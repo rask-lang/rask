@@ -247,12 +247,23 @@ Nothing here is causing a miscompile today.
   type is unknown, per that doc comment.
 - Give derive bodies node types — synthesize them before checking, or record as they are
   built — so the coverage number measures something.
-- **B3. One place decides how wide a slot is.** Four sites in this branch disagreed with the
-  rule #629 settled — a float in a word-wide slot lives there as an `f64`. The array element
-  store (#902), the generic struct field read (#972), the `match` result local and the enum
-  payload read (both #973). The rule lives in a doc comment and a pair of helpers nobody is
-  required to call. This one is still worth doing: it is the only item in this track with
-  evidence behind it, four bugs' worth, all of them quiet wrong answers rather than crashes.
+- **B3. One place decides how wide a slot is — done.** Four sites in this branch disagreed
+  with the rule #629 settled: the array element store (#902), the generic struct field read
+  (#972), the `match` result local and the enum payload read (both #973). All four were quiet
+  wrong answers rather than crashes, which is what let them accumulate.
+
+  `rask_mono::abi` already held the wrapper-payload half of the rule and said why — *"MIR
+  widens a value to this on the way in, codegen takes it apart by this on the way out, and
+  neither gets its own opinion."* It just didn't cover the other slot kinds. `slot_scalar_bytes`
+  generalizes it — a float occupies its slot whole (`f64` in a word, `f32` in four bytes), an
+  integer takes the slot it is given — with unit tests on the rule itself and the four-site
+  table in its doc comment. The narrow store, the struct field read and the enum payload read
+  consult it instead of deciding locally.
+
+  It is not yet a chokepoint in the strong sense: a new site can still call `load`/`store`
+  directly without asking. Making that impossible means routing emission through the helper
+  too, which is a larger change than this one. `t_week_float_slots.rk` is the backstop in the
+  meantime — nine positions, both backends.
 
 **Reorder.** Track B was placed above the rest of Track A because it was believed to generate
 those bugs. The evidence for that is gone — the fallback machinery generates nothing, because

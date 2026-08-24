@@ -2211,11 +2211,14 @@ impl<'a> FunctionBuilder<'a> {
         };
         let val_ty = builder.func.dfg.value_type(val);
         let val = if val_ty.is_float() {
-            // f32 is the only float narrower than a word. It can arrive already
-            // demoted, or still as the f64 a word-wide slot would have held —
-            // an array of f32 keeps its elements at 4 bytes, so the promoted
-            // form has to come back down before its bits are stored.
-            let val = if val_ty.bits() > 32 {
+            // How wide this slot holds a float is `rask_mono::abi`'s to say, not
+            // this function's — a word takes the promoted f64, anything narrower
+            // takes the f32. The value can arrive either way, so bring it to
+            // whichever the slot wants before storing its bits.
+            let want_bytes = rask_mono::abi::slot_scalar_bytes(
+                true, val_ty.bytes(), size,
+            );
+            let val = if want_bytes < 8 && val_ty.bits() > 32 {
                 builder.ins().fdemote(types::F32, val)
             } else {
                 val
@@ -4032,12 +4035,25 @@ impl<'a> FunctionBuilder<'a> {
                         // below demote — the same pair `value_to_ptr` and
                         // `load_scalar_slot` agree on, and the Option and Result
                         // payload paths already use.
-                        load_ty = match &field.ty {
-                            RaskType::F64 | RaskType::F32 => types::F64,
-                            _ if field.is_type_param => {
-                                if load_ty.is_float() { types::F64 } else { load_ty }
+                        // What width the slot holds this in is the ABI's
+                        // answer, whether the field's declared type says
+                        // `float` or the type parameter it was substituted
+                        // from does. Deciding it here is how a `G<f32>` field
+                        // came to be read four bytes wide out of a slot holding
+                        // a promoted double (#972).
+                        let field_is_float = matches!(
+                            &field.ty,
+                            RaskType::F64 | RaskType::F32
+                        ) || (field.is_type_param && load_ty.is_float());
+                        load_ty = if field_is_float {
+                            match rask_mono::abi::slot_scalar_bytes(true, 8, field.size) {
+                                8 => types::F64,
+                                _ => types::F32,
                             }
-                            _ => types::I64,
+                        } else if field.is_type_param {
+                            load_ty
+                        } else {
+                            types::I64
                         };
                         field.offset as i32
                     } else {
@@ -4055,8 +4071,13 @@ impl<'a> FunctionBuilder<'a> {
                 // narrowing tail below demotes it. f64 was right by coincidence:
                 // the width the caller asked for happened to be the storage
                 // width (#973).
-                if load_ty == types::F32 {
-                    load_ty = types::F64;
+                if load_ty.is_float() {
+                    load_ty = match rask_mono::abi::slot_scalar_bytes(
+                        true, load_ty.bytes(), rask_mono::abi::PAYLOAD_SLOT_BYTES,
+                    ) {
+                        8 => types::F64,
+                        _ => types::F32,
+                    };
                 }
                 // Prefer the exact payload offset match_lower computed for this
                 // arm's variant. Guessing "first variant with enough fields"
