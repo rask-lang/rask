@@ -657,10 +657,16 @@ pub fn monomorphize_with_packages(
         let generic_decls: HashMap<String, &Decl> = decls
             .iter()
             .filter_map(|d| match &d.kind {
-                DeclKind::Struct(s) if !s.type_params.is_empty() => {
+                // PC1 counts: a single letter in a field or payload type makes
+                // the type generic whether or not `<T>` was written. Gating on
+                // the explicit list meant an implicit-param struct never got an
+                // instance layout at all, so a `Pair<i32, string>` kept the
+                // shared one — where every parameter is a single word — and its
+                // 16-byte string field was written into an 8-byte slot (#913).
+                DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
                     Some((s.name.split('<').next().unwrap_or(&s.name).to_string(), d))
                 }
-                DeclKind::Enum(e) if !e.type_params.is_empty() => {
+                DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
                     Some((e.name.split('<').next().unwrap_or(&e.name).to_string(), d))
                 }
                 _ => None,

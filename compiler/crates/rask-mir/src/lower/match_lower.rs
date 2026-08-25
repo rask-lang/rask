@@ -205,6 +205,14 @@ impl<'a> MirLowerer<'a> {
 
         let _ = scrutinee;
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
@@ -429,8 +437,23 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 Pattern::Struct { name, .. } => {
+                    // `resolve_pattern_tag` only answers for a *qualified*
+                    // `Enum.Variant`, and a match arm is written unqualified —
+                    // so a `N { v }` arm fell through to "case = arm index" and
+                    // matched only where the arm's position happened to equal
+                    // the variant's tag. Written first for a variant declared
+                    // second, it silently didn't match, or the switch reached an
+                    // arm whose payload wasn't there and the program died
+                    // (#911). Same fallback the positional-payload arm above has
+                    // had all along, which is why `N(i64)` worked and `N { v }`
+                    // did not.
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
+                    } else if has_tag {
+                        let tag = self
+                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
+                            .unwrap_or_else(|| self.variant_tag(name));
+                        cases.push((tag as u64, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
@@ -835,6 +858,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
@@ -933,6 +964,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
@@ -1180,6 +1219,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
@@ -1330,6 +1377,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
@@ -1443,6 +1498,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         self.builder.switch_to_block(merge_block);
+        // The local was allocated before any arm was lowered, so its type
+        // started as a placeholder word. Now that the arms have reported one,
+        // give it the real one: assigning an f64 into an `i64` local converts
+        // rather than reinterprets, so a `match` used as an expression handed
+        // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
+        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
+        // was not.
+        self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
 

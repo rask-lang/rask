@@ -493,3 +493,61 @@ pub enum Pattern {
         binding: Option<String>,
     },
 }
+
+/// The name of an expression's form, for diagnostics and instrumentation that
+/// need to say *what kind* of expression something was without carrying the
+/// tree around.
+///
+/// Exhaustive on purpose: a new `ExprKind` variant won't compile until it's
+/// named here, so the reports built on this can't quietly stop covering a form.
+pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
+    match kind {
+        ExprKind::Int { .. } => "Int",
+        ExprKind::Float { .. } => "Float",
+        ExprKind::String { .. } => "String",
+        ExprKind::StringInterp { .. } => "StringInterp",
+        ExprKind::Char { .. } => "Char",
+        ExprKind::Bool { .. } => "Bool",
+        ExprKind::Null { .. } => "Null",
+        ExprKind::None { .. } => "None",
+        ExprKind::Ident { .. } => "Ident",
+        ExprKind::Binary { .. } => "Binary",
+        ExprKind::Unary { .. } => "Unary",
+        ExprKind::Call { .. } => "Call",
+        ExprKind::MethodCall { .. } => "MethodCall",
+        ExprKind::Field { .. } => "Field",
+        ExprKind::DynamicField { .. } => "DynamicField",
+        ExprKind::OptionalField { .. } => "OptionalField",
+        ExprKind::Index { .. } => "Index",
+        ExprKind::Block { .. } => "Block",
+        ExprKind::If { .. } => "If",
+        ExprKind::IfLet { .. } => "IfLet",
+        ExprKind::GuardPattern { .. } => "GuardPattern",
+        ExprKind::IsPattern { .. } => "IsPattern",
+        ExprKind::Match { .. } => "Match",
+        ExprKind::Try { .. } => "Try",
+        ExprKind::Catch { .. } => "Catch",
+        ExprKind::Take { .. } => "Take",
+        ExprKind::IsPresent { .. } => "IsPresent",
+        ExprKind::Unwrap { .. } => "Unwrap",
+        ExprKind::NullCoalesce { .. } => "NullCoalesce",
+        ExprKind::Range { .. } => "Range",
+        ExprKind::StructLit { .. } => "StructLit",
+        ExprKind::Array { .. } => "Array",
+        ExprKind::ArrayRepeat { .. } => "ArrayRepeat",
+        ExprKind::Tuple { .. } => "Tuple",
+        ExprKind::UsingBlock { .. } => "UsingBlock",
+        ExprKind::WithAs { .. } => "WithAs",
+        ExprKind::Closure { .. } => "Closure",
+        ExprKind::Cast { .. } => "Cast",
+        ExprKind::Convert { .. } => "Convert",
+        ExprKind::Spawn { .. } => "Spawn",
+        ExprKind::BlockCall { .. } => "BlockCall",
+        ExprKind::Unsafe { .. } => "Unsafe",
+        ExprKind::Comptime { .. } => "Comptime",
+        ExprKind::Select { .. } => "Select",
+        ExprKind::Loop { .. } => "Loop",
+        ExprKind::Assert { .. } => "Assert",
+        ExprKind::Check { .. } => "Check",
+    }
+}

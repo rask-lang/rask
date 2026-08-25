@@ -219,9 +219,27 @@ fn register_method(
     method_table: &mut HashMap<String, Decl>,
     method_by_bare_name: &mut HashMap<String, Vec<String>>,
     method_owners: &mut HashMap<String, MethodOwner>,
+    owner_params: &HashMap<String, Vec<String>>,
 ) {
     let qualified = format!("{}_{}", type_name, method.name);
-    if let Some(owner) = parse_owner(type_name) {
+    // `extend Wrapper<T>` says its parameters in the header. `extend Wrapper`
+    // doesn't, and the owning declaration is where they live — the header is
+    // allowed to leave them out. Without this fallback such a method had no
+    // parameters to bind, so it never got a per-receiver copy: one shared
+    // `Wrapper_get` returning a word served `Wrapper<f64>` (which read the
+    // double's bits as an integer) and `Wrapper<string>` (which segfaulted on a
+    // 16-byte value in an 8-byte return slot) alike (#916).
+    let owner = parse_owner(type_name).or_else(|| {
+        let base = type_name.split('<').next().unwrap_or(type_name).trim();
+        owner_params
+            .get(base)
+            .filter(|params| !params.is_empty())
+            .map(|params| MethodOwner {
+                base: base.to_string(),
+                params: params.clone(),
+            })
+    });
+    if let Some(owner) = owner {
         method_owners.insert(format!("{}_{}", owner.base, method.name), owner.clone());
         method_owners.insert(qualified.clone(), owner);
     }
@@ -256,6 +274,24 @@ impl<'a> Monomorphizer<'a> {
         let mut method_by_bare_name: HashMap<String, Vec<String>> = HashMap::new();
         let mut method_owners: HashMap<String, MethodOwner> = HashMap::new();
 
+        // Type parameters per declared type, by bare name — PC1, so a struct
+        // that never wrote `<T>` still reports the parameters its field types
+        // imply. `register_method` falls back to this when an `extend` header
+        // leaves them out.
+        let mut owner_params: HashMap<String, Vec<String>> = HashMap::new();
+        for decl in decls {
+            let (name, params) = match &decl.kind {
+                DeclKind::Struct(s) => (&s.name, rask_types::struct_type_param_names(s)),
+                DeclKind::Enum(e) => (&e.name, rask_types::enum_type_param_names(e)),
+                _ => continue,
+            };
+            if params.is_empty() {
+                continue;
+            }
+            let bare = name.split('<').next().unwrap_or(name).trim().to_string();
+            owner_params.insert(bare, params);
+        }
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -283,7 +319,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &s.name, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }
@@ -292,7 +328,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &e.name, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }
@@ -301,7 +337,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &i.target_ty, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }

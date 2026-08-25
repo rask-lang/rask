@@ -24,7 +24,22 @@ impl TypeChecker {
         f.name == "main" && self.current_self_type.is_none()
     }
 
+    /// Check a function with its own type parameters in scope.
+    ///
+    /// A declared parameter has to win over a type of the same name for as long
+    /// as this signature and body are being checked — `func first<Output>(xs:
+    /// Vec<Output>)` meant the stdlib's `os.Output` otherwise, and every use of
+    /// the parameter mismatched against a type nobody wrote (#915). Wrapping
+    /// rather than pushing inline because the scope has to come back off on
+    /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
+        let params = super::declarations::signature_type_param_names(f);
+        let outer = self.types.push_type_params(params);
+        self.check_fn_scoped(f);
+        self.types.pop_type_params(outer);
+    }
+
+    fn check_fn_scoped(&mut self, f: &FnDecl) {
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
             .filter(|p| p.name != "self" && p.ty.is_empty())

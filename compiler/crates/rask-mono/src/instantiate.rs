@@ -771,8 +771,10 @@ pub fn type_param_names(decl: &Decl, type_args: &[Type]) -> Vec<String> {
                 f.type_params.iter().map(|p| p.name.clone()).collect()
             }
         }
-        DeclKind::Struct(s) => s.type_params.iter().map(|p| p.name.clone()).collect(),
-        DeclKind::Enum(e) => e.type_params.iter().map(|p| p.name.clone()).collect(),
+        // PC1 applies to field and payload types too, so a struct that never
+        // wrote `<T>` still has parameters to bind (#913).
+        DeclKind::Struct(s) => rask_types::struct_type_param_names(s),
+        DeclKind::Enum(e) => rask_types::enum_type_param_names(e),
         _ => Vec::new(),
     }
 }
@@ -806,6 +808,26 @@ pub fn instantiate_function_with_params(
     (cloned, substitutor.node_origin)
 }
 
+/// Turn a PC1 name list back into `TypeParam`s, keeping whatever the explicit
+/// `<T>` list already recorded (bounds, comptime-ness) for the names it has.
+fn named_params(names: Vec<String>, declared: &[TypeParam]) -> Vec<TypeParam> {
+    names
+        .into_iter()
+        .map(|name| {
+            declared
+                .iter()
+                .find(|p| p.name == name)
+                .cloned()
+                .unwrap_or(TypeParam {
+                    name,
+                    is_comptime: false,
+                    comptime_type: None,
+                    bounds: Vec::new(),
+                })
+        })
+        .collect()
+}
+
 pub fn instantiate_function_from(
     decl: &Decl,
     type_args: &[Type],
@@ -837,8 +859,20 @@ pub fn instantiate_function_from(
                 &f.type_params
             }
         }
-        DeclKind::Struct(s) => &s.type_params,
-        DeclKind::Enum(e) => &e.type_params,
+        // Same PC1 widening as the `Fn` arm above: the implicit single letters
+        // in field and payload types are parameters, and the checker's type
+        // args are ordered by that same shared list. Reading only the explicit
+        // `<T>` list here left an implicit-param struct with nothing to
+        // substitute, so a function returning one handed back an unsubstituted
+        // layout and the caller segfaulted reading it (#913).
+        DeclKind::Struct(s) => {
+            implicit_params = named_params(rask_types::struct_type_param_names(s), &s.type_params);
+            &implicit_params
+        }
+        DeclKind::Enum(e) => {
+            implicit_params = named_params(rask_types::enum_type_param_names(e), &e.type_params);
+            &implicit_params
+        }
         _ => {
             // No type parameters to substitute — return a clone
             return (decl.clone(), HashMap::new());
