@@ -3857,6 +3857,7 @@ const PANIC_MESSAGES: &[(&str, &str)] = &[
      "integer overflow: 0 - 1 exceeds u128 range [0, 340282366920938463463374607431768211455]"),
     ("index_past_end.rk", "index out of bounds: index is 5 but length is 1"),
     ("map_key_missing.rk", "key not found in map"),
+    ("map_key_missing_mutate.rk", "key not found in map"),
     ("force_absent.rk", "! on a value that was absent"),
     ("force_error.rk", "! on a value that was an error"),
     ("explicit.rk", "hand written"),
