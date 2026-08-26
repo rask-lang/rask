@@ -1941,6 +1941,14 @@ impl<'a> MirLowerer<'a> {
                         );
                         if size <= 8 && lives_inline {
                             FieldAccess::InPlace(size)
+                        } else if size > 8 && !result_ty.passed_by_address() {
+                            // A scalar wider than a word — a 128-bit integer is
+                            // the only one. It rides in a register pair, so it
+                            // comes back loaded; `Sized` reads a size over a
+                            // word as "aggregate" and handed back the field's
+                            // address, so `ledger.balance` printed a stack
+                            // address (#933).
+                            FieldAccess::InRegister(size)
                         } else {
                             FieldAccess::Sized(size)
                         }
