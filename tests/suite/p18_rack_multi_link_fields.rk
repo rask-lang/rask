@@ -9,7 +9,6 @@
 import memory.Link
 import memory.Rack
 
-
 struct Cell {
     id: i32
     left: Link<Cell>?
