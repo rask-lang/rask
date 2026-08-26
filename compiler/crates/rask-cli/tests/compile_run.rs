@@ -931,7 +931,7 @@ fn error_module_used_without_import() {
     assert!(failed, "a module used without importing it must be rejected: {}", out);
     for module in ["math", "fs"] {
         assert!(
-            out.contains(&format!("`{module}` is used but never imported")),
+            out.contains(&format!("`{module}` is not in scope")),
             "should name `{module}`: {out}",
         );
         assert!(
@@ -1444,7 +1444,7 @@ fn error_module_used_without_its_import() {
     assert!(failed, "a module needs its own import: {}", out);
     for m in ["`json`", "`net`", "`fs`"] {
         assert!(
-            out.contains(&format!("{} is used but never imported", m)),
+            out.contains(&format!("{} is not in scope", m)),
             "{} should need an import like every other module: {}", m, out,
         );
     }
@@ -3646,7 +3646,7 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         // at print time, not in a string user code prints itself. The path is
         // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:25: boom"),
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:26: boom"),
             "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
@@ -4036,6 +4036,8 @@ func main() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 @message
 enum StoreError { Boom }
 
@@ -4110,6 +4112,8 @@ func ok_side() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 struct Store { n: u64 }
 
 extend Store {
@@ -5012,7 +5016,7 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
         assert_eq!(stdout, "main still running\n", "{}", mode);
         let report = stderr.trim_end();
         assert!(report.starts_with("task 1 panic at ")
-                && report.ends_with("detached_panic_report.rk:12: detached boom"),
+                && report.ends_with("detached_panic_report.rk:13: detached boom"),
             "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
     }
 }

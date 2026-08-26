@@ -2,6 +2,9 @@
 // consume `b` (no E0800), and the widen `Handle -> Handle?` is wrapped so the
 // link reads back as Some. Interp is the reference here — native reads of a
 // niche Option<Handle> from a pool element are tracked separately (#438).
+import memory.Handle
+import memory.Pool
+
 struct Node { value: i64, next: Handle<Node>? }
 
 func main() {

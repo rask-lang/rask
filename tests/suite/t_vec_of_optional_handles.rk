@@ -8,6 +8,7 @@
 // the element read handed back its own address, and `== none` walked the value
 // as an aggregate. Every slot read as present, and the address was then used as
 // the handle.
+import memory.Pool
 
 struct Item {
     public hp: i32

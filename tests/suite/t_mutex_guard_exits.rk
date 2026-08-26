@@ -8,6 +8,8 @@
 // into a local, so it has to be written back — which only happened when the
 // body ran off its end. `with m.write() as v { v = v + 5; return v }` therefore
 // returned the wrong value *and* left the mutex untouched.
+import sync.Shared
+import sync.Mutex
 
 func bump_then_return(m: Shared<i64, Mutex>) -> i64 {
     with m.write() as v {

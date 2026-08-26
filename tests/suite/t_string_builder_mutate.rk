@@ -8,6 +8,7 @@
 // pointer to one. Natively that was a segfault or a bogus multi-terabyte
 // allocation; the interpreter never cared because it stores builders by
 // identity. Locals worked fine, so this only showed up across a call.
+import string.StringBuilder
 
 func fill(mutate b: StringBuilder) {
     b.push("hello")

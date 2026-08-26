@@ -14,6 +14,8 @@
 //    logic in both models. What links remove is the last line of `remove`
 //    (no manual head/tail nulling) and the whole class of "I nulled one
 //    direction and forgot the other" bugs.
+import memory.Link
+import memory.Rack
 
 struct Node {
     value: i32

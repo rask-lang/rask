@@ -21,6 +21,7 @@
 // always worked, which is why nothing caught it.
 //
 // Spec: type.gradual (inference), mem.pools (PF1-PF4)
+import memory.Pool
 
 struct Entity {
     public hp: i64

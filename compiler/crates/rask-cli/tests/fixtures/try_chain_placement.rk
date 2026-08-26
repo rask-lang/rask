@@ -2,6 +2,7 @@
 // type.errors/ER16a (#647): `try` attaches to the fallible step of a postfix
 // chain, not to the whole chain. The wrappers carry no methods, so only one
 // placement can work and the compiler finds it — no parentheses needed.
+import io.IoError
 
 struct Config { port: i32, name: string }
 

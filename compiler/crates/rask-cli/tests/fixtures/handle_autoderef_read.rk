@@ -1,5 +1,8 @@
 // mem.context/CC1 (#434): `h.field` on a Handle<Player> auto-resolves through
 // the named `using players: Pool<Player>` context — no explicit `players[h]`.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func report(h: Handle<Player>) using players: Pool<Player> {

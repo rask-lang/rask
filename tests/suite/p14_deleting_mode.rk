@@ -6,6 +6,8 @@
 // outside, so the parameter says `deleting` and the call revokes the caller's
 // links. This file is the accepted side — the rejections live in
 // tests/compile_errors/rack_delete_undeclared.rk.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

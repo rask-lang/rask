@@ -6,6 +6,8 @@
 // The model: deleting a node sets every edge pointing at it to `none` before the
 // delete returns, so a dead link never exists and following a live one needs no
 // check. Everything below is a consequence of that.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

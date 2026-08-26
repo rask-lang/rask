@@ -6,6 +6,7 @@
 // the mode promises is that the value is still there when the call returns, so the
 // replacement is required. `tests/compile_errors/mutate_param_left_empty.rk` pins
 // the half that's refused.
+import string.StringBuilder
 
 func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
     if !b.is_empty() {

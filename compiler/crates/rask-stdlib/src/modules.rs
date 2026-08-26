@@ -89,7 +89,9 @@ const COMPILER_MODULES: &[&str] = &[
     // `reflect` declares `fields<T>` and the rest of the namespace, and parsing
     // it makes `reflect.fields<T>()` inside a generic function stop
     // monomorphizing — `print_fields(Point{…})` mangles to `print_fields$_`,
-    // the call's `T` never bound. #699's fixture catches it (issue filed).
+    // the call's `T` never bound. #699's fixture catches it.
+    //
+    // Both are #990.
     "fmt",
     "encoding",
     "reflect",

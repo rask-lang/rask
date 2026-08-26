@@ -9,6 +9,7 @@
 import async.spawn
 import sync.AtomicI64
 import sync.Relaxed
+import sync.Shared
 
 // Approach 1: Use ! to panic on task failure (simplest for tests)
 func flight_tracker() -> i32 {

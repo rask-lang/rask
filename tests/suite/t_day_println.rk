@@ -6,6 +6,7 @@
 // escaped braces, and with each primitive type in a hole. `print` without the
 // newline is here too, since a "no trailing newline" bug only shows when you
 // compare the two backends' output byte for byte.
+import string.StringBuilder
 
 func fmt_int(n: i32) -> string {
     return "{n}"

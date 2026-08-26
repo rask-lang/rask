@@ -2,6 +2,7 @@
 // Server configuration, shared read-heavy across all request tasks.
 
 import os
+import sync.Shared
 
 // Field defaults (`port: u16 = 8080`, FD1) are the spec mechanism here and
 // would let `Config {}` be the default value — but the parser doesn't accept

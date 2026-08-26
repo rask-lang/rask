@@ -19,6 +19,7 @@
 // Rename the parameter and everything works — explicit lists, closure
 // parameters, and differing in/out types are all fine as long as the name is
 // free. `t_week_generics.rk` covers those with non-colliding names.
+import os.Output
 
 // The colliding name.
 func convert<Input, Output>(x: Input, f: func(Input) -> Output) -> Output {
