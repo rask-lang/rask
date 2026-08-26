@@ -4,6 +4,7 @@
 //! Executes the AST directly without compilation.
 
 mod value;
+mod ptr;
 mod rack;
 mod env;
 mod resource;

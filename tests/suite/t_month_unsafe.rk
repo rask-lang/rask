@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Month one: unsafe blocks and raw pointers — #935.
+// Month one: unsafe blocks and raw pointers — #935, fixed.
 //
-// Native implements the raw-pointer surface mem.unsafe specifies. The interpreter
-// treats a raw pointer as a plain i64, so `*p` silently yields **0** and the
-// pointer methods don't exist ("method not found on `i64`", which is the
-// diagnosis).
-//
-// The two failure modes split badly. `p.read()` at least errors immediately. `*p`
-// returns 0 — a plausible byte value — so a program doing FFI or hand-rolled
-// buffer work runs to completion on `--interp` and produces wrong answers instead
-// of stopping. And since the interpreter is normally the reference, anyone checking
-// unsafe code against a native result would conclude native was wrong.
-//
-// Interpreter-lag direction, the third this sweep found after #909 and #934.
+// The interpreter used to have no pointer value at all: `as_ptr()` handed back the
+// integer 0, so `*p` folded to 0 and `read`/`offset` were "no method on `i64`".
+// It now carries a real pointer — the buffer it came from plus an element index —
+// so every case below answers the same on both backends.
 //
 // `&x` to take a raw pointer to a local isn't available on either backend — `let
 // p: *i32 = &x` is "remove the '&' - Rask currently uses owned values" — so
 // `as_ptr()` is the only way to get a pointer, which is what this file uses.
+//
+// Two things deliberately aren't here, both for the same reason: a test that
+// panics fails, so neither can be asserted on.
+//
+//   - Reading past the end of a buffer, and dereferencing null. mem.unsafe's
+//     debug-mode table says both panic with a location in debug and are UB in
+//     release. The interpreter is a debug environment by construction and always
+//     panics; native reads whatever is there (or takes a SIGSEGV, which
+//     RASK_RUNTIME_CHECKS=1 turns into the same message). That's the specified
+//     split between the modes, not a divergence.
+//   - `Vec<T>` pointer walking for any T narrower than 8 bytes. Native builds the
+//     Vec with an 8-byte stride and steps the pointer by the element's natural
+//     width, so `*p.offset(1)` on a `Vec<i32>` lands inside element 0 — #985. The
+//     Vec cases below stay on `i64`, where the two widths agree.
 //
 // The C-interop half of the area (compile_rust, cbindgen, linking a real object
 // file) still needs a build-system harness and stays a recorded hole in
@@ -25,6 +31,17 @@
 // UF1: inside an unsafe func, no nested unsafe block is needed.
 unsafe func first_byte(s: string) -> u8 {
     return *s.as_ptr()
+}
+
+// A pointer taken by a function, rather than made and used in one place.
+unsafe func third_byte(p: *u8) -> u8 {
+    return *p.offset(2)
+}
+
+// A pointer parked in a field and read back out.
+struct ByteView9 {
+    data: *u8,
+    len: usize,
 }
 
 test "mem.unsafe — dereferencing a raw pointer" {
@@ -71,6 +88,125 @@ test "mem.unsafe — U2: unsafe does not propagate" {
     let inside = unsafe { s.len() }
     assert outside == 4
     assert inside == 4
+}
+
+test "mem.unsafe — the buffer is NUL-terminated, so index len reads 0" {
+    let s = "abc"
+    unsafe {
+        assert *s.as_ptr().offset(3) == 0
+    }
+}
+
+test "mem.unsafe — add() and sub() are offset() in either direction" {
+    let s = "abcd"
+    unsafe {
+        let p = s.as_ptr()
+        assert *p.add(3) == 100
+        assert *p.add(3).sub(2) == 98
+    }
+}
+
+test "mem.unsafe — a pointer survives a function boundary and a struct field" {
+    let s = "wxyz"
+    unsafe {
+        // Through a call.
+        assert third_byte(s.as_ptr()) == 121
+        // And back out of a field.
+        let view = ByteView9 { data: s.as_ptr(), len: s.len() }
+        assert *view.data == 119
+        assert *view.data.offset(3) == 122
+    }
+}
+
+test "mem.unsafe — walking a buffer with a reassigned pointer" {
+    let s = "wxyz"
+    mut total: i64 = 0
+    unsafe {
+        mut p = s.as_ptr()
+        for _ in 0..4 {
+            total = total + (*p) as i64
+            p = p.offset(1)
+        }
+        // Stepping back one lands on the last byte again.
+        assert *p.sub(1) == 122
+    }
+    assert total == 482
+}
+
+test "mem.unsafe — eq/ne ask about the address, not the byte there" {
+    // "aa" has the same byte at both indices, so a comparison that read
+    // through the pointers instead of comparing them would call these equal.
+    let s = "aa"
+    unsafe {
+        let p = s.as_ptr()
+        assert p == p
+        assert p.eq(p)
+        assert p.ne(p.offset(1))
+        assert !p.eq(p.offset(1))
+    }
+}
+
+test "mem.unsafe — is_null separates null from a real pointer" {
+    let s = "abc"
+    let nothing: *u8 = null
+    assert nothing.is_null()
+    unsafe {
+        assert !s.as_ptr().is_null()
+    }
+}
+
+test "mem.unsafe — alignment questions" {
+    let s = "abcdefgh"
+    unsafe {
+        let p = s.as_ptr()
+        // A string buffer starts on an 8-byte boundary; one byte in, it doesn't.
+        assert p.is_aligned()
+        assert !p.offset(1).is_aligned()
+        assert p.is_aligned_to(4)
+        assert p.align_offset(8) == 0
+    }
+}
+
+test "mem.unsafe — cast retypes without moving" {
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        // The annotation on `q` is load-bearing on native: written inline as
+        // `*p.cast<u8>()` this reads a whole word and answers 6513249 —
+        // "abc" three bytes at a time — because `cast` drops the `<u8>` the
+        // caller wrote (#986). The interpreter is right either way.
+        let q: *u8 = p.cast<u8>()
+        assert *q == 97
+    }
+}
+
+test "mem.unsafe — a Vec pointer reads elements, and write() lands in the Vec" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    unsafe {
+        let p = v.as_ptr()
+        assert *p == 10
+        assert *p.offset(1) == 20
+        assert p.add(2).read() == 30
+        // The pointer aliases the Vec, so this is visible through `v`.
+        v.as_mut_ptr().offset(1).write(99)
+    }
+    assert v.get(1) ?? 0 == 99
+}
+
+test "mem.unsafe — string.from_raw and from_c copy back out through a pointer" {
+    let s = "hello"
+    unsafe {
+        assert string.from_raw(s.as_ptr(), 5) == "hello"
+        // Pointer plus length reads only the length asked for.
+        assert string.from_raw(s.as_ptr(), 2) == "he"
+        // Offsetting first starts the copy further in.
+        assert string.from_raw(s.as_ptr().offset(3), 2) == "lo"
+        // from_c walks to the terminator instead.
+        assert string.from_c(s.as_c_str()) == "hello"
+    }
 }
 
 func main() {}
