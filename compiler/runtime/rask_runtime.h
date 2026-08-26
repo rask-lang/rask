@@ -1078,6 +1078,25 @@ void rask_ensure_run_all(void);
 void *rask_ensure_stack_take(void);
 void  rask_ensure_stack_set(void *head);
 
+// ─── Held access (ctrl.panic/U3, U4) ───────────────────────
+// A `with` block over a sync box, and the inline `m.lock().f` form, emit an
+// acquire and a release around the access. Only the release is inline, so a
+// panic in between jumped straight past it and left the lock held for the rest
+// of the process — the next acquirer blocked forever, including an ensure body
+// running during that very unwind. Each acquire registers its release here, the
+// matching release deregisters it, and the panic path drains what's left before
+// running any ensure.
+
+typedef void (*RaskReleaseFn)(int64_t handle);
+
+void rask_access_push(RaskReleaseFn fn, int64_t handle);
+void rask_access_pop(int64_t handle);
+void rask_access_release_all(void);
+
+// Park/resume the current thread's held-access stack (opaque; fiber workers).
+void *rask_access_stack_take(void);
+void  rask_access_stack_set(void *head);
+
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
 // Wraps pthread_mutex (conc.sync/MX1-MX2).
@@ -1146,6 +1165,7 @@ int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
+_Noreturn void rask_os_exit(int64_t code);
 void    rask_os_set_env(const RaskStr *name, const RaskStr *value);
 void    rask_os_remove_env(const RaskStr *name);
 RaskVec *rask_os_args(void);

@@ -203,11 +203,14 @@ int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
 int64_t rask_mutex_acquire(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     pthread_mutex_lock(&m->lock);
+    // U3/U4: a panic before the inline release would leave this held forever.
+    rask_access_push(rask_mutex_release, mutex);
     return (int64_t)(intptr_t)m->data;
 }
 
 void rask_mutex_release(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    rask_access_pop(mutex);
     pthread_mutex_unlock(&m->lock);
 }
 
@@ -281,12 +284,14 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
 int64_t rask_shared_read_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     pthread_rwlock_rdlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     return (int64_t)(intptr_t)s->data;
 }
 
 int64_t rask_shared_write_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     pthread_rwlock_wrlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     return (int64_t)(intptr_t)s->data;
 }
 
@@ -299,6 +304,7 @@ int64_t rask_shared_data(int64_t shared) {
 
 void rask_shared_release(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
+    rask_access_pop(shared);
     pthread_rwlock_unlock(&s->lock);
 }
 

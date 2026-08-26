@@ -60,6 +60,13 @@ int64_t rask_os_pid(void) {
     return (int64_t)getpid();
 }
 
+// os.exit(code) — struct.targets/EX3, ctrl.panic/P5: immediate, no unwind, no
+// ensures. `exit` rather than `_exit` so buffered `println` output still reaches
+// the terminal; what it must not do is run the cleanup a panic would.
+_Noreturn void rask_os_exit(int64_t code) {
+    exit((int)code);
+}
+
 // os.env_vars() -> Vec<(string, string)>
 //
 // Pairs laid out the way a tuple is: name at 0, value at 16. `environ` gives

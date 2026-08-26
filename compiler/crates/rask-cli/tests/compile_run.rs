@@ -3852,6 +3852,55 @@ fn try_inside_ensure_is_rejected() {
     );
 }
 
+// ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.
+//
+// Codegen emits the acquire and the release around a `with` block, but only the
+// release is inline — so a panic in the middle jumped past it and the lock stayed
+// held for the rest of the process. Each acquire registers its release with the
+// runtime now, and the panic path drains what's left before running any ensure.
+// Both of these hung with no output on native before that.
+
+#[test]
+fn panic_inside_with_releases_the_lock() {
+    // The ensure running during unwind reads the same box. It has to be able to
+    // take the lock (U3), and it sees the pre-panic write (U2).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_releases_lock.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90\n0\n",
+            "{}: the ensure must acquire the released lock and see the write", mode,
+        );
+    }
+}
+
+#[test]
+fn panicked_task_hands_on_its_lock() {
+    // LK1/LK2/O3: the next acquirer gets the lock and the last-written state —
+    // no poisoning, no rollback. O1: the death arrives as JoinError.Panicked.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_task_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "panicked\n99\n",
+            "{}: join reports the panic and the lock is free with the last write", mode,
+        );
+    }
+}
+
+#[test]
+fn exit_skips_every_ensure() {
+    // P5/EX3: exit is not a panic. No unwind, no cleanup, at any depth.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "exit_skips_ensures.rk");
+        assert_eq!(code, 5, "{}: os.exit(5) sets the status; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "start\n",
+            "{}: no ensure may run on the exit path", mode,
+        );
+    }
+}
+
 #[test]
 fn panic_exits_101_both_backends() {
     // P4/EX4: a panic escaping main exits 101 on interp and native alike.

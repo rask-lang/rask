@@ -1095,6 +1095,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
+        // ensures. Declared `@native` in stdlib/os.rk with no entry here, so
+        // `os.exit(1)` reached codegen as "Function not found: os_exit" while
+        // the interpreter ran it — same shape as os_set_env before #855.
+        StdlibEntry::simple("os_exit", "rask_os_exit", &[types::I64], None, false),
         StdlibEntry::simple("os_env_vars", "rask_os_env_vars", &[], Some(types::I64), false),
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
