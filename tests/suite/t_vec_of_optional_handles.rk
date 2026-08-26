@@ -9,6 +9,7 @@
 // as an aggregate. Every slot read as present, and the address was then used as
 // the handle.
 import memory.Pool
+import memory.Handle
 
 struct Item {
     public hp: i32

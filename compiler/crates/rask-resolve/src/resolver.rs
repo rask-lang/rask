@@ -57,6 +57,14 @@ pub struct Resolver {
     /// the message named the wrong module for it — `string` also has a
     /// `ParseError`, and that's the one the owner lookup found.
     imported_type_names: HashSet<String>,
+    /// Type-parameter names in scope, innermost frame last.
+    ///
+    /// IM1's annotation check reads type strings by name, and a type parameter
+    /// is spelled exactly like a type — so `func convert<Input, Output>(…)` had
+    /// its `Output` reported as needing `import os.Output`, which is the very
+    /// collision #915 exists to make the parameter win. Only *comptime* type
+    /// params get scope symbols, so `self.scopes` can't answer this.
+    type_param_scopes: Vec<HashSet<String>>,
     /// Names already reported as needing an import (IM1).
     ///
     /// One missing import is one fact about one name, and a program using
@@ -89,6 +97,7 @@ impl Resolver {
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
             imported_type_names: HashSet::new(),
+            type_param_scopes: Vec::new(),
             reported_missing_imports: HashSet::new(),
             lazy_imports: HashMap::new(),
             type_param_map: HashMap::new(),
@@ -1836,6 +1845,15 @@ impl Resolver {
         };
         self.scopes.push(scope_kind);
 
+        // IM1 checks `let`/`mut` annotations as the body is resolved, so the
+        // function's type parameters have to be in scope for that — a local
+        // `let x: Output = …` inside `func f<Output>()` is the parameter, not
+        // `os.Output`. Outer params come along for an `extend Ring<T>` method.
+        let mut fn_params =
+            Self::declared_type_params(&fn_decl.name, &fn_decl.type_params);
+        fn_params.extend(outer_type_params.iter().map(|p| p.name.clone()));
+        self.push_type_params(fn_params);
+
         // Register comptime type params from outer context (struct/enum extend)
         for tp in outer_type_params {
             if tp.is_comptime {
@@ -1915,6 +1933,7 @@ impl Resolver {
             self.resolve_stmt(stmt);
         }
 
+        self.pop_type_params();
         self.scopes.pop();
         self.current_function = None;
     }
@@ -1942,6 +1961,13 @@ impl Resolver {
                 if !self.stdlib_mode && self.is_reserved_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
                 }
+                // IM1 on a local's annotation. `check_annotations` walks
+                // declarations, so it never looked inside a body — and
+                // `let d: Duration = …` with no import was the most ordinary way
+                // to write the thing this rule exists to reject.
+                if let Some(ty) = ty {
+                    self.check_type_annotation(ty, *name_span);
+                }
                 let sym_id = self.symbols.insert(
                     name.clone(),
                     SymbolKind::Variable { mutable: true },
@@ -1957,6 +1983,9 @@ impl Resolver {
                 self.resolve_expr(init);
                 if !self.stdlib_mode && self.is_reserved_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
+                }
+                if let Some(ty) = ty {
+                    self.check_type_annotation(ty, *name_span);
                 }
                 let sym_id = self.symbols.insert(
                     name.clone(),
@@ -2373,6 +2402,43 @@ impl Resolver {
         true
     }
 
+    /// The type-parameter names a declaration introduces.
+    ///
+    /// Two places to look: the parsed `type_params` list, and the `<…>` suffix
+    /// the parser leaves on a declaration's name (`foo<T: Trait>`) or on an
+    /// `extend`'s target (`Ring<T>`). Only plain identifiers are taken — a
+    /// concrete argument like `extend Foo<Duration>` is a type, not a parameter,
+    /// and treating it as one would hide a missing import.
+    fn declared_type_params(name: &str, params: &[TypeParam]) -> HashSet<String> {
+        let mut out: HashSet<String> =
+            params.iter().map(|p| p.name.clone()).collect();
+        if let Some(open) = name.find('<') {
+            let close = name.rfind('>').unwrap_or(name.len());
+            for part in name[open + 1..close].split(',') {
+                let bare = part.split(':').next().unwrap_or(part).trim();
+                let plain = !bare.is_empty()
+                    && bare.chars().all(|c| c.is_alphanumeric() || c == '_');
+                if plain {
+                    out.insert(bare.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    fn push_type_params(&mut self, names: HashSet<String>) {
+        self.type_param_scopes.push(names);
+    }
+
+    fn pop_type_params(&mut self) {
+        self.type_param_scopes.pop();
+    }
+
+    /// Is `name` a type parameter of some enclosing declaration?
+    fn is_type_param(&self, name: &str) -> bool {
+        self.type_param_scopes.iter().any(|f| f.contains(name))
+    }
+
     /// The identifier-shaped pieces of a type string. `Vec<Duration>?` gives
     /// `Vec` and `Duration`, `*u8` gives `u8`, `T or Error` gives `T`, `or` and
     /// `Error`.
@@ -2397,7 +2463,10 @@ impl Resolver {
         if self.stdlib_mode {
             return;
         }
-        let names: Vec<String> = Self::type_idents(ty).map(str::to_string).collect();
+        let names: Vec<String> = Self::type_idents(ty)
+            .filter(|n| !self.is_type_param(n))
+            .map(str::to_string)
+            .collect();
         for name in names {
             self.report_missing_import(&name, span);
         }
@@ -2412,9 +2481,11 @@ impl Resolver {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
+                    self.push_type_params(Self::declared_type_params(&s.name, &s.type_params));
                     for f in &s.fields {
                         self.check_type_annotation(&f.ty, decl.span);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Union(u) => {
                     for f in &u.fields {
@@ -2422,11 +2493,13 @@ impl Resolver {
                     }
                 }
                 DeclKind::Enum(e) => {
+                    self.push_type_params(Self::declared_type_params(&e.name, &e.type_params));
                     for v in &e.variants {
                         for ty in &v.fields {
                             self.check_type_annotation(&ty.ty, decl.span);
                         }
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
                 DeclKind::Trait(t) => {
@@ -2435,10 +2508,16 @@ impl Resolver {
                     }
                 }
                 DeclKind::Impl(i) => {
+                    // `extend Ring<T>` puts `T` in scope for the target and for
+                    // every method in the block.
+                    self.push_type_params(
+                        Self::declared_type_params(&i.target_ty, &i.where_bounds),
+                    );
                     self.check_type_annotation(&i.target_ty, decl.span);
                     for m in &i.methods {
                         self.check_fn_annotations(m, decl.span);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Const(c) => {
                     if let Some(ty) = &c.ty {
@@ -2452,12 +2531,16 @@ impl Resolver {
     }
 
     fn check_fn_annotations(&mut self, fn_decl: &FnDecl, span: Span) {
+        self.push_type_params(
+            Self::declared_type_params(&fn_decl.name, &fn_decl.type_params),
+        );
         for p in &fn_decl.params {
             self.check_type_annotation(&p.ty, span);
         }
         if let Some(ret) = &fn_decl.ret_ty {
             self.check_type_annotation(ret, span);
         }
+        self.pop_type_params();
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {

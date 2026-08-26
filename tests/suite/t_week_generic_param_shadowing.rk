@@ -19,7 +19,12 @@
 // Rename the parameter and everything works — explicit lists, closure
 // parameters, and differing in/out types are all fine as long as the name is
 // free. `t_week_generics.rk` covers those with non-colliding names.
-import os.Output
+//
+// No `import os.Output` here, deliberately. IM1 asks for an import when a stdlib
+// name is used unasked, and the first cut of that check read annotation strings
+// by name with no notion of a type parameter — so this file's own `Output` was
+// reported as needing `import os.Output`, and adding the import to quiet it
+// would have hidden the very collision the file exists to test.
 
 // The colliding name.
 func convert<Input, Output>(x: Input, f: func(Input) -> Output) -> Output {

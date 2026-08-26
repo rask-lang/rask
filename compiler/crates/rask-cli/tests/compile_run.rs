@@ -984,6 +984,13 @@ fn error_namespace_rules() {
         out.contains("`StringBuilder` is not in scope"),
         "IM1: including in a type annotation: {}", out,
     );
+    // A local's annotation. The check began as a pass over declarations, so it
+    // never looked inside a function body — the most ordinary way to write the
+    // thing the rule rejects was the one way it didn't catch.
+    assert!(
+        out.contains("`Metadata` is not in scope"),
+        "IM1: including on a `let`: {}", out,
+    );
     // IM4 is what makes the fix applicable — the code is written against the
     // bare name, so `import time.Instant` keeps it working where plain
     // `import time` would mean rewriting the use.
@@ -1011,16 +1018,21 @@ fn error_namespace_rules() {
     );
 
     // And what stays legal: a name of one's own, a builtin function outside
-    // BF1's set, and a stdlib type this file hasn't imported.
-    for legal in ["Budget9", "`max`", "`Handle`"] {
+    // BF1's set, a stdlib type this file hasn't imported, and — the one that
+    // regressed — a generic type parameter named after a real stdlib type.
+    // `Output`, `Response` and `Input` collide with `os.Output`, `http.Response`
+    // and nothing; the annotation check read type strings by name and reported
+    // all of them as missing imports, which is the collision #915 exists to
+    // make the parameter win.
+    for legal in ["Budget9", "`max`", "`Handle`", "`Output`", "`Response`", "`Input`"] {
         assert!(
             !out.contains(legal),
             "{} should not be reported: {}", legal, out,
         );
     }
     assert_eq!(
-        out.matches("error[").count(), 6,
-        "six errors, no more: {}", out,
+        out.matches("error[").count(), 7,
+        "seven errors, no more: {}", out,
     );
 }
 
@@ -2619,7 +2631,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "func leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.TaskHandle\n\nfunc leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "a TaskHandle bound but never joined/detached should be E0805 (H1): {}", output);
