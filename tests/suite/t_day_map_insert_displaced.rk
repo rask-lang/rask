@@ -41,4 +41,49 @@ test "std.collections — a fresh string key displaces nothing" {
     assert m.insert("a", "one") == none
 }
 
+// `remove` shares the "what does the option hold" path with `insert`, and had
+// the same hole: on a string-valued map it answered `i64?`, so the payload read
+// took the string's inline bytes and dereferenced them. Integer values hid it.
+test "std.collections — a removed string comes back whole" {
+    mut m: Map<string, string> = Map.new()
+    m.insert("a", "one")
+    assert m.remove("a")! == "one"
+    assert m.len() == 0
+}
+
+// A value wider than a word, so the displaced copy has to carry all of it
+// rather than the first eight bytes.
+struct Reading9 {
+    id: i64
+    label: string
+    scale: f64
+}
+
+test "std.collections — a displaced struct comes back whole" {
+    mut m: Map<string, Reading9> = Map.new()
+    m.insert("s", Reading9 { id: 1, label: "first", scale: 1.5 })
+    let old = m.insert("s", Reading9 { id: 2, label: "second", scale: 2.5 })!
+    assert old.id == 1
+    assert old.label == "first"
+    assert old.scale == 1.5
+    assert m.get("s")!.id == 2
+    assert m.get("s")!.label == "second"
+}
+
+// An overwrite in a loop: the scratch buffer holding the displaced value is
+// reused every time, so each answer has to be read before the next insert.
+test "std.collections — repeated overwrites each report their own old value" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", 0)
+    mut seen: Vec<i64> = Vec.new()
+    for i in 1..4 {
+        seen.push(m.insert("k", i)!)
+    }
+    assert seen.len() == 3
+    assert seen[0] == 0
+    assert seen[1] == 1
+    assert seen[2] == 2
+    assert m.get("k")! == 3
+}
+
 func main() {}

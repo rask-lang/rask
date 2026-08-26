@@ -47,7 +47,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | module-level const | `t_day_const.rk` | 9/9 | 9/9 | |
 | numeric conversions and casts | `t_day_casts.rk` | 11/11 | 11/11 | |
 | `[T; N]` element writes | `t_day_array_writes.rk` | 6/6 | 6/6 | |
-| **probe** — `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 5/5 | 0/3 | #903 |
+| `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 8/8 | 8/8 | |
 | arrays sized by a named const | `t_day_const_array.rk` | 5/5 | 5/5 | |
 | **probe** — `u8`/`u16` `.to<f64>()` | `t_day_unsigned_to_float.rk` | 6/6 | 5/6 | #974 |
 
@@ -101,11 +101,11 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — parameter modes | `t_month_param_modes.rk` | 6/10 | 6/10 | #899 |
 | **probe** — test-block parameter scope | `t_month_borrow_name_shadow.rk` | BUILD-FAIL | BUILD-FAIL | #926 |
 | **probe** — `@resource` in a loop | `t_month_resource_loop.rk` | BUILD-FAIL | BUILD-FAIL | #928 |
-| **probe** — `ensure` block scoping | `t_month_ensure_block_scope.rk` | 5/5 | 0/5 | #929 |
+| `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
 | **probe** — CT49 field access by literal | `t_month_comptime_field_literal.rk` | 4/4 | BUILD-FAIL | #930 |
 | **probe** — comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 6/6 | BUILD-FAIL | #931 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
-| **probe** — i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 10/10 | BUILD-FAIL | #933 |
+| i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 20/20 | 20/20 | |
 | unsigned widening to 128 bits | `t_month_u128_widening.rk` | 6/6 | 6/6 | |
 | unsafe blocks and raw pointers | `t_month_unsafe.rk` | 16/16 | 16/16 | |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
