@@ -322,7 +322,9 @@ void *rask_map_get(const RaskMap *m, const void *key) {
 void *rask_map_get_unwrap(const RaskMap *m, const void *key) {
     void *result = rask_map_get(m, key);
     if (!result) {
-        rask_panic("Map.get().unwrap(): key not found");
+        // Named a method Rask doesn't have — the stdlib's Map has `get`
+        // returning `V?`, and `m[k]` is what the user wrote to get here.
+        rask_panic("key not found in map");
     }
     return result;
 }

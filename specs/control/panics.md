@@ -121,7 +121,7 @@ There is no Rust-style double-panic abort. The only code that executes during un
 |------|-------------|
 | **F1: Format** | `panic at <file>:<line>:<col>: <message>` — task id prepended when a runtime is active. (Already the compiled runtime's format) |
 | **F2: Backtrace** | `RASK_BACKTRACE=1` adds a stack trace. Not part of the deterministic surface |
-| **F3: Deterministic message** | Messages are a deterministic function of the failing operation's operands — values, indices, lengths, generations. Never addresses |
+| **F3: Deterministic message** | Messages are a deterministic function of the failing operation's operands — values, indices, lengths, generations. Never addresses. The same operation says the same thing on both backends: `panic_messages_are_the_same_on_both_backends` pins one message per source |
 
 ## Determinism
 
@@ -211,6 +211,8 @@ The interpreter already implements most of this model; compiled code has the big
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
 - Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same box can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
 - Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
+- Panic messages hold F3 on both backends, and are pinned there. Native's checked-arithmetic messages used to be wholly static — "integer overflow: addition exceeds i32 range [...]" where the interpreter printed "2147483647 + 1 exceeds i32 range [...]" — so a user natively couldn't see which values overflowed. The operands now go to a runtime formatter (`rask_panic_overflow_binary`, and an i128 pair in `int128.c` since `snprintf` has no conversion that wide); the static half it splices behind them is the type and range codegen already registered. Two other messages named `unwrap`, a method Rask doesn't have: `x!` says whether the value was absent or an error (the operand's type decides, so MIR passes a flag), and a missing map key says so without naming a method.
+- Residual F3 gap: `r!` on an error branch doesn't print the error's own `message()`, which is the value the reader wants. Both backends have it at the panic point and neither uses it.
 
 ### See Also
 

@@ -802,8 +802,25 @@ int  rask_in_ffi_boundary(void);
 void rask_set_panic_location(const char *file, int32_t line, int32_t col);
 
 // Location-aware panic wrappers for codegen
-void rask_panic_unwrap(void);
-void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col);
+void rask_panic_unwrap(int32_t was_error);
+
+// Checked-arithmetic panics that name their operands (ctrl.panic/F3). `tail` is
+// the static "<type> range [min, max]" / "<type> bit width (n)" half.
+_Noreturn void rask_panic_overflow_binary(const char *file, int32_t line, int32_t col,
+                                          const char *op, const char *tail,
+                                          int64_t lhs, int64_t rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t operand);
+_Noreturn void rask_panic_shift_amount(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t amount);
+// The 128-bit forms. Separate because printing a 128-bit value needs the digit
+// walk in int128.c — snprintf has no conversion for one.
+_Noreturn void rask_panic_overflow_binary_i128(const char *file, int32_t line, int32_t col,
+                                               const char *op, const char *tail,
+                                               RaskI128 lhs, RaskI128 rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int32_t col,
+                                            const char *tail, RaskI128 operand);
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col, int32_t was_error);
 void rask_assert_fail(void);
 void rask_assert_fail_at(const char *file, int32_t line, int32_t col);
 void rask_assert_fail_msg(const char *msg);

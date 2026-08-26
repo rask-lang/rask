@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func main() {
+    mut a: i128 = 170141183460469231731687303715884105727
+    a = a + 1
+}

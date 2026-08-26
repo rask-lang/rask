@@ -319,9 +319,10 @@ impl CodeGenerator {
             self.func_ids.insert("rask_exit".to_string(), id);
         }
 
-        // panic_unwrap() -> void (diverges, but declared as void return)
+        // panic_unwrap(was_error: i32) -> void (diverges, but declared as void return)
         {
-            let sig = self.module.make_signature();
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I32)); // was_error
             let id = self.module
                 .declare_function("rask_panic_unwrap", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
@@ -337,12 +338,13 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail".to_string(), id);
         }
 
-        // panic_unwrap_at(file: ptr, line: i32, col: i32) -> void (diverges)
+        // panic_unwrap_at(file: ptr, line: i32, col: i32, was_error: i32) -> void
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // file ptr
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I32)); // was_error
             let id = self.module
                 .declare_function("rask_panic_unwrap_at", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
@@ -492,6 +494,78 @@ impl CodeGenerator {
                 .declare_function("rask_panic_at", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("panic_at".to_string(), id);
+        }
+
+        // The checked-arithmetic panics that name their operands (ctrl.panic/F3).
+        // `tail` is the static "<type> range [min, max]" half codegen already
+        // registered as a string global; the operands come from the live values
+        // at the check.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // op symbol ptr
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // lhs
+            sig.params.push(AbiParam::new(types::I64)); // rhs
+            sig.params.push(AbiParam::new(types::I32)); // is_unsigned
+            let id = self.module
+                .declare_function("rask_panic_overflow_binary", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_binary".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // operand
+            let id = self.module
+                .declare_function("rask_panic_overflow_neg", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_neg".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // amount
+            let id = self.module
+                .declare_function("rask_panic_shift_amount", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_shift_amount".to_string(), id);
+        }
+        // The 128-bit forms: same messages, operands passed at their own width.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));  // file ptr
+            sig.params.push(AbiParam::new(types::I32));  // line
+            sig.params.push(AbiParam::new(types::I32));  // col
+            sig.params.push(AbiParam::new(types::I64));  // op symbol ptr
+            sig.params.push(AbiParam::new(types::I64));  // tail ptr
+            sig.params.push(AbiParam::new(types::I128)); // lhs
+            sig.params.push(AbiParam::new(types::I128)); // rhs
+            sig.params.push(AbiParam::new(types::I32));  // is_unsigned
+            let id = self.module
+                .declare_function("rask_panic_overflow_binary_i128", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_binary_i128".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));  // file ptr
+            sig.params.push(AbiParam::new(types::I32));  // line
+            sig.params.push(AbiParam::new(types::I32));  // col
+            sig.params.push(AbiParam::new(types::I64));  // tail ptr
+            sig.params.push(AbiParam::new(types::I128)); // operand
+            let id = self.module
+                .declare_function("rask_panic_overflow_neg_i128", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_neg_i128".to_string(), id);
         }
 
         // set_panic_location(file: ptr, line: i32, col: i32) -> void
@@ -902,6 +976,9 @@ impl CodeGenerator {
         for &msg in crate::builder::OVERFLOW_FALLBACKS {
             self.register_string(msg)?;
         }
+        for &sym in crate::builder::OVERFLOW_OP_SYMBOLS {
+            self.register_string(sym)?;
+        }
 
         // Pre-register panic message for inline pool access (release mode)
         if self.build_mode == BuildMode::Release {
@@ -1257,7 +1334,10 @@ impl CodeGenerator {
         // The checked-arithmetic panic messages are emitted by codegen, not
         // referenced in MIR, so import them into every function that might
         // overflow (type.overflow). Unused imports are harmless.
-        for &msg in crate::builder::OVERFLOW_MESSAGES {
+        for &msg in crate::builder::OVERFLOW_MESSAGES
+            .iter()
+            .chain(crate::builder::OVERFLOW_OP_SYMBOLS)
+        {
             if !string_globals.contains_key(msg) {
                 if let Some(data_id) = self.string_data.get(msg) {
                     let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);

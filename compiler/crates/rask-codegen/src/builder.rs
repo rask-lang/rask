@@ -67,10 +67,18 @@ pub(crate) enum OvKind {
     Shift,
 }
 
+/// The operator symbols the runtime formatter splices between the operands.
+/// Registered as string globals alongside the messages below.
+pub(crate) const OVERFLOW_OP_SYMBOLS: &[&str] = &["+", "-", "*", "/"];
+
 /// Build the seven messages for one integer type, and the accessor over them.
 macro_rules! overflow_messages {
     ($($ty:literal, $bits:literal, $unsigned:literal, $range:literal;)*) => {
         /// Every overflow message codegen can emit, registered up front.
+        ///
+        /// The full sentences are what the 128-bit helper path and the
+        /// unknown-width fallback still emit whole. Everything else emits a
+        /// `tail` (below) and lets the runtime splice the operands in front.
         pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
             OV_DIV_ZERO,
             $(
@@ -80,8 +88,36 @@ macro_rules! overflow_messages {
                 concat!("integer overflow: negation exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: dividing ", $ty, " MIN by -1 exceeds ", $ty, " range ", $range),
                 concat!("shift amount exceeds ", $ty, " bit width (", stringify!($bits), ")"),
+                // F3 tails: the static half of an operand-carrying message.
+                concat!($ty, " range ", $range),
+                concat!($ty, " bit width (", stringify!($bits), ")"),
             )*
         ];
+
+        /// The "<type> range [min, max]" half of an overflow message, for the
+        /// runtime formatter to put the operands in front of.
+        ///
+        /// Every width has one; the guards pick the i64 or the i128 formatter
+        /// from the operand's own Cranelift type.
+        pub(crate) fn overflow_range_tail(bits: u32, unsigned: bool) -> Option<&'static str> {
+            match (bits, unsigned) {
+                $( ($bits, $unsigned) => Some(concat!($ty, " range ", $range)), )*
+                _ => None,
+            }
+        }
+
+        /// The "<type> bit width (n)" half of a shift-amount message. Capped at
+        /// 64 bits: a 128-bit shift amount is itself an i128, and the formatter
+        /// for that case would have no caller worth its weight.
+        pub(crate) fn shift_width_tail(bits: u32, unsigned: bool) -> Option<&'static str> {
+            if bits > 64 {
+                return None;
+            }
+            match (bits, unsigned) {
+                $( ($bits, $unsigned) => Some(concat!($ty, " bit width (", stringify!($bits), ")")), )*
+                _ => None,
+            }
+        }
 
         /// The message for one check on one integer type.
         ///
@@ -1810,9 +1846,9 @@ impl<'a> FunctionBuilder<'a> {
                             let min = Self::emit_type_min(builder, val_ty);
                             builder.ins().icmp(IntCC::Equal, val, min)
                         };
-                        Self::guard_overflow(
-                            builder, ctx, overflowed,
-                            overflow_message(OvKind::Neg, val_ty.bits(), unsigned),
+                        Self::guard_overflow_unary(
+                            builder, ctx, overflowed, OvKind::Neg,
+                            val_ty.bits(), unsigned, val,
                         );
                         builder.ins().ineg(val)
                     }
@@ -3111,17 +3147,17 @@ impl<'a> FunctionBuilder<'a> {
             // and division and remainder have no rule at all, so those three go
             // through the runtime and come back with a status (#762).
             if int_ty == types::I128 && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Mod) {
-                let mul = overflow_message(OvKind::Mul, 128, is_unsigned);
-                let div = overflow_message(OvKind::DivMinByNegOne, 128, is_unsigned);
-                let (name, overflow_msg) = match (op, is_unsigned) {
-                    (BinOp::Mul, false) => ("rask_i128_mul", mul),
-                    (BinOp::Mul, true) => ("rask_u128_mul", mul),
-                    (BinOp::Div, false) => ("rask_i128_div", div),
-                    (BinOp::Div, true) => ("rask_u128_div", div),
-                    (BinOp::Mod, false) => ("rask_i128_rem", div),
-                    _ => ("rask_u128_rem", div),
+                let (name, kind, symbol) = match (op, is_unsigned) {
+                    (BinOp::Mul, false) => ("rask_i128_mul", OvKind::Mul, "*"),
+                    (BinOp::Mul, true) => ("rask_u128_mul", OvKind::Mul, "*"),
+                    (BinOp::Div, false) => ("rask_i128_div", OvKind::DivMinByNegOne, "/"),
+                    (BinOp::Div, true) => ("rask_u128_div", OvKind::DivMinByNegOne, "/"),
+                    (BinOp::Mod, false) => ("rask_i128_rem", OvKind::DivMinByNegOne, "/"),
+                    _ => ("rask_u128_rem", OvKind::DivMinByNegOne, "/"),
                 };
-                return Self::emit_i128_helper(builder, ctx, name, lhs_val, rhs_val, overflow_msg);
+                return Self::emit_i128_helper(
+                    builder, ctx, name, lhs_val, rhs_val, kind, symbol, is_unsigned,
+                );
             }
             match op {
                 BinOp::Add => {
@@ -3130,9 +3166,9 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().sadd_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(
-                        builder, ctx, of,
-                        overflow_message(OvKind::Add, int_ty.bits(), is_unsigned),
+                    Self::guard_overflow_binary(
+                        builder, ctx, of, OvKind::Add, "+",
+                        int_ty.bits(), is_unsigned, lhs_val, rhs_val,
                     );
                     res
                 }
@@ -3142,9 +3178,9 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().ssub_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(
-                        builder, ctx, of,
-                        overflow_message(OvKind::Sub, int_ty.bits(), is_unsigned),
+                    Self::guard_overflow_binary(
+                        builder, ctx, of, OvKind::Sub, "-",
+                        int_ty.bits(), is_unsigned, lhs_val, rhs_val,
                     );
                     res
                 }
@@ -3154,9 +3190,9 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().smul_overflow(lhs_val, rhs_val)
                     };
-                    Self::guard_overflow(
-                        builder, ctx, of,
-                        overflow_message(OvKind::Mul, int_ty.bits(), is_unsigned),
+                    Self::guard_overflow_binary(
+                        builder, ctx, of, OvKind::Mul, "*",
+                        int_ty.bits(), is_unsigned, lhs_val, rhs_val,
                     );
                     res
                 }
@@ -4506,7 +4542,13 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
         } else if func.name == "panic_unwrap" {
-            // MIR already handled branching; this is the panic path.
+            // MIR already handled branching; this is the panic path. The single
+            // argument says which mistake it was — an absent optional or a
+            // thrown-away error — since only the `!`'s operand type knows.
+            let was_error = match args.first() {
+                Some(op) => Self::lower_operand_typed(builder, op, Some(types::I32), ctx)?,
+                None => builder.ins().iconst(types::I32, 0),
+            };
             if let Some(file_str) = ctx.source_file {
                 if let (Some(func_ref), Some(gv)) = (
                     ctx.func_refs.get("panic_unwrap_at"),
@@ -4515,16 +4557,16 @@ impl<'a> FunctionBuilder<'a> {
                     let file_ptr = builder.ins().global_value(types::I64, *gv);
                     let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
                     let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
+                    builder.ins().call(*func_ref, &[file_ptr, line_val, col_val, was_error]);
                 } else {
                     let unwrap_fn = ctx.func_refs.get("panic_unwrap")
                         .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
-                    builder.ins().call(*unwrap_fn, &[]);
+                    builder.ins().call(*unwrap_fn, &[was_error]);
                 }
             } else {
                 let unwrap_fn = ctx.func_refs.get("panic_unwrap")
                     .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
-                builder.ins().call(*unwrap_fn, &[]);
+                builder.ins().call(*unwrap_fn, &[was_error]);
             }
         } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
             // Pointer arithmetic: ptr.add(n) → ptr + n*elem_size
@@ -5381,6 +5423,169 @@ impl<'a> FunctionBuilder<'a> {
         builder.seal_block(cont_block);
     }
 
+    /// Widen a checked-arithmetic operand to the i64 the runtime formatter takes.
+    /// Sign or zero extension by the operand's own signedness, so the printed
+    /// number is the value the program saw.
+    fn operand_as_i64(builder: &mut ClifFunctionBuilder, val: Value, unsigned: bool) -> Value {
+        let ty = builder.func.dfg.value_type(val);
+        if ty == types::I64 || !ty.is_int() || ty.bits() > 64 {
+            return val;
+        }
+        if unsigned {
+            builder.ins().uextend(types::I64, val)
+        } else {
+            builder.ins().sextend(types::I64, val)
+        }
+    }
+
+    /// F3: panic naming both operands. Falls back to the static sentence when
+    /// the width has no tail registered (a width the language doesn't have, and
+    /// i128, whose operands don't fit the formatter's words).
+    fn guard_overflow_binary(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        overflowed: Value,
+        kind: OvKind,
+        op_symbol: &str,
+        bits: u32,
+        unsigned: bool,
+        lhs: Value,
+        rhs: Value,
+    ) {
+        // Which formatter takes these operands. The operands' own Cranelift type
+        // decides, not `bits` — `bits` comes from the MIR type, and it's the call
+        // that has to type-check.
+        let lty = builder.func.dfg.value_type(lhs);
+        let rty = builder.func.dfg.value_type(rhs);
+        let wide = lty == types::I128 && rty == types::I128;
+        let usable = wide || ([lty, rty].iter().all(|t| t.is_int() && t.bits() <= 64));
+        let tail = if usable { overflow_range_tail(bits, unsigned) } else { None };
+        let Some(tail) = tail else {
+            return Self::guard_overflow(builder, ctx, overflowed, overflow_message(kind, bits, unsigned));
+        };
+        let (helper, lhs_arg, rhs_arg) = if wide {
+            ("panic_overflow_binary_i128", lhs, rhs)
+        } else {
+            (
+                "panic_overflow_binary",
+                Self::operand_as_i64(builder, lhs, unsigned),
+                Self::operand_as_i64(builder, rhs, unsigned),
+            )
+        };
+
+        let panic_block = builder.create_block();
+        let cont_block = builder.create_block();
+        builder.ins().brif(overflowed, panic_block, &[], cont_block, &[]);
+
+        builder.switch_to_block(panic_block);
+        builder.seal_block(panic_block);
+        builder.set_cold_block(panic_block);
+        let emitted = (|| {
+            let panic_ref = ctx.func_refs.get(helper)?;
+            let tail_gv = ctx.string_globals.get(tail)?;
+            let op_gv = ctx.string_globals.get(op_symbol)?;
+            let (file_ptr, line_val, col_val) = Self::panic_site(builder, ctx);
+            let tail_ptr = builder.ins().global_value(types::I64, *tail_gv);
+            let op_ptr = builder.ins().global_value(types::I64, *op_gv);
+            let uns = builder.ins().iconst(types::I32, unsigned as i64);
+            builder.ins().call(
+                *panic_ref,
+                &[file_ptr, line_val, col_val, op_ptr, tail_ptr, lhs_arg, rhs_arg, uns],
+            );
+            Some(())
+        })();
+        if emitted.is_none() {
+            Self::emit_panic_call(builder, overflow_message(kind, bits, unsigned), ctx);
+        }
+        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+
+        builder.switch_to_block(cont_block);
+        builder.seal_block(cont_block);
+    }
+
+    /// F3 for the one-operand forms: negation, and a shift amount past the width.
+    fn guard_overflow_unary(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        overflowed: Value,
+        kind: OvKind,
+        bits: u32,
+        unsigned: bool,
+        operand: Value,
+    ) {
+        let operand_ty = builder.func.dfg.value_type(operand);
+        let wide = operand_ty == types::I128;
+        // A 128-bit shift amount has no formatter — the count is an i128 there,
+        // and only the negation form takes one at that width.
+        let usable = (wide && kind != OvKind::Shift)
+            || (operand_ty.is_int() && operand_ty.bits() <= 64);
+        let (helper, tail) = match (kind, wide) {
+            (OvKind::Shift, _) => ("panic_shift_amount", shift_width_tail(bits, unsigned)),
+            (_, true) => ("panic_overflow_neg_i128", overflow_range_tail(bits, unsigned)),
+            (_, false) => ("panic_overflow_neg", overflow_range_tail(bits, unsigned)),
+        };
+        let tail = if usable { tail } else { None };
+        let Some(tail) = tail else {
+            return Self::guard_overflow(builder, ctx, overflowed, overflow_message(kind, bits, unsigned));
+        };
+        // A shift amount is a count, never negative in meaning; a negated value
+        // is signed. Either way the printed number is the operand's own reading.
+        let operand_arg = if wide {
+            operand
+        } else {
+            Self::operand_as_i64(builder, operand, unsigned && kind == OvKind::Shift)
+        };
+
+        let panic_block = builder.create_block();
+        let cont_block = builder.create_block();
+        builder.ins().brif(overflowed, panic_block, &[], cont_block, &[]);
+
+        builder.switch_to_block(panic_block);
+        builder.seal_block(panic_block);
+        builder.set_cold_block(panic_block);
+        let emitted = (|| {
+            let panic_ref = ctx.func_refs.get(helper)?;
+            let tail_gv = ctx.string_globals.get(tail)?;
+            let (file_ptr, line_val, col_val) = Self::panic_site(builder, ctx);
+            let tail_ptr = builder.ins().global_value(types::I64, *tail_gv);
+            builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, tail_ptr, operand_arg]);
+            Some(())
+        })();
+        if emitted.is_none() {
+            Self::emit_panic_call(builder, overflow_message(kind, bits, unsigned), ctx);
+        }
+        builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+
+        builder.switch_to_block(cont_block);
+        builder.seal_block(cont_block);
+    }
+
+    /// The file/line/col triple every panic call site passes.
+    fn panic_site(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+    ) -> (Value, Value, Value) {
+        let file_ptr = match ctx.source_file.and_then(|f| ctx.string_globals.get(f)) {
+            Some(gv) => builder.ins().global_value(types::I64, *gv),
+            None => builder.ins().iconst(types::I64, 0),
+        };
+        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+        (file_ptr, line_val, col_val)
+    }
+
+    /// `rask_panic_at(file, line, col, msg)` with a static message, in the block
+    /// the caller has already switched to.
+    fn emit_panic_call(builder: &mut ClifFunctionBuilder, msg: &str, ctx: &CodegenCtx) {
+        if let (Some(panic_ref), Some(msg_gv)) =
+            (ctx.func_refs.get("panic_at"), ctx.string_globals.get(msg))
+        {
+            let (file_ptr, line_val, col_val) = Self::panic_site(builder, ctx);
+            let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
+            builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
+        }
+    }
+
     /// OV2: panic (with a message) when the divisor is zero.
     fn guard_div_zero(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx, rhs: Value, ty: Type) {
         let zero = Self::iconst_at(builder, ty, 0);
@@ -5395,9 +5600,9 @@ impl<'a> FunctionBuilder<'a> {
         let l_is_min = builder.ins().icmp(IntCC::Equal, lhs, min);
         let r_is_neg1 = builder.ins().icmp(IntCC::Equal, rhs, neg1);
         let both = builder.ins().band(l_is_min, r_is_neg1);
-        Self::guard_overflow(
-            builder, ctx, both,
-            overflow_message(OvKind::DivMinByNegOne, ty.bits(), false),
+        Self::guard_overflow_binary(
+            builder, ctx, both, OvKind::DivMinByNegOne, "/",
+            ty.bits(), false, lhs, rhs,
         );
     }
 
@@ -5413,7 +5618,9 @@ impl<'a> FunctionBuilder<'a> {
         name: &str,
         lhs: Value,
         rhs: Value,
-        overflow_msg: &str,
+        kind: OvKind,
+        symbol: &str,
+        unsigned: bool,
     ) -> CodegenResult<Value> {
         let func_ref = *ctx.func_refs.get(name)
             .ok_or_else(|| CodegenError::FunctionNotFound(name.to_string()))?;
@@ -5429,7 +5636,9 @@ impl<'a> FunctionBuilder<'a> {
         Self::guard_overflow(builder, ctx, div_zero, OV_DIV_ZERO);
         let two = builder.ins().iconst(types::I32, 2);
         let overflowed = builder.ins().icmp(IntCC::Equal, status, two);
-        Self::guard_overflow(builder, ctx, overflowed, overflow_msg);
+        Self::guard_overflow_binary(
+            builder, ctx, overflowed, kind, symbol, 128, unsigned, lhs, rhs,
+        );
 
         Ok(builder.ins().stack_load(types::I128, slot, 0))
     }
@@ -5443,17 +5652,18 @@ impl<'a> FunctionBuilder<'a> {
         ty: Type,
         unsigned: bool,
     ) {
-        let msg = overflow_message(OvKind::Shift, ty.bits(), unsigned);
         // `iconst` stops at 64 bits, so a 128-bit width is built from halves.
+        // A 128-bit amount also doesn't fit the runtime formatter's word, so
+        // that width keeps the static message.
         if ty == types::I128 {
             let bits = Self::iconst_i128(builder, ty.bits() as i128);
             let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
-            Self::guard_overflow(builder, ctx, bad, msg);
+            Self::guard_overflow(builder, ctx, bad, overflow_message(OvKind::Shift, ty.bits(), unsigned));
             return;
         }
         let bits = builder.ins().iconst(ty, ty.bits() as i64);
         let bad = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, amount, bits);
-        Self::guard_overflow(builder, ctx, bad, msg);
+        Self::guard_overflow_unary(builder, ctx, bad, OvKind::Shift, ty.bits(), unsigned, amount);
     }
 
     /// Emit a cold panic block: call rask_panic_at with the given message, then trap.
@@ -5467,21 +5677,7 @@ impl<'a> FunctionBuilder<'a> {
         builder.switch_to_block(block);
         builder.seal_block(block);
         builder.set_cold_block(block);
-        if let (Some(panic_ref), Some(msg_gv)) = (
-            ctx.func_refs.get("panic_at"),
-            ctx.string_globals.get(msg),
-        ) {
-            let file_gv = ctx.source_file.and_then(|f| ctx.string_globals.get(f));
-            let file_ptr = if let Some(gv) = file_gv {
-                builder.ins().global_value(types::I64, *gv)
-            } else {
-                builder.ins().iconst(types::I64, 0)
-            };
-            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-            let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
-            builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
-        }
+        Self::emit_panic_call(builder, msg, ctx);
         builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
     }
 

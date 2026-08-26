@@ -2168,7 +2168,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, expr.span))
                             }
                         }
                         "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
@@ -2179,7 +2179,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
