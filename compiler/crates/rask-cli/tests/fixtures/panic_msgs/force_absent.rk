@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func lookup(k: i64) -> i64? {
+    return none
+}
+func main() {
+    println(lookup(1)!.to_string())
+}

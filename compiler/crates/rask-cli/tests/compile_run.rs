@@ -3901,6 +3901,98 @@ fn exit_skips_every_ensure() {
     }
 }
 
+// ─── Panic messages agree across backends (ctrl.panic/F1, F3, PD3) ───
+//
+// F3: a panic message is a deterministic function of the failing operation's
+// operands. PD3 makes it part of the replay contract, and #748 made both
+// backends store the same string for `JoinError.Panicked(msg)` — so a program
+// that reads the message reads the same one either way.
+//
+// Nothing compared them until this test. Eight of sixteen sources disagreed:
+// native's checked-arithmetic messages named the operation and dropped the
+// operands ("addition exceeds i32 range" where the interpreter said
+// "2147483647 + 1 exceeds i32 range"), and two messages named `unwrap`, a
+// method Rask doesn't have.
+
+/// Every panic source worth pinning, with the message both backends must print.
+const PANIC_MESSAGES: &[(&str, &str)] = &[
+    ("add.rk", "integer overflow: 2147483647 + 1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("sub_unsigned.rk", "integer overflow: 0 - 1 exceeds u8 range [0, 255]"),
+    ("mul.rk", "integer overflow: 300 * 300 exceeds i16 range [-32768, 32767]"),
+    ("div_zero.rk", "division by zero"),
+    ("div_min_by_neg_one.rk",
+     "integer overflow: -2147483648 / -1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("shift_past_width.rk", "shift amount 40 exceeds i32 bit width (32)"),
+    ("wide_add.rk",
+     "integer overflow: 170141183460469231731687303715884105727 + 1 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_mul.rk",
+     "integer overflow: 170141183460469231731687303715884105727 * 2 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_unsigned_sub.rk",
+     "integer overflow: 0 - 1 exceeds u128 range [0, 340282366920938463463374607431768211455]"),
+    ("index_past_end.rk", "index out of bounds: index is 5 but length is 1"),
+    ("map_key_missing.rk", "key not found in map"),
+    ("map_key_missing_mutate.rk", "key not found in map"),
+    ("force_absent.rk", "! on a value that was absent"),
+    ("force_error.rk", "! on a value that was an error"),
+    ("explicit.rk", "hand written"),
+    ("not_implemented.rk", "not yet implemented"),
+    ("unreachable_reached.rk", "entered unreachable code"),
+];
+
+/// The message out of a panicking run, with each backend's framing stripped.
+///
+/// Native prints `panic at <file>:<line>: <message>`; the interpreter prints a
+/// full diagnostic whose header is `error[R00xx]: <message>` (with `panic: ` in
+/// front for an explicit `panic()`). What has to match is what's left.
+fn panic_message(mode: &str, fixture: &str) -> String {
+    let (stdout, stderr, code) = run_capture(mode, &format!("panic_msgs/{}", fixture));
+    assert_eq!(
+        code, 101,
+        "{} {}: a panic exits 101 (P4); stdout: {:?} stderr: {:?}",
+        mode, fixture, stdout, stderr
+    );
+    for line in stderr.lines() {
+        let line = line.trim_end();
+        if let Some(rest) = line.strip_prefix("panic at ") {
+            // `<file>:<line>: <message>` — the message is after the second colon.
+            if let Some(pos) = rest.find(": ") {
+                return rest[pos + 2..].to_string();
+            }
+        }
+        if let Some(rest) = line.strip_prefix("error[R") {
+            if let Some(pos) = rest.find("]: ") {
+                let msg = &rest[pos + 3..];
+                return msg.strip_prefix("panic: ").unwrap_or(msg).to_string();
+            }
+        }
+    }
+    panic!("{} {}: no panic line in stderr: {:?}", mode, fixture, stderr);
+}
+
+#[test]
+fn panic_messages_are_the_same_on_both_backends() {
+    let mut wrong: Vec<String> = Vec::new();
+    for (fixture, expected) in PANIC_MESSAGES {
+        for mode in ["--interp", "--native"] {
+            let got = panic_message(mode, fixture);
+            if got != *expected {
+                wrong.push(format!(
+                    "  {} {}\n    expected: {}\n    got:      {}",
+                    mode, fixture, expected, got
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} panic message(s) don't match what the spec pins (ctrl.panic/F3):\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 #[test]
 fn panic_exits_101_both_backends() {
     // P4/EX4: a panic escaping main exits 101 on interp and native alike.

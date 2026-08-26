@@ -1757,13 +1757,15 @@ impl<'a> Printer<'a> {
             }
             StmtKind::Ensure { body, else_handler } => {
                 self.emit("ensure ");
-                // The braceless form parses one expression, so a lone `let` or
-                // any other statement has to keep its braces — dropping them
-                // printed `ensure let n = try s.close()`, which doesn't parse.
-                let collapsible = body.len() == 1
+                // `ensure` takes a bare expression or a block, so the braces
+                // come off a one-statement body only when that statement IS an
+                // expression. Unwrapping anything else printed `ensure let n =
+                // …`, which the parser rejects — and a formatter that emits
+                // something it can't read back is worse than a verbose one.
+                let inlinable = body.len() == 1
                     && else_handler.is_none()
                     && matches!(body[0].kind, StmtKind::Expr(_));
-                if collapsible {
+                if inlinable {
                     self.format_stmt_inline(&body[0]);
                 } else {
                     self.emit("{");

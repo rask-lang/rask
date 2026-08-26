@@ -151,16 +151,70 @@ _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     exit(1);
 }
 
-void rask_panic_unwrap(void) {
-    rask_panic("called unwrap on None/Err value");
+// ─── Checked-arithmetic panic messages (ctrl.panic/F3) ─────
+//
+// F3: a panic message is a deterministic function of the failing operation's
+// operands. Codegen used to emit a wholly static string — "integer overflow:
+// addition exceeds i32 range [...]" — where the interpreter said "integer
+// overflow: 2147483647 + 1 exceeds i32 range [...]". The type and range were
+// there; the two numbers that actually overflowed weren't, so a user natively
+// couldn't see which values got them there.
+//
+// `tail` is the static half codegen already had ("i32 range [...]"), `op` the
+// operator's symbol. The operands come in as raw i64 words with `is_unsigned`
+// saying how to read them, matching how the interpreter reinterprets a stored
+// i64 as its kind's logical value.
+
+_Noreturn void rask_panic_overflow_binary(const char *file, int32_t line, int32_t col,
+                                          const char *op, const char *tail,
+                                          int64_t lhs, int64_t rhs, int32_t is_unsigned) {
+    char buf[RASK_PANIC_MSG_MAX];
+    if (is_unsigned) {
+        snprintf(buf, sizeof(buf), "integer overflow: %llu %s %llu exceeds %s",
+                 (unsigned long long)lhs, op ? op : "?", (unsigned long long)rhs,
+                 tail ? tail : "range");
+    } else {
+        snprintf(buf, sizeof(buf), "integer overflow: %lld %s %lld exceeds %s",
+                 (long long)lhs, op ? op : "?", (long long)rhs, tail ? tail : "range");
+    }
+    rask_panic_at(file, line, col, buf);
+}
+
+_Noreturn void rask_panic_overflow_neg(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t operand) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "integer overflow: negating %lld exceeds %s",
+             (long long)operand, tail ? tail : "range");
+    rask_panic_at(file, line, col, buf);
+}
+
+_Noreturn void rask_panic_shift_amount(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t amount) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "shift amount %lld exceeds %s",
+             (long long)amount, tail ? tail : "bit width");
+    rask_panic_at(file, line, col, buf);
+}
+
+// `x!` failed. The two cases are different mistakes — nothing was there, versus
+// a failure the code threw away — so they say so. `was_error` comes from the
+// operand's type at the `!`, which is the only place that knows.
+static const char *forced_message(int32_t was_error) {
+    return was_error ? "! on a value that was an error"
+                     : "! on a value that was absent";
+}
+
+void rask_panic_unwrap(int32_t was_error) {
+    rask_panic(forced_message(was_error));
 }
 
 void rask_assert_fail(void) {
     rask_panic("assertion failed");
 }
 
-void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col) {
-    rask_panic_at(file, line, col, "called unwrap on None/Err value");
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col,
+                          int32_t was_error) {
+    rask_panic_at(file, line, col, forced_message(was_error));
 }
 
 void rask_assert_fail_at(const char *file, int32_t line, int32_t col) {

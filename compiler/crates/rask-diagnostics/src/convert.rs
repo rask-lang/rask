@@ -3008,13 +3008,22 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("check detected a test failure")
             }
 
-            RuntimeError::UnwrapError => {
-                Diagnostic::error("unwrap failed: value was None")
+            RuntimeError::ForcedAbsent => {
+                Diagnostic::error("! on a value that was absent")
                     .with_code("R0016")
-                    .with_primary(self.span, "unwrap failed here")
-                    .with_help("use pattern matching or `??` to handle None safely")
-                    .with_fix("replace `!` with `?? default_value` or use `if x is Some { ... }`")
-                    .with_why("unwrap panics when called on None")
+                    .with_primary(self.span, "there was no value here to take")
+                    .with_help("`??` substitutes a value, `x is T as v` tests for one first")
+                    .with_fix("replace `x!` with `x ?? default`")
+                    .with_why("`!` takes the payload of a `T?` and panics when the value is absent [type.optionals/OPT13]")
+            }
+
+            RuntimeError::ForcedError => {
+                Diagnostic::error("! on a value that was an error")
+                    .with_code("R0016")
+                    .with_primary(self.span, "this call returned its error branch")
+                    .with_help("`try` propagates the error, `catch e =>` handles it here")
+                    .with_fix("replace `r!` with `try r`")
+                    .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")
             }
 
             RuntimeError::Generic(msg) => {

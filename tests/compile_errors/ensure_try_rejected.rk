@@ -20,7 +20,13 @@ extend Sink9 {
 }
 func main() -> i32 or CloseErr9 {
     let s = Sink9 { id: 3 }
-    ensure { let n = try s.close() }                       // ER4
-    ensure s.close() else |e| { let n = try s.retry() }     // ER3
+    // ER4: in the body.
+    ensure {
+        let n = try s.close()
+    }
+    // ER3: in the handler, which is the last thing that runs.
+    ensure s.close() else |e| {
+        let n = try s.retry()
+    }
     return 0
 }

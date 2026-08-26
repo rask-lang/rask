@@ -1049,9 +1049,16 @@ pub enum RuntimeError {
     #[error("try error")]
     TryError(Value),
 
-    /// Unwrap on None panics
-    #[error("unwrap failed: value was None")]
-    UnwrapError,
+    /// `x!` on an absent optional (type.optionals/OPT13).
+    #[error("! on a value that was absent")]
+    ForcedAbsent,
+
+    /// `r!` on an error result (type.errors/ER15). A separate case from
+    /// ForcedAbsent because they are different mistakes: one had nothing there,
+    /// the other had a failure it threw away. Both used to report "value was
+    /// None", which for the error case names something that never happened.
+    #[error("! on a value that was an error")]
+    ForcedError,
 
     /// Assertion failed (assert expr) — stops test immediately
     #[error("assertion failed: {0}")]
@@ -1096,7 +1103,8 @@ impl RuntimeError {
                 | RuntimeError::IntegerOverflow(_)
                 | RuntimeError::DivisionByZero
                 | RuntimeError::IndexOutOfBounds { .. }
-                | RuntimeError::UnwrapError
+                | RuntimeError::ForcedAbsent
+                | RuntimeError::ForcedError
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)

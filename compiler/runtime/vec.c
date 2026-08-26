@@ -155,7 +155,7 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op) {
 // rask_vec_release_elem; in between, anything that would move the buffer panics.
 void *rask_vec_borrow_elem(RaskVec *v, int64_t index) {
     if (!v || index < 0 || index >= v->len) {
-        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     v->borrows++;
@@ -189,7 +189,7 @@ int64_t rask_vec_try_push(RaskVec *v, const void *elem) {
 
 void *rask_vec_get(const RaskVec *v, int64_t index) {
     if (!v || index < 0 || index >= v->len) {
-        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     return v->data + index * v->elem_size;
@@ -211,7 +211,7 @@ void *rask_vec_get_opt(const RaskVec *v, int64_t index) {
 
 void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     if (!v || index < 0 || index >= v->len) {
-        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
@@ -234,7 +234,7 @@ void *rask_vec_pop(RaskVec *v) {
 int64_t rask_vec_remove(RaskVec *v, int64_t index) {
     vec_check_no_borrows(v, "remove");
     if (!v || index < 0 || index >= v->len) {
-        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     // Shift elements left
@@ -265,7 +265,7 @@ int64_t rask_vec_is_empty(const RaskVec *v) {
 int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
     vec_check_no_borrows(v, "insert");
     if (!v || index < 0 || index > v->len) {
-        rask_panic_fmt("insert index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("insert index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     if (vec_grow(v, v->len + 1) != 0) return -1;
@@ -284,7 +284,7 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
 int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     vec_check_no_borrows(v, "remove_at");
     if (!v || index < 0 || index >= v->len) {
-        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+        rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
     if (out) {
