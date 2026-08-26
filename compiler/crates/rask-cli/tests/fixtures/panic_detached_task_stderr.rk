@@ -11,6 +11,7 @@
 import time
 import time.Duration
 import async.Sender
+import async.TaskHandle
 
 func doomed(tx: Sender<i64>) {
     ensure { let _ = tx.send(1) }

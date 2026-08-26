@@ -31,6 +31,14 @@ import time.Duration
 
 // ── IM1: a stdlib type with no import ───────────────────────────
 
+// ERROR: `Metadata` is not in scope — on a *local's* annotation. The check
+// started as a pass over declarations, so it never looked inside a body, and
+// this is the most ordinary way to write the thing IM1 rejects.
+func local_annotation() {
+    let m: Metadata = todo()
+    return
+}
+
 // ERROR: `Instant` is not in scope
 func started() -> Instant {
     return Instant.now()
@@ -91,6 +99,27 @@ func max(a: i64, b: i64) -> i64 {
 // name without asking — and this file hasn't asked.
 struct Handle {
     slot: i64
+}
+
+// A type parameter is spelled exactly like a type, and these three all collide
+// with a real stdlib name. The annotation check read type strings by name, so
+// every one of them was reported as needing an import — which is the collision
+// #915 exists to make the parameter win. Not an error, in a signature, a field,
+// an `extend` target, or a local.
+func convert<Input, Output>(x: Input, f: func(Input) -> Output) -> Output {
+    let out: Output = f(x)
+    return out
+}
+
+struct Holder<Response> {
+    slot: Response
+}
+
+extend Holder<Response> {
+    func get(self) -> Response {
+        let v: Response = self.slot
+        return v
+    }
 }
 
 func main() {

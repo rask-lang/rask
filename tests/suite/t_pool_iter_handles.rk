@@ -8,6 +8,7 @@
 // type is already resolved at the loop and inference pinned the binding from the
 // body — which is what made this look like a Vec bug rather than a Pool one.
 import memory.Pool
+import memory.Handle
 
 struct Entity {
     id: i64

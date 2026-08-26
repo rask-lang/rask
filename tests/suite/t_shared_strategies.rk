@@ -9,6 +9,7 @@
 import sync.Shared
 import sync.Local
 import sync.Mutex
+import sync.Readers
 
 // SH4: strategy-agnostic code says so.
 func peek<S>(c: Shared<i64, S>) -> i64 {
