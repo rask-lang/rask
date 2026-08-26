@@ -61,4 +61,53 @@ test "ctrl.comptime — CT49: a literal access through a const name" {
     assert p.(which) == 6
 }
 
+// The shapes below were what nobody had written down. The literal form was
+// checked at one depth, on one local, reading one integer — so a nested access,
+// a receiver that arrived as a parameter, and a string field with a method
+// called on it all went untested, and each is a different path through
+// dispatch.
+
+struct Inner9 {
+    v: i32
+}
+
+struct Outer9 {
+    inner: Inner9
+    tag: string
+}
+
+func read_nested(o: Outer9) -> i32 {
+    return o.("inner").("v")
+}
+
+func tag_len(o: Outer9) -> usize {
+    return o.("tag").len()
+}
+
+test "ctrl.comptime — CT49: a literal access nested through a struct field" {
+    let o = Outer9 { inner: Inner9 { v: 42 }, tag: "hi" }
+    assert o.("inner").("v") == 42
+    assert o.("inner").v == 42
+    assert o.inner.("v") == 42
+}
+
+test "ctrl.comptime — CT49: the receiver arriving as a parameter" {
+    let o = Outer9 { inner: Inner9 { v: 7 }, tag: "abc" }
+    assert read_nested(o) == 7
+}
+
+test "ctrl.comptime — CT49: a string field, and a method on it" {
+    let o = Outer9 { inner: Inner9 { v: 1 }, tag: "abc" }
+    assert o.("tag") == "abc"
+    assert o.("tag").len() == 3
+    assert tag_len(o) == 3
+}
+
+test "ctrl.comptime — CT49: a name that came from another name" {
+    let p = Point { x: 11, y: 12 }
+    let first = "x"
+    let same = first
+    assert p.(same) == 11
+}
+
 func main() {}
