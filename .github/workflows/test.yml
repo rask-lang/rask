@@ -104,6 +104,16 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/prototypes_gate.sh
 
+    # The agent benchmark's own gate. Calls no model and spends nothing: it
+    # checks that every hand-written reference solution in agentbench/tasks/
+    # still builds and passes on both backends, and that the harness runs end to
+    # end against a deterministic mock. A reference that goes red means the task
+    # is measuring the compiler instead of the model, so the scores stop meaning
+    # anything until it is fixed or quarantined against an issue.
+    - name: Agent benchmark gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/agentbench_gate.sh
+
     # projects/*/ type-checks. Nothing checked them, which is how raido reached
     # 48 errors and tiwaz 11 (#774) — every rule change since they were written
     # landed without anything noticing. `check` only: neither runs natively yet.
