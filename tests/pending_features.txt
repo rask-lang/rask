@@ -14,7 +14,6 @@
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented
 p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
 p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)
-p12_rack_link_churn.rk     # native `filter` on a Vec reached through a field (#866), not a rack gap
 
 # --- declared-but-unbuilt stdlib surface ---
 t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912
