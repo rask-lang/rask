@@ -3782,6 +3782,76 @@ fn panic_ensure_runs_on_native_with_captured_receiver() {
     }
 }
 
+// ctrl.panic/U1 — the three body shapes native used to skip entirely (#299).
+//
+// The panic hook is a reified thunk over the ensure body. Anything the thunk
+// couldn't be built for stayed inline-only, and inline cleanup is exactly what
+// a panic jumps past — so the ensure silently didn't run. All three build now.
+
+#[test]
+fn panic_ensure_multi_statement_body_runs() {
+    // A body of more than one statement, lowered into the thunk the same way the
+    // inline cleanup lowers it. The captured receiver still shows the pre-panic
+    // write (42, not 1).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_multi_stmt.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\n42\nclosed\n",
+            "{}: every statement of the ensure body runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_else_handler_runs() {
+    // ER2 × U1: the cleanup fails during unwind and its `else |e|` handler runs,
+    // naming the error. `e.message()` is the part that needed the binding to have
+    // a type at all — the handler param used to reach MIR as a free variable.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_else_handler.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\ndevice gone\n",
+            "{}: the ensure and its error handler both run on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_scalar_snapshot_runs() {
+    // A scalar read by the cleanup. `let` binds once, so the value the hook
+    // captured when the ensure was scheduled is the value the cleanup would read
+    // during unwind — snapshotting it is exact, not approximate.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_scalar_snapshot.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body\n7\n",
+            "{}: an ensure reading a `let` scalar runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn try_inside_ensure_is_rejected() {
+    // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
+    // propagate. Both positions are rejected at check time (E0844) instead of
+    // type-checking clean and then failing native MIR lowering with an internal
+    // message about a type it couldn't work out.
+    let (failed, output) = compile_error_output("ensure_try_rejected.rk");
+    assert!(failed, "`try` in an ensure body must be a compile error:\n{}", output);
+    assert!(output.contains("E0844"), "expected E0844, got:\n{}", output);
+    assert!(
+        output.contains("inside an `ensure` body"),
+        "ER4 position should be named:\n{}", output,
+    );
+    assert!(
+        output.contains("in an `ensure` error handler"),
+        "ER3 position should be named:\n{}", output,
+    );
+}
+
 #[test]
 fn panic_exits_101_both_backends() {
     // P4/EX4: a panic escaping main exits 101 on interp and native alike.

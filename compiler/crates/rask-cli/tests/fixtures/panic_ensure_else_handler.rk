@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U1 × ctrl.ensure/ER2: an ensure with an `else |e|` handler runs on
+// panic unwind, and a cleanup that fails there still reaches its handler.
+// Native used to skip the whole ensure when it had a handler (#299).
+struct CloseErr9 { why: string }
+extend CloseErr9 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+struct Sink9 { id: i32 }
+extend Sink9 {
+    func close(self) -> i32 or CloseErr9 {
+        println("closing")
+        return CloseErr9 { why: "device gone" }
+    }
+}
+func main() {
+    let s = Sink9 { id: 3 }
+    ensure s.close() else |e| { println(e.message()) }
+    panic("boom")
+}

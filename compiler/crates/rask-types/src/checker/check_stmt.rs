@@ -365,13 +365,39 @@ impl TypeChecker {
             }
             StmtKind::Continue(_) => {}
             StmtKind::Ensure { body, else_handler } => {
+                // ER4/ER3: cleanup has no caller to propagate to. Report the
+                // `try` itself, then keep checking — the rest of the body is
+                // still worth type-checking.
+                Self::report_try_in_ensure(body, "inside an `ensure` body", &mut self.errors);
+                let mut body_ty = None;
                 for s in body {
                     self.check_stmt(s);
+                    if let StmtKind::Expr(e) = &s.kind {
+                        body_ty = self.node_types.get(&e.id).cloned();
+                    }
                 }
-                if let Some((_name, handler)) = else_handler {
+                if let Some((name, handler)) = else_handler {
+                    Self::report_try_in_ensure(handler, "in an `ensure` error handler", &mut self.errors);
+                    // ER2: the handler binds the error branch of whatever the
+                    // body's last expression produced. That type is still a
+                    // variable here — the body is a method call — so tie the two
+                    // together and let the solver settle it. Without a binding at
+                    // all, `e.message()` had no receiver type and died in MIR
+                    // lowering as an unresolved receiver.
+                    let err_ty = self.ctx.fresh_var();
+                    if let Some(body_ty) = body_ty {
+                        self.ctx.add_constraint(TypeConstraint::ErrorBranch {
+                            value: body_ty,
+                            result: err_ty.clone(),
+                            span: stmt.span,
+                        });
+                    }
+                    self.push_scope();
+                    self.define_local_const(name.clone(), err_ty);
                     for s in handler {
                         self.check_stmt(s);
                     }
+                    self.pop_scope();
                 }
             }
             StmtKind::Comptime(body) => {
@@ -689,4 +715,174 @@ impl TypeChecker {
             _ => None,
         }
     }
+
+    /// ER4/ER3: report every `try` that would run in the `ensure`'s own frame.
+    ///
+    /// A closure or `spawn` body nested in here is its own frame with its own
+    /// caller, so the walk stops at those. Everything else recurses.
+    fn report_try_in_ensure(
+        body: &[Stmt],
+        region: &'static str,
+        errors: &mut Vec<TypeError>,
+    ) {
+        for stmt in body {
+            Self::scan_stmt_for_try(stmt, region, errors);
+        }
+    }
+
+    fn scan_stmt_for_try(stmt: &Stmt, region: &'static str, errors: &mut Vec<TypeError>) {
+        use rask_ast::stmt::StmtKind as SK;
+        let mut exprs: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<Stmt>> = Vec::new();
+        match &stmt.kind {
+            SK::Let { init, .. } | SK::Mut { init, .. } => exprs.push(init),
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } => exprs.push(init),
+            SK::LetStruct { init, .. } => exprs.push(init),
+            SK::Expr(e) => exprs.push(e),
+            SK::Return(Some(e)) => exprs.push(e),
+            SK::Assign { target, value, .. } => {
+                exprs.push(target);
+                exprs.push(value);
+            }
+            SK::While { cond, body, .. } => {
+                exprs.push(cond);
+                bodies.push(body);
+            }
+            SK::WhileLet { expr, body, .. } => {
+                exprs.push(expr);
+                bodies.push(body);
+            }
+            SK::For { iter, body, .. } => {
+                exprs.push(iter);
+                bodies.push(body);
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => bodies.push(body),
+            SK::ComptimeFor { iter, body, .. } => {
+                exprs.push(iter);
+                bodies.push(body);
+            }
+            // A nested `ensure` reports against its own region on its own pass.
+            _ => {}
+        }
+        for e in exprs {
+            Self::scan_expr_for_try(e, region, errors);
+        }
+        for b in bodies {
+            for s in b {
+                Self::scan_stmt_for_try(s, region, errors);
+            }
+        }
+    }
+
+    fn scan_expr_for_try(expr: &Expr, region: &'static str, errors: &mut Vec<TypeError>) {
+        use rask_ast::expr::ExprKind as EK;
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<Stmt>> = Vec::new();
+        match &expr.kind {
+            EK::Try { .. } => {
+                errors.push(TypeError::TryInEnsure { region, span: expr.span });
+                return;
+            }
+            // Own frame, own caller — `try` there is the callee's business.
+            EK::Closure { .. } | EK::Spawn { .. } => return,
+
+            EK::Binary { left, right, .. } => {
+                kids.push(left);
+                kids.push(right);
+            }
+            EK::Unary { operand, .. } => kids.push(operand),
+            EK::Call { func, args } => {
+                kids.push(func);
+                kids.extend(args.iter().map(|a| &a.expr));
+            }
+            EK::MethodCall { object, args, .. } => {
+                kids.push(object);
+                kids.extend(args.iter().map(|a| &a.expr));
+            }
+            EK::Field { object, .. } | EK::OptionalField { object, .. } => kids.push(object),
+            EK::IsPresent { expr: inner, .. }
+            | EK::Unwrap { expr: inner, .. }
+            | EK::Cast { expr: inner, .. }
+            | EK::Convert { expr: inner, .. }
+            | EK::IsPattern { expr: inner, .. } => kids.push(inner),
+            EK::GuardPattern { expr: inner, else_branch, .. } => {
+                kids.push(inner);
+                kids.push(else_branch);
+            }
+            EK::DynamicField { object, field_expr } => {
+                kids.push(object);
+                kids.push(field_expr);
+            }
+            EK::Index { object, index } => {
+                kids.push(object);
+                kids.push(index);
+            }
+            EK::NullCoalesce { value, default } => {
+                kids.push(value);
+                kids.push(default);
+            }
+            EK::Catch { value, .. } => kids.push(value),
+            EK::Take { place } => kids.push(place),
+            EK::If { cond, then_branch, else_branch, .. } => {
+                kids.push(cond);
+                kids.push(then_branch);
+                if let Some(e) = else_branch {
+                    kids.push(e);
+                }
+            }
+            EK::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                kids.push(scrut);
+                kids.push(then_branch);
+                if let Some(e) = else_branch {
+                    kids.push(e);
+                }
+            }
+            EK::Match { scrutinee, arms } => {
+                kids.push(scrutinee);
+                kids.extend(arms.iter().map(|a| a.body.as_ref()));
+            }
+            EK::Range { start, end, .. } => {
+                kids.extend(start.iter().map(|b| b.as_ref()));
+                kids.extend(end.iter().map(|b| b.as_ref()));
+            }
+            EK::StructLit { fields, .. } => kids.extend(fields.iter().map(|f| &f.value)),
+            EK::Array(items) | EK::Tuple(items) => kids.extend(items.iter()),
+            EK::ArrayRepeat { value, count } => {
+                kids.push(value);
+                kids.push(count);
+            }
+            EK::WithAs { bindings, body } => {
+                kids.extend(bindings.iter().map(|b| &b.source));
+                bodies.push(body);
+            }
+            EK::Block(body)
+            | EK::Loop { body, .. }
+            | EK::UsingBlock { body, .. }
+            | EK::Unsafe { body }
+            | EK::Comptime { body } => bodies.push(body),
+            EK::Assert { condition, message } | EK::Check { condition, message } => {
+                kids.push(condition);
+                kids.extend(message.iter().map(|m| m.as_ref()));
+            }
+            EK::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                for seg in segments {
+                    if let StringSegment::Expr(e, _) = seg {
+                        kids.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for k in kids {
+            Self::scan_expr_for_try(k, region, errors);
+        }
+        for b in bodies {
+            for s in b {
+                Self::scan_stmt_for_try(s, region, errors);
+            }
+        }
+    }
+
+
 }

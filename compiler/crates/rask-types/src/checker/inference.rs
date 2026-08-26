@@ -65,6 +65,18 @@ pub enum TypeConstraint {
     /// ER14a: `value ?? default`. Which of the three cases applies depends on
     /// the right side's shape, which often isn't known until a method-call
     /// return type resolves — so the whole decision waits here.
+    /// ctrl.ensure/ER2: `ensure expr else |e| { … }` — `e` is the error branch of
+    /// whatever the body's last expression turns out to produce. That is almost
+    /// never known at the `ensure`: the body is a method call, and its return
+    /// type is still a variable when the handler is checked. Same shape as
+    /// `Unwrap` below, and the same reason — carry the question until the
+    /// operand settles, or the binding stays a free variable forever and
+    /// `e.message()` has no receiver type to dispatch on.
+    ErrorBranch {
+        value: Type,
+        result: Type,
+        span: Span,
+    },
     /// `x!` — the payload of whatever `value` turns out to wrap.
     ///
     /// The shape usually isn't known at the `!`: `v.get(0)!` has to wait for the

@@ -1466,6 +1466,12 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
+    /// Bound by `let`, or a parameter that isn't `mutate` — so nothing in this
+    /// function can write it. An ensure hook can snapshot such a scalar into its
+    /// capture env and still see the live value during unwind. Defaults to
+    /// `false`, which is the conservative answer for a local whose binding form
+    /// this pass didn't see.
+    pub is_immutable: bool,
     /// Function parameter declared `mutate`. Whole-value reassignment must
     /// flow back through the param's pointer (mem.borrowing/M-rules), so
     /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
@@ -2709,6 +2715,16 @@ impl<'a> MirLowerer<'a> {
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
     /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
     /// 8-byte env slot).
+    /// Every named scalar is bound so that nothing in this function can write
+    /// it — `let`, or a parameter that isn't `mutate`. That makes a snapshot
+    /// taken when the ensure was scheduled the same value the cleanup would read
+    /// during unwind.
+    fn scalars_frozen_after_here(&self, names: &[&String]) -> bool {
+        names
+            .iter()
+            .all(|n| self.meta(n).map_or(false, |m| m.is_immutable))
+    }
+
     fn is_ref_capturable(ty: &MirType) -> bool {
         matches!(
             ty,
@@ -2726,39 +2742,57 @@ impl<'a> MirLowerer<'a> {
     /// scope unwinds on a native panic (ctrl.panic/U1). Returns
     /// `(thunk_name, captures)` on success; `None` keeps inline-only behavior.
     ///
-    /// Scoped first cut: only a single-expression body whose free variables are
-    /// all aggregate locals (captured by reference — their MIR value is the
-    /// address). The optional `resource` id is captured by value so the thunk
-    /// can skip a cleanup whose receiver was already consumed (C1). Everything
-    /// else (else-handlers, scalar captures, multi-statement bodies) returns
-    /// `None` — the ensure simply won't run on a native panic, never miscompiles.
+    /// The body may be any statement list, with or without an `else |e|`
+    /// handler — both are lowered into the thunk the same way the inline cleanup
+    /// block lowers them, through `lower_ensure_else_handler`.
+    ///
+    /// Free variables are captured by reference where the MIR value already *is*
+    /// an address (structs, enums, arrays, tuples, strings, pointers, handles),
+    /// so cleanup sees mutations made before the panic. A scalar has no such
+    /// address: its value lives in an SSA variable, so all the thunk could
+    /// capture is a snapshot taken when the ensure was scheduled. Printing a
+    /// stale number during unwind is worse than not printing, so a body that
+    /// reads a scalar the function writes again returns `None` and stays
+    /// inline-only. A scalar nothing writes after the ensure is scheduled is
+    /// captured by value — the snapshot is the live value by definition.
+    ///
+    /// The optional `resource` id is captured by value so the thunk can skip a
+    /// cleanup whose receiver was already consumed (C1).
     fn try_reify_ensure_hook(
         &mut self,
         body: &[rask_ast::stmt::Stmt],
         else_handler: &Option<(String, Vec<rask_ast::stmt::Stmt>)>,
         resource: Option<LocalId>,
     ) -> Option<(String, Vec<crate::stmt::ClosureCapture>)> {
-        use rask_ast::stmt::StmtKind;
-
-        if else_handler.is_some() {
-            return None;
-        }
-        let expr = match body {
-            [only] => match &only.kind {
-                StmtKind::Expr(e) => e,
-                _ => return None,
-            },
-            _ => return None,
-        };
-
-        // Free variables must all be aggregates (captured by reference).
-        let free = self.collect_free_vars(expr, &[]);
-        if free.iter().any(|(_, _, ty)| !Self::is_ref_capturable(ty)) {
+        if body.is_empty() {
             return None;
         }
 
-        // Ordered captures: aggregate free vars (by ref), then the resource id
-        // (by value) when present.
+        // Free variables of the body plus, if there is one, the handler body
+        // with its error parameter bound.
+        let mut free = self.collect_free_vars_block(body);
+        if let Some((param_name, handler_body)) = else_handler {
+            let mut bound = std::collections::HashSet::new();
+            bound.insert(param_name.clone());
+            let mut seen: std::collections::HashSet<String> =
+                free.iter().map(|(n, _, _)| n.clone()).collect();
+            self.walk_free_vars_block(handler_body, &bound, &mut seen, &mut free);
+        }
+
+        // A scalar the body reads can only be snapshotted (see the doc comment).
+        // Sound only while nothing writes it after the ensure is scheduled.
+        let scalar_reads: Vec<&String> = free
+            .iter()
+            .filter(|(_, _, ty)| !Self::is_ref_capturable(ty))
+            .map(|(name, _, _)| name)
+            .collect();
+        if !scalar_reads.is_empty() && !self.scalars_frozen_after_here(&scalar_reads) {
+            return None;
+        }
+
+        // Ordered captures: free vars first, then the resource id when present.
+        // Aggregates go by reference (their MIR value is the address); scalars
+        // by value.
         struct Cap {
             outer: LocalId,
             name: String,
@@ -2771,7 +2805,7 @@ impl<'a> MirLowerer<'a> {
                 outer: *id,
                 name: name.clone(),
                 ty: ty.clone(),
-                by_ref: true,
+                by_ref: Self::is_ref_capturable(ty),
             })
             .collect();
         let res_index = resource.map(|res| {
@@ -2827,21 +2861,36 @@ impl<'a> MirLowerer<'a> {
             thunk_builder.switch_to_block(body_block);
         }
 
-        // Lower the body expression into the thunk (reuses method resolution).
-        // The pending module consts are saved along with the locals: the thunk
-        // is its own MIR function and materialises its own copy of any const it
-        // touches, but that must not consume the outer function's entry — the
-        // cleanup path lowers this same expression again, and with the entry
-        // gone the reference compiled to a call named after the const (#403).
+        // Lower the body into the thunk (reuses method resolution). The pending
+        // module consts are saved along with the locals: the thunk is its own MIR
+        // function and materialises its own copy of any const it touches, but that
+        // must not consume the outer function's entry — the cleanup path lowers
+        // this same body again, and with the entry gone the reference compiled to
+        // a call named after the const (#403).
         let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
         let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
         let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
-        let body_result = self.lower_expr(expr);
+        let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+        // The thunk's own bindings must not leave their metadata behind: a `let`
+        // inside the body would otherwise mark an outer `mut` of the same name
+        // immutable, and a later ensure would snapshot it.
+        let saved_meta = self.local_meta.clone();
+        let body_result = (|| -> Result<(), LoweringError> {
+            for s in body {
+                self.lower_stmt(s)?;
+            }
+            if let Some((param_name, handler_body)) = else_handler {
+                self.lower_ensure_else_handler(param_name, handler_body)?;
+            }
+            Ok(())
+        })();
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
+        self.ensure_stack = saved_ensure_stack;
+        self.local_meta = saved_meta;
 
         if body_result.is_err() {
             return None;
@@ -3289,6 +3338,8 @@ impl<'a> MirLowerer<'a> {
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
                     meta.is_mutate_param = true;
+                } else {
+                    meta.is_immutable = true;
                 }
                 if scalar_mutate {
                     meta.scalar_mutate_ptr = Some(param_ty.clone());
