@@ -17,6 +17,10 @@
 // match: `assert` isn't an expression, so an arm body has to be a block, and a
 // two-argument `assert` in one doesn't parse. Reading the outcome out is clearer
 // anyway — the assertions then say what the rule is.
+import sync.Mutex
+import sync.Shared
+import thread.Thread
+
 
 struct Tally9 {
     hits: i64
