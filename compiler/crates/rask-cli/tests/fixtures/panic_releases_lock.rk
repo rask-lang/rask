@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U3 + LK1: a panic inside `with shared.write()` releases the lock on
+// the way out, and U2 keeps the write it already made.
+//
+// Natively the release was emitted inline, so the panic jumped past it and the
+// lock stayed held for the rest of the process. The first thing to ask for it
+// was the ensure running during that same unwind, which blocked forever — the
+// whole program hung with no output.
+struct Acc9 { checking: i64, savings: i64 }
+const ACC: Shared<Acc9, Mutex> = Shared.mutex(Acc9 { checking: 100, savings: 0 })
+
+func report() {
+    with ACC.read() as a {
+        println(a.checking.to_string())
+        println(a.savings.to_string())
+    }
+}
+
+func main() {
+    ensure report()
+    with ACC.write() as a {
+        a.checking = a.checking - 10
+        panic("boom")
+    }
+}

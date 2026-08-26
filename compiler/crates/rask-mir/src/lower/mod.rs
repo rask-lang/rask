@@ -1429,12 +1429,6 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
-    /// Bound by `let`, or a parameter that isn't `mutate` — so nothing in this
-    /// function can write it. An ensure hook can snapshot such a scalar into its
-    /// capture env and still see the live value during unwind. Defaults to
-    /// `false`, which is the conservative answer for a local whose binding form
-    /// this pass didn't see.
-    pub is_immutable: bool,
     /// Function parameter declared `mutate`. Whole-value reassignment must
     /// flow back through the param's pointer (mem.borrowing/M-rules), so
     /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
@@ -1476,6 +1470,14 @@ pub struct MirLowerer<'a> {
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
+    /// Names this function reassigns, anywhere in its body — an `=` target, or
+    /// an argument passed `mutate`/`own`/`deleting`, or a `take <place>`.
+    ///
+    /// Only the ensure-hook capture decision reads this (see
+    /// `scalars_frozen_after_here`). A name that is never reassigned holds the
+    /// same value at panic time as when the ensure was scheduled, which is what
+    /// makes snapshotting a scalar into the hook's env exact instead of stale.
+    reassigned_names: std::collections::HashSet<String>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
@@ -2674,14 +2676,204 @@ impl<'a> MirLowerer<'a> {
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
     /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
     /// 8-byte env slot).
-    /// Every named scalar is bound so that nothing in this function can write
-    /// it — `let`, or a parameter that isn't `mutate`. That makes a snapshot
-    /// taken when the ensure was scheduled the same value the cleanup would read
-    /// during unwind.
+    /// Collect every name this body reassigns. Walks closure and spawn bodies
+    /// too: a closure writing an outer name reassigns it just the same.
+    pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, &mut out);
+        }
+        out
+    }
+
+    fn note_place(place: &Expr, out: &mut std::collections::HashSet<String>) {
+        // The root of the place is what gets rebound. `s.f = 1` mutates through
+        // `s` without changing what `s` points at, but counting it costs only
+        // precision, and precision here only ever means "hook not reified".
+        let mut cur = place;
+        loop {
+            match &cur.kind {
+                ExprKind::Ident(name) => {
+                    out.insert(name.clone());
+                    return;
+                }
+                ExprKind::Field { object, .. }
+                | ExprKind::OptionalField { object, .. }
+                | ExprKind::Index { object, .. }
+                | ExprKind::DynamicField { object, .. } => cur = object,
+                _ => return,
+            }
+        }
+    }
+
+    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+        use rask_ast::stmt::StmtKind as SK;
+        match &stmt.kind {
+            SK::Assign { target, value, .. } => {
+                Self::note_place(target, out);
+                Self::scan_reassigned_expr(value, out);
+            }
+            SK::Let { init, .. } | SK::Mut { init, .. } => Self::scan_reassigned_expr(init, out),
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } | SK::LetStruct { init, .. } => {
+                Self::scan_reassigned_expr(init, out)
+            }
+            SK::Expr(e) | SK::Return(Some(e)) => Self::scan_reassigned_expr(e, out),
+            SK::Break { value: Some(e), .. } => Self::scan_reassigned_expr(e, out),
+            SK::While { cond, body, .. } => {
+                Self::scan_reassigned_expr(cond, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::WhileLet { expr, body, .. } => {
+                Self::scan_reassigned_expr(expr, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::For { iter, body, .. } | SK::ComptimeFor { iter, body, .. } => {
+                Self::scan_reassigned_expr(iter, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => Self::scan_reassigned_body(body, out),
+            SK::Ensure { body, else_handler } => {
+                Self::scan_reassigned_body(body, out);
+                if let Some((_, handler)) = else_handler {
+                    Self::scan_reassigned_body(handler, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_reassigned_body(body: &[rask_ast::stmt::Stmt], out: &mut std::collections::HashSet<String>) {
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, out);
+        }
+    }
+
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<rask_ast::stmt::Stmt>> = Vec::new();
+        match &expr.kind {
+            // A callee that can write its argument rebinds the caller's local.
+            ExprKind::Call { func, args } => {
+                kids.push(func);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                kids.push(object);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            // OPT32: `take <place>` leaves `none` behind — a write to the place.
+            ExprKind::Take { place } => {
+                Self::note_place(place, out);
+                kids.push(place);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                kids.push(left);
+                kids.push(right);
+            }
+            ExprKind::Unary { operand, .. } => kids.push(operand),
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => kids.push(object),
+            ExprKind::IsPresent { expr: inner, .. }
+            | ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Convert { expr: inner, .. }
+            | ExprKind::IsPattern { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => kids.push(inner),
+            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
+                kids.push(inner);
+                kids.push(else_branch);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                kids.push(object);
+                kids.push(field_expr);
+            }
+            ExprKind::Index { object, index } => {
+                kids.push(object);
+                kids.push(index);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                kids.push(value);
+                kids.push(default);
+            }
+            ExprKind::Catch { value, clause } => {
+                kids.push(value);
+                kids.push(&clause.body);
+            }
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
+                kids.push(cond);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                kids.push(scrut);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                kids.push(scrutinee);
+                kids.extend(arms.iter().map(|a| a.body.as_ref()));
+            }
+            ExprKind::Range { start, end, .. } => {
+                kids.extend(start.iter().map(|b| b.as_ref()));
+                kids.extend(end.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::StructLit { fields, .. } => kids.extend(fields.iter().map(|f| &f.value)),
+            ExprKind::Array(items) | ExprKind::Tuple(items) => kids.extend(items.iter()),
+            ExprKind::ArrayRepeat { value, count } => {
+                kids.push(value);
+                kids.push(count);
+            }
+            ExprKind::WithAs { bindings, body } => {
+                kids.extend(bindings.iter().map(|b| &b.source));
+                bodies.push(body);
+            }
+            ExprKind::Block(body)
+            | ExprKind::Loop { body, .. }
+            | ExprKind::UsingBlock { body, .. }
+            | ExprKind::Unsafe { body }
+            | ExprKind::Comptime { body }
+            | ExprKind::Spawn { body } => bodies.push(body),
+            ExprKind::Closure { body, .. } => kids.push(body),
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                kids.push(condition);
+                kids.extend(message.iter().map(|m| m.as_ref()));
+            }
+            ExprKind::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                for seg in segments {
+                    if let StringSegment::Expr(e, _) = seg {
+                        kids.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for k in kids {
+            Self::scan_reassigned_expr(k, out);
+        }
+        for b in bodies {
+            Self::scan_reassigned_body(b, out);
+        }
+    }
+
+    /// Nothing in this function reassigns any of these names, so the value an
+    /// ensure hook snapshots when the ensure is scheduled is the value the
+    /// cleanup would read during unwind.
+    ///
+    /// Coarser than it could be — a write *before* the ensure is harmless, and
+    /// this counts it — but the direction is safe: an unclear case keeps the
+    /// ensure inline-only, which is what it was before hooks existed.
     fn scalars_frozen_after_here(&self, names: &[&String]) -> bool {
-        names
-            .iter()
-            .all(|n| self.meta(n).map_or(false, |m| m.is_immutable))
+        names.iter().all(|n| !self.reassigned_names.contains(n.as_str()))
     }
 
     fn is_ref_capturable(ty: &MirType) -> bool {
@@ -3239,6 +3431,7 @@ impl<'a> MirLowerer<'a> {
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
+            reassigned_names: std::collections::HashSet::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -3257,6 +3450,11 @@ impl<'a> MirLowerer<'a> {
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
         };
+
+        // Which names this body reassigns (see `reassigned_names`). Scanned once
+        // here rather than tracked as lowering goes, because the question is
+        // about statements the ensure hasn't reached yet.
+        lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
         let self_type_name: Option<String> = fn_decl.params.iter()
@@ -3296,8 +3494,6 @@ impl<'a> MirLowerer<'a> {
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
                     meta.is_mutate_param = true;
-                } else {
-                    meta.is_immutable = true;
                 }
                 if scalar_mutate {
                     meta.scalar_mutate_ptr = Some(param_ty.clone());

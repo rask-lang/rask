@@ -73,6 +73,7 @@ typedef struct GreenTask {
 
     // Per-task ensure hook stack (LIFO cleanup on cancel/panic)
     void           *ensure_stack;
+    void           *access_stack;   // locks this task holds (ctrl.panic/U3)
 } GreenTask;
 
 // ─── Task handle (returned to user code) ────────────────────
@@ -348,6 +349,11 @@ extern void  *rask_ensure_stack_take(void);
 extern void   rask_ensure_stack_set(void *head);
 extern void   rask_ensure_run_all(void);
 
+// Same deal for the locks a task holds (ctrl.panic/U3): parked with the task so
+// a worker multiplexing fibers doesn't hand one task's held locks to another.
+extern void  *rask_access_stack_take(void);
+extern void   rask_access_stack_set(void *head);
+
 // ─── Execute a single task ──────────────────────────────────
 
 static void execute_task(GreenScheduler *s, GreenTask *t) {
@@ -357,6 +363,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
 
     // Restore per-task ensure hook stack (may have hooks from previous polls)
     rask_ensure_stack_set(t->ensure_stack);
+    rask_access_stack_set(t->access_stack);
 
     // Install panic handler for this task invocation
     rask_panic_install();
@@ -380,6 +387,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
 
     // Save ensure hook stack back to task before switching away
     t->ensure_stack = rask_ensure_stack_take();
+    t->access_stack = rask_access_stack_take();
     tl_current_task = NULL;
 
     if (poll_result == RASK_POLL_READY) {

@@ -347,9 +347,6 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Let { name, ty, init, .. } => {
-                // `let` binds once — nothing in this function can write it. An
-                // ensure hook uses that to snapshot a scalar it reads.
-                self.meta_mut(name).is_immutable = true;
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
