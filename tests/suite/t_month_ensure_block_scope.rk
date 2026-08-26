@@ -105,4 +105,134 @@ test "ctrl.ensure — a skipped branch schedules nothing" {
     assert log.order[0] == 7
 }
 
+// The exits that leave a block early already ran their own chain — `return`
+// through the function's cleanup chain, `break` and `continue` back to the
+// loop's depth. The block's fall-through exit is the one that was missing, so
+// these check it didn't start running twice.
+
+func return_from_block(mutate log: Log) -> i32 {
+    {
+        ensure log.order.push(1)
+        log.order.push(0)
+        return 42
+    }
+}
+
+func break_from_block(mutate log: Log) {
+    for i in 0..3 {
+        {
+            ensure log.order.push(1)
+            log.order.push(0)
+            if i == 0 {
+                break
+            }
+        }
+        log.order.push(2)
+    }
+    log.order.push(9)
+}
+
+func continue_from_block(mutate log: Log) {
+    for i in 0..2 {
+        {
+            ensure log.order.push(1)
+            log.order.push(0)
+            if i == 0 {
+                continue
+            }
+        }
+        log.order.push(2)
+    }
+    log.order.push(9)
+}
+
+func match_arm(mutate log: Log, n: i32) {
+    match n {
+        1 => {
+            ensure log.order.push(1)
+            log.order.push(0)
+        }
+        _ => {
+            log.order.push(5)
+        }
+    }
+    log.order.push(9)
+}
+
+func block_value(mutate log: Log) -> i32 {
+    let v = {
+        ensure log.order.push(1)
+        log.order.push(0)
+        7
+    }
+    log.order.push(2)
+    return v
+}
+
+func mixed_scopes(mutate log: Log) {
+    ensure log.order.push(8)
+    {
+        ensure log.order.push(1)
+        log.order.push(0)
+    }
+    log.order.push(2)
+}
+
+test "ctrl.ensure — a return out of a block runs its ensure once" {
+    mut log = Log { order: Vec.new() }
+    assert return_from_block(mutate log) == 42
+    assert log.order.len() == 2
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+}
+
+test "ctrl.ensure — a break out of a nested block runs its ensure once" {
+    mut log = Log { order: Vec.new() }
+    break_from_block(mutate log)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 9
+}
+
+test "ctrl.ensure — a continue out of a nested block runs its ensure once" {
+    mut log = Log { order: Vec.new() }
+    continue_from_block(mutate log)
+    assert log.order.len() == 6
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 0
+    assert log.order[3] == 1
+    assert log.order[4] == 2
+    assert log.order[5] == 9
+}
+
+test "ctrl.ensure — EN1: a match arm's ensure runs at the arm's exit" {
+    mut log = Log { order: Vec.new() }
+    match_arm(mutate log, 1)
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 9
+}
+
+test "ctrl.ensure — a block's value is computed before its ensure runs" {
+    mut log = Log { order: Vec.new() }
+    assert block_value(mutate log) == 7
+    assert log.order.len() == 3
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 2
+}
+
+test "ctrl.ensure — a block ensure and a function ensure keep their own scopes" {
+    mut log = Log { order: Vec.new() }
+    mixed_scopes(mutate log)
+    assert log.order.len() == 4
+    assert log.order[0] == 0
+    assert log.order[1] == 1
+    assert log.order[2] == 2
+    assert log.order[3] == 8
+}
+
 func main() {}
