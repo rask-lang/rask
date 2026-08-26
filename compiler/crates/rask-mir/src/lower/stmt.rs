@@ -360,10 +360,21 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Mut { name, ty, init, .. } => {
+                // A `mut` can be reassigned, so whatever this name meant to
+                // `value.(name)` before, it doesn't now.
+                self.comptime_strings.remove(name);
                 self.lower_binding(name, ty.as_deref(), init)
             }
 
             StmtKind::Let { name, ty, init, .. } => {
+                // A `let` bound to a compile-time string can name a field:
+                // `let which = comptime { "y" }` then `p.(which)` (#930).
+                // Recorded here because lowering the initializer turns it into
+                // an ordinary runtime value and the fact is gone.
+                match self.comptime_field_name(init) {
+                    Some(s) => { self.comptime_strings.insert(name.clone(), s); }
+                    None => { self.comptime_strings.remove(name); }
+                }
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
@@ -789,10 +800,23 @@ impl<'a> MirLowerer<'a> {
                             store_size: None,
                         }));
                     }
-                    _ => {
+                    // CT49 is a read — `value.("x")` resolves to a field access
+                    // in expression position, and nothing says what writing
+                    // through one means. Both backends reject it; say so in words
+                    // rather than printing the AST at the user.
+                    ExprKind::DynamicField { .. } => {
                         return Err(LoweringError::InvalidConstruct(
-                            format!("unsupported assignment target: {:?}", target.kind),
+                            "can't assign through `value.(name)` — comptime field access reads a \
+                             field, it doesn't name one to write to. Write the field directly."
+                                .into(),
                         ));
+                    }
+                    _ => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "can't assign to a {} — an assignment target has to be a variable, \
+                             a field, or an index",
+                            rask_ast::expr::expr_kind_name(&target.kind)
+                        )));
                     }
                 }
                 Ok(())

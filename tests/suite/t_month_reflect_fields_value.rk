@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `reflect.fields<T>()` used as a value rather than as a `comptime for`
+// iterable — #997.
+//
+// The declaration in stdlib/reflect.rk says what it returns:
+//
+//     public func fields<T>() -> Vec<FieldInfo> {}
+//
+// The interpreter implements that — it builds the Vec and hands it back, so
+// `.len()`, indexing and iterating all work. Native implements something
+// narrower: the unroller splices each field's metadata as compile-time
+// constants into the body of a `comptime for`, and there's no runtime
+// `Vec<FieldInfo>` for the call to become anywhere else.
+//
+//     interp:  2
+//     native:  error: native can only use `reflect.fields<T>()` as the iterable
+//              of a `comptime for` …
+//
+// Until this landed the two backends failed together, for the wrong reason:
+// reflect.rk wasn't in the stub set, so `reflect.fields<T>()` had no return
+// type and `let v = …` was "couldn't work out the type of `v`" on both (#931).
+// Compiling reflect.rk in gave the interpreter's implementation a type to
+// answer with and left native's gap showing.
+//
+// The `comptime for` form is green on both and lives in
+// `t_month_reflect_field_strings.rk`.
+
+import std.reflect
+
+struct Point9 {
+    x: i32
+    y: i32
+}
+
+test "std.reflect — fields() bound to a name" {
+    let v = reflect.fields<Point9>()
+    assert v.len() == 2
+}
+
+test "std.reflect — fields() indexed" {
+    let v = reflect.fields<Point9>()
+    assert v[0].name == "x"
+    assert v[1].name == "y"
+}
+
+test "std.reflect — fields() driving an ordinary for" {
+    mut names = Vec.new()
+    for f in reflect.fields<Point9>() {
+        names.push(f.name)
+    }
+    assert names.join(",") == "x,y"
+}
+
+// Control: the comptime form, which both backends do implement.
+test "std.reflect — the comptime for form is the control" {
+    mut count = 0
+    comptime for f in reflect.fields<Point9>() {
+        count = count + 1
+    }
+    assert count == 2
+}
+
+func main() {}
