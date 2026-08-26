@@ -24,6 +24,18 @@
 # the green gate. Any expected-red file that silently starts passing is reported
 # as UNEXPECTED PASS so the list gets pruned.
 #
+# Every registered line must end its note with what it claims — which backends
+# fail and how far each gets:
+#
+#   t_month_try_in_test.rk   # … — #932 (native compile)
+#   t_month_resource_loop.rk # … — #928 (both check)
+#
+# Backend is native, interp or both; phase is check, compile or run. The gate
+# holds the file to that claim, because "still red" is not the same as "still
+# testing the bug" — a file registered for a codegen bug that stops compiling
+# for an unrelated reason is red either way, and the bug quietly stops being
+# exercised (#1005). A mismatch, or a line with no claim, is MISFILED.
+#
 # Usage:  tests/differential.sh [suite-dir]
 # Exit:   0 = no unexpected divergence, 1 = at least one.
 
@@ -58,15 +70,19 @@ reg_label() {
     if names_in "$PENDING_FILE" | grep -qxF "$1"; then echo "PENDING"; else echo "KNOWN-FAIL"; fi
 }
 
-# Which backends a registry line says the file fails on: `(native)`, `(interp)`
-# or `(both)` in its note. First exact match wins — a line naming two issues
-# leads with the one that describes the file's overall state. Prose in the
-# parentheses (`(interp keeps the value, native wraps)`) deliberately doesn't
-# match; there's no claim to check against.
-reg_scope() {
+# What a registry line claims about its file: which backends fail and how far
+# each got. Written `(native run)`, `(both check)`, `(interp compile)` — backend
+# then phase, in the note. First match wins; a line naming two issues leads with
+# the one describing the file's overall state.
+#
+# Prose in parentheses (`(interp keeps the value, native wraps)`) deliberately
+# doesn't match. It makes no checkable claim, and reading one out of it would be
+# inventing the claim rather than checking it — so such a line counts as
+# unmarked and is reported as such.
+reg_claim() {
     awk -v want="$1" '
         NF && $1 !~ /^#/ && $1 == want {
-            if (match($0, /\((native|interp|both)\)/)) {
+            if (match($0, /\((native|interp|both) +(check|compile|run)\)/)) {
                 print substr($0, RSTART + 1, RLENGTH - 2)
             }
             exit
@@ -76,6 +92,22 @@ reg_scope() {
 # Strip per-test and total timing tokens so only semantics are compared.
 normalize() {
     sed -E 's/\([0-9]+ms\)//g'
+}
+
+# How far a backend got before it failed: pass, check, compile or run. This is
+# the difference between "the bug is still being exercised" and "the file stopped
+# building" — both of which are just `red` to an exit code (#1005).
+#
+# `error[E…]` is a checker diagnostic and `error: compile:` is codegen giving up;
+# anything else that failed got far enough to run a test body, including a
+# runtime panic, which prints no marker of its own.
+phase_of() {
+    if [ "$2" -eq 0 ]; then echo pass; return; fi
+    case "$1" in
+        *"=== Check FAILED"*|*"error[E"*) echo check ;;
+        *"error: compile:"*)              echo compile ;;
+        *)                                echo run ;;
+    esac
 }
 
 divergent=0
@@ -116,7 +148,9 @@ run_one() {
     green=0
     if [ "$icode" -eq 0 ] && [ "$ncode" -eq 0 ] && [ "$iout" = "$nout" ]; then green=1; fi
 
-    printf '%s\t%s\t%s\n' "$green" "$icode" "$ncode" > "$WORK/$base.status"
+    iphase="$(phase_of "$iraw" "$icode")"
+    nphase="$(phase_of "$nraw" "$ncode")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$green" "$icode" "$ncode" "$iphase" "$nphase" > "$WORK/$base.status"
     if [ "$green" -eq 0 ]; then
         # `%s\n` not `%s`: without the trailing newline the separator merges
         # into the last output line and the split below cuts in the wrong place.
@@ -127,7 +161,7 @@ run_one() {
         } > "$WORK/$base.detail"
     fi
 }
-export -f run_one normalize
+export -f run_one normalize phase_of
 export RASK WORK
 
 find "$SUITE_DIR" -maxdepth 1 -name '*.rk' -print0 \
@@ -137,7 +171,7 @@ for f in "$SUITE_DIR"/*.rk; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
     [ -f "$WORK/$base.status" ] || { echo "FAILURE:    $base — worker produced no result"; divergent=$((divergent+1)); fail_files+=("$base"); continue; }
-    IFS=$'\t' read -r green icode ncode < "$WORK/$base.status"
+    IFS=$'\t' read -r green icode ncode iphase nphase < "$WORK/$base.status"
 
     if [ "$green" -eq 1 ]; then
         if known_fail "$base"; then
@@ -162,21 +196,57 @@ for f in "$SUITE_DIR"/*.rk; do
         [ "$kind" = "BOTH-FAIL" ] && both_fail=$((both_fail+1))
 
         # A red file is only honest while it fails the way its registry line
-        # says. `t_day_const_string_array.rk` is registered `(native)` for a
-        # const-array bug; when it started failing the *check* for a missing
-        # import it failed on both backends, the bug stopped being exercised,
-        # and nothing noticed — red counted as red either way (#1005).
-        scope="$(reg_scope "$base")"
-        claim=""
-        case "$scope" in
-            native) [ "$icode" -eq 0 ] || claim="registered (native) but the interpreter fails too" ;;
-            interp) [ "$ncode" -eq 0 ] || claim="registered (interp) but native fails too" ;;
-            both)   if [ "$icode" -eq 0 ] || [ "$ncode" -eq 0 ]; then
-                        claim="registered (both) but one backend passes"
+        # says. `t_day_const_string_array.rk` is registered `(native run)` for a
+        # const-array bug; when it lost an import it failed the *check* on both
+        # backends, the bug stopped being exercised, and nothing noticed — red
+        # counted as red either way (#1005).
+        #
+        # Two claims to hold it to: which backends fail, and how far each got.
+        # A file that stays red on the same backends but slides from `run` to
+        # `check` has stopped testing what it was written to test, and only the
+        # phase half sees that.
+        claim="$(reg_claim "$base")"
+        want_side="${claim%% *}"
+        want_phase="${claim##* }"
+
+        # What the file actually does right now, so an unmarked line can be told
+        # exactly what to say instead of being told a marker is missing.
+        if [ "$icode" -ne 0 ] && [ "$ncode" -ne 0 ]; then
+            observed="both $nphase"
+            [ "$iphase" = "$nphase" ] || observed="interp=$iphase native=$nphase"
+        elif [ "$ncode" -ne 0 ]; then
+            observed="native $nphase"
+        else
+            observed="interp $iphase"
+        fi
+
+        why=""
+        if [ -z "$claim" ]; then
+            why="no (backend phase) marker on its registry line — it currently fails ($observed)"
+        else
+            case "$want_side" in
+                native)
+                    if [ "$icode" -ne 0 ]; then
+                        why="registered ($claim) but the interpreter fails too, at $iphase"
+                    elif [ "$nphase" != "$want_phase" ]; then
+                        why="registered ($claim) but native now fails at $nphase"
                     fi ;;
-        esac
-        if [ -n "$claim" ]; then
-            echo "  MISFILED: $claim — the bug it is registered for may not be exercised any more"
+                interp)
+                    if [ "$ncode" -ne 0 ]; then
+                        why="registered ($claim) but native fails too, at $nphase"
+                    elif [ "$iphase" != "$want_phase" ]; then
+                        why="registered ($claim) but the interpreter now fails at $iphase"
+                    fi ;;
+                both)
+                    if [ "$icode" -eq 0 ] || [ "$ncode" -eq 0 ]; then
+                        why="registered ($claim) but one backend passes"
+                    elif [ "$iphase" != "$want_phase" ] || [ "$nphase" != "$want_phase" ]; then
+                        why="registered ($claim) but now fails at interp=$iphase native=$nphase"
+                    fi ;;
+            esac
+        fi
+        if [ -n "$why" ]; then
+            echo "  MISFILED: $why"
             misfiled=$((misfiled+1))
             misfiled_files+=("$base")
         fi
