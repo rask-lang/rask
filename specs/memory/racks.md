@@ -81,12 +81,10 @@ survives the crossing, give it an id field.
 
 Reads are free; writes are not. Assigning a link into an edge writes the
 **target** as well as the holder, because the rack records the incoming edge so
-that RK3 can find it later. An edge write is ~4–8 stores where a handle write is
-1–2.
-
-That is a small implicit cost of the kind `CORE_DESIGN` principle 1 permits — no
-allocation, no unbounded work, in the same tier as a bounds check rather than the
-allocations, locks and I/O the principle reserves visibility for.
+that RK3 can find it later. Measured, an edge write is ~2.6 ns against ~2.9 ns
+for a raw pointer store — one extra cache access, in the same tier as a bounds
+check rather than the allocations, locks and I/O `CORE_DESIGN` principle 1
+reserves visibility for.
 
 Natively, a node lives in a fixed-size chunk the rack never reallocates, with its
 header immediately *before* the payload. So a link is the node's address and
@@ -98,12 +96,42 @@ value its own domain can't produce. A handle is index+generation, so all-ones is
 impossible; a link is an address, so null is. Null also means a rack chunk
 arrives with every link already reading as `none`, since chunks are zeroed.
 
-The delete cost is measured, and the two backends agree on it:
-`RASK_RACK_STATS=1` reports the same `edges_fixed`/`holders_visited` on both.
-
 An edge write touches the target's *header*, not any field the target declares.
 So a link lent for reading (PM10) stays valid for reading: nothing observable
 through it changes.
+
+### Where an edge record lives
+
+The write has to find the record for the slot it is overwriting, so that the old
+target forgets it. Searching the old target's list for that record would make an
+ordinary field assignment cost O(in-degree) — 4096 things pointing at one node
+turned `a.target = b` into 4.6 µs. So records are placed where the write can
+reach them by arithmetic.
+
+A link declared directly on a node keeps its record **inline, immediately before
+the node header**:
+
+```
+chunk: [ e0 | e1 | hdr | T ][ e0 | e1 | hdr | T ] ...
+                     ^
+                     Link<T> points here
+```
+
+Record `k` is a fixed offset from the header, so the write unlinks and re-splices
+in constant time whatever the in-degree. Measured across in-degree 1 → 4096, a
+retarget stays flat at ~5 ns.
+
+Everything else that can hold a link — a field of a struct outside the rack, a
+`Vec` or `Map` element — gets a heap record found by scanning. Those sit on a
+separate list, so a hub with thousands of node-field edges never lengthens the
+list that gets scanned.
+
+| Rule | Description |
+|------|-------------|
+| **RK10: Retargeting is constant-time** | Overwriting a link declared on a node costs the same at any in-degree. The record is inline, so nothing is searched for. A link held outside a node still pays a scan of the target's much shorter foreign-holder list |
+
+The delete cost is measured, and the two backends agree on it:
+`RASK_RACK_STATS=1` reports the same `edges_fixed`/`holders_visited` on both.
 
 ## Choosing this over the alternatives
 
@@ -125,10 +153,6 @@ Named here so the gaps are on the record rather than discovered:
 - **Required edges** (RK7) and, with them, a delete policy. Set-to-`none` is
   complete only while every edge is optional; admitting `Link<T>` makes one of
   cascade or restrict mandatory. Both wait on batch construction.
-- **`filter` on an edge list.** `old.children = old.children.filter(…)` segfaults
-  natively — not a rack bug: filtering a `Vec` reached through a *field* crashes
-  for a plain `Vec<i32>` too (rask-lang/rask#866). It's the last native gap in
-  the rack corpus, and the reparent path of the scene-tree prototype needs it.
 - **Retiring `mem.pools`.** Native lowering has landed, which was the condition
   (rask-lang/rask#908), but the pool corpus hasn't been converted yet.
 - **Slab affordances.** The backing store is a slab already; whether to promise
@@ -137,6 +161,12 @@ Named here so the gaps are on the record rather than discovered:
 - **A link escaping inside a collection.** RK6 covers returns, assignments and
   aggregate literals; a link pushed into a `Vec` that then escapes is not yet
   caught (rask-lang/rask#941).
+- **Pushing a link into a container still scans.** One record per (container,
+  target) means `vec.push(link)` checks whether that pair is already recorded,
+  and that check walks the target's foreign-holder list. It is short by
+  construction, but the cost is O(its length) rather than constant, and it is
+  the last place in the model where in-degree leaks into a write
+  (rask-lang/rask#981).
 - **Structural mutation under concurrency.** Edges may only connect co-owned
   nodes, and the current answer for sharing a graph is a lock around the
   ownership root. Staged structural mutation is designed and unbuilt.
