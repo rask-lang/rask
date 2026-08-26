@@ -1108,6 +1108,9 @@ pub enum Value {
     /// records ops and runs nothing until a terminal (`read`/`sum`). The plan
     /// tree is immutable, so it's shared by Arc.
     Wide(Arc<WidePlan>),
+    /// Raw pointer (`*T`). Holds the buffer it points into and an element
+    /// index rather than an address — see `ptr.rs`.
+    RawPtr(crate::ptr::RawPtr),
     /// Nominal type wrapper: `type UserId = u64` — wraps the underlying value
     Nominal {
         type_name: String,
@@ -1363,6 +1366,7 @@ impl Value {
             Value::Rng(_) => "Random",
             Value::StringBuilder(_) => "StringBuilder",
             Value::Iterator(_) => "Iterator",
+            Value::RawPtr(_) => "raw pointer",
             Value::Nominal { .. } => "nominal",
             Value::NominalConstructor { .. } => "nominal constructor",
         }
@@ -1751,6 +1755,10 @@ impl fmt::Display for Value {
             Value::Rng(_) => write!(f, "<Random>"),
             Value::StringBuilder(_) => write!(f, "<StringBuilder>"),
             Value::Iterator(_) => write!(f, "<Iterator>"),
+            // Native prints a pointer as its address in decimal. The number
+            // differs between runs there too, so nothing can depend on it —
+            // what matters is that it reads as an address and not as `0`.
+            Value::RawPtr(p) => write!(f, "{}", p.addr()),
             // A nominal newtype's inherited traits delegate to the value it
             // wraps (type.aliases/T12), so rendering one shows the value. The
             // wrapper form printed `Id(42)` where native — which carries no
