@@ -10,6 +10,8 @@
 // a call needing a hidden context from directly inside a `test` block fails
 // native MIR lowering with "unresolved variable `__ctx_players`". Separate,
 // pre-existing bug — not this one.
+import memory.Handle
+import memory.Pool
 
 struct Player { health: i32 }
 

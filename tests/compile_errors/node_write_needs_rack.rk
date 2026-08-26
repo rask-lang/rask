@@ -7,6 +7,8 @@
 // what makes a read-only graph free: no second link type, nothing to propagate
 // along the edges you follow, and no way to launder a readable link into a
 // writable one.
+import memory.Link
+import memory.Rack
 
 struct Entity {
     health: i32

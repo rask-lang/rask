@@ -2774,12 +2774,26 @@ impl TypeChecker {
         // Also handles generic forms like Vec<Route>.from().
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
-            let base_name = name.split('<').next().unwrap_or(name);
+            let spelled = name.split('<').next().unwrap_or(name);
+            // IM3: a transparent alias names the same type, so a namespace call
+            // through one is a call on the target. The gate below asks the stub
+            // registry by spelling, and `import time.Duration as Span` puts
+            // `Span` in scope under a name that isn't in there — so the branch
+            // was skipped, the receiver went through `infer_expr`, and `let d =
+            // Span.from_millis(1)` came back "couldn't work out the type of `d`"
+            // (#923).
+            let base_name = self.types.alias_target(spelled).unwrap_or(spelled);
+            let name = if base_name == spelled {
+                name.clone()
+            } else {
+                name.replacen(spelled, base_name, 1)
+            };
+            let name = &name;
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
             // `len` found for type `fs`".
-            let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
+            let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
                 && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())

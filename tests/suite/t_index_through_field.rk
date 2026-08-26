@@ -6,6 +6,8 @@
 // with nothing tying it to the container, so it stayed open however the field
 // later resolved — `let e = state.entities[h]` didn't compile, while the same
 // index on a local did.
+import memory.Pool
+import memory.Handle
 
 struct Entity {
     hp: i64

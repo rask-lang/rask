@@ -10,6 +10,8 @@
 //
 // This is the companion to fanin_links.rk, where in-degree happens to equal
 // rack size and so can't tell the two costs apart.
+import memory.Link
+import memory.Rack
 
 const FILLER: i32 = 498
 

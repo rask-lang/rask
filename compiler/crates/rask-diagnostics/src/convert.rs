@@ -107,11 +107,28 @@ impl ToDiagnostic for rask_resolve::ResolveError {
             // not it was imported — native compiled and ran `math.sin(x)` with
             // no import while the interpreter, which binds a module only when it
             // sees the import, died at runtime (#723).
-            ModuleNotImported { name } => Diagnostic::error(format!("`{}` is used but never imported", name))
-                .with_code("E0210")
-                .with_primary(self.span, format!("`{}` needs an import to be in scope", name))
-                .with_fix(format!("import {}", name))
-                .with_why("a module's name comes from its import — without one there's nothing bringing `{}` into scope [structure.modules/IM1]".replace("{}", name)),
+            ModuleNotImported { name, module } => {
+                let d = Diagnostic::error(format!("`{}` is not in scope", name))
+                    .with_code("E0210")
+                    .with_primary(self.span, "needs an import")
+                    .with_why(
+                        "nothing comes pre-imported. A stdlib name is in scope where the \
+                         program asked for it and nowhere else, which is also what leaves \
+                         the name free for a program that wants it for something of its \
+                         own [structure.modules/IM1]",
+                    );
+                match module {
+                    // `import time.Duration` gives the bare `Duration` this code
+                    // is already written against (IM4). Plain `import time`
+                    // would mean rewriting the use as `time.Duration`.
+                    Some(m) if m != name => d
+                        .with_help(format!("add `import {}.{}` at the top of the file", m, name))
+                        .with_fix(format!("import {}.{}", m, name)),
+                    _ => d
+                        .with_help(format!("add `import {}` at the top of the file", name))
+                        .with_fix(format!("import {}", name)),
+                }
+            }
 
             DuplicateDefinition { name, previous } => {
                 Diagnostic::error(format!("duplicate definition: `{}`", name))
@@ -205,13 +222,34 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("items are private by default — only `public` items are accessible from other modules")
             }
 
-            ShadowsImport { name } => {
-                Diagnostic::error(format!("`{}` shadows an imported name", name))
-                    .with_code("E0208")
-                    .with_primary(self.span, "conflicts with import")
-                    .with_help("use a different name or alias the import")
-                    .with_fix("use a different name or alias the import with `import pkg.Name as Alias`")
-                    .with_why("shadowing imports makes code ambiguous — Rask disallows it for clarity")
+            ShadowsImport { name, module } => {
+                // Naming the module the name came from is the difference between
+                // a fix the reader can apply and a hunt through their import
+                // list.
+                let d = Diagnostic::error(match module {
+                    Some(m) => format!("`{}` is already in scope from `{}`", name, m),
+                    None => format!("`{}` is already in scope from an import", name),
+                })
+                .with_code("E0208")
+                .with_primary(self.span, format!("a second `{}` in the same scope", name))
+                .with_why(format!(
+                    "one name, one meaning: with both in scope nothing in the source \
+                     says which `{}` a use means, and the compiler would be picking for \
+                     you [struct.modules/IM8]",
+                    name
+                ));
+                match module {
+                    Some(m) => d
+                        .with_help(format!(
+                            "rename yours, or keep both by aliasing theirs: \
+                             `import {}.{} as Std{}`",
+                            m, name, name
+                        ))
+                        .with_fix(format!("import {}.{} as Std{}", m, name, name)),
+                    None => d
+                        .with_help("rename your declaration, or alias the import")
+                        .with_fix(format!("import pkg.{} as Other{}", name, name)),
+                }
             }
 
             CircularDependency { path } => {
@@ -251,12 +289,34 @@ impl ToDiagnostic for rask_resolve::ResolveError {
             }
 
             ShadowsBuiltin { name } => {
-                Diagnostic::error(format!("`{}` shadows a built-in", name))
-                    .with_code("E0209")
-                    .with_primary(self.span, "cannot redefine built-in")
-                    .with_help("use a different name")
-                    .with_fix("use a different name")
-                    .with_why("built-in types and functions are reserved — redefining them would break language semantics")
+                // Which set the name is in decides what to say about it. A
+                // built-in function is worse than a built-in type: the compiler
+                // generates code for `println` at each call site, so a program's
+                // own would be written and then never called.
+                if rask_resolve::is_reserved_builtin_fn(name) {
+                    Diagnostic::error(format!("`{}` is a built-in function", name))
+                        .with_code("E0209")
+                        .with_primary(self.span, "this name is already taken")
+                        .with_help(format!("rename it — `{}_impl`, or whatever it actually does", name))
+                        .with_fix(format!("give it a name of its own, not `{}`", name))
+                        .with_why(
+                            "the compiler knows this function's signature and generates \
+                             code for it at each call site, so it isn't a symbol a \
+                             declaration can replace — a program's own would be compiled \
+                             and never called [struct.modules/BF2, BF3]",
+                        )
+                } else {
+                    Diagnostic::error(format!("`{}` is a built-in type", name))
+                        .with_code("E0209")
+                        .with_primary(self.span, "this name is already taken")
+                        .with_help("rename the declaration")
+                        .with_fix(format!("give it a name of its own, not `{}`", name))
+                        .with_why(
+                            "the built-in set is fixed — a program can't add to it or \
+                             replace a member — so a second type under this name would \
+                             have no way to be referred to [struct.modules/BI2, BI3]",
+                        )
+                }
             }
 
             NoSuchStdlibExport { module, symbol, suggestion } => {

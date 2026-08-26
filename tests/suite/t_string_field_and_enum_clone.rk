@@ -3,6 +3,7 @@
 // carries one. Both were silently wrong on native only — found by running
 // text_editor, where they showed up as edits storing empty text and redo
 // trapping on an out-of-range tag.
+import memory.Pool
 
 struct Line {
     text: string

@@ -6,6 +6,7 @@
 // typed as returning nothing and `let v: i64 = try h.join()` was a type
 // error. Underneath, the runtime called the closure through a void signature
 // and dropped whatever it returned, so join answered 0 either way.
+import async.JoinError
 
 func double(n: i64) -> i64 {
     return n * 2

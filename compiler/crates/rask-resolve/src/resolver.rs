@@ -45,6 +45,24 @@ pub struct Resolver {
     current_package: Option<PackageId>,
     package_bindings: HashMap<String, PackageId>,
     imported_symbols: HashSet<String>,
+    /// The subset of `imported_symbols` an import brought in as a *type* — a
+    /// module name, a companion type, an enum's own name, a selective type
+    /// import.
+    ///
+    /// IM8 asks this rather than `imported_symbols`, which also holds enum
+    /// variant names. A variant's name is `JsonError.ParseError`; a program
+    /// declaring its own `ParseError` isn't shadowing anything a reader could
+    /// confuse it with, and two suite files exist to assert exactly that a match
+    /// resolves against the scrutinee's own enum. Both failed IM8 otherwise, and
+    /// the message named the wrong module for it — `string` also has a
+    /// `ParseError`, and that's the one the owner lookup found.
+    imported_type_names: HashSet<String>,
+    /// Names already reported as needing an import (IM1).
+    ///
+    /// One missing import is one fact about one name, and a program using
+    /// `Duration` forty times without importing it doesn't need forty errors —
+    /// the first one carries the whole answer, and the other thirty-nine bury it.
+    reported_missing_imports: HashSet<String>,
     lazy_imports: HashMap<String, Vec<String>>,
     /// Maps struct/enum base names to their type params (for extend blocks)
     type_param_map: HashMap<String, Vec<TypeParam>>,
@@ -70,6 +88,8 @@ impl Resolver {
             current_package: None,
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
+            imported_type_names: HashSet::new(),
+            reported_missing_imports: HashSet::new(),
             lazy_imports: HashMap::new(),
             type_param_map: HashMap::new(),
             package_exports: HashMap::new(),
@@ -83,72 +103,30 @@ impl Resolver {
     }
 
     fn register_builtins(&mut self) {
-        use crate::symbol::{BuiltinFunctionKind, BuiltinTypeKind};
+        use crate::symbol::BuiltinTypeKind;
 
-        let builtin_fns = [
-            ("println", BuiltinFunctionKind::Println, None::<&str>),
-            ("print", BuiltinFunctionKind::Print, None),
-            ("panic", BuiltinFunctionKind::Panic, Some("!")),
-            ("format", BuiltinFunctionKind::Format, None),
-            ("todo", BuiltinFunctionKind::Todo, Some("!")),
-            ("unreachable", BuiltinFunctionKind::Unreachable, Some("!")),
-            ("min", BuiltinFunctionKind::Min, None),
-            ("max", BuiltinFunctionKind::Max, None),
-            ("clamp", BuiltinFunctionKind::Clamp, None),
-            ("assert_eq", BuiltinFunctionKind::AssertEq, None),
-            ("skip", BuiltinFunctionKind::Skip, Some("!")),
-            ("expect_fail", BuiltinFunctionKind::ExpectFail, None),
-            ("drop", BuiltinFunctionKind::Drop, None),
-        ];
-
-        for (name, builtin, ret_ty) in builtin_fns {
+        for entry in crate::symbol::BUILTIN_FUNCTIONS {
             let sym_id = self.symbols.insert(
-                name.to_string(),
-                SymbolKind::BuiltinFunction { builtin },
-                ret_ty.map(String::from),
+                entry.name.to_string(),
+                SymbolKind::BuiltinFunction { builtin: entry.kind },
+                entry.ret_ty.map(String::from),
                 Span::new(0, 0),
                 true,
             );
-            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
+            let _ = self.scopes.define(entry.name.to_string(), sym_id, Span::new(0, 0));
         }
 
-        let builtin_types = [
-            ("Vec", BuiltinTypeKind::Vec),
-            ("Map", BuiltinTypeKind::Map),
-            ("Set", BuiltinTypeKind::Set),
-            ("string", BuiltinTypeKind::String),
-            ("Error", BuiltinTypeKind::Error),
-            ("Channel", BuiltinTypeKind::Channel),
-            ("Pool", BuiltinTypeKind::Pool),
-            ("Handle", BuiltinTypeKind::Handle),
-            ("Rack", BuiltinTypeKind::Rack),
-            ("Link", BuiltinTypeKind::Link),
-            ("Atomic", BuiltinTypeKind::Atomic),
-            ("AtomicBool", BuiltinTypeKind::Atomic),
-            ("AtomicI8", BuiltinTypeKind::Atomic),
-            ("AtomicU8", BuiltinTypeKind::Atomic),
-            ("AtomicI16", BuiltinTypeKind::Atomic),
-            ("AtomicU16", BuiltinTypeKind::Atomic),
-            ("AtomicI32", BuiltinTypeKind::Atomic),
-            ("AtomicU32", BuiltinTypeKind::Atomic),
-            ("AtomicI64", BuiltinTypeKind::Atomic),
-            ("AtomicU64", BuiltinTypeKind::Atomic),
-            ("AtomicUsize", BuiltinTypeKind::Atomic),
-            ("AtomicIsize", BuiltinTypeKind::Atomic),
-            ("Shared", BuiltinTypeKind::Shared),
-            ("Mutex", BuiltinTypeKind::Mutex),
-            ("Heap", BuiltinTypeKind::Heap),
-        ];
-
-        for (name, builtin) in builtin_types {
+        // BI1's set only. A builtin type that belongs to a module comes into
+        // scope with the import, in `register_module_companions`.
+        for entry in crate::symbol::BUILTIN_TYPES.iter().filter(|t| t.module.is_none()) {
             let sym_id = self.symbols.insert(
-                name.to_string(),
-                SymbolKind::BuiltinType { builtin },
+                entry.name.to_string(),
+                SymbolKind::BuiltinType { builtin: entry.kind },
                 None,
                 Span::new(0, 0),
                 true,
             );
-            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
+            let _ = self.scopes.define(entry.name.to_string(), sym_id, Span::new(0, 0));
         }
 
         // Primitive types — always in scope so stdlib stubs and user code
@@ -169,22 +147,12 @@ impl Resolver {
             let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
         }
 
-        // Prelude stdlib structs — always in scope, no import needed.
-        // StringBuilder is the recommended idiom for building strings in loops
-        // (canonical-patterns), so it can't hide behind an import. Registered as
-        // a plain struct; the type checker learns its real fields/methods from
-        // the stub decls. If stdlib decls are collected (run/build), they replace
-        // this binding with the full definition.
-        for name in ["StringBuilder"] {
-            let sym_id = self.symbols.insert(
-                name.to_string(),
-                SymbolKind::Struct { fields: vec![] },
-                None,
-                Span::new(0, 0),
-                true,
-            );
-            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
-        }
+        // `StringBuilder` used to be registered here too, on the grounds that
+        // it's the recommended idiom for building strings in loops
+        // (canonical-patterns) and so "can't hide behind an import". No spec
+        // says that, and IM1 doesn't make an exception for it — BI1's set is
+        // closed. It needs `import string.StringBuilder` like any other stdlib
+        // type, which is what `strings.Builder` costs in Go.
 
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
@@ -278,10 +246,17 @@ impl Resolver {
 
         use crate::symbol::BuiltinFunctionKind;
 
+        // Only the program's own imports reserve a name. The stdlib's files are
+        // resolved into the same scope, and io.rk imports `sync.Shared` for its
+        // own use — recording that as the program's import satisfied IM1 for
+        // every program, which is the shape of #780 and how `net.tcp_listen(…)`
+        // came to work with no import while every other module needed one.
+        let program_import = !self.stdlib_mode;
+
         // Companion functions that come into scope with the module
         let functions: &[(&str, BuiltinFunctionKind, Option<&str>)] = match module {
-            BuiltinModuleKind::Async => &[("spawn", BuiltinFunctionKind::Spawn, None)],
-            BuiltinModuleKind::Core => &[("transmute", BuiltinFunctionKind::Transmute, None)],
+            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn, None)],
+            BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute, None)],
             _ => &[],
         };
 
@@ -308,23 +283,18 @@ impl Resolver {
         let types = &exports.types;
         let enums = &exports.enums;
 
-        let builtin_types: &[(&str, BuiltinTypeKind)] = match module {
-            BuiltinModuleKind::Fs => &[("File", BuiltinTypeKind::File)],
-            BuiltinModuleKind::Random => &[("Random", BuiltinTypeKind::Rng)],
-            BuiltinModuleKind::Math => &[
-                ("f32x4", BuiltinTypeKind::Simd),
-                ("f32x8", BuiltinTypeKind::Simd),
-                ("f64x2", BuiltinTypeKind::Simd),
-                ("f64x4", BuiltinTypeKind::Simd),
-                ("i32x4", BuiltinTypeKind::Simd),
-                ("i32x8", BuiltinTypeKind::Simd),
-            ],
-            _ => &[],
-        };
+        // The compiler-provided types this module owns — the box family for
+        // `memory` and `sync`, `File`, `Random`, the SIMD vectors. Read off
+        // `BUILTIN_TYPES`, which is also what BI3 asks, so "is this name mine to
+        // declare" and "which import brings it in" can't answer differently.
+        let builtin_types: Vec<(&'static str, BuiltinTypeKind)> =
+            crate::symbol::module_builtin_types(module.name())
+                .map(|t| (t.name, t.kind))
+                .collect();
 
         // Structs with known public fields
         let struct_fields: &[(&str, &[&str])] = match module {
-            BuiltinModuleKind::Os => &[
+            BuiltinModuleKind::OS => &[
                 ("Output", &["status", "stdout", "stderr"]),
             ],
             _ => &[],
@@ -332,6 +302,32 @@ impl Resolver {
 
         // Register plain struct-like types
         for type_name in types {
+            // IM8's other order: the program declared this name before writing
+            // the import. Registering nothing left the program's own type in
+            // scope and said nothing about it, which is how a user
+            // `struct Timer` came to sit under stdlib/time.rk's — and natively
+            // it then took the stdlib's zero-field layout and segfaulted (#975).
+            let shadowed_by_local = self.declares_locally(type_name);
+
+            // Record the name as imported whether or not something already
+            // occupies it. `imported_symbols` is how the program says it asked
+            // for this name, and the stdlib's own declarations are collected
+            // before any import runs — so every module type was already in scope
+            // by then, the `continue` below fired, and the record was never made.
+            // `import time` then left `Duration` looking un-imported.
+            if program_import {
+                self.imported_symbols.insert(type_name.to_string());
+                self.imported_type_names.insert(type_name.to_string());
+            }
+
+            if shadowed_by_local {
+                self.errors.push(ResolveError::shadows_import(
+                    type_name.to_string(),
+                    Some(module.name().to_string()),
+                    span,
+                ));
+                continue;
+            }
             if builtin_types.iter().any(|(n, _)| n == type_name) {
                 continue; // handled below as BuiltinType
             }
@@ -362,35 +358,60 @@ impl Resolver {
                 false,
             );
             let _ = self.scopes.define(type_name.to_string(), sym_id, span);
-            self.imported_symbols.insert(type_name.to_string());
         }
 
-        // Register builtin types (File, Rng, SIMD)
-        for (name, kind) in builtin_types {
+        // The module's compiler-provided types — the box family, File, Random,
+        // the SIMD vectors.
+        for (name, kind) in &builtin_types {
+            let shadowed_by_local = self.declares_locally(name);
+            if program_import {
+                self.imported_symbols.insert((*name).to_string());
+                self.imported_type_names.insert((*name).to_string());
+            }
+            if shadowed_by_local {
+                self.errors.push(ResolveError::shadows_import(
+                    (*name).to_string(),
+                    Some(module.name().to_string()),
+                    span,
+                ));
+                continue;
+            }
             if self.scopes.lookup(name).is_some() {
                 continue;
             }
             let sym_id = self.symbols.insert(
-                name.to_string(),
+                (*name).to_string(),
                 SymbolKind::BuiltinType { builtin: *kind },
                 None,
                 span,
                 false,
             );
-            let _ = self.scopes.define(name.to_string(), sym_id, span);
+            let _ = self.scopes.define((*name).to_string(), sym_id, span);
         }
 
         // Register enums
         for (enum_name, variants) in enums {
+            let shadowed_by_local = self.declares_locally(enum_name);
+            if program_import {
+                self.imported_symbols.insert(enum_name.clone());
+                self.imported_type_names.insert(enum_name.clone());
+                for v in variants {
+                    self.imported_symbols.insert(v.clone());
+                }
+            }
+            if shadowed_by_local {
+                self.errors.push(ResolveError::shadows_import(
+                    enum_name.clone(),
+                    Some(module.name().to_string()),
+                    span,
+                ));
+                continue;
+            }
             if self.scopes.lookup(enum_name).is_some() {
                 continue;
             }
             let variant_refs: Vec<&str> = variants.iter().map(String::as_str).collect();
             self.register_builtin_enum(enum_name, &variant_refs);
-            self.imported_symbols.insert(enum_name.clone());
-            for v in variants {
-                self.imported_symbols.insert(v.clone());
-            }
         }
     }
 
@@ -451,7 +472,7 @@ impl Resolver {
     /// Look up the correct SymbolKind for a selective stdlib import
     /// like `import http.HttpServer` or `import async.spawn`.
     fn resolve_stdlib_symbol(&self, module: &str, symbol: &str) -> SymbolKind {
-        use crate::symbol::{BuiltinFunctionKind, BuiltinTypeKind};
+        use crate::symbol::BuiltinFunctionKind;
 
         // Builtin functions
         match (module, symbol) {
@@ -460,26 +481,17 @@ impl Resolver {
             _ => {}
         }
 
-        // Builtin types
-        let builtin_type = match (module, symbol) {
-            ("fs", "File") => Some(BuiltinTypeKind::File),
-            ("random", "Random") => Some(BuiltinTypeKind::Rng),
-            ("math", "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8") => Some(BuiltinTypeKind::Simd),
-            _ => None,
-        };
-        if let Some(kind) = builtin_type {
+        if let Some(kind) = crate::symbol::module_builtin_type(module, symbol) {
             return SymbolKind::BuiltinType { builtin: kind };
         }
 
-        // Struct-like types
-        let is_struct = matches!((module, symbol),
-            ("net", "TcpListener" | "TcpConnection")
-            | ("http", "Request" | "Response" | "Headers" | "HttpServer" | "Responder" | "HttpClient")
-            | ("path", "Path")
-            | ("fs", "Metadata")
-            | ("cli", "Args")
-        );
-        if is_struct {
+        // Is it a type at all? This was a hardcoded list of five modules —
+        // net, http, path, fs, cli — and a type in any of the other twenty-odd
+        // fell through to the variable binding below. `import time.Duration as
+        // Span` bound `Span` as a *variable*, which is why the alias had no
+        // methods and still passed in a type position (#923). The module's own
+        // `.rk` file answers it.
+        if rask_stdlib::modules::exports_type(module, symbol) {
             return SymbolKind::Struct { fields: vec![] };
         }
 
@@ -492,7 +504,33 @@ impl Resolver {
         rask_ast::primitives::is_scalar(name)
     }
 
-    fn is_builtin_name(&self, name: &str) -> bool {
+    /// BI3/BF3: is `name` reserved, so a program's own declaration of it is an
+    /// error?
+    ///
+    /// `is_reserved_name` answers by name — BI1's types, BF1's functions, the
+    /// prelude enums — instead of asking what the scope currently holds. That's
+    /// the fix for BI3 leaking on exactly the names the stdlib also declares:
+    /// the stdlib's own `public struct Vec<T> { }` replaced the builtin binding,
+    /// and the `stdlib_symbols` bail-out below then said `Vec` wasn't a builtin.
+    /// So `struct Vec { … }` compiled while `struct Set { … }` was refused, the
+    /// difference being only which names collections.rk happens to declare
+    /// (#977). Same for `Map`, `Pool`, `Handle`, `Rack`, `Link`, `Mutex`,
+    /// `Option` and `Result`.
+    ///
+    /// The scope lookup that follows covers the two kinds of name that aren't in
+    /// a table: an imported module, and a module's own enum registered by
+    /// `register_module_companions`.
+    ///
+    /// This used to be two functions, `is_builtin_name` for a struct and
+    /// `is_builtin_type_name` for a function, differing in whether a builtin
+    /// *function*'s name was reserved. BF1's `reserved` flag is that distinction
+    /// now, and it's the accurate version: a program may declare `max`, which
+    /// isn't in BF1, and may not declare `println`, which is — whether the
+    /// declaration is a struct or a function.
+    fn is_reserved_name(&self, name: &str) -> bool {
+        if crate::symbol::is_always_in_scope(name) {
+            return true;
+        }
         if let Some(sym_id) = self.scopes.lookup(name) {
             // A module the *stdlib* imported for its own use isn't reserved for
             // the program. `stdlib/http.rk` imports `net`, and that binding
@@ -504,30 +542,9 @@ impl Resolver {
                 return false;
             }
             if let Some(sym) = self.symbols.get(sym_id) {
-                return matches!(
-                    sym.kind,
-                    SymbolKind::BuiltinType { .. }
-                        | SymbolKind::BuiltinFunction { .. }
-                        | SymbolKind::BuiltinModule { .. }
-                ) || (matches!(sym.kind, SymbolKind::Enum { .. })
-                    && sym.span == Span::new(0, 0));
-            }
-        }
-        false
-    }
-
-    /// Check if a name refers to a builtin type or enum (not a builtin function).
-    /// User-defined functions can shadow builtin functions like `max`, `min`,
-    /// but not builtin types like `Vec`, `Map`, `Option`.
-    fn is_builtin_type_name(&self, name: &str) -> bool {
-        if let Some(sym_id) = self.scopes.lookup(name) {
-            if let Some(sym) = self.symbols.get(sym_id) {
-                return matches!(
-                    sym.kind,
-                    SymbolKind::BuiltinType { .. }
-                        | SymbolKind::BuiltinModule { .. }
-                ) || (matches!(sym.kind, SymbolKind::Enum { .. })
-                    && sym.span == Span::new(0, 0));
+                return matches!(sym.kind, SymbolKind::BuiltinModule { .. })
+                    || (matches!(sym.kind, SymbolKind::Enum { .. })
+                        && sym.span == Span::new(0, 0));
             }
         }
         false
@@ -538,6 +555,7 @@ impl Resolver {
         resolver.stdlib_mode = stdlib_mode;
 
         resolver.collect_declarations(decls);
+        resolver.check_annotations(decls);
         resolver.resolve_bodies(decls);
 
         if resolver.errors.is_empty() {
@@ -563,6 +581,7 @@ impl Resolver {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
         resolver.collect_declarations(decls);
+        resolver.check_annotations(decls);
         resolver.resolve_bodies(decls);
         if resolver.errors.is_empty() {
             Ok(ResolvedProgram {
@@ -604,6 +623,7 @@ impl Resolver {
             resolver.stdlib_mode = false;
         }
         resolver.collect_declarations(decls);
+        resolver.check_annotations(decls);
 
         if !stdlib_decls.is_empty() {
             resolver.stdlib_mode = true;
@@ -707,6 +727,7 @@ impl Resolver {
 
         // Collect and resolve user declarations
         resolver.collect_declarations(decls);
+        resolver.check_annotations(decls);
 
         // Resolve bodies for both stdlib and user decls
         if !stdlib_decls.is_empty() {
@@ -861,6 +882,7 @@ impl Resolver {
                     self.resolve_export(export_decl, decl.span);
                 }
                 DeclKind::Const(const_decl) => {
+                    self.check_shadows_import(&const_decl.name, decl.span);
                     let sym_id = self.symbols.insert(
                         const_decl.name.clone(),
                         SymbolKind::Variable { mutable: false },
@@ -873,9 +895,13 @@ impl Resolver {
                     }
                 }
                 DeclKind::TypeAlias(alias) => {
+                    self.check_shadows_import(&alias.name, decl.span);
                     let sym_id = self.symbols.insert(
                         alias.name.clone(),
-                        SymbolKind::TypeAlias { target: alias.target.clone() },
+                        SymbolKind::TypeAlias {
+                            target: alias.target.clone(),
+                            from_import: false,
+                        },
                         None,
                         decl.span,
                         alias.is_pub,
@@ -972,13 +998,63 @@ impl Resolver {
         name.split('<').next().unwrap_or(name)
     }
 
+    /// IM8: a declaration may not take a name an import already bound.
+    ///
+    /// Only the import-then-declaration order reaches here. The other order —
+    /// declaration first, import after — is caught where the import binds its
+    /// name, which has reported it for years; this is the half that was missing,
+    /// and it's the half that mattered, because it's the order people write.
+    ///
+    /// `imported_symbols` holds what the *program* imported, so the stdlib's own
+    /// `import net` inside http.rk doesn't reserve `net` against a program
+    /// (#780).
+    fn check_shadows_import(&mut self, name: &str, span: Span) {
+        if self.stdlib_mode || !self.imported_type_names.contains(name) {
+            return;
+        }
+        self.errors.push(ResolveError::shadows_import(
+            name.to_string(),
+            Self::owning_module(name),
+            span,
+        ));
+    }
+
+    /// The stdlib module that exports `name`, for the message. `None` when the
+    /// name came from a package rather than the stdlib.
+    fn owning_module(name: &str) -> Option<String> {
+        rask_stdlib::modules::module_names()
+            .iter()
+            .find(|m| rask_stdlib::modules::exports(m).exports(name))
+            .map(|m| m.to_string())
+    }
+
+    /// Is `name` bound to a type the *program* declared — as opposed to a
+    /// builtin, something the stdlib declared, or an earlier import?
+    fn declares_locally(&self, name: &str) -> bool {
+        if self.stdlib_mode || self.imported_symbols.contains(name) {
+            return false;
+        }
+        let Some(sym_id) = self.scopes.lookup(name) else { return false };
+        if self.stdlib_symbols.contains(&sym_id) {
+            return false;
+        }
+        self.symbols.get(sym_id).is_some_and(|sym| {
+            matches!(
+                sym.kind,
+                SymbolKind::Struct { .. }
+                    | SymbolKind::Enum { .. }
+                    | SymbolKind::Trait { .. }
+                    | SymbolKind::TypeAlias { .. }
+            ) && sym.span != Span::new(0, 0)
+        })
+    }
+
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
         let base = Self::base_name(&fn_decl.name).to_string();
-        // User functions can shadow builtin functions (max, min, etc.)
-        // but not builtin types (Vec, Map, etc.)
-        if !self.stdlib_mode && self.is_builtin_type_name(&base) {
+        if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
+        self.check_shadows_import(&base, span);
 
         let sym_id = self.symbols.insert(
             base.clone(),
@@ -998,9 +1074,10 @@ impl Resolver {
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
         let base = Self::base_name(&struct_decl.name).to_string();
-        if !self.stdlib_mode && self.is_builtin_name(&base) {
+        if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
+        self.check_shadows_import(&base, span);
 
         let sym_id = self.symbols.insert(
             base.clone(),
@@ -1039,6 +1116,12 @@ impl Resolver {
     }
 
     fn declare_union(&mut self, union_decl: &UnionDecl, span: Span) {
+        let union_base = Self::base_name(&union_decl.name).to_string();
+        if !self.stdlib_mode && self.is_reserved_name(&union_base) {
+            self.errors.push(ResolveError::shadows_builtin(union_base.clone(), span));
+        }
+        self.check_shadows_import(&union_base, span);
+
         let sym_id = self.symbols.insert(
             union_decl.name.clone(),
             SymbolKind::Struct { fields: vec![] },
@@ -1069,9 +1152,10 @@ impl Resolver {
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
         let base = Self::base_name(&enum_decl.name).to_string();
-        if !self.stdlib_mode && self.is_builtin_name(&base) {
+        if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
+        self.check_shadows_import(&base, span);
 
         let sym_id = self.symbols.insert(
             base.clone(),
@@ -1114,9 +1198,11 @@ impl Resolver {
     }
 
     fn declare_trait(&mut self, trait_decl: &TraitDecl, span: Span) {
-        if !self.stdlib_mode && self.is_builtin_name(&trait_decl.name) {
+        if !self.stdlib_mode && self.is_reserved_name(&trait_decl.name) {
             self.errors.push(ResolveError::shadows_builtin(trait_decl.name.clone(), span));
         }
+        let trait_base = Self::base_name(&trait_decl.name).to_string();
+        self.check_shadows_import(&trait_base, span);
 
         let sym_id = self.symbols.insert(
             trait_decl.name.clone(),
@@ -1220,6 +1306,7 @@ impl Resolver {
             // every other module needed one (#780).
             if !self.stdlib_mode {
                 self.imported_symbols.insert(binding_name.clone());
+                self.imported_type_names.insert(binding_name.clone());
             }
 
             if import_decl.is_lazy {
@@ -1240,6 +1327,17 @@ impl Resolver {
                             | SymbolKind::BuiltinType { .. }
                             | SymbolKind::BuiltinModule { .. }
                     )
+                    // A variant of a compiler-registered enum counts too. The
+                    // atomic orderings are variants of `Ordering`, which the
+                    // resolver puts in scope itself, so `import sync.Relaxed`
+                    // met a name that was already there and was reported as
+                    // shadowing an import that doesn't exist. Span (0,0) is how
+                    // the rest of the resolver tells a registered builtin from
+                    // a declaration with real source behind it.
+                    || (matches!(
+                            sym.kind,
+                            SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. }
+                        ) && sym.span == Span::new(0, 0))
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);
@@ -1249,7 +1347,11 @@ impl Resolver {
                 // flattening, not the ambiguity this error is about — and the
                 // order depends on which file happens to be listed first.
                 if !is_builtin && !is_stdlib && !is_imported && !self.stdlib_mode {
-                    self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
+                    self.errors.push(ResolveError::shadows_import(
+                        binding_name.clone(),
+                        Self::owning_module(&binding_name),
+                        span,
+                    ));
                     return;
                 }
             }
@@ -1273,13 +1375,13 @@ impl Resolver {
 
             // Check if the package is a known stdlib module — if so, the imported
             // symbol is a stdlib function/type being selectively imported.
-            let is_stdlib_module = matches!(pkg_name.as_str(),
-                "io" | "fs" | "env" | "cli" | "std" | "json" | "random"
-                | "time" | "math" | "path" | "os" | "net" | "core" | "async"
-                | "thread" | "http" | "num"
-            );
-
-            if is_stdlib_module {
+            // Same question as the bare `import pkg` above, so the same answer.
+            // This used to be its own `matches!` over module names, and the two
+            // disagreed: `num` was here but not in the enum, `memory` and `sync`
+            // in neither — so `import sync.Shared` fell through to the
+            // unknown-package branch and bound `Shared` as a plain variable
+            // (#977).
+            if crate::is_builtin_module(pkg_name) {
                 // A name the module doesn't have used to sail through and fail
                 // much later — `import random.Rng` (renamed to `Random`) got a
                 // plain variable binding, type-checked clean, and only broke at
@@ -1317,16 +1419,55 @@ impl Resolver {
                         span,
                         false,
                     );
+                    if self.stdlib_mode {
+                        self.stdlib_symbols.insert(sym_id);
+                    }
                     if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                         self.errors.push(e);
                     }
                     self.register_module_companions(module_kind, span);
-                } else if self.scopes.lookup(&binding_name).is_none() {
+                // An *aliased* import takes the name it asks for even when
+                // something already holds it. The gate was "only if nothing holds
+                // it", and every type the stdlib declares is in the shared scope
+                // — so `import time.Duration as Span` met `stdlib/builtins.rk`'s
+                // own `Span`, registered nothing at all, and the alias had
+                // nothing behind it (#923). The shadowing check above has
+                // already rejected the case where the holder is the program's
+                // own declaration, so reaching here means replacing is allowed.
+                //
+                // Un-aliased stays a no-op when the name is taken, because there
+                // the holder is the stdlib's own declaration of the very thing
+                // being imported, and re-deriving it can only lose information:
+                // `num` declares both a `struct Wrapping` and a same-named
+                // constructor function (type.overflow/W1 wants `Wrapping(5u32)`
+                // to read as a call), and `import num.Wrapping` replaced the
+                // function binding with the struct, so `Wrapping(33)` became
+                // "`Wrapping<T: Integer>` is a struct, so calling it doesn't
+                // construct one".
+                } else if import_decl.alias.is_some()
+                    || self.scopes.lookup(&binding_name).is_none()
+                {
                     // Enums need special handling (register variants too)
                     if let Some(variants) = Self::stdlib_enum_variants(pkg_name, symbol_name) {
                         self.register_builtin_enum(symbol_name, variants);
                     } else {
-                        let kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        let mut kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        // IM3: `import time.Duration as Span` means `Span` *is*
+                        // `Duration`, not a new type that happens to sit where
+                        // one goes. Bound as a plain struct, the name passed in a
+                        // type position and had none of Duration's methods, so
+                        // `Span.from_millis(1)` was "no method `from_millis`
+                        // found for type `Span`" (#923). The checker turns this
+                        // into a transparent alias, which is the same identity
+                        // `import time.Duration` gets.
+                        if binding_name != *symbol_name
+                            && matches!(kind, SymbolKind::Struct { .. } | SymbolKind::BuiltinType { .. })
+                        {
+                            kind = SymbolKind::TypeAlias {
+                                target: symbol_name.clone(),
+                                from_import: true,
+                            };
+                        }
                         let sym_id = self.symbols.insert(
                             binding_name.clone(),
                             kind,
@@ -1334,6 +1475,15 @@ impl Resolver {
                             span,
                             false,
                         );
+                        // A binding the *stdlib* made for its own use is
+                        // stdlib-owned, and IM1 only asks about those. Without
+                        // this, io.rk's `import sync.Shared` left a plain symbol
+                        // in the shared scope that looked like a program
+                        // declaration, so `Shared` needed no import in any
+                        // program — the same leak as #780, one layer down.
+                        if self.stdlib_mode {
+                            self.stdlib_symbols.insert(sym_id);
+                        }
                         if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                             self.errors.push(e);
                         }
@@ -1360,6 +1510,14 @@ impl Resolver {
             // every other module needed one (#780).
             if !self.stdlib_mode {
                 self.imported_symbols.insert(binding_name.clone());
+                // A type or a module namespace is a name IM8 protects. A
+                // function (`import async.spawn`) or an enum variant is not.
+                let is_type = rask_stdlib::modules::exports_type(pkg_name, symbol_name)
+                    || crate::symbol::module_builtin_type(pkg_name, symbol_name).is_some()
+                    || crate::is_builtin_module(symbol_name);
+                if is_type {
+                    self.imported_type_names.insert(binding_name.clone());
+                }
             }
 
             if import_decl.is_lazy {
@@ -1544,7 +1702,11 @@ impl Resolver {
                 translate::RaskCDecl::TypeAlias(a) => {
                     let sym_id = self.symbols.insert(
                         a.name.clone(),
-                        SymbolKind::TypeAlias { target: a.target.clone() },
+                        // A `typedef` out of a C header, not `import m.T as A`.
+                        SymbolKind::TypeAlias {
+                            target: a.target.clone(),
+                            from_import: false,
+                        },
                         None,
                         span,
                         false,
@@ -1777,7 +1939,7 @@ impl Resolver {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_builtin_name(name) {
+                if !self.stdlib_mode && self.is_reserved_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
                 }
                 let sym_id = self.symbols.insert(
@@ -1793,7 +1955,7 @@ impl Resolver {
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_builtin_name(name) {
+                if !self.stdlib_mode && self.is_reserved_name(name) {
                     self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
                 }
                 let sym_id = self.symbols.insert(
@@ -2143,24 +2305,159 @@ impl Resolver {
     // Expression Resolution
     // =========================================================================
 
-    /// A stdlib module is in scope only where it was imported
-    /// (structure.modules/IM1).
+    /// IM1: the module `name` would have to be imported from, or `None` when the
+    /// program may use it as it stands.
     ///
-    /// The stdlib's own source is resolved alongside the program, and a module
-    /// is declared there as a plain type — `struct math { }` — so its name
-    /// landed in global scope whether the program imported it or not. That made
-    /// `math.sin(x)` with no `import math` compile and run natively, while the
-    /// interpreter, which binds a module only when it sees the import
-    /// declaration, rejected the same program at runtime (#723).
+    /// A stdlib name is in scope where the program asked for it and nowhere
+    /// else. The stdlib's own source is resolved alongside the program into one
+    /// scope, so every module (`struct math { }`) and every type it declares
+    /// landed in the program's namespace whether it imported them or not:
+    /// `math.sin(x)` compiled and ran natively while the interpreter, which
+    /// binds a module only when it sees the import, rejected the same program at
+    /// runtime (#723). This started as the module half of that. The types were
+    /// left out on purpose — "only module names, so `Vec` and the others that are
+    /// genuinely always in scope are untouched" — which let all 65 of the
+    /// stdlib's public types resolve bare, `Duration.seconds(1)` with no import
+    /// anywhere (#977).
     ///
-    /// Only names the stdlib itself defined count, so a program's own `math` is
-    /// untouched; and only module names, so `Vec` and the other types that are
-    /// genuinely always in scope are untouched too.
-    fn stdlib_module_needs_import(&self, name: &str, sym_id: SymbolId) -> bool {
-        !self.stdlib_mode
-            && self.stdlib_symbols.contains(&sym_id)
-            && !self.imported_symbols.contains(name)
-            && rask_stdlib::mir_metadata::stdlib_module_names().contains(name)
+    /// Three sources of owned names, because no one of them has all of them:
+    ///
+    /// - module names, from the stub sources;
+    /// - types the stdlib declares in a `.rk` file, from the stub registry;
+    /// - types the compiler provides on a module's behalf with no declaration
+    ///   anywhere — `Heap`, the atomics, the SIMD vectors. Those aren't in the
+    ///   registry's type names, so asking the stubs alone reported them as an
+    ///   undeclared type instead of a missing import.
+    ///
+    /// A name the program declares itself is its own, imported or not, and
+    /// `is_always_in_scope` is the exception BI1 names.
+    fn needs_import_from(&self, name: &str) -> Option<String> {
+        if self.stdlib_mode
+            || self.imported_symbols.contains(name)
+            || crate::symbol::is_always_in_scope(name)
+        {
+            return None;
+        }
+        // Bound to something the program declared → not the stdlib's name here.
+        if let Some(sym_id) = self.scopes.lookup(name) {
+            if !self.stdlib_symbols.contains(&sym_id) {
+                return None;
+            }
+        }
+        let owned = rask_stdlib::mir_metadata::stdlib_module_names().contains(name)
+            || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+            || crate::symbol::BUILTIN_TYPES
+                .iter()
+                .any(|t| t.name == name && t.module.is_some());
+        if !owned {
+            return None;
+        }
+        // A module imports as itself; a type imports out of the module that
+        // exports it.
+        Some(Self::owning_module(name).unwrap_or_else(|| name.to_string()))
+    }
+
+    /// Report `name` as needing an import, once. True when it did.
+    fn report_missing_import(&mut self, name: &str, span: Span) -> bool {
+        let Some(module) = self.needs_import_from(name) else { return false };
+        if !self.reported_missing_imports.insert(name.to_string()) {
+            // Already said. Still "yes, this name needs an import" for callers
+            // deciding whether to fall through to a worse message.
+            return true;
+        }
+        self.errors.push(ResolveError::module_not_imported(
+            name.to_string(),
+            Some(module),
+            span,
+        ));
+        true
+    }
+
+    /// The identifier-shaped pieces of a type string. `Vec<Duration>?` gives
+    /// `Vec` and `Duration`, `*u8` gives `u8`, `T or Error` gives `T`, `or` and
+    /// `Error`.
+    ///
+    /// Deliberately not a parser. The only question asked of these is whether
+    /// one is a stdlib type name, so splitting on everything that can't be part
+    /// of an identifier is enough — and it can't be wrong about a type spelling
+    /// it hasn't been taught, which a parser would be.
+    fn type_idents(ty: &str) -> impl Iterator<Item = &str> {
+        ty.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|s| !s.is_empty())
+    }
+
+    /// IM1 for a type annotation.
+    ///
+    /// Annotations are strings by the time the resolver sees them — `d: Duration`
+    /// on a field, `-> Instant` on a signature — and nothing in this pass looked
+    /// at them. So however well IM1 was enforced in expression position, every
+    /// stdlib type still reached a program through its annotations: `struct S { d:
+    /// Duration }` compiled with no import (#977).
+    fn check_type_annotation(&mut self, ty: &str, span: Span) {
+        if self.stdlib_mode {
+            return;
+        }
+        let names: Vec<String> = Self::type_idents(ty).map(str::to_string).collect();
+        for name in names {
+            self.report_missing_import(&name, span);
+        }
+    }
+
+    /// IM1 over every type annotation in the program.
+    ///
+    /// A pass of its own, run once `collect_declarations` has seen all the
+    /// imports. Checking a field where it's declared would make the answer depend
+    /// on whether the `import` line happened to come first in the file.
+    fn check_annotations(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Struct(s) => {
+                    for f in &s.fields {
+                        self.check_type_annotation(&f.ty, decl.span);
+                    }
+                }
+                DeclKind::Union(u) => {
+                    for f in &u.fields {
+                        self.check_type_annotation(&f.ty, decl.span);
+                    }
+                }
+                DeclKind::Enum(e) => {
+                    for v in &e.variants {
+                        for ty in &v.fields {
+                            self.check_type_annotation(&ty.ty, decl.span);
+                        }
+                    }
+                }
+                DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
+                DeclKind::Trait(t) => {
+                    for m in &t.methods {
+                        self.check_fn_annotations(m, decl.span);
+                    }
+                }
+                DeclKind::Impl(i) => {
+                    self.check_type_annotation(&i.target_ty, decl.span);
+                    for m in &i.methods {
+                        self.check_fn_annotations(m, decl.span);
+                    }
+                }
+                DeclKind::Const(c) => {
+                    if let Some(ty) = &c.ty {
+                        self.check_type_annotation(ty, decl.span);
+                    }
+                }
+                DeclKind::TypeAlias(a) => self.check_type_annotation(&a.target, decl.span),
+                _ => {}
+            }
+        }
+    }
+
+    fn check_fn_annotations(&mut self, fn_decl: &FnDecl, span: Span) {
+        for p in &fn_decl.params {
+            self.check_type_annotation(&p.ty, span);
+        }
+        if let Some(ret) = &fn_decl.ret_ty {
+            self.check_type_annotation(ret, span);
+        }
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -2170,11 +2467,7 @@ impl Resolver {
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {
-                        if self.stdlib_module_needs_import(name, sym_id) {
-                            self.errors.push(ResolveError::module_not_imported(
-                                name.clone(), expr.span,
-                            ));
-                        }
+                        self.report_missing_import(name, expr.span);
                         self.resolutions.insert(expr.id, sym_id);
                     }
                     None => {
@@ -2182,9 +2475,23 @@ impl Resolver {
                         let base_name = name.split('<').next().unwrap_or(name);
                         if base_name != name {
                             if let Some(sym_id) = self.scopes.lookup(base_name) {
+                                // The generic spelling needs its import as much
+                                // as the bare one: `Pool<Node>.new()` reached
+                                // here instead of the branch above and slipped
+                                // past IM1 entirely.
+                                self.report_missing_import(base_name, expr.span);
                                 self.resolutions.insert(expr.id, sym_id);
                                 return;
                             }
+                        }
+                        // A name a module owns is a missing import, not a
+                        // missing declaration. `Heap` and the atomics have no
+                        // declaration anywhere, so once they stopped being
+                        // always-in-scope they read as "unknown type `Heap`"
+                        // with a fix suggesting the program declare one.
+                        let base = name.split('<').next().unwrap_or(name);
+                        if self.report_missing_import(base, expr.span) {
+                            return;
                         }
                         self.errors.push(ResolveError::undefined(name.clone(), expr.span));
                     }
@@ -2725,6 +3032,7 @@ impl Default for Resolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ResolveErrorKind;
     use rask_ast::decl::{Decl, DeclKind, ImportDecl};
 
     fn make_import_decl(path: Vec<&str>, alias: Option<&str>, is_glob: bool, is_lazy: bool) -> Decl {
@@ -2807,10 +3115,44 @@ mod tests {
 
     #[test]
     fn test_builtin_function_shadowing_allowed() {
-        // User functions can shadow builtin functions (println, max, min, etc.)
-        let decls = vec![make_fn_decl("println")];
-        let result = Resolver::resolve(&decls);
-        assert!(result.is_ok(), "Shadowing built-in function should be allowed");
+        // BF1 names eight compiler-known functions and BF3 reserves those. The
+        // rest of what `register_builtins` puts in scope — `min`, `max`,
+        // `clamp`, the test builtins — are ordinary generic functions, and a
+        // program declaring its own has always been allowed.
+        for name in ["min", "max", "clamp", "drop", "assert_eq"] {
+            let decls = vec![make_fn_decl(name)];
+            assert!(
+                Resolver::resolve(&decls).is_ok(),
+                "`{}` is not in BF1, so a program may declare its own",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_bf1_function_shadowing_error() {
+        // BF3. These used to be accepted: `declare_function` asked
+        // `is_builtin_type_name`, which by design said nothing about builtin
+        // *functions*, so `func println(x: i64)` compiled and was then never
+        // called — the compiler generates code for `println` per call site
+        // (BF2), so the declaration had nothing to hook onto (#977).
+        for name in [
+            "println", "print", "format", "panic",
+            "todo", "unreachable", "spawn", "transmute",
+        ] {
+            let decls = vec![make_fn_decl(name)];
+            let err = Resolver::resolve(&decls)
+                .expect_err(&format!("`{}` is in BF1 and must be rejected", name));
+            assert!(
+                err.iter().any(|e| matches!(
+                    &e.kind,
+                    ResolveErrorKind::ShadowsBuiltin { name: n } if n == name
+                )),
+                "`{}` should report shadowing a builtin, got {:?}",
+                name,
+                err
+            );
+        }
     }
 
     #[test]
@@ -2852,6 +3194,110 @@ mod tests {
         }];
         let result = Resolver::resolve(&decls);
         assert!(result.is_err(), "Shadowing prelude enum should fail");
+    }
+
+    fn make_struct_decl(name: &str) -> Decl {
+        use rask_ast::decl::StructDecl;
+        Decl {
+            id: NodeId(0),
+            kind: DeclKind::Struct(StructDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                fields: vec![],
+                methods: vec![],
+                is_pub: false,
+                attrs: vec![],
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        }
+    }
+
+    /// BI3 over the whole builtin set, not just the names the stdlib happens not
+    /// to declare.
+    ///
+    /// `Vec`, `Map`, `Pool`, `Handle`, `Rack`, `Link`, `Mutex`, `Option` and
+    /// `Result` were all accepted before: the stdlib declares each of them in a
+    /// `.rk` file of its own, that binding replaced the builtin one in the shared
+    /// scope, and the check asked the scope rather than the builtin table. So
+    /// `struct Set` was refused and `struct Vec` was not, for no reason a reader
+    /// could see (#977).
+    #[test]
+    fn test_bi1_type_shadowing_error_covers_names_the_stdlib_also_declares() {
+        for name in [
+            "Vec", "Map", "Set", "string", "Error", "Channel",
+            "Option", "Result", "Ordering", "i32", "f64",
+        ] {
+            let decls = vec![make_struct_decl(name)];
+            assert!(
+                Resolver::resolve(&decls).is_err(),
+                "`{}` is always in scope, so a program may not declare it",
+                name
+            );
+        }
+    }
+
+    /// The other side of the same rule: a stdlib type that isn't in BI1's set is
+    /// an ordinary name, and a program may have it. `Handle` and `Pool` were
+    /// refused here until the box family moved out of the always-in-scope table
+    /// and into `memory` — being a closed compiler type (mem.boxes/BX1–BX4) is
+    /// about who may define one, not about who can see the name unasked.
+    #[test]
+    fn test_a_stdlib_type_name_outside_bi1_is_declarable() {
+        for name in [
+            "Duration", "Timer", "Instant", "StringBuilder", "Budget9",
+            "Pool", "Handle", "Rack", "Link", "Mutex", "Shared", "Heap",
+        ] {
+            let decls = vec![make_struct_decl(name)];
+            assert!(
+                Resolver::resolve(&decls).is_ok(),
+                "`{}` is not in BI1's set, so a program that hasn't imported it \
+                 may declare its own",
+                name
+            );
+        }
+    }
+
+    /// IM8, in the order people write: the import first, the declaration after.
+    /// Only the reverse order was checked, where the import meets a name that's
+    /// already bound.
+    #[test]
+    fn test_declaration_after_import_shadows_it() {
+        let decls = vec![
+            make_import_decl(vec!["time", "Duration"], None, false, false),
+            make_struct_decl("Duration"),
+        ];
+        let err = Resolver::resolve(&decls).expect_err("IM8: the second `Duration` is an error");
+        assert!(
+            err.iter().any(|e| matches!(
+                &e.kind,
+                ResolveErrorKind::ShadowsImport { name, module }
+                    if name == "Duration" && module.as_deref() == Some("time")
+            )),
+            "should report shadowing `time`'s Duration, got {:?}",
+            err
+        );
+    }
+
+    /// An import records the name it bound, so IM1 can tell "the program asked
+    /// for this" from "it was in scope anyway". The stdlib's declarations are
+    /// collected before any import runs, so every module type was already in
+    /// scope when the import got there — the registration loop hit its
+    /// already-bound `continue` and never made the record, leaving `Duration`
+    /// looking un-imported right after `import time`.
+    #[test]
+    fn test_a_module_import_records_the_names_it_brings() {
+        let decls = vec![make_import_decl(vec!["time"], None, false, false)];
+        let mut resolver = Resolver::new();
+        resolver.collect_declarations(&decls);
+        for name in ["Duration", "Instant", "Timer"] {
+            assert!(
+                resolver.imported_symbols.contains(name),
+                "`import time` should record `{}`: {:?}",
+                name,
+                resolver.imported_symbols
+            );
+        }
     }
 
     #[test]

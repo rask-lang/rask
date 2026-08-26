@@ -5,6 +5,7 @@
 // Both backends report it, but they didn't word it the same: native prefixed
 // `task N panic at`, the interpreter printed the bare message with no task id
 // (#298 F1, #748).
+import thread.Thread
 
 func main() {
     using Multitasking {

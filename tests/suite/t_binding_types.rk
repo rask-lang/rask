@@ -10,6 +10,7 @@
 // `tests/compile_errors/untyped_bindings.rk` has the other half: with the types
 // filled in, a wrong annotation on one of these bindings is now an error. It
 // wasn't, which is what "no type at all" means.
+import sync.Shared
 
 enum Msg {
     Text(string)

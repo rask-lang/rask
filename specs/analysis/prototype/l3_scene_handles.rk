@@ -9,6 +9,8 @@
 //     selected node may have been removed since it was set
 //
 // Both are correctness obligations the type doesn't state.
+import memory.Handle
+import memory.Pool
 
 struct SceneNode {
     name: string

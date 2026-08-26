@@ -4,6 +4,7 @@
 // Tasks form a dependency DAG: `deps` holds Handle<Task> into the store's
 // pool, not pointers or ids-to-look-up. That's the pool-shaped design from
 // canonical-patterns "Graph-shaped data is Pool-shaped".
+import memory.Handle
 
 const MAX_TITLE_LEN: usize = 200
 

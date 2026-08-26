@@ -2,6 +2,9 @@
 // method dispatch. `l.settle(a)` and the inner `self.post(h)` both resolve to
 // their `Ledger.method` target and receive the hidden pool arg — native must
 // match the interpreter.
+import memory.Handle
+import memory.Pool
+
 struct Account { balance: i32 }
 struct Ledger { name: i32 }
 

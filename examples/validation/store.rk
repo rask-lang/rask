@@ -6,6 +6,9 @@
 // The store returns only StoreError. Wire-string parsing and validation
 // belong to the handler layer, which widens everything into ApiError — so
 // nothing here ever has to mix error vocabularies.
+import memory.Pool
+import memory.Handle
+import sync.Mutex
 
 // Parsed patch built by the handler; the store never sees wire strings.
 // All fields default (FD1), so a handler starts from `TaskPatch {}` and sets

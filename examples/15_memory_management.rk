@@ -4,6 +4,8 @@
 // NOTE: This is a SPEC EXAMPLE showing intended syntax.
 // Generic Pool and Handle types not fully implemented yet.
 // See examples/README.md for status.
+import memory.Handle
+import memory.Pool
 
 // Node in a linked list - uses Handle instead of references
 struct Node {

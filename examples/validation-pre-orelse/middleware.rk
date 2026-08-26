@@ -6,6 +6,8 @@
 
 import http
 import os
+import sync.Shared
+import sync.Mutex
 
 // A middleware either lets the request continue or short-circuits with a
 // response. before() returns a concrete MwOutcome, so it's callable through

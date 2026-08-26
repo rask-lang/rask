@@ -30,6 +30,17 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
     ("fs", &["File"]),
     // Runtime/codegen types with no stub declaration at all.
     ("math", &["f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8"]),
+    // `Heap` is codegen's one-pointer indirection (mem.heap); memory.rk
+    // declares the rest of the box family but not this one.
+    ("memory", &["Heap"]),
+    // The atomics are codegen intrinsics. sync.rk declares `Mutex` and
+    // `Shared`'s strategies, so those come off the file itself.
+    ("sync", &[
+        "Atomic", "AtomicBool",
+        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
+        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
+        "AtomicUsize", "AtomicIsize",
+    ]),
 ];
 
 /// Names a module exports that aren't types — free functions that come into
@@ -40,10 +51,78 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
     // `spawn(…)` reads as a language feature, not as `async.spawn(…)`.
     ("async", &["spawn", "join_all", "select_first", "cancelled"]),
     ("core", &["transmute"]),
-    // `std` re-exports the reflection module; reflect.rk isn't in the stub set,
-    // so nothing else knows the name.
+    // `std` re-exports the reflection module.
     ("std", &["reflect", "exit"]),
+    // Atomic memory orderings. They're variants of the compiler's `Ordering`,
+    // which it shares with comparison results, so there's no `enum` in sync.rk
+    // to read them off — but `import sync.Relaxed` is the spelling the corpus
+    // uses and it has to name something.
+    ("sync", &["Ordering", "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"]),
+    // The traits fmt.rk and encoding.rk describe. Compiler-provided, so always
+    // in scope — but a selective import of one has to name something, and these
+    // two files aren't parsed (see `COMPILER_MODULES`).
+    ("fmt", &["Displayable", "Debug"]),
+    ("encoding", &["Encode", "Decode"]),
 ];
+
+/// Modules the compiler provides with no `stdlib/*.rk` file behind them.
+///
+/// Everything else importable is a stub source, so this is the whole of the
+/// exception — and each of these three is answered by the compiler rather than
+/// by Rask code, which is why there's nothing to put in a file.
+const COMPILER_MODULES: &[&str] = &[
+    // Environment variables — the checker answers `env.get` directly.
+    "env",
+    // `core.transmute`, `core.Error`.
+    "core",
+    // Build configuration read at comptime (`cfg.target_os`).
+    "cfg",
+    // These three have a `stdlib/*.rk` file that isn't in the stub set, so the
+    // name is importable but nothing in the file reaches the checker. Each was
+    // tried in the stub set and taken back out:
+    //
+    // `fmt` and `encoding` describe traits the compiler provides rather than
+    // declares (`COMPILER_PROVIDED_TRAITS`). Parsing them gives `Displayable` a
+    // second definition whose `to_string` hides the inherent one, and
+    // `StringView.to_string()` stops resolving.
+    //
+    // `reflect` declares `fields<T>` and the rest of the namespace, and parsing
+    // it makes `reflect.fields<T>()` inside a generic function stop
+    // monomorphizing — `print_fields(Point{…})` mangles to `print_fields$_`,
+    // the call's `T` never bound. #699's fixture catches it.
+    //
+    // Both are #990.
+    "fmt",
+    "encoding",
+    "reflect",
+];
+
+static MODULE_NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
+
+/// Every name a program can `import`, sorted.
+///
+/// One per stub source, plus `COMPILER_MODULES`. The resolver used to answer
+/// this from a hand-written enum with a variant per module, and it covered 17 of
+/// the 29 stdlib files — `import memory`, `import string` and twelve others
+/// answered "unknown package" while the types inside them resolved bare (#977).
+/// Adding `stdlib/foo.rk` to the stub set now makes `import foo` work with
+/// nothing else to update.
+pub fn module_names() -> &'static [&'static str] {
+    MODULE_NAMES.get_or_init(|| {
+        let mut names: Vec<&'static str> = crate::stubs::stub_sources()
+            .map(|(file, _, _)| file.strip_suffix(".rk").unwrap_or(file))
+            .chain(COMPILER_MODULES.iter().copied())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    })
+}
+
+/// True when `name` is an importable stdlib module.
+pub fn is_module(name: &str) -> bool {
+    module_names().binary_search(&name).is_ok()
+}
 
 /// What a module brings into scope.
 #[derive(Debug, Default)]
@@ -237,6 +316,51 @@ pub fn exports_type(module: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `stdlib/*.rk` file is a module a program can import.
+    ///
+    /// The list this replaced was a hand-written enum in the resolver covering
+    /// 17 of the 29 files, so `import memory` answered "unknown package" while
+    /// `Pool` and `Rack` resolved with no import at all (#977). Reading the
+    /// directory keeps that from happening again silently — a new stdlib file
+    /// fails here until it's either in the stub set or named in
+    /// `COMPILER_MODULES` with a reason.
+    #[test]
+    fn every_stdlib_file_is_an_importable_module() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../stdlib");
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("stdlib/ is readable") {
+            let path = entry.expect("readable entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rk") {
+                continue;
+            }
+            let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+            if !is_module(&stem) {
+                missing.push(stem);
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "stdlib files that aren't importable modules: {:?}",
+            missing
+        );
+    }
+
+    /// `COMPILER_MODULES` is for names with no stub source. One that *is* in the
+    /// stub set is already covered, and listing it twice hides the fact.
+    #[test]
+    fn compiler_modules_have_no_stub_source() {
+        for name in COMPILER_MODULES {
+            let file = format!("{}.rk", name);
+            assert!(
+                !crate::stubs::stub_sources().any(|(f, _, _)| f == file),
+                "`{}` is in the stub set — drop it from COMPILER_MODULES",
+                name
+            );
+        }
+    }
 
     #[test]
     fn types_come_from_the_module_source() {
