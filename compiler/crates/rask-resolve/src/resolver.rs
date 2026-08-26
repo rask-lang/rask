@@ -280,8 +280,8 @@ impl Resolver {
 
         // Companion functions that come into scope with the module
         let functions: &[(&str, BuiltinFunctionKind, Option<&str>)] = match module {
-            BuiltinModuleKind::Async => &[("spawn", BuiltinFunctionKind::Spawn, None)],
-            BuiltinModuleKind::Core => &[("transmute", BuiltinFunctionKind::Transmute, None)],
+            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn, None)],
+            BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute, None)],
             _ => &[],
         };
 
@@ -309,9 +309,9 @@ impl Resolver {
         let enums = &exports.enums;
 
         let builtin_types: &[(&str, BuiltinTypeKind)] = match module {
-            BuiltinModuleKind::Fs => &[("File", BuiltinTypeKind::File)],
-            BuiltinModuleKind::Random => &[("Random", BuiltinTypeKind::Rng)],
-            BuiltinModuleKind::Math => &[
+            BuiltinModuleKind::FS => &[("File", BuiltinTypeKind::File)],
+            BuiltinModuleKind::RANDOM => &[("Random", BuiltinTypeKind::Rng)],
+            BuiltinModuleKind::MATH => &[
                 ("f32x4", BuiltinTypeKind::Simd),
                 ("f32x8", BuiltinTypeKind::Simd),
                 ("f64x2", BuiltinTypeKind::Simd),
@@ -324,7 +324,7 @@ impl Resolver {
 
         // Structs with known public fields
         let struct_fields: &[(&str, &[&str])] = match module {
-            BuiltinModuleKind::Os => &[
+            BuiltinModuleKind::OS => &[
                 ("Output", &["status", "stdout", "stderr"]),
             ],
             _ => &[],
@@ -1240,6 +1240,17 @@ impl Resolver {
                             | SymbolKind::BuiltinType { .. }
                             | SymbolKind::BuiltinModule { .. }
                     )
+                    // A variant of a compiler-registered enum counts too. The
+                    // atomic orderings are variants of `Ordering`, which the
+                    // resolver puts in scope itself, so `import sync.Relaxed`
+                    // met a name that was already there and was reported as
+                    // shadowing an import that doesn't exist. Span (0,0) is how
+                    // the rest of the resolver tells a registered builtin from
+                    // a declaration with real source behind it.
+                    || (matches!(
+                            sym.kind,
+                            SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. }
+                        ) && sym.span == Span::new(0, 0))
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);
@@ -1273,13 +1284,13 @@ impl Resolver {
 
             // Check if the package is a known stdlib module — if so, the imported
             // symbol is a stdlib function/type being selectively imported.
-            let is_stdlib_module = matches!(pkg_name.as_str(),
-                "io" | "fs" | "env" | "cli" | "std" | "json" | "random"
-                | "time" | "math" | "path" | "os" | "net" | "core" | "async"
-                | "thread" | "http" | "num"
-            );
-
-            if is_stdlib_module {
+            // Same question as the bare `import pkg` above, so the same answer.
+            // This used to be its own `matches!` over module names, and the two
+            // disagreed: `num` was here but not in the enum, `memory` and `sync`
+            // in neither — so `import sync.Shared` fell through to the
+            // unknown-package branch and bound `Shared` as a plain variable
+            // (#977).
+            if crate::is_builtin_module(pkg_name) {
                 // A name the module doesn't have used to sail through and fail
                 // much later — `import random.Rng` (renamed to `Random`) got a
                 // plain variable binding, type-checked clean, and only broke at
