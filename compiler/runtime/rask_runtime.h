@@ -377,6 +377,9 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
+// `Map.insert` answers `V?`: a pointer to the value this call displaced, or
+// NULL if the key was fresh. Good until the next insert on this map.
+void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);

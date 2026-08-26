@@ -45,13 +45,10 @@ t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, poi
 
 # Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
 # out so the working surface stays gated; only the bug lives here.
-t_day_map_insert_displaced.rk # Map.insert returns a flag, not the displaced value — #903 (native)
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
-t_month_i128_aggregates.rk    # an i128 as a Vec element or struct field fails the Cranelift verifier — #933 (native)
 t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)
 t_month_reflect_field_strings.rk # a comptime FieldInfo.name has no resolved type — #931 (native)
 t_month_comptime_field_literal.rk # CT49 `p.("x")` reaches native MIR unresolved — #930 (native)
-t_month_ensure_block_scope.rk # a nested block's ensure deferred to function exit — #929 (native)
 t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both)
 t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
 t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native). #907 (the `as` cast) is fixed.
