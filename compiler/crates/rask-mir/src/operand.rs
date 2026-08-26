@@ -46,6 +46,12 @@ pub enum FieldAccess {
     /// A `T? or E` payload is this: `ok` and `err` can disagree about being an
     /// aggregate, so the size alone can't decide it (#383/#389).
     InPlace(u32),
+    /// The field comes back loaded whatever its size — the mirror of
+    /// `InPlace`. Only a 128-bit integer needs it: it is sixteen bytes and
+    /// still a scalar, held in a register pair, so `Sized`'s "bigger than a
+    /// word means an address" read handed back the field's address and
+    /// `ledger.balance` printed a stack address (#933).
+    InRegister(u32),
 }
 
 impl FieldAccess {
@@ -57,7 +63,11 @@ impl FieldAccess {
         if ty.passed_by_address() {
             FieldAccess::InPlace(size)
         } else {
-            FieldAccess::Sized(size)
+            // Anything else is a scalar, and a scalar comes back loaded — the
+            // size doesn't get a vote. `Sized` reads a size over a word as
+            // "aggregate", which is right for the sites that build one without
+            // a type to consult and wrong for the one scalar wider than a word.
+            FieldAccess::InRegister(size)
         }
     }
 
@@ -67,6 +77,7 @@ impl FieldAccess {
             FieldAccess::Word => false,
             FieldAccess::Sized(size) => *size > 8,
             FieldAccess::InPlace(_) => true,
+            FieldAccess::InRegister(_) => false,
         }
     }
 
@@ -74,7 +85,9 @@ impl FieldAccess {
     pub fn size(&self) -> Option<u32> {
         match self {
             FieldAccess::Word => None,
-            FieldAccess::Sized(size) | FieldAccess::InPlace(size) => Some(*size),
+            FieldAccess::Sized(size)
+            | FieldAccess::InPlace(size)
+            | FieldAccess::InRegister(size) => Some(*size),
         }
     }
 }
