@@ -361,6 +361,9 @@ impl Interpreter {
                 n1 == n2 && v1 == v2 && f1.len() == f2.len()
                     && f1.iter().zip(f2.iter()).all(|(a, b)| Self::value_eq(a, b))
             }
+            // Pointer equality is address equality — `p == q` asks whether
+            // they point at the same place, never what is stored there.
+            (Value::RawPtr(a), Value::RawPtr(b)) => a.same_place(b),
             (Value::Handle { pool_id: p1, index: i1, generation: g1 },
              Value::Handle { pool_id: p2, index: i2, generation: g2 }) => {
                 p1 == p2 && i1 == i2 && g1 == g2

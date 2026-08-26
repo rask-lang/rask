@@ -626,6 +626,11 @@ impl Interpreter {
                 origin: None,
             }),
 
+            // The null pointer. This used to fall through to the catch-all
+            // and evaluate to unit, so `null.is_null()` was "method not found
+            // on `void`" (#935).
+            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
+
             ExprKind::Ident(name) => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
@@ -1183,12 +1188,18 @@ impl Interpreter {
                             expr.span
                         )),
                     },
-                    // mem.owned/OW3: `*owned` is a borrow, not a raw-pointer
-                    // read. `Owned<T>` is transparent — the value already is
-                    // the T — so the deref hands it straight back. A raw
-                    // pointer never reaches the interpreter to begin with;
-                    // `unsafe` code is native-only.
-                    UnaryOp::Deref => Ok(val),
+                    // Two different derefs share the `*` spelling. On a raw
+                    // pointer it's a read through the pointer, the same thing
+                    // `p.read()` does. On anything else it's `*owned`, a
+                    // borrow: `Owned<T>` is transparent — the value already is
+                    // the T — so the deref hands it straight back
+                    // (mem.owned/OW3).
+                    UnaryOp::Deref => match &val {
+                        Value::RawPtr(p) => p
+                            .read()
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span)),
+                        _ => Ok(val),
+                    },
                     // `own` heap-allocates on native (#739); the interpreter's
                     // values are already independent of any stack frame, so
                     // there's nothing further to do here — same OW5 transparency
