@@ -87,10 +87,13 @@
 
 # --- fail on BOTH backends (shared, mostly unimplemented stdlib) ---
 19_unsafe.rk             # Native runs to completion now (#696 — the raw pointer method
-                         # surface). The interpreter still exits 1: it has no `extern "C"`
-                         # at all, so `strlen` is an undefined function before any pointer
-                         # work is reached. Nothing to diff between backends until the
-                         # interpreter can call into libc.
+                         # surface). The interpreter still exits 1, and `extern "C"` is
+                         # now the only thing left: `strlen` is an undefined function
+                         # before any pointer work is reached. The pointer half stopped
+                         # being a co-blocker in #935 — the interpreter reads and walks
+                         # real pointers now — but calling into libc needs dlsym and a
+                         # C ABI, which a tree walker doesn't have. Nothing to diff
+                         # between backends until it does.
 
 # --- has its own harness, not a stdout golden ---
 http_api_server.rk       # Compiles and serves on the interpreter; tests/http_api_harness.sh
