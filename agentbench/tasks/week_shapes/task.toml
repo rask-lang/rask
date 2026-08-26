@@ -1,0 +1,31 @@
+title = "Shapes behind a trait"
+horizon = "week"
+concepts = ["traits", "any Trait", "structs", "floats"]
+issues = []
+
+contract = """
+trait Shape {
+    func area(self) -> f64
+    func name(self) -> string
+}
+
+struct Circle { radius: f64 }
+struct Rectangle { width: f64, height: f64 }
+struct Triangle { base: f64, height: f64 }
+
+func total_area(shapes: Vec<any Shape>) -> f64
+func largest(shapes: Vec<any Shape>) -> string
+"""
+
+prompt = """
+Three shapes behind one trait, and two functions that work over a mixed list.
+
+Areas are the usual ones; use 3.14159 for pi so the numbers are checkable.
+`name` returns "circle", "rectangle", "triangle".
+
+`total_area` adds them up. `largest` returns the name of the biggest one, or the
+empty string for an empty list; on a tie, the first one in the list wins.
+
+Rask's trait conformance is declared, never inferred from the method names, and
+putting a value in a `Vec<any Shape>` is an explicit conversion.
+"""

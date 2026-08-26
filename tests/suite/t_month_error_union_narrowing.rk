@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Month one — probe: calling a method on a value narrowed out of an error union.
+//
+// `if r is AErr as e { e.message() }` on an `i64 or (AErr | BErr)` makes native
+// codegen dispatch against the union instead of the arm the test just selected,
+// so it emits a call to the other member's method too (#1002). When that method
+// doesn't exist the build fails; when it does — and every error type has
+// `message` — it builds and segfaults.
+//
+// `t27_error_narrowing.rk` covers `is … as` against a single error type and
+// stays green; the union is the part that breaks. The first two tests here are
+// the control: narrowing without a call, and bind-and-call on a non-union error.
+
+enum AErr { Bad }
+enum BErr { Worse }
+
+extend AErr with Error {
+    func message(self) -> string { return "a" }
+}
+
+extend BErr with Error {
+    func message(self) -> string { return "b" }
+}
+
+extend AErr {
+    func tag(self) -> i64 { return 7 }
+}
+
+func fa(n: i64) -> i64 or AErr {
+    if n == 1 { return AErr.Bad }
+    return n
+}
+
+func fb(n: i64) -> i64 or BErr {
+    if n == 2 { return BErr.Worse }
+    return n
+}
+
+func both(n: i64) -> i64 or (AErr | BErr) {
+    let x = try fa(n)
+    return try fb(x)
+}
+
+func single(n: i64) -> i64 or AErr {
+    return try fa(n)
+}
+
+test "narrowing a union without calling anything" {
+    let a = both(1)
+    assert a is AErr
+    assert !(a is BErr)
+    let b = both(2)
+    assert b is BErr
+    assert !(b is AErr)
+    assert both(5)! == 5
+}
+
+test "bind and call against a single error type" {
+    let s = single(1)
+    mut said = ""
+    if s is AErr as e { said = e.message() }
+    assert said == "a"
+}
+
+// #1002 — native: `BErr_tag` doesn't exist, and there is no path here that could
+// call it. The build fails before any test runs.
+test "a method that exists on only one member of the union" {
+    let r = both(1)
+    mut tag: i64 = 0
+    if r is AErr as e { tag = e.tag() }
+    assert tag == 7
+}
+
+// #1002 — native: `message` exists on both, so the lookup finds something and
+// the program segfaults instead of failing to build.
+test "a method that exists on every member of the union" {
+    let a = both(1)
+    mut said = ""
+    if a is AErr as e { said = e.message() }
+    assert said == "a"
+    let b = both(2)
+    mut other = ""
+    if b is BErr as e2 { other = e2.message() }
+    assert other == "b"
+}
+
+func main() {}

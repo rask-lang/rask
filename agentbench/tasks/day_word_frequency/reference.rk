@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func word_frequency(text: string) -> Map<string, i64> {
+    mut counts: Map<string, i64> = Map.new()
+    for word in text.split_whitespace().to_vec() {
+        let key = word.to_lowercase()
+        let seen = counts.get(key) ?? 0
+        counts.insert(key, seen + 1)
+    }
+    return counts
+}
+
+func most_common(text: string) -> string {
+    mut words = text.split_whitespace().to_vec().map(|w| w.to_lowercase())
+    words.sort()
+    let counts = word_frequency(text)
+    mut best = ""
+    mut best_count: i64 = 0
+    for word in words {
+        let n = counts.get(word) ?? 0
+        if n > best_count {
+            best = word
+            best_count = n
+        }
+    }
+    return best
+}

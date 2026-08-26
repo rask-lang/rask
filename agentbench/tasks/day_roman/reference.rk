@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The obvious shape here is a module-level `const SYMBOLS: [string; 13]`, and
+// that reads back as garbage on native (#1000). Locals are fine, so the tables
+// live inside the functions until that's fixed. A model that reaches for the
+// const form will show up in the run as a backend divergence, which is the
+// right place for it — that's the compiler's failure, not the model's.
+
+func to_roman(n: i32) -> string {
+    if n < 1 { return "" }
+    if n > 3999 { return "" }
+    let values: [i32; 13] = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+    let symbols: [string; 13] = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+    mut rest = n
+    mut out = StringBuilder.new()
+    for i in 0..13 {
+        while rest >= values[i] {
+            out.push(symbols[i])
+            rest = rest - values[i]
+        }
+    }
+    return out.build()
+}
+
+func from_roman(s: string) -> i32 {
+    let values: [i32; 13] = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+    let symbols: [string; 13] = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+    mut total: i32 = 0
+    mut at: u64 = 0
+    let n = s.len()
+    while at < n {
+        mut matched = false
+        for i in 0..13 {
+            let sym = symbols[i]
+            let end = at + sym.len()
+            if end <= n && s.substring(at, end) == sym {
+                total = total + values[i]
+                at = end
+                matched = true
+                break
+            }
+        }
+        if !matched { return 0 }
+    }
+    return total
+}
