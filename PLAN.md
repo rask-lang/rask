@@ -6,7 +6,7 @@ planning off it — the last three times this document went wrong, it was becaus
 outlived its evidence.
 
 ```
-tests/differential.sh      341 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
+tests/differential.sh      342 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/prototypes_gate.sh   13 agree, 0 untracked
@@ -41,12 +41,14 @@ The other four nothing caught:
 
 - **#989 was branched from `125d039` and its CI had never seen the files its own rule
   rejects.** A branch's green CI says nothing about a base it never merged.
-- **Eleven files across four lanes needed imports they never got** — suite probes, a
+- **Thirteen files across five lanes needed imports they never got** — suite probes, a
   registered-red file, panic and `staged()` fixtures, a benchmark reference. Not carelessness:
   a rule applied to a snapshot of the tree cannot reach files written after the snapshot, and
-  no single branch's CI sees the combination. Two of the eleven were the nastier kind, where
+  no single branch's CI sees the combination. Three of the thirteen were the nastier kind, where
   the file still failed and so still looked fine: `t_day_const_string_array.rk` is registered
-  red, and `staged_misuse.rk` is a compile-error fixture — both were failing on the missing
+  red, `staged_misuse.rk` is a compile-error fixture, and `torn_lock_update.rk` asserts a
+  warning *count* — a check that dies on a missing import emits zero warnings, so that
+  assertion failed for a reason unrelated to what it tests. All three were failing on the
   import instead of on the thing they exist to pin.
 - **One registered-red file rotted.** `t_day_const_string_array.rk` is red for #1000, so the
   gate expected it to fail — and stopped looking when it started failing at the *check* step
