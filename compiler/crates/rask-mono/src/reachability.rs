@@ -782,12 +782,10 @@ impl<'a> Monomorphizer<'a> {
         let Some(ret_ty) = f.ret_ty.clone() else { return };
         let err_branch = match ret_ty.split_once(" or ") {
             Some((_, e)) => e.trim().to_string(),
-            None => match ret_ty
-                .trim()
-                .strip_prefix("Result<")
-                .and_then(|s| s.strip_suffix('>'))
-                .and_then(split_result_args)
-            {
+            // The canonical form. Splitting it lives in rask_ast::type_str so
+            // this and the checker's stub parser can't drift — they already had,
+            // over whether `[` `]` nest (a `Vec[T, N]` lane count has a comma).
+            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
                 Some((_, e)) => e.trim().to_string(),
                 None => return,
             },
@@ -1542,17 +1540,3 @@ impl<'a> Monomorphizer<'a> {
     }
 }
 
-/// Split `Result<...>`'s arguments at the comma separating ok from err,
-/// ignoring commas nested inside a generic.
-fn split_result_args(inner: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some((&inner[..i], &inner[i + 1..])),
-            _ => {}
-        }
-    }
-    None
-}

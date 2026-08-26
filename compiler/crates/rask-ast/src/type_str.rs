@@ -10,7 +10,13 @@
 //! which no rendered result type ever does, so it rejected every correctly
 //! written `try_*` in the language (#893).
 //!
-//! Four places were splitting `Result<…>` apart by hand before this existed.
+//! Several places were splitting `Result<…>` apart by hand before this existed,
+//! and they had already drifted: `rask-mono`'s copy counted `[` `]` as nesting
+//! and `rask-types`' copy didn't. That matters because `Vec[T, N]` is a real
+//! type form (type.simd/T1), so `Result<Vec[f32, 4], SimdError>` split at the
+//! comma inside the brackets in one place and at the right one in the other.
+//! Nothing in the tree hits it yet — SIMD is still pending — which is exactly
+//! how a divergence like that survives. One answer now, in `result_parts`.
 
 /// Split canonical `Result<T, E>` into its two halves.
 ///
@@ -72,6 +78,23 @@ mod tests {
             Some(("Option<V>", "GrowError<V>"))
         );
         assert_eq!(result_parts("Result<(), GrowError<T>>"), Some(("()", "GrowError<T>")));
+    }
+
+    #[test]
+    fn splits_past_a_simd_lane_count() {
+        // `Vec[T, N]` (type.simd/T1) carries a top-level-looking comma inside
+        // brackets. A splitter that only tracks `<` and `(` returns
+        // ("Vec[f32", "4], SimdError") here — the divergence this module
+        // replaced. Nothing in the tree reaches it yet, so only a test does.
+        assert_eq!(
+            result_parts("Result<Vec[f32, 4], SimdError>"),
+            Some(("Vec[f32, 4]", "SimdError"))
+        );
+        assert_eq!(
+            result_parts("Result<Vec[f32, native], SimdError>"),
+            Some(("Vec[f32, native]", "SimdError"))
+        );
+        assert_eq!(to_source("Result<Vec[f32, 4], SimdError>"), "Vec[f32, 4] or SimdError");
     }
 
     #[test]
