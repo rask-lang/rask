@@ -315,6 +315,23 @@ impl<'a> MirLowerer<'a> {
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
     fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
+        // A node's own link field keeps its edge record inline in the node
+        // header, so the runtime reaches it by arithmetic instead of scanning
+        // the old target's incoming list. Only the base tells them apart: a
+        // link base means the holder is a node, anything else is foreign
+        // storage that still needs the scanned record.
+        if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Link_set_node".to_string()),
+                args: vec![
+                    MirOperand::Local(base),
+                    MirOperand::Constant(MirConst::Int(offset as i64)),
+                    value,
+                ],
+            }));
+            return;
+        }
         let slot = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: slot,

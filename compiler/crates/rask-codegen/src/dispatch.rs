@@ -899,6 +899,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Rack_corresponding", "rask_rack_corresponding", &[types::I64, types::I64], Some(types::I64), false),
         // Edge maintenance, emitted by lowering rather than written by anyone.
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_set_node", "rask_link_set_node",
+                            &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),

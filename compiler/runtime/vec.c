@@ -399,16 +399,42 @@ RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
     return result;
 }
 
-// map(vec, fn_ptr) — apply fn to each element, returning new Vec.
-// Stub: calls fn(elem) for each element, stores result.
-RaskVec *rask_vec_map(const RaskVec *src, int64_t fn_ptr) {
-    typedef int64_t (*MapFn)(int64_t);
-    MapFn func = (MapFn)(uintptr_t)fn_ptr;
-    if (!src) return rask_vec_new(8);
+// A closure argument is a pointer to `[ func_ptr | captures... ]`, and the
+// compiled body takes the environment — the captures, at closure+8 — as an
+// implicit first parameter. See crates/rask-codegen/src/closures.rs.
+//
+// Casting that block straight to a function pointer jumps into data. Most
+// adapters never noticed because MIR inlines them when the receiver is a plain
+// local; a receiver reached through a struct field takes the call instead, and
+// segfaulted (rask-lang/rask#866).
+// The return width has to match what the body actually returns, or the upper
+// bits of the return register are read as data. A predicate returns `bool`,
+// which codegen lowers to I8 — reading that as an i64 kept elements a `false`
+// should have dropped.
+typedef int8_t  (*RaskClosurePred)(void *env, int64_t arg);
+typedef int64_t (*RaskClosureMap)(void *env, int64_t arg);
+
+static inline int closure_call_pred(int64_t closure, int64_t arg) {
+    RaskClosurePred fn = *(RaskClosurePred *)(uintptr_t)closure;
+    return fn((char *)(uintptr_t)closure + 8, arg) != 0;
+}
+
+// A mapping closure returns through a full word. Narrower element types come
+// back correctly on x86-64 because a 32-bit result is written through `eax`,
+// which clears the rest of the register; `i32` maps round-trip, negatives
+// included. Worth revisiting for a target where that does not hold.
+static inline int64_t closure_call_map(int64_t closure, int64_t arg) {
+    RaskClosureMap fn = *(RaskClosureMap *)(uintptr_t)closure;
+    return fn((char *)(uintptr_t)closure + 8, arg);
+}
+
+// map(vec, closure) — apply fn to each element, returning new Vec.
+RaskVec *rask_vec_map(const RaskVec *src, int64_t closure) {
+    if (!src || !closure) return rask_vec_new(8);
     RaskVec *dst = rask_vec_with_capacity(8, src->len);
     for (int64_t i = 0; i < src->len; i++) {
         int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
-        int64_t result = func(elem);
+        int64_t result = closure_call_map(closure, elem);
         rask_vec_push(dst, &result);
     }
     return dst;
@@ -431,15 +457,13 @@ int64_t rask_wide_sum(const RaskVec *v) {
     return acc;
 }
 
-// filter(vec, fn_ptr) — keep elements where fn returns non-zero.
-RaskVec *rask_vec_filter(const RaskVec *src, int64_t fn_ptr) {
-    typedef int64_t (*FilterFn)(int64_t);
-    FilterFn func = (FilterFn)(uintptr_t)fn_ptr;
-    if (!src) return rask_vec_new(8);
+// filter(vec, closure) — keep elements where fn returns non-zero.
+RaskVec *rask_vec_filter(const RaskVec *src, int64_t closure) {
+    if (!src || !closure) return rask_vec_new(8);
     RaskVec *dst = rask_vec_new(src->elem_size);
     for (int64_t i = 0; i < src->len; i++) {
         int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
-        if (func(elem)) {
+        if (closure_call_pred(closure, elem)) {
             rask_vec_push(dst, &elem);
         }
     }
