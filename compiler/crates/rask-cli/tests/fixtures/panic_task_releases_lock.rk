@@ -5,6 +5,10 @@
 // poisoning (LK2), no rollback (U2).
 //
 // Natively the survivor's `with` blocked on a lock the dead task still held.
+import sync.Mutex
+import sync.Shared
+import thread.Thread
+
 struct Counter9 { n: i64 }
 const C: Shared<Counter9, Mutex> = Shared.mutex(Counter9 { n: 5 })
 
