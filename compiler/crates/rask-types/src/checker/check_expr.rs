@@ -602,8 +602,18 @@ impl TypeChecker {
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
             ExprKind::DynamicField { object, field_expr } => {
-                // Infer both sub-expressions; actual comptime field resolution
-                // happens in the comptime pass — here we just type-check children.
+                // CT49: `value.("x")` is a field access spelled with the name in
+                // quotes. When the name is right there in the source, check it as
+                // one — that gives the expression the field's real type, and makes
+                // a name that doesn't exist the same error `value.x` would give
+                // instead of something for MIR to trip over later (#930).
+                if let Some(name) = Self::literal_field_name(field_expr) {
+                    self.infer_expr(field_expr);
+                    return self.check_field_access(object, &name, expr.span);
+                }
+                // Anything else — a `comptime for` binding's `.name`, a binding
+                // holding a comptime string — is only known once the loop is
+                // unrolled, which happens after this pass.
                 let _obj_ty = self.infer_expr(object);
                 let _field_ty = self.infer_expr(field_expr);
                 Type::Error
@@ -3431,6 +3441,21 @@ impl TypeChecker {
                 });
                 Some(Type::Error)
             }
+        }
+    }
+
+    /// The field name in `value.(expr)` when the source spells it out: a string
+    /// literal, or a `comptime { … }` block whose value is one. Read off the
+    /// syntax — this pass has no comptime evaluator, and doesn't need one for
+    /// the shapes a reader actually writes.
+    fn literal_field_name(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::String(s) => Some(s.clone()),
+            ExprKind::Comptime { body } => match body.as_slice() {
+                [Stmt { kind: StmtKind::Expr(e), .. }] => Self::literal_field_name(e),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
