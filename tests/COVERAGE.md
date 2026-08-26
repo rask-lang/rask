@@ -107,7 +107,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
 | i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 20/20 | 20/20 | |
 | unsigned widening to 128 bits | `t_month_u128_widening.rk` | 6/6 | 6/6 | |
-| **probe** — unsafe blocks and raw pointers | `t_month_unsafe.rk` | 1/6 | 6/6 | #935 |
+| unsafe blocks and raw pointers | `t_month_unsafe.rk` | 16/16 | 16/16 | |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
 | floats in word-wide slots | `t_week_float_slots.rk` | 9/9 | 9/9 | |
 
@@ -132,10 +132,20 @@ runs on every invocation shouldn't be binding ports.
 
 **C interop, but not `unsafe`.** I initially wrote the whole area off as needing a
 C toolchain and a companion object file. The raw-pointer half turns out to be
-perfectly testable in one file, and doing so found #935 — the interpreter treats a
-raw pointer as a plain i64, so `*p` silently yields 0 while native reads the byte.
-`t_month_unsafe.rk` covers dereference, `read()`, `offset()`, and the U3 and UF1
-forms.
+perfectly testable in one file, and doing so found #935 — the interpreter treated a
+raw pointer as a plain i64, so `*p` silently yielded 0 while native read the byte.
+Fixed; `t_month_unsafe.rk` now covers dereference, `read()`, `write()`, the
+arithmetic and alignment methods, pointer identity, `cast`, `null`, Vec pointers,
+`string.from_raw`/`from_c`, and the U3 and UF1 forms — 16 tests, green on both
+backends. Widening it past the original six found two more native bugs: #985
+(pointer stride disagrees with the Vec's slot width for elements under 8 bytes)
+and #986 (`cast<U>()` drops the `<U>`, so an inline `*p.cast<u8>()` reads a word).
+
+What can't go in it, for the same reason in both cases — a test that panics
+fails — is reading past the end of a buffer and dereferencing null. mem.unsafe
+specifies those as a panic with a location in debug and UB in release; the
+interpreter always panics, native reads whatever is there. That's the specified
+split between the modes, not a divergence.
 
 What genuinely does need a build harness is the C-interop half: `compile_rust()` in
 a build script, the C ABI, cbindgen, linking a real object file. That stays
