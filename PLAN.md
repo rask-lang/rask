@@ -1,6 +1,6 @@
 # Plan
 
-**Measured 2026-08-26, on all six lane branches merged together.** Every number below came
+**Measured 2026-08-26, on all seven lane branches merged together.** Every number below came
 from running the thing, not from reading the previous version of this file. Re-measure before
 planning off it — the last three times this document went wrong, it was because a state column
 outlived its evidence.
@@ -15,28 +15,43 @@ tests/http_api_harness.sh  ok on both backends
 cargo test --release --workspace   0 failures
 ```
 
-## The six lanes, merged
+## The seven lanes, merged
 
-Seven sessions ran in parallel, partitioned by crate. Six produced PRs (#987 codegen, #988
+Seven sessions ran in parallel, partitioned by crate. Six produced PRs — #987 codegen, #988
 interpreter, #989 namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent
-benchmark); the panics lane produced none. Each is green against its own base. Merged
-together they need three fixups, all of them one lane meeting a file another lane wrote:
+benchmark. The seventh pushed `claude/panics-unwinding-9phbli` and opened no PR, so its work
+was invisible from the PR list: ensures with multi-statement bodies and `else` handlers now
+run on a native panic, plus two bugs it found on the way (`e.message()` in a handler never
+compiled natively; `try` inside `ensure` is a diagnostic now instead of a codegen give-up).
+
+Each lane is green against its own base. Merged together they need five fixups, every one of
+them a lane meeting something another lane wrote:
 
 - **#989 never merged main.** Its branch is still on `125d039`, so its CI has not seen
   `p18_rack_multi_link_fields.rk` or `p19_mutate_param_link_write.rk`, both of which its own
-  IM1 rule rejects for a missing `import memory.Rack`. Merge it last.
+  IM1 rule rejects for a missing `import memory.Rack`.
 - **`reflect` ended up in two lists.** #989 kept it out of the stub set because parsing it
   broke monomorphizing `reflect.fields<T>()` through a generic; #995 fixed that cause and put
   it in. #989's own guard catches the overlap.
+- **Two lanes both allocated E0844** — #991 for a `using` clause on the entry point, the
+  panics lane for `try` inside `ensure`. A HashMap keeps the last one, so one of the two had
+  no explanation. #991's own registry audit catches it. `try`-in-`ensure` is E0845 now.
 - **One registered-red file rotted.** `t_day_const_string_array.rk` is red for #1000, so the
   gate expects it to fail — and stopped looking when it started failing at the check step
   instead, for a missing import. The bug it documents was not being exercised.
+- **A formatter bug the corpus had never reached.** `rask fmt` collapsed any one-statement
+  `ensure { … }` to the braceless form, which parses one *expression* — so
+  `ensure { let n = try s.close() }` came back out as unparseable source. The panics lane's
+  E0845 fixture is the first file in the corpus with a lone `let` in an ensure body.
 
-The third is the one worth generalising: a file registered red is only honest while it fails
-for the reason recorded next to it, and nothing checks that. See #1005.
+Three of the five were caught by a guard one lane wrote firing on another lane's change,
+which is the argument for writing them. The two that weren't are the ones worth generalising:
+a file registered red is only honest while it fails for the reason recorded next to it and
+nothing checks that (#1005), and a branch's green CI says nothing about a base it never
+merged.
 
-Suggested merge order: #987, #988, #991, #995, #1003 in any order, then #989, then the
-integration fixups.
+Suggested merge order: #987, #988, #991, #995, #1003 and the panics branch in any order,
+then #989, then the integration fixups.
 
 ## Where things stand
 
