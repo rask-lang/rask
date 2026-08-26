@@ -1102,6 +1102,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
             }
 
+            TornLockUpdate { binding, box_name, first_field, second_field, first_span, second_span } => {
+                Diagnostic::warning("multi-field update under a lock without staged()".to_string())
+                    .with_code("W0907")
+                    .with_primary(*first_span, format!("`{}` written first", first_field))
+                    .with_secondary(
+                        *second_span,
+                        format!("`{}` second — a panic between these leaves other tasks a half-done update", second_field),
+                    )
+                    .with_help(format!(
+                        "stage the update: `with {}.staged() as {} {{ … }}` commits as one move on a clean exit and discards on a panic",
+                        box_name, binding,
+                    ))
+                    .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
+                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function if partial state is harmless here [tool.warnings/W9]")
+            }
+
             StagedOutsideWith { name, span } => {
                 Diagnostic::error("`staged()` only works as the source of a `with` block")
                     .with_code("E0846")

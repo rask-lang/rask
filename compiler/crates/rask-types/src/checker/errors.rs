@@ -310,6 +310,24 @@ pub enum TypeError {
         type_name: String,
         span: Span,
     },
+    /// tool.warnings/W9 (`torn_lock_update`, W0907): a `with` block over a sync
+    /// box assigns two or more fields of the locked value without `staged()`.
+    ///
+    /// A warning, not an error — partial state is sometimes harmless, and Rask
+    /// has no poisoning to make it loud. But `ctrl.panic/LK3` means a panic
+    /// between those two writes leaves survivors a half-done update, and
+    /// `staged()` is the by-construction fix, so the sites that need it get
+    /// pointed at it rather than left to find it.
+    #[error("multi-field update under a lock without staged()")]
+    TornLockUpdate {
+        binding: String,
+        box_name: String,
+        first_field: String,
+        second_field: String,
+        first_span: Span,
+        second_span: Span,
+    },
+
     /// conc.sync/ST1: `staged()` is the source of a `with` binding and nothing
     /// else. `read`/`write` also have an expression-scoped form (R5); staged has
     /// none, because the commit needs a block boundary to happen at.
@@ -1108,6 +1126,7 @@ impl TypeError {
             | BareSharedWith { .. }
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
+            | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }

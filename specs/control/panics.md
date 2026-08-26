@@ -75,7 +75,7 @@ U5 is deliberate. Rask has no hidden destructors — that's the point of linear 
 
 Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into **staged access**: `with mutex.staged() as v { }` works on a copy that commits as one move on non-panic exit and is discarded on unwind. Torn state impossible by construction at staged sites. Rules and example: `conc.sync/ST1–ST4`.
 
-This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`.
+This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`, `W0907`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`. Built, and pointed at two real sites on its first run — both counters, both silenced with `@allow`, which is worth watching: if that stays the ratio the warning is noisier than it is useful.
 
 ## Ensure × Panic
 
