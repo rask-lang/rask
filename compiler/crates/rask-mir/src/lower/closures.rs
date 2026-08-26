@@ -443,6 +443,93 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::Ptr))
     }
 
+    /// As the boxing wrapper above, but for a closure handed to spawn by
+    /// value — `let f = || {...}; Thread.spawn(f)` — rather than written
+    /// inline. There's no named function to call directly here, only a
+    /// runtime closure value, so the wrapper captures *that* (a plain 8-byte
+    /// pointer) and calls through it indirectly instead.
+    ///
+    /// `ret_ty` is the closure's return type as the checker sees it for this
+    /// argument. Returns `closure_op` unchanged when it's 8 bytes or less —
+    /// nothing to box.
+    pub(super) fn wrap_indirect_closure_for_spawn_box(
+        &mut self,
+        closure_op: MirOperand,
+        ret_ty: &MirType,
+    ) -> MirOperand {
+        if ret_ty.size() <= 8 {
+            return closure_op;
+        }
+
+        let closure_local = match closure_op {
+            MirOperand::Local(id) => id,
+            other => {
+                let tmp = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: tmp,
+                    rvalue: MirRValue::Use(other),
+                }));
+                tmp
+            }
+        };
+
+        let wrapper_name = format!("{}__spawn_box_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let mut box_builder = BlockBuilder::new(wrapper_name.clone(), MirType::Ptr);
+        let env_id = box_builder.add_param("__env".to_string(), MirType::Ptr);
+        let inner = box_builder.alloc_local("__inner".to_string(), MirType::Ptr);
+        box_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
+            dst: inner,
+            env_ptr: env_id,
+            offset: 0,
+            by_ref: false,
+        }));
+        let call_dst = box_builder.alloc_local("__ret".to_string(), ret_ty.clone());
+        box_builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: Some(call_dst),
+            closure: inner,
+            args: vec![],
+        }));
+        let boxed = box_builder.alloc_local("__boxed".to_string(), MirType::Ptr);
+        box_builder.push_stmt(MirStmt::dummy(MirStmtKind::BoxValue {
+            dst: boxed,
+            src: call_dst,
+            size: ret_ty.size(),
+        }));
+        box_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Local(boxed)),
+        }));
+
+        self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
+            ret_ty: MirType::Ptr,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
+        });
+        self.synthesized_functions.push(box_builder.finish());
+
+        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: result_local,
+            func_name: wrapper_name,
+            captures: vec![ClosureCapture { local_id: closure_local, offset: 0, size: 8 }],
+            heap: true,
+        }));
+        MirOperand::Local(result_local)
+    }
+
+    /// The closure return type the checker recorded for a spawn argument
+    /// expression, if it typed the argument as a function. Used to decide
+    /// whether a closure passed to spawn by value needs boxing (#883).
+    pub(super) fn spawn_arg_closure_ret(&self, arg_id: NodeId) -> Option<MirType> {
+        match self.ctx.lookup_raw_type(arg_id)? {
+            rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
+            _ => None,
+        }
+    }
+
     /// Spawn lowering: synthesize a closure function from the body block,
     /// emit ClosureCreate + Call to rask_closure_spawn.
     pub(super) fn lower_spawn(

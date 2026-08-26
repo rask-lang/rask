@@ -90,6 +90,20 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                     )));
                 }
 
+                // Boxed onto the heap for a spawned closure's return (#883).
+                // The box is a raw byte copy of the string's header, so the
+                // heap copy now shares the same buffer — same "new location,
+                // new reference" reasoning as the Store case above. Without
+                // this, `src`'s own last-use dec (this statement, since the
+                // box owns the only later reference) freed the buffer the
+                // box still points at.
+                MirStmtKind::BoxValue { src, .. } if string_set.contains(src) => {
+                    insertions.push((si, MirStmt::new(
+                        MirStmtKind::RcInc { local: *src },
+                        stmt.span,
+                    )));
+                }
+
                 _ => {}
             }
         }

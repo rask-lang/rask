@@ -1219,6 +1219,18 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
+                        // A closure handed to spawn by variable rather than
+                        // written inline still needs the boxing wrapper for
+                        // an aggregate return (#883) — the literal-closure
+                        // branch above only wraps what it builds itself.
+                        let op = if spawns_closure {
+                            match self.spawn_arg_closure_ret(a.expr.id) {
+                                Some(ret_mir) => self.wrap_indirect_closure_for_spawn_box(op, &ret_mir),
+                                None => op,
+                            }
+                        } else {
+                            op
+                        };
                         // A parameter declared `T?` or `T or E` given a bare `T`
                         // is the same coercion as an annotated binding, so it
                         // takes the same path. Left to codegen it only ever
@@ -4376,7 +4388,16 @@ impl<'a> MirLowerer<'a> {
                                         Some(arg.expr.id),
                                     )?
                                 } else {
-                                    self.lower_expr(&arg.expr)?
+                                    let (op, ty) = self.lower_expr(&arg.expr)?;
+                                    let op = if spawns_closure {
+                                        match self.spawn_arg_closure_ret(arg.expr.id) {
+                                            Some(ret_mir) => self.wrap_indirect_closure_for_spawn_box(op, &ret_mir),
+                                            None => op,
+                                        }
+                                    } else {
+                                        op
+                                    };
+                                    (op, ty)
                                 };
                                 arg_operands.push(op);
                             }
