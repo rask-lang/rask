@@ -67,6 +67,10 @@ impl TypeChecker {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
+                    // AN8: an annotation name here would leave the binding
+                    // asking for a value nothing can produce, and the type
+                    // error would blame the initializer for it.
+                    self.reject_annotation_binding_type(ty_str, *name_span);
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
@@ -105,6 +109,10 @@ impl TypeChecker {
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
+                    // AN8: an annotation name here would leave the binding
+                    // asking for a value nothing can produce, and the type
+                    // error would blame the initializer for it.
+                    self.reject_annotation_binding_type(ty_str, *name_span);
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);

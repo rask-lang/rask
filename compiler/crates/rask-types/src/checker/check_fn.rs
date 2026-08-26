@@ -24,7 +24,22 @@ impl TypeChecker {
         f.name == "main" && self.current_self_type.is_none()
     }
 
+    /// Check a function with its own type parameters in scope.
+    ///
+    /// A declared parameter has to win over a type of the same name for as long
+    /// as this signature and body are being checked — `func first<Output>(xs:
+    /// Vec<Output>)` meant the stdlib's `os.Output` otherwise, and every use of
+    /// the parameter mismatched against a type nobody wrote (#915). Wrapping
+    /// rather than pushing inline because the scope has to come back off on
+    /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
+        let params = super::declarations::signature_type_param_names(f);
+        let outer = self.types.push_type_params(params);
+        self.check_fn_scoped(f);
+        self.types.pop_type_params(outer);
+    }
+
+    fn check_fn_scoped(&mut self, f: &FnDecl) {
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
             .filter(|p| p.name != "self" && p.ty.is_empty())
@@ -384,11 +399,20 @@ impl TypeChecker {
                 {
                     return;
                 }
-                // Only plain PascalCase identifiers — module paths and
-                // lowercase names resolve through other paths
-                if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                    || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                {
+                // Plain identifiers only — a module path (`time.Instant`)
+                // resolves elsewhere.
+                //
+                // Case is deliberately not part of the test (PC2, #966). It
+                // used to require a leading capital, which reads sensible
+                // against the generics rule — case is what separates `T` from a
+                // type there — but a lowercase name that names nothing isn't a
+                // generics question, it was just unchecked. `func f(x: uszie)`
+                // type-checked and failed at the use site instead, on a type
+                // that was never real. Length is the test, not case: one
+                // uppercase letter is a type parameter (PC1), longer must
+                // resolve. The real primitives are lowercase and land in the
+                // `builtins` check below.
+                if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     return;
                 }
                 if types.get_type_id(name).is_some()
@@ -418,10 +442,22 @@ impl TypeChecker {
             .chain(self.types.builtins.keys())
             .chain(self.types.type_aliases.keys())
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
-            .map(|cand| (edit_distance(name, cand), cand))
-            .filter(|(d, _)| *d > 0 && *d <= max_dist)
-            .min_by_key(|(d, _)| *d)
-            .map(|(_, cand)| cand.clone())
+            // A module isn't a type, so it's never the fix for a type position.
+            // `str` used to suggest `std`, and `st` still would.
+            .filter(|cand| !self.types.builtin_modules.is_module(cand))
+            // A candidate the written name is a prefix of ranks ahead of a
+            // closer one that isn't. Pure edit distance answered `str` with
+            // `std` — one character away, and a module, so not a type you could
+            // write there at all — while `string`, the answer, was three away.
+            // An abbreviation is the common way to get this name wrong.
+            .map(|cand| {
+                let extends = !cand.eq_ignore_ascii_case(name)
+                    && cand.to_ascii_lowercase().starts_with(&name.to_ascii_lowercase());
+                (!extends, edit_distance(name, cand), cand)
+            })
+            .filter(|(not_prefix, d, _)| *d > 0 && (!*not_prefix || *d <= max_dist))
+            .min_by_key(|(not_prefix, d, _)| (*not_prefix, *d))
+            .map(|(_, _, cand)| cand.clone())
     }
 
     /// Check that a @no_alloc function body has no heap allocations.

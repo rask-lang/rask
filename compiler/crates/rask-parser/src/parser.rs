@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -449,7 +449,13 @@ impl Parser {
 
                     // Declaration-only keywords can never start a statement.
                     // Use the original decl error (more specific) and synchronize.
-                    if matches!(self.current_kind(),
+                    // `annotation name` is contextual but just as declaration-only:
+                    // without it, an error inside an annotation body was replaced by
+                    // the statement retry's generic "expected newline".
+                    let is_annotation_decl =
+                        matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
+                            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_));
+                    if is_annotation_decl || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
@@ -624,6 +630,27 @@ impl Parser {
             self.advance();
         }
 
+        // Contextual: `annotation @name { ... }` (type.annotations/AN1). Plain
+        // identifier followed by the sigiled name, so no lexer keyword. The
+        // name keeps its `@` — you declare exactly what you attach. A bare
+        // Ident is matched too so the old spelling gets a pointed error
+        // instead of the generic declaration one.
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
+            && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_))
+        {
+            if is_comptime || is_unsafe || !attrs.is_empty() {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "annotation declarations cannot have modifiers".to_string(),
+                    hint: Some("remove 'comptime', 'unsafe', or attributes".to_string()),
+                    why: None,
+                });
+            }
+            let kind = self.parse_annotation_decl(is_pub, doc)?;
+            let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+            return Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) });
+        }
+
         // Detect common Rust keywords
         if let TokenKind::Ident(s) = self.current_kind() {
             if s == "pub" {
@@ -737,6 +764,9 @@ impl Parser {
                         }
                         TokenKind::Ident(s) => attr.push_str(s),
                         TokenKind::Int(n, _) => attr.push_str(&n.to_string()),
+                        TokenKind::Float(f, _) => attr.push_str(&format!("{:?}", f)),
+                        TokenKind::Bool(b) => attr.push_str(if *b { "true" } else { "false" }),
+                        TokenKind::Char(c) => attr.push_str(&format!("'{}'", c)),
                         TokenKind::Comma => attr.push_str(", "),
                         // Keywords, operators, and delimiters keep their source
                         // text. Debug output here would mangle anything with
@@ -744,6 +774,13 @@ impl Parser {
                         // `@allow(idiom/duck-trait)` came out as
                         // `allow(idiomSlashduck-Trait)` and matched nothing,
                         // breaking per-rule suppression (tool.lint/SU1).
+                        //
+                        // Literals must be listed above, not left to this arm:
+                        // `display_name` is prose for diagnostics, so `@default(1.5)`
+                        // was stored as `default(a number)` and `@default(true)` as
+                        // `default(true' or 'false)` — the value simply gone (#965).
+                        // A token kind added later lands here and gets prose too;
+                        // #965 tracks giving TokenKind a real source_text().
                         k => attr.push_str(k.display_name().trim_matches('\'')),
                     }
                 }
@@ -1562,6 +1599,63 @@ impl Parser {
             attrs,
             doc,
         }))
+    }
+
+    /// `annotation @name { field: T [= default], ... }`
+    /// (type.annotations/AN1). The name keeps its `@` sigil — the declaration
+    /// spells exactly what attachment sites write, so keyword and name can't
+    /// blur. Fields only — no methods, no visibility keywords: annotations are
+    /// pure data records. Reads exactly like a struct; nothing else to learn.
+    fn parse_annotation_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        self.advance(); // 'annotation'
+        if !self.match_token(&TokenKind::At) {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "annotation names keep their `@` sigil".to_string(),
+                hint: Some("declare it the way it attaches: annotation @name { ... }".to_string()),
+                why: None,
+            });
+        }
+        let name_span = self.current().span;
+        let name = self.expect_ident()?;
+
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            if self.check(&TokenKind::Func) {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "annotations cannot have methods".to_string(),
+                    hint: Some("annotations are pure data; behavior belongs in the code that reads them".to_string()),
+                    why: None,
+                });
+            }
+            let field_name_span = self.current().span;
+            let field_name = self.expect_ident_or_keyword()?;
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type_name()?;
+            let default = if self.match_token(&TokenKind::Eq) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            fields.push(Field {
+                name: field_name,
+                name_span: field_name_span,
+                ty,
+                visibility: FieldVisibility::Package,
+                attrs: vec![],
+                default,
+            });
+            self.match_token(&TokenKind::Comma);
+            self.skip_newlines();
+        }
+        self.expect(&TokenKind::RBrace)?;
+
+        Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, is_pub, doc }))
     }
 
     fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
@@ -3750,17 +3844,26 @@ impl Parser {
                             span: self.span(start, end),
                         })
                     }
-                    // `own expr` allocates. Keeping the operator in the tree is
-                    // what makes that possible: it used to be dropped here, so
-                    // `let p = own Node { … }` left `p` an ordinary stack struct
-                    // and there was nothing for `drop` to free (#739).
+                    // `own expr` used to allocate. It doesn't any more: `own`
+                    // means move, and only move (mem.heap). The two readings
+                    // were indistinguishable at a call site — `f(own x)` moved,
+                    // `Node(own x)` allocated — which is what cost it the job.
+                    //
+                    // A move marker is consumed by `parse_args`, so anything
+                    // reaching here is the old allocation form.
                     _ => {
                         let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                         let end = operand.span.end;
-                        Ok(Expr {
-                            id: self.next_id(),
-                            kind: ExprKind::Unary { op: UnaryOp::Own, operand: Box::new(operand) },
+                        Err(ParseError {
                             span: self.span(start, end),
+                            message: "`own` no longer allocates".to_string(),
+                            hint: Some("write `Heap(...)` to put a value on the heap".to_string()),
+                            why: Some(
+                                "`own` marks a move and nothing else now. It used to mean \
+                                 both, and the two were indistinguishable at a call site: \
+                                 `f(own x)` moved, `Node(own x)` allocated."
+                                    .to_string(),
+                            ),
                         })
                     }
                 }
@@ -4237,6 +4340,21 @@ impl Parser {
                 let args = self.parse_args_with(raw_template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
+                // `Heap(expr)` allocates (mem.heap). It reads as an ordinary
+                // call and parses as one, which is the point — it replaced a
+                // keyword, and the keyword is what made `f(own x)` and
+                // `Node(own x)` look alike while meaning different things.
+                if matches!(&lhs.kind, ExprKind::Ident(n) if n == "Heap") && args.len() == 1 {
+                    let arg = args.into_iter().next().unwrap();
+                    return Ok(Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Unary {
+                            op: UnaryOp::Heap,
+                            operand: Box::new(arg.expr),
+                        },
+                        span: self.span(start, end),
+                    });
+                }
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Call { func: Box::new(lhs), args }, span: self.span(start, end) })
             }
 

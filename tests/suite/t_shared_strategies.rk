@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The strategy is part of the type, and every strategy has the whole API.
+//
+// Two gaps this pins. `get`/`set`/`replace` were only wired up for `Local` —
+// the strategy that needs no lock — so `Shared.new(5).get()` type-checked and
+// then failed to link with `Function not found: Shared_get`. And code written
+// to work under any strategy has to keep working: `Shared<T, S>` with `S` left
+// generic is not a mismatch, it's the point.
+
+// SH4: strategy-agnostic code says so.
+func peek<S>(c: Shared<i64, S>) -> i64 {
+    with c.read() as v {
+        return v
+    }
+    return -1
+}
+
+struct Counters {
+    hits: Shared<i64, Local>
+    total: Shared<i64, Mutex>
+}
+
+func main() {}
+
+test "all three strategies read through a generic parameter" {
+    let a = Shared.new(1)
+    let b = Shared.mutex(2)
+    let c = Shared.local(3)
+
+    assert_eq(peek(a), 1)
+    assert_eq(peek(b), 2)
+    assert_eq(peek(c), 3)
+}
+
+test "get, set and replace work under every strategy" {
+    let readers = Shared.new(10)
+    let mutex = Shared.mutex(20)
+    let local = Shared.local(30)
+
+    assert_eq(readers.get(), 10)
+    assert_eq(mutex.get(), 20)
+    assert_eq(local.get(), 30)
+
+    readers.set(11)
+    mutex.set(21)
+    local.set(31)
+
+    assert_eq(readers.get(), 11)
+    assert_eq(mutex.get(), 21)
+    assert_eq(local.get(), 31)
+
+    assert_eq(readers.replace(12), 11)
+    assert_eq(mutex.replace(22), 21)
+    assert_eq(local.replace(32), 31)
+
+    assert_eq(readers.get(), 12)
+    assert_eq(mutex.get(), 22)
+    assert_eq(local.get(), 32)
+}
+
+// A bare `Shared<T>` is `Shared<T, Readers>` — a defaulted parameter, not an
+// absent one. Both spellings name the same type.
+test "the bare spelling and the written default are one type" {
+    let bare: Shared<i64> = Shared.new(7)
+    let written: Shared<i64, Readers> = Shared.new(8)
+
+    assert_eq(peek(bare), 7)
+    assert_eq(peek(written), 8)
+
+    with bare.write() as v {
+        v = v + 1
+    }
+    assert_eq(bare.get(), 8)
+}
+
+test "a struct field carries its strategy" {
+    let c = Counters {
+        hits: Shared.local(0),
+        total: Shared.mutex(0),
+    }
+    with c.hits.write() as h {
+        h = h + 5
+    }
+    with c.total.write() as t {
+        t = t + 5
+    }
+    assert_eq(c.hits.get(), 5)
+    assert_eq(c.total.get(), 5)
+}

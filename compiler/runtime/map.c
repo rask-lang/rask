@@ -33,6 +33,11 @@ struct RaskMap {
     // Value pointers currently lent out. Rehashing moves `vals`, so it is
     // refused while one is outstanding rather than left to dangle.
     int64_t    borrows;
+    // Holds the value an overwrite displaced, so `insert` can hand it back
+    // after the slot has been written over. Allocated on the first overwrite
+    // and reused; good until the next one, which is the same window
+    // `rask_map_take`'s pointer already gets.
+    char      *displaced;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -257,6 +262,7 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
     m->hash_fn = hash;
     m->eq_fn = eq;
     m->borrows = 0;
+    m->displaced = NULL;
     map_alloc_tables(m, MAP_INITIAL_CAP);
     return m;
 }
@@ -267,6 +273,7 @@ void rask_map_free(RaskMap *m) {
     if (m->states) rask_realloc(m->states, m->cap, 0);
     if (m->keys) rask_realloc(m->keys, rask_safe_mul(m->cap, m->key_size), 0);
     if (m->vals) rask_realloc(m->vals, rask_safe_mul(m->cap, m->val_size), 0);
+    if (m->displaced) rask_realloc(m->displaced, m->val_size, 0);
     rask_realloc(m, (int64_t)sizeof(RaskMap), 0);
 }
 
@@ -274,8 +281,16 @@ int64_t rask_map_len(const RaskMap *m) {
     return m ? m->len : 0;
 }
 
-// Returns 0 if inserted new, 1 if updated existing.
-int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
+// Writes the entry and reports what it displaced.
+//
+// `displaced_out`, when given, is set to a pointer to the old value on an
+// overwrite and to NULL on a fresh key. The slot is about to be written over,
+// so the old bytes are copied into the map's scratch buffer first — returning
+// the slot pointer the way `rask_map_take` does would hand back the *new*
+// value.
+static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
+                               void **displaced_out) {
+    if (displaced_out) *displaced_out = NULL;
     if (!m) return -1;
 
     // Rehash if occupied + tombstones exceed load threshold.
@@ -292,12 +307,34 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
     }
 
     uint8_t prev_state = m->states[slot];
+    if (displaced_out && prev_state == MAP_OCCUPIED) {
+        if (!m->displaced) {
+            m->displaced = (char *)rask_alloc(m->val_size);
+        }
+        memcpy(m->displaced, m->vals + slot * m->val_size, (size_t)m->val_size);
+        *displaced_out = m->displaced;
+    }
     memcpy(m->keys + slot * m->key_size, key, (size_t)m->key_size);
     memcpy(m->vals + slot * m->val_size, val, (size_t)m->val_size);
     m->states[slot] = MAP_OCCUPIED;
     if (prev_state == MAP_TOMBSTONE) m->tombstones--;
     if (prev_state != MAP_OCCUPIED) m->len++;
     return (prev_state == MAP_OCCUPIED) ? 1 : 0;
+}
+
+// Returns 0 if inserted new, 1 if updated existing. Used where the caller
+// discards the answer — `Map.set`, rehashing, cloning, the runtime's own maps.
+int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
+    return map_insert_impl(m, key, val, NULL);
+}
+
+// `Map.insert` is declared `-> V?`, so this is what it calls: a pointer to the
+// displaced value, or NULL if the key was fresh. Same NULL-is-none shape as
+// `rask_map_take`, so codegen adapts it with `RetAdapt::DerefOption`.
+void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
+    void *old = NULL;
+    map_insert_impl(m, key, val, &old);
+    return old;
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {
@@ -430,4 +467,41 @@ RaskMap *rask_map_clone(const RaskMap *m) {
         }
     }
     return dst;
+}
+
+// mem.racks/RK3: drop every entry whose value is this link.
+//
+// The index-maintenance move a database makes when a row goes away — the entry
+// leaves, it does not become a `none` under a live key. Values are compared as
+// whole pointers because a link is one; nothing else in the map can match.
+int64_t rask_map_drop_value_ptr(RaskMap *m, const void *target) {
+    map_check_no_borrows(m, "drop_value_ptr");
+    if (!m || m->val_size != (int64_t)sizeof(void *)) return 0;
+    int64_t dropped = 0;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] != MAP_OCCUPIED) continue;
+        void *v;
+        memcpy(&v, m->vals + i * m->val_size, sizeof(v));
+        if (v != target) continue;
+        m->states[i] = MAP_TOMBSTONE;
+        m->len--;
+        m->tombstones++;
+        dropped++;
+    }
+    return dropped;
+}
+
+// Rewrite every value in place through `f`. For `Rack.snapshot()`, where a
+// `Map<K, Link<T>>` field's values have to be re-pointed at the copied nodes:
+// the values live in the map's own storage, which the caller can't reach.
+void rask_map_map_values_ptr(RaskMap *m, void *(*f)(void *value, void *ctx), void *ctx) {
+    map_check_no_borrows(m, "map_values_ptr");
+    if (!m || m->val_size != (int64_t)sizeof(void *)) return;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] != MAP_OCCUPIED) continue;
+        void *v;
+        memcpy(&v, m->vals + i * m->val_size, sizeof(v));
+        void *next = f(v, ctx);
+        memcpy(m->vals + i * m->val_size, &next, sizeof(next));
+    }
 }

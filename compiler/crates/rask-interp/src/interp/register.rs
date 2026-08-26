@@ -228,6 +228,23 @@ impl Interpreter {
                         }
                     }
                 }
+                // AN6: an annotation's declared fields, kept as a struct so
+                // `field.get<A>()` can read a value's declared type. No methods
+                // and no constructor — the checker rejects both (AN1, AN3).
+                DeclKind::Annotation(a) => {
+                    self.struct_decls.insert(
+                        a.name.clone(),
+                        rask_ast::decl::StructDecl {
+                            name: a.name.clone(),
+                            type_params: vec![],
+                            fields: a.fields.clone(),
+                            methods: vec![],
+                            is_pub: a.is_pub,
+                            attrs: vec![],
+                            doc: a.doc.clone(),
+                        },
+                    );
+                }
                 DeclKind::Test(t) => {
                     tests.push(t.clone());
                 }

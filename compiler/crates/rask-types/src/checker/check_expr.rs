@@ -472,6 +472,17 @@ impl TypeChecker {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
+                    // SH7 needs to know which names reached a task-local box and
+                    // where. Recorded here rather than re-walked at the `spawn`,
+                    // which would have to know every expression shape to be
+                    // right; judged after solving, because right now the type of
+                    // a `let c = Shared.new(0)` is usually still a variable.
+                    let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    if matches!(resolved, Type::Var(_))
+                        || Self::type_is_shared(&resolved, &self.types)
+                    {
+                        self.local_shared_uses.push((name.clone(), ty.clone(), expr.span));
+                    }
                     ty
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
@@ -876,6 +887,18 @@ impl TypeChecker {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
                 let base_name = name.split('<').next().unwrap_or(name);
+                // Annotations are comptime data — attached with @name(...),
+                // read through reflect, never constructed as runtime values.
+                if self.annotation_types.contains(base_name) {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: base_name.to_string(),
+                        problem: "annotations cannot be constructed as runtime values".to_string(),
+                        fix: format!("attach it instead: @{}(...) — readers get the values through reflect", base_name),
+                        why: "an annotation is metadata, not a value: nothing constructs one, so nothing at runtime can hold one either [type.annotations/AN3, AN8]",
+                        span: expr.span,
+                    });
+                    return Type::Error;
+                }
                 let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
                     match parse_type_string(name, &self.types) {
                         Ok(Type::Generic { args, .. }) => Some(args),
@@ -1949,13 +1972,19 @@ impl TypeChecker {
                     span: expr.span,
                     self_type: self.current_self_type.clone(),
                 });
-                // Flatten: if field is already T?, return T? not (T?)?
-                let resolved_field = self.ctx.apply(&field_ty);
-                if resolved_field.is_option() {
-                    resolved_field
-                } else {
-                    Type::option(field_ty)
-                }
+                // Flatten: a field that is already `T?` stays one layer deep
+                // (OPT10). That can't be decided here — `field_ty` is the fresh
+                // variable the `HasField` above will fill in, so asking "is it
+                // an option?" now always answers no and the chain came out
+                // `T??` (#938). Defer it: `OptionalChain` settles once the
+                // field's type does.
+                let result = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                    field: field_ty,
+                    result: result.clone(),
+                    span: expr.span,
+                });
+                result
             }
 
             ExprKind::Select { arms, .. } => {
@@ -2253,6 +2282,11 @@ impl TypeChecker {
 
         // Extern and unsafe function calls require unsafe context
         // Also: CC1 — spawn() must be inside a `using Multitasking { }` block
+        // conc.sync/SH7 applies to any call named `spawn`, however it reached
+        // scope — a builtin, or the `async.spawn` import. Judged after solving.
+        if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n.ends_with(".spawn")) {
+            self.spawn_arg_spans.extend(args.iter().map(|a| a.expr.span));
+        }
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
@@ -2263,6 +2297,10 @@ impl TypeChecker {
                         if self.multitasking_depth == 0 {
                             self.errors.push(TypeError::SpawnOutsideBlock { span });
                         }
+                        // conc.sync/SH7: `Local` takes no lock, so a box using it
+                        // must not reach a second task. This is the whole reason
+                        // the default can be the cheap one — the unsafe direction
+                        // doesn't compile.
                     }
 
                     let unsafe_category = match &sym.kind {
@@ -2686,6 +2724,25 @@ impl TypeChecker {
         type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
+        // AN8: a `get<A>()` that reaches here wasn't field-projected — the
+        // projection is handled in `check_field_access` and never recurses into
+        // the receiver. So this is a bare read: a binding, an argument, a
+        // returned value. There is no annotation value to be any of those.
+        if method == "get" {
+            if let Some(name) = type_args.and_then(|ta| ta.first()) {
+                if self.annotation_types.contains(name) {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: name.clone(),
+                        problem: "an annotation read has to name a field".to_string(),
+                        fix: format!("read one field: `.get<{}>().<field>`", name),
+                        why: "there is no annotation value to hold — `get` splices the field's constant, so a read that names no field has no result [type.annotations/AN6, AN8]",
+                        span,
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+
         // Check if this is a builtin module method call (e.g., fs.open). A local
         // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
         // and routing `fs.len()` to the filesystem module reported "no method
@@ -3350,7 +3407,56 @@ impl TypeChecker {
         }
     }
 
+    /// The declared type of `field` on the annotation `get<A>()` names, when
+    /// `object` is such a call (type.annotations/AN6). `None` for anything else.
+    ///
+    /// An unknown field errors here rather than falling through, so the message
+    /// names the annotation instead of blaming a missing method on a value that
+    /// was never going to exist.
+    fn annotation_projection_type(&mut self, object: &Expr, field: &str, span: Span) -> Option<Type> {
+        let ExprKind::MethodCall { method, type_args, .. } = &object.kind else { return None };
+        if method != "get" {
+            return None;
+        }
+        let name = type_args.as_ref()?.first()?;
+        if !self.annotation_types.contains(name) {
+            return None;
+        }
+        let id = match self.types.lookup(name) {
+            Some(Type::Named(id)) => id,
+            _ => return Some(Type::Error),
+        };
+        let fields = match self.types.get(id) {
+            Some(TypeDef::Struct { fields, .. }) => fields.clone(),
+            _ => return Some(Type::Error),
+        };
+        match fields.iter().find(|(n, _)| n == field) {
+            Some((_, ty)) => Some(ty.clone()),
+            None => {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: name.clone(),
+                    problem: format!("no field `{}` to read", field),
+                    fix: format!(
+                        "fields: {}",
+                        fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                    why: "an annotation read names one of the fields the declaration lists — there is no value to look anything else up on [type.annotations/AN6]",
+                    span,
+                });
+                Some(Type::Error)
+            }
+        }
+    }
+
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
+        // AN6/AN8: `item.get<A>().weight` — the one legal shape for `get`. The
+        // field's type comes straight from the annotation's declaration, and
+        // the receiver is deliberately not checked: reaching `check_method_call`
+        // for a `get<A>()` means it wasn't projected, which AN8 rejects.
+        if let Some(ty) = self.annotation_projection_type(object, field, span) {
+            return ty;
+        }
+
         // Primitive type constants: u64.MAX, i32.MIN, etc.
         if let ExprKind::Ident(name) = &object.kind {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
@@ -3432,7 +3538,28 @@ impl TypeChecker {
         Some(ty)
     }
 
+    /// A symbol's type, with its own type parameters in scope while it parses.
+    ///
+    /// A callee's signature is parsed here — at the *call site* — so without
+    /// this the scope in effect is the caller's, and a parameter named like a
+    /// real type resolves to that type: `func first<Output>(…)` was read as the
+    /// stdlib's `os.Output` from every call, and the argument mismatched
+    /// against a type nobody wrote (#915). Wrapping rather than pushing inline
+    /// because the scope has to come back off on every path out, and there are
+    /// a dozen.
     pub(super) fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {
+        let callee_params: Vec<String> =
+            self.fn_type_params.get(&sym_id).cloned().unwrap_or_default();
+        if callee_params.is_empty() {
+            return self.get_symbol_type_scoped(sym_id);
+        }
+        let outer = self.types.push_type_params(callee_params);
+        let ty = self.get_symbol_type_scoped(sym_id);
+        self.types.pop_type_params(outer);
+        ty
+    }
+
+    fn get_symbol_type_scoped(&mut self, sym_id: SymbolId) -> Type {
         if let Some(ty) = self.symbol_types.get(&sym_id) {
             return ty.clone();
         }
@@ -3874,6 +4001,60 @@ impl TypeChecker {
     /// been inferred already — with-binding sources are.)
     /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
     /// for a place that already has the type in hand.
+    /// Report every task-local `Shared` a spawned closure reaches (SH7).
+    ///
+    /// The box is captured by naming it, so the names checked inside a `spawn`
+    /// argument's span are exactly the boxes that task can touch. Matching on
+    /// span containment beats re-walking the body, which would have to know
+    /// every expression and statement shape to be right.
+    ///
+    /// Runs after constraint solving for the same reason
+    /// `validate_pending_mutations` does: during the walk, the type of a
+    /// `let c = Shared.new(0)` is usually still a variable.
+    pub(super) fn validate_spawn_captures(&mut self) {
+        if self.spawn_arg_spans.is_empty() {
+            return;
+        }
+        let spans = std::mem::take(&mut self.spawn_arg_spans);
+        let uses = std::mem::take(&mut self.local_shared_uses);
+        let mut reported: std::collections::HashSet<(String, usize)> =
+            std::collections::HashSet::new();
+        for (name, ty, span) in uses {
+            let Some(i) = spans.iter().position(|s| {
+                s.file_id == span.file_id && span.start >= s.start && span.end <= s.end
+            }) else {
+                continue;
+            };
+            let resolved = self.resolve_named(&self.ctx.apply(&ty));
+            if !Self::type_is_shared(&resolved, &self.types) {
+                continue;
+            }
+            if self.shared_strategy_name(&resolved) != "Local" {
+                continue;
+            }
+            if reported.insert((name.clone(), i)) {
+                self.errors.push(TypeError::LocalSharedSent { name, span });
+            }
+        }
+    }
+
+    /// The strategy argument's name, or `"Local"` when there isn't one — bare
+    /// `Shared<T>` is `Shared<T, Local>` in every position (SH3).
+    fn shared_strategy_name(&self, ty: &Type) -> String {
+        let args = match ty {
+            Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
+            _ => return "Local".to_string(),
+        };
+        match args.get(1) {
+            Some(GenericArg::Type(s)) => match self.resolve_named(s) {
+                Type::UnresolvedNamed(n) => n,
+                Type::Named(id) => self.types.type_name(id),
+                _ => "Local".to_string(),
+            },
+            _ => "Local".to_string(),
+        }
+    }
+
     fn type_is_shared(ty: &Type, types: &crate::TypeTable) -> bool {
         match ty {
             Type::Generic { base, .. } => types.type_name(*base) == "Shared",

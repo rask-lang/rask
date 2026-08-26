@@ -98,6 +98,23 @@ impl Interpreter {
         // `<T>` — reading only `type_params` found nothing to bind.
         let mut type_frame: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+
+        // Written type arguments bind positionally against the declaration's
+        // own list: `count<Plain>()` on `func count<T>()` means `T = "Plain"`.
+        // Taken, so it can't leak into a later call, and applied before the
+        // argument-derived bindings below — which use `or_insert`, so an
+        // inferred value can still fill a parameter this didn't name.
+        if let Some(written) = self.pending_type_args.take() {
+            for (tp, concrete) in func
+                .type_params
+                .iter()
+                .filter(|tp| !tp.is_comptime)
+                .zip(written)
+            {
+                type_frame.insert(tp.name.clone(), concrete);
+            }
+        }
+
         for (idx, param) in func.params.iter().enumerate() {
             let declared = param.ty.trim();
             let named_here = func

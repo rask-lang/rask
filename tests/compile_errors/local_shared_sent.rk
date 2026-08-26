@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.sync/SH7: a task-local `Shared` can't be sent to another task.
+//
+// `Shared.local` is the opt-out: no lock at all, for a box that provably never
+// leaves its task. What makes it safe to reach for is that reaching a second
+// task with one doesn't compile. The default (`Shared.new`, a read-write lock)
+// needs no such rule, which is why it's the default.
+
+import async.spawn
+
+func races() {
+    using Multitasking {
+        let counter = Shared.local(0)       // Local — no lock
+        let h = spawn(|| {
+            with counter.write() as c { c += 1 }   // ERROR: E0346
+        })
+        let _ = h.join()
+    }
+}
+
+// Both locking strategies are fine, and so is the default: `mutex` serialises
+// every holder, `readers` lets concurrent reads through, and `new` is `readers`.
+// None of it is inferred — the constructor says which, and it lands in the type.
+func serialised() {
+    using Multitasking {
+        let counter = Shared.mutex(0)
+        let h = spawn(|| {
+            with counter.write() as c { c += 1 }
+        })
+        let _ = h.join()
+    }
+}
+
+func read_heavy() {
+    using Multitasking {
+        let config = Shared.new(30)
+        let h = spawn(|| {
+            with config.read() as c { let _ = c }
+        })
+        let _ = h.join()
+    }
+}
+
+func main() {}

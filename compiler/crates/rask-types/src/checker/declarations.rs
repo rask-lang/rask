@@ -45,9 +45,37 @@ impl TypeChecker {
                     self.check_declared_type_name(&u.name, "union", decl.span);
                     self.register_union(u);
                 }
+                // AN6: annotations register as nominal struct types so
+                // `field.has<validate>()` can name them as type arguments.
+                // The restricted shape (AN1) is enforced in annotations.rs.
+                DeclKind::Annotation(a) => {
+                    self.check_declared_type_name(&a.name, "annotation", decl.span);
+                    self.annotation_types.insert(a.name.clone());
+                    let s = rask_ast::decl::StructDecl {
+                        name: a.name.clone(),
+                        type_params: vec![],
+                        fields: a.fields.clone(),
+                        methods: vec![],
+                        is_pub: a.is_pub,
+                        attrs: vec![],
+                        doc: a.doc.clone(),
+                    };
+                    let id = self.register_struct(&s);
+                    self.types.record_method_decl(id, decl.id);
+                }
                 DeclKind::TypeAlias(a) => {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);
+                }
+                // `const W = 4` then `[i32; W]`. The length has to be known
+                // before any declared type is parsed, so it's recorded in this
+                // pass rather than where the const is checked (#906).
+                DeclKind::Const(c) => {
+                    if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
+                        if let Ok(len) = usize::try_from(*n) {
+                            self.types.register_const_length(c.name.clone(), len);
+                        }
+                    }
                 }
                 DeclKind::Fn(f) => {
                     // Find this function's SymbolId by matching name + Function kind.
@@ -255,6 +283,10 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
+        // The declaration's own parameters win over types of the same name for
+        // as long as its field types are being parsed (#915).
+        let type_params = struct_type_param_names(s);
+        let outer_params = self.types.push_type_params(type_params.clone());
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -263,6 +295,7 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
+        self.types.pop_type_params(outer_params);
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
@@ -316,7 +349,6 @@ impl TypeChecker {
 
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
-        let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");
@@ -478,7 +510,8 @@ impl TypeChecker {
             })
             .collect();
 
-        let type_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        // PC1: explicit `<T>` plus single letters appearing in payload types.
+        let type_params = enum_type_param_names(e);
         let enum_id = self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
             type_params,
@@ -1472,6 +1505,53 @@ pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
         }
     }
     names
+}
+
+/// PC1 for a type declaration: explicit `<T>` declarations plus every single
+/// uppercase letter appearing in its field or payload types, in declaration
+/// order.
+///
+/// `gradual-constraints` lists struct fields and enum payloads as signature
+/// positions alongside function parameters, but only the function side was
+/// wired up — so `struct Pair { first: T  second: U }` registered with no type
+/// parameters at all, and `Pair<i64, string>` had nothing to match against.
+/// SYNTAX.md's own `Pair` example didn't compile (#913).
+pub fn declared_type_param_names<'a>(
+    explicit: &[rask_ast::decl::TypeParam],
+    member_types: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    use std::sync::OnceLock;
+    static EMPTY_TABLE: OnceLock<super::type_table::TypeTable> = OnceLock::new();
+    let table = EMPTY_TABLE.get_or_init(super::type_table::TypeTable::new);
+
+    let mut names: Vec<String> = explicit.iter().map(|p| p.name.clone()).collect();
+    let mut add = |n: &str| {
+        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    };
+    for ty_str in member_types {
+        if ty_str.is_empty() {
+            continue;
+        }
+        if let Ok(ty) = parse_type_string(ty_str, table) {
+            for_each_unresolved_name(&ty, &mut add);
+        }
+    }
+    names
+}
+
+/// PC1 for a struct: explicit `<T>` plus single letters in its field types.
+pub fn struct_type_param_names(s: &StructDecl) -> Vec<String> {
+    declared_type_param_names(&s.type_params, s.fields.iter().map(|f| f.ty.as_str()))
+}
+
+/// PC1 for an enum: explicit `<T>` plus single letters in its payload types.
+pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
+    declared_type_param_names(
+        &e.type_params,
+        e.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.as_str())),
+    )
 }
 
 /// Walk a parsed type tree, calling `f` on every unresolved base name.

@@ -686,5 +686,5 @@ Hover information shows the access type, duration, and suggested patterns for th
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Single-value `with` access (`mem.cell`)
-- [Synchronization](../concurrency/sync.md) — `Shared<T>`/`Mutex<T>` `with` access (`conc.sync`)
+- [Synchronization](../concurrency/sync.md) — `Shared<T, S>` `with` access (`conc.sync`)
 - [Structs](../types/structs.md) — Struct definition, methods, value semantics (`type.structs`)

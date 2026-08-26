@@ -83,6 +83,7 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::OptionalChain { .. }
                     | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
             ) {
@@ -362,6 +363,10 @@ impl TypeChecker {
                 self.resolve_index(object, index, result, is_range, span)
             }
 
+            TypeConstraint::OptionalChain { field, result, span } => {
+                self.resolve_optional_chain(field, result, span)
+            }
+
             TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span } => {
                 self.resolve_coalesce(node, value, default, result, value_span, default_span, span)
             }
@@ -562,6 +567,34 @@ impl TypeChecker {
     /// Settle `object[index]` once the container's shape is known. Defers while
     /// the container is still a variable — a Pool behind a struct field only
     /// gets its type when that field's own constraint resolves.
+    /// `a?.b` — the chain's result once `b`'s type is known.
+    ///
+    /// A field that is already optional stays one layer deep; anything else
+    /// gains the layer the chain adds. Deferred rather than decided at the
+    /// access, because at that point the field's type is a bare variable and
+    /// the answer would always be "not an option" (#938).
+    fn resolve_optional_chain(
+        &mut self,
+        field: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let field = self.ctx.apply(&field);
+        // Still open — nothing to decide from. Re-defer; the bounded retry
+        // gives it one more chance, and a variable that never settles is
+        // reported by the leftover-constraint pass like any other.
+        if matches!(field, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                field,
+                result,
+                span,
+            });
+            return Ok(false);
+        }
+        let chained = if field.is_option() { field } else { Type::option(field) };
+        self.unify(&result, &chained, span)
+    }
+
     fn resolve_index(
         &mut self,
         object: Type,
@@ -1085,6 +1118,26 @@ impl TypeChecker {
                 Ok(true)
             }
 
+            // `Shared<T, S>`: the strategy decides which lock the accessors
+            // take, so a mismatch has to be caught here. Left to the generic
+            // arms below it becomes an `Equal` constraint between two
+            // `UnresolvedNamed`s that nothing ever discharges — and a `Local`
+            // box read through the read-write-lock entry points blocks forever
+            // on an allocation that has no lock (#960).
+            //
+            // Ahead of those arms, and blind to how the type is spelled, because
+            // `Shared<i32>` and `Shared<i32, Readers>` are the same type and
+            // don't arrive the same way: the first is an `UnresolvedGeneric`
+            // built by the defaulting step, the second a resolved `Generic`.
+            //
+            // An unwritten strategy stays generic: `extend Shared<T, S>` reaches
+            // here with `S` unresolved and its accessors work under every
+            // strategy. Only two *named* strategies that differ are wrong.
+            (a, b) if self.shared_strategy_conflict(a, b).is_some() => {
+                let (expected, found) = self.shared_strategy_conflict(a, b).unwrap();
+                Err(TypeError::SharedStrategyMismatch { found, expected, span })
+            }
+
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
                 if b1 != b2 || a1.len() != a2.len() {
                     return Err(TypeError::Mismatch {
@@ -1352,6 +1405,50 @@ impl TypeChecker {
                 found: t2,
                 span,
             }),
+        }
+    }
+
+    /// The two strategies of a pair of `Shared` types, when both are named and
+    /// differ.
+    ///
+    /// Returned in argument order, which `unify` takes as (expected, found) —
+    /// the same convention the `Mismatch` errors here use.
+    fn shared_strategy_conflict(&self, t1: &Type, t2: &Type) -> Option<(String, String)> {
+        let s1 = self.named_strategy(self.shared_args(t1)?)?;
+        let s2 = self.named_strategy(self.shared_args(t2)?)?;
+        if s1 == s2 { None } else { Some((s1, s2)) }
+    }
+
+    /// A `Shared`'s type arguments, whichever way the type is spelled.
+    fn shared_args<'t>(&self, ty: &'t Type) -> Option<&'t Vec<GenericArg>> {
+        match ty {
+            Type::UnresolvedGeneric { name, args } if name == "Shared" => Some(args),
+            Type::Generic { base, args }
+                if self.types.get_type_id("Shared") == Some(*base) => Some(args),
+            _ => None,
+        }
+    }
+
+    /// The strategy a `Shared`'s arguments name, if they name one of the three.
+    ///
+    /// The three strategies are declared structs in `stdlib/sync.rk`, so a
+    /// written one arrives as a resolved `Named` while the one the defaulting
+    /// step inserts is still an `UnresolvedNamed`. Both count. A type variable,
+    /// a generic parameter, or a missing argument does not — those stay generic,
+    /// which is what makes `func serve<S>(c: Shared<Config, S>)` work (SH4).
+    fn named_strategy(&self, args: &[GenericArg]) -> Option<String> {
+        let GenericArg::Type(ty) = args.get(1)? else { return None };
+        const STRATEGIES: [&str; 3] = ["Readers", "Mutex", "Local"];
+        match ty.as_ref() {
+            Type::UnresolvedNamed(name) => STRATEGIES
+                .iter()
+                .find(|s| *s == name)
+                .map(|s| s.to_string()),
+            Type::Named(id) => STRATEGIES
+                .iter()
+                .find(|s| self.types.get_type_id(s) == Some(*id))
+                .map(|s| s.to_string()),
+            _ => None,
         }
     }
 

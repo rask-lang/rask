@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// User annotations (type.annotations/AN1-AN8): declared data records attached
+// to fields, read back through reflect at comptime.
+//
+// The read surface is `field.has<A>()` and `field.get<A>().<field>` inside a
+// comptime for. Both resolve per unrolled iteration, so every number below is
+// a compile-time fact — and one both backends have to agree on, since native
+// splices constants while the interpreter walks real values.
+//
+// AN6 has exactly these two operations — an earlier draft's third one,
+// enumerating everything attached, was cut as unusable (see the spec).
+
+import std.reflect
+
+annotation @indexed {
+    weight: i64 = 1
+    label: string = "none"
+}
+
+annotation @secret {
+}
+
+annotation @scaled {
+    factor: f64 = 0.5
+    on: bool = false
+}
+
+struct Doc {
+    @indexed(weight: 3, label: "headline")
+    title: string
+    body: string
+    @secret()
+    @indexed(weight: 2)
+    token: string
+}
+
+struct Plain {
+    a: i64
+    b: i64
+}
+
+struct Tuned {
+    @scaled(factor: 2.5, on: true)
+    x: i64
+    @scaled()
+    y: i64
+}
+
+func count_indexed() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func count_secret() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<secret>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func count_plain() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Plain>() {
+        comptime if field.has<indexed>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+func indexed_names() -> string {
+    mut names = ""
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            names = "{names}{field.name},"
+        }
+    }
+    return names
+}
+
+// AN6: get<A>().field splices the attached value. `title` gives it explicitly,
+// `token` leaves `label` to its declared default.
+func total_weight() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            n += field.get<indexed>().weight
+        }
+    }
+    return n
+}
+
+func labels() -> string {
+    mut out = ""
+    comptime for field in reflect.fields<Doc>() {
+        comptime if field.has<indexed>() {
+            out = "{out}{field.get<indexed>().label},"
+        }
+    }
+    return out
+}
+
+// A float and a bool field, both written and both defaulted. These are the
+// values the parser used to drop — `@scaled(factor: 2.5)` was stored as
+// `scaled(factor: a number)` and the value was gone (#965).
+func total_factor() -> f64 {
+    mut f: f64 = 0.0
+    comptime for field in reflect.fields<Tuned>() {
+        comptime if field.has<scaled>() {
+            f += field.get<scaled>().factor
+        }
+    }
+    return f
+}
+
+func count_on() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Tuned>() {
+        comptime if field.has<scaled>() {
+            if field.get<scaled>().on {
+                n += 1
+            }
+        }
+    }
+    return n
+}
+
+// `!has<A>()` folds too, so the else side of a guard is just as usable.
+func count_unindexed() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Doc>() {
+        comptime if !field.has<indexed>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+test "has finds attached annotations" {
+    assert_eq(count_indexed(), 2)
+}
+
+test "has distinguishes annotations on the same field" {
+    assert_eq(count_secret(), 1)
+}
+
+test "has is false without attachments" {
+    assert_eq(count_plain(), 0)
+}
+
+test "has composes with field.name" {
+    assert_eq(indexed_names(), "title,token,")
+}
+
+test "get reads written and defaulted integer fields" {
+    assert_eq(total_weight(), 5)
+}
+
+test "get reads written and defaulted string fields" {
+    assert_eq(labels(), "headline,none,")
+}
+
+test "get reads float fields" {
+    assert_eq(total_factor(), 3.0)
+}
+
+test "get reads bool fields" {
+    assert_eq(count_on(), 1)
+}
+
+test "a negated guard folds as well" {
+    assert_eq(count_unindexed(), 1)
+}
+
+// Two annotations on one field, read independently.
+struct Tagged {
+    @indexed(weight: 4, label: "both")
+    @secret()
+    key: string
+    @indexed(weight: 1)
+    open: string
+}
+
+func tagged_pairs() -> string {
+    mut out = ""
+    comptime for field in reflect.fields<Tagged>() {
+        comptime if field.has<indexed>() {
+            comptime if field.has<secret>() {
+                out = "{out}{field.name}={field.get<indexed>().weight}/{field.get<indexed>().label};"
+            }
+        }
+    }
+    return out
+}
+
+// `&&` and `||` fold the same way `!` does.
+func combined() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<Tagged>() {
+        comptime if field.has<indexed>() && field.has<secret>() {
+            n += 100
+        }
+        comptime if field.has<indexed>() || field.has<secret>() {
+            n += 1
+        }
+    }
+    return n
+}
+
+// Read through a generic function: the written type argument is the only thing
+// naming the struct (#968).
+func total<T>() -> i64 {
+    mut n: i64 = 0
+    comptime for field in reflect.fields<T>() {
+        comptime if field.has<indexed>() {
+            n += field.get<indexed>().weight
+        }
+    }
+    return n
+}
+
+test "two annotations on one field, read independently" {
+    assert_eq(tagged_pairs(), "key=4/both;")
+}
+
+test "and/or fold like the negation does" {
+    assert_eq(combined(), 102)
+}
+
+test "annotations read through a generic function" {
+    assert_eq(total<Doc>(), 5)
+    assert_eq(total<Tagged>(), 5)
+}

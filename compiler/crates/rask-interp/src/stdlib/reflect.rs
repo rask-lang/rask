@@ -136,6 +136,18 @@ impl Interpreter {
                     "has_default".to_string(),
                     Value::Bool(f.default.is_some() || has_attr(&f.attrs, "default")),
                 );
+                // AN6: raw attachments, hidden behind `__` — what
+                // `field.has<A>()` answers from. Mirrors the native
+                // ReflectFieldConst.attrs.
+                fields.insert(
+                    "__attrs".to_string(),
+                    Value::vec(
+                        f.attrs
+                            .iter()
+                            .map(|a| Value::String(Arc::new(Mutex::new(a.clone()))))
+                            .collect(),
+                    ),
+                );
                 Value::Struct(Arc::new(Mutex::new(StructData {
                     name: "FieldInfo".to_string(),
                     fields,

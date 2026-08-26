@@ -126,7 +126,7 @@ let a = |mutate x| { x += 1 }
 let b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
 ```
 
-Use `Cell<T>` or Pool+Handle for shared mutable state across multiple closures.
+Use `Shared<T>` for shared mutable state across multiple closures.
 
 ## Scope-limited closures (non-own)
 
@@ -243,9 +243,9 @@ ERROR [mem.closures/MC2]: variable already mutably captured
 4  |  let b = |mutate x| { x += 2 }
    |             ^^^^^^^^^ cannot capture x again
 
-FIX: Use Cell<T> for shared mutable state:
+FIX: Use Shared<T> for shared mutable state:
 
-  let x = Cell.new(0)
+  let x = Shared.new(0)
   let a = || x.modify(|v| v += 1)
   let b = || x.modify(|v| v += 2)
 ```
@@ -319,19 +319,19 @@ task takes ownership of its captures. Extending `own` to all closures unifies th
 | Simple callback | `\|x\| x * 2` (pure, no captures) |
 | Callback with context | `own \|event\| process(context, event)` (moves context) |
 | Mutating a local | `\|mutate count\| count += 1` (mutable capture) |
-| Shared mutable state (multiple closures) | `Cell<T>` or Pool+Handle |
+| Shared mutable state (multiple closures) | `Shared<T>` |
 | Callback stored for later | `own \|...\|` — capture owned values |
 
-**Cell<T> for shared mutable state:**
+**`Shared<T>` for shared mutable state:**
 
 ```rask
-let counter = Cell.new(0)
+let counter = Shared.new(0)
 
 button1.on_click(own |event| {
-    with counter as c { c += 1 }
+    with counter.write() as c { c += 1 }
 })
 button2.on_click(own |event| {
-    with counter as c { c += 10 }
+    with counter.write() as c { c += 10 }
 })
 ```
 
@@ -349,9 +349,9 @@ button2.on_click(own |event| {
 
 - [Value Semantics](value-semantics.md) — Copy vs move (`mem.value`)
 - [Borrowing](borrowing.md) — Block-scoped views and `with`-based access (`mem.borrowing`)
-- [Boxes](boxes.md) — Cell and Pool as containers for shared mutable state (`mem.boxes`)
-- [Cell](cell.md) — Single-value mutable container (`mem.cell`)
+- [Boxes](boxes.md) — The box family (`mem.boxes`)
+- [Synchronization](../concurrency/sync.md) — `Shared<T, S>`, the single-value container (`conc.sync`)
 - [Pools](pools.md) — Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Linearity](linear.md) — Closures capturing linear values must consume them (`mem.linear`)
-- [Owned Pointers](owned.md) — Moving an `Owned<T>` into a closure consumes it (`mem.owned`)
+- [Owned Pointers](heap.md) — Moving an `Heap<T>` into a closure consumes it (`mem.heap`)
 - [Concurrency](../concurrency/sync.md) — Closures sent cross-task must use `own` (`conc.sync`)

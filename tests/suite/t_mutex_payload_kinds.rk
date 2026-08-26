@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `with box.lock() as x` for every payload shape (#477).
+// `with box.write() as x` for every payload shape (#477).
 //
 // A box stores its payload's bytes and the lock hands the block their address.
 // For a struct that address is the value, but for anything word-sized — a Map
 // or Vec handle, an integer — the value has to be loaded out. Passed straight
-// through, `Mutex<Map>` handed the map runtime a pointer to a pointer.
+// through, `Shared<Map, Mutex>` handed the map runtime a pointer to a pointer.
 
 struct Counter { public n: i64 }
 
@@ -17,55 +17,55 @@ extend Counter {
     }
 }
 
-struct Store { public entries: Mutex<Map<string, i64>> }
+struct Store { public entries: Shared<Map<string, i64>, Mutex> }
 
 extend Store {
     func put(self, k: string, v: i64) {
-        with self.entries.lock() as m {
+        with self.entries.write() as m {
             m.insert(k, v)
         }
     }
     func size(self) -> u64 {
-        return self.entries.lock().len()
+        return self.entries.write().len()
     }
 }
 
 test "struct payload" {
-    let m = Mutex.new(Counter { n: 0 })
-    with m.lock() as c {
+    let m = Shared.mutex(Counter { n: 0 })
+    with m.write() as c {
         c.bump()
         c.bump()
     }
-    assert m.lock().get() == 2
+    assert m.write().get() == 2
 }
 
 test "map payload" {
-    let mm: Mutex<Map<string, i64>> = Mutex.new(Map.new())
-    with mm.lock() as m {
+    let mm: Shared<Map<string, i64>, Mutex> = Shared.mutex(Map.new())
+    with mm.write() as m {
         m.insert("a", 1)
         m.insert("b", 2)
     }
-    assert mm.lock().len() == 2
+    assert mm.write().len() == 2
 }
 
 test "vec payload" {
-    let mv: Mutex<Vec<i64>> = Mutex.new(Vec.new())
-    with mv.lock() as v {
+    let mv: Shared<Vec<i64>, Mutex> = Shared.mutex(Vec.new())
+    with mv.write() as v {
         v.push(3)
         v.push(4)
     }
-    assert mv.lock().len() == 2
+    assert mv.write().len() == 2
 }
 
 test "scalar payload" {
-    let mi: Mutex<i64> = Mutex.new(5)
-    with mi.lock() as n {
+    let mi: Shared<i64, Mutex> = Shared.mutex(5)
+    with mi.write() as n {
         assert n == 5
     }
 }
 
 test "a mutex in a struct field" {
-    let s = Store { entries: Mutex.new(Map.new()) }
+    let s = Store { entries: Shared.mutex(Map.new()) }
     s.put("a", 1)
     s.put("b", 2)
     assert s.size() == 2

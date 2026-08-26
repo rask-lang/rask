@@ -259,6 +259,6 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 
 - [Ownership Rules](ownership.md) — Single-owner model and move semantics (`mem.ownership`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)
-- [Linearity](linear.md) — How `@resource` and `Owned<T>` extend the value model with must-consume rules (`mem.linear`)
+- [Linearity](linear.md) — How `@resource` and `Heap<T>` extend the value model with must-consume rules (`mem.linear`)
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Warnings](../tooling/warnings.md) — `@warn(implicit_copy)` (`tool.warnings`)

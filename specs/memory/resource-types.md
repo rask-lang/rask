@@ -8,7 +8,7 @@
 
 `@resource` marks a struct type as **linear** — every value of that type must be consumed exactly once. You can't forget to close a file or commit a transaction; the compiler enforces it.
 
-The consume-exactly-once rules live in [`mem.linear`](linear.md) and apply identically to `@resource` structs, `Owned<T>`, and linear elements in pools. This spec describes the `@resource` annotation and the patterns specific to I/O handles and transactions.
+The consume-exactly-once rules live in [`mem.linear`](linear.md) and apply identically to `@resource` structs, `Heap<T>`, and linear elements in pools. This spec describes the `@resource` annotation and the patterns specific to I/O handles and transactions.
 
 ## Declaration
 
@@ -460,8 +460,8 @@ func process_files(paths: Vec<string>) -> void or Error {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Owned<T>`, `Pool<Linear>` (`mem.linear`)
-- [Owned Pointers](owned.md) — `Owned<T>`, the other linear value (`mem.owned`)
+- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
+- [Owned Pointers](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Ensure](../control/ensure.md) — Deferred execution (`ctrl.ensure`)

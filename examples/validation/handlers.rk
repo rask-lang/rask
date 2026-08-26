@@ -4,7 +4,7 @@
 // `try` — a typed error lands in its ApiError variant on its own (ER31a) —
 // and reach shared state through the module-level `store`/`metrics`/`config`.
 //
-// Store/metrics are reached with inline `.lock()` (MX3) rather than a `with`
+// Store/metrics are reached with inline `.write()` (MX3) rather than a `with`
 // block: `with <module-level-const mutex> as v` doesn't unwrap to the inner
 // type in the current checker, while inline access does. See FINDINGS.
 
@@ -55,7 +55,7 @@ struct CreateProjectRequest {
 // ─── Health & metrics ────────────────────────────────────────────────
 
 func handle_health() -> Response or ApiError {
-    let count = store.lock().task_count()
+    let count = store.write().task_count()
     let up = started.elapsed()
     let body = HealthBody {
         status: "ok",
@@ -66,7 +66,7 @@ func handle_health() -> Response or ApiError {
 }
 
 func handle_metrics() -> Response or ApiError {
-    let summary = metrics.lock().summarize()
+    let summary = metrics.write().summarize()
     return json_response(200, json.encode(summary))
 }
 
@@ -84,7 +84,7 @@ func handle_sleep(req: Request) -> Response or ApiError {
 
 func handle_list_tasks(req: Request) -> Response or ApiError {
     let filter = try build_filter(req)
-    let page: ListResponse = store.lock().list_views(filter)
+    let page: ListResponse = store.write().list_views(filter)
     return json_response(200, json.encode(page))
 }
 
@@ -98,13 +98,13 @@ func handle_create_task(req: Request) -> Response or ApiError {
     let priority = try Priority.from_label(label)
     let project = ProjectId(dto.project_id)
 
-    let id = try store.lock().create_task(dto.title, project, priority)
-    let view = try store.lock().view_task(id)
+    let id = try store.write().create_task(dto.title, project, priority)
+    let view = try store.write().view_task(id)
     return json_response(201, json.encode(view))
 }
 
 func handle_get_task(id: TaskId) -> Response or ApiError {
-    let view = try store.lock().view_task(id)
+    let view = try store.write().view_task(id)
     return json_response(200, json.encode(view))
 }
 
@@ -115,12 +115,12 @@ func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
     try dto.validate()
     let patch = try build_patch(dto)
 
-    let view = try store.lock().update_task(id, patch)
+    let view = try store.write().update_task(id, patch)
     return json_response(200, json.encode(view))
 }
 
 func handle_delete_task(id: TaskId) -> Response or ApiError {
-    try store.lock().delete_task(id)
+    try store.write().delete_task(id)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
@@ -129,7 +129,7 @@ func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
         return ApiError.BadRequest("invalid JSON")
     }
     let dep = TaskId(dto.dep_id)
-    try store.lock().add_dependency(id, dep)
+    try store.write().add_dependency(id, dep)
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 
@@ -144,7 +144,7 @@ func handle_batch(req: Request) -> Response or ApiError {
     }
 
     let applied = ops.len()
-    try store.lock().apply_batch(ops)
+    try store.write().apply_batch(ops)
     return json_response(200, json.encode(BatchResult { applied }))
 }
 
@@ -157,13 +157,13 @@ func handle_create_user(req: Request) -> Response or ApiError {
     try dto.validate()
 
     let email = EmailAddress { raw: dto.email }
-    let id = try store.lock().create_user(dto.name, email)
-    let view = try store.lock().view_user(id)
+    let id = try store.write().create_user(dto.name, email)
+    let view = try store.write().view_user(id)
     return json_response(201, json.encode(view))
 }
 
 func handle_get_user(id: UserId) -> Response or ApiError {
-    let view = try store.lock().view_user(id)
+    let view = try store.write().view_user(id)
     return json_response(200, json.encode(view))
 }
 
@@ -174,7 +174,7 @@ func handle_create_project(req: Request) -> Response or ApiError {
     if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
 
     let owner = UserId(dto.owner)
-    let id = try store.lock().create_project(dto.name, owner)
+    let id = try store.write().create_project(dto.name, owner)
     return json_response(201, json.encode(ProjectView {
         id: id.value,
         name: dto.name,

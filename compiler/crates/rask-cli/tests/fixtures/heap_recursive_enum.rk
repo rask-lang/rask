@@ -1,7 +1,7 @@
-// A recursive type built with `Owned<T>`, which is what `Owned` is for.
+// A recursive type built with `Heap<T>`, which is what the box is for.
 //
-// `own` allocated nothing. Layout gives an `Owned<T>` slot 8 bytes, so storing a
-// 16-byte enum into an enum payload declared `Owned<Tree>` wrote across the next
+// Allocation used to do nothing here. Layout gives a `Heap<T>` slot 8 bytes, so storing a
+// 16-byte enum into an enum payload declared `Heap<Tree>` wrote across the next
 // payload, and reading it back gave the first child's *tag* used as an address —
 // SIGSEGV on the first recursion (#705).
 //
@@ -9,7 +9,7 @@
 // boxed payload. `Wrap` covers the struct-field form of the same boundary.
 enum Tree {
     Leaf(f64),
-    Node(left: Owned<Tree>, right: Owned<Tree>),
+    Node(left: Heap<Tree>, right: Heap<Tree>),
 }
 
 func total(t: Tree) -> f64 {
@@ -38,7 +38,7 @@ func depth(t: Tree) -> i64 {
 }
 
 struct Wrap {
-    public inner: Owned<Tree>
+    public inner: Heap<Tree>
 }
 
 func main() {
@@ -47,13 +47,13 @@ func main() {
     let l2 = Tree.Leaf(2.0)
     let l3 = Tree.Leaf(4.0)
     let l4 = Tree.Leaf(8.0)
-    let n1 = Tree.Node(left: own l1, right: own l2)
-    let n2 = Tree.Node(left: own l3, right: own l4)
-    let root = Tree.Node(left: own n1, right: own n2)
+    let n1 = Tree.Node(left: Heap(l1), right: Heap(l2))
+    let n2 = Tree.Node(left: Heap(l3), right: Heap(l4))
+    let root = Tree.Node(left: Heap(n1), right: Heap(n2))
     println("total={total(root)} (expect 15)")
     println("depth={depth(root)} (expect 3)")
 
-    // A struct field declared Owned<T>, not just an enum payload.
-    let w = Wrap { inner: own Tree.Leaf(5.0) }
+    // A struct field declared Heap<T>, not just an enum payload.
+    let w = Wrap { inner: Heap(Tree.Leaf(5.0)) }
     println("wrapped={total(w.inner)} (expect 5)")
 }

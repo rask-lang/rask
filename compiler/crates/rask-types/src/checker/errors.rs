@@ -236,6 +236,12 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
+    RetiredBoxType {
+        name: String,
+        replacement: String,
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -510,6 +516,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// conc.sync/SH7: a task-local `Shared` sent to another task.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+        span: Span,
+    },
+
+    /// conc.sync/SH2: two `Shared` boxes with different strategies met.
+    ///
+    /// Not a deferrable obligation like most type mismatches — the strategy
+    /// picks which lock the accessors take, so getting it wrong deadlocks
+    /// rather than misbehaving visibly (#960).
+    #[error("this box uses the `{found}` strategy, but `{expected}` is expected here")]
+    SharedStrategyMismatch {
+        found: String,
+        expected: String,
+        span: Span,
+    },
+
     /// CC1: `spawn` used outside any `using Multitasking` block
     #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
     SpawnOutsideBlock {
@@ -729,6 +754,21 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.annotations/AN1-AN5: a user annotation declared or attached wrong —
+    /// reserved name, bad field type, wrong target, unknown/missing/duplicate
+    /// argument.
+    #[error("annotation `{name}`: {problem}")]
+    BadAnnotation {
+        name: String,
+        problem: String,
+        fix: String,
+        /// Which annotation rule this violates, in words. One shared reason
+        /// can't cover "you can't construct one" and "that's not a type" —
+        /// each site says why its own rule exists.
+        why: &'static str,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -836,6 +876,18 @@ pub enum TypeError {
         kind: IndexErrorKind,
         span: Span,
     },
+
+    /// std.collections (#901): a length-changing method called on `[T; N]`.
+    /// The length is part of the type, so there is nowhere for the element to
+    /// go — and the `Vec` method table used to answer these calls anyway.
+    #[error("`{method}` doesn't exist on a fixed array")]
+    FixedArrayGrowth {
+        /// The method that was called — named in the message and the fix.
+        method: String,
+        /// The receiver's type, so the message can print its length.
+        array: Type,
+        span: Span,
+    },
 }
 
 /// What went wrong at an index site — drives the E0819 diagnostic.
@@ -912,6 +964,8 @@ impl TypeError {
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
             | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+
+            FixedArrayGrowth { array, .. } => *array = f(array),
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
@@ -1014,6 +1068,9 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | RetiredBoxType { .. }
+            | LocalSharedSent { .. }
+            | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
@@ -1057,6 +1114,7 @@ impl TypeError {
             | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
+            | BadAnnotation { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

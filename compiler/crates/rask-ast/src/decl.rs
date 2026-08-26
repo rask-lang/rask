@@ -46,6 +46,22 @@ pub enum DeclKind {
     TypeAlias(TypeAliasDecl),
     /// C header import: `import c "header.h"`
     CImport(CImportDecl),
+    /// User annotation declaration (type.annotations/AN1)
+    Annotation(AnnotationDecl),
+}
+
+/// A user annotation declaration (type.annotations/AN1).
+///
+/// A restricted struct: const-representable fields with optional defaults, no
+/// methods. Attachments (`@name(args)`) type-check like construction (AN3).
+#[derive(Debug, Clone)]
+pub struct AnnotationDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub fields: Vec<Field>,
+    pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// A type declaration: nominal by default, transparent with `type alias`.
@@ -267,6 +283,81 @@ pub mod field_attrs {
     fn call_arg<'a>(attr: &'a str, name: &str) -> Option<&'a str> {
         let rest = attr.trim().strip_prefix(name)?.trim_start();
         rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
+    }
+
+    /// The attachment's name — `validate(max:100)` → `validate`. The one
+    /// definition all three consumers share (checker validation, native
+    /// lowering of `has<A>()`, interp's FieldInfo.has), so what counts as
+    /// "the annotation's name" can't drift between them (type.annotations).
+    pub fn attachment_name(attr: &str) -> &str {
+        let attr = attr.trim();
+        attr.find('(').map(|i| &attr[..i]).unwrap_or(attr)
+    }
+
+    /// The attachment's named arguments, in written order: `validate(min: 1,
+    /// max: 100)` → `[("min", "1"), ("max", "100")]`. Values stay verbatim
+    /// text; a caller that needs one as a value runs it through
+    /// `annotation_value`.
+    ///
+    /// Attachments are stored as source text, so every consumer that wants the
+    /// arguments has to split them the same way — the checker validating them,
+    /// desugar filling defaults, and both backends answering
+    /// `get<A>()` (type.annotations/AN3, AN6). One definition, here.
+    pub fn attachment_args(attr: &str) -> Vec<(&str, &str)> {
+        let attr = attr.trim();
+        let name = attachment_name(attr);
+        if name.len() >= attr.len() || !attr.ends_with(')') {
+            return Vec::new();
+        }
+        split_top_level(&attr[name.len() + 1..attr.len() - 1], ',')
+            .into_iter()
+            .filter_map(|arg| split_top_level_once(arg, ':'))
+            .collect()
+    }
+
+    /// Split on a separator that isn't inside a string or a bracket — commas
+    /// and colons inside `["a,b"]` or `"x: y"` belong to the value.
+    pub fn split_top_level(text: &str, sep: char) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        for (i, c) in scan_top_level(text) {
+            if c == sep {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+        }
+        if !text[start..].trim().is_empty() {
+            out.push(&text[start..]);
+        }
+        out
+    }
+
+    /// First top-level `sep`, splitting into the two trimmed halves.
+    pub fn split_top_level_once(text: &str, sep: char) -> Option<(&str, &str)> {
+        scan_top_level(text)
+            .find(|(_, c)| *c == sep)
+            .map(|(i, _)| (text[..i].trim(), text[i + 1..].trim()))
+    }
+
+    /// Byte offsets of characters at nesting depth zero, outside strings.
+    fn scan_top_level(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+        let mut depth = 0usize;
+        let mut in_str = false;
+        text.char_indices().filter(move |(_, c)| match c {
+            '"' => {
+                in_str = !in_str;
+                false
+            }
+            '[' | '(' if !in_str => {
+                depth += 1;
+                false
+            }
+            ']' | ')' if !in_str => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => !in_str && depth == 0,
+        })
     }
 
     /// The contents of a `"…"` literal, with the usual escapes expanded.

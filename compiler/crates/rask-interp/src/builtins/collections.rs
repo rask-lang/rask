@@ -1661,12 +1661,19 @@ impl Interpreter {
                     )),
                 }
             }
-            (TypeConstructorKind::Shared, "new") => {
+            // conc.sync/SH2: the constructor names the strategy, and the
+            // strategy is the whole difference between the three values. `new`
+            // is `Readers`, which is what bare `Shared<T>` means.
+            (TypeConstructorKind::Shared, "new" | "mutex" | "local") => {
                 let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
                     got: 0,
                 })?;
-                Ok(Value::Shared(Arc::new(RwLock::new(value))))
+                match method {
+                    "mutex" => Ok(Value::RaskMutex(Arc::new(Mutex::new(value)))),
+                    "local" => Ok(Value::Cell(Arc::new(Mutex::new(value)))),
+                    _ => Ok(Value::Shared(Arc::new(RwLock::new(value)))),
+                }
             }
             // CE1: Cell.new(value) — heap-allocate a single mutable value
             (TypeConstructorKind::Cell, "new") => {

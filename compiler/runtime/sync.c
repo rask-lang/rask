@@ -393,3 +393,73 @@ void rask_cell_free(int64_t cell) {
     rask_free(c->data);
     rask_free(c);
 }
+
+// ─── get / set / replace under a lock ──────────────────────────────────────
+//
+// conc.sync puts these on `Shared<T, S>` for every strategy, not just `Local`.
+// The `Local` versions above are a plain copy in and out of a heap slot; under
+// a lock they are the same copy with the lock held. Without these, `get` on a
+// locking box type-checked and then failed to link (`Function not found:
+// Shared_get`) — the interpreter answered it because it has one uniform box.
+//
+// `get` returns the slot's address, matching the Cell and guard-pointer
+// convention: codegen loads a scalar through it or copies an aggregate out. The
+// lock is released before the caller reads, which is the same window `read()`
+// hands out for an inline access — a single-expression shorthand, not a
+// critical section (CE6).
+
+int64_t rask_shared_get(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RASK_CHECK_NONNULL(s, "Shared.get: box is null");
+    return (int64_t)(intptr_t)s->data;
+}
+
+void rask_shared_set(int64_t shared, int64_t data_ptr) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RASK_CHECK_NONNULL(s, "Shared.set: box is null");
+    if (!data_ptr) return;
+    pthread_rwlock_wrlock(&s->lock);
+    memcpy(s->data, (const void *)(intptr_t)data_ptr, (size_t)s->data_size);
+    pthread_rwlock_unlock(&s->lock);
+}
+
+int64_t rask_shared_replace(int64_t shared, int64_t data_ptr) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RASK_CHECK_NONNULL(s, "Shared.replace: box is null");
+    void *old = rask_alloc(s->data_size);
+    pthread_rwlock_wrlock(&s->lock);
+    memcpy(old, s->data, (size_t)s->data_size);
+    if (data_ptr) {
+        memcpy(s->data, (const void *)(intptr_t)data_ptr, (size_t)s->data_size);
+    }
+    pthread_rwlock_unlock(&s->lock);
+    return (int64_t)(intptr_t)old;
+}
+
+int64_t rask_mutex_get(int64_t mutex) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    RASK_CHECK_NONNULL(m, "Shared.get: box is null");
+    return (int64_t)(intptr_t)m->data;
+}
+
+void rask_mutex_set(int64_t mutex, int64_t data_ptr) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    RASK_CHECK_NONNULL(m, "Shared.set: box is null");
+    if (!data_ptr) return;
+    pthread_mutex_lock(&m->lock);
+    memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
+    pthread_mutex_unlock(&m->lock);
+}
+
+int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    RASK_CHECK_NONNULL(m, "Shared.replace: box is null");
+    void *old = rask_alloc(m->data_size);
+    pthread_mutex_lock(&m->lock);
+    memcpy(old, m->data, (size_t)m->data_size);
+    if (data_ptr) {
+        memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
+    }
+    pthread_mutex_unlock(&m->lock);
+    return (int64_t)(intptr_t)old;
+}

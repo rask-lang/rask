@@ -34,7 +34,7 @@ If something genuinely seems wrong, flag it once with a concrete reason — then
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The box family is closed.** `Cell`, `Pool`, `Shared`, `Mutex`, `Owned`, `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
+- **The box family is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Pool` (deprecated), `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
 
 # Working relationship
 
@@ -258,7 +258,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
 | Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
-| Boxes | Container family with `with`-scoped access — Cell, Pool, Shared, Mutex, Owned | [boxes.md](specs/memory/boxes.md) |
+| Boxes | Container family with `with`-scoped access — `Shared<T, S>`, Rack+Link, Heap. `Cell`/`Mutex` are strategies, not types | [boxes.md](specs/memory/boxes.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
@@ -287,7 +287,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Area | Status |
 |------|--------|
 | Build system | Working, including cross-package symbol export |
-| Macros/attributes | Not specified |
+| Macros/attributes | No macro system (rejected). User annotations built — `annotation @name { … }`, attachment checking, `has<A>()`/`get<A>().field` at comptime on both backends, across packages ([annotations.md](specs/types/annotations.md), spec still proposed). Call information is spec only ([call-info.md](specs/control/call-info.md)); gap analysis in [macro-story.md](specs/analysis/macro-story.md) |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
 | Phase B fiber implementation | Decided: stackful fibers with mmap'd virtual stacks, pluggable reactor (io_uring/epoll/kqueue/IOCP), signal-based preemption. Still to prototype: `fiber_switch` assembly, safe-point instrumentation, reactor backends |

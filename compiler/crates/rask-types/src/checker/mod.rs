@@ -17,6 +17,7 @@ mod errors;
 mod parse_type;
 mod borrow;
 mod declarations;
+mod annotations;
 mod check_pattern;
 mod check_fn;
 mod check_stmt;
@@ -32,7 +33,7 @@ pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
-pub use declarations::signature_type_param_names;
+pub use declarations::{signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
 
@@ -165,6 +166,10 @@ pub struct TypeChecker {
     /// SymbolId → (type param name → trait bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
     pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
+    /// Names declared as annotations (type.annotations). Registered as struct
+    /// types for `has<A>()` name resolution, but comptime-only: runtime
+    /// construction is rejected.
+    pub(super) annotation_types: std::collections::HashSet<String>,
     /// Call-site bound obligations: (type-arg var, bound trait names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
     pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
@@ -249,6 +254,14 @@ pub struct TypeChecker {
     /// through a `Handle`/`Link` bound by optional narrowing is recognised for
     /// what it is instead of being reported as mutating a `let`.
     pub(super) pending_mutations: Vec<PendingMutation>,
+    /// Every use of a name that might turn out to be a `Shared`, with its type
+    /// and span. Checked after constraint solving for SH7 — during the walk the
+    /// type is usually still a variable, since `let c = Shared.new(0)` is solved
+    /// later.
+    pub(super) local_shared_uses: Vec<(String, Type, rask_ast::Span)>,
+    /// The argument spans of every `spawn` call seen. A use inside one of these
+    /// is a use in another task.
+    pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
     /// mem.pools/PF5 frozen-context write sites, deferred for the same reason as
     /// `pending_mutations` — the check needs the handle's element type.
     pub(super) pending_frozen_writes: Vec<PendingFrozenWrite>,
@@ -358,6 +371,7 @@ impl TypeChecker {
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
+            annotation_types: std::collections::HashSet::new(),
             pending_bound_checks: Vec::new(),
             pending_disjointness: Vec::new(),
             in_unsafe: false,
@@ -386,6 +400,8 @@ impl TypeChecker {
             deferred_methods: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
+            local_shared_uses: Vec::new(),
+            spawn_arg_spans: Vec::new(),
             pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
@@ -445,6 +461,7 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
         }
         self.collect_type_declarations(decls);
+        self.check_user_annotations(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
@@ -490,6 +507,7 @@ impl TypeChecker {
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
         self.validate_pending_mutations();
+        self.validate_spawn_captures();
         self.validate_pending_frozen_writes();
 
         // #314: verify generic call type args satisfy their declared bounds.

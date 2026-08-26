@@ -18,7 +18,7 @@
                 literal: 'true false none null',
                 built_in:
                     'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +
-                    'Vec Map Set Pool Handle Cell Shared Mutex Owned Atomic StringView ' +
+                    'Vec Map Set Pool Handle Rack Link Shared Heap Atomic StringView ' +
                     'println print format panic todo unreachable'
             },
             contains: [

@@ -229,6 +229,12 @@ impl Hasher {
                     self.feed_str(s);
                 }
             }
+            DeclKind::Annotation(a) => {
+                self.feed_tag(16);
+                self.feed_str(&a.name);
+                self.feed_bool(a.is_pub);
+                self.hash_fields(&a.fields);
+            }
         }
     }
 
@@ -1058,7 +1064,7 @@ fn unaryop_tag(op: UnaryOp) -> u8 {
         UnaryOp::BitNot => 2,
         UnaryOp::Ref => 3,
         UnaryOp::Deref => 4,
-        UnaryOp::Own => 5,
+        UnaryOp::Heap => 5,
     }
 }
 

@@ -547,6 +547,7 @@ impl<'a> Printer<'a> {
             DeclKind::Extern(e) => self.format_extern_decl(e),
             DeclKind::Package(p) => self.format_package_decl(p),
             DeclKind::Union(u) => self.format_union_decl(u, decl.span),
+            DeclKind::Annotation(a) => self.format_annotation_decl(a),
             DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
             DeclKind::CImport(ci) => {
                 self.emit("import c ");
@@ -917,6 +918,33 @@ impl<'a> Printer<'a> {
             self.emit_indent();
             self.emit("}");
         }
+    }
+
+    fn format_annotation_decl(&mut self, a: &rask_ast::decl::AnnotationDecl) {
+        self.emit_indent();
+        if a.is_pub {
+            self.emit("public ");
+        }
+        self.emit("annotation @");
+        self.emit(&a.name);
+        self.emit(" {");
+        self.emit_newline();
+        self.indent += 1;
+        for field in &a.fields {
+            self.emit_indent();
+            self.emit(&field.name);
+            self.emit(": ");
+            let ty = self.format_type(&field.ty);
+            self.emit(&ty);
+            if let Some(default) = &field.default {
+                self.emit(" = ");
+                self.format_expr(default);
+            }
+            self.emit_newline();
+        }
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
     }
 
     fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {
@@ -1905,6 +1933,13 @@ impl<'a> Printer<'a> {
                     self.emit(")");
                 }
             }
+            // Heap allocation is a call, not a prefix operator — it parses as
+            // `Heap(expr)` and has to print back that way.
+            ExprKind::Unary { op: UnaryOp::Heap, operand } => {
+                self.emit("Heap(");
+                self.format_expr(operand);
+                self.emit(")");
+            }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
                 // A prefix operator binds tighter than every binary one, so a
@@ -2879,7 +2914,8 @@ fn unaryop_str(op: &UnaryOp) -> &'static str {
         UnaryOp::BitNot => "~",
         UnaryOp::Ref => "&",
         UnaryOp::Deref => "*",
-        UnaryOp::Own => "own ",
+        // Never reached: `Heap(expr)` prints as the call it is.
+        UnaryOp::Heap => "Heap",
     }
 }
 

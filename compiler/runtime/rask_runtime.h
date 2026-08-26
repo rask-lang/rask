@@ -377,6 +377,9 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
+// `Map.insert` answers `V?`: a pointer to the value this call displaced, or
+// NULL if the key was fresh. Good until the next insert on this map.
+void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
@@ -387,6 +390,10 @@ void     rask_map_clear(RaskMap *m);
 RaskVec *rask_map_keys(const RaskMap *m);
 RaskVec *rask_map_values(const RaskMap *m);
 RaskMap *rask_map_clone(const RaskMap *m);
+// mem.racks/RK3: drop every entry whose value is this link.
+int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
+// Rewrite every value in place through `f` (Rack.snapshot re-points links).
+void     rask_map_map_values_ptr(RaskMap *m, void *(*f)(void *value, void *ctx), void *ctx);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
@@ -441,6 +448,70 @@ RaskVec    *rask_pool_drain(RaskPool *p);
 // All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
 // Option<Handle<T>> uses this as None; any other i64 is Some(handle).
 #define RASK_HANDLE_PACKED_NONE ((int64_t)-1)
+
+// ─── Rack + Link (mem.racks) ────────────────────────────────
+//
+// A `Link<T>` is the node's address — no ticket, no generation check. `none` is
+// a null pointer, which is what makes `Link<T>?` eight bytes and lets `delete`
+// null an edge with one store.
+
+typedef struct RaskRack RaskRack;
+
+// `none` for a link is the null address — the one address that can never name
+// a node. A pool handle is index+generation and uses all-ones instead; the two
+// niches don't share a sentinel, they each pick what their own domain can't
+// produce. Null buys two things here: a rack chunk arrives zeroed, so a node's
+// links start out absent with nothing written, and the check is `if (!link)`.
+#define RASK_LINK_NONE ((void *)0)
+
+static inline int rask_link_is_none(const void *p) {
+    return p == NULL;
+}
+
+RaskRack *rask_rack_new(void);
+void      rask_rack_free(RaskRack *r);
+int64_t   rask_rack_len(const RaskRack *r);
+int64_t   rask_rack_is_empty(const RaskRack *r);
+int64_t   rask_rack_contains(const RaskRack *r, const void *link);
+// What a link-bearing field of the node type holds. Packed into the descriptor
+// alongside the byte offset, two int32s per field.
+#define RASK_RACK_FIELD_LINK 0
+#define RASK_RACK_FIELD_VEC  1
+#define RASK_RACK_FIELD_MAP  2
+
+// The node type's shape arrives here rather than at `new`: `Rack.new()` has no
+// argument to read `T` off. `fields` is `field_count` pairs of
+// (kind, byte offset), which is what lets the fixup find a node's own edges —
+// and what lets `snapshot` re-point them.
+void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
+                           int64_t field_count, const int32_t *fields);
+void      rask_rack_delete(RaskRack *r, void *link);
+void      rask_rack_clear(RaskRack *r);
+RaskVec  *rask_rack_nodes(const RaskRack *r);
+RaskRack *rask_rack_snapshot(const RaskRack *r);
+void     *rask_rack_corresponding(const RaskRack *r, const void *link);
+void      rask_rack_print_stats(void);
+
+// Edge maintenance. `set` writes the slot and keeps the target's incoming list
+// in step; `forget` drops the record without writing, for a holder that is
+// going away while its target stays alive.
+void      rask_link_set(void **slot, void *target);
+// `payload.<field at offset> = target` for a node of some rack. The node's own
+// link fields keep their edge record inline in the header, so this unlinks and
+// re-splices in O(1) — no scan of the old target's incoming list.
+void      rask_link_set_node(void *payload, int64_t offset, void *target);
+void      rask_link_forget(void **slot);
+// A link stored in a container. The record names the container, not a position:
+// pushes, removals and rehashing all move entries around.
+void      rask_link_register_element(RaskVec *v, void *target);
+void      rask_link_register_entry(RaskMap *m, void *target);
+// A container that arrived whole rather than entry by entry — `filter` builds a
+// fresh vector whose entries no push ever recorded.
+void      rask_link_register_vec(RaskVec *v);
+void      rask_link_register_map(RaskMap *m);
+// The edges a struct's own fields carry, against the storage it sits in. Same
+// (kind, byte offset) pairs `rask_rack_insert` takes.
+void      rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields);
 
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.
@@ -1079,6 +1150,15 @@ int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);
 void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
+
+// `get`/`set`/`replace` under each lock — the single-expression shorthand
+// (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.
+int64_t rask_shared_get(int64_t shared);
+void    rask_shared_set(int64_t shared, int64_t data_ptr);
+int64_t rask_shared_replace(int64_t shared, int64_t data_ptr);
+int64_t rask_mutex_get(int64_t mutex);
+void    rask_mutex_set(int64_t mutex, int64_t data_ptr);
+int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 

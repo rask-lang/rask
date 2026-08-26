@@ -106,7 +106,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         ty if ty.is_option() => {
             let inner = ty.as_option().unwrap();
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
-            if matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+            if matches!(inner, Type::UnresolvedGeneric { name, .. }
+                if name == "Handle" || name == "Link")
+            {
                 return (8, 8);
             }
             let (size, align) = type_size_align(inner, cache);
@@ -149,6 +151,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // Generic builtins with known sizes
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
+        // A link is the node's address; a rack is a pointer to its slab.
+        Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
         Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
@@ -159,7 +164,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // generic on every build even though (8, 8) is the right answer.
         Type::UnresolvedGeneric { name, .. }
             if matches!(name.as_str(),
-                "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic"
+                "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
                 | "Sender" | "Receiver" | "TaskHandle") => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
@@ -201,6 +206,13 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
                 | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
+                // A word, but not for the reason the line above is: these two
+                // are an `int64_t` of nanoseconds in the runtime, not a pointer
+                // to anything. Their Rask declarations are empty structs, so
+                // without an entry here the layout cache answered with the
+                // declaration's size — zero — and a struct holding one gave the
+                // field no room at all (#924).
+                "Duration" | "Instant" => (8, 8),
                 _ => {
                     // Look up user-defined types from the layout cache first — a user
                     // struct can be named the same as a builtin container (e.g. `Wide`),
@@ -217,7 +229,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
                         "Vec" | "Wide" | "Map" | "Handle" | "Pool"
-                        | "Mutex" | "Shared" | "Cell" | "Owned" | "Atomic" | "Channel") {
+                        | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
@@ -296,6 +308,32 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
             ok: Box::new(ok),
             err: Box::new(err),
         };
+    }
+
+    // Slice: []T
+    if let Some(elem) = s.strip_prefix("[]") {
+        return Type::Slice(Box::new(parse_field_type(elem)));
+    }
+
+    // Fixed array `[T; N]`, and `[T]` for a slice written the other way. Without
+    // this the whole bracket form fell through to the unknown-name branch below
+    // and every fixed array field was sized as a pointer (#895).
+    if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        match inner.split_once(';') {
+            Some((elem, len)) => {
+                // A symbolic length (`[T; SIZE]`) has no value here — there is no
+                // const table in this pass. Falling through to the unknown-name
+                // branch keeps its warning rather than sizing the field at zero,
+                // which is what pretending the length is 0 would do (#906).
+                if let Ok(len) = len.trim().parse::<usize>() {
+                    return Type::Array {
+                        elem: Box::new(parse_field_type(elem)),
+                        len,
+                    };
+                }
+            }
+            None => return Type::Slice(Box::new(parse_field_type(inner))),
+        }
     }
 
     // Generic types: Name<Args>
@@ -382,13 +420,19 @@ fn split_type_args(s: &str) -> Vec<&str> {
 }
 
 /// Build a substitution map from type param names to concrete types.
+///
+/// Names come from PC1, not from the explicit `<T>` list: a single letter in a
+/// field or payload type is a parameter whether or not it was declared, and the
+/// type arguments are ordered by that same list. Reading only the explicit list
+/// left an implicit-param struct with an empty map, so its fields kept their
+/// placeholder types and the layout came out wrong (#913).
 fn build_subst<'a>(
-    type_params: &'a [rask_ast::decl::TypeParam],
+    param_names: &'a [String],
     type_args: &'a [Type],
 ) -> std::collections::HashMap<&'a str, &'a Type> {
     let mut subst = std::collections::HashMap::new();
-    for (param, arg) in type_params.iter().zip(type_args.iter()) {
-        subst.insert(param.name.as_str(), arg);
+    for (name, arg) in param_names.iter().zip(type_args.iter()) {
+        subst.insert(name.as_str(), arg);
     }
     subst
 }
@@ -453,7 +497,8 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         _ => panic!("Expected struct declaration"),
     };
 
-    let subst = build_subst(&struct_decl.type_params, type_args);
+    let param_names = rask_types::struct_type_param_names(struct_decl);
+    let subst = build_subst(&param_names, type_args);
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
@@ -614,7 +659,8 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
         _ => panic!("Expected enum declaration"),
     };
 
-    let subst = build_subst(&enum_decl.type_params, type_args);
+    let param_names = rask_types::enum_type_param_names(enum_decl);
+    let subst = build_subst(&param_names, type_args);
 
     let variant_count = enum_decl.variants.len();
 

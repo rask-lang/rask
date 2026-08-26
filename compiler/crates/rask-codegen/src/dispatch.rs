@@ -777,10 +777,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
+        // `insert` answers `V?` — the value it displaced. The C side hands
+        // back a pointer to it (NULL for a fresh key), so DerefOption builds
+        // the option the same way `Map_get` and `Map_remove` do. Passing the
+        // plain `rask_map_insert` flag through untranslated made every
+        // overwrite answer `1` and every fresh key answer `Some(0)` (#903).
         StdlibEntry {
-            mir_name: "Map_insert", c_name: "rask_map_insert",
+            mir_name: "Map_insert", c_name: "rask_map_insert_displaced",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::DerefOption,
         },
         // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
         StdlibEntry {
@@ -875,6 +880,42 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
+
+        // ── Rack + Link operations (mem.racks) ─────────────────
+        // `Rack.new()` has nothing to read `T` off, so the node type's size and
+        // link-field offsets ride along with the first `insert` instead.
+        StdlibEntry::simple("Rack_new", "rask_rack_new", &[], Some(types::I64), false),
+        StdlibEntry::simple("Rack_free", "rask_rack_free", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Rack_insert", c_name: "rask_rack_insert",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Rack_delete", "rask_rack_delete", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Rack_len", "rask_rack_len", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_is_empty", "rask_rack_is_empty", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_contains", "rask_rack_contains", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_nodes", "rask_rack_nodes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Rack_clear", "rask_rack_clear", &[types::I64], None, false),
+        StdlibEntry::simple("Rack_snapshot", "rask_rack_snapshot", &[types::I64], Some(types::I64), false),
+        // `corresponding` answers `Link<T>?`, which is the niche — the sentinel
+        // the runtime returns *is* the none, so nothing needs wrapping.
+        StdlibEntry::simple("Rack_corresponding", "rask_rack_corresponding", &[types::I64, types::I64], Some(types::I64), false),
+        // Edge maintenance, emitted by lowering rather than written by anyone.
+        StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_set_node", "rask_link_set_node",
+                            &[types::I64, types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
+        StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Link_register_struct", c_name: "rask_link_register_struct",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
+        StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
 
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
@@ -1310,6 +1351,38 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Cell_replace", c_name: "rask_cell_replace",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+        },
+        // The same three under each lock. `get` hands back the slot's address
+        // like the Cell version; `set`/`replace` take the lock around the copy.
+        StdlibEntry {
+            mir_name: "Shared_get", c_name: "rask_shared_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Shared_set", c_name: "rask_shared_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Shared_replace", c_name: "rask_shared_replace",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_get", c_name: "rask_mutex_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_set", c_name: "rask_mutex_set",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_replace", c_name: "rask_mutex_replace",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
         },

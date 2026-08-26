@@ -9,8 +9,8 @@ struct Counter {
 }
 
 const plain = 7
-const guarded = Mutex.new(Counter { hits: 5 })
-const total = Mutex.new(10)
+const guarded = Shared.mutex(Counter { hits: 5 })
+const total = Shared.mutex(10)
 const derived = plain * 3
 
 test "a folded literal const still works" {
@@ -19,16 +19,16 @@ test "a folded literal const still works" {
 }
 
 test "a boxed const is initialized before the first test runs" {
-    with guarded as g {
+    with guarded.write() as g {
         assert_eq(g.hits, 5)
     }
 }
 
 test "and stays initialized for later tests" {
-    with total as t {
+    with total.write() as t {
         assert_eq(t, 10)
     }
-    with guarded as g {
+    with guarded.write() as g {
         assert_eq(g.hits, 5)
     }
 }
