@@ -777,10 +777,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
+        // `insert` answers `V?` — the value it displaced. The C side hands
+        // back a pointer to it (NULL for a fresh key), so DerefOption builds
+        // the option the same way `Map_get` and `Map_remove` do. Passing the
+        // plain `rask_map_insert` flag through untranslated made every
+        // overwrite answer `1` and every fresh key answer `Some(0)` (#903).
         StdlibEntry {
-            mir_name: "Map_insert", c_name: "rask_map_insert",
+            mir_name: "Map_insert", c_name: "rask_map_insert_displaced",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::DerefOption,
         },
         // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
         StdlibEntry {
@@ -899,6 +904,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Rack_corresponding", "rask_rack_corresponding", &[types::I64, types::I64], Some(types::I64), false),
         // Edge maintenance, emitted by lowering rather than written by anyone.
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_set_node", "rask_link_set_node",
+                            &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),

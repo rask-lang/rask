@@ -1469,18 +1469,41 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Widen an integer value to I64 for comparison, per source signedness.
-    /// No-op when the value is already 64-bit.
-    fn widen_i64(builder: &mut ClifFunctionBuilder, val: Value, source_ty: &MirType) -> Value {
-        if builder.func.dfg.value_type(val) == types::I64 {
+    /// Widen an integer value to a width both sides of a range check survive:
+    /// at least I64, at least as wide as the value, and at least as wide as
+    /// the target whose bounds it is about to be compared against.
+    ///
+    /// Each of those three came from a bug. Extending anything that wasn't
+    /// already I64 meant narrowing *out* of 128 bits emitted `sextend.i64`
+    /// against an i128 — a widening instruction on a value wider than its
+    /// target — and the verifier rejected the function. Truncating to i64
+    /// instead would be worse: the check that decides whether `to<i64>()`
+    /// answers an error would be comparing the value against bounds it has
+    /// already been forced inside of. And comparing an i64 at 64 bits against
+    /// `i128`'s bounds truncated `i128::MIN` to zero, so `(-5).to<i128>()`
+    /// reported out of range for a conversion that cannot fail (#933).
+    fn widen_for_compare(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        source_ty: &MirType,
+        target_ty: &MirType,
+    ) -> Value {
+        let have = builder.func.dfg.value_type(val);
+        let target_bits = mir_to_cranelift_type(target_ty)
+            .map(|t| t.bits())
+            .unwrap_or(64);
+        let want = have.bits().max(64).max(target_bits);
+        if have.bits() >= want {
             return val;
         }
+        let to = if want >= 128 { types::I128 } else { types::I64 };
         if source_ty.is_unsigned() {
-            builder.ins().uextend(types::I64, val)
+            builder.ins().uextend(to, val)
         } else {
-            builder.ins().sextend(types::I64, val)
+            builder.ins().sextend(to, val)
         }
     }
+
 
     /// Clamp `val` (interpreted per source signedness) to the target range.
     fn saturate_int(
@@ -1490,8 +1513,12 @@ impl<'a> FunctionBuilder<'a> {
         target_ty: &MirType,
     ) -> Value {
         let (min, max) = Self::int_bounds(target_ty);
-        // Widen to I64 for the comparison, then reduce.
-        let mut v64 = Self::widen_i64(builder, val, source_ty);
+        // Compare at at least I64. An i128 source stays at its own width —
+        // see `widen_for_compare`.
+        let wide = Self::widen_for_compare(builder, val, source_ty, target_ty);
+        let cmp_ty = builder.func.dfg.value_type(wide);
+        let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
+        let (cmp_signed_max, cmp_unsigned_max) = Self::compare_ceilings(cmp_ty);
 
         // Source and target don't have to share a signedness, and one
         // comparison mode for both is wrong whenever they don't. Clamping
@@ -1499,32 +1526,61 @@ impl<'a> FunctionBuilder<'a> {
         // 2^63 unsigned — so every value below it, meaning every ordinary
         // value, "underflowed" and came out as `i64::MIN`. `42 saturate to
         // i64` was -9223372036854775808 (#495).
-        if source_ty.is_unsigned() {
-            // Nothing unsigned is below a target minimum; every one of those
-            // is zero or negative. Only the ceiling can bite, unsigned.
-            if max < u64::MAX as i128 {
-                let maxc = builder.ins().iconst(types::I64, max as i64);
-                let too_big = builder.ins().icmp(IntCC::UnsignedGreaterThan, v64, maxc);
-                v64 = builder.ins().select(too_big, maxc, v64);
-            }
+        //
+        // Nothing unsigned is below a target minimum, so only the ceiling can
+        // bite there. A ceiling the comparison width can't represent is out of
+        // the source's reach anyway, so there's nothing to clamp against.
+        let too_small = if source_ty.is_unsigned() {
+            None
         } else {
-            let minc = builder.ins().iconst(types::I64, min as i64);
-            let too_small = builder.ins().icmp(IntCC::SignedLessThan, v64, minc);
-            v64 = builder.ins().select(too_small, minc, v64);
-            // A ceiling above `i64::MAX` — only `u64`'s — is out of a signed
-            // value's reach, so there's nothing to clamp against.
-            if max <= i64::MAX as i128 {
-                let maxc = builder.ins().iconst(types::I64, max as i64);
-                let too_big = builder.ins().icmp(IntCC::SignedGreaterThan, v64, maxc);
-                v64 = builder.ins().select(too_big, maxc, v64);
-            }
-        }
+            let minc = Self::iconst_at(builder, cmp_ty, min);
+            Some(builder.ins().icmp(IntCC::SignedLessThan, wide, minc))
+        };
+        let too_big = if source_ty.is_unsigned() {
+            (max < cmp_unsigned_max).then(|| {
+                let maxc = Self::iconst_at(builder, cmp_ty, max);
+                builder.ins().icmp(IntCC::UnsignedGreaterThan, wide, maxc)
+            })
+        } else {
+            (max <= cmp_signed_max).then(|| {
+                let maxc = Self::iconst_at(builder, cmp_ty, max);
+                builder.ins().icmp(IntCC::SignedGreaterThan, wide, maxc)
+            })
+        };
 
-        let to = mir_to_cranelift_type(target_ty).unwrap_or(types::I64);
-        if to.bits() < 64 {
-            builder.ins().ireduce(to, v64)
+        // Narrow first, then substitute the limit — both at the target's
+        // width. Selecting between two i128s instead left Cranelift's egraph
+        // free to rewrite `icmp` + `select` into `smin.i128`, which the x64
+        // backend has no lowering for, so `big.clamp<i64>()` panicked the
+        // compiler rather than producing code (#933). Narrowing against the
+        // comparison width rather than a hardcoded 64 is the other half: a
+        // clamped i128 is still 128 bits until it's reduced.
+        let mut out = if to.bits() < cmp_ty.bits() {
+            builder.ins().ireduce(to, wide)
         } else {
-            v64
+            wide
+        };
+        if let Some(cond) = too_small {
+            let lim = Self::iconst_at(builder, to, min);
+            out = builder.ins().select(cond, lim, out);
+        }
+        if let Some(cond) = too_big {
+            let lim = Self::iconst_at(builder, to, max);
+            out = builder.ins().select(cond, lim, out);
+        }
+        out
+    }
+
+    /// The largest signed and unsigned values a comparison at `ty` can carry
+    /// as a constant. Guards that used to name `i64::MAX`/`u64::MAX` directly
+    /// were reading "the comparison happens in 64 bits", which stopped being
+    /// true once an i128 source compared at its own width: converting one to
+    /// `u64` then skipped the ceiling check and called every value in range.
+    fn compare_ceilings(ty: Type) -> (i128, i128) {
+        if ty.bits() >= 128 {
+            (i128::MAX, i128::MAX)
+        } else {
+            (i64::MAX as i128, u64::MAX as i128)
         }
     }
 
@@ -1536,8 +1592,9 @@ impl<'a> FunctionBuilder<'a> {
         target_ty: &MirType,
     ) -> Value {
         let (min, max) = Self::int_bounds(target_ty);
-        let v64 = Self::widen_i64(builder, val, source_ty);
+        let v64 = Self::widen_for_compare(builder, val, source_ty, target_ty);
         let t = builder.func.dfg.value_type(v64);
+        let (cmp_signed_max, cmp_unsigned_max) = Self::compare_ceilings(t);
         let always = |b: &mut ClifFunctionBuilder| b.ins().iconst(types::I8, 1);
 
         // Same asymmetry as the saturating form: which comparison is right
@@ -1545,18 +1602,18 @@ impl<'a> FunctionBuilder<'a> {
         // all depends on the target's.
         let (ge_min, le_max) = if source_ty.is_unsigned() {
             let ge_min = always(builder); // never below a target minimum
-            let le_max = if max < u64::MAX as i128 {
-                let maxc = builder.ins().iconst(t, max as i64);
+            let le_max = if max < cmp_unsigned_max {
+                let maxc = Self::iconst_at(builder, t, max);
                 builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, v64, maxc)
             } else {
                 always(builder)
             };
             (ge_min, le_max)
         } else {
-            let minc = builder.ins().iconst(t, min as i64);
+            let minc = Self::iconst_at(builder, t, min);
             let ge_min = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, v64, minc);
-            let le_max = if max <= i64::MAX as i128 {
-                let maxc = builder.ins().iconst(t, max as i64);
+            let le_max = if max <= cmp_signed_max {
+                let maxc = Self::iconst_at(builder, t, max);
                 builder.ins().icmp(IntCC::SignedLessThanOrEqual, v64, maxc)
             } else {
                 always(builder)
@@ -2330,14 +2387,23 @@ impl<'a> FunctionBuilder<'a> {
         if !is_aggregate {
             let val = Self::lower_operand(builder, value, ctx)?;
 
+            let val_ty = builder.func.dfg.value_type(val);
+
             // store_size > 8: the lowered value is a pointer to aggregate data
             // (e.g., string constant → 16-byte SSO). Copy word-by-word from
             // the source pointer instead of storing the pointer itself.
-            if store_size.map_or(false, |s| s > 8) {
+            //
+            // Only when it really is a pointer, though, and an address is
+            // always a word. An i128 is the one scalar wider than that:
+            // Cranelift keeps it in a register pair, so the value *is* the
+            // data. Copying from it emitted `load.i64` against an i128 and the
+            // verifier rejected the function before anything ran — every
+            // `struct S { balance: i128 }` and `Vec<i128>` failed to build
+            // (#933). A plain store handles it, the same as any other scalar.
+            if store_size.map_or(false, |s| s > 8) && val_ty == types::I64 {
                 let size = store_size.unwrap();
                 Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
             } else {
-                let val_ty = builder.func.dfg.value_type(val);
                 let flags = MemFlags::new();
 
                 // A field the layout packed into fewer than 8 bytes gets a
@@ -3925,6 +3991,26 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
                 Ok(Self::emit_signed_three_way(builder, a, b))
             }
+            // Every arm above reads its field as an i64, because a scalar
+            // narrower than a word sits in one and one comparison shape then
+            // covers all of them. The 128-bit pair is the exception and has to
+            // be compared at its own width. Falling through to the catch-all
+            // instead meant a struct with an `i128` field had no derivable
+            // `compare`, so it couldn't be sorted or ordered at all (#933).
+            RaskType::I128 | RaskType::U128 => {
+                let a = builder.ins().load(types::I128, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(types::I128, MemFlags::new(), rhs, 0);
+                let (gt_cc, lt_cc) = if matches!(ty, RaskType::U128) {
+                    (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
+                } else {
+                    (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
+                };
+                let gt = builder.ins().icmp(gt_cc, a, b);
+                let lt = builder.ins().icmp(lt_cc, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
             RaskType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
             RaskType::UnresolvedNamed(name) => {
                 if let Some(sidx) = ctx.struct_layouts.iter().position(|l| l.name == *name) {
@@ -3971,6 +4057,27 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().uextend(types::I64, b);
                 let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
                 let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
+                let gt = builder.ins().uextend(types::I64, gt);
+                let lt = builder.ins().uextend(types::I64, lt);
+                Ok(builder.ins().isub(gt, lt))
+            }
+            // The 128-bit pair can't take the extend-to-i64 route the others
+            // do — they widen so one comparison shape covers every width, and
+            // there is nothing wider to widen into. Compare at the value's own
+            // width instead; only the two booleans need to reach i64. Without
+            // this arm a struct holding an i128 had no derivable `compare` at
+            // all, so sorting one failed to build (#933).
+            MirType::I128 | MirType::U128 => {
+                let lty = mir_to_cranelift_type(ty)?;
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                let (gt_cc, lt_cc) = if matches!(ty, MirType::U128) {
+                    (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
+                } else {
+                    (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
+                };
+                let gt = builder.ins().icmp(gt_cc, a, b);
+                let lt = builder.ins().icmp(lt_cc, a, b);
                 let gt = builder.ins().uextend(types::I64, gt);
                 let lt = builder.ins().uextend(types::I64, lt);
                 Ok(builder.ins().isub(gt, lt))
@@ -4056,7 +4163,16 @@ impl<'a> FunctionBuilder<'a> {
                         // Aggregate field: return pointer into parent struct.
                         // Covers both >8-byte structs and ≤8-byte enums/structs
                         // that use stack-slot representation in codegen.
-                        if field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx) {
+                        //
+                        // "Wider than a word" is the usual sign of an aggregate,
+                        // but a 128-bit integer is sixteen bytes and still a
+                        // scalar Cranelift keeps in a register pair. MIR already
+                        // worked that out and said `InRegister`; re-deciding it
+                        // here from the size alone handed back the address and
+                        // `ledger.balance` printed a stack address (#933).
+                        if !matches!(access, FieldAccess::InRegister(_))
+                            && (field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx))
+                        {
                             let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                             return Ok(addr);
                         }
@@ -4098,7 +4214,15 @@ impl<'a> FunctionBuilder<'a> {
                         } else if field.is_type_param {
                             load_ty
                         } else {
-                            types::I64
+                            // How wide the slot holds this is the ABI's answer
+                            // for an integer too, not just a float — that is
+                            // where the i128 case lives.
+                            match rask_mono::abi::slot_scalar_bytes(
+                                false, field.size, field.size,
+                            ) {
+                                16 => types::I128,
+                                _ => types::I64,
+                            }
                         };
                         field.offset as i32
                     } else {
@@ -4152,8 +4276,18 @@ impl<'a> FunctionBuilder<'a> {
                     let (elem_size, elem_align) = Self::real_type_size_align(f, ctx);
                     off = (off + elem_align - 1) & !(elem_align - 1);
                     if i == *field_index as usize {
-                        // Aggregate element: return pointer, don't load scalar
-                        if elem_size > 8 || matches!(f, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
+                        // Aggregate element: return pointer, don't load scalar.
+                        // `passed_by_address` is the type's own answer and
+                        // already covers the struct/enum/tuple cases; the size
+                        // test only has to catch what it can't see. An i128 is
+                        // sixteen bytes and still a scalar, so it has to be
+                        // exempt from that test — the same exception a struct
+                        // field needs, and without it `(big, n).0` came back as
+                        // the tuple's address (#933).
+                        if f.passed_by_address()
+                            || (elem_size > 8
+                                && !matches!(f, MirType::I128 | MirType::U128))
+                        {
                             let addr = builder.ins().iadd_imm(base_val, off as i64);
                             return Ok(addr);
                         }

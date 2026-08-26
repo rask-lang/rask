@@ -1956,6 +1956,14 @@ impl<'a> MirLowerer<'a> {
                         );
                         if size <= 8 && lives_inline {
                             FieldAccess::InPlace(size)
+                        } else if size > 8 && !result_ty.passed_by_address() {
+                            // A scalar wider than a word — a 128-bit integer is
+                            // the only one. It rides in a register pair, so it
+                            // comes back loaded; `Sized` reads a size over a
+                            // word as "aggregate" and handed back the field's
+                            // address, so `ledger.balance` printed a stack
+                            // address (#933).
+                            FieldAccess::InRegister(size)
                         } else {
                             FieldAccess::Sized(size)
                         }
@@ -5141,13 +5149,20 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|a| self.collection_elem_of_expr(&a.expr))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:random_choice"));
             Some(super::option_of(vec_slot_type(elem)))
-        } else if qualified_name == "Map_get" {
-            // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
+        } else if matches!(qualified_name.as_str(),
+            "Map_get" | "Map_remove" | "Map_insert")
+        {
+            // Same reasoning as Vec_get: all three answer `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies
             // `slot_size - tag` bytes out of the map's storage, so a bare
             // `i64?` copied only the value's first word — `self.users.get(id)`
             // handed back eight bytes of a `User` and reading a field off it
             // dereferenced the id.
+            //
+            // `remove` and `insert` were left off this arm, so on a
+            // `Map<string, string>` both came back as `i64?`: the payload read
+            // took the string's first eight bytes — its inline SSO characters —
+            // and codegen dereferenced them as a `RaskStr *` (#903).
             let payload = self.extract_payload_type(expr)
                 .or_else(|| self.map_value_mir(object))
                 .or_else(|| self.collection_elem_of_expr(object))
@@ -8020,6 +8035,15 @@ impl<'a> MirLowerer<'a> {
         // Block scope: any const/mut declared inside the braces shadows but
         // doesn't leak out. Snapshot the locals map and restore after.
         let saved_locals = self.locals.clone();
+        // ctrl.ensure/EN1: an `ensure` runs when its *enclosing block* exits,
+        // not when the function does. Loop bodies did this already (they lower
+        // their statements directly and call `close_loop_body`), so a bare
+        // block, an `if`/`else` body and a match arm — everything that reaches
+        // MIR as a block expression — left their ensures on the stack for the
+        // function's exit to drain: `{ ensure push(1); push(0) } push(2)` gave
+        // 0,2,1 instead of 0,1,2, and a file opened in a block to bound its
+        // lifetime stayed open for the whole function (#929).
+        let ensure_depth = self.ensure_stack.len();
         for (i, stmt) in stmts.iter().enumerate() {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
@@ -8031,6 +8055,14 @@ impl<'a> MirLowerer<'a> {
             }
             self.lower_stmt(stmt)?;
         }
+        // An exit that already terminated ran its own chain — `return` emits a
+        // CleanupReturn covering everything still on the stack, `break` and
+        // `continue` drain back to the loop's depth. Only the fall-through
+        // exit is left to us.
+        if self.builder.current_block_unterminated() {
+            self.emit_loop_cleanup(ensure_depth);
+        }
+        self.ensure_stack.truncate(ensure_depth);
         self.locals = saved_locals;
         Ok((last_val, last_ty))
     }

@@ -377,6 +377,9 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
+// `Map.insert` answers `V?`: a pointer to the value this call displaced, or
+// NULL if the key was fresh. Good until the next insert on this map.
+void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
@@ -493,6 +496,10 @@ void      rask_rack_print_stats(void);
 // in step; `forget` drops the record without writing, for a holder that is
 // going away while its target stays alive.
 void      rask_link_set(void **slot, void *target);
+// `payload.<field at offset> = target` for a node of some rack. The node's own
+// link fields keep their edge record inline in the header, so this unlinks and
+// re-splices in O(1) — no scan of the old target's incoming list.
+void      rask_link_set_node(void *payload, int64_t offset, void *target);
 void      rask_link_forget(void **slot);
 // A link stored in a container. The record names the container, not a position:
 // pushes, removals and rehashing all move entries around.

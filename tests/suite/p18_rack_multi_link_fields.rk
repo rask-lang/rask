@@ -1,0 +1,100 @@
+// A node with several link fields, and a `Vec<Link<T>>` sitting between them.
+//
+// Natively each link field a node declares keeps its edge record inline in the
+// node's header, found by counting link fields in declaration order. A `Vec` or
+// `Map` field is link-bearing too but has no inline record, so the count has to
+// skip it. Get that wrong and a delete nulls a neighbouring field instead of the
+// one that pointed at the dying node — and with a single link field, which is
+// what the rest of the corpus uses, nothing notices.
+
+struct Cell {
+    id: i32
+    left: Link<Cell>?
+    kids: Vec<Link<Cell>>       // link-bearing, but not an inline record
+    right: Link<Cell>?
+    up: Link<Cell>?
+}
+
+func main() {}
+
+test "a delete nulls only the fields that pointed at it" {
+    mut rack: Rack<Cell> = Rack.new()
+    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
+    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+    let c = rack.insert(Cell { id: 3, left: none, kids: Vec.new(), right: none, up: none })
+
+    a.left = b
+    a.right = c
+    a.up = b
+
+    rack.delete(b)
+
+    // `left` and `up` both named b, so both go. `right` named c and stays.
+    if a.left? as _x { assert false }
+    if a.up? as _y { assert false }
+    if a.right? as still {
+        assert_eq(still.id, 3)
+    } else {
+        assert false
+    }
+
+    rack.delete(c)
+    if a.right? as _z { assert false }
+}
+
+test "the same field retargeted across siblings keeps its own record" {
+    mut rack: Rack<Cell> = Rack.new()
+    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
+    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+    let c = rack.insert(Cell { id: 3, left: none, kids: Vec.new(), right: none, up: none })
+
+    // Walk one field across targets. Each write has to unlink from the previous
+    // target, or b's delete reaches a field that no longer names it.
+    a.left = b
+    a.left = c
+    a.right = b
+
+    rack.delete(b)
+
+    if a.left? as kept {
+        assert_eq(kept.id, 3)
+    } else {
+        assert false
+    }
+    if a.right? as _w { assert false }
+}
+
+test "an edge list beside scalar edges is fixed too" {
+    mut rack: Rack<Cell> = Rack.new()
+    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
+    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+
+    a.left = b
+    a.kids.push(b)
+    assert_eq(a.kids.len(), 1)
+
+    rack.delete(b)
+
+    // The scalar field goes to `none`; the list entry goes away entirely.
+    if a.left? as _x { assert false }
+    assert_eq(a.kids.len(), 0)
+}
+
+test "every link field of a dying node is unhooked from its targets" {
+    mut rack: Rack<Cell> = Rack.new()
+    let hub = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
+    let holder = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+
+    // holder points at hub from three fields at once.
+    holder.left = hub
+    holder.right = hub
+    holder.up = hub
+
+    // Deleting the holder must take all three records out of hub's incoming
+    // list. If any survives, hub's own delete writes through a freed slot.
+    rack.delete(holder)
+    assert_eq(rack.len(), 1)
+
+    rack.delete(hub)
+    assert_eq(rack.len(), 0)
+}
