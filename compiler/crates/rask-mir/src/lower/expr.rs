@@ -8128,7 +8128,14 @@ impl<'a> MirLowerer<'a> {
         let mut last_ty = MirType::Void;
         // Block scope: any const/mut declared inside the braces shadows but
         // doesn't leak out. Snapshot the locals map and restore after.
+        //
+        // Comptime-known strings are scoped the same way, and for the same
+        // reason. A `let w = "limit"` inside the braces shadowing an outer
+        // `let w = "spent"` used to overwrite the entry and keep it after the
+        // block ended, so a later `b.(w)` read the inner name — the interpreter
+        // said `spent`, native said `limit`, and nothing complained.
         let saved_locals = self.locals.clone();
+        let saved_comptime_strings = self.comptime_strings.clone();
         // ctrl.ensure/EN1: an `ensure` runs when its *enclosing block* exits,
         // not when the function does. Loop bodies did this already (they lower
         // their statements directly and call `close_loop_body`), so a bare
@@ -8158,6 +8165,7 @@ impl<'a> MirLowerer<'a> {
         }
         self.ensure_stack.truncate(ensure_depth);
         self.locals = saved_locals;
+        self.comptime_strings = saved_comptime_strings;
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer
