@@ -130,8 +130,11 @@ list that gets scanned.
 |------|-------------|
 | **RK10: Retargeting is constant-time** | Overwriting a link declared on a node costs the same at any in-degree. The record is inline, so nothing is searched for. A link held outside a node still pays a scan of the target's much shorter foreign-holder list |
 
-The delete cost is measured, and the two backends agree on it:
-`RASK_RACK_STATS=1` reports the same `edges_fixed`/`holders_visited` on both.
+`RASK_RACK_STATS=1` reports `deletes`/`edges_fixed`/`holders_visited` on both
+backends. The numbers are not comparable across them yet — a container edge
+counts as one record on the interpreter and one per removed element natively,
+so `l1_list_links.rk` reads 1/1 on one side and 6/6 on the other. Read them per
+backend until the counters are defined (rask-lang/rask#983).
 
 ## Choosing this over the alternatives
 
