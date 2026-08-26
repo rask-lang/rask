@@ -893,10 +893,12 @@ mod boundary_tests {
     /// failed loudly — the feature just half-worked.
     #[test]
     fn every_stdlib_file_is_listed_or_deliberately_left_out() {
-        // Left out on purpose. Compiling these turns on checks the corpus
-        // doesn't satisfy yet — `fmt.rk` makes Displayable an enforced trait and
-        // examples/package_manager.rk stops building. Tracked separately; the
-        // point of the entry is that leaving them out is a decision.
+        // Left out on purpose (#990). Both declare a trait the compiler already
+        // provides — `Displayable` in fmt.rk, `Encode`/`Decode` in encoding.rk —
+        // and a declared `to_string` then wins method lookup over the inherent
+        // one, so `examples/package_manager.rk` stops building. Closing that
+        // means deciding whether these files are documentation or the source of
+        // truth; the entry here is so the answer stays a decision.
         const DELIBERATELY_ABSENT: &[&str] = &["encoding.rk", "fmt.rk"];
 
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../stdlib");
