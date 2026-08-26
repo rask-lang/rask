@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/ER4 + ER3: `try` has no caller to propagate to from cleanup, so
+// both the ensure body and its `else` handler reject it (E0844). Before this was
+// checked, the program type-checked, printed nothing on the interpreter, and
+// failed native codegen with an internal "couldn't work out a type" message.
+struct CloseErr9 { why: string }
+extend CloseErr9 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+struct Sink9 { id: i32 }
+extend Sink9 {
+    func close(self) -> i32 or CloseErr9 {
+        return CloseErr9 { why: "device gone" }
+    }
+    func retry(self) -> i32 or CloseErr9 {
+        return 0
+    }
+}
+func main() -> i32 or CloseErr9 {
+    let s = Sink9 { id: 3 }
+    ensure { let n = try s.close() }                       // ER4
+    ensure s.close() else |e| { let n = try s.retry() }     // ER3
+    return 0
+}

@@ -86,6 +86,7 @@ impl TypeChecker {
                     | TypeConstraint::OptionalChain { .. }
                     | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
+                    | TypeConstraint::ErrorBranch { .. }
             ) {
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
@@ -359,6 +360,10 @@ impl TypeChecker {
                 self.resolve_unwrap(value, result, span)
             }
 
+            TypeConstraint::ErrorBranch { value, result, span } => {
+                self.resolve_error_branch(value, result, span)
+            }
+
             TypeConstraint::Index { object, index, result, is_range, span } => {
                 self.resolve_index(object, index, result, is_range, span)
             }
@@ -501,6 +506,31 @@ impl TypeChecker {
     /// `x!` yields the success payload of `x`. Both shapes read the same way —
     /// `T?` is a `Result` whose error side is `none` — so the ok side is the
     /// answer for either. Defers while the operand is still a variable.
+    /// ER2: settle an `ensure … else |e|` binding once the body's type is known.
+    ///
+    /// An infallible body has no error branch and the handler can never run, so
+    /// the binding is left as its own free variable rather than reported — ER1
+    /// already says a cleanup result is ignored by default, and a `T` body with a
+    /// handler is a redundant handler, not a type error.
+    fn resolve_error_branch(
+        &mut self,
+        value: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match self.ctx.apply(&value) {
+            Type::Result { err, .. } => {
+                self.unify(&result, &err, span)?;
+                Ok(true)
+            }
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::ErrorBranch { value, result, span });
+                Ok(false)
+            }
+            _ => Ok(true),
+        }
+    }
+
     fn resolve_unwrap(
         &mut self,
         value: Type,

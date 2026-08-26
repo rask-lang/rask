@@ -347,6 +347,9 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Let { name, ty, init, .. } => {
+                // `let` binds once — nothing in this function can write it. An
+                // ensure hook uses that to snapshot a scalar it reads.
+                self.meta_mut(name).is_immutable = true;
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
@@ -972,63 +975,12 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 if let Some((param_name, handler_body)) = else_handler {
-                    // ER2: route errors from body to else handler.
-                    // The body's last call may return a Result — check its tag.
-                    let handler_block = self.builder.create_block();
-                    let done_block = self.builder.create_block();
-
-                    if let Some(call_dst) = self.builder.last_call_dst() {
-                        // Check Result tag: 0=Ok, 1=Err
-                        let tag = self.builder.alloc_temp(MirType::U8);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: tag,
-                            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
-                        }));
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                            cond: MirOperand::Local(tag),
-                            then_block: handler_block,
-                            else_block: done_block,
-                        }));
-
-                        // Handler block: bind error, run handler body.
-                        // Infer error type from the call's return type.
-                        let err_ty = self.builder.local_type(call_dst)
-                            .and_then(|t| match t {
-                                MirType::Result { err, .. } => Some(*err),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:755"));
-                        self.builder.switch_to_block(handler_block);
-                        let err_local = self.builder.alloc_local(param_name.clone(), err_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: err_local,
-                            rvalue: MirRValue::Field {
-                                base: MirOperand::Local(call_dst),
-                                field_index: 0,
-                                byte_offset: None,
-                                access: FieldAccess::Word,
-                            },
-                        }));
-                        self.locals.insert(param_name.clone(), (err_local, err_ty));
-                        for s in handler_body {
-                            self.lower_stmt(s)?;
-                        }
-                        if self.builder.current_block_unterminated() {
-                            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-                        }
-                    } else {
-                        // No call in body — handler never fires
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-                    }
-
-                    // Done block: sentinel for end of cleanup sub-CFG
-                    self.builder.switch_to_block(done_block);
+                    self.lower_ensure_else_handler(param_name, handler_body)?;
+                }
+                // Sentinel for the end of the cleanup sub-CFG: control never
+                // falls out of a cleanup block, it is spliced in at each exit.
+                if self.builder.current_block_unterminated() {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-                } else {
-                    // No handler — terminate with sentinel
-                    if self.builder.current_block_unterminated() {
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-                    }
                 }
 
                 self.builder.switch_to_block(continue_block);
@@ -3093,6 +3045,74 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
+        Ok(())
+    }
+
+    /// ER2: route an error out of an `ensure` body into its `else |e|` handler.
+    ///
+    /// Assumes the body has just been lowered into the current block, so the
+    /// last `Call` in it is the operation whose `T or E` decides the branch.
+    /// Leaves the builder on the merge block, unterminated — the caller decides
+    /// how a cleanup that ran to completion continues (the inline path splices
+    /// a sentinel, the panic thunk returns).
+    ///
+    /// Shared by both so the handler's shape can't drift between the exit a
+    /// normal return takes and the one a panic takes.
+    pub(super) fn lower_ensure_else_handler(
+        &mut self,
+        param_name: &str,
+        handler_body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let handler_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        let Some(call_dst) = self.builder.last_call_dst() else {
+            // No call in the body — nothing can fail, so the handler never fires.
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+            self.builder.switch_to_block(done_block);
+            return Ok(());
+        };
+
+        // Result tag: 0 = ok, 1 = err.
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag),
+            then_block: handler_block,
+            else_block: done_block,
+        }));
+
+        // Handler binds the error payload; its type comes from the call's own
+        // return type.
+        let err_ty = self.builder.local_type(call_dst)
+            .and_then(|t| match t {
+                MirType::Result { err, .. } => Some(*err),
+                _ => None,
+            })
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:ensure_else"));
+        self.builder.switch_to_block(handler_block);
+        let err_local = self.builder.alloc_local(param_name.to_string(), err_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: err_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(call_dst),
+                field_index: 0,
+                byte_offset: None,
+                access: FieldAccess::Word,
+            },
+        }));
+        self.locals.insert(param_name.to_string(), (err_local, err_ty));
+        for s in handler_body {
+            self.lower_stmt(s)?;
+        }
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        }
+
+        self.builder.switch_to_block(done_block);
         Ok(())
     }
 

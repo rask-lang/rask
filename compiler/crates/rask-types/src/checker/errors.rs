@@ -720,6 +720,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ctrl.ensure/ER4 (body) and ER3 (`else` handler): `try` has nowhere to
+    /// propagate to from cleanup code. `region` names which of the two it is.
+    #[error("`try` can't be used {region}")]
+    TryInEnsure {
+        region: &'static str,
+        span: Span,
+    },
+
     /// ER22: `else as e` requires a `T or E` condition to bind the error
     #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
     ElseBindingNotResult {
@@ -1121,6 +1129,7 @@ impl TypeError {
             | TagOnUnnamedPayload { .. }
             | TagCollidesWithField { .. }
             | ElseBindingNotResult { .. }
+            | TryInEnsure { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | MatchOnOption { .. }

@@ -1685,6 +1685,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("flatten the union or rename one branch")
                     .with_why("a sum type cannot contain the same payload variant twice — the compiler picks the branch from the value's type, and a `(T or E) or E` value fits both [type.unions/U5]")
             }
+            TryInEnsure { region, span } => {
+                Diagnostic::error(format!("`try` can\'t be used {}", region))
+                    .with_code("E0844")
+                    .with_primary(*span, "there is no caller to propagate an error to from here")
+                    .with_help("drop the `try` and handle the error where it happens: `ensure f.close() else |e| { log(e.message()) }`")
+                    .with_fix("remove `try`")
+                    .with_why("cleanup runs at scope exit, after the function has already decided what it returns — an error raised there has nowhere to go, so ensure ignores it by default and `else |e|` is how you see it [ctrl.ensure/ER3-ER4]")
+            }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))
                     .with_code("E0345")
