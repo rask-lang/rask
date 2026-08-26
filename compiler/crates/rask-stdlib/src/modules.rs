@@ -77,24 +77,19 @@ const COMPILER_MODULES: &[&str] = &[
     "core",
     // Build configuration read at comptime (`cfg.target_os`).
     "cfg",
-    // These three have a `stdlib/*.rk` file that isn't in the stub set, so the
-    // name is importable but nothing in the file reaches the checker. Each was
-    // tried in the stub set and taken back out:
+    // These two have a `stdlib/*.rk` file that isn't in the stub set, so the
+    // name is importable but nothing in the file reaches the checker. Both were
+    // tried in the stub set and taken back out: they describe traits the
+    // compiler provides rather than declares (`COMPILER_PROVIDED_TRAITS`), and
+    // parsing them gives `Displayable` a second definition whose `to_string`
+    // hides the inherent one, so `StringView.to_string()` stops resolving.
     //
-    // `fmt` and `encoding` describe traits the compiler provides rather than
-    // declares (`COMPILER_PROVIDED_TRAITS`). Parsing them gives `Displayable` a
-    // second definition whose `to_string` hides the inherent one, and
-    // `StringView.to_string()` stops resolving.
-    //
-    // `reflect` declares `fields<T>` and the rest of the namespace, and parsing
-    // it makes `reflect.fields<T>()` inside a generic function stop
-    // monomorphizing — `print_fields(Point{…})` mangles to `print_fields$_`,
-    // the call's `T` never bound. #699's fixture catches it.
-    //
-    // Both are #990.
+    // #990. (`reflect` was here for the same reason with a different cause —
+    // `reflect.fields<T>()` in a generic function mangled to `print_fields$_`
+    // with the call's `T` never bound. That was the reachability bug behind
+    // #931; with it fixed, `reflect` is an ordinary stub source again.)
     "fmt",
     "encoding",
-    "reflect",
 ];
 
 static MODULE_NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
