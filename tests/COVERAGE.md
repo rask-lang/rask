@@ -101,7 +101,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — parameter modes | `t_month_param_modes.rk` | 6/10 | 6/10 | #899 |
 | **probe** — test-block parameter scope | `t_month_borrow_name_shadow.rk` | BUILD-FAIL | BUILD-FAIL | #926 |
 | **probe** — `@resource` in a loop | `t_month_resource_loop.rk` | BUILD-FAIL | BUILD-FAIL | #928 |
-| **probe** — `ensure` block scoping | `t_month_ensure_block_scope.rk` | 5/5 | 0/5 | #929 |
+| `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
 | **probe** — CT49 field access by literal | `t_month_comptime_field_literal.rk` | 4/4 | BUILD-FAIL | #930 |
 | **probe** — comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 6/6 | BUILD-FAIL | #931 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |

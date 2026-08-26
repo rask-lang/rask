@@ -8006,6 +8006,15 @@ impl<'a> MirLowerer<'a> {
         // Block scope: any const/mut declared inside the braces shadows but
         // doesn't leak out. Snapshot the locals map and restore after.
         let saved_locals = self.locals.clone();
+        // ctrl.ensure/EN1: an `ensure` runs when its *enclosing block* exits,
+        // not when the function does. Loop bodies did this already (they lower
+        // their statements directly and call `close_loop_body`), so a bare
+        // block, an `if`/`else` body and a match arm — everything that reaches
+        // MIR as a block expression — left their ensures on the stack for the
+        // function's exit to drain: `{ ensure push(1); push(0) } push(2)` gave
+        // 0,2,1 instead of 0,1,2, and a file opened in a block to bound its
+        // lifetime stayed open for the whole function (#929).
+        let ensure_depth = self.ensure_stack.len();
         for (i, stmt) in stmts.iter().enumerate() {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
@@ -8017,6 +8026,14 @@ impl<'a> MirLowerer<'a> {
             }
             self.lower_stmt(stmt)?;
         }
+        // An exit that already terminated ran its own chain — `return` emits a
+        // CleanupReturn covering everything still on the stack, `break` and
+        // `continue` drain back to the loop's depth. Only the fall-through
+        // exit is left to us.
+        if self.builder.current_block_unterminated() {
+            self.emit_loop_cleanup(ensure_depth);
+        }
+        self.ensure_stack.truncate(ensure_depth);
         self.locals = saved_locals;
         Ok((last_val, last_ty))
     }
