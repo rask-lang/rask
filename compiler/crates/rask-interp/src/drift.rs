@@ -191,6 +191,45 @@ fn all_registered_type_methods_implemented() {
     }
 }
 
+// Every raw-pointer method has to answer. `PTR_METHODS` is the one list — the
+// checker, MIR lowering and codegen all read it — and the interpreter simply
+// had no entry at all, which is how `p.read()` came to be "no method on `i64`"
+// (#935). Nothing checked, because the type walk above starts from
+// `REGISTERED_TYPES` and a `*T` isn't a registered type.
+//
+// A method added to the table with a new `PtrSig` is caught by the compiler:
+// `call_ptr_method` matches on the sig exhaustively. One added with an existing
+// sig but an unhandled *name* is not, and this catches that.
+#[test]
+fn all_pointer_methods_implemented() {
+    use crate::ptr::{call_ptr_method, RawPtr};
+    use crate::interp::RuntimeError;
+
+    // Points at a real buffer, so a read has something to read and the answer
+    // is a value rather than an out-of-bounds panic.
+    let p = RawPtr::bytes(&Arc::new(Mutex::new("ab".to_string())));
+
+    for m in rask_stdlib::PTR_METHODS {
+        // Enough arguments for the widest shape; the extras are ignored.
+        let args = vec![Value::int(1), Value::RawPtr(p.clone())];
+        let args = match m.sig {
+            // `write` takes the value to store, not a count.
+            rask_stdlib::PtrSig::Write => vec![Value::int(65)],
+            // `eq`/`ne` compare against another pointer.
+            rask_stdlib::PtrSig::Comparison => vec![Value::RawPtr(p.clone())],
+            _ => args,
+        };
+        match call_ptr_method(&p, m.name, args) {
+            Err(RuntimeError::NoSuchMethod { .. }) | Err(RuntimeError::Generic(_)) => panic!(
+                "`{}` is in rask-stdlib's PTR_METHODS but the interpreter has no \
+                 implementation — add one in rask-interp/src/ptr.rs",
+                m.name
+            ),
+            _ => {}
+        }
+    }
+}
+
 // Every registered module method has to have *an* implementation the
 // interpreter can reach. Two count: Rust dispatch in `stdlib/`, or a Rask body
 // in `stdlib/*.rk`, which `call_module_method` falls back to. It used to demand

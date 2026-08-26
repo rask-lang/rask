@@ -6,7 +6,20 @@
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
+use crate::ptr::RawPtr;
 use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, PoolData, RackData, StructData, TypeConstructorKind, Value, VecData};
+
+/// UTF-8 or a clear error. `from_raw` promises no validation natively, but a
+/// Rust `String` can't carry the malformed bytes, so saying so beats inventing
+/// replacement characters.
+fn string_from_bytes(bytes: Vec<u8>) -> Result<String, RuntimeError> {
+    String::from_utf8(bytes).map_err(|_| {
+        RuntimeError::Panic(
+            "those bytes aren't valid UTF-8 — the interpreter can't hold a malformed string"
+                .to_string(),
+        )
+    })
+}
 
 /// The node a link names, seeing through the `Link<T>?` optional that every
 /// edge field carries.
@@ -110,6 +123,9 @@ impl Interpreter {
                     variant_index: 0, origin: None,
                 })
             }
+            // `as_mut_ptr` differs only in taking `mutate self`, which the
+            // checker enforces — both hand back the same buffer.
+            "as_ptr" | "as_mut_ptr" => Ok(Value::RawPtr(RawPtr::elements(v))),
             // CP1/CP2: `none` when the vector may grow freely.
             "capacity" => {
                 let bound = v.lock().unwrap().bound;
@@ -1562,20 +1578,41 @@ impl Interpreter {
                 };
                 Ok(Value::String(Arc::new(Mutex::new(c.to_string()))))
             }
+            // Copy in from a NUL-terminated C string. The interpreter's
+            // buffers have no embedded NULs, so "to the terminator" is "to the
+            // end of the buffer the pointer came from".
             (TypeConstructorKind::String, "from_c") => {
-                // In the interpreter, from_c just copies the string (no real raw pointers).
-                // Accept either a string or int (simulated pointer) argument.
                 match args.first() {
+                    Some(Value::RawPtr(p)) => {
+                        let bytes = p.bytes_from_here()?;
+                        Ok(Value::String(Arc::new(Mutex::new(string_from_bytes(bytes)?))))
+                    }
                     Some(Value::String(s)) => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
-                    Some(Value::Int(_, _)) => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
-                    _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                    _ => Err(RuntimeError::TypeError(
+                        "string.from_c expects a `*u8`".to_string(),
+                    )),
                 }
             }
+            // Pointer plus length, no NUL involved.
             (TypeConstructorKind::String, "from_raw") => {
-                // In the interpreter, from_raw is a no-op (no real raw pointers).
                 match args.first() {
+                    Some(Value::RawPtr(p)) => {
+                        let len = self.expect_int(&args, 1)?;
+                        let mut bytes = p.bytes_from_here()?;
+                        if len < 0 || len as usize > bytes.len() {
+                            return Err(RuntimeError::Panic(format!(
+                                "string.from_raw asked for {} bytes, {} are readable from here",
+                                len,
+                                bytes.len()
+                            )));
+                        }
+                        bytes.truncate(len as usize);
+                        Ok(Value::String(Arc::new(Mutex::new(string_from_bytes(bytes)?))))
+                    }
                     Some(Value::String(s)) => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
-                    _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                    _ => Err(RuntimeError::TypeError(
+                        "string.from_raw expects a `*u8` and a length".to_string(),
+                    )),
                 }
             }
             (TypeConstructorKind::Char, "from_u32") => {
