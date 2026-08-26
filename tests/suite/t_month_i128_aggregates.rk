@@ -104,4 +104,93 @@ test "type.primitives — to<u64> out of a u128" {
     assert u.to<u64>()! == 100
 }
 
+// Every other place a 128-bit scalar can sit, and the rest of the conversion
+// surface. All of these are the same question — is sixteen bytes an aggregate
+// or a scalar? — asked by a different piece of code, and each one used to
+// answer it from the size alone.
+
+struct Wide9 {
+    balance: i128
+    tag: i32
+}
+
+enum Amount9 {
+    Wide(i128)
+    Narrow(i32)
+}
+
+test "type.primitives — an i128 in a tuple" {
+    let t = (18446744073709551617, 5)
+    assert t.0 == 18446744073709551617
+    assert t.1 == 5
+}
+
+test "type.primitives — an i128 array element" {
+    let arr: [i128; 3] = [1, 18446744073709551616, 3]
+    assert arr[0] == 1
+    assert arr[1] == 18446744073709551616
+    assert arr[2] == 3
+}
+
+test "type.primitives — an i128 enum payload" {
+    let a = Amount9.Wide(18446744073709551618)
+    match a {
+        Amount9.Wide(v) => assert v == 18446744073709551618
+        Amount9.Narrow(_) => assert false
+    }
+}
+
+test "type.primitives — an i128 optional payload" {
+    let maybe: i128? = 18446744073709551619
+    assert maybe! == 18446744073709551619
+}
+
+test "type.primitives — a u128 struct field holds its full range" {
+    let w = Wide9 { balance: -18446744073709551617, tag: 3 }
+    assert w.balance == -18446744073709551617
+    assert w.tag == 3
+}
+
+// Ordering a struct with a 128-bit field: the derived `compare` reads each
+// field, and every other scalar arm widens to i64 first. There is nothing
+// wider to widen an i128 into, so it needs an arm of its own.
+test "type.primitives — a struct with an i128 field can be ordered" {
+    let lo = Wide9 { balance: 1, tag: 0 }
+    let hi = Wide9 { balance: 18446744073709551616, tag: 0 }
+    assert lo < hi
+    assert hi > lo
+    assert lo == Wide9 { balance: 1, tag: 0 }
+}
+
+test "type.primitives — a Vec<i128> element can be written back" {
+    mut v: Vec<i128> = Vec.new()
+    v.push(18446744073709551616)
+    v.push(2)
+    v[1] = 36893488147419103232
+    assert v[0] == 18446744073709551616
+    assert v[1] == 36893488147419103232
+}
+
+test "type.primitives — wrap<i64> out of an i128 keeps the low bits" {
+    let big: i128 = 18446744073709551617
+    assert big.wrap<i64>() == 1
+}
+
+test "type.primitives — clamp out of an i128 pins to the target range" {
+    let big: i128 = 18446744073709551617
+    let small: i128 = 100
+    assert big.clamp<i64>() == 9223372036854775807
+    assert small.clamp<i32>() == 100
+}
+
+// Widening the other way. The range check compares the value against the
+// target's bounds, and doing that at the *source's* width truncated
+// `i128::MIN` to zero, so every negative value looked out of range.
+test "type.primitives — to<i128> out of a negative i64 always succeeds" {
+    let n: i64 = -5
+    assert n.to<i128>()! == -5
+    let m: i64 = -9223372036854775808
+    assert m.to<i128>()! == -9223372036854775808
+}
+
 func main() {}

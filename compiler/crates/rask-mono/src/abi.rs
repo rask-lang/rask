@@ -109,11 +109,17 @@ pub fn payload_repr(is_float: bool, passed_by_address: bool) -> PayloadRepr {
 /// a four-byte slot it is an `f32`. An integer is written full-width into a
 /// word and at its own width into anything narrower — little-endian puts the
 /// meaningful bytes first, so a narrower read of a full-width write agrees.
+///
+/// A word is the widest a scalar gets, with one exception: a 128-bit integer
+/// is sixteen bytes and still a scalar, held in a register pair rather than
+/// behind a pointer. Answering "a word" for one is what had a `balance: i128`
+/// field read back eight bytes wide (#933).
 pub fn slot_scalar_bytes(is_float: bool, value_bytes: u32, slot_bytes: u32) -> u32 {
     if slot_bytes >= PAYLOAD_SLOT_BYTES {
-        // A word-wide slot: a float fills it as an f64, an integer is written
-        // full-width. Either way the whole slot carries the value.
-        PAYLOAD_SLOT_BYTES
+        // A word-or-wider slot: a float fills a word as an f64, an integer is
+        // written full-width. A scalar wider than a word takes as much of the
+        // slot as it actually is.
+        PAYLOAD_SLOT_BYTES.max(value_bytes.min(slot_bytes))
     } else if is_float {
         // Only f32 is narrower than a word, and a narrow slot holds it at its
         // own width rather than promoted.
@@ -144,5 +150,13 @@ mod slot_tests {
         assert_eq!(slot_scalar_bytes(false, 4, 4), 4);
         assert_eq!(slot_scalar_bytes(false, 8, 2), 2, "narrowed to the slot");
         assert_eq!(slot_scalar_bytes(false, 1, 1), 1);
+        assert_eq!(slot_scalar_bytes(false, 4, 8), 8, "narrow int fills a word");
+    }
+
+    #[test]
+    fn a_scalar_wider_than_a_word_keeps_its_width() {
+        assert_eq!(slot_scalar_bytes(false, 16, 16), 16, "an i128 is sixteen bytes");
+        // A word-wide slot can't hold more than a word, whatever the value is.
+        assert_eq!(slot_scalar_bytes(false, 16, 8), 8);
     }
 }
