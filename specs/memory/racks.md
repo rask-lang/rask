@@ -163,10 +163,12 @@ Named here so the gaps are on the record rather than discovered:
   caught (rask-lang/rask#941).
 - **Pushing a link into a container still scans.** One record per (container,
   target) means `vec.push(link)` checks whether that pair is already recorded,
-  and that check walks the target's foreign-holder list. It is short by
-  construction, but the cost is O(its length) rather than constant, and it is
-  the last place in the model where in-degree leaks into a write
-  (rask-lang/rask#981).
+  and that check walks the target's foreign-holder list. Node-field edges are on
+  the other list, so they cost it nothing — measured flat at ~3.5 ns whether one
+  node points at the target or 4096 do. What it is still linear in is the number
+  of *foreign* holders: 4096 of those make the same push 9.4 µs. Ordinary graphs
+  have few, but nothing enforces that, and it is the last place in the model
+  where in-degree leaks into a write (rask-lang/rask#981).
 - **Structural mutation under concurrency.** Edges may only connect co-owned
   nodes, and the current answer for sharing a graph is a lock around the
   ownership root. Staged structural mutation is designed and unbuilt.
