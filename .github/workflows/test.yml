@@ -95,6 +95,15 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # The design prototypes, on both backends. differential.sh only scans
+    # tests/suite/, and these are main-only so `rask test` runs nothing on them
+    # and exits 0 — so the programs written to show Rack/Link working end to end
+    # had no parity coverage at all. That is how #984 left the linked list
+    # printing nothing on native, and how #866 hid in the scene tree.
+    - name: Prototype backend parity
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/prototypes_gate.sh
+
     # projects/*/ type-checks. Nothing checked them, which is how raido reached
     # 48 errors and tiwaz 11 (#774) — every rule change since they were written
     # landed without anything noticing. `check` only: neither runs natively yet.

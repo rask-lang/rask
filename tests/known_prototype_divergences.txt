@@ -1,0 +1,10 @@
+# Prototypes whose two backends legitimately disagree, for tests/prototypes_gate.sh.
+#
+# Same contract as tests/known_divergences.txt: an entry here is a tracked bug,
+# not a permanent exemption. A file that starts agreeing fails the gate as an
+# UNEXPECTED PASS, so a line can't quietly outlive the bug it names.
+#
+# Format: one prototype basename per line, trailing `# <what> — #<issue>`.
+#
+# Empty. Every prototype currently agrees on both backends — #866 and #984 were
+# the two that didn't, and both are fixed.
