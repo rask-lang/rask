@@ -110,4 +110,46 @@ test "ctrl.comptime — CT49: a name that came from another name" {
     assert p.(same) == 11
 }
 
+// Naming the field means the name obeys scope, and the first version of this
+// didn't. The compile-time string lived in one flat map keyed by name, so an
+// inner `let which = "y"` overwrote the outer one and kept it after the block
+// ended — the interpreter answered with the outer name, native with the inner,
+// and neither said anything. Braced blocks restored their names; loop bodies,
+// which are lowered statement-by-statement and never go through that path,
+// did not.
+
+test "ctrl.comptime — CT49: a shadowing name doesn't outlive its block" {
+    let p = Point { x: 3, y: 4 }
+    let which = "x"
+    if p.x > 0 {
+        let which = "y"
+        assert p.(which) == 4
+    }
+    assert p.(which) == 3
+}
+
+test "ctrl.comptime — CT49: a shadowing name doesn't outlive its loop" {
+    let p = Point { x: 3, y: 4 }
+    let which = "x"
+    for i in 0..2 {
+        let which = "y"
+        assert p.(which) == 4
+    }
+    assert p.(which) == 3
+}
+
+test "ctrl.comptime — CT49: shadowing two blocks deep unwinds a layer at a time" {
+    let p = Point { x: 3, y: 4 }
+    let which = "x"
+    if p.x > 0 {
+        let which = "y"
+        if p.y > 0 {
+            let which = "x"
+            assert p.(which) == 3
+        }
+        assert p.(which) == 4
+    }
+    assert p.(which) == 3
+}
+
 func main() {}

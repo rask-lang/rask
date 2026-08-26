@@ -8067,7 +8067,14 @@ impl<'a> MirLowerer<'a> {
         let mut last_ty = MirType::Void;
         // Block scope: any const/mut declared inside the braces shadows but
         // doesn't leak out. Snapshot the locals map and restore after.
+        //
+        // Comptime-known strings are scoped the same way, and for the same
+        // reason. A `let w = "limit"` inside the braces shadowing an outer
+        // `let w = "spent"` used to overwrite the entry and keep it after the
+        // block ended, so a later `b.(w)` read the inner name — the interpreter
+        // said `spent`, native said `limit`, and nothing complained.
         let saved_locals = self.locals.clone();
+        let saved_comptime_strings = self.comptime_strings.clone();
         for (i, stmt) in stmts.iter().enumerate() {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
@@ -8080,6 +8087,7 @@ impl<'a> MirLowerer<'a> {
             self.lower_stmt(stmt)?;
         }
         self.locals = saved_locals;
+        self.comptime_strings = saved_comptime_strings;
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer
