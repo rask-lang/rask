@@ -275,6 +275,16 @@ impl TypeTable {
         self.type_aliases.insert(name, target);
     }
 
+    /// The type `name` is an alias for, following a chain. `None` if it isn't an
+    /// alias.
+    ///
+    /// Public because a name used as a *namespace* — `Span.from_millis(1)` — is
+    /// matched against the stub registry by its spelling, and an alias isn't in
+    /// there under its own name.
+    pub fn alias_target<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        self.resolve_alias(name)
+    }
+
     /// Resolve a type alias chain, returning the final target string.
     /// Returns None if name is not an alias.
     fn resolve_alias<'a>(&'a self, name: &'a str) -> Option<&'a str> {

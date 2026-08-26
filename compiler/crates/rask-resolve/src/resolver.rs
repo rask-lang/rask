@@ -57,6 +57,12 @@ pub struct Resolver {
     /// the message named the wrong module for it — `string` also has a
     /// `ParseError`, and that's the one the owner lookup found.
     imported_type_names: HashSet<String>,
+    /// Names already reported as needing an import (IM1).
+    ///
+    /// One missing import is one fact about one name, and a program using
+    /// `Duration` forty times without importing it doesn't need forty errors —
+    /// the first one carries the whole answer, and the other thirty-nine bury it.
+    reported_missing_imports: HashSet<String>,
     lazy_imports: HashMap<String, Vec<String>>,
     /// Maps struct/enum base names to their type params (for extend blocks)
     type_param_map: HashMap<String, Vec<TypeParam>>,
@@ -83,6 +89,7 @@ impl Resolver {
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
             imported_type_names: HashSet::new(),
+            reported_missing_imports: HashSet::new(),
             lazy_imports: HashMap::new(),
             type_param_map: HashMap::new(),
             package_exports: HashMap::new(),
@@ -891,7 +898,10 @@ impl Resolver {
                     self.check_shadows_import(&alias.name, decl.span);
                     let sym_id = self.symbols.insert(
                         alias.name.clone(),
-                        SymbolKind::TypeAlias { target: alias.target.clone() },
+                        SymbolKind::TypeAlias {
+                            target: alias.target.clone(),
+                            from_import: false,
+                        },
                         None,
                         decl.span,
                         alias.is_pub,
@@ -1416,12 +1426,48 @@ impl Resolver {
                         self.errors.push(e);
                     }
                     self.register_module_companions(module_kind, span);
-                } else if self.scopes.lookup(&binding_name).is_none() {
+                // An *aliased* import takes the name it asks for even when
+                // something already holds it. The gate was "only if nothing holds
+                // it", and every type the stdlib declares is in the shared scope
+                // — so `import time.Duration as Span` met `stdlib/builtins.rk`'s
+                // own `Span`, registered nothing at all, and the alias had
+                // nothing behind it (#923). The shadowing check above has
+                // already rejected the case where the holder is the program's
+                // own declaration, so reaching here means replacing is allowed.
+                //
+                // Un-aliased stays a no-op when the name is taken, because there
+                // the holder is the stdlib's own declaration of the very thing
+                // being imported, and re-deriving it can only lose information:
+                // `num` declares both a `struct Wrapping` and a same-named
+                // constructor function (type.overflow/W1 wants `Wrapping(5u32)`
+                // to read as a call), and `import num.Wrapping` replaced the
+                // function binding with the struct, so `Wrapping(33)` became
+                // "`Wrapping<T: Integer>` is a struct, so calling it doesn't
+                // construct one".
+                } else if import_decl.alias.is_some()
+                    || self.scopes.lookup(&binding_name).is_none()
+                {
                     // Enums need special handling (register variants too)
                     if let Some(variants) = Self::stdlib_enum_variants(pkg_name, symbol_name) {
                         self.register_builtin_enum(symbol_name, variants);
                     } else {
-                        let kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        let mut kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        // IM3: `import time.Duration as Span` means `Span` *is*
+                        // `Duration`, not a new type that happens to sit where
+                        // one goes. Bound as a plain struct, the name passed in a
+                        // type position and had none of Duration's methods, so
+                        // `Span.from_millis(1)` was "no method `from_millis`
+                        // found for type `Span`" (#923). The checker turns this
+                        // into a transparent alias, which is the same identity
+                        // `import time.Duration` gets.
+                        if binding_name != *symbol_name
+                            && matches!(kind, SymbolKind::Struct { .. } | SymbolKind::BuiltinType { .. })
+                        {
+                            kind = SymbolKind::TypeAlias {
+                                target: symbol_name.clone(),
+                                from_import: true,
+                            };
+                        }
                         let sym_id = self.symbols.insert(
                             binding_name.clone(),
                             kind,
@@ -1656,7 +1702,11 @@ impl Resolver {
                 translate::RaskCDecl::TypeAlias(a) => {
                     let sym_id = self.symbols.insert(
                         a.name.clone(),
-                        SymbolKind::TypeAlias { target: a.target.clone() },
+                        // A `typedef` out of a C header, not `import m.T as A`.
+                        SymbolKind::TypeAlias {
+                            target: a.target.clone(),
+                            from_import: false,
+                        },
                         None,
                         span,
                         false,
@@ -2307,6 +2357,22 @@ impl Resolver {
         Some(Self::owning_module(name).unwrap_or_else(|| name.to_string()))
     }
 
+    /// Report `name` as needing an import, once. True when it did.
+    fn report_missing_import(&mut self, name: &str, span: Span) -> bool {
+        let Some(module) = self.needs_import_from(name) else { return false };
+        if !self.reported_missing_imports.insert(name.to_string()) {
+            // Already said. Still "yes, this name needs an import" for callers
+            // deciding whether to fall through to a worse message.
+            return true;
+        }
+        self.errors.push(ResolveError::module_not_imported(
+            name.to_string(),
+            Some(module),
+            span,
+        ));
+        true
+    }
+
     /// The identifier-shaped pieces of a type string. `Vec<Duration>?` gives
     /// `Vec` and `Duration`, `*u8` gives `u8`, `T or Error` gives `T`, `or` and
     /// `Error`.
@@ -2331,13 +2397,9 @@ impl Resolver {
         if self.stdlib_mode {
             return;
         }
-        let flagged: Vec<(String, String)> = Self::type_idents(ty)
-            .filter_map(|name| {
-                self.needs_import_from(name).map(|m| (name.to_string(), m))
-            })
-            .collect();
-        for (name, module) in flagged {
-            self.errors.push(ResolveError::module_not_imported(name, Some(module), span));
+        let names: Vec<String> = Self::type_idents(ty).map(str::to_string).collect();
+        for name in names {
+            self.report_missing_import(&name, span);
         }
     }
 
@@ -2405,11 +2467,7 @@ impl Resolver {
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {
-                        if let Some(module) = self.needs_import_from(name) {
-                            self.errors.push(ResolveError::module_not_imported(
-                                name.clone(), Some(module), expr.span,
-                            ));
-                        }
+                        self.report_missing_import(name, expr.span);
                         self.resolutions.insert(expr.id, sym_id);
                     }
                     None => {
@@ -2421,13 +2479,7 @@ impl Resolver {
                                 // as the bare one: `Pool<Node>.new()` reached
                                 // here instead of the branch above and slipped
                                 // past IM1 entirely.
-                                if let Some(module) = self.needs_import_from(base_name) {
-                                    self.errors.push(ResolveError::module_not_imported(
-                                        base_name.to_string(),
-                                        Some(module),
-                                        expr.span,
-                                    ));
-                                }
+                                self.report_missing_import(base_name, expr.span);
                                 self.resolutions.insert(expr.id, sym_id);
                                 return;
                             }
@@ -2438,10 +2490,7 @@ impl Resolver {
                         // always-in-scope they read as "unknown type `Heap`"
                         // with a fix suggesting the program declare one.
                         let base = name.split('<').next().unwrap_or(name);
-                        if let Some(module) = self.needs_import_from(base) {
-                            self.errors.push(ResolveError::module_not_imported(
-                                base.to_string(), Some(module), expr.span,
-                            ));
+                        if self.report_missing_import(base, expr.span) {
                             return;
                         }
                         self.errors.push(ResolveError::undefined(name.clone(), expr.span));

@@ -92,10 +92,20 @@ pub enum SymbolKind {
         /// The PackageId this namespace refers to.
         package_id: PackageId,
     },
-    /// A type alias (transparent).
+    /// A type alias.
     TypeAlias {
         /// The target type name.
         target: String,
+        /// Bound by `import m.T as A` rather than by a `type alias` declaration.
+        ///
+        /// The two have to be told apart. An aliased import is transparent — `A`
+        /// *is* `T`, which is what IM3 means — but a `type X = Y` declaration is
+        /// nominal, with an identity of its own, and registering one as
+        /// transparent collapses the newtype into what it wraps: `r.label.value`
+        /// on a `type Label = string` became "no field `value` on type `string`".
+        /// `type alias X = Y` is the transparent spelling and the checker learns
+        /// it from the declaration, not from here.
+        from_import: bool,
     },
     /// A C import namespace (`import c "header.h"` → `c.symbol`).
     CNamespace {

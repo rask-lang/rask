@@ -941,6 +941,67 @@ fn error_module_used_without_import() {
     }
 }
 
+// #977: the four namespace rules of `struct.modules`, all four of which were
+// specified and none enforced. IM1 leaked twice over — the stdlib's source is
+// resolved into the program's scope, so every module and type it declares was
+// visible unasked, and a type *annotation* wasn't looked at at all. BI3 leaked on
+// exactly the names the stdlib also declares, because the check asked what the
+// scope held and `collections.rk`'s own `struct Vec<T>` had replaced the builtin
+// binding. BF3 wasn't implemented.
+#[test]
+fn error_namespace_rules() {
+    let (failed, out) = compile_error_output("namespace_rules.rk");
+    assert!(failed, "the namespace rules must be enforced: {}", out);
+
+    // IM1, in expression position and in an annotation.
+    assert!(
+        out.contains("`Instant` is not in scope"),
+        "IM1: a stdlib type needs its import: {}", out,
+    );
+    assert!(
+        out.contains("`StringBuilder` is not in scope"),
+        "IM1: including in a type annotation: {}", out,
+    );
+    // IM4 is what makes the fix applicable — the code is written against the
+    // bare name, so `import time.Instant` keeps it working where plain
+    // `import time` would mean rewriting the use.
+    assert!(
+        out.contains("import time.Instant"),
+        "the fix should name the module and the type: {}", out,
+    );
+
+    // IM8, naming the module the collision is with.
+    assert!(
+        out.contains("`Duration` is already in scope from `time`"),
+        "IM8: a declaration may not take an imported name: {}", out,
+    );
+
+    // BI3, on a name the stdlib also declares — the case that leaked.
+    assert!(
+        out.contains("`Vec` is a built-in type") && out.contains("`Option` is a built-in type"),
+        "BI3: builtin names are reserved even where the stdlib declares them too: {}", out,
+    );
+
+    // BF3.
+    assert!(
+        out.contains("`println` is a built-in function"),
+        "BF3: BF1's functions are reserved: {}", out,
+    );
+
+    // And what stays legal: a name of one's own, a builtin function outside
+    // BF1's set, and a stdlib type this file hasn't imported.
+    for legal in ["Budget9", "`max`", "`Handle`"] {
+        assert!(
+            !out.contains(legal),
+            "{} should not be reported: {}", legal, out,
+        );
+    }
+    assert_eq!(
+        out.matches("error[").count(), 6,
+        "six errors, no more: {}", out,
+    );
+}
+
 // #500: a free function named with a keyword can be declared but never called,
 // so the declaration is rejected — and the message says why, instead of the
 // backwards type error the call site used to produce.

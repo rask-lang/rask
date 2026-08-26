@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's own type named like one in the stdlib — #975, #977.
+//
+// `Timer`, `Output`, `Path`, `Metadata`, `Command`, `Buffer`, `Span`, `Process`,
+// `Args`, `Handle`, `Thread`, `Random` — the stdlib declares 65 public types
+// across 20 modules, and they're the unremarkable words people call their own
+// types. Nothing warned when one was shadowed.
+//
+// Natively it was worse than a warning. Layouts live in one flat list looked up
+// by bare name, so a user `struct Timer` and `stdlib/time.rk`'s both answered to
+// `Timer` and the first one won — the stdlib's, `public struct Timer { }`, with
+// no fields. Every field of the user's type landed at offset 0, the struct got a
+// zero-byte slot, and the literal segfaulted while the interpreter printed the
+// right answer. Renaming the type was the entire difference.
+//
+// Two rules and a layout fix cover it now:
+//
+//   IM1  a stdlib name isn't in scope unasked, so `Timer` here is unambiguously
+//        this file's — the collision can only happen where a program asks for
+//        the name and then declares over it
+//   IM8  which is a named error, not a miscompile
+//   and `find_struct` prefers the program's layout when a name has both
+//
+// The `d: Duration` field matters: the plain-scalar case survived the bug, so a
+// probe with `ticks: i64` would pass either way.
+import time.Duration
+import time.Instant
+
+// Same name as stdlib/time.rk's.
+struct Timer {
+    started: Instant
+    budget: Duration
+    label: string
+}
+
+extend Timer {
+    func start(label: string, budget: Duration) -> Timer {
+        return Timer { started: Instant.now(), budget: budget, label: label }
+    }
+
+    func budget_seconds(self) -> u64 {
+        return self.budget.as_seconds()
+    }
+}
+
+// stdlib/builtins.rk declares `Span` too, and it's two fields rather than none —
+// so this one reads a wrong offset rather than a zero-size slot.
+struct Span {
+    lo: i64
+    hi: i64
+}
+
+// stdlib/os.rk's `Output` has three fields, all of them different types from
+// these.
+struct Output {
+    code: i64
+    text: string
+}
+
+test "struct.modules — a struct named like a stdlib type keeps its own fields" {
+    let t = Timer { started: Instant.now(), budget: Duration.seconds(5), label: "work" }
+    assert t.label == "work"
+    assert t.budget.as_seconds() == 5
+}
+
+test "struct.modules — and its own methods" {
+    let t = Timer.start("build", Duration.seconds(30))
+    assert t.budget_seconds() == 30
+    assert t.label == "build"
+}
+
+test "struct.modules — a shadowed name whose stdlib type has fields of its own" {
+    let s = Span { lo: 3, hi: 9 }
+    assert s.lo == 3
+    assert s.hi == 9
+    assert s.hi - s.lo == 6
+}
+
+test "struct.modules — three fields, none of them the stdlib type's" {
+    let o = Output { code: 2, text: "nope" }
+    assert o.code == 2
+    assert o.text == "nope"
+}
+
+test "struct.modules — the shadowing type survives a round trip through a Vec" {
+    mut spans = Vec.new()
+    spans.push(Span { lo: 1, hi: 2 })
+    spans.push(Span { lo: 10, hi: 20 })
+    assert spans.len() == 2
+    assert spans[1].hi == 20
+}
+
+func main() {}
