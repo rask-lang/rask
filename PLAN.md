@@ -1,18 +1,42 @@
 # Plan
 
-**Measured 2026-08-24, at `60678a7` and again after this branch's fixes.** Every number below
-came from running the thing, not from reading the previous version of this file. Re-measure
-before planning off it — the last three times this document went wrong, it was because a
-state column outlived its evidence.
+**Measured 2026-08-26, on all six lane branches merged together.** Every number below came
+from running the thing, not from reading the previous version of this file. Re-measure before
+planning off it — the last three times this document went wrong, it was because a state column
+outlived its evidence.
 
 ```
-tests/differential.sh      329 green, 20 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      340 green, 15 expected-red, 0 untracked, 0 unexpected-pass
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
-tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
+tests/prototypes_gate.sh   13 agree, 0 untracked
+tests/fmt_roundtrip_gate.sh 438 round-tripped, 576 reformatted, 0 failures
 tests/http_api_harness.sh  ok on both backends
-cargo test --release --workspace   52 binaries, 0 failures
+cargo test --release --workspace   0 failures
 ```
+
+## The six lanes, merged
+
+Seven sessions ran in parallel, partitioned by crate. Six produced PRs (#987 codegen, #988
+interpreter, #989 namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent
+benchmark); the panics lane produced none. Each is green against its own base. Merged
+together they need three fixups, all of them one lane meeting a file another lane wrote:
+
+- **#989 never merged main.** Its branch is still on `125d039`, so its CI has not seen
+  `p18_rack_multi_link_fields.rk` or `p19_mutate_param_link_write.rk`, both of which its own
+  IM1 rule rejects for a missing `import memory.Rack`. Merge it last.
+- **`reflect` ended up in two lists.** #989 kept it out of the stub set because parsing it
+  broke monomorphizing `reflect.fields<T>()` through a generic; #995 fixed that cause and put
+  it in. #989's own guard catches the overlap.
+- **One registered-red file rotted.** `t_day_const_string_array.rk` is red for #1000, so the
+  gate expects it to fail — and stopped looking when it started failing at the check step
+  instead, for a missing import. The bug it documents was not being exercised.
+
+The third is the one worth generalising: a file registered red is only honest while it fails
+for the reason recorded next to it, and nothing checks that. See #1005.
+
+Suggested merge order: #987, #988, #991, #995, #1003 in any order, then #989, then the
+integration fixups.
 
 ## Where things stand
 
