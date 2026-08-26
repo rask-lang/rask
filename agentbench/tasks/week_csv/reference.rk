@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Row { name: string, score: i64 }
+
+func parse_csv(text: string) -> Vec<Row> {
+    mut rows: Vec<Row> = Vec.new()
+    mut first = true
+    for raw in text.lines().to_vec() {
+        let line = raw.trim().to_string()
+        if first {
+            first = false
+            continue
+        }
+        if line.is_empty() { continue }
+        let fields = line.split(",").to_vec()
+        if fields.len() != 2 { continue }
+        let score = fields[1].trim().to_string().parse_int() catch _ => {
+            continue
+        }
+        rows.push(Row { name: fields[0].trim().to_string(), score })
+    }
+    return rows
+}
+
+func total(rows: Vec<Row>) -> i64 {
+    mut sum: i64 = 0
+    for row in rows {
+        sum = sum + row.score
+    }
+    return sum
+}
+
+func best(rows: Vec<Row>) -> string {
+    if rows.len() == 0 { return "" }
+    mut name = rows[0].name
+    mut score = rows[0].score
+    for row in rows {
+        if row.score > score {
+            name = row.name
+            score = row.score
+        }
+    }
+    return name
+}

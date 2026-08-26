@@ -1,0 +1,21 @@
+title = "Temperature conversion table"
+horizon = "day"
+concepts = ["floats", "casts", "loops", "Vec"]
+issues = []
+
+contract = """
+func to_fahrenheit(celsius: f64) -> f64
+func table(start: i32, stop: i32, step: i32) -> Vec<f64>
+"""
+
+prompt = """
+Convert Celsius to Fahrenheit: F = C * 9/5 + 32.
+
+`to_fahrenheit` does one value. `table` walks Celsius from `start` up to and
+including `stop` in increments of `step`, and returns the Fahrenheit reading at
+each point. A `step` of zero or less, or a `stop` below `start`, produces an
+empty Vec.
+
+Note that Rask's `as` only converts when nothing can be lost, so an i32 does not
+silently become an f64.
+"""

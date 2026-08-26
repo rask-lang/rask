@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: counts" {
+    let f = word_frequency("the cat the hat")
+    assert f.len() == 3
+    assert f.get("the")! == 2
+    assert f.get("cat")! == 1
+    assert f.get("hat")! == 1
+    assert f.get("dog") is none
+}
+
+test "verify: case is folded" {
+    let f = word_frequency("Go go GO stop")
+    assert f.len() == 2
+    assert f.get("go")! == 3
+    assert f.get("stop")! == 1
+}
+
+test "verify: most common, ties broken alphabetically" {
+    assert most_common("the cat the hat") == "the"
+    assert most_common("b a") == "a"
+    assert most_common("zebra apple apple") == "apple"
+}
+
+test "verify: nothing in, nothing out" {
+    assert word_frequency("").len() == 0
+    assert most_common("") == ""
+}

@@ -1,0 +1,26 @@
+title = "An inverted index"
+horizon = "month"
+concepts = ["nested collections", "Map", "Vec", "strings", "sorting"]
+issues = []
+
+contract = """
+func build_index(documents: Vec<string>) -> Map<string, Vec<i64>>
+func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64>
+func documents_with_all(index: Map<string, Vec<i64>>, words: Vec<string>) -> Vec<i64>
+"""
+
+prompt = """
+Build a search index over a handful of documents.
+
+`build_index` takes the documents in order and returns, for each word, the list
+of document numbers it appears in. Words are lowercased and split on whitespace.
+Document numbers start at 0, appear in ascending order, and never repeat — a
+word that occurs three times in one document still lists that document once.
+
+`lookup` returns the list for a word, or an empty Vec when the word isn't
+indexed. `documents_with_all` returns the documents containing every one of the
+given words, in ascending order; an empty word list matches nothing.
+
+Note that Map iteration order in Rask is seeded per process, so anything whose
+answer depends on order has to sort rather than rely on the walk.
+"""

@@ -49,6 +49,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `[T; N]` element writes | `t_day_array_writes.rk` | 6/6 | 6/6 | |
 | **probe** — `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 5/5 | 0/3 | #903 |
 | arrays sized by a named const | `t_day_const_array.rk` | 5/5 | 5/5 | |
+| **probe** — `const [string; N]` elements | `t_day_const_string_array.rk` | 4/4 | 2/4 | #1000 |
 | **probe** — `u8`/`u16` `.to<f64>()` | `t_day_unsigned_to_float.rk` | 6/6 | 5/6 | #974 |
 
 ## Week one
@@ -110,6 +111,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — unsafe blocks and raw pointers | `t_month_unsafe.rk` | 1/6 | 6/6 | #935 |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
 | floats in word-wide slots | `t_week_float_slots.rk` | 9/9 | 9/9 | |
+| **probe** — a method on a union-narrowed error | `t_month_error_union_narrowing.rk` | 4/4 | BUILD-FAIL | #1002 |
 
 ---
 

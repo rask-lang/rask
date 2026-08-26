@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: single conversions" {
+    assert to_fahrenheit(0.0) == 32.0
+    assert to_fahrenheit(100.0) == 212.0
+    assert to_fahrenheit(-40.0) == -40.0
+    assert to_fahrenheit(37.0) == 98.6
+}
+
+test "verify: the table walks inclusive" {
+    let t = table(0, 100, 50)
+    assert t.len() == 3
+    assert t[0] == 32.0
+    assert t[1] == 122.0
+    assert t[2] == 212.0
+}
+
+test "verify: a step that does not land on stop" {
+    let t = table(0, 10, 4)
+    assert t.len() == 3
+    assert t[0] == 32.0
+    assert t[2] == 46.4
+}
+
+test "verify: degenerate ranges are empty" {
+    assert table(10, 0, 1).len() == 0
+    assert table(0, 10, 0).len() == 0
+    assert table(0, 10, -1).len() == 0
+    assert table(5, 5, 1).len() == 1
+}

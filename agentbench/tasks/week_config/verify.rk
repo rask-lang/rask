@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func why(r: string or ConfigError) -> string {
+    if r is ConfigError as e { return e.message() }
+    return "no error"
+}
+
+func why_number(r: i64 or ConfigError) -> string {
+    if r is ConfigError as e { return e.message() }
+    return "no error"
+}
+
+test "verify: parsing" {
+    let c = parse("a=1\nb = two\n\n# comment\nc=3")
+    assert c.len() == 3
+    assert c.get("a")! == "1"
+    assert c.get("b")! == "two"
+    assert c.get("c")! == "3"
+}
+
+test "verify: junk lines are skipped, last write wins" {
+    let c = parse("  # note\nnokey\nx=1\nx=2\n   \n")
+    assert c.len() == 1
+    assert c.get("x")! == "2"
+}
+
+test "verify: get_text" {
+    let c = parse("host=localhost")
+    assert get_text(c, "host")! == "localhost"
+    assert why(get_text(c, "port")) == "missing key: port"
+}
+
+test "verify: get_number" {
+    let c = parse("port=8080\nname=web")
+    assert get_number(c, "port")! == 8080
+    assert why_number(get_number(c, "name")) == "not a number for name: web"
+    assert why_number(get_number(c, "nope")) == "missing key: nope"
+}
+
+test "verify: the default path" {
+    assert port_or_default("port=9000") == 9000
+    assert port_or_default("port=nope") == 8080
+    assert port_or_default("host=x") == 8080
+    assert port_or_default("") == 8080
+}
