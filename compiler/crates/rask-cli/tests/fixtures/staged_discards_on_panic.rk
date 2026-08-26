@@ -6,6 +6,9 @@
 // The commit sits on the block's inline cleanup, which a panic skips; the
 // acquire registers the *discard* on the runtime's unwind stack, which the panic
 // path drains. Neither half knows about the other.
+import sync.Mutex
+import sync.Shared
+
 struct Ledger9 { checking: i64, savings: i64 }
 const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
 

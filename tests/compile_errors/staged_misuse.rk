@@ -3,6 +3,10 @@
 // from the source alone. Both used to get through the checker and fail later —
 // ST1 as an internal "no method `staged`" on the interpreter and "Function not
 // found" natively, ST3a as neither, just a needless copy.
+import sync.Local
+import sync.Mutex
+import sync.Shared
+
 struct Ledger9 { checking: i64 }
 const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100 })
 const SOLO: Shared<Ledger9, Local> = Shared.local(Ledger9 { checking: 1 })

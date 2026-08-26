@@ -9,6 +9,10 @@
 // checks its exit code. What is testable here is every exit that *does* commit,
 // which is ST2's whole list — and the commit is the part a wrong implementation
 // gets wrong silently.
+import sync.Mutex
+import sync.Readers
+import sync.Shared
+
 
 struct Ledger9 {
     checking: i64
