@@ -3813,6 +3813,19 @@ fn panicked_task_hands_on_its_lock() {
 }
 
 #[test]
+fn exit_skips_every_ensure() {
+    // P5/EX3: exit is not a panic. No unwind, no cleanup, at any depth.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "exit_skips_ensures.rk");
+        assert_eq!(code, 5, "{}: os.exit(5) sets the status; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "start\n",
+            "{}: no ensure may run on the exit path", mode,
+        );
+    }
+}
+
+#[test]
 fn panic_exits_101_both_backends() {
     // P4/EX4: a panic escaping main exits 101 on interp and native alike.
     // Native previously abort()ed (SIGABRT / 134); step 2's runtime plumbing

@@ -303,6 +303,14 @@ impl Interpreter {
             }
         }
 
+        // P5/EX3: `os.exit` terminates immediately — no unwind, no ensures. The
+        // ensure-inside-ensure case was already handled below; a plain
+        // `os.exit(7)` in the body still ran every scheduled cleanup on the way
+        // out, which is the opposite of what exit means.
+        if matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Exit(_))) {
+            return Err(exit_error.unwrap());
+        }
+
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
         let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
@@ -311,9 +319,10 @@ impl Interpreter {
         match (exit_error, ensure_fatal) {
             // os.exit() inside an ensure terminates immediately, no matter what (P5).
             (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
-            // A panic/exit from the body is primary; ensure panics were already
-            // reported as secondary inside run_ensures.
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_) | RuntimeError::Exit(_)) => Err(e),
+            // A panic from the body is primary; ensure panics were already
+            // reported as secondary inside run_ensures. (A body `Exit` never
+            // reaches here — it returned above without running any ensure.)
+            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
             // A panic raised by an ensure kills the task (E1), overriding a
             // non-panic body exit (error propagation, return, break, continue).
             (_, Some(f)) => Err(f),
