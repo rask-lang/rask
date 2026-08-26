@@ -58,6 +58,21 @@ reg_label() {
     if names_in "$PENDING_FILE" | grep -qxF "$1"; then echo "PENDING"; else echo "KNOWN-FAIL"; fi
 }
 
+# Which backends a registry line says the file fails on: `(native)`, `(interp)`
+# or `(both)` in its note. First exact match wins — a line naming two issues
+# leads with the one that describes the file's overall state. Prose in the
+# parentheses (`(interp keeps the value, native wraps)`) deliberately doesn't
+# match; there's no claim to check against.
+reg_scope() {
+    awk -v want="$1" '
+        NF && $1 !~ /^#/ && $1 == want {
+            if (match($0, /\((native|interp|both)\)/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+            }
+            exit
+        }' "$KNOWN_DIV_FILE" "$PENDING_FILE"
+}
+
 # Strip per-test and total timing tokens so only semantics are compared.
 normalize() {
     sed -E 's/\([0-9]+ms\)//g'
@@ -65,11 +80,13 @@ normalize() {
 
 divergent=0
 known=0
+misfiled=0
 unexpected_pass=0
 ok=0
 both_fail=0
 fail_files=()
 upass_files=()
+misfiled_files=()
 
 # Each file is independent — two subprocesses and a comparison — so the runs
 # fan out across cores and only the classification below stays sequential. The
@@ -143,6 +160,26 @@ for f in "$SUITE_DIR"/*.rk; do
         echo "$(reg_label "$base"): $base [$kind] (interp exit $icode, native exit $ncode)"
         known=$((known+1))
         [ "$kind" = "BOTH-FAIL" ] && both_fail=$((both_fail+1))
+
+        # A red file is only honest while it fails the way its registry line
+        # says. `t_day_const_string_array.rk` is registered `(native)` for a
+        # const-array bug; when it started failing the *check* for a missing
+        # import it failed on both backends, the bug stopped being exercised,
+        # and nothing noticed — red counted as red either way (#1005).
+        scope="$(reg_scope "$base")"
+        claim=""
+        case "$scope" in
+            native) [ "$icode" -eq 0 ] || claim="registered (native) but the interpreter fails too" ;;
+            interp) [ "$ncode" -eq 0 ] || claim="registered (interp) but native fails too" ;;
+            both)   if [ "$icode" -eq 0 ] || [ "$ncode" -eq 0 ]; then
+                        claim="registered (both) but one backend passes"
+                    fi ;;
+        esac
+        if [ -n "$claim" ]; then
+            echo "  MISFILED: $claim — the bug it is registered for may not be exercised any more"
+            misfiled=$((misfiled+1))
+            misfiled_files+=("$base")
+        fi
     else
         echo "FAILURE:    $base [$kind] (interp exit $icode, native exit $ncode) — untracked"
         echo "  --- interp (normalized tail) ---"
@@ -155,16 +192,20 @@ for f in "$SUITE_DIR"/*.rk; do
 done
 
 echo "──────────────────────────────────────────────────"
-echo "differential: $ok green, $known expected-red (bugs + pending; $both_fail both-fail), $divergent untracked-failure, $unexpected_pass unexpected-pass"
+echo "differential: $ok green, $known expected-red (bugs + pending; $both_fail both-fail), $divergent untracked-failure, $unexpected_pass unexpected-pass, $misfiled misfiled"
 if [ "$divergent" -gt 0 ]; then
     echo "UNTRACKED FAILURES (add to known_divergences.txt with an issue, or fix): ${fail_files[*]}"
 fi
 if [ "$unexpected_pass" -gt 0 ]; then
     echo "NOW PASSING — prune from the registries: ${upass_files[*]}"
 fi
+if [ "$misfiled" -gt 0 ]; then
+    echo "MISFILED (failing differently than registered; fix the file or correct the note): ${misfiled_files[*]}"
+fi
 
-# Fail on new divergence or on a stale known-fail entry that now passes.
-if [ "$divergent" -gt 0 ] || [ "$unexpected_pass" -gt 0 ]; then
+# Fail on new divergence, on a stale known-fail entry that now passes, or on a
+# red file that stopped failing the way its registry line claims.
+if [ "$divergent" -gt 0 ] || [ "$unexpected_pass" -gt 0 ] || [ "$misfiled" -gt 0 ]; then
     exit 1
 fi
 exit 0
