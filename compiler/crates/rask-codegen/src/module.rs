@@ -450,19 +450,25 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
         }
 
-        // assert_fail_cmp_f64(left: f64, right: f64, op: ptr, file: ptr, line: i32, col: i32)
-        {
+        // assert_fail_cmp_f64/_f32(left, right, op: ptr, file: ptr, line: i32, col: i32)
+        // Two widths, not one: the shortest round-tripping decimal depends on
+        // the width it's checked against, so an f32 widened to double reports
+        // its exact binary expansion instead of what `println` shows.
+        for (internal, symbol, value_ty) in [
+            ("assert_fail_cmp_f64", "rask_assert_fail_cmp_f64", types::F64),
+            ("assert_fail_cmp_f32", "rask_assert_fail_cmp_f32", types::F32),
+        ] {
             let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::F64)); // left
-            sig.params.push(AbiParam::new(types::F64)); // right
+            sig.params.push(AbiParam::new(value_ty)); // left
+            sig.params.push(AbiParam::new(value_ty)); // right
             sig.params.push(AbiParam::new(types::I64)); // op str ptr
             sig.params.push(AbiParam::new(types::I64)); // file ptr
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_fail_cmp_f64", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("assert_fail_cmp_f64".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
@@ -623,6 +629,7 @@ impl CodeGenerator {
             ("assert_eq_fail_bool", "rask_assert_eq_fail_bool", Some(types::I64)),
             ("assert_eq_fail_char", "rask_assert_eq_fail_char", Some(types::I64)),
             ("assert_eq_fail_f64", "rask_assert_eq_fail_f64", Some(types::F64)),
+            ("assert_eq_fail_f32", "rask_assert_eq_fail_f32", Some(types::F32)),
             ("assert_eq_fail_str", "rask_assert_eq_fail_str", Some(types::I64)),
             ("assert_eq_fail", "rask_assert_eq_fail", None),
         ] {
