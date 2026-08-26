@@ -2696,6 +2696,12 @@ impl Interpreter {
             struct WithInfo {
                 source: WithSource,
                 name: String,
+                /// ST1: bound to a working copy that commits as one move on a
+                /// non-panic exit and is discarded on unwind. Every `with` over
+                /// a sync box already works on a copy here and writes it back at
+                /// block exit — staged is that, minus the writeback when the
+                /// body panicked (ST3).
+                staged: bool,
             }
 
             let mut infos: Vec<WithInfo> = Vec::new();
@@ -2715,8 +2721,8 @@ impl Interpreter {
                     // older spelling.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
-                        (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock" | "read" | "write") => {
+                        (Value::Shared(s), "write" | "staged") => WithSource::SharedWrite(Arc::clone(s)),
+                        (Value::RaskMutex(m), "lock" | "read" | "write" | "staged") => {
                             WithSource::Mutex(Arc::clone(m))
                         }
                         (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),
@@ -2748,9 +2754,14 @@ impl Interpreter {
                     }
                 };
 
+                let staged = matches!(
+                    &binding.source.kind,
+                    ExprKind::MethodCall { method, .. } if method == "staged"
+                );
                 infos.push(WithInfo {
                     source,
                     name: binding.name.clone(),
+                    staged,
                 });
             }
 
@@ -2793,7 +2804,13 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        // ST1: staged works on a copy. A plain `Value::clone`
+                        // shares the `Arc` behind a struct or a Vec, so writes
+                        // through the binding land in the box whatever the
+                        // writeback below decides — deep_clone is what makes the
+                        // discard on unwind mean anything.
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         mutex_guards.push((info.name.clone(), guard));
                     }
                     WithSource::Cell(c) => {
@@ -2819,7 +2836,8 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         rw_write_guards.push((info.name.clone(), guard));
                     }
                 }
@@ -2836,12 +2854,24 @@ impl Interpreter {
                 }
             }
 
+            // ST3: a staged binding's copy is discarded on unwind, so survivors
+            // see the last committed state and never a torn one. Every other
+            // binding flushes (U2: unwind releases access but keeps writes).
+            let unwinding = matches!(&body_result, Err(d) if d.error.is_panic());
+            let discard: std::collections::HashSet<&str> = infos
+                .iter()
+                .filter(|i| i.staged && unwinding)
+                .map(|i| i.name.as_str())
+                .collect();
+
             // Writeback (U2: mutations made before the panic are flushed,
             // not rolled back). Read locks never write back — the checker
             // rejects mutation through them (conc.sync/R1).
             let mut writeback_err: Option<RuntimeDiagnostic> = None;
             for info in &infos {
-                if !matches!(info.source, WithSource::SharedRead(_)) {
+                if !matches!(info.source, WithSource::SharedRead(_))
+                    && !discard.contains(info.name.as_str())
+                {
                     if let Some(updated) = self.env.get(&info.name).cloned() {
                         match &info.source {
                             WithSource::Index { collection, key } => {
@@ -2864,6 +2894,9 @@ impl Interpreter {
 
             // Write back to Mutex/Cell guards
             for (name, mut guard) in mutex_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }
@@ -2871,6 +2904,9 @@ impl Interpreter {
 
             // Write back to Shared write guards
             for (name, mut guard) in rw_write_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }

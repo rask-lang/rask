@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The contrast conc.sync draws: plain `write()` keeps whatever landed before the
+// panic (ctrl.panic/LK3, U2). Same program as staged_discards_on_panic.rk with
+// one word changed, and the survivor sees 90/0 — the torn state staged exists to
+// prevent. If these two ever print the same thing, one of them is broken.
+struct Ledger9 { checking: i64, savings: i64 }
+const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
+
+func report() {
+    with BOOKS.read() as b {
+        println("{b.checking} {b.savings}")
+    }
+}
+
+func main() {
+    ensure report()
+    with BOOKS.write() as b {
+        b.checking = b.checking - 10
+        panic("boom")
+    }
+}

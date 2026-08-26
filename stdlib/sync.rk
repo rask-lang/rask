@@ -51,6 +51,14 @@ extend Shared<T, S> {
     @native("rask_shared_write_ptr")
     public func write(self) -> T {}
 
+    /// Exclusive access to a working copy, committed as one move on any
+    /// non-panic exit and discarded on unwind (ST1-ST4). The clone is the price
+    /// and the name says so — reach for it where a panic mid-update would leave
+    /// an invariant other tasks read torn. Not available under `Local`: nothing
+    /// else can observe the tear, and there is no unwind boundary to protect.
+    @native("rask_shared_staged_ptr")
+    public func staged(self) -> T {}
+
     /// Non-blocking read. `none` if contended; always succeeds under `Local`.
     @native("rask_shared_try_read_ptr")
     public func try_read(self, f: func(T)) -> Option<T> {}

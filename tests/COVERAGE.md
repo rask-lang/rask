@@ -102,6 +102,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — test-block parameter scope | `t_month_borrow_name_shadow.rk` | BUILD-FAIL | BUILD-FAIL | #926 |
 | **probe** — `@resource` in a loop | `t_month_resource_loop.rk` | BUILD-FAIL | BUILD-FAIL | #928 |
 | `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
+| staged access, commit on every non-panic exit | `t_month_staged.rk` | 6/6 | 6/6 | #292 |
 | **probe** — CT49 field access by literal | `t_month_comptime_field_literal.rk` | 4/4 | BUILD-FAIL | #930 |
 | **probe** — comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 6/6 | BUILD-FAIL | #931 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
@@ -167,9 +168,24 @@ lesson the file records: an area file only gates the shapes it happens to use.
 **Panics and unwinding.** A test that panics fails, so a suite file can't assert
 on a panic's behaviour without failing. `specs/control/panics.md` describes
 task-kill plus unwind with ensures running; the `ensure`-ordering half of that is
-covered in `t_month_resource_ensure.rk` and `t_month_ensure_block_scope.rk`, and
-the panic half wants a harness that runs a program expecting a non-zero exit.
-`tests/compile_errors/` is the nearest existing pattern.
+covered in `t_month_resource_ensure.rk` and `t_month_ensure_block_scope.rk`.
+
+The panic half lives in `compiler/crates/rask-cli/tests/compile_run.rs`, which
+runs a program and checks its exit code and output — the harness this file used
+to say was still wanted. What is asserted there, on both backends: ensures run on
+unwind and in LIFO order across scopes (`panic_ensure_*`), a panicking ensure
+never skips its siblings and the first panic wins (E2/E3), locks release so the
+next acquirer isn't blocked (`panic_releases_lock`, `panic_task_releases_lock` —
+these two hung forever before the fix), `os.exit` skips every ensure
+(`exit_skips_ensures`), a staged block discards its copy while a plain `write`
+keeps the partial one, and one pinned message per panic source
+(`panic_messages_are_the_same_on_both_backends`, 17 sources).
+
+Worth knowing when adding to it: the differential harness never sees any of this,
+so a panic-path regression shows up only in `cargo test`. Anything about panics
+that *can* be asserted without panicking belongs in a suite file instead —
+`t_month_staged.rk` is that split done deliberately, with ST2's commit paths in
+the suite and ST3's discard in the harness.
 
 **`select`.** Covered by `t_select.rk` and `p06_select.rk`.
 

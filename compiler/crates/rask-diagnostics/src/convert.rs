@@ -1102,6 +1102,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
             }
 
+            StagedOutsideWith { name, span } => {
+                Diagnostic::error("`staged()` only works as the source of a `with` block")
+                    .with_code("E0846")
+                    .with_primary(*span, "there is no block here for the commit to happen at")
+                    .with_help(format!("write `with {}.staged() as v {{ … }}`; for a single field, `{}.write().field` takes the lock for the expression", name, name))
+                    .with_fix(format!("with {}.staged() as v {{ … }}", name))
+                    .with_why("staged access works on a copy and commits it as one move when the block exits. `read`/`write` also have an expression-scoped form, where the lock is held for the chain (mem.borrowing/E5) — staged has none, because there would be nowhere to put the commit [conc.sync/ST1]")
+            }
+
+            StagedOnLocal { name, span } => {
+                Diagnostic::error("`staged()` has nothing to protect under `Local`")
+                    .with_code("E0845")
+                    .with_primary(*span, format!("`{}` is a `Shared<T, Local>` — one task, no unwind boundary", name))
+                    .with_help("use `.write()` here; reach for `staged()` under `Readers` or `Mutex`, where another task could read a torn update")
+                    .with_fix(format!("with {}.write() as …", name))
+                    .with_why("staged access exists to make a multi-field update atomic against a panic that other tasks would observe. Under `Local` there is no other task to observe it, so the clone buys nothing and costs a copy [conc.sync/ST3a]")
+            }
+
             BareSharedWith { name, binding, span } => {
                 Diagnostic::error(format!("`with {} as {}` doesn't say which lock", name, binding))
                     .with_code("E0839")

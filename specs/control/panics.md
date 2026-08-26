@@ -202,7 +202,7 @@ The interpreter already implements most of this model; compiled code has the big
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
 - Residual: the `mem.resources/R5` and `conc.async/H1` runtime guards firing at an unwound scope exit still override the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
-- `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
+- `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the box whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):
 - Main-thread panic runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.

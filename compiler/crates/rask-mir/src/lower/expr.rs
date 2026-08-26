@@ -3389,7 +3389,9 @@ impl<'a> MirLowerer<'a> {
                 if bindings.len() == 1 {
                     let binding = &bindings[0];
                     if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
-                        let is_shared_access = (method == "read" || method == "write") && call_args.is_empty();
+                        let is_shared_access =
+                            matches!(method.as_str(), "read" | "write" | "staged")
+                            && call_args.is_empty();
                         if is_shared_access {
                             // Check if the object type is Shared
                             let obj_raw_type = self.ctx.lookup_raw_type(object.id);
@@ -3412,10 +3414,14 @@ impl<'a> MirLowerer<'a> {
                             if is_shared {
                                 // Which lock the block takes is the strategy's
                                 // business (SH5) — the verb only says read or
-                                // write. A `Local` box takes none.
-                                let syms = self
-                                    .shared_strategy(object)
-                                    .with_syms(method == "write");
+                                // write. A `Local` box takes none. `staged` takes
+                                // the exclusive lock either way and binds a copy.
+                                let strategy = self.shared_strategy(object);
+                                let syms = if method == "staged" {
+                                    strategy.staged_syms()
+                                } else {
+                                    strategy.with_syms(method == "write")
+                                };
                                 return self.lower_box_with_block(object, &binding.name, body, &syms);
                             }
                         }

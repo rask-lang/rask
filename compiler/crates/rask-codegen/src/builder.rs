@@ -233,6 +233,10 @@ enum CallAdapt {
     /// Result is void* pointing to 16-byte string element in Vec.
     /// Copy to dst's stack slot.
     DerefStringElement,
+    /// The return points at a sync box's payload (or its staged working copy).
+    /// A payload with its own storage binds the destination to the pointer, so
+    /// the block's writes land in the box; a word-sized one takes a load.
+    BoxPayloadPtr,
     /// Receiver.try_recv: call returned a channel status; the payload was
     /// written into the given slot. Build a `T or E` Result in dst —
     /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
@@ -4963,10 +4967,7 @@ impl<'a> FunctionBuilder<'a> {
             // map pointer, and rask_map_get crashed on it (#477) — that payload
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
-            if matches!(func.name.as_str(),
-                "Mutex_acquire" | "Shared_read_acquire" | "Shared_write_acquire"
-                | "Cell_acquire")
-            {
+            if matches!(adapt, CallAdapt::BoxPayloadPtr) {
                 let results = builder.inst_results(call_inst);
                 let ptr = if !results.is_empty() {
                     results[0]
@@ -7139,6 +7140,7 @@ impl<'a> FunctionBuilder<'a> {
             // Negative-return=Err wrapping happens in the result-store path,
             // keyed off the entry's RetAdapt::NegErr — arg handling is untouched.
             RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
+            RetAdapt::BoxPayloadPtr => CallAdapt::BoxPayloadPtr,
         }
     }
 
