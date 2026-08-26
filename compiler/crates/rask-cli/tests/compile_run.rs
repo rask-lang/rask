@@ -3836,12 +3836,12 @@ fn panic_ensure_scalar_snapshot_runs() {
 #[test]
 fn try_inside_ensure_is_rejected() {
     // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
-    // propagate. Both positions are rejected at check time (E0844) instead of
+    // propagate. Both positions are rejected at check time (E0845) instead of
     // type-checking clean and then failing native MIR lowering with an internal
     // message about a type it couldn't work out.
     let (failed, output) = compile_error_output("ensure_try_rejected.rk");
     assert!(failed, "`try` in an ensure body must be a compile error:\n{}", output);
-    assert!(output.contains("E0844"), "expected E0844, got:\n{}", output);
+    assert!(output.contains("E0845"), "expected E0845, got:\n{}", output);
     assert!(
         output.contains("inside an `ensure` body"),
         "ER4 position should be named:\n{}", output,
