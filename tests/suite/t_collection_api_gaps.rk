@@ -77,6 +77,33 @@ test "vec zip — stops at the shorter side" {
     assert_eq(empty.len(), 0)
 }
 
+// A review on #969 caught this: native indexed `other` by the loop's raw
+// walk position over self's own array, not by how many pairs had actually
+// been produced. `skip` starts that raw position past zero with nothing
+// produced yet, and `filter` advances it once per source slot even on the
+// slots it drops — both left `other` read at the wrong offset.
+test "vec zip — filter before it doesn't skew the other side" {
+    let a: Vec<i64> = [1, 2, 3, 4, 5]
+    let b: Vec<i64> = [10, 20, 30]
+    let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).zip(b)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 2)
+    assert_eq(pairs[0].1, 10)
+    assert_eq(pairs[1].0, 4)
+    assert_eq(pairs[1].1, 20)
+}
+
+test "vec zip — skip before it doesn't skew the other side" {
+    let a: Vec<i64> = [1, 2, 3, 4, 5]
+    let b: Vec<i64> = [10, 20, 30]
+    let pairs: Vec<(i64, i64)> = a.skip(2).zip(b)
+    assert_eq(pairs.len(), 3)
+    assert_eq(pairs[0].0, 3)
+    assert_eq(pairs[0].1, 10)
+    assert_eq(pairs[2].0, 5)
+    assert_eq(pairs[2].1, 30)
+}
+
 test "map insert_if_missing — fills a gap and leaves a value alone" {
     mut m: Map<string, i64> = Map.new()
     m.insert_if_missing("a", || {

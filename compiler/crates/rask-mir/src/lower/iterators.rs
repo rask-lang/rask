@@ -2109,18 +2109,34 @@ impl<'a> MirLowerer<'a> {
             args: vec![],
         }));
 
-        let setup = self.setup_iter_chain_loop(chain)?;
+        // Counts pairs actually produced so far, separately from `setup.idx`
+        // (which walks self's *underlying array*, before `skip`/`filter` have
+        // any say). Indexing `other` by `setup.idx` instead of this paired a
+        // self element with the wrong slot of `other` the moment either
+        // adapter was in the chain: `skip(2)` starts `setup.idx` at 2 while
+        // the first produced pair still wants `other[0]`, and `filter` moves
+        // `setup.idx` once per source slot even on the slots it drops.
+        let pair_idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
 
-        // `zip` stops at the shorter Vec. `setup`'s own check already stops
-        // at `len(self)` (adjusted for skip/take); this adds the other half
-        // of that stopping rule before the self element (already loaded by
-        // `setup`) gets used for anything.
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        // `zip` stops at the shorter Vec. Filter may have skipped straight to
+        // `inc_block` above without reaching here, so this only runs for a
+        // self element that survived adapters and is about to be paired.
         let past_other = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: past_other,
             rvalue: MirRValue::BinaryOp {
                 op: crate::operand::BinOp::Ge,
-                left: MirOperand::Local(setup.idx),
+                left: MirOperand::Local(pair_idx),
                 right: MirOperand::Local(other_len),
             },
         }));
@@ -2132,16 +2148,11 @@ impl<'a> MirLowerer<'a> {
         }));
         self.builder.switch_to_block(continue_block);
 
-        let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
-        )?;
-
         let other_elem = self.builder.alloc_temp(other_elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(other_elem),
             func: FunctionRef::internal("Vec_get".to_string()),
-            args: vec![MirOperand::Local(other_vec), MirOperand::Local(setup.idx)],
+            args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
         }));
 
         let (pair_op, pair_ty) = self.build_pair_tuple(
@@ -2160,6 +2171,19 @@ impl<'a> MirLowerer<'a> {
             dst: None,
             func: FunctionRef::internal("Vec_push".to_string()),
             args: vec![MirOperand::Local(result_vec), pair_op],
+        }));
+        let pair_idx_next = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx_next,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(pair_idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx,
+            rvalue: MirRValue::Use(MirOperand::Local(pair_idx_next)),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
