@@ -5122,13 +5122,20 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|a| self.collection_elem_of_expr(&a.expr))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:random_choice"));
             Some(super::option_of(vec_slot_type(elem)))
-        } else if qualified_name == "Map_get" {
-            // Same reasoning as Vec_get: `Map.get` returns `V?`, and the payload
+        } else if matches!(qualified_name.as_str(),
+            "Map_get" | "Map_remove" | "Map_insert")
+        {
+            // Same reasoning as Vec_get: all three answer `V?`, and the payload
             // type sizes the result slot. The DerefOption adapter copies
             // `slot_size - tag` bytes out of the map's storage, so a bare
             // `i64?` copied only the value's first word — `self.users.get(id)`
             // handed back eight bytes of a `User` and reading a field off it
             // dereferenced the id.
+            //
+            // `remove` and `insert` were left off this arm, so on a
+            // `Map<string, string>` both came back as `i64?`: the payload read
+            // took the string's first eight bytes — its inline SSO characters —
+            // and codegen dereferenced them as a `RaskStr *` (#903).
             let payload = self.extract_payload_type(expr)
                 .or_else(|| self.map_value_mir(object))
                 .or_else(|| self.collection_elem_of_expr(object))

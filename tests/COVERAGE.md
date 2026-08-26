@@ -47,7 +47,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | module-level const | `t_day_const.rk` | 9/9 | 9/9 | |
 | numeric conversions and casts | `t_day_casts.rk` | 11/11 | 11/11 | |
 | `[T; N]` element writes | `t_day_array_writes.rk` | 6/6 | 6/6 | |
-| **probe** — `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 5/5 | 0/3 | #903 |
+| `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 8/8 | 8/8 | |
 | arrays sized by a named const | `t_day_const_array.rk` | 5/5 | 5/5 | |
 | **probe** — `u8`/`u16` `.to<f64>()` | `t_day_unsigned_to_float.rk` | 6/6 | 5/6 | #974 |
 
