@@ -54,8 +54,15 @@ The other four nothing caught:
   stdlib names need importing. A low solve rate would have read as a language-usability
   result. The guide says it now, in the Modules section and as common mistake 15.
 
-Suggested merge order: #987, #988, #991, #995, #1003, #1004 in any order, then #989, then the
-integration branch.
+Suggested merge order: #988, #991, #995, #1003, #1004 in any order, then #989, then the
+integration branch. #987 is already in main.
+
+**The lanes are still moving.** Between the first integration pass and the second, five of
+seven branches gained commits and one opened its PR; between the second and third, five gained
+commits again and #987 merged. Two of those rounds changed the answer — the panics lane
+replaced the `is_immutable` flag this branch had merged with a `reassigned_names` set, and
+fixed the `ensure`-braces formatter bug independently. So this branch is a snapshot, not a
+standing result: re-merge at current heads and re-run before trusting the numbers.
 
 ---
 
