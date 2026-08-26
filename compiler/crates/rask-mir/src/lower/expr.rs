@@ -6008,8 +6008,18 @@ impl<'a> MirLowerer<'a> {
             return Ok(None);
         }
         // `fields` is the unrolled `comptime for` iterable, handled in stmt.rs.
+        // Reaching here means it was used as an ordinary value instead, which
+        // native has no way to build — there's no runtime `Vec<FieldInfo>` to
+        // hand back, only the constants the unroller splices. Say that, rather
+        // than falling through to dispatch and failing in codegen with
+        // "Function not found: reflect_fields" (#997).
         if method == "fields" {
-            return Ok(None);
+            return Err(LoweringError::InvalidConstruct(
+                "native can only use `reflect.fields<T>()` as the iterable of a `comptime for` — \
+                 it resolves to compile-time constants there, and there is no runtime \
+                 `Vec<FieldInfo>` for it to become anywhere else"
+                    .into(),
+            ));
         }
 
         let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {

@@ -104,6 +104,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — `ensure` block scoping | `t_month_ensure_block_scope.rk` | 5/5 | 0/5 | #929 |
 | CT49 field access by literal | `t_month_comptime_field_literal.rk` | 8/8 | 8/8 | |
 | comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 11/11 | 11/11 | |
+| **probe** — `reflect.fields()` as a value | `t_month_reflect_fields_value.rk` | 4/4 | BUILD-FAIL | #997 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
 | **probe** — i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 10/10 | BUILD-FAIL | #933 |
 | unsigned widening to 128 bits | `t_month_u128_widening.rk` | 6/6 | 6/6 | |

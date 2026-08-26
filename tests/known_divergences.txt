@@ -82,3 +82,4 @@ t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native)
