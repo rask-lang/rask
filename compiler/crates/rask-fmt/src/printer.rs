@@ -1757,7 +1757,13 @@ impl<'a> Printer<'a> {
             }
             StmtKind::Ensure { body, else_handler } => {
                 self.emit("ensure ");
-                if body.len() == 1 && else_handler.is_none() {
+                // The braceless form parses one expression, so a lone `let` or
+                // any other statement has to keep its braces — dropping them
+                // printed `ensure let n = try s.close()`, which doesn't parse.
+                let collapsible = body.len() == 1
+                    && else_handler.is_none()
+                    && matches!(body[0].kind, StmtKind::Expr(_));
+                if collapsible {
                     self.format_stmt_inline(&body[0]);
                 } else {
                     self.emit("{");
