@@ -235,8 +235,20 @@ impl RawPtr {
                 }
                 Ok(bytes[self.index as usize..].to_vec())
             }
-            PtrTarget::Elements(_) | PtrTarget::Foreign(_) => Err(RuntimeError::TypeError(
-                "expected a pointer into a string's bytes".to_string(),
+            // Native just reads bytes at the address, whatever the buffer
+            // holds. The interpreter has values rather than bytes, so there is
+            // nothing here to reinterpret — say which pointer it got and what
+            // it can work with, instead of naming only the expected shape (#1012).
+            PtrTarget::Elements(_) => Err(RuntimeError::TypeError(format!(
+                "reading a string out of {} would mean reinterpreting its elements as \
+                 bytes, which the interpreter can't do — it holds values, not memory \
+                 (#1012). Pass a pointer from `string.as_ptr()`.",
+                self.describe_target()
+            ))),
+            PtrTarget::Foreign(_) => Err(RuntimeError::TypeError(
+                "reading a string through a pointer that came from outside the \
+                 interpreter — there are no bytes behind it to read"
+                    .to_string(),
             )),
         }
     }
@@ -335,8 +347,12 @@ pub(crate) fn call_ptr_method(
             Ok(Value::Int(offset as i64, IntKind::usize_kind()))
         }
         // Type-only natively — no runtime call, so nothing to do here either.
-        // The interpreter carries values rather than bytes, so a cast does not
-        // reinterpret what a read gives back the way native's would.
+        //
+        // Known gap, filed as #1012: natively a cast changes the width of the
+        // following read, so `*p.cast<u8>()` on a `*i64` holding 300 gives 44,
+        // its low byte. The interpreter carries values rather than bytes and
+        // has nothing to narrow, so it answers 300. Closing it needs the target
+        // type the call was written with, which is what #986 drops.
         PtrSig::Cast => Ok(Value::RawPtr(p.clone())),
     }
 }
