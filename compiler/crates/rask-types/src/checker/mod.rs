@@ -259,6 +259,10 @@ pub struct TypeChecker {
     /// type is usually still a variable, since `let c = Shared.new(0)` is solved
     /// later.
     pub(super) local_shared_uses: Vec<(String, Type, rask_ast::Span)>,
+    /// ST1: `staged()` calls found outside a `with` binding source, collected by
+    /// the sync-access walk and reported by its caller (the walk itself only
+    /// gathers).
+    pub(super) staged_outside_with: Vec<(String, rask_ast::Span)>,
     /// The argument spans of every `spawn` call seen. A use inside one of these
     /// is a use in another task.
     pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
@@ -394,6 +398,7 @@ impl TypeChecker {
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             local_shared_uses: Vec::new(),
+            staged_outside_with: Vec::new(),
             spawn_arg_spans: Vec::new(),
             pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),

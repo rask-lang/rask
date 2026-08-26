@@ -1816,6 +1816,37 @@ impl TypeChecker {
                         ExprKind::MethodCall { method, .. }
                             if matches!(method.as_str(), "read" | "write" | "staged")
                     );
+                    // ST3a: `staged()` under `Local`. The strategy is in the
+                    // type, so the compiler can decide it — and ctrl.panic/S7
+                    // says a condition fixed at the declaration is a diagnostic,
+                    // not a runtime message.
+                    let stages = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. } if method == "staged"
+                    );
+                    // `source_ty` is the type of the whole `box.staged()` call —
+                    // the payload — so the strategy has to come off the receiver.
+                    let staged_recv = match &binding.source.kind {
+                        ExprKind::MethodCall { object, method, .. } if method == "staged" => {
+                            let ty = self
+                                .node_types
+                                .get(&object.id)
+                                .map(|t| self.resolve_named(&self.ctx.apply(t)));
+                            ty.map(|t| (object.as_ref(), t))
+                        }
+                        _ => None,
+                    };
+                    if let Some((recv, recv_ty)) = staged_recv {
+                        if Self::type_is_shared(&recv_ty, &self.types)
+                            && self.shared_strategy_name(&recv_ty) == "Local"
+                        {
+                            self.errors.push(TypeError::StagedOnLocal {
+                                name: Self::source_text_for(recv)
+                                    .unwrap_or_else(|| "the box".to_string()),
+                                span: binding.source.span,
+                            });
+                        }
+                    }
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {
                             name: Self::source_text_for(&binding.source)
@@ -4063,20 +4094,30 @@ impl TypeChecker {
         }
     }
 
-    /// The strategy argument's name, or `"Local"` when there isn't one — bare
-    /// `Shared<T>` is `Shared<T, Local>` in every position (SH3).
+    /// The strategy argument's name, or `"Readers"` when there isn't one.
+    ///
+    /// SH3: bare `Shared<T>` is `Shared<T, Readers>` in every position — a
+    /// `let`, a parameter, a field, a return type. This said `Local` and cited
+    /// SH3 for it, which is the opposite of what SH3 says; `rask-mir`'s
+    /// `shared_strategy` had it right ("a lock you didn't need costs time, and
+    /// one you did need and skipped costs correctness", SH8). Both callers here
+    /// test for `Local` specifically, so the wrong default only ever made a bare
+    /// `Shared<T>` look like the one strategy it can't be.
+    ///
+    /// Callers guard on `type_is_shared` first; anything unreadable lands on the
+    /// default, which is the safe side of both rules that read this.
     fn shared_strategy_name(&self, ty: &Type) -> String {
         let args = match ty {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
-            _ => return "Local".to_string(),
+            _ => return "Readers".to_string(),
         };
         match args.get(1) {
             Some(GenericArg::Type(s)) => match self.resolve_named(s) {
                 Type::UnresolvedNamed(n) => n,
                 Type::Named(id) => self.types.type_name(id),
-                _ => "Local".to_string(),
+                _ => "Readers".to_string(),
             },
-            _ => "Local".to_string(),
+            _ => "Readers".to_string(),
         }
     }
 

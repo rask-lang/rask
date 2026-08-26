@@ -3993,6 +3993,54 @@ fn panic_messages_are_the_same_on_both_backends() {
     );
 }
 
+// ─── Staged access (conc.sync/ST1–ST4) ───────────────────────────
+//
+// `with box.staged() as v { … }` binds a working copy under the exclusive lock,
+// commits it as one move on any non-panic exit, and discards it on unwind. The
+// commit half is `tests/suite/t_month_staged.rk`, where the differential harness
+// gates it on both backends; the discard needs a program that panics, so it
+// lives here.
+
+#[test]
+fn staged_discards_its_copy_on_panic() {
+    // ST3: a panic between the two writes commits nothing. The ensure runs
+    // during unwind, takes the same lock, and must see the last committed state.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "staged_discards_on_panic.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "100 0\n",
+            "{}: nothing may commit out of a staged block that panicked", mode,
+        );
+    }
+}
+
+#[test]
+fn plain_write_keeps_the_partial_update_on_panic() {
+    // The contrast conc.sync draws, and the reason staged exists: without it the
+    // survivor sees the torn state (LK3, U2). One word apart from the fixture
+    // above — if these two ever agree, one of them is broken.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "unstaged_keeps_partial_write.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90 0\n",
+            "{}: a plain `write` keeps whatever landed before the panic", mode,
+        );
+    }
+}
+
+#[test]
+fn staged_misuse_is_rejected_at_check_time() {
+    // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).
+    // Both are decidable from the source, which ctrl.panic/S7 makes a diagnostic
+    // rather than a later failure.
+    let (failed, output) = compile_error_output("staged_misuse.rk");
+    assert!(failed, "both staged misuses must be compile errors:\n{}", output);
+    assert!(output.contains("E0846"), "expected ST1 as E0846, got:\n{}", output);
+    assert!(output.contains("E0847"), "expected ST3a as E0847, got:\n{}", output);
+}
+
 #[test]
 fn panic_exits_101_both_backends() {
     // P4/EX4: a panic escaping main exits 101 on interp and native alike.

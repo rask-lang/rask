@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.sync/ST3: a panic between the two writes commits nothing, so survivors
+// see the last committed state and never a torn one. The ensure runs during
+// unwind and reads the box back — it must show 100/0, not 90/0.
+//
+// The commit sits on the block's inline cleanup, which a panic skips; the
+// acquire registers the *discard* on the runtime's unwind stack, which the panic
+// path drains. Neither half knows about the other.
+struct Ledger9 { checking: i64, savings: i64 }
+const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
+
+func report() {
+    with BOOKS.read() as b {
+        println("{b.checking} {b.savings}")
+    }
+}
+
+func main() {
+    ensure report()
+    with BOOKS.staged() as b {
+        b.checking = b.checking - 10
+        panic("boom")
+    }
+}

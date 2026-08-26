@@ -637,13 +637,28 @@ impl TypeChecker {
 
     /// Recursively collect all sync access nodes within an expression tree.
     /// Each access is (type_name, method, span).
-    fn collect_sync_accesses(&self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
+    fn collect_sync_accesses(&mut self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
         let mut accesses = Vec::new();
         self.walk_sync_accesses(expr, &mut accesses);
+        let staged = std::mem::take(&mut self.staged_outside_with);
+        for (name, span) in staged {
+            self.errors.push(TypeError::StagedOutsideWith { name, span });
+        }
         accesses
     }
 
-    fn walk_sync_accesses(&self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
+    /// How to spell a sync receiver back to the author, for the suggestion.
+    fn sync_source_text(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::sync_source_text(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
+    fn walk_sync_accesses(&mut self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check if this node itself is a sync access
@@ -651,6 +666,15 @@ impl TypeChecker {
                     if let Some(ty_name) = self.sync_type_of(object) {
                         out.push((ty_name, method.clone(), expr.span));
                     }
+                }
+                // ST1: `staged()` has no expression-scoped form, so reaching one
+                // here at all means it is outside a `with` source — this walk
+                // never descends into a `with` binding.
+                if args.is_empty() && method == "staged" && self.sync_type_of(object).is_some() {
+                    self.staged_outside_with.push((
+                        Self::sync_source_text(object).unwrap_or_else(|| "the box".to_string()),
+                        expr.span,
+                    ));
                 }
                 // Recurse into object and args
                 self.walk_sync_accesses(object, out);

@@ -310,6 +310,24 @@ pub enum TypeError {
         type_name: String,
         span: Span,
     },
+    /// conc.sync/ST1: `staged()` is the source of a `with` binding and nothing
+    /// else. `read`/`write` also have an expression-scoped form (R5); staged has
+    /// none, because the commit needs a block boundary to happen at.
+    #[error("`staged()` only works as the source of a `with` block")]
+    StagedOutsideWith {
+        name: String,
+        span: Span,
+    },
+
+    /// conc.sync/ST3a: `staged()` under the `Local` strategy. There is no other
+    /// task to observe a torn update and no unwind boundary to protect against,
+    /// so the clone would buy nothing and cost a copy.
+    #[error("`staged()` has nothing to protect under `Local`")]
+    StagedOnLocal {
+        name: String,
+        span: Span,
+    },
+
     /// conc.sync/R4: bare `with shared as v` — the lock has to be named.
     #[error("`with {name} as {binding}` doesn't say which lock")]
     BareSharedWith {
@@ -1088,6 +1106,8 @@ impl TypeError {
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
             | BareSharedWith { .. }
+            | StagedOnLocal { .. }
+            | StagedOutsideWith { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }

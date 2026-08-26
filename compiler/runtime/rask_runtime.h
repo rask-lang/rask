@@ -1143,6 +1143,21 @@ int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
 int64_t rask_shared_data(int64_t shared);
 void    rask_shared_release(int64_t shared);
+
+// Staged access (conc.sync/ST1–ST4). `acquire` locks and hands back a working
+// copy; `commit` puts it back as one move and unlocks; `discard` drops it and
+// unlocks. Codegen schedules the commit as the block's inline cleanup, and the
+// acquire registers the discard on the unwind stack — so a panic runs one and an
+// ordinary exit the other, without either path knowing about the other.
+int64_t rask_mutex_staged_acquire(int64_t mutex);
+int64_t rask_mutex_staged_data(int64_t mutex);
+void    rask_mutex_staged_commit(int64_t mutex);
+void    rask_mutex_staged_discard(int64_t mutex);
+int64_t rask_shared_staged_acquire(int64_t shared);
+int64_t rask_shared_staged_data(int64_t shared);
+void    rask_shared_staged_commit(int64_t shared);
+void    rask_shared_staged_discard(int64_t shared);
+int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
