@@ -536,9 +536,8 @@ mod registry_audit {
                     let code = &rest[..end];
                     // Compile-time codes only. `RuntimeDiagnostic` emits its own
                     // R00xx namespace, which this registry has never covered —
-                    // `rask explain R0001` says the code doesn't exist. Filed
-                    // separately; scanning them here would only report that gap
-                    // 19 times.
+                    // `rask explain R0001` says the code doesn't exist (#992);
+                    // scanning them here would only report that gap 19 times.
                     if code.starts_with('E') || code.starts_with('W') {
                         out.push((code.to_string(), arm.clone(), n + 1));
                     }
@@ -613,7 +612,7 @@ mod registry_audit {
     ///    answer — which is exactly the E0831 bug this module exists to prevent.
     ///    Saying "unknown code" is the honest answer until they're renumbered.
     ///  - Match arms that are declared and formatted but never constructed.
-    ///    Unreachable today, so there is no error to explain.
+    ///    Unreachable today, so there is no error to explain (#992).
     const UNEXPLAINED: &[&str] = &[
         // Shared — see SHARED_CODES.
         "E0329", "E0330", "E0333", "E0335", "E0340",
@@ -651,7 +650,7 @@ mod registry_audit {
     /// useless for searching. Fixing these means renumbering, and 21 codes are
     /// cited by name in `specs/` — so which meaning keeps the number is a
     /// documentation decision, not a mechanical one. Pinned here so the count
-    /// can only go down. See the issue linked from #892 for the full table.
+    /// can only go down. See #992 for the full table.
     const SHARED_CODES: &[&str] = &[
         "E0210", "E0309", "E0313", "E0322", "E0324", "E0325", "E0327", "E0328",
         "E0329", "E0330", "E0331", "E0333", "E0335", "E0340", "E0341", "E0342",
