@@ -6,88 +6,56 @@ planning off it — the last three times this document went wrong, it was becaus
 outlived its evidence.
 
 ```
-tests/differential.sh      340 green, 15 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      340 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/prototypes_gate.sh   13 agree, 0 untracked
-tests/fmt_roundtrip_gate.sh 438 round-tripped, 576 reformatted, 0 failures
+tests/fmt_roundtrip_gate.sh 438 round-tripped, 577 reformatted, 0 failures
 tests/http_api_harness.sh  ok on both backends
+tests/agentbench_gate.sh   17 green, 1 quarantined, 0 broken
 cargo test --release --workspace   0 failures
 ```
 
 ## The seven lanes, merged
 
-Seven sessions ran in parallel, partitioned by crate. Six produced PRs — #987 codegen, #988
-interpreter, #989 namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent
-benchmark. The seventh pushed `claude/panics-unwinding-9phbli` and opened no PR, so its work
-was invisible from the PR list: ensures with multi-statement bodies and `else` handlers now
-run on a native panic, plus two bugs it found on the way (`e.message()` in a handler never
-compiled natively; `try` inside `ensure` is a diagnostic now instead of a codegen give-up).
+Seven sessions ran in parallel, partitioned by crate: #987 codegen, #988 interpreter, #989
+namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent benchmark, #1004
+panics. Each is green against its own base.
 
-Each lane is green against its own base. Merged together they need five fixups, every one of
-them a lane meeting something another lane wrote:
+Merged together they need seven fixups, every one a lane meeting something another lane wrote.
+Three were caught by a guard one lane had written firing on another's change, which is the
+argument for writing them:
 
-- **#989 never merged main.** Its branch is still on `125d039`, so its CI has not seen
-  `p18_rack_multi_link_fields.rk` or `p19_mutate_param_link_write.rk`, both of which its own
-  IM1 rule rejects for a missing `import memory.Rack`.
-- **`reflect` ended up in two lists.** #989 kept it out of the stub set because parsing it
-  broke monomorphizing `reflect.fields<T>()` through a generic; #995 fixed that cause and put
-  it in. #989's own guard catches the overlap.
-- **Two lanes both allocated E0844** — #991 for a `using` clause on the entry point, the
-  panics lane for `try` inside `ensure`. A HashMap keeps the last one, so one of the two had
-  no explanation. #991's own registry audit catches it. `try`-in-`ensure` is E0845 now.
+- **#989's stub-set guard** caught `reflect` in two lists at once. #989 kept it out because
+  parsing it broke monomorphizing `reflect.fields<T>()` through a generic; #995 fixed that
+  cause and put it in.
+- **#991's error-code audit** caught #991 and #1004 both allocating E0844 — main topped out at
+  E0843, so both picked the same next number. A HashMap keeps the last, so one of the two
+  errors had no explanation. `try`-in-`ensure` is E0845 now.
+- **The fmt gate** caught a formatter bug the corpus had never reached: `rask fmt` collapsed
+  any one-statement `ensure { … }` to the braceless form, which parses one *expression*, so
+  `ensure { let n = try s.close() }` came back out as unparseable source. #1004's E0845
+  fixture is the first file with a lone `let` in an ensure body.
+
+The other four nothing caught:
+
+- **#989 was branched from `125d039` and its CI had never seen the files its own rule
+  rejects.** A branch's green CI says nothing about a base it never merged.
+- **Seven files across three lanes needed imports they never got** — two suite probes, one
+  registered-red file, two panic fixtures, one benchmark reference. Not carelessness: a rule
+  applied to a snapshot of the tree cannot reach files written after the snapshot, and no
+  single branch's CI sees the combination.
 - **One registered-red file rotted.** `t_day_const_string_array.rk` is red for #1000, so the
-  gate expects it to fail — and stopped looking when it started failing at the check step
-  instead, for a missing import. The bug it documents was not being exercised.
-- **A formatter bug the corpus had never reached.** `rask fmt` collapsed any one-statement
-  `ensure { … }` to the braceless form, which parses one *expression* — so
-  `ensure { let n = try s.close() }` came back out as unparseable source. The panics lane's
-  E0845 fixture is the first file in the corpus with a lone `let` in an ensure body.
+  gate expected it to fail — and stopped looking when it started failing at the *check* step
+  for a missing import. The bug it documents was not being exercised. Fixed, and the gate now
+  holds every red file to a `(backend phase)` claim so it cannot recur (#1005).
+- **The benchmark would have measured our own stale documentation.** It hands a model
+  LANGUAGE_GUIDE.md as normative and scores whether the reply compiles; the guide never said
+  stdlib names need importing. A low solve rate would have read as a language-usability
+  result. The guide says it now, in the Modules section and as common mistake 15.
 
-Three of the five were caught by a guard one lane wrote firing on another lane's change,
-which is the argument for writing them. The two that weren't are the ones worth generalising:
-a file registered red is only honest while it fails for the reason recorded next to it and
-nothing checks that (#1005), and a branch's green CI says nothing about a base it never
-merged.
-
-Suggested merge order: #987, #988, #991, #995, #1003 and the panics branch in any order,
-then #989, then the integration fixups.
-
-## Where things stand
-
-**The five validation programs all pass.** Sensor processor, grep clone, game loop and text
-editor are enrolled in the examples gate with goldens; the HTTP JSON API server serves a CRUD
-sequence on both backends through its own harness. ROADMAP's "two of five" table was from
-2026-08-08 and is now fixed. That milestone is met — it is no longer the thing to steer by.
-
-**The soundness track is closed.** Spot-checked today, all four rejecting correctly with the
-fix shown as code: consuming a value on one branch and using it after the join (E0813),
-consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
-and `i32::MAX + 1` panicking at runtime instead of wrapping.
-
-**What is left is a backlog, not a frontier.** 20 files in the suite are registered red: 13
-tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, A3, half
-of A4, three of A2, and three of A5 came off. Nothing is untracked and nothing has silently started passing. Every red file
-has a probe and an issue.
-
-## The one thing worth deciding
-
-The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
-what a person meets in their first hour, first week, first month. In the five days since,
-the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first nineteen came
-off in this branch.
-
-Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
-compile. `Map.insert` hands back a flag instead of the displaced value. A named-payload enum
-variant never matches. A struct with implicit type parameters can't be named at an
-instantiation — SYNTAX.md's own `Pair` example doesn't compile. NORTH_STAR says the
-instrument is models writing Rask against the compiler and measuring convergence; a model
-writing Rask reaches these inside ten minutes, and the examples that pass the gate pass
-because they happen to route around them.
-
-So: **stop adding surface until the backlog shrinks.** Every new shape is another place a
-bug in these clusters can hide.
+Suggested merge order: #987, #988, #991, #995, #1003, #1004 in any order, then #989, then the
+integration branch.
 
 ---
 
