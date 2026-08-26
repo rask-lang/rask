@@ -4420,15 +4420,19 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
             }
-        } else if func.name == "assert_fail_cmp_f64" {
-            // Comparison assert failure with f64 values: args = [left, right, op_str]
+        } else if func.name == "assert_fail_cmp_f64" || func.name == "assert_fail_cmp_f32" {
+            // Comparison assert failure with float values: args = [left, right, op_str].
+            // The operands stay at their own width — an f32 formatted as a
+            // double round-trips against the wrong width and prints its exact
+            // binary expansion rather than the digits `println` shows.
             if args.len() >= 3 {
-                let left_val = Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?;
-                let right_val = Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?;
+                let arg_ty = if func.name.ends_with("f32") { types::F32 } else { types::F64 };
+                let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
+                let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get("assert_fail_cmp_f64"),
+                        ctx.func_refs.get(func.name.as_str()),
                         ctx.string_globals.get(file_str),
                     ) {
                         let file_ptr = builder.ins().global_value(types::I64, *gv);
@@ -4485,6 +4489,11 @@ impl<'a> FunctionBuilder<'a> {
                 "assert_eq_fail_f64" => vec![
                     Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?,
                     Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?,
+                ],
+                // f32 stays f32: see assert_fail_cmp_f32.
+                "assert_eq_fail_f32" => vec![
+                    Self::lower_operand_typed(builder, &args[0], Some(types::F32), ctx)?,
+                    Self::lower_operand_typed(builder, &args[1], Some(types::F32), ctx)?,
                 ],
                 "assert_eq_fail" => Vec::new(),
                 _ => vec![

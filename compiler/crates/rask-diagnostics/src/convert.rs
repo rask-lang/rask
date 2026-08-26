@@ -1351,13 +1351,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a duck trait matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck traits stay package-internal (DT1)")
             }
 
+            // The fix used to name `string.concat(a, b)`, which has never
+            // existed — following the message got you a second error, "no
+            // method `concat` found for type `string`" (#900). Interpolation is
+            // the one way to join two pieces, and StringBuilder is the one way
+            // to join many, so those are what it says now.
             StringAddForbidden { span } => {
                 Diagnostic::error("the `+` operator cannot be used on strings")
                     .with_code("E0335")
                     .with_primary(*span, "strings don't support `+`")
-                    .with_help("use `string.concat(a, b)` or interpolation `\"{a}{b}\"`")
-                    .with_fix("replace `a + b` with `string.concat(a, b)` or `\"{a}{b}\"`")
-                    .with_why("string concatenation allocates — Rask requires the allocation to be visible through the method name or interpolation syntax")
+                    .with_fix("write the pieces in one string: `\"{a}{b}\"` — or build up with `StringBuilder` when you're joining in a loop")
+                    .with_why("joining strings allocates, and Rask keeps allocation visible at the call. `+` reads as free, so it's spelled out instead: interpolation shows the whole result being built in one place, and StringBuilder shows one allocation reused across many appends")
             }
 
             NominalMismatch { expected, found, nominal_name, span } => {
@@ -1442,8 +1446,12 @@ impl ToDiagnostic for rask_types::TypeError {
                 // `Pool<Player>` → `Pool`, so the suggestion names the constructor
                 // the way it's actually written.
                 let head = ty.split('<').next().unwrap_or(ty).trim();
+                // Was E0831, which `??` on a non-optional already had. Two
+                // errors under one code meant the registry kept only one of
+                // them, so `rask explain E0831` answered about `using` on main
+                // for anyone who hit the `??` error (#892).
                 Diagnostic::error(format!("`{}` cannot declare a `using` context", entry))
-                    .with_code("E0831")
+                    .with_code("E0844")
                     .with_primary(*span, "nothing can supply this")
                     .with_fix(format!(
                         "drop the clause and own it here — `mut {}: {} = {}.new()` — \
