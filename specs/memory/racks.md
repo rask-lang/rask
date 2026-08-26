@@ -130,11 +130,24 @@ list that gets scanned.
 |------|-------------|
 | **RK10: Retargeting is constant-time** | Overwriting a link declared on a node costs the same at any in-degree. The record is inline, so nothing is searched for. A link held outside a node still pays a scan of the target's much shorter foreign-holder list |
 
-`RASK_RACK_STATS=1` reports `deletes`/`edges_fixed`/`holders_visited` on both
-backends. The numbers are not comparable across them yet — a container edge
-counts as one record on the interpreter and one per removed element natively,
-so `l1_list_links.rk` reads 1/1 on one side and 6/6 on the other. Read them per
-backend until the counters are defined (rask-lang/rask#983).
+### Measuring it
+
+`RASK_RACK_STATS=1` reports three numbers at exit:
+
+| Counter | Meaning |
+|---------|---------|
+| `deletes` | Nodes deleted, `clear` included. A property of the program |
+| `edges_fixed` | Slots set to `none`, plus container entries removed. Also a property of the program: it counts what actually changed, so a splice that repointed an edge before the delete leaves nothing here |
+| `holders_visited` | Edge records the fixup walked. A property of the *backend*, not the program — the two keep different records, so this is what delete cost on the backend you ran, and comparing it across them means nothing |
+
+The first two are model-level and agree across backends; the third is not and
+does not. That split is the useful one: `edges_fixed` says what RK3 had to do,
+`holders_visited` says what it cost the implementation that did it.
+
+`edges_fixed` still disagrees on one shape — a doubly-linked list emptied
+through `remove` reads 0 natively and 1 on the interpreter, with no observable
+difference in the program's output. Untangled to the point of knowing it is a
+counting artefact rather than a missed edge, and no further (rask-lang/rask#983).
 
 ## Choosing this over the alternatives
 
