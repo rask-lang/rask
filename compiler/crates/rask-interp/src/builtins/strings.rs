@@ -6,6 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
+use crate::ptr::RawPtr;
 use crate::value::{FloatKind, IntKind, IteratorState, Value};
 
 impl Interpreter {
@@ -380,10 +381,10 @@ impl Interpreter {
                     variant_index: 0, origin: None,
                 })
             }
-            // C interop: returns raw pointer (simulated as Int in interpreter)
-            "as_c_str" | "as_ptr" => {
-                Ok(Value::int(0)) // Opaque pointer — meaningful only in compiled code
-            }
+            // C interop. The pointer keeps hold of this string's buffer, so
+            // `*p` reads its first byte and `p.offset(n)` walks it — the same
+            // answers native gives, which used to be a flat 0 here (#935).
+            "as_c_str" | "as_ptr" => Ok(Value::RawPtr(RawPtr::bytes(s))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "string".to_string(),
                 method: method.to_string(),
