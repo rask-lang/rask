@@ -199,6 +199,28 @@ fn compile_only_succeeds(fixture_name: &str) -> (bool, String) {
     (compile_out.status.success(), combined)
 }
 
+/// `rask check` on a fixture file, returning (succeeded, combined output).
+///
+/// Distinct from `compile_error_output`, which expects failure, and from
+/// `check_output` further down, which takes inline source: a warning is reported
+/// *and* the check succeeds, and the full diagnostic — code, labels, fix — only
+/// comes out of `check`. `compile` prints the one-line form.
+fn check_fixture(fixture_name: &str) -> (bool, String) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture(fixture_name))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let combined = format!(
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
 /// Run a .rk fixture via `rask run --interp`, returning stdout.
 fn run_interp(fixture_name: &str) -> (String, i32) {
     let rask = rask_binary();
@@ -4028,6 +4050,33 @@ fn plain_write_keeps_the_partial_update_on_panic() {
             "{}: a plain `write` keeps whatever landed before the panic", mode,
         );
     }
+}
+
+#[test]
+fn torn_lock_update_warns_once_and_only_where_it_should() {
+    // W9 (tool.warnings, W0907): two fields of a locked value written in one
+    // `with` block without staging. A warning, not an error — the program still
+    // builds and runs. The fixture has four blocks of the same shape and exactly
+    // one may warn: `@allow` says the tear is harmless, `Local` has nobody to
+    // observe one (and `staged()` is refused there, ST3a), and staging is the fix.
+    let (built, build_output) = compile_only_succeeds("torn_lock_update.rk");
+    assert!(built, "W9 is a warning — the program must still build:\n{}", build_output);
+
+    let (checked, output) = check_fixture("torn_lock_update.rk");
+    assert!(checked, "a warning must not fail the check:\n{}", output);
+    let hits = output.matches("W0907").count();
+    assert_eq!(
+        hits, 1,
+        "expected exactly one W0907, got {}:\n{}", hits, output,
+    );
+    assert!(
+        output.contains("`checking` written first"),
+        "the warning should name the fields and point at the first:\n{}", output,
+    );
+    assert!(
+        output.contains("staged()"),
+        "the fix is `staged()` and the warning has to say so:\n{}", output,
+    );
 }
 
 #[test]

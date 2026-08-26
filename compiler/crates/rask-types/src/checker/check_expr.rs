@@ -1847,6 +1847,13 @@ impl TypeChecker {
                             });
                         }
                     }
+                    // W9 (tool.warnings, W0907): two or more fields of the
+                    // locked value written without staging. Checked here rather
+                    // than in a syntactic pass because it must not fire under
+                    // `Local` — there is nothing to tear and `staged()` is an
+                    // error there (ST3a), so the suggestion would be one.
+                    self.check_torn_lock_update(binding, body);
+
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {
                             name: Self::source_text_for(&binding.source)
@@ -4092,6 +4099,76 @@ impl TypeChecker {
                 self.errors.push(TypeError::LocalSharedSent { name, span });
             }
         }
+    }
+
+    /// W9: warn when a `with` block over a sync box assigns two or more fields
+    /// of the locked binding without `staged()`.
+    ///
+    /// Exclusive access only — a read lock can't be written through (R1), and
+    /// `staged()` is already the fix. `Local` is excluded: nothing else can
+    /// observe a torn update there and `staged()` is refused (ST3a), so a
+    /// warning would point at a compile error.
+    ///
+    /// Field assignments only. A mutating method call (`q.push(a)` twice) leaves
+    /// the same invariant torn, but a method body is opaque and flagging every
+    /// pair of calls would drown the real signal — the spec draws that line, not
+    /// this code (tool.warnings, W9 scope).
+    fn check_torn_lock_update(
+        &mut self,
+        binding: &rask_ast::expr::WithBinding,
+        body: &[rask_ast::stmt::Stmt],
+    ) {
+        use rask_ast::stmt::StmtKind;
+
+        if self.allowed_warnings.iter().any(|a| a == "torn_lock_update") {
+            return;
+        }
+        let ExprKind::MethodCall { object, method, args, .. } = &binding.source.kind else {
+            return;
+        };
+        if !args.is_empty() || !matches!(method.as_str(), "write" | "lock") {
+            return;
+        }
+        let Some(recv_ty) = self
+            .node_types
+            .get(&object.id)
+            .map(|t| self.resolve_named(&self.ctx.apply(t)))
+        else {
+            return;
+        };
+        if !Self::type_is_shared(&recv_ty, &self.types)
+            || self.shared_strategy_name(&recv_ty) == "Local"
+        {
+            return;
+        }
+
+        // Distinct fields of the binding, in the order they are first written.
+        let mut written: Vec<(String, rask_ast::Span)> = Vec::new();
+        for stmt in body {
+            let StmtKind::Assign { target, .. } = &stmt.kind else { continue };
+            let ExprKind::Field { object: base, field } = &target.kind else { continue };
+            if !matches!(&base.kind, ExprKind::Ident(n) if *n == binding.name) {
+                continue;
+            }
+            if written.iter().any(|(f, _)| f == field) {
+                continue;
+            }
+            written.push((field.clone(), target.span));
+            if written.len() == 2 {
+                break;
+            }
+        }
+        if written.len() < 2 {
+            return;
+        }
+        self.errors.push(TypeError::TornLockUpdate {
+            binding: binding.name.clone(),
+            box_name: Self::source_text_for(object).unwrap_or_else(|| "the box".to_string()),
+            first_field: written[0].0.clone(),
+            second_field: written[1].0.clone(),
+            first_span: written[0].1,
+            second_span: written[1].1,
+        });
     }
 
     /// The strategy argument's name, or `"Readers"` when there isn't one.

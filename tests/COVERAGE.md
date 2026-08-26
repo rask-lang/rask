@@ -105,6 +105,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — `@resource` in a loop | `t_month_resource_loop.rk` | BUILD-FAIL | BUILD-FAIL | #928 |
 | `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
 | staged access, commit on every non-panic exit | `t_month_staged.rk` | 6/6 | 6/6 | #292 |
+| what a survivor observes of a panic (O1-O3, P2) | `t_month_panic_observed.rk` | 6/6 | 6/6 | #299 |
 | CT49 field access by literal | `t_month_comptime_field_literal.rk` | 11/11 | 11/11 | |
 | comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 11/11 | 11/11 | |
 | **probe** — `reflect.fields()` as a value | `t_month_reflect_fields_value.rk` | 4/4 | BUILD-FAIL | #997 |
@@ -184,9 +185,19 @@ on a panic's behaviour without failing. `specs/control/panics.md` describes
 task-kill plus unwind with ensures running; the `ensure`-ordering half of that is
 covered in `t_month_resource_ensure.rk` and `t_month_ensure_block_scope.rk`.
 
-The panic half lives in `compiler/crates/rask-cli/tests/compile_run.rs`, which
-runs a program and checks its exit code and output — the harness this file used
-to say was still wanted. What is asserted there, on both backends: ensures run on
+Half of it turned out to be gateable here after all. A test that panics fails —
+but a panic in a *spawned* task is a value at the join, and everything a survivor
+can see about it is an ordinary assertion. That's the whole point of task-kill
+over process-abort, so `t_month_panic_observed.rk` asserts O1 (the join returns
+`JoinError.Panicked` with the message), P2 (the survivor joins a healthy task
+after), O3/LK1-LK3 (the next acquirer gets the lock, unpoisoned, with the last
+write), O2 (a dying sender's buffer drains then closes) and ST3 across a task
+boundary. 12 runs each backend and 6 under `RASK_POISON_STACK=1`, no flakes.
+
+The half that needs the panic to escape `main` — ensures running, locks released
+seen from inside, panic messages — lives in
+`compiler/crates/rask-cli/tests/compile_run.rs`, which runs a program and checks
+its exit code and output. What is asserted there, on both backends: ensures run on
 unwind and in LIFO order across scopes (`panic_ensure_*`), a panicking ensure
 never skips its siblings and the first panic wins (E2/E3), locks release so the
 next acquirer isn't blocked (`panic_releases_lock`, `panic_task_releases_lock` —

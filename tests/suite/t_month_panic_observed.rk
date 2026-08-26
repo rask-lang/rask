@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// ctrl.panic "What Survivors Observe" — O1-O3, LK1-LK3, P2.
+//
+// COVERAGE.md said panics can't be gated here because a test that panics fails.
+// That's true of a panic in the *test's own* task, and it hid the half that
+// isn't: a panic in a spawned task is a value at the join, and everything the
+// survivor can see about it is an ordinary assertion. The whole point of
+// task-kill over process-abort is that the survivor keeps running (P2), so if
+// these rules hold there is a passing test to write.
+//
+// The unwind seen from the inside — ensures running, locks releasing, panic
+// messages — still needs a program that exits non-zero, and lives in rask-cli's
+// compile_run harness.
+//
+// Each join is read into a flag and a message rather than asserted inside the
+// match: `assert` isn't an expression, so an arm body has to be a block, and a
+// two-argument `assert` in one doesn't parse. Reading the outcome out is clearer
+// anyway — the assertions then say what the rule is.
+
+struct Tally9 {
+    hits: i64
+    misses: i64
+}
+
+const SHELF: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 0, misses: 0 })
+const LATER: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 7, misses: 0 })
+
+// 1 = returned a value, 2 = panicked, 3 = cancelled.
+const RETURNED: i64 = 1
+const PANICKED: i64 = 2
+const CANCELLED: i64 = 3
+
+test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
+    mut outcome = 0
+    mut note = ""
+    using Multitasking {
+        let h = Thread.spawn(own || {
+            panic("worker boom")
+            return 0
+        })
+        match h.join() {
+            i64 as v => { outcome = RETURNED },
+            JoinError.Panicked(msg) => {
+                outcome = PANICKED
+                note = msg
+            },
+            JoinError.Cancelled => { outcome = CANCELLED },
+        }
+    }
+    assert outcome == PANICKED
+    assert note.len() > 0
+}
+
+test "O1: the message names what went wrong" {
+    mut note = ""
+    using Multitasking {
+        let h = Thread.spawn(own || {
+            panic("shelf gave out")
+            return 0
+        })
+        match h.join() {
+            i64 as v => { note = "returned" },
+            JoinError.Panicked(msg) => { note = msg },
+            JoinError.Cancelled => { note = "cancelled" },
+        }
+    }
+    assert note.contains("shelf gave out")
+}
+
+test "P2: the survivor keeps running and joins a healthy task after" {
+    mut first = 0
+    mut second = 0
+    using Multitasking {
+        let dead = Thread.spawn(own || {
+            panic("first one dies")
+            return 0
+        })
+        match dead.join() {
+            i64 as v => { first = RETURNED },
+            JoinError.Panicked(msg) => { first = PANICKED },
+            JoinError.Cancelled => { first = CANCELLED },
+        }
+        let alive = Thread.spawn(own || {
+            return 42
+        })
+        match alive.join() {
+            i64 as v => { second = v },
+            JoinError.Panicked(msg) => { second = -1 },
+            JoinError.Cancelled => { second = -2 },
+        }
+    }
+    assert first == PANICKED
+    assert second == 42
+}
+
+test "O3 + LK1-LK3: the next acquirer gets the lock and the last write" {
+    mut outcome = 0
+    using Multitasking {
+        let h = Thread.spawn(own || {
+            with SHELF.write() as t {
+                t.hits = 5
+                panic("died holding the lock")
+            }
+            return 0
+        })
+        match h.join() {
+            i64 as v => { outcome = RETURNED },
+            JoinError.Panicked(msg) => { outcome = PANICKED },
+            JoinError.Cancelled => { outcome = CANCELLED },
+        }
+    }
+    assert outcome == PANICKED
+    // LK1: the lock released, so this doesn't block. LK2: no poisoning, so it
+    // doesn't fail either. LK3: the write that landed before the panic is here.
+    with SHELF.read() as t {
+        assert t.hits == 5
+        assert t.misses == 0
+    }
+}
+
+test "ST3 across a task boundary: a staged update commits nothing on panic" {
+    mut outcome = 0
+    using Multitasking {
+        let h = Thread.spawn(own || {
+            with LATER.staged() as t {
+                t.hits = 99
+                t.misses = 99
+                panic("died mid-update")
+            }
+            return 0
+        })
+        match h.join() {
+            i64 as v => { outcome = RETURNED },
+            JoinError.Panicked(msg) => { outcome = PANICKED },
+            JoinError.Cancelled => { outcome = CANCELLED },
+        }
+    }
+    assert outcome == PANICKED
+    with LATER.read() as t {
+        assert t.hits == 7
+        assert t.misses == 0
+    }
+}
+
+test "O2: a dying sender's buffer drains, then the receiver sees closed" {
+    let (tx, rx) = Channel<i64>.buffered(8)
+    mut outcome = 0
+    using Multitasking {
+        let h = Thread.spawn(own || {
+            tx.send(1)
+            tx.send(2)
+            panic("died after sending")
+            return 0
+        })
+        match h.join() {
+            i64 as v => { outcome = RETURNED },
+            JoinError.Panicked(msg) => { outcome = PANICKED },
+            JoinError.Cancelled => { outcome = CANCELLED },
+        }
+    }
+    assert outcome == PANICKED
+    mut sum = 0
+    mut n = 0
+    while rx.try_receive() is i64 as v {
+        sum += v
+        n += 1
+        if n > 8 {
+            return
+        }
+    }
+    assert n == 2
+    assert sum == 3
+}
