@@ -1189,7 +1189,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             StagedOnLocal { name, span } => {
                 Diagnostic::error("`staged()` has nothing to protect under `Local`")
-                    .with_code("E0847")
+                    .with_code("E0845")
                     .with_primary(*span, format!("`{}` is a `Shared<T, Local>` — one task, no unwind boundary", name))
                     .with_help("use `.write()` here; reach for `staged()` under `Readers` or `Mutex`, where another task could read a torn update")
                     .with_fix(format!("with {}.write() as …", name))
@@ -1789,7 +1789,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
             TryInEnsure { region, span } => {
                 Diagnostic::error(format!("`try` can\'t be used {}", region))
-                    .with_code("E0845")
+                    .with_code("E0847")
                     .with_primary(*span, "there is no caller to propagate an error to from here")
                     .with_help("drop the `try` and handle the error where it happens: `ensure f.close() else |e| { log(e.message()) }`")
                     .with_fix("remove `try`")
