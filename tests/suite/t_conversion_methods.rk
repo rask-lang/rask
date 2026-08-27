@@ -11,6 +11,7 @@
 // anything total yields the value bare. So `wrap` and `clamp` hand back a `T`,
 // `to` and the float→int family hand back `T or ConvertError`, and `round` to a
 // float target is the one that depends on where it's going.
+import builtins.ConvertError
 
 test "type.primitives — CV11: `to` is exact or it fails" {
     let n: i64 = 300

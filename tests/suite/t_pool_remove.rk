@@ -6,6 +6,7 @@
 // as the option payload. MIR also typed the result `i64?` no matter what the
 // pool held, so reading a struct back out of it offset into a scalar and
 // segfaulted.
+import memory.Pool
 
 struct Node {
     public v: i64

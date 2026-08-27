@@ -3,6 +3,7 @@
 //
 // False positives are acceptable; false negatives are not. Uses FNV-1a
 // inspired hashing with seed mixing to set bits in a fixed-size array.
+import string.StringBuilder
 
 const BLOOM_BITS: usize = 1024
 

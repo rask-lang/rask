@@ -9,6 +9,8 @@
 // It is the delete-time fixup's walk with a different rewrite: delete finds the
 // edges into one node and nulls them, snapshot finds the edges out of every node
 // and re-points them. Both work because the rack knows its own graph.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

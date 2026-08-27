@@ -2,6 +2,7 @@
 // mem.pools PL2/PL8 — a `with_capacity` pool is bounded, `try_insert` refuses
 // once it's full, and freeing a slot makes room again. Native had no dispatch
 // for `try_insert` at all (#435), so a bounded pool couldn't even compile.
+import memory.Pool
 
 struct Ent { hp: i32 }
 

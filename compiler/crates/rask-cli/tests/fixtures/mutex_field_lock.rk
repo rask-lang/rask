@@ -4,6 +4,8 @@
 // Previously `with self.index.write() as idx { ... }` was lowered as a
 // plain method call, emitting Mutex_lock with only 1 arg and failing
 // Cranelift verification.
+import sync.Shared
+import sync.Mutex
 
 struct Counter {
     value: Shared<i64, Mutex>

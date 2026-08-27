@@ -13,6 +13,8 @@
 //
 // The handle version of this is `pool.snapshot()` plus `using frozen Pool<T>`.
 // Same shape, and links reach it without a read-only type.
+import memory.Link
+import memory.Rack
 
 struct Node { id: i32, peer: Link<Node>? }
 

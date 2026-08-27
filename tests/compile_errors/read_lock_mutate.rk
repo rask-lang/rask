@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A shared read lock never hands out mutable access (conc.sync/R1).
 // Mutation through a `.read()` binding is E0360 — use `.write()`.
+import sync.Shared
 
 struct Config {
     timeout: i64

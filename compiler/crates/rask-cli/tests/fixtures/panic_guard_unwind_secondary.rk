@@ -8,6 +8,8 @@
 // see: `nested` panics with "boom", the still-live handle trips the runtime
 // guard on the way out, and "boom" stays the task's panic while the leak is
 // reported to stderr instead.
+import async.TaskHandle
+
 func nested() -> i64 {
     let h: TaskHandle<i64> = spawn(|| { return 1 })
     panic("boom")

@@ -9,6 +9,7 @@
 // its first eight bytes were read as if they were the value, and printing it
 // gave back garbage. `Shared.mutex("hello")` also copied only 8 of the string's 16
 // bytes in, because a string *constant* was sized by the same short list.
+import sync.Shared
 
 struct Point {
     public x: i64,

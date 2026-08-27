@@ -1,6 +1,9 @@
 // mem.context/CC1 (#434): writing through `h.field` — plain store, compound
 // assign, and a named vs unnamed context — mutates the pool element, not the
 // (read-only) handle binding.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32, score: i32 }
 
 // named context, compound assign

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Linear resources with @resource and ensure
 import fs
+import io.IoError
 
 // Linear resource must be explicitly consumed
 @resource

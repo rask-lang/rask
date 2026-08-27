@@ -1,4 +1,6 @@
 // mem.pools/PL8: insert on a full bounded pool panics (both backends, exit 101).
+import memory.Pool
+
 struct Ent { hp: i32 }
 
 func main() {

@@ -14,6 +14,7 @@
 // side by its type. t_comptime_try covers that direction.
 
 import fs
+import io.IoError
 
 func write_then_read(path: string) -> string or IoError {
     mut w = try fs.create(path)

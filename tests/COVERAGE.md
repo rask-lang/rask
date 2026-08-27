@@ -79,7 +79,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | type param vs stdlib name | `t_week_generic_param_shadowing.rk` | 4/4 | 4/4 | |
 | a method returning its own type parameter | `t_week_generic_method_return.rk` | 7/7 | 7/7 | |
 | **probe** — `parse<T>` target range | `t_week_parse_range.rk` | 2/6 | 2/6 | #919 |
-| **probe** — `import X as Y` | `t_week_import_alias.rk` | BUILD-FAIL | BUILD-FAIL | #923 |
+| `import X as Y` | `t_week_import_alias.rk` | 5/5 | 5/5 | |
 | opaque handles as struct fields | `t_week_opaque_struct_fields.rk` | 8/8 | 8/8 | |
 | **pending** — declared-but-unbuilt collection API | `t_week_collection_stubs.rk` | BUILD-FAIL | BUILD-FAIL | #912 |
 | **pending** — range terminals and adapters | `t_week_range_adapters.rk` | BUILD-FAIL | BUILD-FAIL | #920 |
@@ -92,6 +92,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | borrowing, disjoint fields, `with` | `t_month_borrowing.rk` | 13/13 | 13/13 | |
 | box family — Cell, Mutex, Shared, Owned | `t_month_boxes.rk` | 13/13 | 13/13 | |
 | `@resource` and `ensure` | `t_month_resource_ensure.rk` | 11/11 | 11/11 | |
+| a program type named like a stdlib one | `t_month_stdlib_name_collision.rk` | 5/5 | 5/5 | |
 | threads, channels | `t_month_concurrency.rk` | 11/11 | 11/11 | #267 |
 | comptime | `t_month_comptime.rk` | 11/11 | 11/11 | |
 | JSON encode and decode | `t_month_json.rk` | 13/13 | 13/13 | |

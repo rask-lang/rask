@@ -2,6 +2,7 @@
 // Compile Error: index expression types (#310, std.collections/V1, mem.pools/PL4).
 // Vec/array/slice/string are position-indexed by an integer; `Map<K,V>` by `K`;
 // `Pool<T>` by `Handle<T>`. Range indexing (slicing) works only on sequences.
+import memory.Pool
 
 struct Entity { health: i32 }
 struct Item { weight: i32 }

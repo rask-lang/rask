@@ -6,6 +6,10 @@
 // then failed to link with `Function not found: Shared_get`. And code written
 // to work under any strategy has to keep working: `Shared<T, S>` with `S` left
 // generic is not a mismatch, it's the point.
+import sync.Shared
+import sync.Local
+import sync.Mutex
+import sync.Readers
 
 // SH4: strategy-agnostic code says so.
 func peek<S>(c: Shared<i64, S>) -> i64 {
