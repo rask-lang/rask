@@ -7,6 +7,7 @@
 // linear-Responder demo lives in FINDINGS rather than here.
 
 import http
+import async.TaskHandle
 
 struct SeedSpec {
     title: string

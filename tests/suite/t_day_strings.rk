@@ -4,6 +4,7 @@
 // Length, case, trimming, searching, slicing, splitting, joining, replacing,
 // concatenation, and comparison. `len` is bytes and `char_count` is characters,
 // which is the one thing here that surprises people, so both are pinned.
+import string.StringBuilder
 
 test "length and emptiness" {
     assert "".is_empty()

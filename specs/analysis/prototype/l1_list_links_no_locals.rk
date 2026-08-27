@@ -14,6 +14,8 @@
 //
 // Compare l1_list_links.rk, which holds `let n1 = push_back(...)`. Same output.
 // The question this file answers is what the restriction costs to read.
+import memory.Link
+import memory.Rack
 
 struct Node {
     value: i32

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // join() reports both what the task produced and how it ended.
+import thread.Thread
 
 func main() {
     let ok = Thread.spawn(|| {

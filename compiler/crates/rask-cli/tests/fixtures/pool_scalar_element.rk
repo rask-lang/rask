@@ -12,6 +12,8 @@
 // the store went far outside the arena.
 //
 // Struct elements were always fine, and are here so they stay that way.
+import memory.Pool
+
 struct Ent {
     public hp: i64
     public name: string

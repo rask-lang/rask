@@ -5,6 +5,8 @@
 // fields before the value has an address, so there was no slot to record and the
 // link stayed live past its target's delete — a dangling node address, native
 // only, silent. These pin the holders that don't come from an assignment.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

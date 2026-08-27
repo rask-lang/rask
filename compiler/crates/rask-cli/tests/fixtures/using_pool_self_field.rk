@@ -1,6 +1,9 @@
 // comp.hidden-params/CALL2 pri 3: a pool held in `self.players` satisfies a free
 // callee's Pool<Player> context. The hidden arg lowers as a real field-access
 // expression (`self.players`), so native reads the pool the same as interp.
+import memory.Pool
+import memory.Handle
+
 struct Player { score: i32 }
 struct Game { players: Pool<Player> }
 

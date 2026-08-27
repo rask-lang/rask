@@ -2,6 +2,9 @@
 // contexts, but it may take the pool as an explicit parameter. Here `damage`'s
 // Pool<Player> context resolves to the closure's own `pool` param, so it
 // compiles and runs on both backends.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func damage(h: Handle<Player>) using players: Pool<Player> {

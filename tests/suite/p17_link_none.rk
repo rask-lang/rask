@@ -6,6 +6,10 @@
 // was the address -1 — which `rack.insert` then walked, looking for edges to
 // record. It only stayed upright because the runtime also accepted -1 as
 // absent, i.e. two wrongs.
+import memory.Link
+import memory.Handle
+import memory.Rack
+import memory.Pool
 
 struct Item {
     hp: i32

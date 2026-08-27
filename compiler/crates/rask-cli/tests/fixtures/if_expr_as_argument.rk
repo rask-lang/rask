@@ -8,6 +8,7 @@
 //
 // while the identical expression under a `let` was fine, because a `let` never
 // sets the flag. Found in examples/lsm_database's bloom encoder.
+import string.StringBuilder
 
 func takes(s: string) -> string {
     return s

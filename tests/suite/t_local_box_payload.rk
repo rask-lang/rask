@@ -4,6 +4,8 @@
 // and a struct payload segfaulted on the first field read. Also covers CE6's
 // get/set/replace and the interior mutability that lets them work through a
 // `let` binding — mutation goes through the heap slot, never the binding.
+import sync.Shared
+import sync.Local
 
 struct State {
     public count: i32

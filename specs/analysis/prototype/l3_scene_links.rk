@@ -7,6 +7,8 @@
 //
 // `selected` is a root edge on the editor, so deleting the selected node
 // clears the selection with no code in `delete_subtree` saying so.
+import memory.Link
+import memory.Rack
 
 struct SceneNode {
     name: string

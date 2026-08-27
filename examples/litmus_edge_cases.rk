@@ -436,6 +436,7 @@ test "Response.bad_request creates 400" {
 // ─── File I/O round-trip ────────────────────────────────────────
 
 import fs
+import memory.Pool
 
 test "fs write and read round-trip" {
     let path = "/tmp/rask_test_litmus.txt"

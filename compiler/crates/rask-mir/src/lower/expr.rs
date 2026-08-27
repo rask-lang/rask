@@ -4241,6 +4241,24 @@ impl<'a> MirLowerer<'a> {
         type_args: &Option<Vec<String>>,
     ) -> Result<Option<TypedOperand>, LoweringError> {
         if let ExprKind::Ident(name) = &object.kind {
+            // IM3: a transparent alias is the target type, so every prefix this
+            // function mangles has to be the target's name. `import time.Duration
+            // as Span` reached codegen as `Span_from_millis`, which no function
+            // is called — while `d.as_millis()` right after it mangled to
+            // `Duration_as_millis`, because an instance call takes its prefix
+            // from the receiver's *type* rather than its spelling (#923).
+            //
+            // Done once here rather than at each mangling site below: the alias
+            // is a property of the name, not of which call shape found it.
+            let aliased = self
+                .ctx
+                .type_defs
+                .alias_target(name)
+                .map(str::to_string);
+            let name = match &aliased {
+                Some(target) if !self.locals.contains_key(name) => target,
+                _ => name,
+            };
             if !self.locals.contains_key(name) {
                         // Cross-package call: pkg.func() → direct call to func
                         // Skip builtin stdlib modules — they use prefixed names

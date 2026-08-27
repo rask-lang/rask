@@ -6,6 +6,7 @@
 // garbage (#386/#387). Compound assign `pool[h].f -= n`, `with pool[h] as e`
 // write-back, and `pool.remove(h)` value-binding all diverge on native
 // (see t50/report) so they're excluded here.
+import memory.Pool
 
 struct Entity {
     health: i32
