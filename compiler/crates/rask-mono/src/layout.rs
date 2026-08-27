@@ -317,8 +317,7 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
     // Being broader is also what makes an *aliased* import work — `import http as h`
     // binds the module under a name no module list knows, and `h.Response` on a
     // field hit exactly that hard error.
-    let s = s.trim();
-    let s = s.rsplit_once('.').map_or(s, |(_, tail)| tail);
+    let s = rask_ast::type_str::bare_name(s);
 
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {
