@@ -57,8 +57,6 @@ t_day_const_string_array.rk   # a module-level `const [string; N]` element reads
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
 t_month_error_union_narrowing.rk # a method on a union-narrowed error dispatches against the whole union — #1002 (native)
 t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)
-t_month_reflect_field_strings.rk # a comptime FieldInfo.name has no resolved type — #931 (native)
-t_month_comptime_field_literal.rk # CT49 `p.("x")` reaches native MIR unresolved — #930 (native)
 t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both)
 t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
 t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native). #907 (the `as` cast) is fixed.
@@ -90,3 +88,4 @@ t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native)
