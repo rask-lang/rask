@@ -223,13 +223,42 @@ void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
     rask_panic_at(file, line, col, buf);
 }
 
+// `%g` here rounded both operands to 6 significant digits, so two floats that
+// differ past the 6th printed as the same number — "assertion failed: 1 == 1"
+// for 1.000000001 vs 1.000000002, which reads like the assert machinery is
+// broken rather than like a failing test (#898). Use the same formatter
+// `println` and `assert_eq` already use: shortest round-trip, never exponent
+// form. What matters is that a reader comparing this message against a
+// `println` of the same value sees one number, not two.
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
+    char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
+    rask_fmt_double(l, sizeof(l), left);
+    rask_fmt_double(r, sizeof(r), right);
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assertion failed: %g %s %g (left: %g, right: %g)",
-             left, op ? op : "?", right, left, right);
+             "assertion failed: %s %s %s (left: %s, right: %s)",
+             l, op ? op : "?", r, l, r);
+    rask_panic_at(file, line, col, buf);
+}
+
+// f32 operands get their own helper because the shortest round-trip depends on
+// the width you check against. Widening to double first and formatting as a
+// double spells out the f32's exact binary value — 1.1f reports as
+// 1.100000023841858 — which is why `println` has had a separate f32 formatter
+// all along. Reaching the f64 helper, an f32 assert printed a number no `println`
+// of the same value would ever show.
+void rask_assert_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
+    rask_fmt_float(l, sizeof(l), left);
+    rask_fmt_float(r, sizeof(r), right);
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: %s %s %s (left: %s, right: %s)",
+             l, op ? op : "?", r, l, r);
     rask_panic_at(file, line, col, buf);
 }
 
@@ -274,6 +303,16 @@ void rask_assert_eq_fail_f64(double got, double expected,
     char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
     rask_fmt_double(g, sizeof(g), got);
     rask_fmt_double(e, sizeof(e), expected);
+    assert_eq_fail_fmt(g, e, file, line, col);
+}
+
+// See rask_assert_fail_cmp_f32: the round-trip has to be checked at the
+// operand's own width, or an f32 reports its exact binary expansion.
+void rask_assert_eq_fail_f32(float got, float expected,
+                             const char *file, int32_t line, int32_t col) {
+    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
+    rask_fmt_float(g, sizeof(g), got);
+    rask_fmt_float(e, sizeof(e), expected);
     assert_eq_fail_fmt(g, e, file, line, col);
 }
 

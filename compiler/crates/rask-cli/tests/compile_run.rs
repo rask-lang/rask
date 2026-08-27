@@ -5913,3 +5913,189 @@ fn error_field_annotation_forms() {
         "an excluded field with no default should block Decode by name: {}", out,
     );
 }
+
+// ─── Regression: issues #897, #898 ──────────────────────────
+//
+// Assertion failure *messages*, which nothing gated before. Both issues
+// observed that a Rask test can't assert on its own failure message — true
+// from inside the language, but a test that runs the compiler can read what
+// the message said. Both bugs printed a confidently wrong number:
+//
+//   #897  `assert a == b` on two string variables reported the addresses of the
+//         two RaskStr slots, because the string/i64 choice was made from the
+//         source shape (was either side written as a literal?) rather than from
+//         the operand types.
+//   #898  a failed float assertion formatted with `%g`, so anything past the
+//         6th significant digit was dropped and 1.000000001 vs 1.000000002
+//         printed as "1 == 1".
+
+/// Run `rask test` on `src` and return stdout. Failing tests are the point
+/// here, so a non-zero exit is expected rather than asserted against.
+fn run_rask_test_source(src: &str, interp: bool) -> String {
+    let rask = rask_binary();
+    let path = std::env::temp_dir().join(format!(
+        "rask_assertmsg_{}_{}.rk",
+        std::process::id(),
+        next_tmp_id(),
+    ));
+    std::fs::write(&path, src).expect("write fixture");
+
+    let mut cmd = Command::new(&rask);
+    cmd.arg("test");
+    if interp {
+        cmd.arg("--interp");
+    }
+    let out = cmd
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+
+    let _ = std::fs::remove_file(&path);
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+const STRING_ASSERT_SRC: &str = r#"
+test "two string variables" {
+    let a = "abc"
+    let b = "abd"
+    assert a == b
+}
+
+test "a string past the inline capacity" {
+    let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+    let b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"
+    assert a == b
+}
+
+test "a string field against a string variable" {
+    let h = Holder9 { name: "left" }
+    let other = "right"
+    assert h.name == other
+}
+
+test "strings that came back from a call" {
+    assert pick9(1) == pick9(2)
+}
+
+struct Holder9 { public name: string }
+
+func pick9(n: i64) -> string {
+    if n == 1 {
+        return "one"
+    }
+    return "two"
+}
+
+func main() {}
+"#;
+
+#[test]
+fn string_assertion_message_shows_the_strings_not_addresses() {
+    // Every shape here has variables on BOTH sides — the one case the old
+    // literal-spotting check got wrong. A literal on either side always worked,
+    // which is why the suite never caught this.
+    for interp in [false, true] {
+        let out = run_rask_test_source(STRING_ASSERT_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+        for want in ["abc", "abd", "left", "right", "one", "two"] {
+            assert!(
+                out.contains(want),
+                "{backend}: assertion message should contain the string `{want}`:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+            "{backend}: a heap string should report in full:\n{out}"
+        );
+        // The addresses this used to print were 12+ digit decimals. Nothing in
+        // these messages is a number, so any long run of digits is a slot
+        // address leaking through again.
+        for line in out.lines().filter(|l| l.contains("assertion failed")) {
+            let longest = line
+                .split(|c: char| !c.is_ascii_digit())
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                longest < 8,
+                "{backend}: this looks like a pointer, not a string:\n{line}"
+            );
+        }
+    }
+}
+
+const FLOAT_ASSERT_SRC: &str = r#"
+test "floats differing in the 9th digit" {
+    let a: f64 = 1.000000001
+    let b: f64 = 1.000000002
+    assert a == b
+}
+
+test "a repeating quotient" {
+    let a: f64 = 4.0 / 1.5
+    let b: f64 = 2.0
+    assert a == b
+}
+
+test "f32 operands" {
+    let a: f32 = 1.1
+    let b: f32 = 2.2
+    assert a == b
+}
+
+func main() {}
+"#;
+
+#[test]
+fn float_assertion_message_keeps_every_digit() {
+    for interp in [false, true] {
+        let out = run_rask_test_source(FLOAT_ASSERT_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+        // %g rounded both of these to "1", so the message read "1 == 1".
+        assert!(
+            out.contains("1.000000001") && out.contains("1.000000002"),
+            "{backend}: digits past the 6th must survive:\n{out}"
+        );
+        assert!(
+            out.contains("2.6666666666666665"),
+            "{backend}: a repeating quotient reports every digit that round-trips:\n{out}"
+        );
+        // An f32 has to be formatted at f32 width. Checking the round-trip
+        // against a double instead spells out the f32's exact binary value, so
+        // 1.1 reports as 1.100000023841858 — a number no `println` of the same
+        // value ever shows.
+        assert!(
+            out.contains("1.1") && out.contains("2.2"),
+            "{backend}: f32 operands report at f32 width:\n{out}"
+        );
+        assert!(
+            !out.contains("1.100000023841858"),
+            "{backend}: f32 was widened to double before formatting:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn float_assertion_message_agrees_across_backends() {
+    // The interpreter is the reference for what these should say. Native adds a
+    // `file:line:` prefix the interpreter doesn't; past that the two must match
+    // character for character, or the same failing test reads differently
+    // depending on how it was run.
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed"))
+            .map(|l| match l.find("assertion failed") {
+                Some(i) => l[i..].to_string(),
+                None => l.to_string(),
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(FLOAT_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(FLOAT_ASSERT_SRC, true));
+    assert!(!interp.is_empty(), "expected failing assertions to report");
+    assert_eq!(
+        native, interp,
+        "native and interpreter must render the same float assertion message"
+    );
+}
