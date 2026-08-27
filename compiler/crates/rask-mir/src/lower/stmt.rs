@@ -360,10 +360,25 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Mut { name, ty, init, .. } => {
+                // A `mut` can be reassigned, so whatever this name meant to
+                // `value.(name)` before, it doesn't now.
+                self.comptime_strings.remove(name);
                 self.lower_binding(name, ty.as_deref(), init)
             }
 
             StmtKind::Let { name, ty, init, .. } => {
+                // A `let` bound to a compile-time string can name a field:
+                // `let which = comptime { "y" }` then `p.(which)` (#930).
+                // Recorded here because lowering the initializer turns it into
+                // an ordinary runtime value and the fact is gone.
+                // Errors are not this statement's to report: a `comptime`
+                // block that fails here is still lowered as an ordinary
+                // initializer below, and gets to fail on its own terms. Only a
+                // name that folded to a string is worth remembering.
+                match self.comptime_field_name(init) {
+                    Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
+                    _ => { self.comptime_strings.remove(name); }
+                }
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
@@ -789,10 +804,23 @@ impl<'a> MirLowerer<'a> {
                             store_size: None,
                         }));
                     }
-                    _ => {
+                    // CT49 is a read — `value.("x")` resolves to a field access
+                    // in expression position, and nothing says what writing
+                    // through one means. Both backends reject it; say so in words
+                    // rather than printing the AST at the user.
+                    ExprKind::DynamicField { .. } => {
                         return Err(LoweringError::InvalidConstruct(
-                            format!("unsupported assignment target: {:?}", target.kind),
+                            "can't assign through `value.(name)` — comptime field access reads a \
+                             field, it doesn't name one to write to. Write the field directly."
+                                .into(),
                         ));
+                    }
+                    _ => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "can't assign to a {} — an assignment target has to be a variable, \
+                             a field, or an index",
+                            rask_ast::expr::expr_kind_name(&target.kind)
+                        )));
                     }
                 }
                 Ok(())
@@ -1099,6 +1127,32 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Lower a nested body's statements with the bindings it introduces scoped
+    /// to it.
+    ///
+    /// `lower_block` snapshots `locals` for a braced block, but a loop body is
+    /// lowered statement-by-statement and never goes through it. That's
+    /// invisible for `locals` — the checker settled every name long before —
+    /// and not for comptime-known strings, where a `let w = "limit"` shadowing
+    /// an outer `let w = "spent"` outlived its loop and changed which field a
+    /// later `value.(w)` read. Restores on the error path too, so a body that
+    /// fails to lower doesn't leave its names behind.
+    ///
+    /// Every loop body goes through here rather than each writing the restore
+    /// out, so the next one added gets it without anyone remembering to.
+    fn lower_body_scoped(&mut self, body: &[Stmt]) -> Result<(), LoweringError> {
+        let saved = self.comptime_strings.clone();
+        let mut result = Ok(());
+        for stmt in body {
+            result = self.lower_stmt(stmt);
+            if result.is_err() {
+                break;
+            }
+        }
+        self.comptime_strings = saved;
+        result
+    }
+
     /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
     /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
     /// and `value.(field.xxx)` inside the body splice as compile-time
@@ -1122,9 +1176,7 @@ impl<'a> MirLowerer<'a> {
 
         for field in fields {
             self.comptime_for_bindings.push((name.clone(), field));
-            for stmt in body {
-                self.lower_stmt(stmt)?;
-            }
+            self.lower_body_scoped(body)?;
             self.comptime_for_bindings.pop();
         }
         Ok(())
@@ -1977,9 +2029,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, check_block);
 
         self.loop_stack.pop();
@@ -2312,9 +2362,7 @@ impl<'a> MirLowerer<'a> {
         if wb_block.is_some() {
             self.mutate_writebacks.push(writeback);
         }
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         if wb_block.is_some() {
             self.mutate_writebacks.pop();
         }
@@ -2587,9 +2635,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, continue_target);
 
         // LP13: Pool_set writeback blocks for `for mutate`
@@ -2714,9 +2760,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
 
         // counter = counter + 1
@@ -2920,9 +2964,7 @@ impl<'a> MirLowerer<'a> {
             result_local: None,
             ensure_depth,
         });
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
 
         self.builder.switch_to_block(inc_block);
@@ -2969,9 +3011,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, loop_block);
 
         self.loop_stack.pop();
@@ -3100,9 +3140,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
 
         self.close_loop_body(ensure_depth, setup.inc_block);
         self.loop_stack.pop();

@@ -292,6 +292,21 @@ impl<'a> Monomorphizer<'a> {
             owner_params.insert(bare, params);
         }
 
+        // Every type a method could belong to. `Type_method`-shaped free
+        // functions are registered as instance methods below, and without this
+        // the "type" half was whatever came before the first underscore —
+        // making `print_fields` a `fields` method (see below).
+        let mut declared_types: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for decl in decls {
+            let name = match &decl.kind {
+                DeclKind::Struct(s) => &s.name,
+                DeclKind::Enum(e) => &e.name,
+                DeclKind::Impl(i) => &i.target_ty,
+                _ => continue,
+            };
+            declared_types.insert(name.split('<').next().unwrap_or(name).trim().to_string());
+        }
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -304,9 +319,21 @@ impl<'a> Monomorphizer<'a> {
                     }
                     // Free functions with Type_method naming (e.g. compiled stdlib
                     // wrappers) should also be discoverable as instance methods.
+                    //
+                    // Only when the half before the underscore is a type that
+                    // exists. Any underscore used to do, so an ordinary function
+                    // named `print_fields` was filed as a `fields` method of a
+                    // type called `print`. A call to `something.fields()` whose
+                    // receiver this pass couldn't pin down then swept it up along
+                    // with the real ones — and handed it that call's type
+                    // arguments. `reflect.fields<T>()` inside an uninstantiated
+                    // generic template did exactly that, so `print_fields` got
+                    // queued with a `T` that was still an open variable and MIR
+                    // was asked to lower `print_fields$_` (#931).
                     if let Some(underscore_pos) = f.name.find('_') {
-                        let bare_method = &f.name[underscore_pos + 1..];
-                        if !bare_method.is_empty() {
+                        let (owner, bare_method) =
+                            (&f.name[..underscore_pos], &f.name[underscore_pos + 1..]);
+                        if !bare_method.is_empty() && declared_types.contains(owner) {
                             method_by_bare_name
                                 .entry(bare_method.to_string())
                                 .or_default()

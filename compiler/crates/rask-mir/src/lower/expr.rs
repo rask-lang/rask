@@ -1979,15 +1979,23 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Dynamic field access: value.(expr) — CT49 resolves this to a
-            // direct field access once `expr` is comptime-known. The only
-            // source of a comptime-known name today is the loop binding of
-            // an enclosing `comptime for` (`value.(field.name)`, CT53).
+            // direct field access once `expr` is comptime-known. See
+            // `comptime_field_name` for what counts as known.
             ExprKind::DynamicField { object, field_expr } => {
-                let Some(name) = self.resolve_comptime_field_name(field_expr) else {
+                let Some(name) = self.comptime_field_name(field_expr)? else {
                     return Err(LoweringError::InvalidConstruct(
-                        "dynamic field access (value.(expr)) must be resolved at comptime before MIR lowering".into()
+                        "the field name in `value.(expr)` has to be known at compile time — \
+                         write a string literal, a `comptime { … }` block, or a `comptime for` \
+                         binding's `.name`".into()
                     ));
                 };
+                // Ordinary field lowering answers "field 0" for a name it can't
+                // find, which is right nowhere and only safe because the checker
+                // rejects `p.nope` long before. A name that arrived through the
+                // unroller was never checked against anything, so a typo in
+                // `p.(f.name)` would read the wrong field and say nothing. Check
+                // it here, where the struct is known.
+                self.check_dynamic_field_exists(object, &name)?;
                 let synthetic = Expr {
                     id: expr.id,
                     span: expr.span,
@@ -4015,19 +4023,96 @@ impl<'a> MirLowerer<'a> {
             )))
     }
 
-    /// CT53: the expression in `value.(expr)` must be comptime-known. The
-    /// only source implemented so far is a `comptime for` loop binding's
-    /// string-valued FieldInfo members (`field.name`, `.serial_name`, `.type_name`).
-    fn resolve_comptime_field_name(&self, expr: &Expr) -> Option<String> {
-        let ExprKind::Field { object, field } = &expr.kind else { return None };
-        let ExprKind::Ident(name) = &object.kind else { return None };
-        let (_, fc) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)?;
-        match field.as_str() {
-            "name" => Some(fc.name.clone()),
-            "serial_name" => Some(fc.serial_name.clone()),
-            "type_name" => Some(fc.type_name.clone()),
-            _ => None,
+    /// Reject `value.(name)` where `name` isn't a field of `value`, when the
+    /// struct is knowable here. Silent otherwise — an object whose type this
+    /// pass can't pin down is lowered the way it always was.
+    fn check_dynamic_field_exists(&self, object: &Expr, name: &str) -> Result<(), LoweringError> {
+        let Some(raw) = self.ctx.lookup_raw_type(object.id) else { return Ok(()) };
+        let MirType::Struct(StructLayoutId { id, .. }) = self.ctx.type_to_mir(raw) else {
+            return Ok(());
+        };
+        let Some(layout) = self.ctx.struct_layouts.get(id as usize) else { return Ok(()) };
+        if layout.fields.iter().any(|f| f.name == name) {
+            return Ok(());
         }
+        let known = layout
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(LoweringError::InvalidConstruct(format!(
+            "`{}` has no field `{}` — it has: {}",
+            layout.name, name, known
+        )))
+    }
+
+    /// CT53: the expression in `value.(expr)` must be comptime-known. Every
+    /// spelling SYNTAX.md gives the feature folds through here — a bare literal
+    /// `p.("x")`, a `comptime { … }` block, a binding whose initializer was one
+    /// of those, and a `comptime for` loop binding's string-valued FieldInfo
+    /// members (`field.name`, `.serial_name`, `.type_name`).
+    ///
+    /// `Ok(None)` means "not one of these forms", which the caller turns into
+    /// the user-facing "has to be known at compile time" error. `Err` means it
+    /// *was* a `comptime` block and evaluating it went wrong — telling someone
+    /// who already wrote one to write one is no help, so that error carries the
+    /// reason instead. Only the loop-binding arm used to exist, so the literal
+    /// form — the one you write to try the feature out, needing neither
+    /// `reflect` nor a loop — reached MIR unresolved and failed the build (#930).
+    pub(super) fn comptime_field_name(
+        &self,
+        expr: &Expr,
+    ) -> Result<Option<String>, LoweringError> {
+        Ok(match &expr.kind {
+            ExprKind::String(s) => Some(s.clone()),
+
+            // A name bound earlier in this body to a comptime-known string.
+            ExprKind::Ident(name) => self.comptime_strings.get(name).cloned(),
+
+            ExprKind::Comptime { body } => {
+                let Some(interp_cell) = self.ctx.comptime_interp.as_ref() else {
+                    return Ok(None);
+                };
+                let mut interp = interp_cell.borrow_mut();
+                match interp.eval_block_to_value(body) {
+                    Ok(rask_comptime::ComptimeValue::String(s)) => Some(s),
+                    // Evaluated fine, just not to a name.
+                    Ok(other) => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "a `comptime` block naming a field has to produce a string — \
+                             this one produced {}",
+                            other.type_name()
+                        )))
+                    }
+                    // Quota, overflow, a divide by zero — say which.
+                    Err(e) => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "the `comptime` block naming a field didn't finish: {}",
+                            e
+                        )))
+                    }
+                }
+            }
+
+            // `field.name` inside an unrolled `comptime for` (CT49).
+            ExprKind::Field { object, field } => {
+                let ExprKind::Ident(name) = &object.kind else { return Ok(None) };
+                let Some((_, fc)) =
+                    self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)
+                else {
+                    return Ok(None);
+                };
+                match field.as_str() {
+                    "name" => Some(fc.name.clone()),
+                    "serial_name" => Some(fc.serial_name.clone()),
+                    "type_name" => Some(fc.type_name.clone()),
+                    _ => None,
+                }
+            }
+
+            _ => None,
+        })
     }
 
     /// If expression lowering (spec L1).
@@ -6010,8 +6095,18 @@ impl<'a> MirLowerer<'a> {
             return Ok(None);
         }
         // `fields` is the unrolled `comptime for` iterable, handled in stmt.rs.
+        // Reaching here means it was used as an ordinary value instead, which
+        // native has no way to build — there's no runtime `Vec<FieldInfo>` to
+        // hand back, only the constants the unroller splices. Say that, rather
+        // than falling through to dispatch and failing in codegen with
+        // "Function not found: reflect_fields" (#997).
         if method == "fields" {
-            return Ok(None);
+            return Err(LoweringError::InvalidConstruct(
+                "native can only use `reflect.fields<T>()` as the iterable of a `comptime for` — \
+                 it resolves to compile-time constants there, and there is no runtime \
+                 `Vec<FieldInfo>` for it to become anywhere else"
+                    .into(),
+            ));
         }
 
         let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {
@@ -8059,7 +8154,14 @@ impl<'a> MirLowerer<'a> {
         let mut last_ty = MirType::Void;
         // Block scope: any const/mut declared inside the braces shadows but
         // doesn't leak out. Snapshot the locals map and restore after.
+        //
+        // Comptime-known strings are scoped the same way, and for the same
+        // reason. A `let w = "limit"` inside the braces shadowing an outer
+        // `let w = "spent"` used to overwrite the entry and keep it after the
+        // block ended, so a later `b.(w)` read the inner name — the interpreter
+        // said `spent`, native said `limit`, and nothing complained.
         let saved_locals = self.locals.clone();
+        let saved_comptime_strings = self.comptime_strings.clone();
         // ctrl.ensure/EN1: an `ensure` runs when its *enclosing block* exits,
         // not when the function does. Loop bodies did this already (they lower
         // their statements directly and call `close_loop_body`), so a bare
@@ -8089,6 +8191,7 @@ impl<'a> MirLowerer<'a> {
         }
         self.ensure_stack.truncate(ensure_depth);
         self.locals = saved_locals;
+        self.comptime_strings = saved_comptime_strings;
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer
