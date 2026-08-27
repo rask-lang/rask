@@ -3799,6 +3799,22 @@ fn try_inside_ensure_is_rejected() {
 }
 
 #[test]
+fn ensure_handler_binds_a_binding_bodys_error() {
+    // ctrl.ensure/ER2: the handler's parameter takes its type from what the
+    // body's last statement produced, and only bare expressions counted — so a
+    // body ending in `let n = close()` left `e` untyped and died in MIR
+    // lowering. The interpreter skipped the handler outright for the same shape.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_binding_handler.rk");
+        assert_eq!(code, 0, "{}: stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body done\nmut: device gone\nlet: device gone\n",
+            "{}: both binding forms should reach the handler, LIFO", mode,
+        );
+    }
+}
+
+#[test]
 fn panic_in_a_lock_closure_releases_the_lock() {
     // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
     // lock, call the closure, then unlock — and a panic longjmps over that

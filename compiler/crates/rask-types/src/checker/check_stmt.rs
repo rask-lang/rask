@@ -372,7 +372,7 @@ impl TypeChecker {
                 let mut body_ty = None;
                 for s in body {
                     self.check_stmt(s);
-                    if let StmtKind::Expr(e) = &s.kind {
+                    if let Some(e) = Self::ensure_body_value(&s.kind) {
                         body_ty = self.node_types.get(&e.id).cloned();
                     }
                 }
@@ -732,6 +732,24 @@ impl TypeChecker {
             {
                 Some(name.clone())
             }
+            _ => None,
+        }
+    }
+
+    /// The expression an `ensure` body statement leaves as its result — whatever
+    /// the `else` handler binds the error branch of. A binding counts: writing
+    /// `let n = s.close()` can fail in exactly the way a bare `s.close()` can,
+    /// and taking only bare expressions left the handler's parameter untyped.
+    fn ensure_body_value(kind: &StmtKind) -> Option<&Expr> {
+        use rask_ast::stmt::StmtKind as SK;
+        match kind {
+            SK::Expr(e)
+            | SK::Let { init: e, .. }
+            | SK::Mut { init: e, .. }
+            | SK::LetTuple { init: e, .. }
+            | SK::MutTuple { init: e, .. }
+            | SK::LetStruct { init: e, .. }
+            | SK::Assign { value: e, .. } => Some(e),
             _ => None,
         }
     }
