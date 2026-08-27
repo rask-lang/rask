@@ -18,66 +18,39 @@ cargo test --release --workspace   0 failures
 
 ## The seven lanes, merged
 
-Seven sessions ran in parallel, partitioned by crate: #987 codegen, #988 interpreter, #989
-namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent benchmark, #1004
-panics. Each is green against its own base.
+Seven sessions ran in parallel, partitioned by crate. All seven landed: #987 codegen, #988
+interpreter, #989 namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent
+benchmark, #1004 panics — plus #1015, which the namespace lane needed because it kept working
+after #989 merged and a merged PR cannot take new commits.
 
-Merged together they need seven fixups, every one a lane meeting something another lane wrote.
-Three were caught by a guard one lane had written firing on another's change, which is the
-argument for writing them:
+What integrating them cost, since none of it is visible from any single PR: seven collisions
+where one lane met another lane's work. Three were caught by a guard one lane had written
+firing on another's change — #989's stub-set check caught `reflect` in two lists, #991's
+error-code audit caught two lanes allocating E0844, the fmt gate caught a formatter bug the
+corpus had never reached. That is the argument for writing them.
 
-- **#989's stub-set guard** caught `reflect` in two lists at once. #989 kept it out because
-  parsing it broke monomorphizing `reflect.fields<T>()` through a generic; #995 fixed that
-  cause and put it in.
-- **#991's error-code audit** caught #991 and #1004 both allocating E0844 — main topped out at
-  E0843, so both picked the same next number. A HashMap keeps the last, so one of the two
-  errors had no explanation. `try`-in-`ensure` is E0845 now.
-- **The fmt gate** caught a formatter bug the corpus had never reached: `rask fmt` collapsed
-  any one-statement `ensure { … }` to the braceless form, which parses one *expression*, so
-  `ensure { let n = try s.close() }` came back out as unparseable source. #1004's E0845
-  fixture is the first file with a lone `let` in an ensure body.
+Four nothing caught:
 
-The other four nothing caught:
-
-- **#989 was branched from `125d039` and its CI had never seen the files its own rule
-  rejects.** A branch's green CI says nothing about a base it never merged.
-- **Thirteen files across five lanes needed imports they never got** — suite probes, a
-  registered-red file, panic and `staged()` fixtures, a benchmark reference. Not carelessness:
-  a rule applied to a snapshot of the tree cannot reach files written after the snapshot, and
-  no single branch's CI sees the combination. Three of the thirteen were the nastier kind, where
-  the file still failed and so still looked fine: `t_day_const_string_array.rk` is registered
-  red, `staged_misuse.rk` is a compile-error fixture, and `torn_lock_update.rk` asserts a
-  warning *count* — a check that dies on a missing import emits zero warnings, so that
-  assertion failed for a reason unrelated to what it tests. All three were failing on the
-  import instead of on the thing they exist to pin.
-- **One registered-red file rotted.** `t_day_const_string_array.rk` is red for #1000, so the
-  gate expected it to fail — and stopped looking when it started failing at the *check* step
-  for a missing import. The bug it documents was not being exercised. Fixed, and the gate now
-  holds every red file to a `(backend phase)` claim so it cannot recur (#1005).
-- **The benchmark would have measured our own stale documentation.** It hands a model
+- **A branch's green CI says nothing about a base it never merged.** #989 was still on
+  `125d039` and had not seen the files its own rule rejects.
+- **Thirteen files across five lanes needed imports they never got.** A rule applied to a
+  snapshot of the tree cannot reach files written after the snapshot, and no single branch's
+  CI sees the combination. Three of the thirteen were the quiet kind, where the file still
+  failed and so still looked fine: a registered-red file, a compile-error fixture, and a
+  fixture asserting a warning *count* — all three failing on the import instead of on the
+  thing they exist to pin.
+- **A registered-red file rotted.** `t_day_const_string_array.rk` stopped compiling entirely
+  and stayed "red", so #1000 quietly stopped being exercised. Fixed, and the gate now holds
+  every red file to a `(backend phase)` claim so it cannot recur (#1005).
+- **The benchmark would have measured our own documentation.** It hands a model
   LANGUAGE_GUIDE.md as normative and scores whether the reply compiles; the guide never said
-  stdlib names need importing. A low solve rate would have read as a language-usability
-  result. The guide says it now, in the Modules section and as common mistake 15.
+  stdlib names need importing. A low solve rate would have read as a language-usability result.
 
-All seven lane PRs are merged: #987, #988, #989, #991, #995, #1003, #1004. Only the
-integration branch is left.
-
-One thing it carries that nothing else does. The namespace lane kept working after #989
-merged, and a merged PR can't take new commits — so four commits sat on a branch with no
-route into main:
-
-    Importing a module gives the module, not the names inside it
-    An aliased module import gets the real layout too
-    …plus two main-merges carrying an import fix for the benchmark
-
-They are in this branch. Without it they stay stranded, or need a fresh PR.
-
-**The lanes are still moving.** Between the first integration pass and the second, five of
-seven branches gained commits and one opened its PR; between the second and third, five gained
-commits again and #987 merged. Two of those rounds changed the answer — the panics lane
-replaced the `is_immutable` flag this branch had merged with a `reassigned_names` set, and
-fixed the `ensure`-braces formatter bug independently. So this branch is a snapshot, not a
-standing result: re-merge at current heads and re-run before trusting the numbers.
+And one mistake of my own worth keeping: resolving a contested file with `git checkout
+--theirs` dropped three tests belonging to a lane that did not own that file. Verifying
+against the *lane branch* said clean and then went stale — a test that arrives in a later
+lane commit does not come back, because git reads the earlier deletion as the newer intent.
+Verify against `origin/main`, which is where the work accumulates.
 
 ---
 
