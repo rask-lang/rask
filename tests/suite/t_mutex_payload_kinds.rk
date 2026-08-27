@@ -5,6 +5,8 @@
 // For a struct that address is the value, but for anything word-sized — a Map
 // or Vec handle, an integer — the value has to be loaded out. Passed straight
 // through, `Shared<Map, Mutex>` handed the map runtime a pointer to a pointer.
+import sync.Shared
+import sync.Mutex
 
 struct Counter { public n: i64 }
 

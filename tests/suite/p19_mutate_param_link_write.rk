@@ -11,6 +11,8 @@
 // matched. So the shape that breaks is a function whose only write to the
 // parameter goes through a link field, which is exactly what a list's
 // `push_back` looks like.
+import memory.Link
+import memory.Rack
 
 struct Node {
     value: i32

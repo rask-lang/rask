@@ -7,6 +7,8 @@
 // any assert over a call that did work did that work twice. Native only; the
 // interpreter evaluated the condition once and only re-read the sides when the
 // assert actually failed.
+import sync.Shared
+import sync.Mutex
 
 func bump(m: Shared<i64, Mutex>) -> i64 {
     with m.write() as n {

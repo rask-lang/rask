@@ -12,6 +12,7 @@
 import fs
 import cli
 import std
+import string.StringBuilder
 
 // ─── Error Types ────────────────────────────────────────────────────
 

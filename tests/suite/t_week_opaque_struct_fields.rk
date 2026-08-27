@@ -23,6 +23,7 @@
 import time.Duration
 import time.Instant
 import random.Random
+import string.StringBuilder
 
 struct JustDuration {
     took: Duration

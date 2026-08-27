@@ -5,6 +5,8 @@
 // The shape this exists to show: the staleness branch is gone. Not moved,
 // not hidden — `target` became `none` at the moment its target was deleted,
 // so there is no dead-reference state left for a reader to detect.
+import memory.Link
+import memory.Rack
 
 struct Entity {
     name: string

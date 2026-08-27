@@ -3,6 +3,7 @@
 // thunks used to be called from — so a `const` holding a box stayed a zero
 // slot and the first read through it dereferenced null. The runner runs the
 // thunks itself now.
+import sync.Shared
 
 struct Counter {
     public hits: u64

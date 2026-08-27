@@ -5,6 +5,8 @@
 // missed and the element was copied instead of aliased — scalar writes landed in
 // the copy and vanished. Heap-backed writes (a Vec push) persisted through the
 // shared buffer, which made it look like it half-worked.
+import memory.Pool
+import memory.Handle
 
 enum Status { Open, Done }
 enum Priority { Low, High }

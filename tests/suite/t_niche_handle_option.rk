@@ -7,6 +7,8 @@
 //   - reading a `Handle?` binding whose use-site type is the narrowed
 //     `Handle` — that extracted "field 0", which meant loading through the
 //     handle value.
+import memory.Pool
+import memory.Handle
 
 struct Task {
     public title: string

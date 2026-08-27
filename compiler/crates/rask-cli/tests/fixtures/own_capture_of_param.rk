@@ -25,6 +25,8 @@
 // Without `own` the same call is rejected the other way ("closure captures scoped
 // borrow and cannot escape", with the fix hint telling you to add `own`), so this
 // shape had no spelling that compiled.
+import memory.Handle
+import memory.Pool
 
 struct Item {
     id: i32

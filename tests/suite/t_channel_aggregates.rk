@@ -7,6 +7,7 @@
 // smashed the stack. And the send path spilled any non-struct argument through
 // a scratch slot, storing the *address* of an enum instead of its bytes, so the
 // tag arrived as the low word of a pointer.
+import async.ReceiveError
 
 struct Msg {
     public id: i64

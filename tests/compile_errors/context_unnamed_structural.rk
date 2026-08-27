@@ -3,6 +3,8 @@
 //
 // This demonstrates the compile error when trying to use structural pool
 // operations (insert/remove/cursor) in a function with an unnamed context.
+import memory.Handle
+import memory.Pool
 
 struct Entity {
     health: i32,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+import sync.Shared
+
 extern "C" func rask_io_errno() -> i32
 
 extern "C" func rask_io_error_kind(err: i32) -> i32

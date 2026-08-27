@@ -3,6 +3,7 @@
 // (`len()` counts bytes, `char_at(i)` counts scalars). Native's `chars()` walked
 // bytes, so any non-ASCII string yielded the halves of each sequence as separate
 // Latin-1 chars: `"aöb".chars()` gave `[a][Ã][¶][b]`. Silent mojibake.
+import string.StringBuilder
 
 func main() {
     let ascii = "abc"

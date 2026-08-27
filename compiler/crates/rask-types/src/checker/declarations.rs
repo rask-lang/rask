@@ -17,6 +17,35 @@ impl TypeChecker {
     // Pass 1: Declaration Collection
     // ------------------------------------------------------------------------
 
+    /// IM3: register the aliases the resolver made out of `import m.T as A`.
+    ///
+    /// `SymbolKind::TypeAlias` existed and was only ever produced, never read —
+    /// the checker learned aliases from `type alias` declarations and nothing
+    /// else, so an aliased import bound a name with nothing behind it. Same
+    /// registration as a written `type alias A = T`, so `A` resolves to the same
+    /// TypeId as `T` and carries its `extend` blocks (#923).
+    ///
+    /// Runs before the declarations, so a program's own `type alias` of the same
+    /// name overwrites this one rather than the other way round.
+    pub(super) fn collect_import_aliases(&mut self) {
+        let aliases: Vec<(String, String)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                rask_resolve::SymbolKind::TypeAlias { target, from_import: true } => {
+                    Some((sym.name.clone(), target.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (name, target) in aliases {
+            if self.types.check_alias_cycle(&name, &target).is_none() {
+                self.types.register_alias(name, target);
+            }
+        }
+    }
+
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {

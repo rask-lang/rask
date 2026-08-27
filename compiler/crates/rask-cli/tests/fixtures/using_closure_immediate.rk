@@ -2,6 +2,9 @@
 // inherits the enclosing function's Pool<Player> context. `run` has the context;
 // the callback `|hh| { damage(hh) }` captures it and `damage` reads the pool.
 // Native must match the interpreter.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func damage(h: Handle<Player>) using players: Pool<Player> {
