@@ -59,7 +59,18 @@ The other four nothing caught:
   stdlib names need importing. A low solve rate would have read as a language-usability
   result. The guide says it now, in the Modules section and as common mistake 15.
 
-Merged so far: #987, #988, #989, #991, #995, #1003. Left: #1004, then the integration branch.
+All seven lane PRs are merged: #987, #988, #989, #991, #995, #1003, #1004. Only the
+integration branch is left.
+
+One thing it carries that nothing else does. The namespace lane kept working after #989
+merged, and a merged PR can't take new commits — so four commits sat on a branch with no
+route into main:
+
+    Importing a module gives the module, not the names inside it
+    An aliased module import gets the real layout too
+    …plus two main-merges carrying an import fix for the benchmark
+
+They are in this branch. Without it they stay stranded, or need a fresh PR.
 
 **The lanes are still moving.** Between the first integration pass and the second, five of
 seven branches gained commits and one opened its PR; between the second and third, five gained
