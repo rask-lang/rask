@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func main() {
+    mut a: u8 = 0
+    a = a - 1
+}

@@ -814,8 +814,25 @@ int  rask_in_ffi_boundary(void);
 void rask_set_panic_location(const char *file, int32_t line, int32_t col);
 
 // Location-aware panic wrappers for codegen
-void rask_panic_unwrap(void);
-void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col);
+void rask_panic_unwrap(int32_t was_error);
+
+// Checked-arithmetic panics that name their operands (ctrl.panic/F3). `tail` is
+// the static "<type> range [min, max]" / "<type> bit width (n)" half.
+_Noreturn void rask_panic_overflow_binary(const char *file, int32_t line, int32_t col,
+                                          const char *op, const char *tail,
+                                          int64_t lhs, int64_t rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t operand);
+_Noreturn void rask_panic_shift_amount(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t amount);
+// The 128-bit forms. Separate because printing a 128-bit value needs the digit
+// walk in int128.c — snprintf has no conversion for one.
+_Noreturn void rask_panic_overflow_binary_i128(const char *file, int32_t line, int32_t col,
+                                               const char *op, const char *tail,
+                                               RaskI128 lhs, RaskI128 rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int32_t col,
+                                            const char *tail, RaskI128 operand);
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col, int32_t was_error);
 void rask_assert_fail(void);
 void rask_assert_fail_at(const char *file, int32_t line, int32_t col);
 void rask_assert_fail_msg(const char *msg);
@@ -1078,6 +1095,25 @@ void rask_ensure_run_all(void);
 void *rask_ensure_stack_take(void);
 void  rask_ensure_stack_set(void *head);
 
+// ─── Held access (ctrl.panic/U3, U4) ───────────────────────
+// A `with` block over a sync box, and the inline `m.lock().f` form, emit an
+// acquire and a release around the access. Only the release is inline, so a
+// panic in between jumped straight past it and left the lock held for the rest
+// of the process — the next acquirer blocked forever, including an ensure body
+// running during that very unwind. Each acquire registers its release here, the
+// matching release deregisters it, and the panic path drains what's left before
+// running any ensure.
+
+typedef void (*RaskReleaseFn)(int64_t handle);
+
+void rask_access_push(RaskReleaseFn fn, int64_t handle);
+void rask_access_pop(int64_t handle);
+void rask_access_release_all(void);
+
+// Park/resume the current thread's held-access stack (opaque; fiber workers).
+void *rask_access_stack_take(void);
+void  rask_access_stack_set(void *head);
+
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
 // Wraps pthread_mutex (conc.sync/MX1-MX2).
@@ -1107,6 +1143,21 @@ int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
 int64_t rask_shared_data(int64_t shared);
 void    rask_shared_release(int64_t shared);
+
+// Staged access (conc.sync/ST1–ST4). `acquire` locks and hands back a working
+// copy; `commit` puts it back as one move and unlocks; `discard` drops it and
+// unlocks. Codegen schedules the commit as the block's inline cleanup, and the
+// acquire registers the discard on the unwind stack — so a panic runs one and an
+// ordinary exit the other, without either path knowing about the other.
+int64_t rask_mutex_staged_acquire(int64_t mutex);
+int64_t rask_mutex_staged_data(int64_t mutex);
+void    rask_mutex_staged_commit(int64_t mutex);
+void    rask_mutex_staged_discard(int64_t mutex);
+int64_t rask_shared_staged_acquire(int64_t shared);
+int64_t rask_shared_staged_data(int64_t shared);
+void    rask_shared_staged_commit(int64_t shared);
+void    rask_shared_staged_discard(int64_t shared);
+int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
@@ -1146,6 +1197,7 @@ int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
+_Noreturn void rask_os_exit(int64_t code);
 void    rask_os_set_env(const RaskStr *name, const RaskStr *value);
 void    rask_os_remove_env(const RaskStr *name);
 RaskVec *rask_os_args(void);

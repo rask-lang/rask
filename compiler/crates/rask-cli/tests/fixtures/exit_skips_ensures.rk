@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/P5 + struct.targets/EX3: `os.exit` terminates immediately — no
+// unwind, no ensures, at any depth. Neither "never" line may print; status 5.
+//
+// Two bugs met here. Native had no `os_exit` entry point at all, so the program
+// failed codegen with "Function not found". The interpreter ran every scheduled
+// ensure on the way out, which is the opposite of what exit means.
+import os
+
+func inner() {
+    ensure println("inner never")
+    os.exit(5)
+}
+
+func main() {
+    ensure println("outer never")
+    println("start")
+    inner()
+}

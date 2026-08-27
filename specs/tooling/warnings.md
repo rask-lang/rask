@@ -48,6 +48,13 @@ func process(data: Vec<u8>) -> i32 {
 
 **W10 (ensure_order) scope:** Derivation is read off the calls themselves, function-locally: the dependency appeared as an argument to the call that produced the dependent, or it appears in the dependent's own cleanup call. Independent resources never warn regardless of order, and an alias (`let b = a`) is not a derivation. Anything smarter needs a false-positive budget first.
 
+**W9 (torn_lock_update) implementation:** checked at the `with` binding in
+`rask-types` rather than as a syntactic pass, because it must not fire under
+`Local` — nothing there can observe a torn update and `staged()` is refused
+outright (`conc.sync/ST3a`), so the suggested fix would be a compile error.
+Suppression is `@allow(torn_lock_update)` on the enclosing *function*; a `test`
+block can't carry it, because `TestDecl` has no attributes ([#1010](https://github.com/rask-lang/rask/issues/1010)).
+
 **W9 (torn_lock_update) scope:** Fires on two or more field assignments to the locked binding in one `with` block. Mutating method calls (`q.push(a)` twice) don't trigger — method bodies are opaque, and flagging every call pair would drown the real signal. A panic between the flagged writes leaves survivors a broken invariant (`ctrl.panic/LK3–LK4`); `.staged()` makes the update panic-atomic.
 
 ## Opt-In Warnings

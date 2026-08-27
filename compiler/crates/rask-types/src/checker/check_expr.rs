@@ -1816,6 +1816,44 @@ impl TypeChecker {
                         ExprKind::MethodCall { method, .. }
                             if matches!(method.as_str(), "read" | "write" | "staged")
                     );
+                    // ST3a: `staged()` under `Local`. The strategy is in the
+                    // type, so the compiler can decide it — and ctrl.panic/S7
+                    // says a condition fixed at the declaration is a diagnostic,
+                    // not a runtime message.
+                    let stages = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. } if method == "staged"
+                    );
+                    // `source_ty` is the type of the whole `box.staged()` call —
+                    // the payload — so the strategy has to come off the receiver.
+                    let staged_recv = match &binding.source.kind {
+                        ExprKind::MethodCall { object, method, .. } if method == "staged" => {
+                            let ty = self
+                                .node_types
+                                .get(&object.id)
+                                .map(|t| self.resolve_named(&self.ctx.apply(t)));
+                            ty.map(|t| (object.as_ref(), t))
+                        }
+                        _ => None,
+                    };
+                    if let Some((recv, recv_ty)) = staged_recv {
+                        if Self::type_is_shared(&recv_ty, &self.types)
+                            && self.shared_strategy_name(&recv_ty) == "Local"
+                        {
+                            self.errors.push(TypeError::StagedOnLocal {
+                                name: Self::source_text_for(recv)
+                                    .unwrap_or_else(|| "the box".to_string()),
+                                span: binding.source.span,
+                            });
+                        }
+                    }
+                    // W9 (tool.warnings, W0907): two or more fields of the
+                    // locked value written without staging. Checked here rather
+                    // than in a syntactic pass because it must not fire under
+                    // `Local` — there is nothing to tear and `staged()` is an
+                    // error there (ST3a), so the suggestion would be one.
+                    self.check_torn_lock_update(binding, body);
+
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {
                             name: Self::source_text_for(&binding.source)
@@ -4063,20 +4101,100 @@ impl TypeChecker {
         }
     }
 
-    /// The strategy argument's name, or `"Local"` when there isn't one — bare
-    /// `Shared<T>` is `Shared<T, Local>` in every position (SH3).
+    /// W9: warn when a `with` block over a sync box assigns two or more fields
+    /// of the locked binding without `staged()`.
+    ///
+    /// Exclusive access only — a read lock can't be written through (R1), and
+    /// `staged()` is already the fix. `Local` is excluded: nothing else can
+    /// observe a torn update there and `staged()` is refused (ST3a), so a
+    /// warning would point at a compile error.
+    ///
+    /// Field assignments only. A mutating method call (`q.push(a)` twice) leaves
+    /// the same invariant torn, but a method body is opaque and flagging every
+    /// pair of calls would drown the real signal — the spec draws that line, not
+    /// this code (tool.warnings, W9 scope).
+    fn check_torn_lock_update(
+        &mut self,
+        binding: &rask_ast::expr::WithBinding,
+        body: &[rask_ast::stmt::Stmt],
+    ) {
+        use rask_ast::stmt::StmtKind;
+
+        if self.allowed_warnings.iter().any(|a| a == "torn_lock_update") {
+            return;
+        }
+        let ExprKind::MethodCall { object, method, args, .. } = &binding.source.kind else {
+            return;
+        };
+        if !args.is_empty() || !matches!(method.as_str(), "write" | "lock") {
+            return;
+        }
+        let Some(recv_ty) = self
+            .node_types
+            .get(&object.id)
+            .map(|t| self.resolve_named(&self.ctx.apply(t)))
+        else {
+            return;
+        };
+        if !Self::type_is_shared(&recv_ty, &self.types)
+            || self.shared_strategy_name(&recv_ty) == "Local"
+        {
+            return;
+        }
+
+        // Distinct fields of the binding, in the order they are first written.
+        let mut written: Vec<(String, rask_ast::Span)> = Vec::new();
+        for stmt in body {
+            let StmtKind::Assign { target, .. } = &stmt.kind else { continue };
+            let ExprKind::Field { object: base, field } = &target.kind else { continue };
+            if !matches!(&base.kind, ExprKind::Ident(n) if *n == binding.name) {
+                continue;
+            }
+            if written.iter().any(|(f, _)| f == field) {
+                continue;
+            }
+            written.push((field.clone(), target.span));
+            if written.len() == 2 {
+                break;
+            }
+        }
+        if written.len() < 2 {
+            return;
+        }
+        self.errors.push(TypeError::TornLockUpdate {
+            binding: binding.name.clone(),
+            box_name: Self::source_text_for(object).unwrap_or_else(|| "the box".to_string()),
+            first_field: written[0].0.clone(),
+            second_field: written[1].0.clone(),
+            first_span: written[0].1,
+            second_span: written[1].1,
+        });
+    }
+
+    /// The strategy argument's name, or `"Readers"` when there isn't one.
+    ///
+    /// SH3: bare `Shared<T>` is `Shared<T, Readers>` in every position — a
+    /// `let`, a parameter, a field, a return type. This said `Local` and cited
+    /// SH3 for it, which is the opposite of what SH3 says; `rask-mir`'s
+    /// `shared_strategy` had it right ("a lock you didn't need costs time, and
+    /// one you did need and skipped costs correctness", SH8). Both callers here
+    /// test for `Local` specifically, so the wrong default only ever made a bare
+    /// `Shared<T>` look like the one strategy it can't be.
+    ///
+    /// Callers guard on `type_is_shared` first; anything unreadable lands on the
+    /// default, which is the safe side of both rules that read this.
     fn shared_strategy_name(&self, ty: &Type) -> String {
         let args = match ty {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
-            _ => return "Local".to_string(),
+            _ => return "Readers".to_string(),
         };
         match args.get(1) {
             Some(GenericArg::Type(s)) => match self.resolve_named(s) {
                 Type::UnresolvedNamed(n) => n,
                 Type::Named(id) => self.types.type_name(id),
-                _ => "Local".to_string(),
+                _ => "Readers".to_string(),
             },
-            _ => "Local".to_string(),
+            _ => "Readers".to_string(),
         }
     }
 

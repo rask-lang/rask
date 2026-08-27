@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U1: an ensure reading a scalar runs on panic unwind when the scalar
+// is bound by `let`. A `let` is written once, so the value the hook captured when
+// the ensure was scheduled is the value the cleanup would read during unwind.
+// Native used to skip any ensure body that mentioned a scalar at all (#299).
+func main() {
+    let attempt = 7
+    ensure println(attempt.to_string())
+    println("body")
+    panic("boom")
+}

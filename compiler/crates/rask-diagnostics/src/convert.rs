@@ -1162,6 +1162,40 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
             }
 
+            TornLockUpdate { binding, box_name, first_field, second_field, first_span, second_span } => {
+                Diagnostic::warning("multi-field update under a lock without staged()".to_string())
+                    .with_code("W0907")
+                    .with_primary(*first_span, format!("`{}` written first", first_field))
+                    .with_secondary(
+                        *second_span,
+                        format!("`{}` second — a panic between these leaves other tasks a half-done update", second_field),
+                    )
+                    .with_help(format!(
+                        "stage the update: `with {}.staged() as {} {{ … }}` commits as one move on a clean exit and discards on a panic",
+                        box_name, binding,
+                    ))
+                    .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
+                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function if partial state is harmless here [tool.warnings/W9]")
+            }
+
+            StagedOutsideWith { name, span } => {
+                Diagnostic::error("`staged()` only works as the source of a `with` block")
+                    .with_code("E0846")
+                    .with_primary(*span, "there is no block here for the commit to happen at")
+                    .with_help(format!("write `with {}.staged() as v {{ … }}`; for a single field, `{}.write().field` takes the lock for the expression", name, name))
+                    .with_fix(format!("with {}.staged() as v {{ … }}", name))
+                    .with_why("staged access works on a copy and commits it as one move when the block exits. `read`/`write` also have an expression-scoped form, where the lock is held for the chain (mem.borrowing/E5) — staged has none, because there would be nowhere to put the commit [conc.sync/ST1]")
+            }
+
+            StagedOnLocal { name, span } => {
+                Diagnostic::error("`staged()` has nothing to protect under `Local`")
+                    .with_code("E0845")
+                    .with_primary(*span, format!("`{}` is a `Shared<T, Local>` — one task, no unwind boundary", name))
+                    .with_help("use `.write()` here; reach for `staged()` under `Readers` or `Mutex`, where another task could read a torn update")
+                    .with_fix(format!("with {}.write() as …", name))
+                    .with_why("staged access exists to make a multi-field update atomic against a panic that other tasks would observe. Under `Local` there is no other task to observe it, so the clone buys nothing and costs a copy [conc.sync/ST3a]")
+            }
+
             BareSharedWith { name, binding, span } => {
                 Diagnostic::error(format!("`with {} as {}` doesn't say which lock", name, binding))
                     .with_code("E0839")
@@ -1752,6 +1786,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("`{}` appears more than once", variant))
                     .with_help("flatten the union or rename one branch")
                     .with_why("a sum type cannot contain the same payload variant twice — the compiler picks the branch from the value's type, and a `(T or E) or E` value fits both [type.unions/U5]")
+            }
+            TryInEnsure { region, span } => {
+                Diagnostic::error(format!("`try` can\'t be used {}", region))
+                    .with_code("E0847")
+                    .with_primary(*span, "there is no caller to propagate an error to from here")
+                    .with_help("drop the `try` and handle the error where it happens: `ensure f.close() else |e| { log(e.message()) }`")
+                    .with_fix("remove `try`")
+                    .with_why("cleanup runs at scope exit, after the function has already decided what it returns — an error raised there has nowhere to go, so ensure ignores it by default and `else |e|` is how you see it [ctrl.ensure/ER3-ER4]")
             }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))
@@ -3000,13 +3042,22 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("check detected a test failure")
             }
 
-            RuntimeError::UnwrapError => {
-                Diagnostic::error("unwrap failed: value was None")
+            RuntimeError::ForcedAbsent => {
+                Diagnostic::error("! on a value that was absent")
                     .with_code("R0016")
-                    .with_primary(self.span, "unwrap failed here")
-                    .with_help("use pattern matching or `??` to handle None safely")
-                    .with_fix("replace `!` with `?? default_value` or use `if x is Some { ... }`")
-                    .with_why("unwrap panics when called on None")
+                    .with_primary(self.span, "there was no value here to take")
+                    .with_help("`??` substitutes a value, `x is T as v` tests for one first")
+                    .with_fix("replace `x!` with `x ?? default`")
+                    .with_why("`!` takes the payload of a `T?` and panics when the value is absent [type.optionals/OPT13]")
+            }
+
+            RuntimeError::ForcedError => {
+                Diagnostic::error("! on a value that was an error")
+                    .with_code("R0016")
+                    .with_primary(self.span, "this call returned its error branch")
+                    .with_help("`try` propagates the error, `catch e =>` handles it here")
+                    .with_fix("replace `r!` with `try r`")
+                    .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")
             }
 
             RuntimeError::Generic(msg) => {

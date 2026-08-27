@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.sync/ST1 + ST3a: the two shapes of `staged()` the compiler can reject
+// from the source alone. Both used to get through the checker and fail later —
+// ST1 as an internal "no method `staged`" on the interpreter and "Function not
+// found" natively, ST3a as neither, just a needless copy.
+
+import sync.Shared
+import sync.Mutex
+import sync.Local
+
+struct Ledger9 { checking: i64 }
+const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100 })
+const SOLO: Shared<Ledger9, Local> = Shared.local(Ledger9 { checking: 1 })
+
+func main() {
+    // ST1: no block for the commit to happen at.
+    println(BOOKS.staged().checking.to_string())
+    // ST3a: nothing else can observe a torn update under Local.
+    with SOLO.staged() as s {
+        s.checking = 2
+    }
+}

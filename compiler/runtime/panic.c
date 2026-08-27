@@ -215,6 +215,72 @@ void rask_ensure_run_all(void) {
     tl_in_unwind = 0;
 }
 
+// ─── Held access (ctrl.panic/U3, U4) ───────────────────────
+//
+// The release half of every `with`-block and inline sync access. Codegen emits
+// the release inline, so a panic in the middle of the block jumped past it and
+// left the lock held: the next acquire blocked forever, and the first thing to
+// try one is usually an ensure body running during the same unwind. Each
+// acquire registers its release here; the matching release deregisters it; the
+// panic path drains what's left, before the ensures, so a cleanup that touches
+// the same box can take the lock.
+//
+// Keyed by handle rather than popping blindly off the top: acquire/release pairs
+// nest LIFO in practice (conc.sync/DL1 rejects nested `with` on sync boxes
+// outright), but a release that didn't match the top would otherwise drop
+// somebody else's entry and leave a real lock held.
+
+typedef struct HeldAccess {
+    RaskReleaseFn      fn;
+    int64_t            handle;
+    struct HeldAccess *next;
+} HeldAccess;
+
+static __thread HeldAccess *tl_held_access = NULL;
+
+void rask_access_push(RaskReleaseFn fn, int64_t handle) {
+    HeldAccess *held = (HeldAccess *)rask_alloc(sizeof(HeldAccess));
+    if (!held) return;
+    held->fn     = fn;
+    held->handle = handle;
+    held->next   = tl_held_access;
+    tl_held_access = held;
+}
+
+void rask_access_pop(int64_t handle) {
+    HeldAccess **link = &tl_held_access;
+    while (*link) {
+        if ((*link)->handle == handle) {
+            HeldAccess *dead = *link;
+            *link = dead->next;
+            rask_free(dead);
+            return;
+        }
+        link = &(*link)->next;
+    }
+}
+
+void rask_access_release_all(void) {
+    while (tl_held_access) {
+        HeldAccess *held = tl_held_access;
+        tl_held_access = held->next;
+        RaskReleaseFn fn = held->fn;
+        int64_t handle = held->handle;
+        rask_free(held);
+        if (fn) fn(handle);
+    }
+}
+
+void *rask_access_stack_take(void) {
+    void *head = tl_held_access;
+    tl_held_access = NULL;
+    return head;
+}
+
+void rask_access_stack_set(void *head) {
+    tl_held_access = (HeldAccess *)head;
+}
+
 // ─── Backtrace ─────────────────────────────────────────────
 
 static void print_backtrace(void) {
@@ -272,6 +338,11 @@ _Noreturn void rask_panic(const char *msg) {
     // codegen's print lock and deadlock every later print on other threads.
     rask_print_unlock_all();
 
+    // U3/U4: release the locks and borrows this task still holds. Before the
+    // ensures, not after — a cleanup that touches the same box has to be able to
+    // take the lock, and an ensure blocking on it is a hang, not a failure.
+    rask_access_release_all();
+
     // Unwind: run scheduled ensures for the dying task (U1/E2/E3). The primary
     // panic message is set afterward, so it wins over any secondary.
     rask_ensure_run_all();
@@ -308,6 +379,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     }
 
     rask_print_unlock_all();
+    rask_access_release_all();
     rask_ensure_run_all();
 
     if (panic_ctx.active) {

@@ -199,6 +199,28 @@ fn compile_only_succeeds(fixture_name: &str) -> (bool, String) {
     (compile_out.status.success(), combined)
 }
 
+/// `rask check` on a fixture file, returning (succeeded, combined output).
+///
+/// Distinct from `compile_error_output`, which expects failure, and from
+/// `check_output` further down, which takes inline source: a warning is reported
+/// *and* the check succeeds, and the full diagnostic — code, labels, fix — only
+/// comes out of `check`. `compile` prints the one-line form.
+fn check_fixture(fixture_name: &str) -> (bool, String) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture(fixture_name))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let combined = format!(
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
 /// Run a .rk fixture via `rask run --interp`, returning stdout.
 fn run_interp(fixture_name: &str) -> (String, i32) {
     let rask = rask_binary();
@@ -3807,6 +3829,334 @@ fn panic_ensure_runs_on_native_with_captured_receiver() {
         assert_eq!(code, 101, "{}: panic should exit 101", mode);
         assert_eq!(stdout, "42\n", "{}: ensure runs on panic and sees the live receiver", mode);
     }
+}
+
+// ctrl.panic/U1 — the three body shapes native used to skip entirely (#299).
+//
+// The panic hook is a reified thunk over the ensure body. Anything the thunk
+// couldn't be built for stayed inline-only, and inline cleanup is exactly what
+// a panic jumps past — so the ensure silently didn't run. All three build now.
+
+#[test]
+fn panic_ensure_multi_statement_body_runs() {
+    // A body of more than one statement, lowered into the thunk the same way the
+    // inline cleanup lowers it. The captured receiver still shows the pre-panic
+    // write (42, not 1).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_multi_stmt.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\n42\nclosed\n",
+            "{}: every statement of the ensure body runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_else_handler_runs() {
+    // ER2 × U1: the cleanup fails during unwind and its `else |e|` handler runs,
+    // naming the error. `e.message()` is the part that needed the binding to have
+    // a type at all — the handler param used to reach MIR as a free variable.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_else_handler.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\ndevice gone\n",
+            "{}: the ensure and its error handler both run on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_scalar_snapshot_runs() {
+    // A scalar read by the cleanup. `let` binds once, so the value the hook
+    // captured when the ensure was scheduled is the value the cleanup would read
+    // during unwind — snapshotting it is exact, not approximate.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_scalar_snapshot.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body\n7\n",
+            "{}: an ensure reading a `let` scalar runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn try_inside_ensure_is_rejected() {
+    // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
+    // propagate. Both positions are rejected at check time (E0847) instead of
+    // type-checking clean and then failing native MIR lowering with an internal
+    // message about a type it couldn't work out.
+    let (failed, output) = compile_error_output("ensure_try_rejected.rk");
+    assert!(failed, "`try` in an ensure body must be a compile error:\n{}", output);
+    assert!(output.contains("E0847"), "expected E0847, got:\n{}", output);
+    assert!(
+        output.contains("inside an `ensure` body"),
+        "ER4 position should be named:\n{}", output,
+    );
+    assert!(
+        output.contains("in an `ensure` error handler"),
+        "ER3 position should be named:\n{}", output,
+    );
+    // Four `try`s, four diagnostics. Counting rather than just checking for the
+    // code: the scan reached the plain body and the handler but had no arm for
+    // `break` and never looked at a match guard, so two of these compiled clean
+    // and blew up in codegen. A `contains` still passes with that hole in it.
+    assert_eq!(
+        output.matches("E0847").count(), 4,
+        "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
+        output,
+    );
+}
+
+#[test]
+fn ensure_handler_binds_a_binding_bodys_error() {
+    // ctrl.ensure/ER2: the handler's parameter takes its type from what the
+    // body's last statement produced, and only bare expressions counted — so a
+    // body ending in `let n = close()` left `e` untyped and died in MIR
+    // lowering. The interpreter skipped the handler outright for the same shape.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_binding_handler.rk");
+        assert_eq!(code, 0, "{}: stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body done\nmut: device gone\nlet: device gone\n",
+            "{}: both binding forms should reach the handler, LIFO", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_in_a_lock_closure_releases_the_lock() {
+    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
+    // lock, call the closure, then unlock — and a panic longjmps over that
+    // unlock. Nothing had registered the lock, so the unwind had nothing to
+    // release and the next acquirer blocked forever. Both of these hung.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
+            "{}: both closure forms hand the lock back", mode,
+        );
+    }
+}
+
+// ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.
+//
+// Codegen emits the acquire and the release around a `with` block, but only the
+// release is inline — so a panic in the middle jumped past it and the lock stayed
+// held for the rest of the process. Each acquire registers its release with the
+// runtime now, and the panic path drains what's left before running any ensure.
+// Both of these hung with no output on native before that.
+
+#[test]
+fn panic_inside_with_releases_the_lock() {
+    // The ensure running during unwind reads the same box. It has to be able to
+    // take the lock (U3), and it sees the pre-panic write (U2).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_releases_lock.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90\n0\n",
+            "{}: the ensure must acquire the released lock and see the write", mode,
+        );
+    }
+}
+
+#[test]
+fn panicked_task_hands_on_its_lock() {
+    // LK1/LK2/O3: the next acquirer gets the lock and the last-written state —
+    // no poisoning, no rollback. O1: the death arrives as JoinError.Panicked.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_task_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "panicked\n99\n",
+            "{}: join reports the panic and the lock is free with the last write", mode,
+        );
+    }
+}
+
+#[test]
+fn exit_skips_every_ensure() {
+    // P5/EX3: exit is not a panic. No unwind, no cleanup, at any depth.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "exit_skips_ensures.rk");
+        assert_eq!(code, 5, "{}: os.exit(5) sets the status; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "start\n",
+            "{}: no ensure may run on the exit path", mode,
+        );
+    }
+}
+
+// ─── Panic messages agree across backends (ctrl.panic/F1, F3, PD3) ───
+//
+// F3: a panic message is a deterministic function of the failing operation's
+// operands. PD3 makes it part of the replay contract, and #748 made both
+// backends store the same string for `JoinError.Panicked(msg)` — so a program
+// that reads the message reads the same one either way.
+//
+// Nothing compared them until this test. Eight of sixteen sources disagreed:
+// native's checked-arithmetic messages named the operation and dropped the
+// operands ("addition exceeds i32 range" where the interpreter said
+// "2147483647 + 1 exceeds i32 range"), and two messages named `unwrap`, a
+// method Rask doesn't have.
+
+/// Every panic source worth pinning, with the message both backends must print.
+const PANIC_MESSAGES: &[(&str, &str)] = &[
+    ("add.rk", "integer overflow: 2147483647 + 1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("sub_unsigned.rk", "integer overflow: 0 - 1 exceeds u8 range [0, 255]"),
+    ("mul.rk", "integer overflow: 300 * 300 exceeds i16 range [-32768, 32767]"),
+    ("div_zero.rk", "division by zero"),
+    ("div_min_by_neg_one.rk",
+     "integer overflow: -2147483648 / -1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("shift_past_width.rk", "shift amount 40 exceeds i32 bit width (32)"),
+    ("wide_add.rk",
+     "integer overflow: 170141183460469231731687303715884105727 + 1 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_mul.rk",
+     "integer overflow: 170141183460469231731687303715884105727 * 2 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_unsigned_sub.rk",
+     "integer overflow: 0 - 1 exceeds u128 range [0, 340282366920938463463374607431768211455]"),
+    ("index_past_end.rk", "index out of bounds: index is 5 but length is 1"),
+    ("map_key_missing.rk", "key not found in map"),
+    ("map_key_missing_mutate.rk", "key not found in map"),
+    ("force_absent.rk", "! on a value that was absent"),
+    ("force_error.rk", "! on a value that was an error"),
+    ("explicit.rk", "hand written"),
+    ("not_implemented.rk", "not yet implemented"),
+    ("unreachable_reached.rk", "entered unreachable code"),
+];
+
+/// The message out of a panicking run, with each backend's framing stripped.
+///
+/// Native prints `panic at <file>:<line>: <message>`; the interpreter prints a
+/// full diagnostic whose header is `error[R00xx]: <message>` (with `panic: ` in
+/// front for an explicit `panic()`). What has to match is what's left.
+fn panic_message(mode: &str, fixture: &str) -> String {
+    let (stdout, stderr, code) = run_capture(mode, &format!("panic_msgs/{}", fixture));
+    assert_eq!(
+        code, 101,
+        "{} {}: a panic exits 101 (P4); stdout: {:?} stderr: {:?}",
+        mode, fixture, stdout, stderr
+    );
+    for line in stderr.lines() {
+        let line = line.trim_end();
+        if let Some(rest) = line.strip_prefix("panic at ") {
+            // `<file>:<line>: <message>` — the message is after the second colon.
+            if let Some(pos) = rest.find(": ") {
+                return rest[pos + 2..].to_string();
+            }
+        }
+        if let Some(rest) = line.strip_prefix("error[R") {
+            if let Some(pos) = rest.find("]: ") {
+                let msg = &rest[pos + 3..];
+                return msg.strip_prefix("panic: ").unwrap_or(msg).to_string();
+            }
+        }
+    }
+    panic!("{} {}: no panic line in stderr: {:?}", mode, fixture, stderr);
+}
+
+#[test]
+fn panic_messages_are_the_same_on_both_backends() {
+    let mut wrong: Vec<String> = Vec::new();
+    for (fixture, expected) in PANIC_MESSAGES {
+        for mode in ["--interp", "--native"] {
+            let got = panic_message(mode, fixture);
+            if got != *expected {
+                wrong.push(format!(
+                    "  {} {}\n    expected: {}\n    got:      {}",
+                    mode, fixture, expected, got
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} panic message(s) don't match what the spec pins (ctrl.panic/F3):\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+// ─── Staged access (conc.sync/ST1–ST4) ───────────────────────────
+//
+// `with box.staged() as v { … }` binds a working copy under the exclusive lock,
+// commits it as one move on any non-panic exit, and discards it on unwind. The
+// commit half is `tests/suite/t_month_staged.rk`, where the differential harness
+// gates it on both backends; the discard needs a program that panics, so it
+// lives here.
+
+#[test]
+fn staged_discards_its_copy_on_panic() {
+    // ST3: a panic between the two writes commits nothing. The ensure runs
+    // during unwind, takes the same lock, and must see the last committed state.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "staged_discards_on_panic.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "100 0\n",
+            "{}: nothing may commit out of a staged block that panicked", mode,
+        );
+    }
+}
+
+#[test]
+fn plain_write_keeps_the_partial_update_on_panic() {
+    // The contrast conc.sync draws, and the reason staged exists: without it the
+    // survivor sees the torn state (LK3, U2). One word apart from the fixture
+    // above — if these two ever agree, one of them is broken.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "unstaged_keeps_partial_write.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90 0\n",
+            "{}: a plain `write` keeps whatever landed before the panic", mode,
+        );
+    }
+}
+
+#[test]
+fn torn_lock_update_warns_once_and_only_where_it_should() {
+    // W9 (tool.warnings, W0907): two fields of a locked value written in one
+    // `with` block without staging. A warning, not an error — the program still
+    // builds and runs. The fixture has four blocks of the same shape and exactly
+    // one may warn: `@allow` says the tear is harmless, `Local` has nobody to
+    // observe one (and `staged()` is refused there, ST3a), and staging is the fix.
+    let (built, build_output) = compile_only_succeeds("torn_lock_update.rk");
+    assert!(built, "W9 is a warning — the program must still build:\n{}", build_output);
+
+    let (checked, output) = check_fixture("torn_lock_update.rk");
+    assert!(checked, "a warning must not fail the check:\n{}", output);
+    let hits = output.matches("W0907").count();
+    assert_eq!(
+        hits, 1,
+        "expected exactly one W0907, got {}:\n{}", hits, output,
+    );
+    assert!(
+        output.contains("`checking` written first"),
+        "the warning should name the fields and point at the first:\n{}", output,
+    );
+    assert!(
+        output.contains("staged()"),
+        "the fix is `staged()` and the warning has to say so:\n{}", output,
+    );
+}
+
+#[test]
+fn staged_misuse_is_rejected_at_check_time() {
+    // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).
+    // Both are decidable from the source, which ctrl.panic/S7 makes a diagnostic
+    // rather than a later failure.
+    let (failed, output) = compile_error_output("staged_misuse.rk");
+    assert!(failed, "both staged misuses must be compile errors:\n{}", output);
+    assert!(output.contains("E0846"), "expected ST1 as E0846, got:\n{}", output);
+    assert!(output.contains("E0845"), "expected ST3a as E0845, got:\n{}", output);
 }
 
 #[test]
