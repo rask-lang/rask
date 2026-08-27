@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import rask
@@ -68,16 +68,30 @@ class Score:
     output_tokens: int
     seconds: float
     by_horizon: dict[str, dict]
+    # (task id, why) for tasks the provider never answered for. Scored nowhere,
+    # reported plainly, because a quota wall that reads as "the model failed"
+    # is the worst possible way to lose a measurement.
+    aborted_tasks: list = field(default_factory=list)
+    waited_seconds: float = 0.0
+    billing: str = "free"
 
 
-def score(results: list[TaskResult]) -> Score:
-    total = len(results)
-    solved = [r for r in results if r.solved]
-    first_try = [r for r in results if r.solved and r.attempts_used == 1]
+def score(results: list[TaskResult], billing: str = "free") -> Score:
+    # An aborted task is one the provider never answered for — quota gone, the
+    # login bad, the transport broken. Scoring it would report a plan limit as
+    # a language failure, so it leaves the denominators entirely. Its finished
+    # attempts still count toward teach rate and divergences: those are real
+    # measurements of the compiler regardless of how the task ended.
+    aborted = [r for r in results if r.aborted]
+    scored = [r for r in results if not r.aborted]
+
+    total = len(scored)
+    solved = [r for r in scored if r.solved]
+    first_try = [r for r in scored if r.solved and r.attempts_used == 1]
     outcomes = Counter(a.outcome for r in results for a in r.attempts)
 
     divergent = [r.task_id for r in results if r.saw_divergence]
-    thrash = [r.task_id for r in results if _thrashed(r)]
+    thrash = [r.task_id for r in scored if _thrashed(r)]
 
     return Score(
         total=total,
@@ -93,7 +107,10 @@ def score(results: list[TaskResult]) -> Score:
         input_tokens=sum(a.input_tokens for r in results for a in r.attempts),
         output_tokens=sum(a.output_tokens for r in results for a in r.attempts),
         seconds=sum(r.seconds for r in results),
-        by_horizon=_by_horizon(results),
+        by_horizon=_by_horizon(scored),
+        aborted_tasks=[(r.task_id, r.aborted) for r in aborted],
+        waited_seconds=sum(r.waited_seconds for r in results),
+        billing=billing,
     )
 
 
@@ -181,6 +198,16 @@ def _by_horizon(results: list[TaskResult]) -> dict[str, dict]:
 
 # --- rendering --------------------------------------------------------------
 
+def _cost_label(billing: str) -> str:
+    """A subscription run spends plan quota, not dollars.
+
+    The CLI still prices every call at list rates, which is useful — it says
+    what the run would have cost on the API — but calling that "cost" on a Max
+    plan is wrong, so the column says what it is.
+    """
+    return "list-price equivalent (plan quota, no API spend)" if billing == "subscription" else "cost"
+
+
 def render_report(score: Score, results: list[TaskResult], meta: dict) -> str:
     lines = [
         "# Agent benchmark run",
@@ -199,11 +226,27 @@ def render_report(score: Score, results: list[TaskResult], meta: dict) -> str:
         f"| convergence (mean attempts when solved) | {score.convergence:.2f} |",
         f"| tasks that hit a backend divergence | {len(score.divergent_tasks)} |",
         f"| tasks that thrashed (same error twice running) | {len(score.thrash_tasks)} |",
-        f"| cost | ${score.cost_usd:.2f} "
+        f"| {_cost_label(score.billing)} | ${score.cost_usd:.2f} "
         f"({score.input_tokens:,} in / {score.output_tokens:,} out) |",
         f"| compiler time | {score.seconds:.0f}s |",
         "",
     ]
+
+    if score.aborted_tasks:
+        lines += [
+            "## Not scored — the provider never answered",
+            "",
+            "These left the denominators. A usage limit or a broken login is not a",
+            "model that failed to write Rask, and the numbers above cover only tasks",
+            "that actually got a reply.",
+            "",
+        ]
+        for task_id, why in score.aborted_tasks:
+            lines.append(f"- `{task_id}` — {why}")
+        lines.append("")
+    if score.waited_seconds:
+        lines += [f"Waited {score.waited_seconds:.0f}s in total on provider "
+                  "rate limits and retries.", ""]
 
     lines += ["## Targets", "", "| target | want | got | |", "|---|---|---|---|"]
     for name, want, got, met in check_targets(score):
@@ -277,6 +320,14 @@ def render_transcript(result: TaskResult, task) -> str:
         f"· result: **{'solved' if result.solved else 'unsolved'}** "
         f"in {result.attempts_used} attempt(s)",
         "",
+    ]
+    if result.aborted:
+        lines += [f"**Not scored** — {result.aborted}", ""]
+    if result.stalls:
+        stalls = "; ".join(f"attempt {s['attempt']}: {s['kind']}, waited {s['waited']:.0f}s"
+                           for s in result.stalls)
+        lines += [f"Provider stalls: {stalls}", ""]
+    lines += [
         "## Prompt given to the model",
         "",
         task.prompt,
@@ -325,6 +376,9 @@ def write_run(directory: Path, score: Score, results: list[TaskResult],
             "input_tokens": score.input_tokens,
             "output_tokens": score.output_tokens,
             "by_horizon": score.by_horizon,
+            "aborted_tasks": score.aborted_tasks,
+            "waited_seconds": score.waited_seconds,
+            "billing": score.billing,
         },
         "results": [r.to_json() for r in results],
     }
