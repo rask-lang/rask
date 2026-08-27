@@ -17,6 +17,9 @@ extend Sink9 {
     func retry(self) -> i32 or CloseErr9 {
         return 0
     }
+    func ready(self) -> bool or CloseErr9 {
+        return true
+    }
 }
 func main() -> i32 or CloseErr9 {
     let s = Sink9 { id: 3 }
@@ -27,6 +30,21 @@ func main() -> i32 or CloseErr9 {
     // ER3: in the handler, which is the last thing that runs.
     ensure s.close() else |e| {
         let n = try s.retry()
+    }
+    // ER4 via `break`: the scan walked statements but had no arm for `break`,
+    // so this got through the checker and failed the Cranelift verifier.
+    ensure {
+        loop {
+            break try s.close()
+        }
+    }
+    // ER4 via a match guard: the scan visited each arm's body but never its
+    // guard, which runs in the same frame.
+    ensure {
+        match s.id {
+            3 if try s.ready() => println("three"),
+            _ => println("other"),
+        }
     }
     return 0
 }

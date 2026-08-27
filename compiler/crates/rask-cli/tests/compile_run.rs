@@ -3796,6 +3796,15 @@ fn try_inside_ensure_is_rejected() {
         output.contains("in an `ensure` error handler"),
         "ER3 position should be named:\n{}", output,
     );
+    // Four `try`s, four diagnostics. Counting rather than just checking for the
+    // code: the scan reached the plain body and the handler but had no arm for
+    // `break` and never looked at a match guard, so two of these compiled clean
+    // and blew up in codegen. A `contains` still passes with that hole in it.
+    assert_eq!(
+        output.matches("E0844").count(), 4,
+        "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
+        output,
+    );
 }
 
 #[test]

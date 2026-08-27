@@ -799,8 +799,11 @@ impl TypeChecker {
                 exprs.push(iter);
                 bodies.push(body);
             }
+            SK::Break { value, .. } => exprs.extend(value.iter()),
             // A nested `ensure` reports against its own region on its own pass.
-            _ => {}
+            SK::Ensure { .. } => {}
+            // Nothing to walk: no sub-expression, no body.
+            SK::Return(None) | SK::Continue(_) | SK::Discard { .. } => {}
         }
         for e in exprs {
             Self::scan_expr_for_try(e, region, errors);
@@ -877,6 +880,9 @@ impl TypeChecker {
             }
             EK::Match { scrutinee, arms } => {
                 kids.push(scrutinee);
+                // A guard runs in this frame too, so `try` in one is just as
+                // unpropagatable as `try` in the arm body.
+                kids.extend(arms.iter().filter_map(|a| a.guard.as_deref()));
                 kids.extend(arms.iter().map(|a| a.body.as_ref()));
             }
             EK::Range { start, end, .. } => {
