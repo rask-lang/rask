@@ -1,0 +1,26 @@
+title = "Sort and filter a roster"
+horizon = "week"
+concepts = ["closures", "sorting", "structs", "higher-order"]
+issues = []
+
+contract = """
+struct Person { name: string, age: i32, city: string }
+
+func by_age(people: Vec<Person>) -> Vec<Person>
+func names_in(people: Vec<Person>, city: string) -> Vec<string>
+func average_age(people: Vec<Person>) -> f64
+func oldest_name(people: Vec<Person>) -> string?
+"""
+
+prompt = """
+Four small queries over a list of people.
+
+`by_age` returns them sorted youngest first; people of the same age keep their
+original order. `names_in` returns the names of everyone in a given city, in the
+order they appear. `average_age` is the mean, and 0.0 for an empty list.
+`oldest_name` is the name of the oldest, absent for an empty list; ties go to
+whoever appears first.
+
+The closure-taking collection methods (`map`, `filter`, `fold`, `sort_by`) are
+the natural fit for most of these.
+"""

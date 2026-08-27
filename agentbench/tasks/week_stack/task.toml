@@ -1,0 +1,28 @@
+title = "A generic stack"
+horizon = "week"
+concepts = ["generics", "extend", "optionals", "Vec"]
+issues = []
+
+contract = """
+struct Stack<T> { items: Vec<T> }
+
+extend Stack<T> {
+    func new() -> Stack<T>
+    func push(mutate self, value: T)
+    func pop(mutate self) -> T?
+    func peek(self) -> T?
+    func len(self) -> i64
+    func is_empty(self) -> bool
+}
+"""
+
+prompt = """
+A last-in-first-out stack over a Vec.
+
+`pop` removes and returns the top; `peek` returns it without removing it. Both
+give back the absent value when the stack is empty — no panic. `len` counts the
+items and `is_empty` is the obvious question.
+
+Methods go in an `extend` block, and `new` is a static one, called as
+`Stack.new()`.
+"""

@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func digit_sum(n: i64) -> i64 {
+    mut rest = if n < 0 { -n } else { n }
+    mut total: i64 = 0
+    while rest > 0 {
+        total = total + rest % 10
+        rest = rest / 10
+    }
+    return total
+}
+
+func reverse_digits(n: i64) -> i64 {
+    let negative = n < 0
+    mut rest = if negative { -n } else { n }
+    mut out: i64 = 0
+    while rest > 0 {
+        out = out * 10 + rest % 10
+        rest = rest / 10
+    }
+    return if negative { -out } else { out }
+}
+
+func is_palindrome(n: i64) -> bool {
+    if n < 0 { return false }
+    return reverse_digits(n) == n
+}

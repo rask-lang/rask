@@ -1,0 +1,19 @@
+title = "Word frequencies from a line of text"
+horizon = "day"
+concepts = ["Map", "strings", "loops"]
+issues = []
+
+contract = """
+func word_frequency(text: string) -> Map<string, i64>
+func most_common(text: string) -> string
+"""
+
+prompt = """
+Count how often each word appears in a piece of text.
+
+Split on whitespace, lowercase every word, and count. `word_frequency` returns
+the counts. `most_common` returns the word with the highest count; when two
+words tie, return the one that is alphabetically first, so the answer doesn't
+depend on Map iteration order. Empty text gives an empty map and an empty
+string.
+"""

@@ -39,6 +39,8 @@ Percentages are rough coverage vs spec.
 
 ## Tooling
 
+- [ ] **Grow the agent benchmark** — `agentbench/` exists and scores 19 tasks (7 day, 7 week, 5 month) with `tests/agentbench_gate.sh` keeping the references honest. What it still needs: a wider task set (nothing yet exercises concurrency, `with` blocks, Rack+Link, or the encoding path), a stored baseline so a run can be compared against the last one instead of read in isolation, and a second axis measuring the model with the compiler's docs available rather than only the language card. See `agentbench/README.md`.
+
 - [ ] **`rask annotate` (tool.annotate)** — materialize ghost text for diffs/review; spec proposed, nothing implemented. Cheapest first slice: effect labels — `Effects::label()` in rask-effects already renders the ghost strings and has zero callers. Command shape precedent: `rask unsafe --json`.
 
 ## Design questions
