@@ -3904,7 +3904,7 @@ fn try_inside_ensure_is_rejected() {
     // `break` and never looked at a match guard, so two of these compiled clean
     // and blew up in codegen. A `contains` still passes with that hole in it.
     assert_eq!(
-        output.matches("E0844").count(), 4,
+        output.matches("E0845").count(), 4,
         "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
         output,
     );
