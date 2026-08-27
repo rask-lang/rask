@@ -59,7 +59,7 @@ The other four nothing caught:
   stdlib names need importing. A low solve rate would have read as a language-usability
   result. The guide says it now, in the Modules section and as common mistake 15.
 
-Merged so far: #987, #988, #989, #995. Left: #991, #1003, #1004, then the integration branch.
+Merged so far: #987, #988, #989, #995, #1003. Left: #991, #1004, then the integration branch.
 
 **The lanes are still moving.** Between the first integration pass and the second, five of
 seven branches gained commits and one opened its PR; between the second and third, five gained
