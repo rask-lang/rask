@@ -2506,6 +2506,21 @@ fn error_index_types() {
 }
 
 #[test]
+fn error_comptime_field_name_that_is_not_a_field() {
+    // #930: `p.("nope")` is a field access with the name in quotes, so an
+    // unknown name is E0312 at check time, same as `p.nope`. It has to be
+    // caught here: field lowering answers "field 0" for a name it can't find,
+    // so while this went unchecked `p.("nope")` printed the first field.
+    let (failed, out) = compile_error_output("comptime_field_name.rk");
+    assert!(failed, "should reject a comptime field name that names no field");
+    assert!(
+        out.contains("E0312") && out.contains("nope"),
+        "should fail on the unknown field, not something else:\n{}",
+        out
+    );
+}
+
+#[test]
 fn error_linear_containers() {
     // RC1/RC3: Vec/Map can't hold linear elements (@resource, transitively
     // linear, or optionals/tuples built from them). Covers every entry route:

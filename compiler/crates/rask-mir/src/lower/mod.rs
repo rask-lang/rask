@@ -1591,6 +1591,10 @@ pub struct MirLowerer<'a> {
     /// value — `field.name`/`value.(field.name)` splice this directly instead
     /// of going through the normal local/struct-layout lookup (CT48/CT49).
     comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
+    /// Bindings in this body whose initializer folded to a compile-time string.
+    /// `value.(name)` reads them so a field name can be given a name of its own
+    /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
+    comptime_strings: HashMap<String, String>,
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for
@@ -3244,6 +3248,7 @@ impl<'a> MirLowerer<'a> {
             catch_frames: Vec::new(),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
+            comptime_strings: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
