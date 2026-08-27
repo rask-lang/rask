@@ -6,7 +6,7 @@ planning off it — the last three times this document went wrong, it was becaus
 outlived its evidence.
 
 ```
-tests/differential.sh      342 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
+tests/differential.sh      343 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
 tests/prototypes_gate.sh   13 agree, 0 untracked
@@ -59,8 +59,7 @@ The other four nothing caught:
   stdlib names need importing. A low solve rate would have read as a language-usability
   result. The guide says it now, in the Modules section and as common mistake 15.
 
-Suggested merge order: #988, #991, #995, #1003, #1004 in any order, then #989, then the
-integration branch. #987 is already in main.
+Merged so far: #987, #988, #989, #995. Left: #991, #1003, #1004, then the integration branch.
 
 **The lanes are still moving.** Between the first integration pass and the second, five of
 seven branches gained commits and one opened its PR; between the second and third, five gained
