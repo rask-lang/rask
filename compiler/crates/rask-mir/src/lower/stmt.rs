@@ -775,10 +775,18 @@ impl<'a> MirLowerer<'a> {
                                 }));
                             }
                         } else {
-                            // Vec/Map: dispatch through runtime
+                            // A map key is not a position. `Vec_set` on a map
+                            // reached the native runtime as `rask_vec_set`,
+                            // which takes arg 1 as an integer index — so
+                            // `m["a"] = 1` used the key's address as the index
+                            // and panicked with `index is 140728023345216 but
+                            // length is 8`. The interpreter accepts a map
+                            // receiver for `Vec_set`, which is why only native
+                            // failed.
+                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::internal("Vec_set".to_string()),
+                                func: FunctionRef::internal(setter.to_string()),
                                 args: vec![obj_op, idx_op, val_op],
                             }));
                         }

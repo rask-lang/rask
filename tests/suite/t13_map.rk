@@ -50,3 +50,39 @@ test "map string values" {
 }
 
 func main() {}
+
+// A map key is not a position. Index-assign lowered to `Vec_set` for every
+// container, so natively `m["a"] = 1` handed the key's address to the Vec
+// element store and panicked with "index is 140728023345216 but length is 8".
+// The interpreter accepts a map receiver there, so only native broke — found
+// by agentbench, where a model wrote the counting loop below.
+test "map index assign inserts a new key" {
+    mut m = Map.new()
+    m["a"] = 1
+    m["b"] = 2
+    assert m.len() == 2
+    assert m["a"] == 1
+    assert m["b"] == 2
+}
+
+test "map index assign overwrites an existing key" {
+    mut m = Map.new()
+    m.insert("k", 1)
+    m["k"] = 9
+    assert m.len() == 1
+    assert m["k"] == 9
+}
+
+test "map index assign counts" {
+    let words = ["a", "b", "a"]
+    mut counts: Map<string, i64> = Map.new()
+    for w in words {
+        if counts.contains_key(w) {
+            counts[w] = counts[w] + 1i64
+        } else {
+            counts[w] = 1i64
+        }
+    }
+    assert counts["a"] == 2i64
+    assert counts["b"] == 1i64
+}
