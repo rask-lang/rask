@@ -4672,6 +4672,31 @@ func main() {
 }
 
 #[test]
+fn interp_a_module_import_does_not_bring_its_types_in_bare() {
+    // The other half of the same rule. Registering a module's types unqualified
+    // also reserved them: `import http` took all nine of http's names, so a
+    // program with its own `Response` was told "already in scope from `http`"
+    // for a name it never asked for — and adding a type to a stdlib module broke
+    // every program that had one by that name.
+    let out = interp_output(r#"
+import http
+
+func main() {
+    let r = Response.ok("x")
+    println("status={r.status}")
+}
+"#);
+    assert!(
+        out.contains("`Response` is not in scope"),
+        "a module import must not hand over its type names: {}", out,
+    );
+    assert!(
+        out.contains("import http.Response"),
+        "and the fix should name the import that would: {}", out,
+    );
+}
+
+#[test]
 fn interp_single_member_import_covers_every_exported_type() {
     // `import http.Response` used to be silently ignored — the single-member
     // table only knew about time/path/random.
