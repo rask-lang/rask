@@ -481,6 +481,21 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
+    /// Whether a `!` operand is a `T or E` rather than a `T?`. Decides which
+    /// panic message the runtime prints: an error branch that got thrown away
+    /// reads nothing like an absent value, and both used to say "None".
+    ///
+    /// A type it can't read counts as an optional — that's the far commoner
+    /// form, and it is what both backends said before either distinguished.
+    pub(super) fn forced_operand_was_result(&self, operand: &Expr) -> bool {
+        // A `T?` reaches the checker as a `Result` whose error side is `none`,
+        // so the error side is what tells the two apart.
+        matches!(
+            self.ctx.lookup_raw_type(operand.id),
+            Some(crate::lower::Type::Result { err, .. }) if **err != crate::lower::Type::None
+        )
+    }
+
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
             MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
@@ -2922,10 +2937,14 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(panic_block);
 
+                // The message differs by what went wrong: nothing was there, or
+                // a failure got thrown away. Only the operand's type knows.
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::internal("panic_unwrap".to_string()),
-                    args: vec![],
+                    args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
+                        self.forced_operand_was_result(inner) as i64,
+                    ))],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
@@ -3389,7 +3408,9 @@ impl<'a> MirLowerer<'a> {
                 if bindings.len() == 1 {
                     let binding = &bindings[0];
                     if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
-                        let is_shared_access = (method == "read" || method == "write") && call_args.is_empty();
+                        let is_shared_access =
+                            matches!(method.as_str(), "read" | "write" | "staged")
+                            && call_args.is_empty();
                         if is_shared_access {
                             // Check if the object type is Shared
                             let obj_raw_type = self.ctx.lookup_raw_type(object.id);
@@ -3412,10 +3433,14 @@ impl<'a> MirLowerer<'a> {
                             if is_shared {
                                 // Which lock the block takes is the strategy's
                                 // business (SH5) — the verb only says read or
-                                // write. A `Local` box takes none.
-                                let syms = self
-                                    .shared_strategy(object)
-                                    .with_syms(method == "write");
+                                // write. A `Local` box takes none. `staged` takes
+                                // the exclusive lock either way and binds a copy.
+                                let strategy = self.shared_strategy(object);
+                                let syms = if method == "staged" {
+                                    strategy.staged_syms()
+                                } else {
+                                    strategy.with_syms(method == "write")
+                                };
                                 return self.lower_box_with_block(object, &binding.name, body, &syms);
                             }
                         }
@@ -7693,7 +7718,9 @@ impl<'a> MirLowerer<'a> {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("panic_unwrap".to_string()),
-                args: vec![],
+                args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
+                    self.forced_operand_was_result(object) as i64,
+                ))],
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 

@@ -126,6 +126,18 @@ impl TypeChecker {
         // ER3/ER4: validate every `T or E` that appears in the return type.
         self.validate_result_types_in(&ret_ty, f.span);
         self.current_return_type = Some(ret_ty);
+        // `@allow(name)` on the function suppresses that warning inside it.
+        let old_allowed = std::mem::replace(
+            &mut self.allowed_warnings,
+            f.attrs
+                .iter()
+                .filter_map(|a| {
+                    a.strip_prefix("allow(")
+                        .and_then(|r| r.strip_suffix(')'))
+                        .map(str::to_string)
+                })
+                .collect(),
+        );
 
         // ER20: Save outer accumulation state and detect if we should accumulate
         let old_accumulate = self.accumulate_errors;
@@ -354,6 +366,7 @@ impl TypeChecker {
 
         self.pop_scope();
         self.current_return_type = None;
+        self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
         self.in_unsafe = was_unsafe;
 

@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct RouteErr9 { why: string }
+extend RouteErr9 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+func fetch() -> i64 or RouteErr9 {
+    return RouteErr9 { why: "no route" }
+}
+func main() {
+    println(fetch()!.to_string())
+}

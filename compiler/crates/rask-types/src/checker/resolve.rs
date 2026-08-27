@@ -2354,6 +2354,11 @@ impl TypeChecker {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
             }
+            // Shared<T>.staged() -> T  (ST1: a working copy under the
+            // exclusive lock, committed as one move on any non-panic exit)
+            ("Shared", "staged") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();

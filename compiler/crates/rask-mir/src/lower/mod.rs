@@ -1507,6 +1507,14 @@ pub struct MirLowerer<'a> {
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
+    /// Names this function reassigns, anywhere in its body — an `=` target, or
+    /// an argument passed `mutate`/`own`/`deleting`, or a `take <place>`.
+    ///
+    /// Only the ensure-hook capture decision reads this (see
+    /// `scalars_frozen_after_here`). A name that is never reassigned holds the
+    /// same value at panic time as when the ensure was scheduled, which is what
+    /// makes snapshotting a scalar into the hook's env exact instead of stale.
+    reassigned_names: std::collections::HashSet<String>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
@@ -2709,6 +2717,206 @@ impl<'a> MirLowerer<'a> {
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
     /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
     /// 8-byte env slot).
+    /// Collect every name this body reassigns. Walks closure and spawn bodies
+    /// too: a closure writing an outer name reassigns it just the same.
+    pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, &mut out);
+        }
+        out
+    }
+
+    fn note_place(place: &Expr, out: &mut std::collections::HashSet<String>) {
+        // The root of the place is what gets rebound. `s.f = 1` mutates through
+        // `s` without changing what `s` points at, but counting it costs only
+        // precision, and precision here only ever means "hook not reified".
+        let mut cur = place;
+        loop {
+            match &cur.kind {
+                ExprKind::Ident(name) => {
+                    out.insert(name.clone());
+                    return;
+                }
+                ExprKind::Field { object, .. }
+                | ExprKind::OptionalField { object, .. }
+                | ExprKind::Index { object, .. }
+                | ExprKind::DynamicField { object, .. } => cur = object,
+                _ => return,
+            }
+        }
+    }
+
+    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+        use rask_ast::stmt::StmtKind as SK;
+        match &stmt.kind {
+            SK::Assign { target, value, .. } => {
+                Self::note_place(target, out);
+                Self::scan_reassigned_expr(value, out);
+            }
+            SK::Let { init, .. } | SK::Mut { init, .. } => Self::scan_reassigned_expr(init, out),
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } | SK::LetStruct { init, .. } => {
+                Self::scan_reassigned_expr(init, out)
+            }
+            SK::Expr(e) | SK::Return(Some(e)) => Self::scan_reassigned_expr(e, out),
+            SK::Break { value: Some(e), .. } => Self::scan_reassigned_expr(e, out),
+            SK::While { cond, body, .. } => {
+                Self::scan_reassigned_expr(cond, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::WhileLet { expr, body, .. } => {
+                Self::scan_reassigned_expr(expr, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::For { iter, body, .. } | SK::ComptimeFor { iter, body, .. } => {
+                Self::scan_reassigned_expr(iter, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => Self::scan_reassigned_body(body, out),
+            SK::Ensure { body, else_handler } => {
+                Self::scan_reassigned_body(body, out);
+                if let Some((_, handler)) = else_handler {
+                    Self::scan_reassigned_body(handler, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_reassigned_body(body: &[rask_ast::stmt::Stmt], out: &mut std::collections::HashSet<String>) {
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, out);
+        }
+    }
+
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<rask_ast::stmt::Stmt>> = Vec::new();
+        match &expr.kind {
+            // A callee that can write its argument rebinds the caller's local.
+            ExprKind::Call { func, args } => {
+                kids.push(func);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                kids.push(object);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            // OPT32: `take <place>` leaves `none` behind — a write to the place.
+            ExprKind::Take { place } => {
+                Self::note_place(place, out);
+                kids.push(place);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                kids.push(left);
+                kids.push(right);
+            }
+            ExprKind::Unary { operand, .. } => kids.push(operand),
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => kids.push(object),
+            ExprKind::IsPresent { expr: inner, .. }
+            | ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Convert { expr: inner, .. }
+            | ExprKind::IsPattern { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => kids.push(inner),
+            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
+                kids.push(inner);
+                kids.push(else_branch);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                kids.push(object);
+                kids.push(field_expr);
+            }
+            ExprKind::Index { object, index } => {
+                kids.push(object);
+                kids.push(index);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                kids.push(value);
+                kids.push(default);
+            }
+            ExprKind::Catch { value, clause } => {
+                kids.push(value);
+                kids.push(&clause.body);
+            }
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
+                kids.push(cond);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                kids.push(scrut);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                kids.push(scrutinee);
+                kids.extend(arms.iter().map(|a| a.body.as_ref()));
+            }
+            ExprKind::Range { start, end, .. } => {
+                kids.extend(start.iter().map(|b| b.as_ref()));
+                kids.extend(end.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::StructLit { fields, .. } => kids.extend(fields.iter().map(|f| &f.value)),
+            ExprKind::Array(items) | ExprKind::Tuple(items) => kids.extend(items.iter()),
+            ExprKind::ArrayRepeat { value, count } => {
+                kids.push(value);
+                kids.push(count);
+            }
+            ExprKind::WithAs { bindings, body } => {
+                kids.extend(bindings.iter().map(|b| &b.source));
+                bodies.push(body);
+            }
+            ExprKind::Block(body)
+            | ExprKind::Loop { body, .. }
+            | ExprKind::UsingBlock { body, .. }
+            | ExprKind::Unsafe { body }
+            | ExprKind::Comptime { body }
+            | ExprKind::Spawn { body } => bodies.push(body),
+            ExprKind::Closure { body, .. } => kids.push(body),
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                kids.push(condition);
+                kids.extend(message.iter().map(|m| m.as_ref()));
+            }
+            ExprKind::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                for seg in segments {
+                    if let StringSegment::Expr(e, _) = seg {
+                        kids.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for k in kids {
+            Self::scan_reassigned_expr(k, out);
+        }
+        for b in bodies {
+            Self::scan_reassigned_body(b, out);
+        }
+    }
+
+    /// Nothing in this function reassigns any of these names, so the value an
+    /// ensure hook snapshots when the ensure is scheduled is the value the
+    /// cleanup would read during unwind.
+    ///
+    /// Coarser than it could be — a write *before* the ensure is harmless, and
+    /// this counts it — but the direction is safe: an unclear case keeps the
+    /// ensure inline-only, which is what it was before hooks existed.
+    fn scalars_frozen_after_here(&self, names: &[&String]) -> bool {
+        names.iter().all(|n| !self.reassigned_names.contains(n.as_str()))
+    }
+
     fn is_ref_capturable(ty: &MirType) -> bool {
         matches!(
             ty,
@@ -2726,39 +2934,57 @@ impl<'a> MirLowerer<'a> {
     /// scope unwinds on a native panic (ctrl.panic/U1). Returns
     /// `(thunk_name, captures)` on success; `None` keeps inline-only behavior.
     ///
-    /// Scoped first cut: only a single-expression body whose free variables are
-    /// all aggregate locals (captured by reference — their MIR value is the
-    /// address). The optional `resource` id is captured by value so the thunk
-    /// can skip a cleanup whose receiver was already consumed (C1). Everything
-    /// else (else-handlers, scalar captures, multi-statement bodies) returns
-    /// `None` — the ensure simply won't run on a native panic, never miscompiles.
+    /// The body may be any statement list, with or without an `else |e|`
+    /// handler — both are lowered into the thunk the same way the inline cleanup
+    /// block lowers them, through `lower_ensure_else_handler`.
+    ///
+    /// Free variables are captured by reference where the MIR value already *is*
+    /// an address (structs, enums, arrays, tuples, strings, pointers, handles),
+    /// so cleanup sees mutations made before the panic. A scalar has no such
+    /// address: its value lives in an SSA variable, so all the thunk could
+    /// capture is a snapshot taken when the ensure was scheduled. Printing a
+    /// stale number during unwind is worse than not printing, so a body that
+    /// reads a scalar the function writes again returns `None` and stays
+    /// inline-only. A scalar nothing writes after the ensure is scheduled is
+    /// captured by value — the snapshot is the live value by definition.
+    ///
+    /// The optional `resource` id is captured by value so the thunk can skip a
+    /// cleanup whose receiver was already consumed (C1).
     fn try_reify_ensure_hook(
         &mut self,
         body: &[rask_ast::stmt::Stmt],
         else_handler: &Option<(String, Vec<rask_ast::stmt::Stmt>)>,
         resource: Option<LocalId>,
     ) -> Option<(String, Vec<crate::stmt::ClosureCapture>)> {
-        use rask_ast::stmt::StmtKind;
-
-        if else_handler.is_some() {
-            return None;
-        }
-        let expr = match body {
-            [only] => match &only.kind {
-                StmtKind::Expr(e) => e,
-                _ => return None,
-            },
-            _ => return None,
-        };
-
-        // Free variables must all be aggregates (captured by reference).
-        let free = self.collect_free_vars(expr, &[]);
-        if free.iter().any(|(_, _, ty)| !Self::is_ref_capturable(ty)) {
+        if body.is_empty() {
             return None;
         }
 
-        // Ordered captures: aggregate free vars (by ref), then the resource id
-        // (by value) when present.
+        // Free variables of the body plus, if there is one, the handler body
+        // with its error parameter bound.
+        let mut free = self.collect_free_vars_block(body);
+        if let Some((param_name, handler_body)) = else_handler {
+            let mut bound = std::collections::HashSet::new();
+            bound.insert(param_name.clone());
+            let mut seen: std::collections::HashSet<String> =
+                free.iter().map(|(n, _, _)| n.clone()).collect();
+            self.walk_free_vars_block(handler_body, &bound, &mut seen, &mut free);
+        }
+
+        // A scalar the body reads can only be snapshotted (see the doc comment).
+        // Sound only while nothing writes it after the ensure is scheduled.
+        let scalar_reads: Vec<&String> = free
+            .iter()
+            .filter(|(_, _, ty)| !Self::is_ref_capturable(ty))
+            .map(|(name, _, _)| name)
+            .collect();
+        if !scalar_reads.is_empty() && !self.scalars_frozen_after_here(&scalar_reads) {
+            return None;
+        }
+
+        // Ordered captures: free vars first, then the resource id when present.
+        // Aggregates go by reference (their MIR value is the address); scalars
+        // by value.
         struct Cap {
             outer: LocalId,
             name: String,
@@ -2771,7 +2997,7 @@ impl<'a> MirLowerer<'a> {
                 outer: *id,
                 name: name.clone(),
                 ty: ty.clone(),
-                by_ref: true,
+                by_ref: Self::is_ref_capturable(ty),
             })
             .collect();
         let res_index = resource.map(|res| {
@@ -2827,21 +3053,36 @@ impl<'a> MirLowerer<'a> {
             thunk_builder.switch_to_block(body_block);
         }
 
-        // Lower the body expression into the thunk (reuses method resolution).
-        // The pending module consts are saved along with the locals: the thunk
-        // is its own MIR function and materialises its own copy of any const it
-        // touches, but that must not consume the outer function's entry — the
-        // cleanup path lowers this same expression again, and with the entry
-        // gone the reference compiled to a call named after the const (#403).
+        // Lower the body into the thunk (reuses method resolution). The pending
+        // module consts are saved along with the locals: the thunk is its own MIR
+        // function and materialises its own copy of any const it touches, but that
+        // must not consume the outer function's entry — the cleanup path lowers
+        // this same body again, and with the entry gone the reference compiled to
+        // a call named after the const (#403).
         let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
         let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
         let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
-        let body_result = self.lower_expr(expr);
+        let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+        // The thunk's own bindings must not leave their metadata behind: a `let`
+        // inside the body would otherwise mark an outer `mut` of the same name
+        // immutable, and a later ensure would snapshot it.
+        let saved_meta = self.local_meta.clone();
+        let body_result = (|| -> Result<(), LoweringError> {
+            for s in body {
+                self.lower_stmt(s)?;
+            }
+            if let Some((param_name, handler_body)) = else_handler {
+                self.lower_ensure_else_handler(param_name, handler_body)?;
+            }
+            Ok(())
+        })();
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
+        self.ensure_stack = saved_ensure_stack;
+        self.local_meta = saved_meta;
 
         if body_result.is_err() {
             return None;
@@ -3231,6 +3472,7 @@ impl<'a> MirLowerer<'a> {
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
+            reassigned_names: std::collections::HashSet::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -3250,6 +3492,11 @@ impl<'a> MirLowerer<'a> {
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
         };
+
+        // Which names this body reassigns (see `reassigned_names`). Scanned once
+        // here rather than tracked as lowering goes, because the question is
+        // about statements the ensure hasn't reached yet.
+        lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
         let self_type_name: Option<String> = fn_decl.params.iter()

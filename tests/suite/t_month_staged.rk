@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// conc.sync/ST1-ST4: staged access. `with box.staged() as v { … }` binds a
+// working copy under the exclusive lock and commits it as one move when the
+// block exits.
+//
+// ST3 (a panic discards the copy) isn't here: a test that panics fails, so the
+// unwind half lives in rask-cli's compile_run harness, which runs a program and
+// checks its exit code. What is testable here is every exit that *does* commit,
+// which is ST2's whole list — and the commit is the part a wrong implementation
+// gets wrong silently.
+
+import sync.Shared
+import sync.Mutex
+import sync.Readers
+
+struct Ledger9 {
+    checking: i64
+    savings: i64
+}
+
+const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
+const POT: Shared<Ledger9, Readers> = Shared.new(Ledger9 { checking: 50, savings: 5 })
+
+func transfer(amount: i64) {
+    with BOOKS.staged() as b {
+        b.checking = b.checking - amount
+        b.savings = b.savings + amount
+    }
+}
+
+func transfer_then_return(amount: i64) -> i64 {
+    with BOOKS.staged() as b {
+        b.checking = b.checking - amount
+        b.savings = b.savings + amount
+        return b.savings
+    }
+    return -1
+}
+
+func drain_in_loop(times: i64) -> i64 {
+    mut moved = 0
+    mut i = 0
+    while i < times {
+        with BOOKS.staged() as b {
+            b.checking = b.checking - 1
+            b.savings = b.savings + 1
+            moved = moved + 1
+            if i == 1 {
+                i = i + 1
+                continue
+            }
+        }
+        i = i + 1
+    }
+    return moved
+}
+
+test "ST2: a clean exit commits both fields as one move" {
+    transfer(10)
+    with BOOKS.read() as b {
+        assert b.checking == 90
+        assert b.savings == 10
+    }
+}
+
+test "ST2: a `return` out of the block still commits" {
+    let got = transfer_then_return(15)
+    assert got == 25
+    with BOOKS.read() as b {
+        assert b.checking == 75
+        assert b.savings == 25
+    }
+}
+
+test "ST2: `continue` out of the block commits that iteration" {
+    let moved = drain_in_loop(3)
+    assert moved == 3
+    with BOOKS.read() as b {
+        assert b.checking == 72
+        assert b.savings == 28
+    }
+}
+
+test "ST1: the Readers strategy stages the same way" {
+    with POT.staged() as p {
+        p.checking = p.checking - 5
+        p.savings = p.savings + 5
+    }
+    with POT.read() as p {
+        assert p.checking == 45
+        assert p.savings == 10
+    }
+}
+
+test "ST1: the copy starts as the committed value, not a blank" {
+    with POT.staged() as p {
+        assert p.checking == 45
+        assert p.savings == 10
+    }
+}
+
+test "a staged block reads back its own writes inside the block" {
+    with POT.staged() as p {
+        p.checking = 200
+        assert p.checking == 200
+    }
+    with POT.read() as p {
+        assert p.checking == 200
+    }
+}

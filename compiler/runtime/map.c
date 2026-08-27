@@ -209,7 +209,10 @@ static void map_check_no_borrows(const RaskMap *m, const char *op) {
 void *rask_map_borrow_elem(RaskMap *m, const void *key) {
     void *slot = rask_map_get(m, key);
     if (!slot) {
-        rask_panic("key not found");
+        // Same failure as `rask_map_get_unwrap` below — one key, absent, reached
+        // by `m[k]` — so the same words. Two spellings of one panic diverge from
+        // the interpreter no matter which one it happens to match (ctrl.panic/F3).
+        rask_panic("key not found in map");
     }
     m->borrows++;
     return slot;
@@ -359,7 +362,9 @@ void *rask_map_get(const RaskMap *m, const void *key) {
 void *rask_map_get_unwrap(const RaskMap *m, const void *key) {
     void *result = rask_map_get(m, key);
     if (!result) {
-        rask_panic("Map.get().unwrap(): key not found");
+        // Named a method Rask doesn't have — the stdlib's Map has `get`
+        // returning `V?`, and `m[k]` is what the user wrote to get here.
+        rask_panic("key not found in map");
     }
     return result;
 }

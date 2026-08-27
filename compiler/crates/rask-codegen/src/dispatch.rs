@@ -95,6 +95,18 @@ pub enum RetAdapt {
     /// otherwise `some(value)`. Distinct from NegErr because Option and Result
     /// put their payloads at different offsets.
     NegNone,
+    /// The return is a pointer to a sync box's payload (or, for staged access,
+    /// to the working copy standing in for it). A payload that lives in its own
+    /// storage binds the destination straight to that pointer, so the block's
+    /// field writes land in the box rather than in a copied stack slot; anything
+    /// word-sized takes one load. Which of the two is the destination type's
+    /// business, so the entry only has to say "this is a payload pointer".
+    ///
+    /// Was a hardcoded list of four acquire names in `builder.rs`. Adding the
+    /// staged pair to it was the obvious move and the wrong one — the fact
+    /// belongs to the entry, and a name missing from a list four deep is how
+    /// this went wrong the first time.
+    BoxPayloadPtr,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -1095,6 +1107,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
+        // ensures. Declared `@native` in stdlib/os.rk with no entry here, so
+        // `os.exit(1)` reached codegen as "Function not found: os_exit" while
+        // the interpreter ran it — same shape as os_set_env before #855.
+        StdlibEntry::simple("os_exit", "rask_os_exit", &[types::I64], None, false),
         StdlibEntry::simple("os_env_vars", "rask_os_env_vars", &[], Some(types::I64), false),
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
@@ -1398,12 +1415,35 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // block decides for itself whether to load through it or alias it, so no
         // ret_adapt here. Separate MIR names keep the two uses from drifting; a
         // Cell has no lock, so there's no release counterpart.
-        StdlibEntry::simple("Cell_acquire", "rask_cell_get", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Cell_acquire", c_name: "rask_cell_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Cell_data", "rask_cell_get", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Shared_read_acquire", c_name: "rask_shared_read_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry {
+            mir_name: "Shared_write_acquire", c_name: "rask_shared_write_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Shared_data", "rask_shared_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),
+        // Staged access (conc.sync/ST1-ST3). The "release" of the triple is the
+        // commit; the discard is registered by the acquire and reached only from
+        // the runtime's unwind drain, so codegen never names it.
+        StdlibEntry {
+            mir_name: "Shared_staged_acquire", c_name: "rask_shared_staged_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry::simple("Shared_staged_data", "rask_shared_staged_data", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_staged_commit", "rask_shared_staged_commit", &[types::I64], None, false),
+        StdlibEntry::simple("Shared_staged_ptr", "rask_shared_staged_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_clone", "rask_shared_clone_i64", &[types::I64], Some(types::I64), false),
@@ -1416,8 +1456,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Mutex_acquire", "rask_mutex_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Mutex_acquire", c_name: "rask_mutex_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Mutex_release", "rask_mutex_release", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Mutex_staged_acquire", c_name: "rask_mutex_staged_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry::simple("Mutex_staged_data", "rask_mutex_staged_data", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Mutex_staged_commit", "rask_mutex_staged_commit", &[types::I64], None, false),
         StdlibEntry::simple("Mutex_data", "rask_mutex_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),

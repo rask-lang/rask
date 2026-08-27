@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func main() {
+    mut a: i32 = 1
+    mut s: i32 = 40
+    a = a << s
+}
