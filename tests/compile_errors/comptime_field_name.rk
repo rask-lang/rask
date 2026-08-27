@@ -26,6 +26,26 @@ func typo(b: Budget9) -> i64 {
     return b.("nope")
 }
 
+// A `comptime` block that doesn't finish, or finishes with something that
+// isn't a name, reports what actually happened. Telling someone who already
+// wrote a `comptime` block to write a `comptime` block is no help, which is
+// what the generic "has to be known at compile time" error did until the
+// evaluator's own error was allowed through.
+
+// ERROR: the block runs past the branch quota — say so, don't call it unknown.
+func over_quota(b: Budget9) -> i64 {
+    return b.(comptime {
+        mut s = ""
+        for i in 0..1500 { s = "spent" }
+        s
+    })
+}
+
+// ERROR: it finished, it just didn't produce a name.
+func not_a_name(b: Budget9) -> i64 {
+    return b.(comptime { 42 })
+}
+
 // THE FIX: name a field that exists. Both spellings the syntax allows work —
 // the literal, and a binding holding a compile-time string.
 func works(b: Budget9) -> i64 {

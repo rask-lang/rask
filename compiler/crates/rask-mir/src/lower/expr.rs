@@ -1997,7 +1997,7 @@ impl<'a> MirLowerer<'a> {
             // direct field access once `expr` is comptime-known. See
             // `comptime_field_name` for what counts as known.
             ExprKind::DynamicField { object, field_expr } => {
-                let Some(name) = self.comptime_field_name(field_expr) else {
+                let Some(name) = self.comptime_field_name(field_expr)? else {
                     return Err(LoweringError::InvalidConstruct(
                         "the field name in `value.(expr)` has to be known at compile time — \
                          write a string literal, a `comptime { … }` block, or a `comptime for` \
@@ -4078,30 +4078,56 @@ impl<'a> MirLowerer<'a> {
     /// of those, and a `comptime for` loop binding's string-valued FieldInfo
     /// members (`field.name`, `.serial_name`, `.type_name`).
     ///
-    /// `None` means "not comptime-known", which the caller turns into the
-    /// user-facing error. Only the loop-binding arm used to exist, so the
-    /// literal form — the one you write to try the feature out, needing neither
+    /// `Ok(None)` means "not one of these forms", which the caller turns into
+    /// the user-facing "has to be known at compile time" error. `Err` means it
+    /// *was* a `comptime` block and evaluating it went wrong — telling someone
+    /// who already wrote one to write one is no help, so that error carries the
+    /// reason instead. Only the loop-binding arm used to exist, so the literal
+    /// form — the one you write to try the feature out, needing neither
     /// `reflect` nor a loop — reached MIR unresolved and failed the build (#930).
-    pub(super) fn comptime_field_name(&self, expr: &Expr) -> Option<String> {
-        match &expr.kind {
+    pub(super) fn comptime_field_name(
+        &self,
+        expr: &Expr,
+    ) -> Result<Option<String>, LoweringError> {
+        Ok(match &expr.kind {
             ExprKind::String(s) => Some(s.clone()),
 
             // A name bound earlier in this body to a comptime-known string.
             ExprKind::Ident(name) => self.comptime_strings.get(name).cloned(),
 
             ExprKind::Comptime { body } => {
-                let interp_cell = self.ctx.comptime_interp.as_ref()?;
+                let Some(interp_cell) = self.ctx.comptime_interp.as_ref() else {
+                    return Ok(None);
+                };
                 let mut interp = interp_cell.borrow_mut();
                 match interp.eval_block_to_value(body) {
                     Ok(rask_comptime::ComptimeValue::String(s)) => Some(s),
-                    _ => None,
+                    // Evaluated fine, just not to a name.
+                    Ok(other) => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "a `comptime` block naming a field has to produce a string — \
+                             this one produced {}",
+                            other.type_name()
+                        )))
+                    }
+                    // Quota, overflow, a divide by zero — say which.
+                    Err(e) => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "the `comptime` block naming a field didn't finish: {}",
+                            e
+                        )))
+                    }
                 }
             }
 
             // `field.name` inside an unrolled `comptime for` (CT49).
             ExprKind::Field { object, field } => {
-                let ExprKind::Ident(name) = &object.kind else { return None };
-                let (_, fc) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)?;
+                let ExprKind::Ident(name) = &object.kind else { return Ok(None) };
+                let Some((_, fc)) =
+                    self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)
+                else {
+                    return Ok(None);
+                };
                 match field.as_str() {
                     "name" => Some(fc.name.clone()),
                     "serial_name" => Some(fc.serial_name.clone()),
@@ -4111,7 +4137,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             _ => None,
-        }
+        })
     }
 
     /// If expression lowering (spec L1).

@@ -68,8 +68,8 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
 /// Modules the compiler provides with no `stdlib/*.rk` file behind them.
 ///
 /// Everything else importable is a stub source, so this is the whole of the
-/// exception — and each of these three is answered by the compiler rather than
-/// by Rask code, which is why there's nothing to put in a file.
+/// exception — and each of these is answered by the compiler rather than by
+/// Rask code, which is why there's nothing to put in a file.
 const COMPILER_MODULES: &[&str] = &[
     // Environment variables — the checker answers `env.get` directly.
     "env",
@@ -80,14 +80,20 @@ const COMPILER_MODULES: &[&str] = &[
     // These two have a `stdlib/*.rk` file that isn't in the stub set, so the
     // name is importable but nothing in the file reaches the checker. Both were
     // tried in the stub set and taken back out: they describe traits the
-    // compiler provides rather than declares (`COMPILER_PROVIDED_TRAITS`), and
+    // compiler provides rather than declares (`COMPILER_PROVIDED_TRAITS`), so
     // parsing them gives `Displayable` a second definition whose `to_string`
-    // hides the inherent one, so `StringView.to_string()` stops resolving.
+    // hides the inherent one and `StringView.to_string()` stops resolving.
+    // That half of #990 is still open.
     //
-    // #990. (`reflect` was here for the same reason with a different cause —
-    // `reflect.fields<T>()` in a generic function mangled to `print_fields$_`
-    // with the call's `T` never bound. That was the reachability bug behind
-    // #931; with it fixed, `reflect` is an ordinary stub source again.)
+    // `reflect` used to be the third. It was here because parsing it made
+    // `reflect.fields<T>()` inside a generic function stop monomorphizing —
+    // `print_fields(Point{…})` mangled to `print_fields$_`. That turned out not
+    // to be about reflect at all: mono registered free functions as instance
+    // methods by splitting on the first underscore, so `print_fields` was filed
+    // as a `fields` method and swept up by an unresolved-receiver call to
+    // `reflect.fields<T>()`, carrying that call's type arguments. Fixed, so
+    // reflect.rk is a stub source now and its declarations reach the checker —
+    // which is what `f.name` needed a type from (#931).
     "fmt",
     "encoding",
 ];
