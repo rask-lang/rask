@@ -7,6 +7,7 @@ import random
 import thread.ThreadPool
 import memory.Pool
 import memory.Handle
+import random.Random
 
 // Trait for updatable components
 trait Updatable {

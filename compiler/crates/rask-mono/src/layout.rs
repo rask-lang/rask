@@ -302,7 +302,12 @@ fn is_typevar_name(name: &str) -> bool {
 
 /// Parse a field type string (from AST) to a Type for layout computation.
 pub(crate) fn parse_field_type(s: &str) -> Type {
-    let s = s.trim();
+    // `d: time.Duration` on a field. Left dotted it fell through to the unknown
+    // name at the bottom of `type_size_align`, and the field got pointer-sized
+    // room by default — which is right for `Duration` by luck and wrong for
+    // anything wider. Same helper the checker's parser uses, so the two can't
+    // disagree about what a module qualifier is.
+    let s = rask_stdlib::modules::strip_module_qualifier(s.trim());
 
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {

@@ -20,6 +20,7 @@ import memory.Handle
 import memory.Pool
 import sync.Shared
 import string.StringBuilder
+import json.JsonValue
 
 // ─── Semver ─────────────────────────────────────────────────────────
 

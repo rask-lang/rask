@@ -12,6 +12,7 @@
 
 import fs
 import io.IoError
+import fs.File
 
 func temp_path(tag: string) -> string {
     return "/tmp/rask-sweep-io-{tag}.txt"
