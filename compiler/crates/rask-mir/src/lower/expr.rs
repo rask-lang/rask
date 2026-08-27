@@ -21,10 +21,16 @@ use rask_ast::{
 
 /// Detect comparison patterns in assert conditions for smart failure messages.
 ///
-/// Returns `Some((left_expr, right_expr, op_str, is_string))` if the condition
-/// is a desugared comparison. After desugar: `a == b` → `a.eq(b)`,
+/// Returns `Some((left_expr, right_expr, op_str))` if the condition is a
+/// desugared comparison. After desugar: `a == b` → `a.eq(b)`,
 /// `a != b` → `!(a.eq(b))`, `a < b` → `a.lt(b)`, etc.
-fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str, bool)> {
+///
+/// Which fail helper the operands need is the caller's decision, made from the
+/// lowered types. This used to answer "is it a string?" here from the source
+/// shape — true only when one side was written as a literal — so `assert a == b`
+/// on two string variables took the i64 helper and printed the two `RaskStr`
+/// slot addresses (#897).
+fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str)> {
     match &condition.kind {
         // Desugared comparison: a.eq(b), a.lt(b), etc.
         ExprKind::MethodCall { object, method, args, .. } if args.len() == 1 => {
@@ -36,18 +42,13 @@ fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static
                 "ge" => ">=",
                 _ => return None,
             };
-            // Conservative: assume i64 unless one side is obviously a string literal
-            let is_string = matches!(&object.kind, ExprKind::String(_))
-                || matches!(&args[0].expr.kind, ExprKind::String(_));
-            Some((object.as_ref(), &args[0].expr, op_str, is_string))
+            Some((object.as_ref(), &args[0].expr, op_str))
         }
         // Desugared !=: !(a.eq(b))
         ExprKind::Unary { op: UnaryOp::Not, operand } => {
             if let ExprKind::MethodCall { object, method, args, .. } = &operand.kind {
                 if method == "eq" && args.len() == 1 {
-                    let is_string = matches!(&object.kind, ExprKind::String(_))
-                        || matches!(&args[0].expr.kind, ExprKind::String(_));
-                    return Some((object.as_ref(), &args[0].expr, "!=", is_string));
+                    return Some((object.as_ref(), &args[0].expr, "!="));
                 }
             }
             None
@@ -1460,8 +1461,18 @@ impl<'a> MirLowerer<'a> {
                     let (fail_fn, fail_args) = if is_string {
                         ("assert_eq_fail_str", vec![got_op, expected_op])
                     } else if is_float {
-                        let want = MirType::F64;
-                        ("assert_eq_fail_f64", vec![
+                        // f32 reports at its own width — widening to double
+                        // round-trips against the wrong one and spells out the
+                        // f32's exact binary value instead of `1.1`.
+                        let both_f32 = matches!(got_ty, MirType::F32)
+                            && matches!(expected_ty, MirType::F32);
+                        let want = if both_f32 { MirType::F32 } else { MirType::F64 };
+                        let name = if both_f32 {
+                            "assert_eq_fail_f32"
+                        } else {
+                            "assert_eq_fail_f64"
+                        };
+                        (name, vec![
                             self.widen_for_assert_helper(got_op, &got_ty, &want),
                             self.widen_for_assert_helper(expected_op, &expected_ty, &want),
                         ])
@@ -3686,7 +3697,7 @@ impl<'a> MirLowerer<'a> {
                     None
                 };
 
-                if let Some((left_expr, right_expr, op_str, is_string)) = cmp_info {
+                if let Some((left_expr, right_expr, op_str)) = cmp_info {
                     // Lower both sides first to capture their values + types
                     let (left_op, left_ty) = self.lower_expr(left_expr)?;
                     let (right_op, right_ty) = self.lower_expr(right_expr)?;
@@ -3716,8 +3727,21 @@ impl<'a> MirLowerer<'a> {
                     // Pick the right fail helper for the operand types so the
                     // Cranelift call signature matches: f64 args go to a f64
                     // helper, strings to the str helper, everything else i64.
+                    // Keyed off the lowered types, same as every classifier
+                    // below. Guessing from the source shape meant only a written
+                    // literal counted as a string, so two string variables went
+                    // to the i64 helper and reported their slot addresses (#897).
+                    let is_string = matches!(left_ty, MirType::String)
+                        || matches!(right_ty, MirType::String);
                     let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
                         || matches!(right_ty, MirType::F32 | MirType::F64);
+                    // Both sides f32 keeps the operands at that width. The
+                    // shortest decimal that reads back as the same value depends
+                    // on the width you check against, so an f32 widened to
+                    // double reports 1.100000023841858 for 1.1 — a number no
+                    // `println` of the same value would ever print.
+                    let is_f32 = matches!(left_ty, MirType::F32)
+                        && matches!(right_ty, MirType::F32);
                     let is_char = matches!(left_ty, MirType::Char)
                         && matches!(right_ty, MirType::Char);
                     // A 128-bit comparison gets its own helper: narrowing the
@@ -3736,6 +3760,8 @@ impl<'a> MirLowerer<'a> {
                         || matches!(right_ty, MirType::Option(_));
                     let fail_fn = if is_string {
                         "assert_fail_cmp_str"
+                    } else if is_f32 {
+                        "assert_fail_cmp_f32"
                     } else if is_float {
                         "assert_fail_cmp_f64"
                     } else if is_char {
@@ -3754,7 +3780,9 @@ impl<'a> MirLowerer<'a> {
                     let (left_op, right_op) = if is_string || is_optional {
                         (left_op, right_op)
                     } else {
-                        let want = if is_float {
+                        let want = if is_f32 {
+                            MirType::F32
+                        } else if is_float {
                             MirType::F64
                         } else if is_u128 {
                             MirType::U128

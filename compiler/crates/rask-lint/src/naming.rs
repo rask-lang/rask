@@ -5,6 +5,7 @@
 //! from_* → returns Self, into_* → takes self, is_* → returns bool, etc.
 
 use rask_ast::decl::*;
+use rask_ast::type_str;
 
 use crate::types::*;
 use crate::util;
@@ -331,13 +332,13 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if !ret.contains(" or ") {
+            if !type_str::is_result(ret) {
                 diags.push(make_diagnostic(
                     "naming/try",
                     Severity::Error,
                     format!(
                         "`{}` must return a result type (`T or E`), found `{}`",
-                        ctx.method.name, ret
+                        ctx.method.name, type_str::to_source(ret)
                     ),
                     "change return type to `T or E`".to_string(),
                     source,
@@ -354,13 +355,13 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
-                if !ret.contains(" or ") {
+                if !type_str::is_result(ret) {
                     diags.push(make_diagnostic(
                         "naming/try",
                         Severity::Error,
                         format!(
                             "`{}` must return a result type (`T or E`), found `{}`",
-                            f.name, ret
+                            f.name, type_str::to_source(ret)
                         ),
                         "change return type to `T or E`".to_string(),
                         source,
@@ -385,13 +386,13 @@ pub fn check_or_suffix(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if ret.contains(" or ") || ret.ends_with('?') {
+            if type_str::is_result(ret) || type_str::is_optional(ret) {
                 diags.push(make_diagnostic(
                     "naming/or_suffix",
                     Severity::Warning,
                     format!(
                         "`{}` should return unwrapped `T`, found `{}`",
-                        ctx.method.name, ret
+                        ctx.method.name, type_str::to_source(ret)
                     ),
                     "return the unwrapped value type — `*_or` provides a fallback".to_string(),
                     source,
@@ -401,4 +402,79 @@ pub fn check_or_suffix(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
         }
     }
     diags
+}
+
+// ─── naming/try ────────────────────────────────────────────
+// The rule reads a *rendered* type string, and the parser renders `T or E` in
+// a canonical form the source never uses: `Result<T, E>`. Asking whether that
+// string contains `" or "` is asking about the surface syntax, which no
+// rendered result type has — so the rule rejected every correctly written
+// `try_*` in the language, the stdlib's own included (#893).
+#[cfg(test)]
+mod try_rule_tests {
+    use crate::types::{LintOpts, Severity};
+
+    fn try_errors(src: &str) -> Vec<String> {
+        crate::lint(src, "t.rk", LintOpts::default())
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.rule == "naming/try" && d.severity == Severity::Error)
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn accepts_a_result_return_written_in_rask() {
+        // Each of these is `T or E`, so each is what the rule asks for. All four
+        // were reported as violations before: `void` renders as `()`, and a
+        // nested generic error type has to survive the split.
+        let src = r#"
+struct Queue9<T> { }
+
+extend Queue9<T> {
+    public func try_send(self, value: T) -> void or SendError9 {}
+    public func try_receive(self) -> T or ReceiveError9 {}
+    public func try_push(mutate self, value: T) -> void or GrowError9<T> {}
+    public func try_swap(mutate self, value: T) -> Option<T> or GrowError9<T> {}
+}
+
+func try_parse(s: string) -> i64 or ParseError9 {
+    return 0
+}
+"#;
+        assert_eq!(try_errors(src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn still_rejects_a_non_result_return() {
+        let src = r#"
+struct Pool9<T> { }
+
+extend Pool9<T> {
+    public func try_insert(mutate self, value: T) -> Handle9<T>? {}
+    public func try_peek(self) -> i64 {}
+}
+"#;
+        let errs = try_errors(src);
+        assert_eq!(errs.len(), 2, "both should still be flagged: {:?}", errs);
+    }
+
+    #[test]
+    fn names_the_type_the_way_it_was_written() {
+        // Telling someone to write `T or E` while printing `Result<(), E>` names
+        // a spelling Rask doesn't have.
+        let src = r#"
+struct S9 { }
+extend S9 {
+    public func try_thing(self) -> Handle9<i64>? {}
+}
+"#;
+        let errs = try_errors(src);
+        assert_eq!(errs.len(), 1);
+        assert!(
+            !errs[0].contains("Result<"),
+            "message should use Rask syntax, not the internal rendering: {}",
+            errs[0]
+        );
+    }
 }
