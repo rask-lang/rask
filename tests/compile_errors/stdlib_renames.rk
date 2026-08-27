@@ -16,6 +16,8 @@ import math
 import async.Receiver
 import time.Instant
 import path.Path
+import fs.File
+import os.Command
 
 // Channel.recv → receive
 func old_recv(rx: Receiver<i64>) {

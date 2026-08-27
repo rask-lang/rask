@@ -302,7 +302,22 @@ fn is_typevar_name(name: &str) -> bool {
 
 /// Parse a field type string (from AST) to a Type for layout computation.
 pub(crate) fn parse_field_type(s: &str) -> Type {
-    let s = s.trim();
+    // `d: time.Duration` on a field. Left dotted it fell through to the unknown
+    // name at the bottom of `type_size_align`, and the field got pointer-sized
+    // room by default — right for `Duration` by luck, and for anything wider a
+    // hard "field holds 32 bytes but its slot is 8" telling the user to report a
+    // compiler bug.
+    //
+    // Whatever a field's type is reached *through* says nothing about its size,
+    // so the last segment is the whole question here. The checker's
+    // `strip_module_qualifier` is narrower on purpose — it drops the head only
+    // when it names a real module, because there a wrong strip changes which type
+    // resolves (`c.Rect` is the C namespace's, and bare `Rect` is nobody's, #948).
+    // Layout has no such worry: the fallback it replaces was an outright guess.
+    // Being broader is also what makes an *aliased* import work — `import http as h`
+    // binds the module under a name no module list knows, and `h.Response` on a
+    // field hit exactly that hard error.
+    let s = rask_ast::type_str::bare_name(s);
 
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {

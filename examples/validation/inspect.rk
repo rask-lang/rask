@@ -14,6 +14,7 @@
 // declarations. See FINDINGS on why this stayed a note more than a feature.
 
 import http
+import http.Response
 
 // The lint nudge (DT3) is right, and staying a sketch is the point here.
 @allow(idiom/duck-trait)

@@ -8,6 +8,8 @@ import http
 import json
 import time
 import sync.Shared
+import http.Request
+import http.Response
 
 // ─── Domain types ────────────────────────────────────────────────
 

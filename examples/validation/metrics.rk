@@ -2,6 +2,7 @@
 // Request metrics behind a Mutex — write-heavy (every request records),
 // so Mutex over Shared (conc.sync "When to Use What").
 import sync.Mutex
+import http.Request
 
 struct Metrics {
     public total_requests: u64

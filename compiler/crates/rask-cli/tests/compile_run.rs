@@ -991,6 +991,15 @@ fn error_namespace_rules() {
         out.contains("`Metadata` is not in scope"),
         "IM1: including on a `let`: {}", out,
     );
+    // The module-import half (#999). `import http` binds `http`; it does not
+    // hand over the nine type names http exports. Registering them made
+    // `import http` and `import http.Request` mean the same thing, so naming the
+    // type bought nothing — and no language with both import forms has them
+    // agree.
+    assert!(
+        out.contains("`Request` is not in scope"),
+        "IM1: a module import does not bring its types in bare: {}", out,
+    );
     // IM4 is what makes the fix applicable — the code is written against the
     // bare name, so `import time.Instant` keeps it working where plain
     // `import time` would mean rewriting the use.
@@ -1024,15 +1033,21 @@ fn error_namespace_rules() {
     // and nothing; the annotation check read type strings by name and reported
     // all of them as missing imports, which is the collision #915 exists to
     // make the parameter win.
-    for legal in ["Budget9", "`max`", "`Handle`", "`Output`", "`Response`", "`Input`"] {
+    // `Method` is the other side of the module-import rule: `import http` is in
+    // the file and http exports a `Method`, so binding only `http` is what
+    // leaves the name free for the program's own enum.
+    for legal in [
+        "Budget9", "`max`", "`Handle`", "`Output`", "`Response`", "`Input`",
+        "`Method`",
+    ] {
         assert!(
             !out.contains(legal),
             "{} should not be reported: {}", legal, out,
         );
     }
     assert_eq!(
-        out.matches("error[").count(), 7,
-        "seven errors, no more: {}", out,
+        out.matches("error[").count(), 8,
+        "eight errors, no more: {}", out,
     );
 }
 
@@ -4638,8 +4653,14 @@ func main() {
 #[test]
 fn interp_qualified_and_bare_module_types_agree() {
     // The two spellings name the same type, so they must behave the same.
+    //
+    // The bare one needs its own import to exist at all: `import http` binds
+    // `http` and nothing inside it (structure.modules/IM1, #999). This test used
+    // to write only `import http` and reach for a bare `Response`, which is the
+    // reading that made naming the type in an import buy nothing.
     let out = interp_output(r#"
 import http
+import http.Response
 
 func main() {
     let viaModule = http.Response.ok("x")
@@ -4648,6 +4669,31 @@ func main() {
 }
 "#);
     assert!(out.contains("same=true"), "both spellings must agree: {}", out);
+}
+
+#[test]
+fn interp_a_module_import_does_not_bring_its_types_in_bare() {
+    // The other half of the same rule. Registering a module's types unqualified
+    // also reserved them: `import http` took all nine of http's names, so a
+    // program with its own `Response` was told "already in scope from `http`"
+    // for a name it never asked for — and adding a type to a stdlib module broke
+    // every program that had one by that name.
+    let out = interp_output(r#"
+import http
+
+func main() {
+    let r = Response.ok("x")
+    println("status={r.status}")
+}
+"#);
+    assert!(
+        out.contains("`Response` is not in scope"),
+        "a module import must not hand over its type names: {}", out,
+    );
+    assert!(
+        out.contains("import http.Response"),
+        "and the fix should name the import that would: {}", out,
+    );
 }
 
 #[test]
