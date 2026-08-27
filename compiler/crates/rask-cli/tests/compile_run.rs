@@ -931,7 +931,7 @@ fn error_module_used_without_import() {
     assert!(failed, "a module used without importing it must be rejected: {}", out);
     for module in ["math", "fs"] {
         assert!(
-            out.contains(&format!("`{module}` is used but never imported")),
+            out.contains(&format!("`{module}` is not in scope")),
             "should name `{module}`: {out}",
         );
         assert!(
@@ -939,6 +939,79 @@ fn error_module_used_without_import() {
             "should show the import as the fix for `{module}`: {out}",
         );
     }
+}
+
+// #977: the four namespace rules of `struct.modules`, all four of which were
+// specified and none enforced. IM1 leaked twice over — the stdlib's source is
+// resolved into the program's scope, so every module and type it declares was
+// visible unasked, and a type *annotation* wasn't looked at at all. BI3 leaked on
+// exactly the names the stdlib also declares, because the check asked what the
+// scope held and `collections.rk`'s own `struct Vec<T>` had replaced the builtin
+// binding. BF3 wasn't implemented.
+#[test]
+fn error_namespace_rules() {
+    let (failed, out) = compile_error_output("namespace_rules.rk");
+    assert!(failed, "the namespace rules must be enforced: {}", out);
+
+    // IM1, in expression position and in an annotation.
+    assert!(
+        out.contains("`Instant` is not in scope"),
+        "IM1: a stdlib type needs its import: {}", out,
+    );
+    assert!(
+        out.contains("`StringBuilder` is not in scope"),
+        "IM1: including in a type annotation: {}", out,
+    );
+    // A local's annotation. The check began as a pass over declarations, so it
+    // never looked inside a function body — the most ordinary way to write the
+    // thing the rule rejects was the one way it didn't catch.
+    assert!(
+        out.contains("`Metadata` is not in scope"),
+        "IM1: including on a `let`: {}", out,
+    );
+    // IM4 is what makes the fix applicable — the code is written against the
+    // bare name, so `import time.Instant` keeps it working where plain
+    // `import time` would mean rewriting the use.
+    assert!(
+        out.contains("import time.Instant"),
+        "the fix should name the module and the type: {}", out,
+    );
+
+    // IM8, naming the module the collision is with.
+    assert!(
+        out.contains("`Duration` is already in scope from `time`"),
+        "IM8: a declaration may not take an imported name: {}", out,
+    );
+
+    // BI3, on a name the stdlib also declares — the case that leaked.
+    assert!(
+        out.contains("`Vec` is a built-in type") && out.contains("`Option` is a built-in type"),
+        "BI3: builtin names are reserved even where the stdlib declares them too: {}", out,
+    );
+
+    // BF3.
+    assert!(
+        out.contains("`println` is a built-in function"),
+        "BF3: BF1's functions are reserved: {}", out,
+    );
+
+    // And what stays legal: a name of one's own, a builtin function outside
+    // BF1's set, a stdlib type this file hasn't imported, and — the one that
+    // regressed — a generic type parameter named after a real stdlib type.
+    // `Output`, `Response` and `Input` collide with `os.Output`, `http.Response`
+    // and nothing; the annotation check read type strings by name and reported
+    // all of them as missing imports, which is the collision #915 exists to
+    // make the parameter win.
+    for legal in ["Budget9", "`max`", "`Handle`", "`Output`", "`Response`", "`Input`"] {
+        assert!(
+            !out.contains(legal),
+            "{} should not be reported: {}", legal, out,
+        );
+    }
+    assert_eq!(
+        out.matches("error[").count(), 7,
+        "seven errors, no more: {}", out,
+    );
 }
 
 // #500: a free function named with a keyword can be declared but never called,
@@ -1444,7 +1517,7 @@ fn error_module_used_without_its_import() {
     assert!(failed, "a module needs its own import: {}", out);
     for m in ["`json`", "`net`", "`fs`"] {
         assert!(
-            out.contains(&format!("{} is used but never imported", m)),
+            out.contains(&format!("{} is not in scope", m)),
             "{} should need an import like every other module: {}", m, out,
         );
     }
@@ -2536,7 +2609,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "func leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.TaskHandle\n\nfunc leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "a TaskHandle bound but never joined/detached should be E0805 (H1): {}", output);
@@ -3661,7 +3734,7 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         // at print time, not in a string user code prints itself. The path is
         // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:25: boom"),
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:26: boom"),
             "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
@@ -4051,6 +4124,8 @@ func main() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 @message
 enum StoreError { Boom }
 
@@ -4125,6 +4200,8 @@ func ok_side() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 struct Store { n: u64 }
 
 extend Store {
@@ -5027,7 +5104,7 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
         assert_eq!(stdout, "main still running\n", "{}", mode);
         let report = stderr.trim_end();
         assert!(report.starts_with("task 1 panic at ")
-                && report.ends_with("detached_panic_report.rk:12: detached boom"),
+                && report.ends_with("detached_panic_report.rk:13: detached boom"),
             "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
     }
 }

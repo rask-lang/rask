@@ -56,7 +56,6 @@
 t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
 t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)
 t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both)
-t_week_import_alias.rk        # `import X as Y` carries the name but not the methods — #923 (both)
 t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
 t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native). #907 (the `as` cast) is fixed.
 t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both); inferred string param reaches MIR as void — #905 (native)

@@ -12,6 +12,8 @@
 // Test bodies call through `run_*` helpers rather than holding pools
 // directly, matching t_context_entry_point.rk — a hidden-context call from
 // inside a `test` block hits a separate, pre-existing native MIR limitation.
+import memory.Handle
+import memory.Pool
 
 struct Item { val: i32 }
 struct Player { score: i32 }

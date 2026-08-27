@@ -2,6 +2,8 @@
 // A panic inside an exported symbol, reached through a C frame from a spawned
 // task. The task's setjmp is live, so the unwind path would longjmp straight
 // over the C frame — which is what A1 forbids.
+import thread.Thread
+
 extern "C" func c_calls_bad()
 
 /// Exported to C; panics on purpose.

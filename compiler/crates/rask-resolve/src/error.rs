@@ -21,9 +21,11 @@ impl ResolveError {
     }
 
     /// A stdlib module used without importing it (structure.modules/IM1).
-    pub fn module_not_imported(name: String, span: Span) -> Self {
+    /// IM1. `source` is the module the name would come from, so the message can
+    /// name the import to add rather than the name that's missing one.
+    pub fn module_not_imported(name: String, module: Option<String>, span: Span) -> Self {
         Self {
-            kind: ResolveErrorKind::ModuleNotImported { name },
+            kind: ResolveErrorKind::ModuleNotImported { name, module },
             span,
         }
     }
@@ -77,9 +79,12 @@ impl ResolveError {
         }
     }
 
-    pub fn shadows_import(name: String, span: Span) -> Self {
+    /// IM8. `module` is the stdlib module the name came from when one owns it,
+    /// so the message can say which import to alias instead of leaving the
+    /// reader to search their import list.
+    pub fn shadows_import(name: String, module: Option<String>, span: Span) -> Self {
         Self {
-            kind: ResolveErrorKind::ShadowsImport { name },
+            kind: ResolveErrorKind::ShadowsImport { name, module },
             span,
         }
     }
@@ -148,9 +153,9 @@ impl ResolveError {
 pub enum ResolveErrorKind {
     #[error("undefined symbol: {name}")]
     UndefinedSymbol { name: String },
-    /// A stdlib module name used with no `import` for it.
+    /// A stdlib module or type name used with no `import` for it (IM1).
     #[error("`{name}` is used but never imported")]
-    ModuleNotImported { name: String },
+    ModuleNotImported { name: String, module: Option<String> },
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },
@@ -185,7 +190,7 @@ pub enum ResolveErrorKind {
     NotVisible { name: String },
 
     #[error("cannot define `{name}` because it shadows an imported name; consider using a different name or aliasing the import")]
-    ShadowsImport { name: String },
+    ShadowsImport { name: String, module: Option<String> },
 
     #[error("circular import dependency detected: {}", path.join(" -> "))]
     CircularDependency { path: Vec<String> },

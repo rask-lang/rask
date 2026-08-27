@@ -2,6 +2,8 @@
 // mem.pools/PF5: a `using frozen Pool<T>` context is read-only. Writing through
 // a handle (`h.field = v`, compound assign) must be rejected (E0325). Reads are
 // fine. Structural ops are caught separately by the effects analysis.
+import memory.Handle
+
 struct Player { health: i32 }
 
 func read_ok(h: Handle<Player>) using frozen Pool<Player> -> i32 {

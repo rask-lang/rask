@@ -8,6 +8,7 @@
 //
 // The values here are chosen to catch a sign-extend: 3000000000 needs bit 31, so
 // widening it wrong gives a negative rather than a slightly-off number.
+import sync.Shared
 
 struct Holder {
     wide: i64

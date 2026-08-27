@@ -14,6 +14,7 @@
 // StringBuilder is the mutable one. Each mistake below is one error (#693),
 // plus one cascade: the failed `string.new()` leaves its binding untyped, so
 // E0361 follows it. Five errors total, four of them distinct mistakes.
+import string.StringBuilder
 
 func append_string() {
     mut out = ""

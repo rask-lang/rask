@@ -10,6 +10,8 @@
 // The two properties that make the view worth having are both checked below: a
 // view can't be laundered into a writer, and it stays a view when you follow an
 // edge.
+import memory.Link
+import memory.Rack
 
 struct Node {
     value: i32

@@ -10,6 +10,8 @@
 // printing. The `time.sleep` gives it that beat.
 import time
 import time.Duration
+import async.Sender
+import async.TaskHandle
 
 func doomed(tx: Sender<i64>) {
     ensure { let _ = tx.send(1) }

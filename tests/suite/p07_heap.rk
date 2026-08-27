@@ -2,6 +2,7 @@
 // Spec: specs/memory/heap.md — `Heap(expr)` heap-allocates a `Heap<T>`; `*ptr`
 // borrows the inner value without consuming; drop(ptr) consumes exactly once
 // (mem.linear/L1-L3). Canonical syntax from owned.md "Allocation and Usage".
+import memory.Heap
 
 // --- allocate / deref / drop on a scalar ---
 

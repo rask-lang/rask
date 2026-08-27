@@ -28,6 +28,7 @@ pub mod signing;
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};
 pub use symbol::{Symbol, SymbolId, SymbolKind, SymbolTable, BuiltinFunctionKind};
+pub use symbol::{is_builtin_type, is_reserved_builtin_fn, is_always_in_scope};
 pub use resolver::Resolver;
 pub use package::{Package, PackageId, PackageRegistry, PackageError, SourceFile};
 #[cfg(not(target_arch = "wasm32"))]

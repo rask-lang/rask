@@ -1,5 +1,7 @@
 // mem.pools/PL2: a with_capacity pool holds up to its bound; inserts within the
 // bound work like a normal pool. Native and interp agree.
+import memory.Pool
+
 struct Ent { hp: i32 }
 
 func main() {
