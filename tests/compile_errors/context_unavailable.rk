@@ -3,6 +3,8 @@
 //
 // This demonstrates the compile error when calling a context-requiring function
 // from a scope where the required pool is not available.
+import memory.Handle
+import memory.Pool
 
 struct Enemy {
     health: i32,

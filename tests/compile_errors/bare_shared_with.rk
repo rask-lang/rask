@@ -10,6 +10,7 @@
 // The two locks don't behave the same: a read binding permits other readers and
 // never writes back, a write binding blocks them and does. Which one you get is
 // written, not inferred.
+import sync.Shared
 
 struct Config {
     timeout: i64

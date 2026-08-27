@@ -409,10 +409,14 @@ impl TypeChecker {
                 // CT48–CT54: comptime for loop type checking
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = match &iter_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
-                    _ => self.ctx.fresh_var(),
-                };
+                // The same element-type machinery an ordinary `for` uses. The
+                // hand-written match this replaces knew about arrays and slices
+                // and nothing else, so `reflect.fields<T>()` — a `Vec<FieldInfo>`
+                // — fell through to a fresh variable with nothing tying it to the
+                // iterable. `f` was then typeless for good, and `f.name` had no
+                // type to dispatch a string method from or to infer a Vec's
+                // element from (#931).
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {

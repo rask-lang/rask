@@ -17,6 +17,16 @@ pub struct StructLayout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<FieldLayout>,
+    /// Declared in the stdlib rather than in the program.
+    ///
+    /// Layouts live in one flat `Vec` looked up by bare name, so a program's
+    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer` and the
+    /// first one wins. The stdlib's is `public struct Timer { }` — no fields —
+    /// so every field of the user's landed at offset 0 and the literal
+    /// segfaulted (#975). `find_struct` prefers the program's when both exist,
+    /// which is the same rule the checker's `type_names` /
+    /// `stdlib_type_names` split already applies to types (#515).
+    pub is_stdlib: bool,
 }
 
 /// Field layout within struct
@@ -489,6 +499,15 @@ fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
+/// Was this declaration parsed out of a stdlib stub?
+///
+/// The stdlib's sources occupy the top of the `file_id` range by construction
+/// (`STDLIB_FILE_ID_BASE`), so the span answers it — no flag has to be threaded
+/// down from whoever collected the declarations.
+pub fn is_stdlib_span(span: rask_ast::Span) -> bool {
+    span.file_id >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE
+}
+
 pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
     use rask_ast::decl::DeclKind;
 
@@ -560,6 +579,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(struct_def.span),
     }
 }
 
@@ -605,6 +625,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(union_def.span),
     }
 }
 

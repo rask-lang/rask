@@ -16,6 +16,10 @@ import std
 import http
 import json
 import async.Channel
+import memory.Handle
+import memory.Pool
+import sync.Shared
+import string.StringBuilder
 
 // ─── Semver ─────────────────────────────────────────────────────────
 

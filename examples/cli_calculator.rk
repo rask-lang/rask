@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 import io
+import memory.Heap
+import string.StringBuilder
 
 // CLI Calculator - Expression Evaluator
 // Demonstrates: Parsing, enums, match expressions, error handling, REPL pattern

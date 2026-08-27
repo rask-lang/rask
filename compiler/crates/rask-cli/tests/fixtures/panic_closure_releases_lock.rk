@@ -8,6 +8,11 @@
 // the lock the unwind had nothing to release either — so the next acquirer
 // blocked forever. Both boxes here are acquired again after the panicking task
 // dies; before the fix each hung the process.
+
+import sync.Shared
+import sync.Mutex
+import thread.Thread
+
 struct Widget9 { n: i64 }
 const BLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
 const NONBLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })

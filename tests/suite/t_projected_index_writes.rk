@@ -8,6 +8,7 @@
 // That one loads the intermediate aggregate as a value copy and stores into the
 // copy, so the write vanished — silently, native only, and the read afterwards
 // returned the original. The interpreter was right throughout.
+import memory.Pool
 
 struct Health {
     public current: i64

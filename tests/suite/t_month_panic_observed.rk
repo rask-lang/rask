@@ -18,6 +18,10 @@
 // two-argument `assert` in one doesn't parse. Reading the outcome out is clearer
 // anyway — the assertions then say what the rule is.
 
+import sync.Shared
+import sync.Mutex
+import thread.Thread
+
 struct Tally9 {
     hits: i64
     misses: i64

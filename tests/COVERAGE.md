@@ -78,7 +78,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | type param vs stdlib name | `t_week_generic_param_shadowing.rk` | 4/4 | 4/4 | |
 | a method returning its own type parameter | `t_week_generic_method_return.rk` | 7/7 | 7/7 | |
 | **probe** — `parse<T>` target range | `t_week_parse_range.rk` | 2/6 | 2/6 | #919 |
-| **probe** — `import X as Y` | `t_week_import_alias.rk` | BUILD-FAIL | BUILD-FAIL | #923 |
+| `import X as Y` | `t_week_import_alias.rk` | 5/5 | 5/5 | |
 | opaque handles as struct fields | `t_week_opaque_struct_fields.rk` | 8/8 | 8/8 | |
 | **pending** — declared-but-unbuilt collection API | `t_week_collection_stubs.rk` | BUILD-FAIL | BUILD-FAIL | #912 |
 | **pending** — range terminals and adapters | `t_week_range_adapters.rk` | BUILD-FAIL | BUILD-FAIL | #920 |
@@ -91,6 +91,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | borrowing, disjoint fields, `with` | `t_month_borrowing.rk` | 13/13 | 13/13 | |
 | box family — Cell, Mutex, Shared, Owned | `t_month_boxes.rk` | 13/13 | 13/13 | |
 | `@resource` and `ensure` | `t_month_resource_ensure.rk` | 11/11 | 11/11 | |
+| a program type named like a stdlib one | `t_month_stdlib_name_collision.rk` | 5/5 | 5/5 | |
 | threads, channels | `t_month_concurrency.rk` | 11/11 | 11/11 | #267 |
 | comptime | `t_month_comptime.rk` | 11/11 | 11/11 | |
 | JSON encode and decode | `t_month_json.rk` | 13/13 | 13/13 | |
@@ -104,8 +105,9 @@ surface stays gated instead of hiding behind a known-fail line.
 | `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
 | staged access, commit on every non-panic exit | `t_month_staged.rk` | 6/6 | 6/6 | #292 |
 | what a survivor observes of a panic (O1-O3, P2) | `t_month_panic_observed.rk` | 6/6 | 6/6 | #299 |
-| **probe** — CT49 field access by literal | `t_month_comptime_field_literal.rk` | 4/4 | BUILD-FAIL | #930 |
-| **probe** — comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 6/6 | BUILD-FAIL | #931 |
+| CT49 field access by literal | `t_month_comptime_field_literal.rk` | 11/11 | 11/11 | |
+| comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 11/11 | 11/11 | |
+| **probe** — `reflect.fields()` as a value | `t_month_reflect_fields_value.rk` | 4/4 | BUILD-FAIL | #997 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
 | i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 20/20 | 20/20 | |
 | unsigned widening to 128 bits | `t_month_u128_widening.rk` | 6/6 | 6/6 | |

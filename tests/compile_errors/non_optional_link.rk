@@ -9,6 +9,7 @@
 // to (analysis.fourth-option).
 //
 // Inside a container a bare link is fine either way: delete drops the entry.
+import memory.Link
 
 struct Entity {
     name: string

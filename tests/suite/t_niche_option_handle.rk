@@ -5,6 +5,8 @@
 // Inside a pool element the field has no checker type to read at the use site,
 // so both the read and the `none` construction fell back to the tagged layout —
 // which tested a tag that isn't there and stored one where the handle belongs.
+import memory.Handle
+import memory.Pool
 
 struct Node {
     public v: i64

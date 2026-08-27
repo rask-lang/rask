@@ -3,6 +3,7 @@
 // initializer's type is a stdlib container. `unify` defers on those because the
 // name may still resolve, and the deferred constraint was then dropped — so a
 // primitive annotation on a Mutex/Sender/Vec type-checked (#730).
+import sync.Shared
 
 func mutex_as_string() -> string {
     let m = Shared.mutex(0)

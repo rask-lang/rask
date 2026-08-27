@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: the four namespace rules of struct.modules — #977
+// ERROR: is not in scope
+// ERROR: is already in scope
+// ERROR: is a built-in
+//
+// All four were specified and none were enforced, so each of these lines used to
+// type-check clean:
+//
+//   IM1  nothing comes pre-imported, so a stdlib name needs its module
+//   IM8  a declaration may not take a name an import already bound
+//   BI3  a program may not declare a type with a built-in's name
+//   BF3  or a function with a built-in function's name
+//
+// IM1 leaked in two places at once. In expression position the stdlib's own
+// source is resolved into the program's scope, so every module and every type it
+// declares was visible unasked. In a *type annotation* nothing looked at all —
+// annotations are strings by the time the resolver sees them.
+//
+// BI3 was leaking on exactly the names the stdlib also declares: the check asked
+// what the scope held, and `collections.rk`'s own `public struct Vec<T> { }` had
+// replaced the builtin binding. `struct Set` was refused and `struct Vec` was
+// accepted, which is not a distinction the rule makes.
+//
+// The four that pass are the point of the file as much as the ones that fail —
+// `Budget9` is nobody's name, `import time.Duration` earns the bare `Duration`,
+// `max` is not in BF1, and `Handle` belongs to `memory` rather than to BI1's
+// closed set, so a program that hasn't imported it may have the name.
+
+import time.Duration
+
+// ── IM1: a stdlib type with no import ───────────────────────────
+
+// ERROR: `Metadata` is not in scope — on a *local's* annotation. The check
+// started as a pass over declarations, so it never looked inside a body, and
+// this is the most ordinary way to write the thing IM1 rejects.
+func local_annotation() {
+    let m: Metadata = todo()
+    return
+}
+
+// ERROR: `Instant` is not in scope
+func started() -> Instant {
+    return Instant.now()
+}
+
+// ERROR: `StringBuilder` is not in scope — in an annotation, which nothing
+// used to check
+struct Report {
+    body: StringBuilder
+}
+
+// ── IM8: a declaration over an imported name ────────────────────
+
+// ERROR: `Duration` is already in scope from `time`
+struct Duration {
+    ticks: i64
+}
+
+// ── BI3: a type with a built-in's name ──────────────────────────
+
+// ERROR: `Vec` is a built-in type
+struct Vec {
+    n: i64
+}
+
+// ERROR: `Option` is a built-in type — a prelude enum, and `option.rk`
+// declares one of its own, which is why this was accepted
+enum Option {
+    Yes
+    No
+}
+
+// ── BF3: a function with a built-in function's name ─────────────
+
+// ERROR: `println` is a built-in function
+func println(x: i64) {
+    return
+}
+
+// ── And what stays legal ───────────────────────────────────────
+
+// Not a stdlib name at all.
+struct Budget9 {
+    d: Duration
+}
+
+// `max` is not in BF1 — it's an ordinary generic function, and a program's own
+// has always been allowed.
+func max(a: i64, b: i64) -> i64 {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// `Handle` is `memory`'s, not BI1's. Being a closed compiler type
+// (mem.boxes/BX1-BX4) is about who may define one, not about who can see the
+// name without asking — and this file hasn't asked.
+struct Handle {
+    slot: i64
+}
+
+// A type parameter is spelled exactly like a type, and these three all collide
+// with a real stdlib name. The annotation check read type strings by name, so
+// every one of them was reported as needing an import — which is the collision
+// #915 exists to make the parameter win. Not an error, in a signature, a field,
+// an `extend` target, or a local.
+func convert<Input, Output>(x: Input, f: func(Input) -> Output) -> Output {
+    let out: Output = f(x)
+    return out
+}
+
+struct Holder<Response> {
+    slot: Response
+}
+
+extend Holder<Response> {
+    func get(self) -> Response {
+        let v: Response = self.slot
+        return v
+    }
+}
+
+func main() {
+    return
+}

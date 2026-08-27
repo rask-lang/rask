@@ -609,12 +609,37 @@ impl<'a> MirContext<'a> {
         MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
     }
 
+    /// The layout for `name`, preferring the program's own over the stdlib's.
+    ///
+    /// Layouts are one flat `Vec` keyed by bare name, so a program's
+    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer`. This used to
+    /// take whichever came first, which is the stdlib's — `public struct Timer
+    /// { }`, no fields. Every field of the user's type then landed at offset 0
+    /// (MIR showed three writes to `*(_0+0)` and three reads of `.0`), the struct
+    /// got a zero-byte slot, and the literal segfaulted while the interpreter
+    /// printed the right answer. Renaming the type to anything the stdlib doesn't
+    /// use was the whole difference (#975).
+    ///
+    /// The program winning in its own package is the rule the checker already
+    /// applies to type names (#515). Once IM1 and IM8 are enforced this is a
+    /// narrower case than it was — an unimported stdlib name isn't in scope, and
+    /// an imported one that's shadowed is a named error — but it stays reachable
+    /// through a name that resolves to a stdlib type without being one of its
+    /// declared exports.
     pub fn find_struct(&self, name: &str) -> Option<(u32, &StructLayout)> {
-        self.struct_layouts
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.name == name)
-            .map(|(i, s)| (i as u32, s))
+        let mut stdlib_match = None;
+        for (i, s) in self.struct_layouts.iter().enumerate() {
+            if s.name != name {
+                continue;
+            }
+            if !s.is_stdlib {
+                return Some((i as u32, s));
+            }
+            if stdlib_match.is_none() {
+                stdlib_match = Some((i as u32, s));
+            }
+        }
+        stdlib_match
     }
 
     /// AN1: the declared type of one field of a user annotation.
@@ -842,7 +867,19 @@ impl<'a> MirContext<'a> {
 
     /// Resolve a type string to MirType, looking up struct/enum names in layouts.
     pub fn resolve_type_str(&self, s: &str) -> MirType {
-        match s.trim() {
+        // IM3: a transparent alias is its target, so the layout to find is the
+        // target's. Every type string reaches MIR through here, which makes this
+        // the one place it has to happen — `let d: Span = …` under
+        // `import time.Duration as Span` was matching `stdlib/builtins.rk`'s own
+        // `Span` layout by name, so the binding got that struct's slot and a
+        // `Duration` was copied into it (#923 crossed with #975).
+        let trimmed = s.trim();
+        if let Some(target) = self.type_defs.alias_target(trimmed) {
+            if target != trimmed {
+                return self.resolve_type_str(target);
+            }
+        }
+        match trimmed {
             "i8" => MirType::I8,
             "i16" => MirType::I16,
             "i32" => MirType::I32,
@@ -1562,6 +1599,10 @@ pub struct MirLowerer<'a> {
     /// value — `field.name`/`value.(field.name)` splice this directly instead
     /// of going through the normal local/struct-layout lookup (CT48/CT49).
     comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
+    /// Bindings in this body whose initializer folded to a compile-time string.
+    /// `value.(name)` reads them so a field name can be given a name of its own
+    /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
+    comptime_strings: HashMap<String, String>,
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for
@@ -3449,6 +3490,7 @@ impl<'a> MirLowerer<'a> {
             catch_frames: Vec::new(),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
+            comptime_strings: HashMap::new(),
         };
 
         // Which names this body reassigns (see `reassigned_names`). Scanned once

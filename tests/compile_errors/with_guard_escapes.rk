@@ -12,6 +12,7 @@
 // or a method call. Scalar and `string` payloads are unaffected: copying
 // them out is already an independent value, same as the flagship example's
 // `with counter.write() as c { c }` in examples/package_manager.rk.
+import sync.Shared
 
 struct Counter { public hits: u64, public misses: u64 }
 

@@ -1,5 +1,8 @@
 // CC5/CALL4 propagation: a `using` caller threads its hidden pool param into a
 // callee that also declares the same context. Must agree on both backends.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func heal(h: Handle<Player>) using players: Pool<Player> {

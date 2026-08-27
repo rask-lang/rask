@@ -7,6 +7,8 @@
 //
 // Three levels deep on purpose: a boxed payload has to be able to hold another
 // boxed payload. `Wrap` covers the struct-field form of the same boundary.
+import memory.Heap
+
 enum Tree {
     Leaf(f64),
     Node(left: Heap<Tree>, right: Heap<Tree>),

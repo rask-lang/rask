@@ -2,6 +2,8 @@
 // persist on native. The repeated access was being coalesced into a value-copy
 // of the struct, so the write landed in the copy, not the pool slot. Native
 // must match the interpreter.
+import memory.Pool
+
 struct Ent { hp: i32 }
 
 func main() {

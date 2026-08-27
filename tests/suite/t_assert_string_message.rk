@@ -16,6 +16,7 @@
 //
 // A test can't assert on its own failure message, so this checks the passing
 // side at every length and leaves the message shape to the issue.
+import string.StringBuilder
 
 func long_text() -> string {
     return "a fairly long string that will not fit in the inline buffer"

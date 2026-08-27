@@ -602,8 +602,18 @@ impl TypeChecker {
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
             ExprKind::DynamicField { object, field_expr } => {
-                // Infer both sub-expressions; actual comptime field resolution
-                // happens in the comptime pass — here we just type-check children.
+                // CT49: `value.("x")` is a field access spelled with the name in
+                // quotes. When the name is right there in the source, check it as
+                // one — that gives the expression the field's real type, and makes
+                // a name that doesn't exist the same error `value.x` would give
+                // instead of something for MIR to trip over later (#930).
+                if let Some(name) = Self::literal_field_name(field_expr) {
+                    self.infer_expr(field_expr);
+                    return self.check_field_access(object, &name, expr.span);
+                }
+                // Anything else — a `comptime for` binding's `.name`, a binding
+                // holding a comptime string — is only known once the loop is
+                // unrolled, which happens after this pass.
                 let _obj_ty = self.infer_expr(object);
                 let _field_ty = self.infer_expr(field_expr);
                 Type::Error
@@ -2802,12 +2812,26 @@ impl TypeChecker {
         // Also handles generic forms like Vec<Route>.from().
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
-            let base_name = name.split('<').next().unwrap_or(name);
+            let spelled = name.split('<').next().unwrap_or(name);
+            // IM3: a transparent alias names the same type, so a namespace call
+            // through one is a call on the target. The gate below asks the stub
+            // registry by spelling, and `import time.Duration as Span` puts
+            // `Span` in scope under a name that isn't in there — so the branch
+            // was skipped, the receiver went through `infer_expr`, and `let d =
+            // Span.from_millis(1)` came back "couldn't work out the type of `d`"
+            // (#923).
+            let base_name = self.types.alias_target(spelled).unwrap_or(spelled);
+            let name = if base_name == spelled {
+                name.clone()
+            } else {
+                name.replacen(spelled, base_name, 1)
+            };
+            let name = &name;
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
             // `len` found for type `fs`".
-            let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
+            let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
                 && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
@@ -3469,6 +3493,21 @@ impl TypeChecker {
                 });
                 Some(Type::Error)
             }
+        }
+    }
+
+    /// The field name in `value.(expr)` when the source spells it out: a string
+    /// literal, or a `comptime { … }` block whose value is one. Read off the
+    /// syntax — this pass has no comptime evaluator, and doesn't need one for
+    /// the shapes a reader actually writes.
+    fn literal_field_name(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::String(s) => Some(s.clone()),
+            ExprKind::Comptime { body } => match body.as_slice() {
+                [Stmt { kind: StmtKind::Expr(e), .. }] => Self::literal_field_name(e),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

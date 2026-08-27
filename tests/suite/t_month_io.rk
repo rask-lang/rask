@@ -11,6 +11,7 @@
 // leaves no trace and can run in parallel with itself.
 
 import fs
+import io.IoError
 
 func temp_path(tag: string) -> string {
     return "/tmp/rask-sweep-io-{tag}.txt"

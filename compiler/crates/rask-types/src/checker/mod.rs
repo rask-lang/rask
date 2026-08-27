@@ -462,6 +462,7 @@ impl TypeChecker {
             self.collect_type_declarations(stdlib_decls);
             self.types.stdlib_mode = false;
         }
+        self.collect_import_aliases();
         self.collect_type_declarations(decls);
         self.check_user_annotations(decls);
 

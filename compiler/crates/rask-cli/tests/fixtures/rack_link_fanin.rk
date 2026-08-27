@@ -11,6 +11,8 @@
 // Both track FANIN exactly. Vary FANIN below to see it stay linear. Compare
 // sparse_delete_links.rk, where in-degree is 1 in a 500-node rack and the
 // delete visits one holder — the cost follows in-degree, not rack size.
+import memory.Link
+import memory.Rack
 
 const FANIN: i32 = 200
 

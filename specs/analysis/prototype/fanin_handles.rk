@@ -5,6 +5,8 @@
 // win. What it leaves behind is the interesting part: FANIN stale handles,
 // none of them fixed, every one of which costs a check at its next read and
 // has to be cleaned up by somebody.
+import memory.Handle
+import memory.Pool
 
 const FANIN: i32 = 200
 

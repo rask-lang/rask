@@ -6,6 +6,10 @@
 // lock stayed held for the rest of the process. The first thing to ask for it
 // was the ensure running during that same unwind, which blocked forever — the
 // whole program hung with no output.
+
+import sync.Shared
+import sync.Mutex
+
 struct Acc9 { checking: i64, savings: i64 }
 const ACC: Shared<Acc9, Mutex> = Shared.mutex(Acc9 { checking: 100, savings: 0 })
 

@@ -4,6 +4,7 @@
 
 import thread.Thread
 import time
+import async.Sender
 
 // ============================================================================
 // Lookup Tables (runtime-initialized)
