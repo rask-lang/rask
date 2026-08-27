@@ -791,7 +791,12 @@ void rask_print_unlock_all(void);
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.
 
-#define RASK_PANIC_MSG_MAX 512
+// Big enough to hold an assertion message whose operands are floats spelled out
+// in full. A double near the top of its range is ~309 digits with no exponent
+// form (RASK_F64_BUF_SIZE), and the comparison messages print each operand
+// twice — so 512 truncated mid-number for large magnitudes. These are stack
+// buffers on a path that is about to unwind, so the headroom is free.
+#define RASK_PANIC_MSG_MAX 2048
 
 _Noreturn void rask_panic(const char *msg);
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
@@ -845,6 +850,9 @@ void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col);
 
 // assert_eq failure reporting — got/expected wording (testing A4).
 // Generated code does the comparison and calls the variant matching the
@@ -856,6 +864,8 @@ void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
 void rask_assert_eq_fail_char(int64_t got, int64_t expected,
                               const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_f64(double got, double expected,
+                             const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_f32(float got, float expected,
                              const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col);

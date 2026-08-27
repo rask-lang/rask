@@ -382,7 +382,7 @@ impl Default for ErrorCodeRegistry {
                 "E0830" => ("`!` on an optional", Type,
                     "`!` negates a `bool`; a `T?` doesn't coerce to `T` (type.optionals/OPT5), so `!` doesn't reach through the wrapper. This matters most on `bool?`, where the payload's type makes `!x` look applicable — but a reader can't tell whether it negates the payload or tests for absence, and `x!` already means force-unwrap on the same operand. Test presence with `x is none`, or narrow first with `if x? as v { !v }`.",
                     "let x: bool? = flag()\nlet y = !x   // error: negation doesn't reach through the optional\n// fix: `if x? as v { !v }`, or `x is none` to test absence"),
-                "E0831" => ("`using` context on the entry point", Type,
+                "E0844" => ("`using` context on the entry point", Type,
                     "A `using` clause is a hidden parameter (mem.context/CC11): callers pass the context in, and the compiler finds it by searching the caller's scope. The entry point has no caller — the process starts there — so that parameter is never written and holds whatever the stack happened to contain. Own the context instead: build it as a local in the entry point and call the functions that declare `using`; they resolve it out of your scope automatically.",
                     "func main() using players: Pool<Player> {   // error: nothing can supply this\n    spawn_wave(10)\n}\n\n// fix: own the pool in main, leave the clause on the callee\nfunc main() {\n    mut players: Pool<Player> = Pool.new()\n    spawn_wave(10)   // resolves `players` from main's scope\n}\n\nfunc spawn_wave(n: i64) using players: Pool<Player> { }"),
                 "E0841" => ("`@tag` on a variant with an unnamed payload", Type,
@@ -409,6 +409,85 @@ impl Default for ErrorCodeRegistry {
                 "E0840" => ("resource discarded as a statement", Ownership,
                     "A resource-typed value (marked @resource, like `TaskHandle` — conc.async/H1) came back from a call used as a bare statement, with nothing to bind it to. The value is produced and dropped in the same instant, before anything could consume it — the same leak `E0805` catches for a named binding that falls out of scope unconsumed, just with no name to point at.",
                     "using Multitasking {\n    spawn(|| { work() })   // error: TaskHandle dropped without join()/detach()\n}\n// fix: let h = spawn(|| { work() })\n//      h.detach()"),
+                // ─── Backfill: emitted by convert.rs, previously unexplained (#892) ───
+                "E0211" => ("C header could not be parsed", Resolution,
+                    "`import c` runs the built-in C parser over the header, and it handles standard C — not C++, and not compiler-specific extensions. A header that pulls in templates, `__attribute__` forms the parser doesn't know, or vendor builtins stops here. The way past it is to skip the header for those declarations and write the handful you need by hand: an `extern \"C\"` block declares the symbol and its signature directly, and nothing has to be parsed.",
+                    "import c \"vendor/simd_intrin.h\"   // error: can't parse this header\n\n// fix: declare just what you call\nextern \"C\" {\n    func vendor_add(a: i32, b: i32) -> i32\n}"),
+                "E0212" => ("module has no such symbol to import", Resolution,
+                    "A selective import — `import time.Duration` — names one symbol out of one module, and the module doesn't export that name. Usually a typo or a name that moved. This used to be accepted at resolution and only failed much later, at code generation, with an error that pointed at generated code instead of at the import line.",
+                    "import string.Builder      // error: `string` has no `Builder`\n// fix: import string.StringBuilder\n//      or import the whole module: import string"),
+                "E0213" => ("`extern` name already declared with a different signature", Resolution,
+                    "An `extern` name is one symbol in the linked program, so two signatures for it can't both be right. The stdlib declares some C functions itself — std.fs declares `strlen` — and a second declaration used to replace it silently, which left the stdlib's own calls type-checked against your signature instead of theirs. Match the existing declaration, or drop yours: the name is already in scope.",
+                    "extern \"C\" {\n    func strlen(s: *u8) -> i32   // error: already declared as -> usize\n}\n// fix: drop it — `strlen` is already in scope from std.fs"),
+                "E0332" => ("Self-returning method called through a trait object", Trait,
+                    "`as any Trait` erases the concrete type, and a method returning `Self` has to name it — the caller would have no type to put the result in (type.traits/TR2). This is a property of the method, not of the call: the same method is fine on the concrete type, where `Self` is known. Split the trait if only some methods need erasing, or call this one before boxing.",
+                    "trait Shape { func scaled(self, k: f64) -> Self }\nlet s: any Shape = circle\nlet bigger = s.scaled(2.0)   // error: what type is the result?\n// fix: scale first, then erase\nlet bigger: any Shape = circle.scaled(2.0)"),
+                "E0334" => ("public function is missing type annotations", Type,
+                    "A public function's signature is its contract, so it's written out rather than inferred (struct.grouping/GC5). Inference still works inside the body, and on anything not `public` — the rule is about what callers can see. A caller reading the declaration should not have to read the body to learn what goes in and what comes out.",
+                    "public func scale(v, k) {        // error: no types on `v`, `k`, or the return\n    return v * k\n}\n// fix: write the contract\npublic func scale(v: f64, k: f64) -> f64 {\n    return v * k\n}"),
+                "E0336" => ("value used after `discard`", Ownership,
+                    "`discard name` drops a value and invalidates the binding on purpose — it's the way to say \"this is finished with\" for a type that would otherwise be flagged as unconsumed. After it, the name holds nothing. Either drop the `discard` and go on using the value, or move the `discard` past the last use.",
+                    "let buf = load()\ndiscard buf\nprintln(\"{buf.len}\")   // error: `buf` was discarded above\n// fix: move the discard after the last use"),
+                "E0337" => ("range step of zero", Type,
+                    "A zero step never advances, so the loop would run forever without making progress (ctrl.ranges/SP3). A step's sign also picks the direction: positive counts up, negative counts down. Zero says neither.",
+                    "for i in (0..10).step(0) { … }   // error: never advances\n// fix: `.step(2)` to count up by two, `.step(-1)` on a descending range"),
+                "E0339" => ("`.read()`/`.write()` with nothing chained onto it", Type,
+                    "Taking a lock on a `Shared` is expression-scoped: the lock is held for the chain it appears in and released at the end of it (mem.borrowing/E5). On its own, with no field access after it, the lock is taken and dropped in the same instant and the value goes nowhere. Chain a field to read one thing, or use `with` when you need several statements under the lock — that form holds it for the block.",
+                    "counter.write()             // error: locks, then immediately unlocks\n// fix (one field): counter.write().hits = 0\n// fix (several statements):\nwith counter.write() as c {\n    c.hits = 0\n    c.last = now()\n}"),
+                "E0347" => ("type pattern names a type the result can't hold", Type,
+                    "A type pattern matches one arm of a result's error union, so the type it names has to be in that union (type.errors/ER23). Naming anything else is a branch that can never be taken — most often a stale error type left after the signature changed, or a typo. The union is written in the function's return type; match against what's there.",
+                    "func load() -> Config or (ParseError | IoError) { … }\nmatch load() {\n    NetworkError as e => …    // error: not in `ParseError | IoError`\n}\n// fix: match one of the two it can actually return"),
+                "E0348" => ("`Some(...)`/`Ok(...)`/`Err(...)` used as a constructor", Type,
+                    "Rask has no wrapper constructors. A `T?` is built by writing the value or `none`, and a `T or E` by returning either side — the wrapping happens at the `return`, from the signature (type.optionals/OPT2, type.errors/ER2). There is nothing to call, which is the point: no name to import, no distinction between a `T` and a wrapped `T` at the call site.",
+                    "return Some(user)     // error: `Some` isn't callable\nreturn Ok(user)       // error: `Ok` isn't callable\n// fix: just return the value — the signature says which branch it is\nreturn user"),
+                "E0349" => ("`match` on an optional", Type,
+                    "An optional has exactly two states, and the operator family covers both in less space than a match with two arms (type.optionals). `if x?` tests presence, `if x? as v` binds the payload, `x ?? d` supplies a fallback, and `x == none` tests absence. A `match` here would also need pattern names that don't exist.",
+                    "match maybe_user { … }        // error: not a user enum\n// fix, depending on what you want:\nif maybe_user? as u { … }     // bind the payload\nlet name = maybe_user?.name ?? \"anon\"\nif maybe_user == none { return }"),
+                "E0350" => ("`Some`/`None`/`Ok`/`Err` used as a pattern", Type,
+                    "The same rule as E0348, on the pattern side: optionals and results have no variant names to match, so there is nothing for `Some(v)` to destructure (type.optionals/OPT2, type.errors/ER2). Presence and absence are operators; a result's error arms are matched by their actual error types.",
+                    "if r is Ok(v) { … }              // error: `Ok` isn't a pattern\n// fix: operators for presence\nif r? as v { … }\n// fix: the real error type for the failure arm\nif r is ParseError as e { … }"),
+                "E0362" => ("`try` on a value that can both fail and be absent", Type,
+                    "A `T? or E` has two ways to leave the function and `try` only handles one, so which one it means would be a guess (type.errors/ER47, ER16b). Say both: `try` sends the error up, and `??` answers the absence here. The order reads left to right — propagate the failure, then deal with the miss.",
+                    "let cfg = try load()          // error: error, or absence?\n// fix: one answer for each\nlet cfg = try load() ?? default_config()\nlet cfg = try load() ?? return none"),
+                "E0363" => ("`catch` on an optional", Type,
+                    "`catch` binds or drops an error, and an absence isn't one — `none` carries nothing to bind (type.errors/ER14). The fallbacks are split by shape on purpose: `??` for a miss, `catch` for a failure. Reaching for `catch` here usually means the value is more optional than you thought.",
+                    "let port = read_port() catch _ => 8080   // error: nothing to catch\n// fix: `??` is the optional's fallback\nlet port = read_port() ?? 8080"),
+                "E0366" => ("`take` on a `let` binding", Type,
+                    "`take slot` moves the payload out and writes `none` back (type.optionals/OPT32) — that second half is a mutation, so the place has to be writable. A `let` isn't. If you only want to read the value and leave it there, drop the `take`.",
+                    "let pending: Request? = …\nlet req = take pending    // error: `pending` isn't writable\n// fix: mut pending: Request? = …\n// or, if it should stay: let req = pending"),
+                "E0367" => ("method call on a `T?` or `T or E`", Type,
+                    "The wrapper shapes are operator-only: one spelling per job, and the right-hand side stays lazy by construction (std.stdlib/api-design SD4). So there is no `unwrap`, `expect`, `ok_or` or `and_then` to call — `x!` forces, `??` supplies a fallback, `x?.field` reaches through, `catch` handles a failure. Reaching for a method here is usually Rust muscle memory; the operator for the same job is shorter.",
+                    "let n = maybe_count.unwrap_or(0)    // error: no methods on `i64?`\n// fix: the operator that does that job\nlet n = maybe_count ?? 0"),
+                "E0368" => ("`?` on a result", Type,
+                    "`?` asks whether a value is there, and a result answers a different question: it succeeded or it failed, and the failure carries an error (type.errors/ER12). Treating it as presence would step over that error without naming it. Test the failure with `is`, or handle it with `catch`.",
+                    "if load()? { … }                     // error: this is a result\n// fix: name the failure\nif load() is ParseError as e { … }\nlet cfg = load() catch e => fallback(e)"),
+                "E0379" => ("`Link` outlives the rack it points into", Ownership,
+                    "A `Link<T>` is the address of a node, and the nodes live in the rack — so when the rack goes out of scope the node goes with it and the link dangles. Nothing else catches this: no `delete` happened, so the use-after-delete rule never looks, and a link is Copy, so it escapes the scope that produced it without a move to flag. A link into a rack the *caller* owns is fine, because that rack outlives the call.",
+                    "func build() -> Link<Node> {\n    mut r: Rack<Node> = Rack.new()\n    return r.add(Node { v: 1 })   // error: `r` dies at the return\n}\n// fix: let the caller own the rack\nfunc build(mutate r: Rack<Node>) -> Link<Node> {\n    return r.add(Node { v: 1 })\n}"),
+                "E0808" => ("collection restructured inside its own `with` block", Ownership,
+                    "A `with` block borrows one element in place, and `push`, `insert`, `remove` or a resize can move the whole buffer — which would leave the binding pointing at freed memory. Do the structural change outside the block. A `Pool` is the way to hold a reference across one: handles survive reallocation, because they're an index and a generation rather than an address.",
+                    "with items[0] as first {\n    items.push(other)      // error: may reallocate under `first`\n}\n// fix: move it out\nwith items[0] as first { use(first) }\nitems.push(other)"),
+                "E0809" => ("removing the very element a `with` block is holding", Ownership,
+                    "The binding is a view into that element's storage, and removing it frees the storage — the view would dangle for the rest of the block. This is the narrow case of E0808 worth its own message, because the fix is different: it isn't \"move the mutation out of the way\", it's \"finish with the element, then remove it\".",
+                    "with pool[h] as node {\n    pool.remove(h)         // error: that's the element you're holding\n}\n// fix: leave the block first\nwith pool[h] as node { use(node) }\npool.remove(h)"),
+                "E0814" => ("collection restructured during `for mutate`", Ownership,
+                    "`for mutate` walks elements in place so writes reach the collection, which means the loop holds a position in it. Insert, remove, push or clear shifts the elements or moves the buffer, and the position no longer means what it did — the loop would skip elements, repeat them, or read freed memory. Writing to the elements is fine; changing how many there are is not. Collect the changes and apply them after.",
+                    "for mutate item in items {\n    if item.dead { items.remove(i) }   // error: invalidates the walk\n}\n// fix: decide during, apply after\nmut doomed: Vec<i64> = []\nfor item in items { if item.dead { doomed.push(item.id) } }\nfor id in doomed { items.remove_by_id(id) }"),
+                "E0815" => ("`for mutate` element passed to a `take` parameter", Ownership,
+                    "`for mutate` lends each element in place — the collection still owns it. A `take` parameter consumes what it's given, which would leave a hole in the collection with nothing written back. Clone the element if the callee really needs its own, or change the callee to `mutate`, which writes through instead of consuming.",
+                    "for mutate c in conns {\n    close(take c)          // error: `conns` still owns `c`\n}\n// fix: let the callee borrow it\nfor mutate c in conns { reset(mutate c) }"),
+                "E0816" => ("`_` would drop a linear value", Ownership,
+                    "A linear value is consumed exactly once (mem.linear/L1), and `_` consumes nothing — it discards the binding, so a resource or an `Owned<T>` matched into it is never closed or freed. Name it instead and consume it on every arm. This applies to the scrutinee and to payload fields alike: a `_` in a field position drops that field just as silently.",
+                    "match conn {\n    _ => return              // error: the connection is never closed\n}\n// fix: name it and consume it\nmatch conn {\n    c => { c.close(); return }\n}"),
+                "E0828" => ("value doesn't auto-wrap outside a `return`", Type,
+                    "A plain value becomes a `T or E` at a `return`, where the signature says which branch it is. At an assignment there is no signature to read, so the choice between the success and the error side would be a guess — and it's written instead (type.errors/ER11). Optionals are exempt: a `T` widens to a `T?` anywhere, because `none` is the only other branch. Get the result from something that already returns one — a call, or a small `func` whose `return` does the wrapping.",
+                    "let r: Config or ParseError = cfg    // error: which branch is `cfg`?\n// fix: let a return do the wrapping\nfunc ok(c: Config) -> Config or ParseError { return c }\nlet r = ok(cfg)"),
+                "E0839" => ("`with shared as g` doesn't say which lock", Type,
+                    "A `Shared` is read by many or written by one, and the two behave differently — a read binding lets other readers in and never writes back, a write binding shuts them out and does (conc.sync/R4). Which one you get is written rather than inferred, because the difference is not visible in the block's body but is very visible in production.",
+                    "with counter as c { … }          // error: read or write?\n// fix: name the lock\nwith counter.read() as c { … }   // concurrent readers\nwith counter.write() as c { … }  // exclusive"),
+                "W0302" => ("range step runs the wrong way, so the range is empty", Type,
+                    "A positive step on a descending range, or a negative step on an ascending one, never reaches the far end — the loop body runs zero times (ctrl.ranges/SP1-SP2). That is legal and almost never intended, so it's a warning rather than an error. Match the step's sign to the range's direction, or swap the endpoints.",
+                    "for i in (10..0).step(1) { … }   // warning: runs zero times\n// fix: descend\nfor i in (10..0).step(-1) { … }\n// or ascend\nfor i in (0..10).step(1) { … }"),
             },
         }
     }
@@ -421,5 +500,196 @@ impl ErrorCodeRegistry {
 
     pub fn all(&self) -> impl Iterator<Item = &ErrorCodeInfo> {
         self.codes.values()
+    }
+}
+
+// ─── Registry audit ────────────────────────────────────────
+// The registry and the emitters are two hand-maintained lists that have to
+// agree, and nothing made them. `register_codes!` builds a HashMap, so a
+// duplicate code is a silent overwrite rather than an `unreachable_patterns`
+// warning — E0831 was registered twice and the later entry won, so anyone who
+// hit "`??` on a value that is always there" and ran `rask explain E0831` got
+// an explanation about `using` clauses on `main` instead (#892).
+//
+// These read `convert.rs` and this file as text, so they're derived from what
+// the compiler actually does rather than from a list someone has to remember
+// to update.
+#[cfg(test)]
+mod registry_audit {
+    use super::ErrorCodeRegistry;
+
+    const CONVERT_RS: &str = include_str!("convert.rs");
+    const CODES_RS: &str = include_str!("codes.rs");
+
+    /// Every `with_code("…")` in `convert.rs`, with the match arm it sits under.
+    fn emitted_codes() -> Vec<(String, String, usize)> {
+        let mut out = Vec::new();
+        let mut arm = String::from("<none>");
+        for (n, line) in CONVERT_RS.lines().enumerate() {
+            let indent = line.len() - line.trim_start().len();
+            let head = line.trim_start();
+            // Match arms sit at 8–16 spaces and start with the variant name.
+            if (8..=16).contains(&indent) {
+                let name: String = head
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                let rest = head[name.len()..].trim_start();
+                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && (rest.starts_with('{') || rest.starts_with("=>") || rest.starts_with('('))
+                {
+                    arm = name;
+                }
+            }
+            let mut rest = line;
+            while let Some(i) = rest.find("with_code(\"") {
+                rest = &rest[i + "with_code(\"".len()..];
+                if let Some(end) = rest.find('"') {
+                    let code = &rest[..end];
+                    // Compile-time codes only. `RuntimeDiagnostic` emits its own
+                    // R00xx namespace, which this registry has never covered —
+                    // `rask explain R0001` says the code doesn't exist (#992);
+                    // scanning them here would only report that gap 19 times.
+                    if code.starts_with('E') || code.starts_with('W') {
+                        out.push((code.to_string(), arm.clone(), n + 1));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Every code literal registered in this file, in source order.
+    fn registered_codes() -> Vec<String> {
+        CODES_RS
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                let rest = l.strip_prefix('"')?;
+                let end = rest.find('"')?;
+                let code = &rest[..end];
+                if rest[end + 1..].trim_start().starts_with("=>")
+                    && code.len() == 5
+                    && matches!(code.as_bytes()[0], b'E' | b'W')
+                    && code[1..].bytes().all(|b| b.is_ascii_digit())
+                {
+                    Some(code.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_code_is_registered_twice() {
+        let all = registered_codes();
+        let mut seen = std::collections::HashMap::new();
+        let mut dupes = Vec::new();
+        for c in &all {
+            if seen.insert(c.clone(), ()).is_some() {
+                dupes.push(c.clone());
+            }
+        }
+        assert!(
+            dupes.is_empty(),
+            "codes.rs registers these twice, so only the last entry survives \
+             the HashMap and `rask explain` answers about the wrong error: {:?}",
+            dupes
+        );
+    }
+
+    #[test]
+    fn registry_entries_are_reachable_by_get() {
+        // Guards the failure mode above from the other side: the parsed source
+        // and the built map must hold the same number of codes.
+        let registry = ErrorCodeRegistry::default();
+        assert_eq!(
+            registry.all().count(),
+            registered_codes().len(),
+            "codes.rs has more entries than the built registry — some code is \
+             registered twice and one entry was overwritten"
+        );
+    }
+
+    /// Codes emitted by `convert.rs` with no `rask explain` entry.
+    ///
+    /// Every one of these is a user who reads a code off a diagnostic, asks the
+    /// compiler what it means, and is told the code doesn't exist. This list may
+    /// shrink, never grow. Two reasons appear here, and both clear once the
+    /// underlying problem is fixed rather than by adding text:
+    ///
+    ///  - Shared codes (in SHARED_CODES below). An entry could only describe one
+    ///    of the two errors, so the other meaning would get a confidently wrong
+    ///    answer — which is exactly the E0831 bug this module exists to prevent.
+    ///    Saying "unknown code" is the honest answer until they're renumbered.
+    ///  - Match arms that are declared and formatted but never constructed.
+    ///    Unreachable today, so there is no error to explain (#992).
+    const UNEXPLAINED: &[&str] = &[
+        // Shared — see SHARED_CODES.
+        "E0329", "E0330", "E0333", "E0335", "E0340",
+        "E0341", "E0343", "E0344", "E0807", "E0810",
+        // Never constructed.
+        "E0326", // MissingMutateAnnotation — superseded by E0373
+        "E0338", // MessageCoverageMissing
+        "W0301", // DiscardCopyType
+    ];
+
+    #[test]
+    fn every_emitted_code_can_be_explained() {
+        let registry = ErrorCodeRegistry::default();
+        let mut missing: Vec<String> = emitted_codes()
+            .into_iter()
+            .filter(|(code, _, _)| {
+                registry.get(code).is_none() && !UNEXPLAINED.contains(&code.as_str())
+            })
+            .map(|(code, arm, line)| format!("{} ({} at convert.rs:{})", code, arm, line))
+            .collect();
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "these codes are emitted but `rask explain` doesn't know them — \
+             add an entry to codes.rs: {:#?}",
+            missing
+        );
+    }
+
+    /// Codes that two or more genuinely different errors both report.
+    ///
+    /// A code is supposed to identify one error, so a shared code makes
+    /// `rask explain` wrong for every meaning but one, and makes the code
+    /// useless for searching. Fixing these means renumbering, and 21 codes are
+    /// cited by name in `specs/` — so which meaning keeps the number is a
+    /// documentation decision, not a mechanical one. Pinned here so the count
+    /// can only go down. See #992 for the full table.
+    const SHARED_CODES: &[&str] = &[
+        "E0210", "E0309", "E0313", "E0322", "E0324", "E0325", "E0327", "E0328",
+        "E0329", "E0330", "E0331", "E0333", "E0335", "E0340", "E0341", "E0342",
+        "E0343", "E0344", "E0345", "E0346", "E0360", "E0361", "E0371", "E0805",
+        "E0806", "E0807", "E0810", "E0813", "E0819", "E0830", "E0843",
+    ];
+
+    #[test]
+    fn no_new_code_serves_two_errors() {
+        let mut by_code: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            Default::default();
+        for (code, arm, _) in emitted_codes() {
+            by_code.entry(code).or_default().insert(arm);
+        }
+        let new: Vec<String> = by_code
+            .into_iter()
+            .filter(|(code, arms)| arms.len() > 1 && !SHARED_CODES.contains(&code.as_str()))
+            .map(|(code, arms)| {
+                format!("{} → {:?}", code, arms.into_iter().collect::<Vec<_>>())
+            })
+            .collect();
+        assert!(
+            new.is_empty(),
+            "these codes each report two or more different errors, so \
+             `rask explain` can only describe one of them. Give the new error \
+             its own code: {:#?}",
+            new
+        );
     }
 }

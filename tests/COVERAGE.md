@@ -32,11 +32,11 @@ surface stays gated instead of hiding behind a known-fail line.
 
 | Area | File | interp | native | Issues |
 |---|---|---|---|---|
-| println, interpolation, escapes | `t_day_println.rk` | 10/10 | 10/10 | #897 #898 |
+| println, interpolation, escapes | `t_day_println.rk` | 10/10 | 10/10 | |
 | let, mut, shadowing, compound assign | `t_day_bindings.rk` | 10/10 | 10/10 | |
 | integer arithmetic at every width | `t_day_int_math.rk` | 11/11 | 11/11 | |
 | float arithmetic, mixed int/float rules | `t_day_float_math.rk` | 11/11 | 11/11 | |
-| string methods | `t_day_strings.rk` | 13/13 | 13/13 | #900 |
+| string methods | `t_day_strings.rk` | 13/13 | 13/13 | |
 | bool, if/else, logical operators | `t_day_conditionals.rk` | 11/11 | 11/11 | |
 | while, for, loop, break, continue | `t_day_loops.rk` | 12/12 | 12/12 | |
 | Vec basics | `t_day_vec.rk` | 13/13 | 13/13 | |
@@ -211,6 +211,15 @@ so a panic-path regression shows up only in `cargo test`. Anything about panics
 that *can* be asserted without panicking belongs in a suite file instead —
 `t_month_staged.rk` is that split done deliberately, with ST2's commit paths in
 the suite and ST3's discard in the harness.
+
+**Assertion failure messages — no longer a hole.** #897 and #898 were both
+filed as ungateable, on the reasoning that a test can't assert on its own
+failure message. That's true from inside Rask and it doesn't apply from outside:
+a Rust integration test can run `rask test` on a failing file and read what the
+message said. `assertion` in `rask-cli/tests/compile_run.rs` does that on both
+backends, and the float case asserts the two render character for character.
+Anything about how a diagnostic or a runtime message *reads* belongs there
+rather than in a suite file.
 
 **`select`.** Covered by `t_select.rk` and `p06_select.rk`.
 
