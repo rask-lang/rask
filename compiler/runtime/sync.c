@@ -149,9 +149,10 @@ int64_t rask_shared_read_i64(int64_t shared, int64_t closure) {
     int64_t env = CLOSURE_ENV(closure);
 
     pthread_rwlock_rdlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t data = *(int64_t *)s->data;
     int64_t result = fn(env, data);
-    pthread_rwlock_unlock(&s->lock);
+    rask_shared_release(shared);
     return result;
 }
 
@@ -161,10 +162,11 @@ int64_t rask_shared_write_i64(int64_t shared, int64_t closure) {
     int64_t env = CLOSURE_ENV(closure);
 
     pthread_rwlock_wrlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t data = *(int64_t *)s->data;
     int64_t new_data = fn(env, data);
     *(int64_t *)s->data = new_data;
-    pthread_rwlock_unlock(&s->lock);
+    rask_shared_release(shared);
     return new_data;
 }
 
@@ -353,8 +355,9 @@ int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
     int64_t env = CLOSURE_ENV(closure);
 
     pthread_mutex_lock(&m->lock);
+    rask_access_push(rask_mutex_release, mutex);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)m->data);
-    pthread_mutex_unlock(&m->lock);
+    rask_mutex_release(mutex);
     return result;
 }
 
@@ -390,8 +393,9 @@ int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
     if (pthread_mutex_trylock(&m->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
+        rask_access_push(rask_mutex_release, mutex);   // U3/U4
         int64_t result = fn(env, (int64_t)(intptr_t)m->data);
-        pthread_mutex_unlock(&m->lock);
+        rask_mutex_release(mutex);
         return result;
     }
     return 0; // lock not acquired
@@ -424,8 +428,9 @@ int64_t rask_shared_read_ptr(int64_t shared, int64_t closure) {
     int64_t env = CLOSURE_ENV(closure);
 
     pthread_rwlock_rdlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)s->data);
-    pthread_rwlock_unlock(&s->lock);
+    rask_shared_release(shared);
     return result;
 }
 
@@ -435,8 +440,9 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
     int64_t env = CLOSURE_ENV(closure);
 
     pthread_rwlock_wrlock(&s->lock);
+    rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)s->data);
-    pthread_rwlock_unlock(&s->lock);
+    rask_shared_release(shared);
     return result;
 }
 
@@ -476,8 +482,9 @@ int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure) {
     if (pthread_rwlock_tryrdlock(&s->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
+        rask_access_push(rask_shared_release, shared);   // U3/U4
         int64_t result = fn(env, (int64_t)(intptr_t)s->data);
-        pthread_rwlock_unlock(&s->lock);
+        rask_shared_release(shared);
         // Encode as Option: tag=0 (Some) in high bits, payload in low bits
         // For i64 results, pack as (result << 1) | 1 to distinguish from None(0)
         return (result << 1) | 1;
@@ -491,9 +498,10 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
     if (pthread_rwlock_trywrlock(&s->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
+        rask_access_push(rask_shared_release, shared);   // U3/U4
         int64_t result = fn(env, (int64_t)(intptr_t)s->data);
         *(int64_t *)s->data = result;
-        pthread_rwlock_unlock(&s->lock);
+        rask_shared_release(shared);
         return (result << 1) | 1;
     }
     return 0; // None

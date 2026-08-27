@@ -14,6 +14,10 @@ import sync.Readers
 import sync.Shared
 
 
+import sync.Shared
+import sync.Mutex
+import sync.Readers
+
 struct Ledger9 {
     checking: i64
     savings: i64

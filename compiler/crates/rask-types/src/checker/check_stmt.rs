@@ -372,7 +372,7 @@ impl TypeChecker {
                 let mut body_ty = None;
                 for s in body {
                     self.check_stmt(s);
-                    if let StmtKind::Expr(e) = &s.kind {
+                    if let Some(e) = Self::ensure_body_value(&s.kind) {
                         body_ty = self.node_types.get(&e.id).cloned();
                     }
                 }
@@ -740,6 +740,24 @@ impl TypeChecker {
         }
     }
 
+    /// The expression an `ensure` body statement leaves as its result — whatever
+    /// the `else` handler binds the error branch of. A binding counts: writing
+    /// `let n = s.close()` can fail in exactly the way a bare `s.close()` can,
+    /// and taking only bare expressions left the handler's parameter untyped.
+    fn ensure_body_value(kind: &StmtKind) -> Option<&Expr> {
+        use rask_ast::stmt::StmtKind as SK;
+        match kind {
+            SK::Expr(e)
+            | SK::Let { init: e, .. }
+            | SK::Mut { init: e, .. }
+            | SK::LetTuple { init: e, .. }
+            | SK::MutTuple { init: e, .. }
+            | SK::LetStruct { init: e, .. }
+            | SK::Assign { value: e, .. } => Some(e),
+            _ => None,
+        }
+    }
+
     /// ER4/ER3: report every `try` that would run in the `ensure`'s own frame.
     ///
     /// A closure or `spawn` body nested in here is its own frame with its own
@@ -785,8 +803,11 @@ impl TypeChecker {
                 exprs.push(iter);
                 bodies.push(body);
             }
+            SK::Break { value, .. } => exprs.extend(value.iter()),
             // A nested `ensure` reports against its own region on its own pass.
-            _ => {}
+            SK::Ensure { .. } => {}
+            // Nothing to walk: no sub-expression, no body.
+            SK::Return(None) | SK::Continue(_) | SK::Discard { .. } => {}
         }
         for e in exprs {
             Self::scan_expr_for_try(e, region, errors);
@@ -863,6 +884,9 @@ impl TypeChecker {
             }
             EK::Match { scrutinee, arms } => {
                 kids.push(scrutinee);
+                // A guard runs in this frame too, so `try` in one is just as
+                // unpropagatable as `try` in the arm body.
+                kids.extend(arms.iter().filter_map(|a| a.guard.as_deref()));
                 kids.extend(arms.iter().map(|a| a.body.as_ref()));
             }
             EK::Range { start, end, .. } => {

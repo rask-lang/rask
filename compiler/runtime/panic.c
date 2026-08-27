@@ -239,7 +239,7 @@ typedef struct HeldAccess {
 static __thread HeldAccess *tl_held_access = NULL;
 
 void rask_access_push(RaskReleaseFn fn, int64_t handle) {
-    HeldAccess *held = (HeldAccess *)malloc(sizeof(HeldAccess));
+    HeldAccess *held = (HeldAccess *)rask_alloc(sizeof(HeldAccess));
     if (!held) return;
     held->fn     = fn;
     held->handle = handle;
@@ -253,7 +253,7 @@ void rask_access_pop(int64_t handle) {
         if ((*link)->handle == handle) {
             HeldAccess *dead = *link;
             *link = dead->next;
-            free(dead);
+            rask_free(dead);
             return;
         }
         link = &(*link)->next;
@@ -266,7 +266,7 @@ void rask_access_release_all(void) {
         tl_held_access = held->next;
         RaskReleaseFn fn = held->fn;
         int64_t handle = held->handle;
-        free(held);
+        rask_free(held);
         if (fn) fn(handle);
     }
 }

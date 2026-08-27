@@ -22,6 +22,10 @@ import sync.Shared
 import thread.Thread
 
 
+import sync.Shared
+import sync.Mutex
+import thread.Thread
+
 struct Tally9 {
     hits: i64
     misses: i64

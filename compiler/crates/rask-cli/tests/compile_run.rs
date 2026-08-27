@@ -3899,6 +3899,48 @@ fn try_inside_ensure_is_rejected() {
         output.contains("in an `ensure` error handler"),
         "ER3 position should be named:\n{}", output,
     );
+    // Four `try`s, four diagnostics. Counting rather than just checking for the
+    // code: the scan reached the plain body and the handler but had no arm for
+    // `break` and never looked at a match guard, so two of these compiled clean
+    // and blew up in codegen. A `contains` still passes with that hole in it.
+    assert_eq!(
+        output.matches("E0844").count(), 4,
+        "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
+        output,
+    );
+}
+
+#[test]
+fn ensure_handler_binds_a_binding_bodys_error() {
+    // ctrl.ensure/ER2: the handler's parameter takes its type from what the
+    // body's last statement produced, and only bare expressions counted — so a
+    // body ending in `let n = close()` left `e` untyped and died in MIR
+    // lowering. The interpreter skipped the handler outright for the same shape.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_binding_handler.rk");
+        assert_eq!(code, 0, "{}: stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body done\nmut: device gone\nlet: device gone\n",
+            "{}: both binding forms should reach the handler, LIFO", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_in_a_lock_closure_releases_the_lock() {
+    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
+    // lock, call the closure, then unlock — and a panic longjmps over that
+    // unlock. Nothing had registered the lock, so the unwind had nothing to
+    // release and the next acquirer blocked forever. Both of these hung.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
+            "{}: both closure forms hand the lock back", mode,
+        );
+    }
 }
 
 // ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/ER2: an `ensure … else |e|` whose body ends in a binding rather
+// than a bare expression still binds `e` to the failure.
+//
+// The handler's parameter takes its type from what the body's last statement
+// produced, and only a bare expression statement counted — so `let n = close()`
+// left `e` untyped, type-checked clean, and died in MIR lowering with an
+// unresolved receiver for `e.message()`. The interpreter had the same blind
+// spot one layer down: a binding statement evaluates to Unit, so it saw a body
+// that produced nothing and skipped the handler entirely.
+struct CloseErr9 { why: string }
+extend CloseErr9 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+struct Sink9 { id: i32 }
+extend Sink9 {
+    func close(self) -> i32 or CloseErr9 {
+        return CloseErr9 { why: "device gone" }
+    }
+}
+
+func main() {
+    let s = Sink9 { id: 3 }
+    ensure {
+        let n = s.close()
+    } else |e| {
+        println("let: {e.message()}")
+    }
+    ensure {
+        mut n = s.close()
+    } else |e| {
+        println("mut: {e.message()}")
+    }
+    println("body done")
+}

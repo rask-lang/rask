@@ -425,6 +425,15 @@ impl Interpreter {
         let mut last_value = Value::Unit;
         for stmt in body {
             last_value = self.exec_stmt(stmt)?;
+            // A binding statement evaluates to Unit, but the cleanup call whose
+            // failure the `else` handler exists for is its initializer — so
+            // `ensure { let n = s.close() }` has to read `n` back, or a failed
+            // close looks like a body that produced nothing.
+            if let Some(name) = binding_name(&stmt.kind) {
+                if let Some(bound) = self.env.get(name) {
+                    last_value = bound.clone();
+                }
+            }
         }
         Ok(last_value)
     }
@@ -436,6 +445,15 @@ impl Interpreter {
             let _ = self.exec_ensure_body(handler);
             self.env.pop_scope();
         }
+    }
+}
+
+/// The name a single-binding statement binds, if it is one. Destructuring forms
+/// are deliberately absent: a `T or E` can't be taken apart by one.
+fn binding_name(kind: &StmtKind) -> Option<&str> {
+    match kind {
+        StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => Some(name),
+        _ => None,
     }
 }
 

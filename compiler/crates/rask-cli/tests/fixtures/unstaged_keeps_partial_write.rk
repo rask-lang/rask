@@ -3,8 +3,9 @@
 // panic (ctrl.panic/LK3, U2). Same program as staged_discards_on_panic.rk with
 // one word changed, and the survivor sees 90/0 — the torn state staged exists to
 // prevent. If these two ever print the same thing, one of them is broken.
-import sync.Mutex
+
 import sync.Shared
+import sync.Mutex
 
 struct Ledger9 { checking: i64, savings: i64 }
 const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
