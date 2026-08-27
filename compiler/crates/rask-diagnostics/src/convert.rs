@@ -1789,7 +1789,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
             TryInEnsure { region, span } => {
                 Diagnostic::error(format!("`try` can\'t be used {}", region))
-                    .with_code("E0844")
+                    .with_code("E0847")
                     .with_primary(*span, "there is no caller to propagate an error to from here")
                     .with_help("drop the `try` and handle the error where it happens: `ensure f.close() else |e| { log(e.message()) }`")
                     .with_fix("remove `try`")

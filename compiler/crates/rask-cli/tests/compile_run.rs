@@ -3870,12 +3870,12 @@ fn panic_ensure_scalar_snapshot_runs() {
 #[test]
 fn try_inside_ensure_is_rejected() {
     // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
-    // propagate. Both positions are rejected at check time (E0844) instead of
+    // propagate. Both positions are rejected at check time (E0847) instead of
     // type-checking clean and then failing native MIR lowering with an internal
     // message about a type it couldn't work out.
     let (failed, output) = compile_error_output("ensure_try_rejected.rk");
     assert!(failed, "`try` in an ensure body must be a compile error:\n{}", output);
-    assert!(output.contains("E0844"), "expected E0844, got:\n{}", output);
+    assert!(output.contains("E0847"), "expected E0847, got:\n{}", output);
     assert!(
         output.contains("inside an `ensure` body"),
         "ER4 position should be named:\n{}", output,
@@ -3889,7 +3889,7 @@ fn try_inside_ensure_is_rejected() {
     // `break` and never looked at a match guard, so two of these compiled clean
     // and blew up in codegen. A `contains` still passes with that hole in it.
     assert_eq!(
-        output.matches("E0844").count(), 4,
+        output.matches("E0847").count(), 4,
         "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
         output,
     );
