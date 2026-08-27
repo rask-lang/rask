@@ -1,0 +1,19 @@
+title = "Roman numerals"
+horizon = "day"
+concepts = ["while", "arrays", "StringBuilder", "strings"]
+issues = []
+
+contract = """
+func to_roman(n: i32) -> string
+func from_roman(s: string) -> i32
+"""
+
+prompt = """
+Convert between Roman numerals and integers, for 1 through 3999.
+
+`to_roman` uses the subtractive forms: 4 is "IV", 9 is "IX", 40 is "XL", 900 is
+"CM". `from_roman` reads one back. `to_roman` of anything outside 1..=3999
+returns the empty string; `from_roman` of an unparseable string returns 0.
+
+Rask has no string `+`. Build a string with `StringBuilder` or interpolation.
+"""

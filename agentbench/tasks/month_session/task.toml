@@ -1,0 +1,36 @@
+title = "A session that must be closed"
+horizon = "month"
+concepts = ["@resource", "ensure", "linearity", "take"]
+issues = []
+
+contract = """
+@resource
+struct Session { id: i32 }
+
+extend Session {
+    func open(id: i32) -> Session
+    func id(self) -> i32
+    func close(take self) -> i32
+}
+
+func visit(id: i32) -> i32
+func visit_branch(id: i32, early: bool) -> i32
+func audited(mutate log: Vec<i32>, id: i32, early: bool) -> i32
+"""
+
+prompt = """
+A `@resource` type is linear: it must be consumed exactly once, and the compiler
+rejects any path that drops it. Build one and three functions that use it.
+
+`Session.open` makes one. `id` reads the id without consuming. `close` consumes
+the session and returns its id.
+
+- `visit` opens a session with `id`, closes it, and returns twice the id it got
+  back from `close`.
+- `visit_branch` opens one, and returns `close()` when `early` is true, or
+  `close() + 100` otherwise. Both arms have to consume it — that's the point.
+- `audited` pushes 1 onto `log` and schedules a push of 9 for scope exit, so the
+  9 lands however the function leaves. When `early` is true it returns 1
+  immediately; otherwise it pushes 5 and returns 2. No session involved here,
+  just the cleanup ordering.
+"""

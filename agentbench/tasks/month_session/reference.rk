@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+@resource
+struct Session {
+    id: i32
+}
+
+extend Session {
+    func open(id: i32) -> Session {
+        return Session { id }
+    }
+
+    func id(self) -> i32 {
+        return self.id
+    }
+
+    func close(take self) -> i32 {
+        return self.id
+    }
+}
+
+func visit(id: i32) -> i32 {
+    let s = Session.open(id)
+    return s.close() * 2
+}
+
+func visit_branch(id: i32, early: bool) -> i32 {
+    let s = Session.open(id)
+    if early {
+        return s.close()
+    }
+    return s.close() + 100
+}
+
+func audited(mutate log: Vec<i32>, id: i32, early: bool) -> i32 {
+    log.push(1)
+    ensure log.push(9)
+    if early {
+        return 1
+    }
+    log.push(5)
+    return 2
+}

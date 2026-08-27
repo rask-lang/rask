@@ -1,0 +1,27 @@
+title = "Summary statistics"
+horizon = "day"
+concepts = ["structs", "extend", "optionals", "floats"]
+issues = []
+
+contract = """
+struct Stats { count: i64, total: f64, smallest: f64, largest: f64 }
+
+func summarize(values: Vec<f64>) -> Stats?
+
+extend Stats {
+    func mean(self) -> f64
+    func span(self) -> f64
+}
+"""
+
+prompt = """
+Summarize a list of measurements.
+
+`summarize` returns the count, the sum, the smallest and the largest value. An
+empty list has no summary at all, so it returns the absent value rather than a
+zeroed struct.
+
+`mean` is the sum over the count; `span` is largest minus smallest. Both are
+methods on Stats, which in Rask means an `extend` block, not a function body
+inside the struct.
+"""

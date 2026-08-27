@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func build_index(documents: Vec<string>) -> Map<string, Vec<i64>> {
+    mut index: Map<string, Vec<i64>> = Map.new()
+    mut doc: i64 = 0
+    for text in documents {
+        for raw in text.split_whitespace().to_vec() {
+            let word = raw.to_lowercase()
+            mut postings = index.get(word) ?? Vec.new()
+            if postings.len() == 0 || postings[postings.len() - 1] != doc {
+                postings.push(doc)
+                index.insert(word, postings)
+            }
+        }
+        doc = doc + 1
+    }
+    return index
+}
+
+func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
+    return index.get(word) ?? Vec.new()
+}
+
+func documents_with_all(index: Map<string, Vec<i64>>, words: Vec<string>) -> Vec<i64> {
+    mut out: Vec<i64> = Vec.new()
+    if words.len() == 0 { return out }
+    let first = lookup(index, words[0])
+    for doc in first {
+        mut everywhere = true
+        for word in words {
+            let postings = lookup(index, word)
+            mut here = false
+            for other in postings {
+                if other == doc { here = true }
+            }
+            if !here { everywhere = false }
+        }
+        if everywhere { out.push(doc) }
+    }
+    out.sort()
+    return out
+}

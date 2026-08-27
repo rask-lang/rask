@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func roster() -> Vec<Person> {
+    return [Person { name: "ada", age: 36, city: "london" }, Person { name: "bo", age: 24, city: "oslo" }, Person { name: "cy", age: 36, city: "oslo" }, Person { name: "di", age: 19, city: "london" }]
+}
+
+test "verify: sorted by age, stable on ties" {
+    let sorted = by_age(roster())
+    assert sorted.len() == 4
+    assert sorted[0].name == "di"
+    assert sorted[1].name == "bo"
+    assert sorted[2].name == "ada"
+    assert sorted[3].name == "cy"
+}
+
+test "verify: filtered by city, in order" {
+    let oslo = names_in(roster(), "oslo")
+    assert oslo.len() == 2
+    assert oslo[0] == "bo"
+    assert oslo[1] == "cy"
+    assert names_in(roster(), "paris").len() == 0
+}
+
+test "verify: average" {
+    assert average_age(roster()) == 28.75
+    mut empty: Vec<Person> = Vec.new()
+    assert average_age(empty) == 0.0
+}
+
+test "verify: oldest" {
+    assert oldest_name(roster())! == "ada"
+    mut empty: Vec<Person> = Vec.new()
+    assert oldest_name(empty) is none
+}
