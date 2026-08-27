@@ -1,309 +1,281 @@
-# Track 1 Prompts
+# Session prompts
 
-One prompt per Track 1 item in [PLAN.md](PLAN.md). Each is self-contained — paste into a fresh
-session. Shared rules baked into every prompt: understand before changing, fix the cause, error
-messages go through rask-diagnostics, and every fix ships with conformance tests that pass on
-**both** backends (`rask check` + `rask run --interp` + `rask run`). Evidence line numbers were
-verified at commit ce8b13e; re-locate if the file has moved.
+Self-contained prompts, one per lane. Paste into a fresh session; each ends in its own PR.
+
+**They're partitioned by crate so several can run at once.** The lane table says which files each
+one owns. A lane that needs to touch a file outside its list should say so in the PR rather than
+just doing it — that's how two sessions end up rewriting the same 7,000-line file.
+
+Measured 2026-08-24 at `bd83147` (after #971). Re-measure before trusting any number here.
+
+```
+tests/differential.sh      329 green, 20 expected-red, 0 untracked, 0 unexpected-pass
+tests/examples_gate.sh     34 ok      tests/projects_gate.sh   21 ok
+tests/fmt_roundtrip_gate.sh clean     tests/http_api_harness.sh ok both backends
+cargo test --release --workspace      52 binaries, 0 failures
+```
+
+## Lanes
+
+| Lane | Owns | Issues |
+|---|---|---|
+| **L1 Namespace** | `rask-resolve/`, `rask-stdlib/mir_metadata.rs`, corpus `import` lines | #977, #923, #975 |
+| **L2 Interpreter** | `rask-interp/` | #935, interp halves generally |
+| **L3 Diagnostics & tooling** | `rask-diagnostics/`, `rask-lint/`, `rask-fmt/` | #900, #892, #893, #897, #898 |
+| **L4 Codegen singles** | `rask-codegen/src/builder.rs` | #903, #933, #929 |
+| **L5 Comptime** | `rask-comptime/`, MIR comptime paths | #930, #931 |
+| **L6 Panics & unwinding** | `runtime/*.c`, codegen panic path | #299 family |
+| **L7 Agent benchmark** | new files only | — |
+
+**L4 and L6 both reach `rask-codegen/src/builder.rs`.** Run one or the other, not both, unless
+you're willing to merge that file by hand.
+
+**Every lane touches `tests/known_divergences.txt` and `tests/COVERAGE.md`** — one line added or
+deleted per fix. Conflicts there are trivial: take both sides. Tell lanes not to edit `PLAN.md`;
+fold that in when you merge.
 
 ---
 
-## 1.1 Ownership branch-merge unsoundness
+## Shared preamble
+
+Paste this at the top of any lane prompt.
 
 ```
-Fix an unsoundness in the ownership checker's branch merge. In
-compiler/crates/rask-ownership/src/lib.rs, merge_branch_bindings (~line 1241) treats a binding as
-Moved only if it was moved in BOTH branches of an if/else — its own comments say "Moved in then but
-not else — keep else state (not moved)". So a value moved or a linear resource consumed in exactly
-one branch is considered live/unconsumed after the join. This defeats mem.ownership/O3 (use after
-move) and mem.linear/L1 (consume exactly once) for all conditional code, and is the general form of
-issue #294 (if-without-else accepting single-branch consumption of a linear resource).
+Read CLAUDE.md and compiler/CLAUDE.md first. Work on branch <BRANCH>, open a draft PR when the
+first fix lands, keep it green.
 
-The correct merge for use-after-move is: moved in EITHER branch => "maybe moved" after the join, and
-any later use is an error (spec treats maybe-moved as moved). For linear consumption the dual holds:
-consumed in only one branch is an error at the join unless the other branch also consumes or the
-value is consumed on every path afterward — check what specs/memory/linear.md and
-specs/control/ensure.md (C3–C5 definiteness) say before deciding how strict the join must be, and
-read issues #294, #295, #296 first; this fix should subsume #294 and may interact with the ensure
-runtime-flag machinery.
+Verify every change on BOTH backends. A fix isn't done until:
+  rask test --interp tests/suite/<probe>.rk   and   rask test tests/suite/<probe>.rk
+agree, and the file has left tests/known_divergences.txt.
 
-Also audit the loop case: check how binding states from a loop body merge back (a move inside a loop
-body is a use-after-move on the second iteration).
+Before pushing, run: tests/differential.sh, tests/examples_gate.sh, tests/projects_gate.sh,
+and `cd compiler && cargo test --release --workspace`. All were green at bd83147, so any red is
+yours.
 
-Deliverables:
-- Fix in rask-ownership with clear diagnostics (what moved where, which branch) via rask-diagnostics.
-- Negative tests in tests/compile_errors/ covering: move in one branch then use after join; linear
-  resource consumed in one branch only (both if/else and if-without-else); move inside a loop body.
-  Tag each with the rule it witnesses (mem.ownership/O3, mem.linear/L1).
-- Positive tests in tests/suite/ for the legal forms: moved in both branches; consumed in both;
-  conditional move followed by reassignment before use.
-- Run the full tests/suite/ on check+interp+native to catch programs the stricter checker now
-  rejects; fix fallout properly (the examples/ programs must still compile).
-- Close #294 via the PR if subsumed; update #295/#296 with findings.
-```
+Five things that cost real time in the last session — they will cost you the same:
 
-## 1.2 Integer overflow semantics
+1. YOUR FIRST EXPLANATION IS PROBABLY WRONG. It was wrong about half the time last session, every
+   time convincingly. Instrument before you theorise: `--dump-mir`, a temporary eprintln, `gdb
+   -batch -ex run -ex 'bt 12'`. One bug was "diagnosed" three times before the measurement said
+   what it actually was.
 
-```
-Implement integer overflow semantics per specs/types/integer-overflow.md — this is currently
-unimplemented in both backends and it's a headline spec promise (panic on overflow in ALL builds,
-OV1/OV3/OV4).
+2. GREEN GATES DON'T MEAN CORRECT. `match n { 1 => 2.5, _ => 0.0 }` returned 2 while all six gates
+   passed, because no test happened to put a float in a match arm. When you fix something, ask what
+   *shape* was untested and add that, not just the reported case.
 
-Current state:
-- Native: compiler/crates/rask-codegen/src/builder.rs (~line 2199) emits raw iadd/isub/imul with no
-  overflow trap, and raw udiv/sdiv with NO divide-by-zero check (OV2) — the interpreter has the
-  div-zero check, so the backends diverge.
-- Interpreter: compiler/crates/rask-interp/src/interp/operators.rs does i64 arithmetic with no
-  width-aware overflow checks.
-- No shift-amount-exceeds-width panic (SH1) anywhere.
-- specs/types/integer-overflow.md also defines elision rules (EL1–EL3) via range analysis —
-  rask-mir/src/analysis/intervals.rs exists for bounds checks and could be reused later; do NOT
-  block the semantics on the optimization. Correctness first, elision as a follow-up.
+3. A HALF-FIX LOOKS LIKE A WHOLE ONE. Scoping type parameters fixed the declaration site and left
+   every call site broken — the second failure looked identical to the first. Write repros that
+   exercise two shapes, not one.
 
-Read the spec fully first, including negation (-x at MIN), the panic message format, and comptime
-behavior (CT1: overflow in comptime eval is a compile error — check rask-comptime already does
-width-aware arithmetic; fix if not).
+4. WATCH FOR HAND-MAINTAINED LISTS. Several bugs were a name missing from a hardcoded match:
+   opaque types in the layout pass, stdlib modules in the resolver (two such lists, disagreeing),
+   struct-like types in `resolve_stdlib_symbol`. If your fix is "add a name to a list", ask what
+   derives that list and whether it should.
 
-Deliverables:
-- Interp: width-aware checked arithmetic for all integer types (i8..i128, u8..u128) on + - * / % -x
-  and shifts, panicking with a message that names the operation and type.
-- Native: overflow traps (Cranelift supports trapping variants / explicit checks), div-zero and
-  shift checks. Use the same panic path as other runtime panics so ctrl.panic semantics apply.
-- Positive tests: arithmetic at type boundaries that should NOT panic (MAX with no overflow, etc.).
-- Panic tests: overflow on each op class, div by zero, shift == width, on both backends. Follow the
-  existing test conventions for expected-panic tests; if none exist, establish one.
-- Benchmark note: run benchmarks/ before/after to quantify the check cost; report, don't optimize
-  prematurely.
-- File a tracking issue first if none exists (PLAN.md Track 1.2 says it needs filing); reference it
-  in the commit.
-Out of scope (file follow-ups): Wrapping<T>/Saturating<T> and wrapping_*/checked_* methods (W1–W5,
-M1), elision (EL1–EL3).
-```
+5. NAME YOUR REPRO TYPES SOMETHING UNLIKELY. Calling a test struct `Timer` collided with
+   `stdlib/time.rk`'s and hid the bug under a different one (#975). `Budget9` is a fine name.
 
-## 1.3 `as` cast rules + lossy conversion forms
-
-```
-Enforce the conversion rules from specs/types/primitives.md (CV1–CV10, CH5, BL3). Today the type
-checker accepts ANY `as` cast: in compiler/crates/rask-types/src/checker/check_expr.rs
-(ExprKind::Cast, ~line 948) the only validation is trait satisfaction for `as any Trait`; every
-numeric cast falls through and returns the target type unchecked.
-
-Spec: `as` is lossless widening only (CV1–CV4). Narrowing (i32 as i8), sign reinterpretation
-(i32 as u32 when negative-capable), float<->int via `as`, int-to-char (CH5), and int-to-bool (BL3)
-are compile errors. The sanctioned lossy forms are separate syntax (CV5–CV10): `truncate to T`,
-`saturate to T`, `convert to T?`, and explicit float-to-int forms — read the spec
-for the exact surface; none of it is parsed today (grep the lexer/parser first to confirm).
-
-This is a two-part task; do them in order:
-1. Reject invalid `as` casts in the checker with diagnostics that suggest the correct form
-   (suggestions.rs — show `x truncate to i8` as the fix, not prose). Then run tests/suite/,
-   examples/, and stdlib/*.rk on check to find code relying on the old permissive `as`; fix each
-   site to the spec-correct form. Expect fallout — that's the point.
-2. Implement the CV5–CV10 forms end to end: lexer/parser (specs/SYNTAX.md for precedence), AST,
-   typecheck, interp semantics, MIR lowering, native codegen. Truncate/saturate/try-convert
-   semantics must match the spec tables exactly at the boundaries (round-toward for floats etc. —
-   read the spec, don't assume).
-
-Deliverables:
-- compile_errors tests for each rejected cast class (tag CV1–CV4, CH5, BL3).
-- suite tests exercising every CV5–CV10 form at boundary values, identical results on both backends.
-- char.from_u32 must return char? per CH3 — the interp currently returns a bare char with
-  unwrap_or('\0') (rask-interp/src/interp/eval_expr.rs ~line 1409); fix it with the same change.
-- File the tracking issue first (PLAN.md Track 1.3 — not yet filed).
-Coordinate with overflow work (1.2): checked arithmetic and conversions share panic/runtime helpers.
-```
-
-## 1.4 Trait-object vtable dispatch
-
-```
-Fix trait-object method dispatch for native codegen. Two defects in the `any Trait` path
-(specs/types/traits.md):
-
-1. Vtable offset bug: compiler/crates/rask-mir/src/lower/expr.rs (~line 1467) computes
-   vtable_offset = 24 + idx*8 where idx is the method's position among ALL of the trait's methods
-   (self.ctx.trait_methods). Check how the vtable is actually laid out in
-   rask-codegen/src/vtable.rs — the spec (TR1) says only object-compatible methods go in the
-   vtable, so if the layout skips incompatible methods (Self-returning, generic), any trait with an
-   incompatible method before a compatible one dispatches through the WRONG SLOT — a silent
-   miscompile. First write a failing test that demonstrates it (trait with a Self-returning method
-   declared before a normal method; call the normal method through `any Trait` natively). Then fix:
-   either both sides index the compatible-only list, or the vtable stores all methods with
-   compatible ones populated — pick the one the spec's layout table prescribes.
-2. TR3 unenforced: calling a generic method through `any Trait` should be a compile error at the
-   conversion site (or the call site — read TR1–TR3 for which), with a diagnostic explaining why
-   it can't be dispatched dynamically. Today nothing rejects it.
-
-Also reproduce and fold in issue #194 ("vtable not found for any Trait") — likely the same area;
-diagnose whether it's a separate registration gap in rask-codegen/src/dispatch.rs before fixing.
-
-Deliverables:
-- Failing-then-passing native test for the offset bug (this cannot be tested through the
-  interpreter — its dynamic dispatch masks the bug; the test must run the compiled binary).
-- compile_errors test for TR3.
-- suite test: heterogeneous Vec<any Trait> calling methods through the box on both backends (TR7).
-- Update/close #194 with the diagnosis.
-```
-
-## 1.5 Panic semantics (ctrl.panic)
-
-```
-Work the panic-semantics tracking issue #299 (spec: specs/control/panics.md, accepted; also
-specs/control/ensure.md). Read #299 and its sub-issues (#287, #288, #289, #290, #291, #298) and the
-spec's own "Implementation status" section first — the spec is precise about the target semantics.
-
-Current state, verified:
-- Native: the panic path runs NO ensures and abort()s the whole process
-  (compiler/runtime/panic.c ~line 118); codegen only emits ensure bodies on the normal
-  CleanupReturn path (#287). Spec: panic kills the TASK, unwinds running ensures (P1/U1), main
-  task panic exits the process with code 101 (P4).
-- Interpreter: ensures DO run on panic, but an ensure-body panic skips the remaining ensures and
-  the secondary panic is silently dropped (#289; spec E2/E3: remaining ensures still run,
-  first panic wins, secondary panics are reported). with-block writes are buffered and discarded
-  on panic (#290; spec U2: released writes are kept). Uncaught panic exits code 1, spec says 101
-  (#291).
-- Runtime: green.c join re-panics in the joiner instead of returning JoinError.Panicked (#288) —
-  but note green.c is not currently linked into builds (PLAN.md Track 5.5), so prioritize the
-  thread.c/OS-thread join path; fix green.c in passing only if trivial.
-
-Suggested order (each its own PR-sized chunk):
-1. Interpreter E2/E3 + U2 + exit code 101 (#289, #290, #291) — smallest, establishes the reference
-   semantics and the test corpus.
-2. Native unwind: panic runs ensures for the panicking task, then task-kill; main-task panic =>
-   exit 101 after unwind (#287). This needs a real unwind mechanism in codegen/runtime — read the
-   spec's implementation notes; do not guess an ABI. If the full design is too large for one
-   session, land the runtime plumbing behind the existing panic entry point and file precise
-   follow-ups on #299.
-3. Join semantics (#288, ctrl.panic/O1) + the runtime surface items in #298.
-
-Every semantic rule you implement gets a suite test that panics and asserts observable cleanup
-(e.g. ensure writes to a file that the harness checks) — on both backends once step 2 lands.
-staged() (ST1–ST4) is out of scope here — it's tracked separately (#292).
-```
-
-## 1.6 Generic-layout miscompile (Cranelift verifier errors)
-
-```
-Fix a native-codegen miscompile class: generic struct methods hit Cranelift verifier errors —
-f64 values used where a pointer/int is expected. Repro right now:
-
-  compiler/target/release/rask compile examples/sensor_processor.rk -o /tmp/out
-  => "Compilation(Verifier(... arg 0 (v24) with type f64 failed to satisfy type set ..." in
-  ProcessorState_compute_averages.
-
-Related open issues — read both before starting: #272 (generic struct method returning T where
-T = string returns empty string) and #259 (ER24 early-exit narrowing reads wrong layout). This may
-be one root cause (monomorphized layout/type substitution disagreeing between rask-mono layout
-computation and rask-codegen) or several; diagnose first with
-`rask compile --dump-mir examples/sensor_processor.rk` and a minimized .rk repro before touching
-code. compiler/CLAUDE.md: struct layout bugs live in rask-codegen/src/layouts.rs and
-rask-mono/src/layout.rs.
-
-Understand-before-changing applies doubly here: explain in the PR description exactly why the
-wrong Cranelift type is chosen (which substitution or layout lookup goes stale) before the fix.
-
-Deliverables:
-- Minimal repro added to tests/suite/ (generic struct + method over f64 fields and over string,
-  asserting correct values) — must pass check+interp+native.
-- examples/sensor_processor.rk compiles and runs natively.
-- If #272/#259 turn out to be the same root cause, close them via the PR; if not, update them
-  with what you learned and file a new issue for this specific bug.
-```
-
-## 1.7 Index expression types unchecked
-
-```
-Fix issue #310: index expression types are never checked — `vec[string_key]` typechecks and fails
-at runtime. In rask-types/src/checker/check_expr.rs, find the Index/subscript path and add type
-checking: Vec<T> requires an integer index (which widths? check specs/stdlib/collections.md),
-Map<K,V> requires K, Pool<T> requires Handle<T> (and reject cross-pool handle types where
-statically known — see specs/memory/pools.md PH rules), tuples take only literal indices (TU5/TU6,
-specs/types/tuples.md — verify out-of-bounds literal is a compile error as TU6 says).
-
-The diagnostic must say what index type the container expects and what was found, with a
-suggestion when there's an obvious fix (e.g. `.get(&key)` vs indexing — match whatever the spec
-sanctions; read collections.md first, don't invent API).
-
-Deliverables: compile_errors tests per container class; suite check that valid indexing still
-works everywhere (run full suite on all three paths); close #310.
-```
-
-## 1.8 Linear values in containers
-
-```
-Enforce the container rules for linear values from specs/memory/resource-types.md (RC1–RC4) and
-specs/memory/linear.md: Vec<T> and Map<K,V> must REJECT element types that are linear
-(@resource structs, Owned<T>, transitively-linear structs) at compile time — today nothing stops
-Vec<FileHandle>, and linear values can be silently dropped inside collections, breaking
-consume-exactly-once. Pool<T> and T? are the sanctioned containers (RC2/RC4).
-
-Implementation: rask-ownership already computes transitive resource-ness
-(is_transitive_resource_by_id, rask-ownership/src/lib.rs ~line 2225); the rejection likely belongs
-in the type checker at instantiation sites (Vec<T> construction, push/insert calls, struct fields
-of type Vec<Resource>, generic instantiation where T binds to a linear type through mono).
-Find ALL the routes a linear type can enter a Vec/Map — direct literal, push, generic call,
-collect — and cover each. Check the specs for the exact rule statements and error wording direction.
-
-Also verify R5 while you're here: Pool<Resource> panics on drop if non-empty (take_all is the
-consume path). If the runtime panic isn't implemented in the interpreter and native runtime
-(pool.c), implement or file precisely.
-
-Deliverables: compile_errors tests for each entry route (tag RC1/RC3); suite test that
-Pool<Resource> + take_all works and non-empty drop panics (both backends); file the tracking
-issue first (PLAN.md Track 1.8 — not yet filed).
-```
-
-## 1.9 Cross-task ownership
-
-```
-Implement the cross-task ownership rules from specs/memory/ownership.md T1–T3, currently
-completely unenforced (no logic in rask-ownership):
-- T1: sending a value over a channel transfers ownership — the send consumes the value like a
-  take-param; use after send is use-after-move. Today channel.send() doesn't consume (related:
-  #296, where take-param/send consumption isn't recognized without call-site `own`).
-- T2: no shared mutable state across tasks — verify what the spec requires the checker to reject
-  beyond what Send-ability of Shared/Mutex already covers.
-- T3: borrows must not cross task boundaries — a spawn closure capturing a borrow/view whose
-  source lives outside must be rejected (interaction with specs/memory/closures.md capture rules —
-  read both).
-
-Start by reading how spawn closures capture today (rask-ownership closure handling +
-rask-types/src/checker/borrow.rs) and how send is typed (rask-stdlib stubs for channels). The fix
-is checker-side flow logic, not runtime.
-
-Deliverables: compile_errors tests for use-after-send, borrow-capturing spawn, and whatever T2
-mandates; suite tests for the legal patterns (send owned value, clone-then-send, move-capture
-spawn); resolve or fold in #296; file the tracking issue first (PLAN.md Track 1.9 — not yet
-filed).
-```
-
-## 1.10 Ensure cancellation: static definiteness (C3–C5)
-
-```
-Replace the runtime drop-flag mechanism for ensure cancellation with the static definiteness
-analysis the spec requires: specs/control/ensure.md C3–C5. Read the spec's own implementation-
-status section and issues #293 (the implementation task), #295 (nested-block cancellation bug:
-rollback runs after commit), #296 (consumption recognition) first.
-
-Target semantics: `ensure` on a linear value is cancelled by explicit consumption; whether the
-compiler ACCEPTS a maybe-consumed value is a static property (C4: consumption must be definite on
-every path or on none — maybe-consumed is a compile error), so no runtime flags are needed
-(C3), and consumption is recognized uniformly across take-calls, sends, and returns (C5, ties into
-#296 and Track 1.1's branch-merge fix — coordinate: this analysis sits on top of the fixed merge).
-
-This is checker/ownership work in rask-ownership (ensure_registered / mark_ensure_resources,
-~line 2246) plus removal of the interpreter's runtime cancellation flags
-(rask-interp/src/resource.rs, ensure_receiver_consumed in call.rs) once the static analysis
-guarantees definiteness. Sequence it AFTER 1.1 lands — the definiteness analysis is only sound on
-a sound branch merge.
-
-Deliverables: compile_errors test for maybe-consumed (consume in one branch, not the other, with
-an ensure pending — C4); suite tests for definite-consume-cancels-ensure and no-consume-runs-
-ensure including the #295 nested-block case (both backends); close #293/#295 as delivered,
-update #296.
+Explain in chat, not by pointing at a diff — quote the 10-20 relevant lines. End with the 2-4 most
+questionable calls you made.
 ```
 
 ---
 
-Suggested order: 1.1 → 1.7 → 1.6 → 1.4 (independent, unblock validation programs) can run in
-parallel with 1.2 → 1.3 (shared runtime helpers); then 1.5; 1.8/1.9 after 1.1; 1.10 last (depends
-on 1.1, coordinates with 1.5's ensure work).
+## L1 — Namespace rules (#977, #923, #975)
+
+The biggest lane and the one with corpus churn. Do it alone if you're only running one.
+
+```
+<SHARED PREAMBLE>
+
+Enforce structure.modules' namespace rules. They are specified and none are enforced — issue #977
+has the four one-line programs that all wrongly compile today.
+
+  IM1  "there is no set that comes pre-imported"      — every stdlib type resolves bare
+  IM8  local shadowing an import is a compile error   — accepted
+  BI3  local type named `Vec` is a compile error      — accepted
+  BF3  local `func println` is a compile error        — accepted
+
+BLOCKER, FOUND AND NOT YET FIXED — do this first or IM1's error message advises something
+impossible. Only 17 of 29 stdlib modules can be imported at all:
+
+  $ rask check <<< 'import memory'     → error[E0207]: unknown package: `memory`
+  Same for: string, sync, collections, bits, builtins, char, encoding, error_context,
+            fmt, num, option, reflect, result, sequence
+
+`BuiltinModuleKind` in rask-resolve/src/symbol.rs is a hand-written enum, and
+`ALL_BUILTIN_MODULES` lists 17 variants. A *second*, different hardcoded list lives at
+resolver.rs:1276 (`is_stdlib_module`) and includes `num`, which the enum doesn't. Both should
+derive from the actual stub set. Make every stdlib module importable before enforcing IM1.
+
+IM1 is already half-built: `stdlib_module_needs_import` (resolver.rs ~2158) enforces it for module
+names only, deliberately — see its comment. Widen it to types, minus BI1's closed builtin set
+(primitives, string, Vec, Map, Set, Error, Channel, none). Note IM1 means `import time` gives
+`time.Duration`, NOT a bare `Duration`; bare names come only from IM4 `import time.Duration`.
+
+Two halves, both needed: the resolver sees expression positions, but type ANNOTATIONS
+(`func f(d: Duration)`, `struct S { d: Duration }`) are strings resolved by the checker's
+parse_type_string and slip through entirely. Confirm with a repro before and after.
+
+Blast radius, measured: 102 of 444 corpus files need a new import (13 examples, 80 suite, 6
+tutorials, 3 projects), dominated by memory.Pool (20), string.StringBuilder (8), memory.Rack (7).
+Script the mechanical part.
+
+DECISION YOU MAY NEED: BI1's builtin list is closed and does NOT include the box family — Pool,
+Handle, Rack, Link, Mutex, Shared. That's ~60 of the 102 files. Following BI1 literally means
+`import memory` everywhere Pool is used. If that reads as too much ceremony, ask before deciding —
+it changes half the work.
+
+Then #923 falls out: `import time.Duration as Span` binds Span as SymbolKind::Variable, not a type,
+because resolve_stdlib_symbol's hardcoded is_struct list covers five modules. See the comment on
+#923 for the full trace — the fix is to desugar an aliased type import into `type alias Span =
+Duration`, which reuses machinery that already works.
+
+And #975 gets much less urgent: a user struct named like a stdlib type currently takes the stdlib's
+layout and segfaults, because MirContext::find_struct resolves by bare name against a flat
+Vec<StructLayout>. With IM1 the name isn't in scope unasked; with IM8 shadowing is a named error.
+Fix the flat-map lookup too if you have room — the checker already solved this with separate
+type_names/stdlib_type_names maps (#515).
+```
+
+---
+
+## L2 — Interpreter (#935)
+
+```
+<SHARED PREAMBLE>
+
+The interpreter treats a raw pointer as a plain i64 (#935): `*ptr` silently yields 0, and
+`ptr.read()` / `ptr.offset()` don't exist. Native handles all of it, so this is the interpreter
+lagging, and `tests/suite/t_month_unsafe.rk` is 1/6 there against 6/6 native.
+
+Native is the reference for what the answer should be — read rask-codegen's raw-pointer path and
+mirror its semantics, don't invent them. specs/memory/unsafe.md has the rules (U3, UF1).
+
+While you're in rask-interp, `t_month_unsafe.rk` and `examples/19_unsafe.rk` are the corpus for
+this; 19_unsafe is in tests/known_fail_examples.txt because the interpreter has no `extern "C"` at
+all, which is the same gap one layer up. Enrolling that example is a bonus, not the task.
+```
+
+---
+
+## L3 — Diagnostics & tooling (#900, #892, #893, #897, #898)
+
+Five small, independent, all in the presentation layer. Good first lane.
+
+```
+<SHARED PREAMBLE>
+
+Five diagnostics/tooling bugs, all independent:
+
+#900  E0335 tells you to write `string.concat(a, b)`, which doesn't exist.
+#892  `rask explain E0831` prints the wrong error — duplicate match arm in the code registry.
+#893  `rask lint` rejects the stdlib's own try_send/try_receive under the `T or E` naming rule.
+#897  `assert a == b` on two string variables prints their addresses instead of the strings (native).
+#898  A failed float assertion rounds both operands to 6 digits, so unequal floats print as equal.
+
+Diagnostics are a first-class feature here — read the "Error messages" section of CLAUDE.md. For
+#900 in particular: write the message you WANT first, then make it true. Every user-facing error
+goes through rask-diagnostics; don't eprintln.
+
+#897 and #898 are assertion *rendering*, which lives on the native side — check whether the
+interpreter prints these correctly and match it.
+```
+
+---
+
+## L4 — Codegen singles (#903, #933, #929)
+
+```
+<SHARED PREAMBLE>
+
+Three native codegen bugs, all in rask-codegen/src/builder.rs. Do NOT run this lane alongside L6 —
+you'd both be editing a 7,273-line file.
+
+#903  Map.insert returns a replaced/not-replaced flag instead of the displaced value, and segfaults
+      for string values. Probe: tests/suite/t_day_map_insert_displaced.rk (interp 5/5, native 0/3).
+#933  An i128 inside an aggregate emits `load.i64` from an i128 and fails the Cranelift verifier.
+      Probe: t_month_i128_aggregates.rk (interp 10/10, native BUILD-FAIL).
+#929  Native defers an `ensure` in a bare block or `if` body to function exit instead of block exit
+      (EN1). Probe: t_month_ensure_block_scope.rk (interp 5/5, native 0/5).
+
+For #933, note rask_mono::abi::slot_scalar_bytes now owns "how wide does a scalar sit in a slot"
+for floats and narrow integers — if i128 wants a rule, it belongs there, not in a fourth local
+answer. Four sites disagreed about this before it existed (#902, #972, both halves of #973).
+```
+
+---
+
+## L5 — Comptime (#930, #931)
+
+```
+<SHARED PREAMBLE>
+
+Two comptime bugs, both native-only:
+
+#930  Comptime field access by string literal — `p.("x")` — reaches native MIR unresolved. Only the
+      `comptime for` form is handled. Probe: t_month_comptime_field_literal.rk (interp 4/4, native
+      BUILD-FAIL).
+#931  A comptime FieldInfo.name has no resolved type natively: string methods fail at MIR lowering,
+      and pushing it into an inferred Vec corrupts the string. Probe:
+      t_month_reflect_field_strings.rk (interp 6/6, native BUILD-FAIL).
+
+Both are "the comptime value reached MIR without a type". Related: every node_types miss the
+compiler makes is in an auto-derived `compare` body, because auto_derive_traits registers a
+MethodSig with no body and the checker never visits what's synthesized later — see the measurement
+on #725. If comptime bodies have the same shape, say so on that issue.
+```
+
+---
+
+## L6 — Panics and unwinding (#299)
+
+The ROADMAP's first long-term item. Big; probably its own session.
+
+```
+<SHARED PREAMBLE>
+
+Make panics run their ensures. Today the panic path in compiled code runs NO ensure blocks and
+aborts the process (runtime/panic.c:118), which undercuts the resource-safety promise everywhere
+else — a server can't ship with it. Tracking issue #299, sub-issues #287 #288 #289 #290 #291 #298.
+
+specs/control/panics.md is the contract: task-kill plus unwind, ensures run, locks release without
+poisoning, opt-in `staged()`. P1, P4, U1, E2-E3.
+
+The interpreter gets multi-ensure panics wrong too (the first ensure-panic skips the rest, the
+secondary panic is dropped), so neither backend is the reference here — the spec is.
+
+tests/COVERAGE.md's "holes left on purpose" says why there's no coverage: a test that panics fails,
+so asserting on panic behaviour needs a harness that runs a program expecting a non-zero exit.
+tests/compile_errors/ is the nearest existing pattern. Building that harness is part of the job.
+
+Do NOT run alongside L4 — you'd both be editing rask-codegen/src/builder.rs.
+```
+
+---
+
+## L7 — The agent benchmark
+
+All new files. Zero conflict with any other lane. ROADMAP calls this the instrument that tells you
+when the compiler is done.
+
+```
+<SHARED PREAMBLE>
+
+Build the agent benchmark NORTH_STAR names and that doesn't exist: models writing Rask against the
+compiler, convergence measured, failure transcripts readable.
+
+The problem it solves: "the native compiler is stable" currently has no exit criterion. Every gate
+was green while `match n { 1 => 2.5, _ => 0.0 }` returned 2. A bug count doesn't say what fraction
+of ordinary programs compile and run correctly — this should.
+
+Shape it yourself, but it needs at minimum: a task set (small programs with known-correct output),
+a runner that compiles and runs each on both backends, a convergence metric (how many attempts to a
+correct program), and transcripts saved so failures can be read rather than counted.
+
+Read NORTH_STAR.md for what it's meant to measure and METRICS.md for the scoring conventions
+already in use. The five validation programs in examples/ are the shape of a task but too big for
+one — the day/week/month files in tests/suite/ are closer to the right granularity.
+
+Keep it out of the compiler crates entirely. A new top-level directory is right.
+```

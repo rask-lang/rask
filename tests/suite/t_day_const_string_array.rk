@@ -9,6 +9,8 @@
 // `t_day_const_array.rk` next door covers const arrays of numbers and arrays
 // sized by a named const; it stays green and deliberately holds no string
 // element type.
+import string.StringBuilder
+
 
 const SYMS: [string; 3] = ["M", "CM", "D"]
 

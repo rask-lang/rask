@@ -70,11 +70,15 @@ test "add cases" {
 | **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential` |
 | **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X` |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |
+| **T10: No `try` in a test body** | A test block has no error branch to propagate to, so bare `try` is a `type.errors/ER47` compile error like anywhere else. Fallible setup is `catch`, and the handler says why — an assertion that swallows the error reports "assertion failed" and nothing else |
 
 <!-- test: skip -->
 ```rask
 test "file processing" {
-    let file = try open("test.txt")
+    let file = fs.open("test.txt") catch e => {
+        assert false, "open failed: {e.message()}"
+        return
+    }
     ensure file.close()
     assert file.read() == "expected"
 }
