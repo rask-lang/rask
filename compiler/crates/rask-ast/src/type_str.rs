@@ -49,6 +49,22 @@ pub fn is_optional(s: &str) -> bool {
     s.trim().ends_with('?')
 }
 
+/// Drop the namespace a type is reached through: `time.Duration` → `Duration`.
+///
+/// A module import binds the module and nothing else (structure.modules/IM1), so
+/// a qualified name is the ordinary way to write a stdlib type — and what it is
+/// reached *through* says nothing about the type itself. Whatever the head is,
+/// the last segment names the type: a module, a module alias, an external
+/// package, a C header's namespace.
+///
+/// This is the question a *layout* asks. Resolution has a narrower one — there a
+/// wrong strip changes which type resolves, so `rask_stdlib::modules::
+/// strip_module_qualifier` drops the head only when it names a real module.
+pub fn bare_name(s: &str) -> &str {
+    let s = s.trim();
+    s.rsplit_once('.').map_or(s, |(_, tail)| tail)
+}
+
 /// Render a parsed type back the way it's written in source, for messages.
 ///
 /// A diagnostic that prints `Result<(), TrySendError>` while telling you to
@@ -64,6 +80,15 @@ pub fn to_source(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_name_drops_any_namespace() {
+        assert_eq!(bare_name("time.Duration"), "Duration");
+        assert_eq!(bare_name("h.Response"), "Response");
+        assert_eq!(bare_name("c.Rect"), "Rect");
+        assert_eq!(bare_name("Duration"), "Duration");
+        assert_eq!(bare_name(" os.Output "), "Output");
+    }
 
     #[test]
     fn splits_plain_result() {
