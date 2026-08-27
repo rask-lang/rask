@@ -13,6 +13,7 @@
 
 import time
 import http
+import http as h
 
 // `http` exports a `Method`. This file imports `http` and not `http.Method`, so
 // the name is the program's.
@@ -33,6 +34,16 @@ struct Slot9 {
 // a smaller slot would have run into.
 struct Frame9 {
     result: http.Response
+    sentinel: i64
+}
+
+// The same field under an *aliased* import (structure.modules/IM3). The layout
+// used to ask whether the head named a real module, and an alias is a name no
+// module list knows — so `h.Response` hit the same too-small slot the canonical
+// spelling had just been fixed for. What a type is reached through says nothing
+// about its size, so layout takes the last segment whatever the head is.
+struct Frame10 {
+    result: h.Response
     sentinel: i64
 }
 
@@ -74,6 +85,22 @@ test "a qualified field gets the real layout, not a pointer's" {
     assert_eq(f.result.status, 207)
     assert_eq(f.result.body, "body-here")
     assert_eq(f.sentinel, 424242)
+}
+
+test "an aliased module import gets the real layout too" {
+    let f = Frame10 {
+        result: h.Response.new(409, "conflict"),
+        sentinel: 191919,
+    }
+    assert_eq(f.result.status, 409)
+    assert_eq(f.result.body, "conflict")
+    assert_eq(f.sentinel, 191919)
+}
+
+test "both spellings of the same module name one type" {
+    let viaModule: http.Response = http.Response.new(200, "a")
+    let viaAlias: h.Response = h.Response.new(200, "a")
+    assert_eq(viaModule.status, viaAlias.status)
 }
 
 func main() {

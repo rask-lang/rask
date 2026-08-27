@@ -318,15 +318,17 @@ pub fn exports_type(module: &str, name: &str) -> bool {
 ///
 /// A module import binds the module and nothing else (structure.modules/IM1), so
 /// the qualified spelling is the ordinary way to write a stdlib type in a type
-/// position, and every reader of a type string has to reduce it to the same name
-/// the bare spelling gives. There are two such readers — the checker's
-/// `parse_type_string` and monomorphization's `parse_field_type` — and they must
-/// agree, so the question is asked here, next to the module list it's asked
-/// against.
+/// position, and the checker has to reduce it to the same name the bare spelling
+/// gives. The question is asked here, next to the module list it's asked against.
 ///
-/// Only the head is dropped, and only when it names a real module.
-/// `Vec<os.Output>` splits at the first dot into `Vec<os`, which is not one, so
-/// the outer type is left alone and the argument is stripped when the parser
+/// Only the head is dropped, and only when it names a real module — a wrong strip
+/// here changes which type resolves, and `c.Rect` names the C namespace's struct
+/// while bare `Rect` names nothing (#948). Monomorphization's `parse_field_type`
+/// takes the last segment unconditionally instead, because a namespace says
+/// nothing about a type's size and what it replaces there is a guess.
+///
+/// `Vec<os.Output>` splits at the first dot into `Vec<os`, which is not a module,
+/// so the outer type is left alone and the argument is stripped when the parser
 /// recurses into it.
 pub fn strip_module_qualifier(ty: &str) -> &str {
     let Some((head, tail)) = ty.split_once('.') else { return ty };
