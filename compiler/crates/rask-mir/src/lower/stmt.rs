@@ -371,9 +371,13 @@ impl<'a> MirLowerer<'a> {
                 // `let which = comptime { "y" }` then `p.(which)` (#930).
                 // Recorded here because lowering the initializer turns it into
                 // an ordinary runtime value and the fact is gone.
+                // Errors are not this statement's to report: a `comptime`
+                // block that fails here is still lowered as an ordinary
+                // initializer below, and gets to fail on its own terms. Only a
+                // name that folded to a string is worth remembering.
                 match self.comptime_field_name(init) {
-                    Some(s) => { self.comptime_strings.insert(name.clone(), s); }
-                    None => { self.comptime_strings.remove(name); }
+                    Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
+                    _ => { self.comptime_strings.remove(name); }
                 }
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
