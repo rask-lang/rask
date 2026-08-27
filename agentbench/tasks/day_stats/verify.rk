@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: a straightforward list" {
+    let s = summarize([1.0, 2.0, 3.0, 4.0])!
+    assert s.count == 4
+    assert s.total == 10.0
+    assert s.smallest == 1.0
+    assert s.largest == 4.0
+    assert s.mean() == 2.5
+    assert s.span() == 3.0
+}
+
+test "verify: one value" {
+    let s = summarize([7.5])!
+    assert s.count == 1
+    assert s.total == 7.5
+    assert s.smallest == 7.5
+    assert s.largest == 7.5
+    assert s.mean() == 7.5
+    assert s.span() == 0.0
+}
+
+test "verify: negatives" {
+    let s = summarize([-3.0, 0.5, -10.0])!
+    assert s.smallest == -10.0
+    assert s.largest == 0.5
+    assert s.total == -12.5
+}
+
+test "verify: an empty list has no summary" {
+    mut empty: Vec<f64> = Vec.new()
+    assert summarize(empty) is none
+}

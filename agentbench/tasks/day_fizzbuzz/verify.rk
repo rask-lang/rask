@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: plain numbers" {
+    let out = fizzbuzz(15)
+    assert out.len() == 15
+    assert out[0] == "1"
+    assert out[1] == "2"
+    assert out[6] == "7"
+}
+
+test "verify: the three replacements" {
+    let out = fizzbuzz(15)
+    assert out[2] == "Fizz"
+    assert out[4] == "Buzz"
+    assert out[8] == "Fizz"
+    assert out[9] == "Buzz"
+    assert out[14] == "FizzBuzz"
+}
+
+test "verify: nothing to do" {
+    assert fizzbuzz(0).len() == 0
+    assert fizzbuzz(1).len() == 1
+    assert fizzbuzz(1)[0] == "1"
+}

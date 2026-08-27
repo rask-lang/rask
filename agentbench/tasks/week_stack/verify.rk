@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: push then pop is last in, first out" {
+    mut s: Stack<i64> = Stack.new()
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    assert s.len() == 3
+    assert s.pop()! == 3
+    assert s.pop()! == 2
+    assert s.len() == 1
+    assert s.pop()! == 1
+    assert s.len() == 0
+}
+
+test "verify: an empty stack pops nothing" {
+    mut s: Stack<i64> = Stack.new()
+    assert s.is_empty()
+    assert s.pop() is none
+    assert s.peek() is none
+    assert s.len() == 0
+}
+
+test "verify: peek leaves the stack alone" {
+    mut s: Stack<i64> = Stack.new()
+    s.push(10)
+    s.push(20)
+    assert s.peek()! == 20
+    assert s.peek()! == 20
+    assert s.len() == 2
+}
+
+test "verify: it really is generic" {
+    mut s: Stack<string> = Stack.new()
+    assert s.is_empty()
+    s.push("a")
+    s.push("b")
+    assert s.pop()! == "b"
+    assert s.peek()! == "a"
+    assert !s.is_empty()
+}

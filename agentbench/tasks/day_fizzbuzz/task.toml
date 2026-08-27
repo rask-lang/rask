@@ -1,0 +1,19 @@
+title = "FizzBuzz as a list of strings"
+horizon = "day"
+concepts = ["loops", "conditionals", "interpolation", "Vec"]
+issues = []
+
+contract = """
+func fizzbuzz(n: i32) -> Vec<string>
+"""
+
+prompt = """
+Return the FizzBuzz sequence for 1 through n inclusive, as a Vec of strings.
+
+- a multiple of 3 is "Fizz"
+- a multiple of 5 is "Buzz"
+- a multiple of both is "FizzBuzz"
+- anything else is the number itself, written out
+
+`fizzbuzz(0)` returns an empty Vec.
+"""
