@@ -52,7 +52,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 
 | Rule | Description |
 |------|-------------|
-| **IM1: Qualified** | `import pkg` → access as `pkg.Name`. Every stdlib module works this way — there is no set that comes pre-imported, so a module name is an ordinary identifier until a program imports it, and a program that hasn't may bind a local called `net` or `json` |
+| **IM1: Qualified** | `import pkg` → access as `pkg.Name`, and *only* as `pkg.Name`: a module import binds the module, not the names inside it. Every stdlib module works this way — there is no set that comes pre-imported, so a module name is an ordinary identifier until a program imports it, and a program that hasn't may bind a local called `net` or `json` |
 | **IM2: Last-segment qualifier** | `import myapp.net.http` → access as `http.get()` |
 | **IM3: Alias** | `import pkg as p` → access as `p.Name` |
 | **IM4: Unqualified** | `import pkg.Name` → `Name` directly |
@@ -314,14 +314,22 @@ Tradeoff acknowledged: directory = package makes intra-package dependencies invi
 | Feature resolution (additive + exclusive) | Implemented |
 | Lock file with capability tracking | Implemented |
 
-**Open, under IM1:** `import time` binds `Duration` as a bare name as well as
-`time.Duration`. IM1 says how to reach a name through a whole-module import and
-IM4 gives the unqualified form for a selective one, but neither says the bare
-name is *unavailable* after `import time` — and the resolver registers a
-module's types unqualified on purpose ("module functions are accessed qualified,
-types are used unqualified per convention"). Reading IM1 as closed would mean
-34 corpus files gain a selective import, `http.Response` and `http.Request`
-being most of them. Worth settling one way or the other; I haven't — #999.
+**Settled (#999):** `import time` gives `time.Duration` and no bare `Duration`.
+The two forms had meant the same thing — importing a module registered every type
+it exports directly into scope, so naming the type in `import time.Duration`
+bought nothing. Two things decided it. Nothing else offers both forms and has them
+agree: Go and Zig have no unqualified form at all, and Python, Rust and TypeScript
+draw exactly this line (`import http` vs `from http import Response`). The
+languages that do hand you the names on a module import — Swift, Java, C# — have
+only the one form. And the loose reading fought IM8: `import http` reserved all
+nine of `Method`…`HttpClient`, so a program with its own `Response` was told
+"already in scope from `http`" for a name it never asked for, and adding a type to
+a stdlib module broke every program that had one by that name. Swift lives with
+that because its shadowing rule is "the local one wins, silently"; IM8 makes it an
+error, and the two don't combine.
+
+Cost was 41 corpus files gaining a selective import, `http.Response`,
+`http.Request` and `http.Method` being most of them.
 
 ### See Also
 

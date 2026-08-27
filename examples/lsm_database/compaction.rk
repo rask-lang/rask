@@ -6,6 +6,7 @@
 
 import fs
 import async
+import async.Sender
 
 const MAX_LEVELS: i32 = 4
 

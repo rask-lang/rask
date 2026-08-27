@@ -8,6 +8,7 @@
 
 import http
 import json
+import http.Response
 
 func json_response(status: u16, body: string) -> Response {
     return Response.new(status, body).with_header("Content-Type", "application/json")

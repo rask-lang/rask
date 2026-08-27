@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A module import binds the module, so its types are reached through it —
+// `time.Duration`, not a bare `Duration` (structure.modules/IM1, #999).
+//
+// The bare form used to work too: importing a module registered every type it
+// exports directly into scope. That made `import time` and `import time.Duration`
+// mean the same thing, and it reserved names the program never asked for — a
+// program with its own `Method` got "already in scope from `http`".
+//
+// So this file checks the three things that had to keep working: the qualified
+// name in an annotation, the qualified name as a constructor, and a program type
+// named after one the imported module exports.
+
+import time
+import http
+
+// `http` exports a `Method`. This file imports `http` and not `http.Method`, so
+// the name is the program's.
+enum Method {
+    Fetch
+    Store
+}
+
+struct Slot9 {
+    window: time.Duration
+    how: Method
+}
+
+// A qualified field wider than a pointer. Monomorphization has its own type-string
+// parser, separate from the checker's, and it read `http.Response` as an unknown
+// name — so the field got pointer-sized room and MIR refused the store with
+// "field `result` holds 32 bytes but its slot is 8". The sentinel after it is what
+// a smaller slot would have run into.
+struct Frame9 {
+    result: http.Response
+    sentinel: i64
+}
+
+func window_of(s: Slot9) -> time.Duration {
+    return s.window
+}
+
+test "a module import reaches its types through the module" {
+    let d: time.Duration = time.Duration.from_millis(250)
+    assert_eq(d.as_millis(), 250)
+}
+
+test "the qualified name works in a field and a return type" {
+    let s = Slot9 { window: time.Duration.from_millis(40), how: Method.Store }
+    assert_eq(window_of(s).as_millis(), 40)
+}
+
+test "a program may name a type after one the imported module exports" {
+    let m = Method.Fetch
+    match m {
+        Method.Fetch => assert_eq(1, 1)
+        Method.Store => assert_eq(1, 0)
+    }
+}
+
+test "the qualified type survives a generic" {
+    mut v: Vec<time.Duration> = Vec.new()
+    v.push(time.Duration.from_millis(5))
+    v.push(time.Duration.from_millis(15))
+    assert_eq(v.len(), 2)
+    assert_eq(v[1].as_millis(), 15)
+}
+
+test "a qualified field gets the real layout, not a pointer's" {
+    let f = Frame9 {
+        result: http.Response.new(207, "body-here"),
+        sentinel: 424242,
+    }
+    assert_eq(f.result.status, 207)
+    assert_eq(f.result.body, "body-here")
+    assert_eq(f.sentinel, 424242)
+}
+
+func main() {
+    println("qualified module types ok")
+    return
+}

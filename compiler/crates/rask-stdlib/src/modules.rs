@@ -313,6 +313,29 @@ pub fn exports_type(module: &str, name: &str) -> bool {
     exports(module).exports_type(name)
 }
 
+/// `time.Duration` → `Duration`: drop the module a type is reached through.
+///
+/// A module import binds the module and nothing else (structure.modules/IM1), so
+/// the qualified spelling is the ordinary way to write a stdlib type in a type
+/// position, and every reader of a type string has to reduce it to the same name
+/// the bare spelling gives. There are two such readers — the checker's
+/// `parse_type_string` and monomorphization's `parse_field_type` — and they must
+/// agree, so the question is asked here, next to the module list it's asked
+/// against.
+///
+/// Only the head is dropped, and only when it names a real module.
+/// `Vec<os.Output>` splits at the first dot into `Vec<os`, which is not one, so
+/// the outer type is left alone and the argument is stripped when the parser
+/// recurses into it.
+pub fn strip_module_qualifier(ty: &str) -> &str {
+    let Some((head, tail)) = ty.split_once('.') else { return ty };
+    let plain = !head.is_empty() && head.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if plain && is_module(head) {
+        return tail;
+    }
+    ty
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

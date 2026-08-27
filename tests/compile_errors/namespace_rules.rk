@@ -7,7 +7,8 @@
 // All four were specified and none were enforced, so each of these lines used to
 // type-check clean:
 //
-//   IM1  nothing comes pre-imported, so a stdlib name needs its module
+//   IM1  nothing comes pre-imported, so a stdlib name needs its module, and
+//        `import time` gives `time.Duration` rather than a bare `Duration`
 //   IM8  a declaration may not take a name an import already bound
 //   BI3  a program may not declare a type with a built-in's name
 //   BF3  or a function with a built-in function's name
@@ -28,6 +29,7 @@
 // closed set, so a program that hasn't imported it may have the name.
 
 import time.Duration
+import http
 
 // ── IM1: a stdlib type with no import ───────────────────────────
 
@@ -42,6 +44,14 @@ func local_annotation() {
 // ERROR: `Instant` is not in scope
 func started() -> Instant {
     return Instant.now()
+}
+
+// ERROR: `Request` is not in scope — `import http` is right there, and it binds
+// `http`. Registering every type a module exports made the two import forms
+// mean the same thing, so naming the type bought nothing; it also reserved all
+// nine of http's names against a program that asked for one of them (#999).
+func handle(r: Request) {
+    return
 }
 
 // ERROR: `StringBuilder` is not in scope — in an annotation, which nothing
@@ -92,6 +102,13 @@ func max(a: i64, b: i64) -> i64 {
         return a
     }
     return b
+}
+
+// `http` exports a `Method`, and this file imports `http` — which binds `http`
+// and nothing inside it. So the name is still the program's to take.
+enum Method {
+    Get
+    Put
 }
 
 // `Handle` is `memory`'s, not BI1's. Being a closed compiler type
