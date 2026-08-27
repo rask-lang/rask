@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func fails_with(tokens: Vec<Token>) -> string {
+    let r = eval_rpn(tokens)
+    if r is RpnError as e { return e.message() }
+    return "no error"
+}
+
+test "verify: simple expressions" {
+    let add: Vec<Token> = [Token.Number(3), Token.Number(4), Token.Plus]
+    assert eval_rpn(add)! == 7
+    let sub: Vec<Token> = [Token.Number(5), Token.Number(3), Token.Minus]
+    assert eval_rpn(sub)! == 2
+    let mul: Vec<Token> = [Token.Number(6), Token.Number(7), Token.Times]
+    assert eval_rpn(mul)! == 42
+}
+
+test "verify: nesting" {
+    let tokens: Vec<Token> = [Token.Number(5), Token.Number(1), Token.Number(2), Token.Plus, Token.Times]
+    assert eval_rpn(tokens)! == 15
+}
+
+test "verify: a lone number is its own answer" {
+    let one: Vec<Token> = [Token.Number(42)]
+    assert eval_rpn(one)! == 42
+    let neg: Vec<Token> = [Token.Number(-7)]
+    assert eval_rpn(neg)! == -7
+}
+
+test "verify: each failure names itself" {
+    mut empty: Vec<Token> = Vec.new()
+    assert fails_with(empty) == "empty expression"
+    let short: Vec<Token> = [Token.Number(1), Token.Plus]
+    assert fails_with(short) == "not enough operands"
+    let extra: Vec<Token> = [Token.Number(1), Token.Number(2)]
+    assert fails_with(extra) == "leftover operands"
+}
+
+test "verify: a failure is a failure, whatever you do with it" {
+    let short: Vec<Token> = [Token.Number(1), Token.Minus]
+    assert (eval_rpn(short) catch _ => -99) == -99
+    let good: Vec<Token> = [Token.Number(1), Token.Number(2), Token.Plus]
+    assert (eval_rpn(good) catch _ => -99) == 3
+}

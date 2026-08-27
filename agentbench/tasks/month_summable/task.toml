@@ -1,0 +1,30 @@
+title = "A trait bound and the operator that comes with it"
+horizon = "month"
+concepts = ["generics", "traits", "operators", "bounds"]
+issues = []
+
+contract = """
+trait Summable {
+    func add(self, other: Self) -> Self
+}
+
+struct Money { cents: i64 }
+struct Meters { value: f64 }
+
+func total<T: Summable>(values: Vec<T>, take zero: T) -> T
+func doubled<T: Summable>(value: T) -> T
+"""
+
+prompt = """
+One trait, two conforming types, and two generic functions over the bound.
+
+`Money` counts whole cents; `Meters` is a float. Both conform to `Summable`,
+whose one method combines two values.
+
+`total` folds a list down to one value, starting from the `zero` it is handed;
+an empty list totals to that `zero`. `doubled` adds a value to itself.
+
+Rask's arithmetic operators are sugar over a method of the same name on a
+concrete type — writing `add` is what makes `a + b` work on `Money` — so the
+tests use both spellings.
+"""

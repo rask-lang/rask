@@ -1,0 +1,24 @@
+title = "Read a small CSV"
+horizon = "week"
+concepts = ["strings", "structs", "Vec", "parsing"]
+issues = []
+
+contract = """
+struct Row { name: string, score: i64 }
+
+func parse_csv(text: string) -> Vec<Row>
+func total(rows: Vec<Row>) -> i64
+func best(rows: Vec<Row>) -> string
+"""
+
+prompt = """
+Read a two-column CSV: a header line `name,score`, then one row per line.
+
+`parse_csv` returns the rows. Skip the header, skip blank lines, and skip any
+line that doesn't have exactly two comma-separated fields or whose score isn't
+an integer — this is a forgiving reader, not a validating one. Trim whitespace
+around both fields.
+
+`total` sums the scores. `best` returns the name with the highest score, or the
+empty string when there are no rows; ties go to the first row.
+"""

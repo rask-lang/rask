@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Stats {
+    count: i64
+    total: f64
+    smallest: f64
+    largest: f64
+}
+
+extend Stats {
+    func mean(self) -> f64 {
+        return self.total / self.count.to<f64>()!
+    }
+
+    func span(self) -> f64 {
+        return self.largest - self.smallest
+    }
+}
+
+func summarize(values: Vec<f64>) -> Stats? {
+    if values.len() == 0 { return none }
+    mut total = 0.0
+    mut smallest = values[0]
+    mut largest = values[0]
+    for v in values {
+        total = total + v
+        if v < smallest { smallest = v }
+        if v > largest { largest = v }
+    }
+    return Stats {
+        count: values.len().to<i64>()!,
+        total,
+        smallest,
+        largest,
+    }
+}

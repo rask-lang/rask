@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Item { name: string, sku: string?, price_cents: i64 }
+
+func find(items: Vec<Item>, name: string) -> Item? {
+    for item in items {
+        if item.name == name { return item }
+    }
+    return none
+}
+
+func sku_or_unknown(items: Vec<Item>, name: string) -> string {
+    let item = find(items, name) ?? {
+        return "unknown"
+    }
+    return item.sku ?? "unknown"
+}
+
+func price_of(items: Vec<Item>, name: string) -> i64 {
+    let item = find(items, name) ?? {
+        return -1
+    }
+    return item.price_cents
+}
+
+func labelled(items: Vec<Item>) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for item in items {
+        if item.sku? as sku {
+            out.push("{item.name} ({sku})")
+        } else {
+            out.push(item.name)
+        }
+    }
+    return out
+}

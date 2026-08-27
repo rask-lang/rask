@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+trait Shape {
+    func area(self) -> f64
+    func name(self) -> string
+}
+
+struct Circle { radius: f64 }
+
+struct Rectangle { width: f64, height: f64 }
+
+struct Triangle { base: f64, height: f64 }
+
+extend Circle with Shape {
+    func area(self) -> f64 {
+        return 3.14159 * self.radius * self.radius
+    }
+    func name(self) -> string {
+        return "circle"
+    }
+}
+
+extend Rectangle with Shape {
+    func area(self) -> f64 {
+        return self.width * self.height
+    }
+    func name(self) -> string {
+        return "rectangle"
+    }
+}
+
+extend Triangle with Shape {
+    func area(self) -> f64 {
+        return self.base * self.height / 2.0
+    }
+    func name(self) -> string {
+        return "triangle"
+    }
+}
+
+func total_area(shapes: Vec<any Shape>) -> f64 {
+    mut total = 0.0
+    for shape in shapes {
+        total = total + shape.area()
+    }
+    return total
+}
+
+func largest(shapes: Vec<any Shape>) -> string {
+    mut best = ""
+    mut best_area = 0.0
+    mut first = true
+    for shape in shapes {
+        let area = shape.area()
+        if first || area > best_area {
+            best = shape.name()
+            best_area = area
+            first = false
+        }
+    }
+    return best
+}

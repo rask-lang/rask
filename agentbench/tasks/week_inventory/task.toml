@@ -1,0 +1,27 @@
+title = "An inventory with missing fields"
+horizon = "week"
+concepts = ["optionals", "??", "is as", "Map"]
+issues = []
+
+contract = """
+struct Item { name: string, sku: string?, price_cents: i64 }
+
+func find(items: Vec<Item>, name: string) -> Item?
+func sku_or_unknown(items: Vec<Item>, name: string) -> string
+func price_of(items: Vec<Item>, name: string) -> i64
+func labelled(items: Vec<Item>) -> Vec<string>
+"""
+
+prompt = """
+An inventory where the SKU is optional.
+
+`find` returns the first item with that name, or the absent value. `sku_or_unknown`
+returns the item's SKU, falling back to "unknown" when the item is missing or has
+no SKU. `price_of` returns the price, or -1 when there's no such item.
+`labelled` returns one string per item: "name (sku)" when there's a SKU, just
+"name" when there isn't.
+
+Watch out for one thing: a `?` test in Rask does not narrow the value the way a
+smart cast would in Kotlin or TypeScript. Bind with `x? as v`, or use the `??`
+fallback.
+"""
