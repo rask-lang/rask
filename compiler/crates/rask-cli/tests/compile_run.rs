@@ -3798,6 +3798,23 @@ fn try_inside_ensure_is_rejected() {
     );
 }
 
+#[test]
+fn panic_in_a_lock_closure_releases_the_lock() {
+    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
+    // lock, call the closure, then unlock — and a panic longjmps over that
+    // unlock. Nothing had registered the lock, so the unwind had nothing to
+    // release and the next acquirer blocked forever. Both of these hung.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
+            "{}: both closure forms hand the lock back", mode,
+        );
+    }
+}
+
 // ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.
 //
 // Codegen emits the acquire and the release around a `with` block, but only the
