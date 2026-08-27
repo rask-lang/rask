@@ -4,8 +4,11 @@
 // live inside the functions until that's fixed. A model that reaches for the
 // const form will show up in the run as a backend divergence, which is the
 // right place for it — that's the compiler's failure, not the model's.
-import string.StringBuilder
+//
+// `import string.StringBuilder` is required since IM1 landed: nothing comes
+// pre-imported, so a stdlib type is in scope only where the program asks for it.
 
+import string.StringBuilder
 
 func to_roman(n: i32) -> string {
     if n < 1 { return "" }
