@@ -114,6 +114,18 @@ def cmd_run(args) -> int:
         return 2
 
     probe = models.build(args.model, "", effort=args.effort)
+    # Eighteen tasks each discovering the same missing login is a waste of a
+    # minute and a confusing report. Ask once.
+    if isinstance(probe, models.CliModel) and not probe.use_api_key:
+        status = models.auth_status(probe.binary)
+        if not status:
+            print(f"warning: `{probe.binary} auth status` said nothing — "
+                  "is the CLI installed and on PATH?", file=sys.stderr)
+        elif not status.get("loggedIn"):
+            print(f"`{probe.binary}` is not logged in. Run `{probe.binary} auth login` "
+                  "to use a Claude subscription, or set ANTHROPIC_API_KEY and "
+                  "RASK_BENCH_CLI_API_KEY=1 to bill a key.", file=sys.stderr)
+            return 2
     if probe.paid and not args.yes_spend:
         _print_estimate(selected, args, probe)
         print("\nRefusing to spend without --yes-spend.", file=sys.stderr)

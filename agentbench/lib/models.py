@@ -179,6 +179,29 @@ ISOLATION = [
 API_AUTH_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
+# `claude auth status` answers this exactly, so don't guess it from env vars:
+# a machine can be logged in with an OAuth token (a Pro/Max plan) or with a key
+# through apiKeyHelper, and the two bill differently. Cached — every task builds
+# its own adapter and the answer can't change mid-run.
+_AUTH_CACHE: dict[str, dict] = {}
+
+
+def auth_status(binary: str = "claude") -> dict:
+    """{"loggedIn": bool, "authMethod": str, ...}, or {} if the CLI wouldn't say."""
+    if binary in _AUTH_CACHE:
+        return _AUTH_CACHE[binary]
+    try:
+        proc = subprocess.run([binary, "auth", "status"], capture_output=True,
+                              text=True, timeout=60)
+        status = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except Exception:
+        status = {}
+    if not isinstance(status, dict):
+        status = {}
+    _AUTH_CACHE[binary] = status
+    return status
+
+
 class CliModel(Model):
     """`claude -p`, reusing the login the machine already has.
 
@@ -204,7 +227,16 @@ class CliModel(Model):
         self.name = f"cli:{model}"
         self.use_api_key = os.environ.get("RASK_BENCH_CLI_API_KEY") == "1"
         keyed = any(os.environ.get(v) for v in API_AUTH_VARS)
-        self.billing = "api" if (keyed and self.use_api_key) else "subscription"
+        if keyed and self.use_api_key:
+            self.billing = "api"
+        else:
+            # With the key vars stripped, whatever the CLI's own login is
+            # decides. `oauth_token` is a Pro/Max plan; a key reached through
+            # apiKeyHelper is metered even with no key in the environment.
+            self.auth = auth_status(binary)
+            self.billing = ("subscription"
+                            if self.auth.get("authMethod") == "oauth_token"
+                            else "api")
 
     def _env(self) -> dict:
         env = dict(os.environ)

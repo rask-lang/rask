@@ -33,9 +33,15 @@ has. On a Pro/Max plan that login *is* the subscription, so a run spends plan
 quota and no API credit — no key, no billing setup, nothing to buy:
 
 ```bash
-claude auth            # once, if the machine isn't logged in
+claude auth login      # once, if the machine isn't logged in
 agentbench/bench.py run --model cli:claude-sonnet-5 --yes-spend
 ```
+
+`run` asks `claude auth status` before spending anything and stops with the
+login command if the machine isn't signed in — eighteen tasks each discovering
+the same missing login makes for a confusing report. That's also where the
+billing label comes from: `authMethod: oauth_token` is a plan, and a key reached
+through `apiKeyHelper` is metered even with nothing in the environment.
 
 Three things make this work rather than half-work.
 
