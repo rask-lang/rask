@@ -5321,12 +5321,20 @@ impl<'a> MirLowerer<'a> {
             // `positional.remove(0)` produced half a string's bytes as a number
             // (#203's grep_clone entry).
             //
-            // Tracking first, like `v[i]`; the checker's type second, because a
-            // `test` body doesn't carry the push tracking. Either way the width
-            // is rounded up to a word: a Vec keeps scalars in 8-byte slots, and
-            // an i32-typed destination read back only half of what the
-            // out-param wrote.
+            // Tracking first, like `v[i]`; then the receiver's own element type,
+            // because inside a generic method the checker's type for the call is
+            // the type parameter itself and that reads back as a bare i64. A
+            // `Stack<T>` whose `pop` did `self.items.remove(last)` came out as
+            // `let _44: i64` at `T = string` — eight bytes of a string, and no
+            // `rc_inc` on the payload either, since those follow the slot's
+            // type. It printed fine and segfaulted on the next comparison.
+            // The checker's type stays as the last word: a `test` body doesn't
+            // carry push tracking, and the receiver isn't always a collection
+            // the layout can answer for. Either way the width is rounded up to
+            // a word: a Vec keeps scalars in 8-byte slots, and an i32-typed
+            // destination read back only half of what the out-param wrote.
             tracked_elem
+                .or_else(|| self.collection_elem_of_expr(object))
                 .or_else(|| self.ctx.lookup_node_type(expr.id))
                 .map(vec_slot_type)
         } else if qualified_name == "Vec_pop" {
