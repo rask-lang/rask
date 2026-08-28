@@ -39,6 +39,8 @@ _TIMING = re.compile(r"\(\d+ms\)")
 _CODE = re.compile(r"\berror\[([A-Z]\d+)\]")
 # "3 tests, 1 passed, 2 failed"
 _FAILED_COUNT = re.compile(r"\b([1-9]\d*) failed\b")
+# "  ✓ verify: counts (0ms)" / "  ✗ verify: counts"
+_TEST_LINE = re.compile(r"^\s*([\u2713\u2717])\s+(.+?)(?:\s+\(\d+ms\))?\s*$", re.M)
 
 
 def find_rask() -> Path:
@@ -58,6 +60,11 @@ def find_rask() -> Path:
 
 def _normalize(text: str) -> str:
     return _TIMING.sub("", text).strip()
+
+
+def _test_verdicts(text: str) -> dict[str, bool]:
+    """Which named tests passed, per `rask test`'s own ✓/✗ lines."""
+    return {name.strip(): mark == "\u2713" for mark, name in _TEST_LINE.findall(text)}
 
 
 @dataclass
@@ -126,6 +133,15 @@ def _tail(text: str, lines: int) -> str:
     )
 
 
+def _stage(run: "BackendRun") -> str:
+    """Which stage the backend lost at — the coarsest thing they can disagree on."""
+    if _CODE.search(run.output) or "Check FAILED" in run.output or "Build FAILED" in run.output:
+        return "check"
+    if run.exit_code == 124:
+        return "timeout"
+    return "run"
+
+
 def _run(rask: Path, args: list[str], cwd: Path, timeout: float) -> tuple[int, str, float]:
     import time
 
@@ -185,6 +201,17 @@ def _classify(interp: BackendRun, native: BackendRun) -> str:
         return DIVERGENCE
     if interp.exit_code == 124 or native.exit_code == 124:
         return TIMEOUT
+    # Both failed — but not necessarily the same way, and "both red" was hiding
+    # real divergences. A model wrote `counts[word] = n` on a `Map`: the
+    # interpreter failed one assertion, native panicked with a stack address as
+    # an index in three tests, and the attempt scored `assert_fail` with no
+    # divergence recorded. BD is the exit criterion the compiler never had, so
+    # it can't only count the cases where one backend happens to be green.
+    if _stage(interp) != _stage(native):
+        return DIVERGENCE
+    itests, ntests = _test_verdicts(interp.output), _test_verdicts(native.output)
+    if itests and ntests and itests != ntests:
+        return DIVERGENCE
     # Both failed. The interpreter is the reference, so read its output for the
     # shape of the failure. `rask test` is unambiguous about which stage lost:
     # a check error prints `error[E….]` and `Check FAILED`, a bad assertion

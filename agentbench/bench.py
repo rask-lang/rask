@@ -113,9 +113,21 @@ def cmd_run(args) -> int:
         print("no tasks selected", file=sys.stderr)
         return 2
 
-    probe = models.build(args.model, "")
+    probe = models.build(args.model, "", effort=args.effort)
+    # Eighteen tasks each discovering the same missing login is a waste of a
+    # minute and a confusing report. Ask once.
+    if isinstance(probe, models.CliModel) and not probe.use_api_key:
+        status = models.auth_status(probe.binary)
+        if not status:
+            print(f"warning: `{probe.binary} auth status` said nothing — "
+                  "is the CLI installed and on PATH?", file=sys.stderr)
+        elif not status.get("loggedIn"):
+            print(f"`{probe.binary}` is not logged in. Run `{probe.binary} auth login` "
+                  "to use a Claude subscription, or set ANTHROPIC_API_KEY and "
+                  "RASK_BENCH_CLI_API_KEY=1 to bill a key.", file=sys.stderr)
+            return 2
     if probe.paid and not args.yes_spend:
-        _print_estimate(selected, args)
+        _print_estimate(selected, args, probe)
         print("\nRefusing to spend without --yes-spend.", file=sys.stderr)
         return 2
 
@@ -132,28 +144,43 @@ def cmd_run(args) -> int:
         "started": started,
         "tasks": [t.id for t in selected],
     }
+    meta["billing"] = probe.billing
     print(f"agentbench: {len(selected)} task(s), model {args.model}, "
           f"budget {args.max_attempts} attempt(s)")
+    if probe.billing == "subscription":
+        print("  billing:  Claude plan quota via `claude -p` (no API key in play)")
+    elif probe.billing == "api":
+        print("  billing:  metered Anthropic API")
     print(f"  compiler: {rask_bin} @ {meta['commit']}")
     print(f"  output:   {out_dir}\n")
 
+    quota = attempts.QuotaLatch()
+
     def run_one(task):
-        model = models.build(args.model, task.reference)
+        model = models.build(args.model, task.reference, effort=args.effort)
         return attempts.run_task(task, model, max_attempts=args.max_attempts,
                                  rask_bin=rask_bin, timeout=args.timeout,
-                                 feedback_lines=args.feedback_lines)
+                                 feedback_lines=args.feedback_lines,
+                                 model_retries=args.model_retries,
+                                 retry_base=args.retry_wait,
+                                 max_wait=args.max_wait, quota=quota)
 
     results = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for result in pool.map(run_one, selected):
             results.append(result)
             state = "solved" if result.solved else (
-                result.attempts[-1].outcome if result.attempts else "no attempt")
+                "not scored" if result.aborted else
+                (result.attempts[-1].outcome if result.attempts else "no attempt"))
             print(f"  {result.task_id:<32} {state:<14} {result.attempts_used} attempt(s)"
                   f"{'  [BACKEND DIVERGENCE]' if result.saw_divergence else ''}")
 
+    if quota.tripped:
+        print(f"\nStopped early: {quota.reason}")
+        print("  Partial results are scored and written; rerun to pick up the rest.")
+
     results.sort(key=lambda r: (r.horizon, r.task_id))
-    scored = report.score(results)
+    scored = report.score(results, billing=probe.billing)
     report.write_run(out_dir, scored, results, {t.id: t for t in selected}, meta)
 
     print("\n" + "─" * 50)
@@ -161,13 +188,20 @@ def cmd_run(args) -> int:
           f"pass@1 {scored.pass_at_1:.0%} · convergence {scored.convergence:.2f}")
     if scored.divergent_tasks:
         print(f"BACKEND DIVERGENCES (compiler bugs found): {', '.join(scored.divergent_tasks)}")
+    if scored.aborted_tasks:
+        print(f"not scored (provider never answered): "
+              f"{', '.join(t for t, _ in scored.aborted_tasks)}")
     if scored.cost_usd:
-        print(f"cost ${scored.cost_usd:.2f}")
+        if probe.billing == "subscription":
+            print(f"plan quota spent: {scored.input_tokens:,} in / "
+                  f"{scored.output_tokens:,} out (${scored.cost_usd:.2f} at list price)")
+        else:
+            print(f"cost ${scored.cost_usd:.2f}")
     print(f"report: {out_dir / 'report.md'}")
     return 0
 
 
-def _print_estimate(selected, args) -> None:
+def _print_estimate(selected, args, probe) -> None:
     """Rough cost ceiling, so nobody starts a run blind.
 
     Worst case means every task burning its whole attempt budget. Retries are
@@ -186,8 +220,14 @@ def _print_estimate(selected, args) -> None:
     print(f"{len(selected)} task(s) × up to {args.max_attempts} attempt(s)")
     print(f"  worst case ≈ {total_in:,} input + {total_out:,} output tokens")
     print(f"  (the language card is ~{card:,} of the input tokens, resent every attempt)")
+    if probe.billing == "subscription":
+        print("  billing: Claude plan quota — no API charge, but it counts against")
+        print("           the rolling usage window, so a big run can lock you out")
+        print("           of your own session for a while. Start with --select day.")
     for name, (rate_in, rate_out) in sorted(models.PRICES.items()):
-        print(f"  at {name} rates: ${(total_in * rate_in + total_out * rate_out) / 1e6:.2f}")
+        label = "would cost" if probe.billing == "subscription" else "at"
+        print(f"  {label} {name} rates: "
+              f"${(total_in * rate_in + total_out * rate_out) / 1e6:.2f}")
     print("  a solved task stops early, so a healthy run lands well under this")
 
 
@@ -198,7 +238,7 @@ def cmd_report(args) -> int:
     run_dir = Path(args.run)
     payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     results = [_result_from_json(r) for r in payload["results"]]
-    scored = report.score(results)
+    scored = report.score(results, billing=payload["meta"].get("billing", "free"))
     by_id = {t.id: t for t in tasks.load_tasks(None)}
     missing = [r.task_id for r in results if r.task_id not in by_id]
     if missing:
@@ -214,7 +254,8 @@ def _result_from_json(row: dict) -> attempts.TaskResult:
     result = attempts.TaskResult(
         task_id=row["task_id"], title=row["title"], horizon=row["horizon"],
         concepts=row.get("concepts", []), solved=row["solved"],
-        attempts_used=row["attempts_used"], seconds=row.get("seconds", 0.0))
+        attempts_used=row["attempts_used"], seconds=row.get("seconds", 0.0),
+        aborted=row.get("aborted"), stalls=row.get("stalls", []))
     result.attempts = [attempts.Attempt(**a) for a in row["attempts"]]
     return result
 
@@ -250,8 +291,19 @@ def main(argv=None) -> int:
     p.add_argument("--out", help="run directory (default agentbench/runs/<stamp>-<model>)")
     p.add_argument("--include-quarantined", action="store_true",
                    help="also run tasks whose reference is known broken")
+    p.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
+                   help="cli: models only — thinking effort per attempt")
+    p.add_argument("--model-retries", type=int, default=4,
+                   help="times to wait out a rate limit before giving up on a task; "
+                        "a wait never consumes an attempt")
+    p.add_argument("--retry-wait", type=float, default=15.0,
+                   help="first backoff in seconds, doubled per retry")
+    p.add_argument("--max-wait", type=float, default=600.0,
+                   help="longest single wait; a plan window further out than this "
+                        "stops the run instead of holding it")
     p.add_argument("--yes-spend", action="store_true",
-                   help="required for cli:/api: models — this run costs money")
+                   help="required for cli:/api: models — this run spends plan quota "
+                        "or API credit")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("report", help="re-score a finished run from its run.json")
