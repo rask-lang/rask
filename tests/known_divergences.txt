@@ -67,6 +67,8 @@ t_week_parse_range.rk         # parse<T> ignores the target's range — interp k
 t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native run). #907 (the `as` cast) is fixed.
 t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both check); inferred string param reaches MIR as void — #905 (native)
 t_generic_index_clone.rk      # `.clone()` on a generic element: `T` reaches MIR as i64, so a string is copied 8 bytes wide — #1020 (native run)
+t_array_string_join.rk        # `join` on a `[string; N]` returns empty, or segfaults after element reads — #1021 (native run)
+t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, so a method on it won't lower — #1022 (native compile)
 
 # --- E0361: binding whose type inference left open (#620) ---
 # Empty. All 19 files that lit up when E0361 went on by default now compile.

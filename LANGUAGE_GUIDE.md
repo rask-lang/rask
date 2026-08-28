@@ -106,10 +106,10 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 `Vec<T>` and `Map<K,V>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
 
-There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`):
+There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`). **There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
 
 ```rask
-let active = users.iter().filter(|u| u.active).map(|u| u.name).collect()
+let active = users.iter().filter(|u| u.active).map(|u| u.name).to_vec()
 
 for x in vec { }              // borrowed elements
 for mutate x in vec { }       // in-place mutation
@@ -121,6 +121,37 @@ for h in pool.handles() { }   // pools yield handles; snapshot-safe for removal
 ## Strings
 
 `string`: UTF-8, immutable, refcounted, Copy (`std.strings`). Interpolation is the one way to combine strings — no `+`, no concat function. `StringBuilder` for loops (`push`, `push_char`, zero-copy `build()`), `join` for lists. `s[i..j]` slices are expression-scoped; `.to_string()` copies out.
+
+## Method surface
+
+The names below are the ones that exist. Guessing from Rust or Python is the
+most common way to lose a first attempt here — `to_lower`, `collect`, `find` on
+a string and `entries` on a map are all things that look right and aren't.
+
+**`string`** — `len` `is_empty` `contains` `starts_with` `ends_with` `trim`
+`trim_start` `trim_end` `to_uppercase` `to_lowercase` `replace` `replacen`
+`repeat` `reverse` `substring` `char_count` `is_ascii` `to_string`
+`split` `split_whitespace` `lines` `chars` `char_indices` `bytes`
+`parse_int` `parse_float` `parse`
+`index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`)
+
+**`Vec<T>`** — `push` `pop` `len` `is_empty` `get` `first` `last` `contains`
+`insert` `remove` `clear` `reverse` `swap` `sort` `sort_by` `chunks` `clone`
+`join`
+
+**`Map<K,V>`** — `insert` `get` `remove` `keys` `values` `len` `is_empty`
+`clear` `iter` `clone`, and **`contains_key`** for presence — `Vec` and `string`
+say `contains`, a map does not. `m[k] = v` inserts or replaces; `m[k]` reads and
+panics when the key is absent, so test with `contains_key` or use `get`.
+
+**Sequence adapters** (off `.iter()`, or a `string` splitter) — `map` `filter`
+`flat_map` `fold` `reduce` `enumerate` `zip` `skip` `take` `limit` `flatten`
+`sort` `sort_by`.
+**Terminals** — `to_vec` `to_map` `join` `sum` `count` `min` `max` `any` `all`
+`find` `position`. A chain that doesn't end in one doesn't compile.
+
+`.len()` answers `u64` everywhere. `as` won't narrow it to `i64` — that's
+`.to<i64>()!`, or keep the count unsigned.
 
 ## Types
 
@@ -316,5 +347,9 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `Pool`, `Handle`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
 ## Spec vs compiler (temporary)
+
+`Set` is named in the prelude and `Set<T>` type-checks, but the type has no
+methods at all — no `insert`, no `contains`, no `len` (#1017). Use a
+`Map<T, bool>` until that's settled.
 
 The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Trait` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.

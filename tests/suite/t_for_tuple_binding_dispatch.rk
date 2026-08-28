@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1022 — a name bound by a tuple pattern in a `for` carries no type, so calling
+// a method on it fails MIR lowering: "method `trim` on receiver of unresolved
+// type — dispatch could not determine a stdlib type prefix". The interpreter
+// runs the same program.
+//
+// The hard failure is lowering behaving correctly (#425 replaced a wrong guess
+// with a reported miss); the gap is in the checker, which doesn't give the
+// tuple's parts their types.
+
+func first_words(text: string) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 { continue }
+        let t: string = line.trim().to_string()
+        out.push(t)
+    }
+    return out
+}
+
+test "a method on a tuple-bound loop name" {
+    let rows = first_words("header\n a \n b ")
+    assert rows.len() == 2u64
+    assert rows[0] == "a"
+    assert rows[1] == "b"
+}
+
+test "the same loop without destructuring is fine" {
+    mut out: Vec<string> = Vec.new()
+    for line in "a \n b ".lines() {
+        out.push(line.trim().to_string())
+    }
+    assert out.len() == 2u64
+    assert out[0] == "a"
+}
