@@ -18,6 +18,7 @@
 // decides to copy through an address. #963.
 
 import async.JoinError
+import thread.ThreadPool
 
 func a_string_task() -> string or JoinError {
     using Multitasking {
@@ -47,6 +48,20 @@ func a_counted_task() -> i64 or JoinError {
     }
 }
 
+func a_pooled_string() -> string or JoinError {
+    using ThreadPool(workers: 2) {
+        let h = ThreadPool.spawn(own || { return "from the pool" })
+        return try h.join()
+    }
+}
+
+func a_pooled_float() -> f64 or JoinError {
+    using ThreadPool(workers: 2) {
+        let h = ThreadPool.spawn(own || { return 0.25f64 })
+        return try h.join()
+    }
+}
+
 test "a task returning a string comes back whole" {
     assert a_string_task()! == "from the task"
 }
@@ -72,4 +87,11 @@ test "many tasks each box their own answer" {
         i += 1i64
     }
     assert total == 20i64
+}
+
+// The third way to start one. `spawn` and `Thread.spawn` are covered above and
+// in t_spawn_payload_type.rk; this is the pool.
+test "a pooled task boxes its answer too" {
+    assert a_pooled_string()! == "from the pool"
+    assert a_pooled_float()! == 0.25f64
 }
