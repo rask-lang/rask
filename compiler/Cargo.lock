@@ -1450,6 +1450,7 @@ dependencies = [
  "rask-ownership",
  "rask-parser",
  "rask-resolve",
+ "rask-stdlib",
  "rask-types",
  "serde",
  "serde_json",

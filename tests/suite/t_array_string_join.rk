@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1021 — `join` on a fixed-size array of strings. Reading elements out of the
+// same array is fine natively, and the same strings in a `Vec` join fine, so
+// it's `join`'s receiver handling that's wrong: an array base pointer where a
+// Vec header is expected. Empty result in the small case, SIGSEGV once a few
+// element reads precede it.
+//
+// Related but distinct from #1000, which is module-level `const` arrays — this
+// one is a plain local, and its element reads work.
+
+test "elements of a local string array read back" {
+    let arr = ["a", "b"]
+    assert arr.len() == 2u64
+    assert arr[0] == "a"
+    assert arr[1] == "b"
+}
+
+test "the same strings join fine through a Vec" {
+    let v: Vec<string> = ["a", "b"].iter().to_vec()
+    assert v.join("-") == "a-b"
+}
+
+test "join on the array itself" {
+    let arr = ["a", "b"]
+    assert arr.join("-") == "a-b"
+}

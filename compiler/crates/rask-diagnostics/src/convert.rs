@@ -7,6 +7,59 @@
 use crate::{Diagnostic, ToDiagnostic};
 use rask_ast::Span;
 
+/// Base name of a rendered type: `Map<_, _>` -> `Map`, `Vec<string>?` -> `Vec`.
+fn type_base(ty: &str) -> &str {
+    let ty = ty.trim_end_matches(['?', '!']);
+    ty.split(['<', ' ']).next().unwrap_or(ty)
+}
+
+/// Levenshtein distance, capped by the shorter string — only used on method
+/// names, so the quadratic table is a dozen cells.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Methods on `ty` whose names are close enough to `method` to be worth naming.
+///
+/// Two rules, and containment comes first because it catches the mistake models
+/// and people actually make: a name that's right but truncated or missing its
+/// prefix (`to_lower` for `to_lowercase`, `lower` for the same). Plain typos are
+/// caught by edit distance, scaled to the name's length so short names don't
+/// match everything. Empty when the type has no registry entry — a user-defined
+/// type, where there's nothing to compare against.
+fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
+    let candidates = rask_stdlib::registry::type_method_names(type_base(ty));
+    if candidates.is_empty() || method.is_empty() {
+        return Vec::new();
+    }
+    let budget = (method.len() / 3).max(1);
+    let mut scored: Vec<(usize, &'static str)> = candidates
+        .iter()
+        .filter_map(|cand| {
+            if cand.contains(method) || method.contains(cand) {
+                Some((0, *cand))
+            } else {
+                let d = edit_distance(method, cand);
+                (d <= budget).then_some((d, *cand))
+            }
+        })
+        .collect();
+    scored.sort_by_key(|(d, name)| (*d, name.len(), *name));
+    scored.truncate(2);
+    scored.into_iter().map(|(_, name)| name).collect()
+}
+
 // ============================================================================
 // Lex Errors
 // ============================================================================
@@ -491,15 +544,32 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             NoSuchMethod { ty, method, span } => {
-                Diagnostic::error(format!(
+                // "check available methods on `string`" is a dead end when the
+                // caller is one letter off. Nearly every method-not-found in
+                // agentbench's first real run was a name that exists under
+                // another spelling — `to_lower` for `to_lowercase`, twice in
+                // two different tasks — so name the neighbour when there is one.
+                let ty_name = ty.to_string();
+                let diag = Diagnostic::error(format!(
                     "no method `{}` found for type `{}`",
                     method, ty
                 ))
                 .with_code("E0313")
-                .with_primary(*span, "method not found")
-                .with_help(format!("check available methods on `{}`", ty))
-                .with_fix(format!("check available methods on `{}`", ty))
-                .with_why("method calls are resolved at compile time against the type's extend blocks")
+                .with_primary(*span, "method not found");
+                match nearest_methods(&ty_name, method) {
+                    names if !names.is_empty() => diag
+                        .with_help(format!("did you mean `{}`?", names.join("` or `")))
+                        .with_fix(format!("did you mean `{}`?", names.join("` or `")))
+                        .with_why(format!(
+                            "method calls are resolved at compile time against the type's \
+                             extend blocks, and `{}` has no `{}`",
+                            ty, method
+                        )),
+                    _ => diag
+                        .with_help(format!("check available methods on `{}`", ty))
+                        .with_fix(format!("check available methods on `{}`", ty))
+                        .with_why("method calls are resolved at compile time against the type's extend blocks"),
+                }
             }
 
             UnimplementedStdlibMethod { ty, method, span } => {

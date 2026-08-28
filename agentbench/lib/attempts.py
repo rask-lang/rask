@@ -10,6 +10,7 @@ because how well those words teach is one of the things being measured.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -81,10 +82,21 @@ class TaskResult:
     attempts_used: int
     attempts: list[Attempt] = field(default_factory=list)
     seconds: float = 0.0
+    # Set when the run never got an answer out of the model — quota gone, the
+    # transport broke, the login is bad. Not a task the model failed, so it
+    # drops out of the scored set instead of counting as a miss.
+    aborted: str | None = None
+    # Every provider error the loop waited out, so a transcript shows the
+    # stalls that a clean solve rate would otherwise hide.
+    stalls: list[dict] = field(default_factory=list)
 
     @property
     def cost_usd(self) -> float:
         return sum(a.cost_usd for a in self.attempts)
+
+    @property
+    def waited_seconds(self) -> float:
+        return sum(s.get("waited", 0.0) for s in self.stalls)
 
     @property
     def saw_divergence(self) -> bool:
@@ -102,9 +114,55 @@ def system_prompt() -> str:
     return f"{SYSTEM_PREAMBLE}\n\n----- BEGIN RASK LANGUAGE REFERENCE -----\n{card}\n----- END RASK LANGUAGE REFERENCE -----\n"
 
 
+class QuotaLatch:
+    """Shared "the plan window is gone" flag.
+
+    Without it, a subscription run that hits its usage limit on task 3 makes
+    every remaining task discover the same wall on its own, one full backoff
+    ladder each. The first task to give up trips the latch and the rest abort
+    immediately, so the partial run is scored and reported in seconds instead
+    of an hour.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self.reason: str | None = None
+        self._lock = threading.Lock()
+
+    def trip(self, reason: str) -> None:
+        with self._lock:
+            if not self._event.is_set():
+                self.reason = reason
+                self._event.set()
+
+    @property
+    def tripped(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, seconds: float) -> None:
+        """Sleep, but wake early if another task decides the window is closed."""
+        self._event.wait(seconds)
+
+
+def _backoff(kind: str, retry: int, reply: Reply, base: float, cap: float) -> float:
+    """How long to wait before retrying, in seconds.
+
+    A rate limit that names its reset time gets waited out to that second; a
+    subscription window can be hours away, so `cap` decides when to stop
+    waiting and abort the task instead of holding the process hostage.
+    """
+    if reply.retry_after:
+        return max(5.0, min(cap, reply.retry_after - time.time() + 5.0))
+    if kind == "rate_limit":
+        return min(cap, base * (2 ** retry))
+    return min(cap, base * (1.5 ** retry))
+
+
 def run_task(task: tasks.Task, model: Model, *, max_attempts: int = 3,
              rask_bin: Path | None = None, timeout: float = 90.0,
-             feedback_lines: int = 60, on_attempt=None) -> TaskResult:
+             feedback_lines: int = 60, on_attempt=None,
+             model_retries: int = 4, retry_base: float = 15.0,
+             max_wait: float = 600.0, quota: QuotaLatch | None = None) -> TaskResult:
     system = system_prompt()
     conversation: list[dict] = [
         {"role": "user", "content": FIRST_TURN.format(prompt=task.prompt, contract=task.contract)}
@@ -113,13 +171,24 @@ def run_task(task: tasks.Task, model: Model, *, max_attempts: int = 3,
                         solved=False, attempts_used=0)
     started = time.monotonic()
 
+    if quota and quota.tripped:
+        result.aborted = f"not started: {quota.reason}"
+        return result
+
     for index in range(1, max_attempts + 1):
-        reply: Reply = model.complete(system, conversation)
+        reply = _complete_with_retries(
+            model, system, conversation, result, index,
+            model_retries=model_retries, retry_base=retry_base,
+            max_wait=max_wait, quota=quota)
+
         if reply.error:
+            # A provider that never answered is not a model that got Rask
+            # wrong. Record it, mark the task unscored, and stop.
             result.attempts.append(Attempt(
                 index=index, reply="", code="", source="", outcome="model_error",
                 error_codes=[], interp_output="", native_output="",
                 model_error=reply.error))
+            result.aborted = f"{reply.error_kind or 'error'}: {reply.error}"
             break
 
         code = tasks.extract_code(reply.text)
@@ -149,6 +218,40 @@ def run_task(task: tasks.Task, model: Model, *, max_attempts: int = 3,
 
     result.seconds = time.monotonic() - started
     return result
+
+
+def _complete_with_retries(model: Model, system: str, conversation: list[dict],
+                           result: TaskResult, index: int, *, model_retries: int,
+                           retry_base: float, max_wait: float,
+                           quota: QuotaLatch | None) -> Reply:
+    """One attempt's completion, waiting out rate limits and blips.
+
+    A retry here does not consume an attempt: the model never saw the prompt,
+    so counting it would inflate convergence and invent thrash that didn't
+    happen. The waits are recorded on the result instead.
+    """
+    for retry in range(model_retries + 1):
+        reply = model.complete(system, conversation)
+        if not reply.error or not reply.retryable or retry == model_retries:
+            return reply
+        wait = _backoff(reply.error_kind, retry, reply, retry_base, max_wait)
+        result.stalls.append({
+            "attempt": index, "kind": reply.error_kind,
+            "error": reply.error[:400], "waited": round(wait, 1),
+        })
+        if reply.error_kind == "rate_limit" and reply.retry_after and quota:
+            gap = reply.retry_after - time.time()
+            if gap > max_wait:
+                mins = gap / 60.0
+                quota.trip(f"plan usage limit — window reopens in {mins:.0f} min")
+                return reply
+        if quota:
+            quota.wait(wait)
+            if quota.tripped:
+                return reply
+        else:
+            time.sleep(wait)
+    return reply
 
 
 def check_reference(task: tasks.Task, rask_bin: Path | None = None,

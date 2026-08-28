@@ -22,9 +22,62 @@ agentbench/bench.py run --model cli:claude-sonnet-5 --yes-spend
 agentbench/bench.py report agentbench/runs/<run>   # re-score old transcripts, no new spend
 ```
 
-A real model costs money, so `run` prints an estimate and refuses without
+A real model spends something, so `run` prints an estimate and refuses without
 `--yes-spend`. `--select day`, `--limit 3` and `--max-attempts 2` are the knobs
 for a cheap partial run.
+
+## Running it on a Claude subscription
+
+`cli:<model>` shells out to `claude -p` and reuses whatever login the machine
+has. On a Pro/Max plan that login *is* the subscription, so a run spends plan
+quota and no API credit — no key, no billing setup, nothing to buy:
+
+```bash
+claude auth login      # once, if the machine isn't logged in
+agentbench/bench.py run --model cli:claude-sonnet-5 --yes-spend
+```
+
+`run` asks `claude auth status` before spending anything and stops with the
+login command if the machine isn't signed in — eighteen tasks each discovering
+the same missing login makes for a confusing report. That's also where the
+billing label comes from: `authMethod: oauth_token` is a plan, and a key reached
+through `apiKeyHelper` is metered even with nothing in the environment.
+
+Three things make this work rather than half-work.
+
+**An API key silently wins over the subscription.** If `ANTHROPIC_API_KEY` is
+exported, `claude` bills the key and the plan sees nothing. The adapter drops
+it (and `ANTHROPIC_AUTH_TOKEN`) from the child's environment, so a run on a
+developer machine with a key lying around still spends plan quota. Set
+`RASK_BENCH_CLI_API_KEY=1` to keep the key and bill it instead. The run header
+says which one it used.
+
+**The child gets nothing from this machine.** `--safe-mode --tools ""` and
+friends: no CLAUDE.md, no skills, hooks, plugins, MCP servers, or settings, and
+no tools at all — the model writes Rask from the card or it doesn't. That's
+required for the measurement to mean anything, and it's also 24k tokens of
+plan quota per call that would otherwise go on Claude Code's own system prompt
+and tool definitions. Measured: 24,288 tokens per call before, 243 after.
+
+**A usage limit is not a failed task.** Hitting the rolling window mid-run used
+to record `model_error` and score the task as unsolved, so a plan limit read as
+"the language is hard". Now a rate limit is waited out with backoff (a wait
+never consumes an attempt), and a task the provider never answered for is
+marked *not scored*, listed separately in `report.md`, and left out of every
+denominator. The first task to conclude the window is gone trips a shared latch
+so the rest abort immediately instead of each grinding through its own backoff:
+the partial run is scored and written in seconds. `--model-retries`,
+`--retry-wait` and `--max-wait` tune it.
+
+For a subscription the report says *list-price equivalent* rather than *cost* —
+the CLI prices every call at API rates, which is a useful number, but no money
+changed hands. Token counts include cached input, because cached reads come off
+the plan window too.
+
+Rough size, so nobody wipes out their own window by accident: the full
+eighteen-task set at three attempts is about **335k tokens** (277k in, 57k out
+on the first Sonnet run) and takes ~11 minutes at `--jobs 4`. `--select day`
+is about a fifth of that.
 
 Everything a run produces lands in `agentbench/runs/<stamp>-<model>/`, which is
 gitignored: `run.json` (everything, machine-readable), `report.md` (the scores),
@@ -119,12 +172,15 @@ touching `T or E` pays for that on attempt one.
 mock:reference     emits the reference immediately        free
 mock:solves@N      fails N-1 times, then solves           free
 mock:garbage       never produces anything buildable      free
-cli:<model>        `claude -p`, using the machine's auth  paid
-api:<model>        Anthropic messages API                 paid
+cli:<model>        `claude -p`, using the machine's auth  plan quota
+api:<model>        Anthropic messages API                 API credit
 ```
 
 The mocks exist so the loop — prompting, assembly, compilation, scoring,
-transcripts — can be exercised end to end for nothing. `mock:garbage` emits
+transcripts — can be exercised end to end for nothing. Run one by hand when you
+change the harness; CI doesn't, on purpose — the gate there checks the reference
+solutions and nothing else, so a green build never depends on benchmark
+plumbing. `mock:garbage` emits
 Rust-shaped code (`fn`, `let mut`, `Ok(...)`), which is what a model actually
 gets wrong here, so the harness gets tested against realistic diagnostics.
 

@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1020 — `.clone()` on a generic element. Inside the generic body the checker's
+// type for `elem.clone()` is `T`, and `T` reaches MIR as a bare i64, so at
+// `T = string` the destination is an 8-byte slot: half the string, no refcount
+// bump, garbage at the next read. `Vec_index` itself resolves fine — the same
+// method without `.clone()` is green, which is why the reference solution for
+// agentbench's week_stack passes and the model's version doesn't.
+
+struct Bin<T> { items: Vec<T> }
+
+extend Bin<T> {
+    func new() -> Bin<T> {
+        return Bin<T> { items: Vec.new() }
+    }
+
+    func put(mutate self, value: T) {
+        self.items.push(value)
+    }
+
+    func top(self) -> T? {
+        if self.items.is_empty() { return none }
+        let idx = self.items.len() - 1
+        return self.items[idx].clone()
+    }
+}
+
+test "generic index clone at string" {
+    mut b: Bin<string> = Bin.new()
+    b.put("a")
+    b.put("bb")
+    assert b.top()! == "bb"
+}
+
+test "generic index without clone is fine" {
+    mut b: Bin<string> = Bin.new()
+    b.put("a")
+    assert b.items[0] == "a"
+}
