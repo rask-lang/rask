@@ -1545,6 +1545,17 @@ impl TypeChecker {
                     }
                     expected_ret
                 } else {
+                    // A body that diverges returns nothing, so no constraint
+                    // reaches the return variable: `spawn(|| { panic("boom") })`
+                    // finished inference with it open, and every consumer
+                    // downstream then invented a width for a value that never
+                    // exists. Register `Never` as the answer of last resort — a
+                    // `return` in the same body coerces later and wins.
+                    if matches!(inferred_ret, Type::Never) && !body_returns_a_value(body) {
+                        if let Type::Var(id) = self.ctx.apply(&closure_return_type) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                     closure_return_type
                 };
 
@@ -4923,4 +4934,49 @@ fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
         }
         _ => InvalidCastClass::Other,
     }
+}
+
+/// Does this closure body hand a value out through a `return`?
+///
+/// A body's type is `Never` both when it panics and when it ends in `return x`
+/// — control doesn't fall off the end either way. Only the first means no value
+/// ever comes out, and that's the one whose return type nothing constrains.
+/// Nested closures don't count: their `return` returns from them.
+fn body_returns_a_value(body: &Expr) -> bool {
+    fn in_stmts(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(in_stmt)
+    }
+    fn in_stmt(stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return(Some(_)) => true,
+            StmtKind::Expr(e) => in_expr(e),
+            StmtKind::Let { init, .. } => in_expr(init),
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::Loop { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Comptime(body) => in_stmts(body),
+            StmtKind::Ensure { body, else_handler } => {
+                in_stmts(body)
+                    || else_handler.as_ref().map_or(false, |(_, h)| in_stmts(h))
+            }
+            _ => false,
+        }
+    }
+    fn in_expr(expr: &Expr) -> bool {
+        match &expr.kind {
+            // A nested closure's `return` is its own.
+            ExprKind::Closure { .. } => false,
+            ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+                in_stmts(body)
+            }
+            ExprKind::If { then_branch, else_branch, .. } => {
+                in_expr(then_branch)
+                    || else_branch.as_ref().map_or(false, |e| in_expr(e))
+            }
+            ExprKind::Match { arms, .. } => arms.iter().any(|a| in_expr(&a.body)),
+            _ => false,
+        }
+    }
+    in_expr(body)
 }

@@ -23,6 +23,11 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type};
 
 /// Does this type still contain an inference variable anywhere inside it?
+pub(crate) fn is_open_type(ty: &Type) -> bool {
+    is_open(ty)
+}
+
+/// Does this type still contain an inference variable anywhere inside it?
 fn is_open(ty: &Type) -> bool {
     match ty {
         Type::Var(_) => true,

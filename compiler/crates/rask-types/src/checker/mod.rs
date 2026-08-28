@@ -26,7 +26,7 @@ mod unify;
 mod generics;
 mod resolve;
 mod validate;
-mod resolved_types;
+pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
@@ -523,6 +523,11 @@ impl TypeChecker {
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
 
+        // Then the answers of last resort — a diverging closure's return type,
+        // which no constraint ever reaches. After the return coercions above,
+        // so a `return` in the same body wins.
+        self.ctx.apply_var_defaults();
+
         // A method call that deferred on an unsuffixed literal receiver can be
         // resolved now that the literal has a type.
         self.retry_deferred_methods();
@@ -544,11 +549,38 @@ impl TypeChecker {
         // answer it didn't have during the walk.
         self.validate_pending_view_bindings();
 
+        // Every recorded type, with inference's answers substituted in.
+        //
+        // Some still hold a variable inference never solved. They stay: a
+        // consumer reading the *head* of a type is right to — `TaskHandle<?>`
+        // is still a `TaskHandle`, and that's what the ownership checker needs
+        // to know a handle got dropped. What can't be done with one is compute
+        // a layout, and that's guarded where layouts are made
+        // (`MirContext::lookup_node_type`), not by throwing the type away here.
+        //
+        // `RASK_TRACE_OPEN_NODES=1` counts and shapes them, which is how you
+        // find the inference gaps behind them rather than assuming.
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
+
+        if std::env::var_os("RASK_TRACE_OPEN_NODES").is_some() {
+            let mut shapes: std::collections::BTreeMap<String, u32> = Default::default();
+            for ty in node_types.values() {
+                if crate::checker::resolved_types::is_open_type(ty) {
+                    *shapes.entry(format!("{ty:?}")).or_insert(0) += 1;
+                }
+            }
+            let total: u32 = shapes.values().sum();
+            eprintln!("[open-nodes] {total} of {} recorded types still hold an inference variable", node_types.len());
+            let mut v: Vec<_> = shapes.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            for (shape, n) in v.iter().take(25) {
+                eprintln!("[open-nodes] {n:>5}  {shape}");
+            }
+        }
 
         self.validate_resolved_binding_types(decls, &node_types);
 
