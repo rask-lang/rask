@@ -1301,11 +1301,36 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// Look up the MIR type for an expression node.
+    /// The MIR type for an expression node — `None` when the checker's answer
+    /// can't be one.
+    ///
+    /// This is the only place a checker type becomes a layout, which makes it
+    /// the only place that can invent a width. Two answers can't be layouts: a
+    /// type still holding an inference variable nobody solved, and one still
+    /// naming a type parameter the substitution missed. Both convert to a
+    /// plausible 8-byte scalar — `Ptr` for a bare variable, `i64` through a
+    /// stub's spelling of one — and nothing downstream can tell either from a
+    /// real answer.
+    ///
+    /// That's why call sites around this crate grew
+    /// `.filter(|t| !matches!(t, MirType::Ptr))`: each was reaching for this
+    /// check and catching one half of it. The guard belongs here, where no call
+    /// site can miss it, and `None` then means one thing — the checker has no
+    /// answer. Absence every consumer already handles; a wrong width none of
+    /// them can (#1020).
+    ///
+    /// `lookup_raw_type` deliberately hands both over: reading the *head* of a
+    /// type is fine with an open argument. `TaskHandle<?>` is still a
+    /// `TaskHandle`, which is how the ownership checker knows a handle was
+    /// dropped.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         let found = self.node_types.get(&node_id);
         crate::fallback::record_lookup(found);
-        found.map(|ty| self.type_to_mir(ty))
+        let ty = found?;
+        if crate::fallback::type_is_open(ty) || type_names_a_parameter(ty).is_some() {
+            return None;
+        }
+        Some(self.type_to_mir(ty))
     }
 
     /// Look up the raw Type for an expression node (preserves generic info).

@@ -279,7 +279,7 @@ impl<'a> MirLowerer<'a> {
     /// than a slot sized by hope.
     fn call_ret_ty(&self, qualified: &str, node: rask_ast::NodeId) -> MirType {
         super::stdlib_return_mir_type_known(qualified, Some(self.ctx))
-            .or_else(|| self.checker_type(node))
+            .or_else(|| self.ctx.lookup_node_type(node))
             // Last: the signature table, including the stub entries `sig_ret_ty`
             // refused at the front. A stub's `T` is a made-up width, but it
             // carries the right *shape* — `T or JoinError` still says "a Result
@@ -287,33 +287,6 @@ impl<'a> MirLowerer<'a> {
             // when the checker never solved the variable either.
             .or_else(|| self.func_sigs.get(qualified).map(|s| s.ret_ty.clone()))
             .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:call-return"))
-    }
-
-    /// The checker's type for a node, unless it still names a type parameter.
-    ///
-    /// Inside an instantiated body a surviving `T` is a missing substitution,
-    /// and `type_to_mir` would turn it into `Ptr` or `i64` — an 8-byte slot
-    /// that looks like a real answer. Absence is recoverable; a wrong width is
-    /// not.
-    ///
-    /// This is the question the `.filter(|t| !matches!(t, MirType::Ptr))` guards
-    /// around this file were reaching for. `Ptr` was a proxy for "that's a bare
-    /// `T`", and a poor one in both directions: an unsubstituted parameter also
-    /// arrives as `i64`, which the filter waved through, while a `Vec`, a `Map`,
-    /// a rack or a closure is legitimately `Ptr` and got thrown away. Asking
-    /// about the parameter directly costs the same and answers the real
-    /// question (#1020).
-    pub(crate) fn checker_type(&self, node: rask_ast::NodeId) -> Option<MirType> {
-        let raw = self.ctx.lookup_raw_type(node)?;
-        // A type parameter the substitution missed, or an inference variable
-        // nobody solved. Both convert to a plausible 8-byte scalar — `Ptr` or
-        // `i64` — and both are lies. `spawn(|| { return 10 }).join()` records
-        // `Result { ok: Var(_), err: JoinError }`, and taking that gave the ok
-        // side `Ptr`: two joins that should have summed to 42 gave 266.
-        if super::type_names_a_parameter(raw).is_some() || crate::fallback::type_is_open(raw) {
-            return None;
-        }
-        Some(self.ctx.type_to_mir(raw))
     }
 
     /// The element type push tracking recorded for this receiver.
@@ -1104,7 +1077,7 @@ impl<'a> MirLowerer<'a> {
                     // narrowed type recorded, extract the payload from the
                     // wider Result/Option so downstream Field / method lookup
                     // operates on the narrowed type, not the wrapper.
-                    let narrow_ty = self.checker_type(expr.id);
+                    let narrow_ty = self.ctx.lookup_node_type(expr.id);
                     let needs_narrow = matches!(
                         (&ty, &narrow_ty),
                         (MirType::Result { .. }, Some(n)) if !matches!(n, MirType::Result { .. })
@@ -1998,7 +1971,7 @@ impl<'a> MirLowerer<'a> {
                     }
 
                     if !resolved {
-                        rt = self.checker_type(expr.id)
+                        rt = self.ctx.lookup_node_type(expr.id)
                             .unwrap_or_else(|| {
                                 eprintln!(
                                     "[mir] unresolved field `{}` — defaulting to I64 (should be caught by type checker)",
@@ -2193,7 +2166,7 @@ impl<'a> MirLowerer<'a> {
                 // Vec/Map/etc: dispatch through runtime
                 // Try to determine the element type from the type checker,
                 // then from tracked push/set calls, then default to I64
-                let result_ty = self.checker_type(expr.id)
+                let result_ty = self.ctx.lookup_node_type(expr.id)
                     .or_else(|| self.tracked_elem_of(object))
                     // Last resort: the receiver's own `Vec<T>`. Push tracking
                     // only sees Vecs built in this function, and the checker
@@ -5393,7 +5366,7 @@ impl<'a> MirLowerer<'a> {
             // in 8-byte slots, and an i32-typed destination read back only half
             // of what the out-param wrote.
             self.collection_elem_of_expr(object)
-                .or_else(|| self.checker_type(expr.id))
+                .or_else(|| self.ctx.lookup_node_type(expr.id))
                 .map(vec_slot_type)
         } else if qualified_name == "Vec_pop" {
             // Same, one level in: `.pop()` is `T?`, and the payload type sizes
@@ -5434,7 +5407,7 @@ impl<'a> MirLowerer<'a> {
             // `none`. Accept both spellings — filtering to the bare one dropped
             // the return type for `corresponding` entirely, and its `?` test
             // then read a tag that isn't there.
-            self.checker_type(expr.id).filter(|t| t.is_link_slot())
+            self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
         } else if matches!(qualified_name.as_str(),
             "Cell_get" | "Cell_replace" | "Cell_into_inner"
             | "Shared_get" | "Shared_replace"
@@ -5452,7 +5425,7 @@ impl<'a> MirLowerer<'a> {
             //
             // It used to refuse a `Ptr` answer as a guess at "that's still `T`",
             // which cost every box that really does hold a pointer.
-            self.checker_type(expr.id)
+            self.ctx.lookup_node_type(expr.id)
         } else if matches!(qualified_name.as_str(),
             "Receiver_receive_struct" | "Receiver_try_receive")
         {
@@ -5476,9 +5449,10 @@ impl<'a> MirLowerer<'a> {
             // The checker's answer has to be a wrapper — a `Result` or an
             // `Option`. The nested `!matches!(**ok, MirType::Ptr)` this used to
             // carry was the same guess at "the ok side is still `T`" the rest of
-            // the file made; `checker_type` refuses a real type parameter and
-            // keeps a channel of `Vec`s, which is legitimately `Ptr` inside.
-            self.checker_type(expr.id)
+            // the file made; `lookup_node_type` refuses a real type parameter
+            // and keeps a channel of `Vec`s, which is legitimately `Ptr`
+            // inside.
+            self.ctx.lookup_node_type(expr.id)
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
