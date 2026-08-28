@@ -66,7 +66,12 @@ impl LookupStats {
     }
 }
 
-fn type_is_open(ty: &rask_types::Type) -> bool {
+/// Does this type still contain an inference variable?
+///
+/// The checker recorded something, but it never got solved — present and
+/// useless, which reads the same as absent to every consumer. A caller about to
+/// size a slot from it wants to know that before it does.
+pub(crate) fn type_is_open(ty: &rask_types::Type) -> bool {
     use rask_types::{GenericArg, Type};
     match ty {
         Type::Var(_) => true,
