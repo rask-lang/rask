@@ -22,6 +22,11 @@ use super::errors::TypeError;
 use super::TypeChecker;
 use crate::types::{GenericArg, Type};
 
+/// Is the open-node census switched on?
+pub(crate) fn tracing_open_nodes() -> bool {
+    std::env::var_os("RASK_TRACE_OPEN_NODES").is_some()
+}
+
 /// Does this type still contain an inference variable anywhere inside it?
 pub(crate) fn is_open_type(ty: &Type) -> bool {
     is_open(ty)

@@ -121,6 +121,9 @@ pub struct TypeChecker {
     pub(super) ctx: InferenceContext,
     /// Types assigned to nodes.
     pub(super) node_types: HashMap<NodeId, Type>,
+    /// Node ids typed while checking stdlib declarations. Only populated when
+    /// the open-node census is switched on; see `tracing_open_nodes`.
+    stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
     /// Types assigned to symbols (for bindings without annotations).
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
@@ -358,6 +361,7 @@ impl TypeChecker {
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
+            stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
@@ -475,6 +479,12 @@ impl TypeChecker {
                 self.check_decl(decl);
             }
             self.types.stdlib_mode = false;
+            // Everything recorded up to here came from a stdlib declaration.
+            // Only collected when the census is on — it's a set of every node id
+            // so far, which is not worth building otherwise.
+            if resolved_types::tracing_open_nodes() {
+                self.stdlib_typed_nodes = Some(self.node_types.keys().copied().collect());
+            }
         }
 
         // Everything that isn't a body first — imports, module-level consts, type
@@ -566,15 +576,29 @@ impl TypeChecker {
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
 
-        if std::env::var_os("RASK_TRACE_OPEN_NODES").is_some() {
+        if resolved_types::tracing_open_nodes() {
+            // Split by origin. A stub's type parameter is abstract-but-known
+            // rather than unresolved — `string.parse<T>`'s two nodes are in every
+            // program ever compiled — and counting those alongside the real gaps
+            // buries the handful a person can act on.
+            let from_stdlib = self.stdlib_typed_nodes.take().unwrap_or_default();
             let mut shapes: std::collections::BTreeMap<String, u32> = Default::default();
-            for ty in node_types.values() {
-                if crate::checker::resolved_types::is_open_type(ty) {
+            let mut stdlib_open = 0u32;
+            for (id, ty) in node_types.iter() {
+                if !resolved_types::is_open_type(ty) {
+                    continue;
+                }
+                if from_stdlib.contains(id) {
+                    stdlib_open += 1;
+                } else {
                     *shapes.entry(format!("{ty:?}")).or_insert(0) += 1;
                 }
             }
             let total: u32 = shapes.values().sum();
-            eprintln!("[open-nodes] {total} of {} recorded types still hold an inference variable", node_types.len());
+            eprintln!(
+                "[open-nodes] {total} of {} recorded types still hold an inference variable ({stdlib_open} more in stdlib signatures, abstract-but-known)",
+                node_types.len(),
+            );
             let mut v: Vec<_> = shapes.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1));
             for (shape, n) in v.iter().take(25) {
