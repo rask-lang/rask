@@ -106,6 +106,34 @@ pub enum Type {
 }
 
 impl Type {
+    /// Does this type still contain an inference variable anywhere inside it?
+    ///
+    /// An answer that does is present and useless: it converts to a plausible
+    /// 8-byte scalar and nothing downstream can tell it from a real type. Three
+    /// passes ask this — the checker reporting a binding it couldn't infer, its
+    /// open-node census, and MIR deciding whether a recorded type can become a
+    /// layout — and they each had their own copy of the match. They agreed, but
+    /// only until someone added a `Type` variant and updated one of them.
+    pub fn has_unsolved_var(&self) -> bool {
+        match self {
+            Type::Var(_) => true,
+            Type::Result { ok, err } => ok.has_unsolved_var() || err.has_unsolved_var(),
+            Type::RawPtr(inner) | Type::Slice(inner) => inner.has_unsolved_var(),
+            Type::Array { elem, .. } => elem.has_unsolved_var(),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(Type::has_unsolved_var)
+            }
+            Type::Fn { params, ret } => {
+                params.iter().any(Type::has_unsolved_var) || ret.has_unsolved_var()
+            }
+            Type::SimdVector { elem, .. } => elem.has_unsolved_var(),
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
+                .iter()
+                .any(|a| matches!(a, GenericArg::Type(t) if t.has_unsolved_var())),
+            _ => false,
+        }
+    }
+
     /// P2: what `usize` is on this target — pointer-sized, not always 64-bit.
     /// The width comes from `rask_ast::primitives::pointer_bits`, which is the
     /// single place that decides it.

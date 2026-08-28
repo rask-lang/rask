@@ -2580,6 +2580,19 @@ impl TypeChecker {
 
 
     /// Validate that call-site annotations match parameter declarations.
+    /// Check that call-site `mutate`/`take` annotations match the declaration.
+    ///
+    /// This reads the callee's parameter *symbols*, so it does nothing for a
+    /// callee that has none. Stdlib stubs used to be exactly that — the resolver
+    /// registered them with an empty parameter list — which meant these rules
+    /// silently did not apply to any stdlib call. Stubs carry their real
+    /// parameters and modes now, so the checks apply there like anywhere else.
+    ///
+    /// Nothing changed for existing code: the only `public func` stub taking a
+    /// mode is `drop(take ptr: Heap)`, and `drop` returns before reaching here.
+    /// A stub added later with a `mutate` parameter will start enforcing at its
+    /// call sites, which is the intent — noted because it turned on as a side
+    /// effect of fixing the parameter list, not as a change written here.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
         use rask_ast::expr::ArgMode;
         use rask_resolve::SymbolKind;

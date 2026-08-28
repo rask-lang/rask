@@ -202,6 +202,12 @@ impl Resolver {
             // Inserted into the symbol table but deliberately not defined in any
             // scope: they exist to be read through the function's own symbol, not
             // to be named.
+            //
+            // Giving them modes also switches on `check_call_annotations` for
+            // stdlib calls, which was a no-op while the list was empty. No
+            // existing call site changes — `drop` is the only `public func` stub
+            // with a mode and the checker handles it before that point — but a
+            // stub added later with a `mutate` parameter will start enforcing.
             let param_syms: Vec<SymbolId> = f
                 .params
                 .iter()

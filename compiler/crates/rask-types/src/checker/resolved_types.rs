@@ -29,23 +29,7 @@ pub(crate) fn tracing_open_nodes() -> bool {
 
 /// Does this type still contain an inference variable anywhere inside it?
 pub(crate) fn is_open_type(ty: &Type) -> bool {
-    is_open(ty)
-}
-
-/// Does this type still contain an inference variable anywhere inside it?
-fn is_open(ty: &Type) -> bool {
-    match ty {
-        Type::Var(_) => true,
-        Type::Result { ok, err } => is_open(ok) || is_open(err),
-        Type::RawPtr(inner) | Type::Slice(inner) => is_open(inner),
-        Type::Array { elem, .. } => is_open(elem),
-        Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(is_open),
-        Type::Fn { params, ret } => params.iter().any(is_open) || is_open(ret),
-        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
-            .iter()
-            .any(|a| matches!(a, GenericArg::Type(t) if is_open(t))),
-        _ => false,
-    }
+    ty.has_unsolved_var()
 }
 
 /// A type to show in the suggested annotation. The outer shape is usually
@@ -136,7 +120,7 @@ fn walk_stmt(
         StmtKind::Let { name, .. } if name == "_" || name.starts_with('_') => {}
         StmtKind::Let { name, name_span, ty: None, init } => {
             if let Some(t) = node_types.get(&init.id) {
-                if is_open(t) {
+                if t.has_unsolved_var() {
                     out.push(TypeError::UnresolvedType {
                         name: name.clone(),
                         hint: suggest(t, names),
