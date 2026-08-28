@@ -909,7 +909,7 @@ int64_t   rask_green_join_simple(void *handle);
 int64_t   rask_green_cancel_simple(void *handle);
 
 // Closure-based spawn (bridge for codegen before state machine transform).
-void     *rask_green_closure_spawn(void *closure_ptr);
+void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // Yield helpers — called by state machines to pause on I/O.
 void      rask_yield_read(int fd, void *buf, size_t len);
@@ -962,7 +962,7 @@ int64_t rask_sleep_ns(int64_t ns);
 
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are
@@ -978,7 +978,9 @@ void rask_threadpool_shutdown(void);
 // ThreadPool.spawn — enqueues a job and hands back the same handle shape
 // Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
 // `using ThreadPool` block there is no pool, so it falls back to one thread.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+struct RaskTaskState;
+void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);

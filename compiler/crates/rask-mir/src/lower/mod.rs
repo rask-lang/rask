@@ -1525,6 +1525,13 @@ pub struct MirLowerer<'a> {
     synthesized_functions: Vec<MirFunction>,
     /// Counter for generating unique closure function names
     closure_counter: u32,
+    /// Whether the closure just lowered for a `spawn` boxes its result.
+    ///
+    /// Written by `lower_closure_expecting` and read by the spawn call it was
+    /// lowered for, which is the very next thing lowered. A one-shot handoff
+    /// rather than a return value because the decision is made three call
+    /// frames below the argument list it has to reach.
+    spawn_result_boxed: bool,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable names known to hold closure values
@@ -3494,6 +3501,7 @@ impl<'a> MirLowerer<'a> {
             ctx,
             synthesized_functions: Vec::new(),
             closure_counter: 0,
+            spawn_result_boxed: false,
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),

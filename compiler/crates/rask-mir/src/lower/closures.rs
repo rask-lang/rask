@@ -389,11 +389,19 @@ impl<'a> MirLowerer<'a> {
         // `int64_t (*)(void *)` and kept whatever was in the integer return
         // register — a stale pointer for a task returning `2.5f64`, which read
         // back as 3.3e-310, and nothing at all for a string.
-        let entry_name = if for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret) {
+        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret);
+        let entry_name = if boxes_result {
             self.synthesize_spawn_box_thunk(&closure_name, &closure_ret)
         } else {
             closure_name
         };
+        // Handed straight to the spawn call being lowered, which is the next
+        // thing that happens. The runtime has to know whether the word the task
+        // hands back is a box it must free — see `GreenTask::result_owned` — and
+        // this is the only place that knows, because it's the place that decided.
+        if for_spawn {
+            self.spawn_result_boxed = boxes_result;
+        }
 
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can

@@ -6480,12 +6480,19 @@ impl<'a> FunctionBuilder<'a> {
         let boxed = rask_mir::spawn_payload_is_boxed(&ok_ty);
         if boxed {
             // The task handed back an address. Copy through it — nothing in the
-            // slot survives the callee otherwise.
+            // slot survives the callee otherwise — and then free it: joining
+            // takes ownership of the box, which `rask_green_join` transfers by
+            // clearing the task's own reference. Without the free this leaked
+            // one allocation per task, about 80 bytes, which no assertion can
+            // see (#963).
             let src = builder.ins().stack_load(types::I64, value_ss, 0);
             let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
             Self::copy_bytes(
                 builder, src, 0, dst_addr, crate::layouts::RESULT_PAYLOAD_OFFSET, ok_size,
             );
+            if let Some(free_ref) = ctx.func_refs.get("rask_free") {
+                builder.ins().call(*free_ref, &[src]);
+            }
         } else {
             let load_ty = mir_to_cranelift_type(&ok_ty).unwrap_or(types::I64);
             let value = builder.ins().stack_load(load_ty, value_ss, 0);

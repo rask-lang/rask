@@ -1325,15 +1325,24 @@ impl<'a> MirLowerer<'a> {
                 };
                 let mut arg_operands = Vec::new();
                 let mut arg_mir_types = Vec::new();
+                let mut spawn_boxes_result = false;
                 for (i, a) in args.iter().enumerate() {
                     let smut = callee_smut.get(i).and_then(|o| o.as_ref());
                     let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &a.expr.kind {
                         let expected = Self::expected_closure_param_tys(&callee_params, i);
-                        self.lower_closure_expecting(
+                        let lowered = self.lower_closure_expecting(
                             params, ret_ty.as_deref(), body,
                             *is_own || spawns_closure, &expected, Some(a.expr.id),
                             spawns_closure,
-                        )?
+                        )?;
+                        if spawns_closure {
+                            // Tell the runtime whether the word this task hands
+                            // back is a box it owns and must free when nobody
+                            // joins. The closure lowering just decided; this is
+                            // the call that carries it (#963).
+                            spawn_boxes_result = self.spawn_result_boxed;
+                        }
+                        lowered
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
@@ -1362,6 +1371,12 @@ impl<'a> MirLowerer<'a> {
                     // outer one had no concrete type to name its vtable after.
                     arg_operands.push(op);
                     arg_mir_types.push(mir_ty);
+                }
+                if spawns_closure {
+                    arg_operands.push(MirOperand::Constant(
+                        crate::operand::MirConst::Int(i64::from(spawn_boxes_result)),
+                    ));
+                    arg_mir_types.push(MirType::I64);
                 }
 
                 // Non-ident callees: field access, returned functions, etc.
@@ -4762,6 +4777,7 @@ impl<'a> MirLowerer<'a> {
                             // `Thread.spawn` never is; it arrives here instead.
                             let spawns_closure = method == "spawn"
                                 && (base_name == "Thread" || base_name == "ThreadPool");
+                            let mut method_spawn_boxes = false;
                             for (i, arg) in args.iter().enumerate() {
                                 // An unannotated closure parameter takes its type
                                 // from the callee's declared `func(...)` parameter;
@@ -4769,16 +4785,27 @@ impl<'a> MirLowerer<'a> {
                                 // otherwise defaulted to i64 (#463).
                                 let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
-                                    self.lower_closure_expecting(
+                                    let lowered = self.lower_closure_expecting(
                                         params, ret_ty.as_deref(), body,
                                         *is_own || spawns_closure, &expected,
                                         Some(arg.expr.id),
                                         spawns_closure,
-                                    )?
+                                    )?;
+                                    if spawns_closure {
+                                        method_spawn_boxes = self.spawn_result_boxed;
+                                    }
+                                    lowered
                                 } else {
                                     self.lower_expr(&arg.expr)?
                                 };
                                 arg_operands.push(op);
+                            }
+                            if spawns_closure {
+                                // Same handover as the free-function `spawn`:
+                                // the runtime frees the box when no join comes.
+                                arg_operands.push(MirOperand::Constant(
+                                    crate::operand::MirConst::Int(i64::from(method_spawn_boxes)),
+                                ));
                             }
 
                             // Inject elem_size/data_size for generic constructors.

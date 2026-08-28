@@ -1231,8 +1231,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
         StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
@@ -1243,7 +1243,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // join/cancel report how the task ended alongside its value, same as
         // the OS-thread path — a panicked task no longer re-panics in the
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64], Some(types::I64), false),
+        // Two args: the closure, then whether its result is a heap box the task
+        // owns and must free if no join ever comes for it (#963).
+        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("join", "rask_green_join_outcome"),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("cancel", "rask_green_cancel_outcome"),
