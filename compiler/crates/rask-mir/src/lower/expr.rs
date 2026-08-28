@@ -247,6 +247,39 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
+    /// The return type of a call once the declared signatures have had their
+    /// say — the stdlib's stub metadata, then the checker's own type for the
+    /// call expression.
+    ///
+    /// The checker comes after the stubs because a declared return beats an
+    /// inference variable. But it has to be asked at all, and it wasn't: a
+    /// method no stub declares ran off the end of the chain into a bare `i64`.
+    /// `s.clone()` is exactly that method. Nothing declares `string_clone`, so
+    /// the destination was an 8-byte slot, the 16-byte string was half-copied
+    /// with no `rc_inc`, and `println` printed the address as a number (#1020).
+    ///
+    /// When nobody knows, that is a lowering failure naming the site rather
+    /// than a slot sized by hope.
+    fn call_ret_ty(&self, qualified: &str, node: rask_ast::NodeId) -> MirType {
+        super::stdlib_return_mir_type_known(qualified, Some(self.ctx))
+            .or_else(|| self.checker_ret_ty(node))
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:call-return"))
+    }
+
+    /// The checker's type for a node, unless it still names a type parameter.
+    ///
+    /// Inside an instantiated body a surviving `T` is a missing substitution,
+    /// and `type_to_mir` would turn it into `Ptr` or `i64` — an 8-byte slot
+    /// that looks like a real answer. Absence is recoverable; a wrong width is
+    /// not.
+    fn checker_ret_ty(&self, node: rask_ast::NodeId) -> Option<MirType> {
+        let raw = self.ctx.lookup_raw_type(node)?;
+        if super::type_names_a_parameter(raw).is_some() {
+            return None;
+        }
+        Some(self.ctx.type_to_mir(raw))
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
@@ -4193,7 +4226,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_module_type_method(object, method, args)? {
+        if let Some(r) = self.try_lower_module_type_method(expr, object, method, args)? {
             return Ok(r);
         }
 
@@ -4387,7 +4420,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                                .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
@@ -4841,7 +4874,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                                .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                             // Channel.buffered()/unbuffered() C runtime returns a
                             // single i64 (raw channel pair pointer), not a tuple.
                             // Override the Tuple return type from stubs to I64 so the
@@ -5464,7 +5497,7 @@ impl<'a> MirLowerer<'a> {
             .get(&qualified_name)
             .or_else(|| self.func_sigs.get(&method))
             .map(|s| s.ret_ty.clone())
-            .unwrap_or_else(|| super::stdlib_return_mir_type_in(&qualified_name, Some(self.ctx))));
+            .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
 
         // A method on a generic type is lowered once, so its signature says `T`
         // — which reaches MIR as a bare `Ptr`. The call site knows what `T`
@@ -6284,6 +6317,7 @@ impl<'a> MirLowerer<'a> {
     /// `module.Type.method()` → flattened `Type_method` qualified call.
     fn try_lower_module_type_method(
         &mut self,
+        expr: &Expr,
         object: &Expr,
         method: &String,
         args: &[CallArg],
@@ -6325,7 +6359,7 @@ impl<'a> MirLowerer<'a> {
                         .func_sigs
                         .get(&func_name)
                         .map(|s| s.ret_ty.clone())
-                        .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                        .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),

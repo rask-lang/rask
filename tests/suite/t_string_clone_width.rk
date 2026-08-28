@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` on a string. No stub declares `string_clone`, so MIR lowering's
+// return-type chain used to run off its end and type the destination `i64` —
+// eight bytes of a sixteen-byte string, no refcount bump on the payload, and
+// `println` printing the address as a number. Nothing about this needs a
+// generic: it was wrong in a plain function too. #1020 found it through a
+// generic `Bin<T>.top()`, which is the same call with more scaffolding.
+
+struct Point { x: i64, y: string }
+
+test "cloning a string keeps the whole string" {
+    let s = "hello"
+    let t = s.clone()
+    assert t == "hello"
+    assert t.len() == 5
+}
+
+test "cloning an element read out of a Vec" {
+    mut v: Vec<string> = Vec.new()
+    v.push("a")
+    v.push("bb")
+    let idx = v.len() - 1
+    let elem = v[idx]
+    let copy = elem.clone()
+    assert copy == "bb"
+}
+
+test "a cloned string outlives its source's slot" {
+    mut v: Vec<string> = Vec.new()
+    v.push("first")
+    let copy = v[0].clone()
+    v.clear()
+    v.push("something else entirely")
+    assert copy == "first"
+}
+
+test "cloning a Vec and a struct still works" {
+    mut v: Vec<string> = Vec.new()
+    v.push("one")
+    let v2 = v.clone()
+    assert v2[0] == "one"
+
+    let p = Point { x: 1, y: "why" }
+    let q = p.clone()
+    assert q.y == "why"
+    assert q.x == 1
+}

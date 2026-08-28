@@ -38,8 +38,36 @@ pub enum RetCategory {
     },
     /// A named stdlib type (e.g., "File", "Vec", "Shared").
     Named(std::string::String),
+    /// The stub's own type parameter — `Vec.remove` is declared `-> T`.
+    ///
+    /// This used to be recorded as `I64`, which is where "`T` reaches MIR as a
+    /// bare i64" came from: a `Vec<string>.remove(i)` destination got an 8-byte
+    /// slot, half the string was copied, and no refcount was taken on the
+    /// payload. The stub genuinely doesn't know — only the call site does — so
+    /// the honest answer is to say which parameter it is and let the caller ask
+    /// something that knows (#1020).
+    TypeParam(std::string::String),
     /// Tuple of types (e.g., `(Request, Responder)`).
     Tuple(Vec<RetCategory>),
+}
+
+impl RetCategory {
+    /// Does this return type still mention one of the stub's type parameters?
+    ///
+    /// `Vec.remove` is `-> T` and `Vec.get` is `-> T?`; both are holes the call
+    /// site has to fill. A caller that can't fill one is better off knowing that
+    /// than being handed a width the stub invented.
+    pub fn names_a_type_param(&self) -> bool {
+        match self {
+            RetCategory::TypeParam(_) => true,
+            RetCategory::Option(inner) => inner.names_a_type_param(),
+            RetCategory::Result { ok, err } => {
+                ok.names_a_type_param() || err.names_a_type_param()
+            }
+            RetCategory::Tuple(elems) => elems.iter().any(|e| e.names_a_type_param()),
+            _ => false,
+        }
+    }
 }
 
 /// An integer width other than the `I64` default, by its Rask name.
@@ -272,9 +300,9 @@ fn parse_simple_type(s: &str) -> RetCategory {
             } else {
                 s
             };
-            // Generic type variables like "T" → treat as I64
+            // A generic type variable like "T" is not a type — it's a hole.
             if base.len() == 1 && base.chars().next().unwrap().is_uppercase() {
-                RetCategory::I64
+                RetCategory::TypeParam(base.to_string())
             } else {
                 RetCategory::Named(base.to_string())
             }
@@ -287,6 +315,9 @@ fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
     match cat {
         RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::Int(_)
         | RetCategory::F64 => None,
+        // The stub doesn't know what `T` is, so it can't name a prefix for it.
+        // Same answer it gave when `T` was recorded as I64.
+        RetCategory::TypeParam(_) => None,
         RetCategory::String => Some("string".to_string()),
         // Keep the "char" prefix it had as a Named type, so `char` methods
         // still resolve on the result of a char-returning stdlib call.
@@ -446,8 +477,15 @@ mod tests {
 
     #[test]
     fn parse_generic_t() {
-        // Single-letter type variables are opaque → I64
-        assert_eq!(parse_ret_ty("T"), RetCategory::I64);
+        // A single-letter type variable is a hole, not a type. It used to be
+        // recorded as I64, which is how a `Vec<string>.remove(i)` destination
+        // got an 8-byte slot (#1020).
+        assert_eq!(parse_ret_ty("T"), RetCategory::TypeParam("T".into()));
+        assert!(parse_ret_ty("T").names_a_type_param());
+        assert!(parse_ret_ty("T?").names_a_type_param());
+        assert!(parse_ret_ty("T or IoError").names_a_type_param());
+        assert!(!parse_ret_ty("string").names_a_type_param());
+        assert!(!parse_ret_ty("File").names_a_type_param());
     }
 
     #[test]
