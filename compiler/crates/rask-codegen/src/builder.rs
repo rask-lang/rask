@@ -6473,7 +6473,12 @@ impl<'a> FunctionBuilder<'a> {
         let tag = builder.ins().iconst(types::I64, 0);
         builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
-        if ok_size > 8 {
+        // Whether the task boxed its answer. The same question the task side
+        // asks when it decides to box — one predicate, so the two can't drift.
+        // A float is boxed even though it fits a word: it comes back in a float
+        // register, and the runtime's result slot is an `int64_t` (#963).
+        let boxed = rask_mir::spawn_payload_is_boxed(&ok_ty);
+        if boxed {
             // The task handed back an address. Copy through it — nothing in the
             // slot survives the callee otherwise.
             let src = builder.ins().stack_load(types::I64, value_ss, 0);
