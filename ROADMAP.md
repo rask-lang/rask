@@ -4,20 +4,20 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 ## Where things stand
 
-**Measured 2026-08-27 on `99091447`**, by running the gates rather than by reading the last version of this file.
+**Measured 2026-08-27 on `2e9bf998`**, by running the gates rather than by reading the last version of this file.
 
 ```
-differential      343 green, 15 expected-red, 0 untracked, 0 misfiled
+differential      344 green, 18 expected-red, 0 untracked, 0 misfiled
 examples          34 ok          projects      21 ok
 prototypes        13 agree       fmt           441 round-tripped, 0 failures
 http api harness  ok both backends
-agentbench        17 green, 1 quarantined
+agentbench        18 green, 1 quarantined
 cargo test        0 failures
 ```
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 133 spec files.
 
-What's left is a registered backlog: **9 tracked bugs and 6 unbuilt features**, each with a probe file and an issue. A red file now has to keep failing on the backend *and* at the phase its registry line claims, so a probe that quietly stops testing its bug is reported instead of counting as still-red.
+What's left is a registered backlog: **12 tracked bugs and 6 unbuilt features**, each with a probe file and an issue. Three of the twelve arrived in the last week from the agent benchmark, which is the point of it. A red file now has to keep failing on the backend *and* at the phase its registry line claims, so a probe that quietly stops testing its bug is reported instead of counting as still-red.
 
 ## Validation programs
 
@@ -48,27 +48,43 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 ## What comes next, and why in this order
 
-The previous ordering opened with three things: finish the coverage backlog, close the coverage holes, and build the agent benchmark. The third is done and the first two shrank, so the ordering below is what's actually left.
+The previous ordering opened with three things: finish the coverage backlog, close the coverage holes, and build the agent benchmark. The benchmark is built and has now been run — and what it found reorders the rest, so it goes first.
 
-### The benchmark exists. Now read what it says.
+### The benchmark has been run. Here is what it said.
 
-[NORTH_STAR](NORTH_STAR.md) names the instrument — models writing Rask against the compiler, convergence measured, the failure transcripts read. `agentbench/` is built and its gate runs in CI on every push.
+Four runs, 18 tasks. **Five native-only bugs, none of which any of the eight gates caught**, all found by a model writing the obvious thing — a word count, a stack, a CSV parser:
 
-**Building it is not the same as using it.** Nobody has run it against real models and read the transcripts. That is the next thing, and it is cheap: the harness is done, the tasks are written, the reference solutions are green.
+| what a model wrote | what happened |
+|---|---|
+| `counts[word] = n` | the key's stack address used as a Vec index, then a panic |
+| `self.items.remove(i)` in a generic | 8 bytes of a 16-byte string, no refcount |
+| `self.items[i].clone()` in a generic | same, truncated string ([#1020](https://github.com/rask-lang/rask/issues/1020)) |
+| `["a","b"].join("-")` | empty result, then a segfault ([#1021](https://github.com/rask-lang/rask/issues/1021)) |
+| `for (i, line) in text.lines().enumerate()` | native refuses to build a valid program ([#1022](https://github.com/rask-lang/rask/issues/1022)) |
 
-It has already earned its keep once without being run. Integrating it surfaced that it hands a model `LANGUAGE_GUIDE.md` as normative and scores whether the reply compiles — and the guide never said stdlib names need importing. A low solve rate would have read as a language-usability number rather than our own stale documentation. Expect more of that: the benchmark measures the compiler *and everything we tell a model about it*, and the second half has never been audited.
+The interpreter was right every single time.
 
-### The sequence protocol is the pivot
+Against the targets: convergence 1.29 (want ≤1.5) and teach rate hold; ASR is 93% against a 95% floor; **backend divergence is 1 in 18 against a target of zero, and has never once been zero.** Four runs, four different disagreements. That is the exit criterion "native is stable" never had, and it is now failing with names and repros attached rather than passing by absence of evidence.
+
+Two things it caught that were not compiler bugs at all. The language card's only sequence example taught `.collect()`, which the compiler had removed — every model copying it burned an attempt. And `Set` is in the prelude and `Set<T>` type-checks with zero methods ([#1017](https://github.com/rask-lang/rask/issues/1017)). Fixing the card moved pass@1 from 50% to 72%. **The benchmark measures the compiler and everything we tell a model about it**, and the second half had never been audited.
+
+The instrument was wrong too: divergences only counted when one backend was green, so "both red, differently" scored as an ordinary test failure. That is how the map bug hid. Fixed — and the fix is what caught #1020.
+
+### First: `T` survives monomorphization
+
+Three of the five findings are one root cause. Inside a monomorphized generic the checker still says `T`, and MIR reads that as `i64` — so a string element comes back as 8 bytes of a 16-byte value with no refcount. The compiler works around it per call site. Two more sites were fixed this round and a third was filed as [#1020](https://github.com/rask-lang/rask/issues/1020) rather than patched, which is the right call: every new generic site is a new instance of the same bug, and the workaround list only grows.
+
+This leads for a reason beyond its own bug count. **The sequence protocol adds generic surface.** Building it on a checker that loses `T` inside monomorphized generics means building more sites that need the workaround. Fix the substrate, then build on it.
+
+### Then the sequence protocol
 
 `type.sequence` is one piece of work that unblocks three things:
 
 - **User types can't be iterated at all.** That is the feature itself.
-- **Range adapters** (#920) route through it. A range has no terminals and no adapters today.
+- **Range adapters** ([#920](https://github.com/rask-lang/rask/issues/920)) route through it. A range has no terminals and no adapters today.
 - **The larger program** waits on both. A declared method that doesn't exist is worse than a missing one — the signature promises and the call fails — and a real program meets that in its first hour.
 
-Alongside it, #912: eleven `Vec`/`Map` methods that exist in the signature and not in the implementation. Same reasoning, no shared machinery.
-
-Nothing else in the backlog has this shape. It is the highest-leverage item left.
+Alongside it, [#912](https://github.com/rask-lang/rask/issues/912): eleven `Vec`/`Map` methods that exist in the signature and not in the implementation. Same reasoning, no shared machinery.
 
 ### Then a program big enough to hurt
 
@@ -79,6 +95,16 @@ The larger program is the *instrument*, not the reward. Dogfooding a piece of th
 ### Then incremental compilation
 
 NORTH_STAR's first commitment is maximum static checking per millisecond of feedback. This is the item that serves it directly, and the IR design for function-level granularity can't be retrofitted — spec in [incremental.md](specs/compiler/incremental.md).
+
+### A discipline note: checks that pass for the wrong reason
+
+Three times now a check reported the expected outcome without testing what it was written to test:
+
+- A registered-red file stopped compiling entirely, stayed red, and quietly stopped exercising its bug ([#1005](https://github.com/rask-lang/rask/issues/1005) — the gate holds every red file to a `(backend phase)` claim now).
+- A compile-error fixture and a warning-count fixture failed on a missing import rather than on the error and the count they pin.
+- The benchmark scored "both backends red, differently" as an ordinary failure rather than a divergence.
+
+Each one looked green. The pattern is worth watching for directly: **a test that still fails is not the same as a test that still tests its bug**, and the same holds for a metric that still reports.
 
 ### What came off this list
 
