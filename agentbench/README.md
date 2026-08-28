@@ -177,7 +177,10 @@ api:<model>        Anthropic messages API                 API credit
 ```
 
 The mocks exist so the loop — prompting, assembly, compilation, scoring,
-transcripts — can be exercised end to end for nothing. `mock:garbage` emits
+transcripts — can be exercised end to end for nothing. Run one by hand when you
+change the harness; CI doesn't, on purpose — the gate there checks the reference
+solutions and nothing else, so a green build never depends on benchmark
+plumbing. `mock:garbage` emits
 Rust-shaped code (`fn`, `let mut`, `Ok(...)`), which is what a model actually
 gets wrong here, so the harness gets tested against realistic diagnostics.
 

@@ -104,13 +104,15 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/prototypes_gate.sh
 
-    # The agent benchmark's own gate. Calls no model and spends nothing: it
-    # checks that every hand-written reference solution in agentbench/tasks/
-    # still builds and passes on both backends, and that the harness runs end to
-    # end against a deterministic mock. A reference that goes red means the task
-    # is measuring the compiler instead of the model, so the scores stop meaning
-    # anything until it is fixed or quarantined against an issue.
-    - name: Agent benchmark gate
+    # The agent benchmark's reference solutions, as a differential test over
+    # nineteen more ordinary programs. Calls no model and spends nothing — the
+    # paid adapters aren't reachable from the gate. A reference that goes red
+    # means the task is measuring the compiler instead of the model, so the
+    # scores stop meaning anything until it is fixed or quarantined against an
+    # issue; #1000 and #1002 were both caught that way. The harness's own
+    # end-to-end check is deliberately not here: CI shouldn't depend on
+    # benchmark plumbing, so that one is run by hand.
+    - name: Agent benchmark reference gate
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/agentbench_gate.sh
 
