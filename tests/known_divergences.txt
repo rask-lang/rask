@@ -96,3 +96,4 @@ t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, 
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
 t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native compile)
+t_spawn_wide_payload.rk    # a task's non-word payload is read at the wrong width — the type reaches join() now, the value doesn't — #963 (native run)

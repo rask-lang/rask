@@ -134,11 +134,27 @@ pub struct TypeStub {
     pub span: Span,
 }
 
+/// A stub parameter's declared mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StubParamMode {
+    pub is_take: bool,
+    pub is_mutate: bool,
+    pub is_deleting: bool,
+}
+
 /// Top-level function extracted from stubs (println, print, etc.).
 #[derive(Debug, Clone)]
 pub struct FunctionStub {
     pub name: String,
     pub params: Vec<(String, String)>,
+    /// Each parameter's declared mode, positionally matching `params`.
+    ///
+    /// Kept beside the name/type pairs rather than folded into them because the
+    /// LSP reads those as a pair to render a signature, and only the resolver
+    /// needs the modes — it registers a symbol per parameter, and a mode
+    /// defaulted to `false` there would quietly reject a correct `mutate` at a
+    /// call site.
+    pub param_modes: Vec<StubParamMode>,
     pub ret_ty: String,
     pub doc: Option<String>,
     pub source_file: String,
@@ -404,6 +420,14 @@ impl StubRegistry {
                     params: f.params.iter()
                         .filter(|p| p.name != "self")
                         .map(|p| (p.name.clone(), p.ty.clone()))
+                        .collect(),
+                    param_modes: f.params.iter()
+                        .filter(|p| p.name != "self")
+                        .map(|p| StubParamMode {
+                            is_take: p.is_take,
+                            is_mutate: p.is_mutate,
+                            is_deleting: p.is_deleting,
+                        })
                         .collect(),
                     ret_ty: f.ret_ty.clone().unwrap_or_default(),
                     doc: f.doc.clone(),

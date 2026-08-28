@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A spawned task returning something that isn't a machine-word integer.
+//
+// #963 said no native program could reach this: `TaskHandle<T>`'s `T` never
+// arrived at `join()`, so the destination was always typed i64 and the codegen
+// path for a wider payload could not be exercised from real source. The type
+// flows now — `t_spawn_payload_type.rk` pins that — and this is what it reaches:
+// the value the task hands back is still read at the wrong width.
+//
+//   a string comes back as "\xef\xbf\xbd\xef\xbf\xbdd"
+//   2.5f64 comes back as ~5.17e-310, an integer bit pattern read as a double
+//
+// The join side already branches on payload size and copies through an address
+// for an aggregate, so the remaining gap is on the task side — what the wrapper
+// stores into the value slot before the join reads it. #883/#963.
+
+import async.JoinError
+
+func a_string_task() -> string or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return "from the task" })
+        return try h.join()
+    }
+}
+
+func a_float_task() -> f64 or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return 2.5f64 })
+        return try h.join()
+    }
+}
+
+test "a task returning a string comes back whole" {
+    assert a_string_task()! == "from the task"
+}
+
+test "a task returning a float comes back as a float" {
+    assert a_float_task()! == 2.5f64
+}

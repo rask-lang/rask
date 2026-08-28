@@ -298,7 +298,24 @@ impl TypeChecker {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
             }
         }
-        let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
+        // The receiver's parameters as its *declaration* spells them, not as the
+        // extend block does. `extend Wrapper { func get(self) -> T }` on a
+        // `struct Wrapper<T>` leaves them out of the block header entirely, and
+        // reading only `Wrapper` would make `T` look like the method's own —
+        // a second variable per call, shadowing the one the receiver bound.
+        let impl_params = self
+            .types
+            .get(type_id)
+            .and_then(|d| match d {
+                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                    Some(type_params.clone())
+                }
+                _ => None,
+            })
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
+        let new_methods: Vec<_> =
+            i.methods.iter().map(|m| self.method_signature(m, &impl_params)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }
@@ -376,7 +393,8 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
-        let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
+        let struct_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = s.methods.iter().map(|m| self.method_signature(m, &struct_params)).collect();
 
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
@@ -524,7 +542,8 @@ impl TypeChecker {
             .map(|(vname, fts)| (vname, fts.into_iter().map(|(_, t)| t).collect::<Vec<_>>()))
             .collect();
 
-        let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
+        let enum_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = e.methods.iter().map(|m| self.method_signature(m, &enum_params)).collect();
 
         // Field names for the struct-shaped variants, so a pattern that names
         // them can be matched against the positional payload types (#809).
@@ -559,7 +578,7 @@ impl TypeChecker {
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
-        let methods = t.methods.iter().map(|m| self.method_signature(m)).collect();
+        let methods = t.methods.iter().map(|m| self.method_signature(m, &[])).collect();
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -627,7 +646,26 @@ impl TypeChecker {
         });
     }
 
-    pub(super) fn method_signature(&self, m: &FnDecl) -> MethodSig {
+    /// The type parameter names in a target type spelling: `Ring<T>` → `["T"]`.
+    ///
+    /// An `extend` block names its receiver as a string, so this is the only
+    /// place the owner's parameters can be read back out.
+    pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
+        let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
+        rest.trim_end()
+            .trim_end_matches('>')
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_type_param_name(s))
+            .collect()
+    }
+
+    /// `owner_params` are the receiver type's own parameters — `T` in
+    /// `extend Ring<T>`. They're excluded from the method's list: the receiver
+    /// binds them once, and a method claiming them again takes a *second* fresh
+    /// variable per call that shadows the first, so `self.value.width()` loses
+    /// the type it was already given (#872).
+    pub(super) fn method_signature(&self, m: &FnDecl, owner_params: &[String]) -> MethodSig {
         let self_param_decl = m.params.iter().find(|p| p.name == "self");
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
@@ -675,9 +713,32 @@ impl TypeChecker {
             self_param,
             params,
             ret,
-            type_params: m.type_params.iter()
-                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                .collect(),
+            // PC1, the same rule a free function gets: the explicit `<T>` list
+            // plus every single uppercase letter appearing in the signature.
+            //
+            // This used to read the explicit list only. A stdlib method almost
+            // never has one — `Thread.spawn(f: func() -> T) -> ThreadHandle<T>`
+            // declares `T` by using it — so nothing gave `T` a variable, the
+            // argument had nothing to bind to, and the handle's payload stayed
+            // unresolved all the way to MIR (#963).
+            type_params: {
+                let declared: std::collections::HashMap<&str, &Vec<String>> = m
+                    .type_params
+                    .iter()
+                    .map(|tp| (tp.name.as_str(), &tp.bounds))
+                    .collect();
+                signature_type_param_names(m)
+                    .into_iter()
+                    .filter(|name| !owner_params.iter().any(|o| o == name))
+                    .map(|name| {
+                        let bounds = declared
+                            .get(name.as_str())
+                            .map(|b| (*b).clone())
+                            .unwrap_or_default();
+                        (name, bounds)
+                    })
+                    .collect()
+            },
         }
     }
 

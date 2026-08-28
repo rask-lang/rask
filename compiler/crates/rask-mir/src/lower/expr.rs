@@ -280,12 +280,6 @@ impl<'a> MirLowerer<'a> {
     fn call_ret_ty(&self, qualified: &str, node: rask_ast::NodeId) -> MirType {
         super::stdlib_return_mir_type_known(qualified, Some(self.ctx))
             .or_else(|| self.ctx.lookup_node_type(node))
-            // Last: the signature table, including the stub entries `sig_ret_ty`
-            // refused at the front. A stub's `T` is a made-up width, but it
-            // carries the right *shape* — `T or JoinError` still says "a Result
-            // with a JoinError on the error side" — and that beats giving up
-            // when the checker never solved the variable either.
-            .or_else(|| self.func_sigs.get(qualified).map(|s| s.ret_ty.clone()))
             .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:call-return"))
     }
 
