@@ -5281,24 +5281,21 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
         }
     }
 
-    // Suffix-based fallbacks for methods not in stubs (user types, etc.)
-    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
-        || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
-        || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
-        || func_name.ends_with("_replace") || func_name.ends_with("_substring")
-        || func_name.ends_with("_substr")
-        || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
-    {
-        return Some(MirType::String);
-    }
-    if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
-        || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
-    {
-        return Some(MirType::Bool);
-    }
-    if func_name.starts_with("char_is_") || func_name == "char_eq" {
-        return Some(MirType::Bool);
-    }
+    // No suffix guessing. There used to be a block here that answered from the
+    // *end* of the mangled name — `_to_string`, `_trim`, `_replace`,
+    // `_is_empty`, `_contains` and friends — for "user type methods and methods
+    // not yet in stubs". It was blind to the receiver, so it answered for any
+    // type whose method happened to share a name with a string's.
+    //
+    // That is how `Shared<i32>.replace(7)` came back as a `string`: the strategy
+    // rewrite turns it into `Cell_replace`, which ends in `_replace`. The box
+    // arm in lower/expr.rs existed to shadow this, which is why it looked
+    // redundant and wasn't.
+    //
+    // Instrumented across the 362 suite files and every example, the block fired
+    // zero times — a user type's methods are in `func_sigs` from their own
+    // declarations, which is consulted first, and the stdlib's are in the stub
+    // metadata above. Its only live effect was the wrong answer.
 
     None
 }

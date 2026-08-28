@@ -7279,7 +7279,13 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 if func_name.ends_with("_replace") {
-                    CallAdapt::DerefResult
+                    // The old value comes back by address. `DerefResult` loads a
+                    // scalar through it, which is right for a number and half a
+                    // string: `Shared.local("first").replace("second")` handed
+                    // back eight of sixteen bytes and read as empty. Aggregates
+                    // need the copy-through-the-slot adapter, which is the same
+                    // choice every other by-address return makes.
+                    Self::deref_or_string(dst, ctx)
                 } else {
                     CallAdapt::None
                 }

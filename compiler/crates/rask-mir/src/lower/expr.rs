@@ -5409,24 +5409,6 @@ impl<'a> MirLowerer<'a> {
             // then read a tag that isn't there.
             self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
         } else if matches!(qualified_name.as_str(),
-            "Cell_get" | "Cell_replace" | "Cell_into_inner"
-            | "Shared_get" | "Shared_replace"
-            | "Mutex_get" | "Mutex_replace")
-        {
-            // What the box holds — all of these hand back the payload. The stub's
-            // return type is a bare `T`, so it says nothing about the width, and
-            // a `Shared<string>` read came back as a pointer while a
-            // `Shared<i32>` got loaded eight bytes wide.
-            //
-            // Not redundant with the general chain, though it looks it: these
-            // names resolve through the strategy rewrite above, so the chain's
-            // own lookups answer for a different method than the one being
-            // lowered. Deleting this arm reddened four box tests.
-            //
-            // It used to refuse a `Ptr` answer as a guess at "that's still `T`",
-            // which cost every box that really does hold a pointer.
-            self.ctx.lookup_node_type(expr.id)
-        } else if matches!(qualified_name.as_str(),
             "Receiver_receive_struct" | "Receiver_try_receive")
         {
             // Renamed from Receiver_receive above for struct elements. Only the
