@@ -121,7 +121,13 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
 
             for si in 0..stmts_len {
                 let stmt = &func.blocks[block_idx].statements[si];
-                if uses::stmt_reads(stmt, *local) {
+                // A phi reads its argument on the incoming edge, not here. Counting
+                // it as a use in the phi's own block put the drop at the top of a
+                // loop header, where it runs on the first iteration — before the
+                // value it releases has been written. That freed whatever the
+                // uninitialized slot happened to point at.
+                let phi = matches!(stmt.kind, MirStmtKind::Phi { .. });
+                if !phi && uses::stmt_reads(stmt, *local) {
                     last_use_idx = Some(si);
                 }
                 // If this statement defines the local, earlier uses are irrelevant
@@ -165,7 +171,21 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 )));
             } else if let Some(si) = last_use_idx {
                 let span = func.blocks[block_idx].statements[si].span;
-                insertions.push((si + 1, MirStmt::new(
+                // Step over the increments the copy pass already put here. At
+                // `dst = src`, `src`'s last use is the copy itself, so the naive
+                // spot is directly between `dst = src` and `RcInc(dst)` — the
+                // release runs first, the buffer hits zero, and the increment
+                // that was meant to keep it alive touches freed memory.
+                let mut at = si + 1;
+                while at < func.blocks[block_idx].statements.len()
+                    && matches!(
+                        func.blocks[block_idx].statements[at].kind,
+                        MirStmtKind::RcInc { .. }
+                    )
+                {
+                    at += 1;
+                }
+                insertions.push((at, MirStmt::new(
                     MirStmtKind::RcDec { local: *local },
                     span,
                 )));
@@ -346,6 +366,79 @@ mod tests {
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
+    }
+
+    /// At `dst = src` the increment on the copy has to happen before the
+    /// release of the original. Placed the other way round, a refcount of one
+    /// hits zero, the buffer is freed, and the increment meant to keep it alive
+    /// lands on freed memory.
+    #[test]
+    fn copy_increments_before_it_releases() {
+        let mut f = make_fn(
+            vec![string_local(0, "src"), string_local(1, "dst")],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(1),
+                        rvalue: MirRValue::Use(MirOperand::Local(local(0))),
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f);
+        let stmts = &f.blocks[0].statements;
+        let (src, dst) = (local(0), local(1));
+        let inc = stmts.iter().position(|s|
+            matches!(&s.kind, MirStmtKind::RcInc { local } if *local == dst));
+        let dec = stmts.iter().position(|s|
+            matches!(&s.kind, MirStmtKind::RcDec { local } if *local == src));
+        assert!(inc.is_some() && dec.is_some(), "expected both ops: {stmts:?}");
+        assert!(inc < dec, "inc on the copy must precede the release: {stmts:?}");
+    }
+
+    /// A phi reads its argument on the incoming edge, not in the phi's own
+    /// block. Treating it as a use there put the release at the top of a loop
+    /// header, where it runs on the first iteration — before anything has
+    /// written the local it releases.
+    #[test]
+    fn phi_argument_is_not_a_use_in_the_header() {
+        let header = MirBlock {
+            id: BlockId(1),
+            statements: vec![MirStmt::dummy(MirStmtKind::Phi {
+                dst: local(0),
+                args: vec![
+                    (BlockId(0), MirOperand::Constant(MirConst::String("".into()))),
+                    (BlockId(2), MirOperand::Local(local(1))),
+                ],
+            })],
+            terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(2) }),
+        };
+        let body = MirBlock {
+            id: BlockId(2),
+            statements: vec![MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(local(1)),
+                func: FunctionRef::internal("string_new".into()),
+                args: vec![],
+            })],
+            terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
+        };
+        let entry = MirBlock {
+            id: BlockId(0),
+            statements: vec![],
+            terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
+        };
+        let mut f = make_fn(
+            vec![string_local(0, "carried"), string_local(1, "fresh")],
+            vec![entry, header, body],
+        );
+        insert_rc_ops(&mut f);
+        let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
+        assert!(
+            !has_rc_dec(&header.statements, local(1)),
+            "no release for a phi argument in the header: {:?}", header.statements
+        );
     }
 
     #[test]
