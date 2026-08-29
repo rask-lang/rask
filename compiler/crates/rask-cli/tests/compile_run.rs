@@ -6458,12 +6458,14 @@ fn float_assertion_message_agrees_across_backends() {
 /// and an `i64` payload comes out right by coincidence, so the ordinary tests
 /// pass either way. They also passed before the two pattern fixes this guards.
 ///
-/// What it guards: a generic enum reaches the constructor pattern as
+/// What it guards. A generic enum reaches the constructor pattern as
 /// `Holder<f64>`, not as a plain named type, and only the plain shape used to be
 /// handled — every binding in the arm fell through to a fresh variable. A tuple
 /// pattern made a variable per element and left the "this is a (Value, Value)"
 /// constraint for the solver, which runs after the sub-patterns are checked, so
-/// they saw nothing either.
+/// they saw nothing either. And `none` has no payload type of its own: neither
+/// `x == none` nor `catch _ => none` tied it to the type it was standing in
+/// for.
 #[test]
 fn open_nodes_pattern_bindings() {
     let rask = rask_binary();

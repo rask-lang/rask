@@ -39,4 +39,28 @@ func main() {
     println(unwrap_float(Holder<f64>.Full(2.5)))
     println(unwrap_text(Holder<string>.Full("text")))
     println(describe(Value.Num(1.5), Value.Text("tail")))
+    println(none_from_context(Vec<string>.new(), 0))
+}
+
+// `none` has no payload type of its own — whatever it's compared or assigned
+// against is the only place one can come from.
+enum Gone {
+    Yes
+}
+
+extend Gone {
+    func message(self) -> string {
+        return "gone"
+    }
+}
+
+func maybe(i: i64) -> string or Gone {
+    if i < 0 { return Gone.Yes }
+    return "here"
+}
+
+func none_from_context(v: Vec<string>, i: i64) -> bool {
+    let popped = v.get(i)
+    let dropped = maybe(i) catch _ => none
+    return popped == none && dropped == none
 }

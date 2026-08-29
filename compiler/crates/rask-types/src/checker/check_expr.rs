@@ -160,6 +160,17 @@ impl TypeChecker {
                 self.node_types.insert(expr.id, ty.clone());
                 return ty;
             }
+            // `none` carries no payload type of its own, so the slot it lands in
+            // is the only thing that can say what it's an absent *what*. Typed
+            // from itself it comes out `Option<?>` and the variable is still
+            // there at the end — the unification that should have closed it runs
+            // after the node has been recorded.
+            ExprKind::None if expected.is_option() => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                self.note_node_origin(expr);
+                return ty;
+            }
             // CV1a: push the expectation into a tuple literal's elements, so each
             // one is checked against the slot it fills and the tuple's recorded
             // type is the annotated shape. Typed from its elements instead, the
@@ -1351,11 +1362,19 @@ impl TypeChecker {
                     // the whole expression produces, so it passes straight
                     // through — marking it "keeps shape" would make both
                     // backends re-wrap and hand back a `T??` (#634).
+                    //
+                    // Either way the `none` is that same optional. Its own node
+                    // was typed before we knew which, from nothing but the word
+                    // `none`, so it kept an empty payload variable unless it's
+                    // tied to the answer here.
                     if ok_ty.is_option() {
+                        let _ = self.unify(&body_ty, &ok_ty, clause.body.span);
                         return ok_ty;
                     }
                     self.fallback_keeps_shape.insert(expr.id);
-                    return Type::option(ok_ty);
+                    let result = Type::option(ok_ty);
+                    let _ = self.unify(&body_ty, &result, clause.body.span);
+                    return result;
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
