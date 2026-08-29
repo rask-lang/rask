@@ -18,9 +18,9 @@ test "card: string methods" {
     assert t.replace("World", "there") == "Hello there"
     assert "ab".repeat(2) == "abab"
     assert "abc".reverse() == "cba"
-    assert t.char_count() == 11u64
+    assert t.width() == 11u64
     assert t.is_ascii()
-    assert t.substring(0, 5) == "Hello"
+    assert t[0..5].to_string() == "Hello"
     assert "  x".trim_start() == "x"
     assert "x  ".trim_end() == "x"
 }

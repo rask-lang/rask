@@ -179,74 +179,6 @@ int64_t rask_string_byte_at(const RaskStr *s, int64_t pos) {
     return (int64_t)(uint8_t)str_data(s)[pos];
 }
 
-// The Unicode scalar at *character* index `index`, or -1 when out of range.
-// Character index, not byte index — `s.char_at(i)` and `s[i]` both count
-// scalars, and `s.len()` counting bytes doesn't change that.
-static int64_t str_scalar_at(const RaskStr *s, int64_t index) {
-    if (index < 0) return -1;
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t byte = 0;
-    int64_t seen = 0;
-    while (byte < len) {
-        unsigned char c = (unsigned char)d[byte];
-        int64_t width = c < 0x80 ? 1
-                      : (c & 0xE0) == 0xC0 ? 2
-                      : (c & 0xF0) == 0xE0 ? 3
-                      : (c & 0xF8) == 0xF0 ? 4
-                      : 1;
-        if (byte + width > len) return -1;
-        if (seen == index) {
-            switch (width) {
-                case 2: return ((c & 0x1F) << 6) | (d[byte + 1] & 0x3F);
-                case 3: return ((c & 0x0F) << 12) | ((d[byte + 1] & 0x3F) << 6)
-                             | (d[byte + 2] & 0x3F);
-                case 4: return ((c & 0x07) << 18) | ((d[byte + 1] & 0x3F) << 12)
-                             | ((d[byte + 2] & 0x3F) << 6) | (d[byte + 3] & 0x3F);
-                default: return c;
-            }
-        }
-        byte += width;
-        seen++;
-    }
-    return -1;
-}
-
-// How many Unicode scalars the string holds (for the index-out-of-bounds message).
-static int64_t str_char_count(const RaskStr *s) {
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t byte = 0;
-    int64_t seen = 0;
-    while (byte < len) {
-        unsigned char c = (unsigned char)d[byte];
-        int64_t width = c < 0x80 ? 1
-                      : (c & 0xE0) == 0xC0 ? 2
-                      : (c & 0xF0) == 0xE0 ? 3
-                      : (c & 0xF8) == 0xF0 ? 4
-                      : 1;
-        byte += width;
-        seen++;
-    }
-    return seen;
-}
-
-int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
-    return str_scalar_at(s, index);
-}
-
-// s[i] — indexing, so an out-of-range index panics rather than answering none.
-int64_t rask_string_index(const RaskStr *s, int64_t index) {
-    int64_t scalar = str_scalar_at(s, index);
-    if (scalar < 0) {
-        char buf[128];
-        snprintf(buf, sizeof(buf),
-                 "string index out of bounds: index is %lld but length is %lld",
-                 (long long)index, (long long)str_char_count(s));
-        rask_panic(buf);
-    }
-    return scalar;
-}
 
 int64_t rask_string_contains(const RaskStr *haystack, const RaskStr *needle) {
     int64_t hlen = str_len(haystack);
@@ -484,26 +416,6 @@ static int str_is_char_boundary(const char *d, int64_t len, int64_t i) {
     return ((unsigned char)d[i] & 0xC0) != 0x80;
 }
 
-void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
-    int64_t slen = str_len(s);
-    /* Out of range clamps — there's no ambiguity about what was meant. */
-    if (start < 0) start = 0;
-    if (end > slen) end = slen;
-    if (start >= end) { rask_string_new(out); return; }
-    /* A cut inside a character is a different matter: it would hand back a
-       `string` that isn't valid UTF-8, which the type says can't exist. The
-       caller asked for something that doesn't exist, so say so rather than
-       returning a nearby slice they didn't ask for. */
-    const char *d = str_data(s);
-    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
-        rask_panic_fmt(
-            "substring(%lld, %lld) cuts a character in half - "
-            "these are byte offsets, and one of them lands inside a multi-byte "
-            "character. `char_indices()` gives offsets that don't.",
-            (long long)start, (long long)end);
-    }
-    str_make(out, d + start, end - start);
-}
 
 // ─── UTF-8 scalar decode/encode ─────────────────────────────
 // One decoder, shared by `chars()` and case conversion. `chars()` walked bytes
@@ -531,6 +443,19 @@ static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *wi
     }
     *width = w;
     return ch;
+}
+
+// The scalar starting at *byte* offset `index`, or -1 when the offset is out
+// of range or lands inside a character. Byte-offset like every other index
+// (std.strings/U1), so it's O(1): the old character-indexed version scanned
+// from byte zero, which made every cursor loop quadratic.
+int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
+    int64_t len = str_len(s);
+    if (index < 0 || index >= len) return -1;
+    const char *d = str_data(s);
+    if (((unsigned char)d[index] & 0xC0) == 0x80) return -1;  // mid-character
+    int64_t w;
+    return (int64_t)str_decode_at(d, len, index, &w);
 }
 
 // Unicode White_Space, the same set Rust's `char::is_whitespace` uses. The
@@ -665,10 +590,6 @@ void rask_string_trim(RaskStr *out, const RaskStr *s) {
 // std.strings: the byte range `trim` would keep, without building the copy.
 // The pair lands in the destination tuple's own slot, so `out` is that slot:
 // start at +0, end at +8.
-void rask_string_trim_indices(int64_t *out, const RaskStr *s) {
-    if (str_len(s) == 0) { out[0] = 0; out[1] = 0; return; }
-    str_trim_range(s, &out[0], &out[1]);
-}
 
 void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
@@ -721,28 +642,39 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
     }
 }
 
-// By Unicode scalars, which is what the stub documents. Reversing bytes tore
-// every multi-byte scalar apart: `"Wörld".reverse()` came back with the two
-// halves of `ö` swapped, so the text was no longer valid UTF-8 (#841).
-void rask_string_reverse(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    char *buf = (char *)rask_alloc(len);
-    int64_t written = 0;
-    int64_t i = len;
-    while (i > 0) {
-        int64_t prev = str_prev_scalar(d, i);
-        int64_t w = i - prev;
-        for (int64_t k = 0; k < w; k++) buf[written + k] = d[prev + k];
-        written += w;
-        i = prev;
-    }
-    str_make(out, buf, len);
-    rask_realloc(buf, len, 0);
+// Replace every occurrence. The `limit:` form (std.strings) needs default
+// arguments on methods — rask-lang/rask#1028 — so only this one is reachable
+// from Rask today.
+void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from,
+                         const RaskStr *to) {
+    rask_string_replace_limit(out, s, from, to, -1);
 }
 
-void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to) {
+// Byte range of a string — this is what `s[i..j]` lowers to (std.strings/U1).
+// Not exposed as a `substring` method: that was the slice under a second name.
+void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+    int64_t slen = str_len(s);
+    /* Out of range clamps — there's no ambiguity about what was meant. */
+    if (start < 0) start = 0;
+    if (end > slen) end = slen;
+    if (start >= end) { rask_string_new(out); return; }
+    /* A cut inside a character is a different matter: it would hand back a
+       `string` that isn't valid UTF-8, which the type says can't exist. The
+       caller asked for something that doesn't exist, so say so rather than
+       returning a nearby slice they didn't ask for. */
+    const char *d = str_data(s);
+    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
+        rask_panic_fmt(
+            "s[%lld..%lld] cuts a character in half - "
+            "these are byte offsets, and one of them lands inside a multi-byte "
+            "character. `char_indices()` gives offsets that don't.",
+            (long long)start, (long long)end);
+    }
+    str_make(out, d + start, end - start);
+}
+
+void rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from,
+                               const RaskStr *to, int64_t limit) {
     int64_t slen = str_len(s);
     int64_t flen = str_len(from);
     if (slen == 0) { rask_string_new(out); return; }
@@ -757,61 +689,29 @@ void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, co
     const char *fd = str_data(from);
     const char *td = str_data(to);
 
-    // Count occurrences
+    // `limit` caps how many get replaced, left to right. Negative means no
+    // limit — 0 has to stay available for "replace none".
+    if (limit == 0) { str_make(out, str_data(s), slen); return; }
+
     int64_t count = 0;
     const char *p = sd;
     const char *end = sd + slen;
     while (p + flen <= end) {
-        if (memcmp(p, fd, (size_t)flen) == 0) { count++; p += flen; }
-        else p++;
-    }
-
-    int64_t new_len = rask_safe_add(slen, rask_safe_mul(count, tlen - flen));
-    char *buf = (char *)rask_alloc(new_len);
-    char *dst = buf;
-    p = sd;
-    while (p < end) {
-        if (p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
-            if (tlen > 0) memcpy(dst, td, (size_t)tlen);
-            dst += tlen;
+        if (memcmp(p, fd, (size_t)flen) == 0) {
+            count++;
             p += flen;
-        } else {
-            *dst++ = *p++;
-        }
-    }
-    str_make(out, buf, new_len);
-    rask_realloc(buf, new_len, 0);
-}
-
-// Replace the first `n` occurrences (S: replacen). n <= 0 leaves the string
-// alone; a larger n than there are matches just replaces them all.
-void rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from,
-                          const RaskStr *to, int64_t n) {
-    int64_t slen = str_len(s);
-    int64_t flen = str_len(from);
-    if (slen == 0) { rask_string_new(out); return; }
-    if (flen == 0 || n <= 0) { str_make(out, str_data(s), slen); return; }
-
-    int64_t tlen = str_len(to);
-    const char *sd = str_data(s);
-    const char *fd = str_data(from);
-    const char *td = str_data(to);
-    const char *end = sd + slen;
-
-    int64_t count = 0;
-    const char *p = sd;
-    while (p + flen <= end && count < n) {
-        if (memcmp(p, fd, (size_t)flen) == 0) { count++; p += flen; }
-        else p++;
+            if (limit >= 0 && count == limit) break;
+        } else p++;
     }
 
     int64_t new_len = rask_safe_add(slen, rask_safe_mul(count, tlen - flen));
     char *buf = (char *)rask_alloc(new_len);
     char *dst = buf;
-    int64_t done = 0;
     p = sd;
+    int64_t done = 0;
     while (p < end) {
-        if (done < n && p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
+        if ((limit < 0 || done < limit)
+            && p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
             if (tlen > 0) memcpy(dst, td, (size_t)tlen);
             dst += tlen;
             p += flen;
@@ -824,17 +724,8 @@ void rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from,
     rask_realloc(buf, new_len, 0);
 }
 
-// Number of Unicode scalars, not bytes (S: char_count). Counts the bytes that
-// aren't UTF-8 continuation bytes.
-int64_t rask_string_char_count(const RaskStr *s) {
-    int64_t len = str_len(s);
-    const unsigned char *p = (const unsigned char *)str_data(s);
-    int64_t n = 0;
-    for (int64_t i = 0; i < len; i++) {
-        if ((p[i] & 0xC0) != 0x80) n++;
-    }
-    return n;
-}
+// Replace the first `n` occurrences (S: replacen). n <= 0 leaves the string
+// alone; a larger n than there are matches just replaces them all.
 
 // True when every byte is ASCII (0x00–0x7F).
 int64_t rask_string_str_is_ascii(const RaskStr *s) {
@@ -1341,24 +1232,18 @@ void rask_f64_to_exp(RaskStr *out, double val) {
     rask_string_from(out, buf);
 }
 
-// Keep the first `count` characters — a precision on a string truncates it.
+// `{:.n}` on text keeps the first `n` display columns without splitting a
+// grapheme (std.fmt/S5) — the same operation as `s.truncate(n)`.
 void rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count) {
     if (count < 0) { *out = *s; rask_string_clone(out); return; }
-    const char *data = str_data(s);
-    int64_t len = str_len(s);
-    int64_t i = 0, seen = 0;
-    while (i < len && seen < count) {
-        unsigned char c = (unsigned char)data[i];
-        i += (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
-        seen++;
-    }
-    if (i > len) i = len;
-    str_make(out, data, i);
+    rask_string_truncate(out, s, count);
 }
 
-// align: 0 left, 1 right, 2 center. Width counts characters, not bytes.
+// align: 0 left, 1 right, 2 center. Width is display columns (std.fmt/S4) —
+// bytes or scalars would line up only for ASCII, which is how a table goes
+// crooked the moment a name has an accent or a CJK character in it.
 void rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill) {
-    int64_t count = str_char_count(s);
+    int64_t count = rask_string_width(s);
     if (width <= 0 || count >= width) {
         *out = *s;
         rask_string_clone(out);
@@ -1647,4 +1532,258 @@ int64_t rask_string_builder_len(int64_t handle) {
 int64_t rask_string_builder_is_empty(int64_t handle) {
     RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
     return sb->len == 0 ? 1 : 0;
+}
+
+// ─── Text units (std.strings/U1–U5) ────────────────────────────────────────
+//
+// Bytes index, graphemes display. The tables below are range checks rather
+// than the full Unicode character database: they cover the cases ordinary
+// programs hit — accents, CJK, emoji including ZWJ sequences and flags — and
+// the ASCII path (U4) skips them entirely. Full UCD coverage is tracked
+// separately; see the implementation notes in specs/stdlib/strings.md.
+
+typedef struct { uint32_t lo, hi; } RaskRange;
+
+static int str_in_ranges(uint32_t c, const RaskRange *r, size_t n) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (c < r[mid].lo) hi = mid;
+        else if (c > r[mid].hi) lo = mid + 1;
+        else return 1;
+    }
+    return 0;
+}
+
+// Combining marks, ZWJ, variation selectors, and the other scalars that render
+// on top of the previous character rather than beside it.
+static const RaskRange RASK_ZERO_WIDTH[] = {
+    {0x0300, 0x036F}, {0x0483, 0x0489}, {0x0591, 0x05BD}, {0x05BF, 0x05BF},
+    {0x05C1, 0x05C2}, {0x05C4, 0x05C5}, {0x05C7, 0x05C7}, {0x0610, 0x061A},
+    {0x064B, 0x065F}, {0x0670, 0x0670}, {0x06D6, 0x06DC}, {0x06DF, 0x06E4},
+    {0x06E7, 0x06E8}, {0x06EA, 0x06ED}, {0x0711, 0x0711}, {0x0730, 0x074A},
+    {0x07A6, 0x07B0}, {0x07EB, 0x07F3}, {0x0816, 0x0819}, {0x081B, 0x0823},
+    {0x0825, 0x0827}, {0x0829, 0x082D}, {0x0900, 0x0903}, {0x093A, 0x093C},
+    {0x093E, 0x094F}, {0x0951, 0x0957}, {0x0962, 0x0963}, {0x0981, 0x0983},
+    {0x09BC, 0x09BC}, {0x09BE, 0x09CD}, {0x09D7, 0x09D7}, {0x09E2, 0x09E3},
+    {0x0A01, 0x0A03}, {0x0A3C, 0x0A51}, {0x0A70, 0x0A71}, {0x0A75, 0x0A75},
+    {0x0A81, 0x0A83}, {0x0ABC, 0x0ACD}, {0x0AE2, 0x0AE3}, {0x0B01, 0x0B03},
+    {0x0B3C, 0x0B57}, {0x0B82, 0x0B82}, {0x0BBE, 0x0BCD}, {0x0BD7, 0x0BD7},
+    {0x0C00, 0x0C04}, {0x0C3E, 0x0C56}, {0x0C81, 0x0C83}, {0x0CBC, 0x0CD6},
+    {0x0D00, 0x0D03}, {0x0D3B, 0x0D4D}, {0x0D57, 0x0D57}, {0x0D82, 0x0D83},
+    {0x0DCA, 0x0DDF}, {0x0E31, 0x0E31}, {0x0E34, 0x0E3A}, {0x0E47, 0x0E4E},
+    {0x0EB1, 0x0EB1}, {0x0EB4, 0x0EBC}, {0x0EC8, 0x0ECD}, {0x0F18, 0x0F19},
+    {0x0F35, 0x0F35}, {0x0F37, 0x0F37}, {0x0F39, 0x0F39}, {0x0F71, 0x0F84},
+    {0x0F86, 0x0F87}, {0x0F8D, 0x0FBC}, {0x0FC6, 0x0FC6}, {0x102B, 0x103E},
+    {0x1056, 0x1059}, {0x105E, 0x1060}, {0x1062, 0x1064}, {0x1067, 0x106D},
+    {0x1071, 0x1074}, {0x1082, 0x108D}, {0x108F, 0x108F}, {0x109A, 0x109D},
+    {0x135D, 0x135F}, {0x1712, 0x1714}, {0x1732, 0x1734}, {0x1752, 0x1753},
+    {0x1772, 0x1773}, {0x17B4, 0x17D3}, {0x17DD, 0x17DD}, {0x180B, 0x180D},
+    {0x1885, 0x1886}, {0x18A9, 0x18A9}, {0x1920, 0x193B}, {0x1A17, 0x1A1B},
+    {0x1A55, 0x1A7F}, {0x1AB0, 0x1AFF}, {0x1B00, 0x1B04}, {0x1B34, 0x1B44},
+    {0x1B6B, 0x1B73}, {0x1B80, 0x1B82}, {0x1BA1, 0x1BAD}, {0x1BE6, 0x1BF3},
+    {0x1C24, 0x1C37}, {0x1CD0, 0x1CD2}, {0x1CD4, 0x1CE8}, {0x1CED, 0x1CED},
+    {0x1CF4, 0x1CF4}, {0x1CF7, 0x1CF9}, {0x1DC0, 0x1DFF}, {0x200B, 0x200F},
+    {0x202A, 0x202E}, {0x2060, 0x2064}, {0x206A, 0x206F}, {0x20D0, 0x20F0},
+    {0x2CEF, 0x2CF1}, {0x2D7F, 0x2D7F}, {0x2DE0, 0x2DFF}, {0x302A, 0x302F},
+    {0x3099, 0x309A}, {0xA66F, 0xA672}, {0xA674, 0xA67D}, {0xA69E, 0xA69F},
+    {0xA6F0, 0xA6F1}, {0xA802, 0xA802}, {0xA806, 0xA806}, {0xA80B, 0xA80B},
+    {0xA823, 0xA827}, {0xA880, 0xA881}, {0xA8B4, 0xA8C5}, {0xA8E0, 0xA8F1},
+    {0xA926, 0xA92D}, {0xA947, 0xA953}, {0xA980, 0xA983}, {0xA9B3, 0xA9C0},
+    {0xAA29, 0xAA36}, {0xAA43, 0xAA43}, {0xAA4C, 0xAA4D}, {0xAAB0, 0xAAB0},
+    {0xAAB2, 0xAAB4}, {0xAAB7, 0xAAB8}, {0xAABE, 0xAABF}, {0xAAC1, 0xAAC1},
+    {0xAAEB, 0xAAEF}, {0xAAF5, 0xAAF6}, {0xABE3, 0xABEA}, {0xABEC, 0xABED},
+    {0xFB1E, 0xFB1E}, {0xFE00, 0xFE0F}, {0xFE20, 0xFE2F}, {0xFEFF, 0xFEFF},
+    {0xFFF9, 0xFFFB},
+    {0x101FD, 0x101FD}, {0x10376, 0x1037A}, {0x10A01, 0x10A0F},
+    {0x10A38, 0x10A3F}, {0x11000, 0x11002}, {0x11038, 0x11046},
+    {0x1107F, 0x11082}, {0x110B0, 0x110BA}, {0x11100, 0x11102},
+    {0x11127, 0x11134}, {0x11180, 0x11182}, {0x111B3, 0x111C0},
+    {0x1122C, 0x11237}, {0x112DF, 0x112EA}, {0x11300, 0x11303},
+    {0x1133C, 0x1134D}, {0x11357, 0x11357}, {0x11362, 0x11374},
+    {0x114B0, 0x114C3}, {0x115AF, 0x115C0}, {0x11630, 0x11640},
+    {0x116AB, 0x116B7}, {0x1171D, 0x1172B}, {0x16AF0, 0x16AF4},
+    {0x16B30, 0x16B36}, {0x1BC9D, 0x1BC9E}, {0x1D165, 0x1D169},
+    {0x1D16D, 0x1D172}, {0x1D17B, 0x1D182}, {0x1D185, 0x1D18B},
+    {0x1D1AA, 0x1D1AD}, {0x1D242, 0x1D244}, {0x1E8D0, 0x1E8D6},
+    {0xE0100, 0xE01EF},
+};
+
+// East Asian Wide and Fullwidth, plus the emoji that render double-width.
+static const RaskRange RASK_WIDE[] = {
+    {0x1100, 0x115F}, {0x231A, 0x231B}, {0x2329, 0x232A}, {0x23E9, 0x23EC},
+    {0x23F0, 0x23F0}, {0x23F3, 0x23F3}, {0x25FD, 0x25FE}, {0x2614, 0x2615},
+    {0x2648, 0x2653}, {0x267F, 0x267F}, {0x2693, 0x2693}, {0x26A1, 0x26A1},
+    {0x26AA, 0x26AB}, {0x26BD, 0x26BE}, {0x26C4, 0x26C5}, {0x26CE, 0x26CE},
+    {0x26D4, 0x26D4}, {0x26EA, 0x26EA}, {0x26F2, 0x26F3}, {0x26F5, 0x26F5},
+    {0x26FA, 0x26FA}, {0x26FD, 0x26FD}, {0x2705, 0x2705}, {0x270A, 0x270B},
+    {0x2728, 0x2728}, {0x274C, 0x274C}, {0x274E, 0x274E}, {0x2753, 0x2755},
+    {0x2757, 0x2757}, {0x2795, 0x2797}, {0x27B0, 0x27B0}, {0x27BF, 0x27BF},
+    {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
+    {0x2E80, 0x303E}, {0x3041, 0x33FF}, {0x3400, 0x4DBF}, {0x4E00, 0x9FFF},
+    {0xA000, 0xA4CF}, {0xA960, 0xA97F}, {0xAC00, 0xD7A3},
+    {0xF900, 0xFAFF}, {0xFE10, 0xFE19}, {0xFE30, 0xFE6F},
+    {0xFF00, 0xFF60}, {0xFFE0, 0xFFE6},
+    {0x16FE0, 0x16FE4}, {0x17000, 0x18AFF}, {0x1B000, 0x1B2FF},
+    {0x1F004, 0x1F004}, {0x1F0CF, 0x1F0CF}, {0x1F18E, 0x1F18E},
+    {0x1F191, 0x1F19A}, {0x1F200, 0x1F320}, {0x1F32D, 0x1F335},
+    {0x1F337, 0x1F37C}, {0x1F37E, 0x1F393}, {0x1F3A0, 0x1F3CA},
+    {0x1F3CF, 0x1F3D3}, {0x1F3E0, 0x1F3F0}, {0x1F3F4, 0x1F3F4},
+    {0x1F3F8, 0x1F43E}, {0x1F440, 0x1F440}, {0x1F442, 0x1F4FC},
+    {0x1F4FF, 0x1F53D}, {0x1F54B, 0x1F54E}, {0x1F550, 0x1F567},
+    {0x1F57A, 0x1F57A}, {0x1F595, 0x1F596}, {0x1F5A4, 0x1F5A4},
+    {0x1F5FB, 0x1F64F}, {0x1F680, 0x1F6C5}, {0x1F6CC, 0x1F6CC},
+    {0x1F6D0, 0x1F6D2}, {0x1F6EB, 0x1F6EC}, {0x1F6F4, 0x1F6FC},
+    {0x1F7E0, 0x1F7EB}, {0x1F90C, 0x1F93A}, {0x1F93C, 0x1F945},
+    {0x1F947, 0x1F9FF}, {0x1FA70, 0x1FAFF},
+    {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
+};
+
+#define RASK_NRANGES(a) (sizeof(a) / sizeof((a)[0]))
+
+// Columns this scalar occupies in a terminal. Control characters are zero —
+// emitting them is the caller's problem, not the width's.
+static int64_t str_scalar_width(uint32_t c) {
+    if (c == 0) return 0;
+    if (c < 0x20 || (c >= 0x7F && c < 0xA0)) return 0;
+    if (c < 0x7F) return 1;
+    if (str_in_ranges(c, RASK_ZERO_WIDTH, RASK_NRANGES(RASK_ZERO_WIDTH))) return 0;
+    if (str_in_ranges(c, RASK_WIDE, RASK_NRANGES(RASK_WIDE))) return 2;
+    return 1;
+}
+
+static int str_is_regional_indicator(uint32_t c) {
+    return c >= 0x1F1E6 && c <= 0x1F1FF;
+}
+
+// End of the grapheme cluster starting at byte `i` (UAX #29, the rules that
+// matter in practice): CRLF stays together, combining marks and variation
+// selectors join what precedes them, ZWJ glues emoji sequences, and regional
+// indicators pair up into one flag.
+static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
+    if (i >= len) return len;
+    int64_t w;
+    uint32_t first = str_decode_at(d, len, i, &w);
+    int64_t j = i + w;
+
+    if (first == '\r' && j < len && d[j] == '\n') return j + 1;
+
+    if (str_is_regional_indicator(first) && j < len) {
+        int64_t w2;
+        uint32_t next = str_decode_at(d, len, j, &w2);
+        if (str_is_regional_indicator(next)) j += w2;
+    }
+
+    while (j < len) {
+        int64_t w2;
+        uint32_t c = str_decode_at(d, len, j, &w2);
+        if (c == 0x200D) {                  // ZWJ — glue, then take what follows
+            j += w2;
+            if (j < len) {
+                int64_t w3;
+                str_decode_at(d, len, j, &w3);
+                j += w3;
+            }
+            continue;
+        }
+        if (str_in_ranges(c, RASK_ZERO_WIDTH, RASK_NRANGES(RASK_ZERO_WIDTH))) {
+            j += w2;
+            continue;
+        }
+        break;
+    }
+    return j;
+}
+
+// Display columns (U2). ASCII is the byte length (U4) — the common case never
+// touches a table.
+int64_t rask_string_width(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (rask_string_str_is_ascii(s)) {
+        int64_t n = 0;
+        for (int64_t i = 0; i < len; i++) {
+            unsigned char c = (unsigned char)d[i];
+            if (c >= 0x20 && c < 0x7F) n++;
+        }
+        return n;
+    }
+    int64_t cols = 0;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, i, &w);
+        cols += str_scalar_width(c);
+        i += w;
+    }
+    return cols;
+}
+
+// Cut to at most `cols` display columns, never inside a grapheme (U2).
+void rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (cols <= 0 || len == 0) { rask_string_new(out); return; }
+
+    int64_t used = 0;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        int64_t gw = 0;
+        int64_t k = i;
+        while (k < end) {
+            int64_t w;
+            uint32_t c = str_decode_at(d, len, k, &w);
+            gw += str_scalar_width(c);
+            k += w;
+        }
+        if (used + gw > cols) break;
+        used += gw;
+        i = end;
+    }
+    str_make(out, d, i);
+}
+
+// Reverse by graphemes (U2). Scalar reversal separated combining marks from
+// the characters they sit on and tore ZWJ emoji sequences apart.
+void rask_string_reverse(RaskStr *out, const RaskStr *s) {
+    int64_t len = str_len(s);
+    if (len == 0) { rask_string_new(out); return; }
+    const char *d = str_data(s);
+    char *buf = (char *)rask_alloc(len);
+    int64_t written = len;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        int64_t w = end - i;
+        written -= w;
+        for (int64_t k = 0; k < w; k++) buf[written + k] = d[i + k];
+        i = end;
+    }
+    str_make(out, buf, len);
+    rask_realloc(buf, len, 0);
+}
+
+// One string per grapheme (U2) — the unit for cursors and truncation, and
+// what split() would give if the separator were "between characters".
+RaskVec *rask_string_graphemes(const RaskStr *s) {
+    RaskVec *v = rask_vec_new(16);
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        RaskStr g;
+        str_make(&g, d + i, end - i);
+        rask_vec_push(v, &g);
+        i = end;
+    }
+    return v;
+}
+
+// NFC (U5). ASCII is already normal, so the fast path returns the input.
+// Non-ASCII normalization needs the decomposition and composition tables;
+// until they land this returns the input unchanged rather than corrupting it.
+void rask_string_normalized(RaskStr *out, const RaskStr *s) {
+    str_make(out, str_data(s), str_len(s));
 }

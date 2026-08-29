@@ -52,7 +52,7 @@ test "std.strings — a char knows whether it's whitespace" {
     assert(!'ö'.is_whitespace())
 }
 
-test "std.strings — reverse works on scalars" {
+test "std.strings — reverse works on graphemes" {
     assert_eq("Wörld".reverse(), "dlröW")
     assert_eq("abc".reverse(), "cba")
     assert_eq("".reverse(), "")
@@ -60,27 +60,16 @@ test "std.strings — reverse works on scalars" {
     // Reversing twice is the identity, which byte-reversal also satisfies —
     // the point is that one reversal is still valid text.
     assert_eq("Wörld".reverse().reverse(), "Wörld")
+
+    // A combining mark stays on the character it belongs to. Scalar reversal
+    // leaves the accent looking for a letter (std.strings/U2).
+    assert_eq("cafe\u{0301}".reverse(), "\u{0065}\u{0301}fac")
 }
 
-test "std.strings — trim_indices gives the range trim would keep" {
-    let (a, z) = "  pad  ".trim_indices()
-    assert_eq(a, 2)
-    assert_eq(z, 5)
-
-    let (a2, z2) = "".trim_indices()
-    assert_eq(a2, 0)
-    assert_eq(z2, 0)
-
-    let (a3, z3) = "hi".trim_indices()
-    assert_eq(a3, 0)
-    assert_eq(z3, 2)
-
-    // Multi-byte whitespace: the indices are byte offsets, so a two-byte
-    // non-breaking space moves the start by two.
-    let (a4, z4) = "{nbsp}hi".trim_indices()
-    assert_eq(a4, 2)
-    assert_eq(z4, 4)
-}
+// The trimmed region's byte range is `s.trim().span()` (std.strings) — which
+// needs slices to be ranges rather than copies, the same gap V5's
+// implementation notes record. `trim_indices` returned a bare (usize, usize)
+// and is gone; coverage returns with `.span()`.
 
 test "std.strings — char_indices pairs a byte offset with a scalar" {
     mut out = ""

@@ -66,8 +66,9 @@ Rask picks per purpose and never leaves it ambiguous.
 | Rule | Description |
 |------|-------------|
 | **U1: Bytes for machines** | Every index, length, offset and range is a byte offset. `len`, `s[i..j]`, `index_of`, `byte_at`, `char_indices`, `Span` all speak bytes, so a result feeds straight back in as an argument. No operation takes an index in any other unit |
+| **U1b: `[]` on a string is a range** | `s[i..j]` slices; `s[i]` does not exist. A single-element index is ambiguous about what it yields, and `s[i]` counting characters while `s[i..j]` counted bytes is exactly the bug this rule closes. Read one position with `byte_at(i)` or `char_at(i)` — both byte-offset, both O(1) — and walk with `chars()`/`graphemes()` |
 | **U2: Graphemes for humans** | Anything a person sees or counts works in graphemes or display columns: `width`, `truncate`, `graphemes`, `reverse`. These are O(n) and named so the scan is visible |
-| **U3: Scalars are not a unit** | A Unicode scalar is neither a byte nor a character, and counting or indexing them is always someone reaching for the wrong one of U1/U2. Scalars leak out through `chars()` and `char_indices()` — for lexers and protocol parsers — and nowhere else. There is no `char_count`, no `char_at` |
+| **U3: Scalars are not a unit** | A Unicode scalar is neither a byte nor a character, so *counting* them answers no real question and there is no `char_count`. Scalars reach user code through `chars()`, `char_indices()` and `char_at(byte_index)` — the lexer's tools — and nowhere else |
 | **U4: ASCII is free** | Every string carries an ASCII flag, set at construction (S10). For an ASCII string all three units coincide, so `width`, `graphemes`, `truncate` and `normalized` take a byte-only fast path. Unicode correctness costs nothing until the bytes are actually non-ASCII |
 | **U5: Normalization is explicit** | `"café"` composed and decomposed are different byte sequences, so `==` says false. Making `==` normalize would hide an O(n) table lookup behind an operator. `s.normalized()` returns the NFC form and the cost is at the call site |
 
@@ -325,16 +326,34 @@ if a.normalized() == b.normalized() { … }
 Not built into `==`. That would put a table lookup behind an operator, on the
 one comparison that must stay O(1) on the fast path.
 
-## Byte Access
+## Indexed Access
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.byte_at(idx)` | `u8?` | Byte at byte index (U1) |
+| `s.byte_at(i)` | `u8?` | The byte at byte offset `i` |
+| `s.char_at(i)` | `char?` | The scalar *starting* at byte offset `i`. `none` when out of range or when `i` is inside a character |
 
-To walk characters, iterate — `s.chars()` for scalars, `s.graphemes()` for what a
-reader sees. Neither is an indexed lookup, because a `char_at(n)` that takes a
-character index has to scan from the start every call: it reads like `Vec` indexing
-and costs a loop, so a cursor built on it turns a linear scan quadratic (U3).
+Both take byte offsets (U1) and both are O(1). That's the whole fix: `char_at`
+used to take a *character* index, so it scanned from byte zero on every call and a
+cursor loop built on it was quadratic while reading like `Vec` indexing.
+
+With byte offsets a cursor is O(1) per step, and `char.len_utf8()` advances it:
+
+<!-- test: skip -->
+```rask
+func peek(self) -> char? {
+    return self.source.char_at(self.pos)
+}
+
+func advance(mutate self) {
+    if self.source.char_at(self.pos)? as c {
+        self.pos = self.pos + c.len_utf8()
+    }
+}
+```
+
+To walk without a cursor, iterate: `s.chars()` for scalars, `s.graphemes()` for
+what a reader sees.
 
 ## Substring Extraction
 
@@ -377,12 +396,14 @@ enum ParseError {
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `s.replace(from, to)` | `string` | Replace all occurrences, allocates new string |
-| `s.replace(from, to, limit: n)` | `string` | Replace at most `n`, left to right |
+| `s.replace(from, to, limit: n)` | `string` | Replace at most `n`, left to right. Absent means all |
 | `s.reverse()` | `string` | Reverse by graphemes (U2), allocates new string |
 | `s.truncate(cols)` | `string` | Cut to at most `cols` display columns, never splitting a grapheme (U2) |
 
 `replace` takes a count as an optional parameter rather than splitting into a
-`replacen` sibling — same operation, one more knob (`std.api/SD2`).
+`replacen` sibling — same operation, one more knob (`std.api/SD2`). The parameter
+is absent-or-a-number, not a sentinel: `limit: 0` replaces nothing, and "all" is
+what you get by not asking for a limit.
 
 `reverse` works in graphemes because scalar reversal has no correct use: it turns
 `"né"` into a combining accent looking for a letter, and any emoji into rubble.
@@ -521,7 +542,18 @@ This is one of the few cases where a type owns heap memory but is still Copy. Th
 
 **S5 (byte indices):** Byte indexing matches the underlying UTF-8 representation. Character indexing would be O(n) and misleading for multi-byte characters.
 
-**U1–U3 (text units):** The first draft of this API had it both ways. S5 argued for byte indices and gave the reason — "counting characters would make an index mean one thing coming out and another going in, and it hides an O(n) scan behind what looks like a slice" — and then `char_at(idx)` shipped taking a character index, doing exactly that. Three lexers in this repo were built on it:
+**U1–U3 (text units):** The first draft of this API had it both ways — and the sharpest case was the indexing operator itself. `s[i]` counted characters while `s[i..j]` counted bytes, so the same bracket meant two different units depending on whether a `..` was in it:
+
+```rask
+let s = "aöb"     // 4 bytes, 3 characters
+s[1]              // 'ö'  — character index 1
+s[1..3]           // "ö"  — bytes 1 through 3
+s.len()           // 4    — bytes
+```
+
+Every `s[i]` rescans from byte zero, so a loop over a string by index is quadratic while looking exactly like `Vec` indexing.
+
+S5 had argued for byte indices and given the reason — "counting characters would make an index mean one thing coming out and another going in, and it hides an O(n) scan behind what looks like a slice" — and then `char_at(idx)` shipped taking a character index, doing exactly that. Three lexers in this repo were built on it:
 
 ```rask
 // projects/raido/src/lexer.rk — self.pos advances per character
@@ -531,6 +563,8 @@ return self.source.char_at(self.pos)
 Every call rescans from byte zero, so each lexer was quadratic in its input. Not a Unicode problem — a units problem, in a language whose pitch is removing abstraction tax. `char_count` was the same mistake with the count instead of the index, and it never even reached real code: all six call sites in the repo were tests asserting `"hello".char_count() == 5`.
 
 The fix isn't to pick one unit, it's to stop leaving it implicit. Bytes are what indexing means, graphemes are what people mean, and scalars are neither — they're a UTF-8 implementation detail that lexers legitimately want and nobody else does.
+
+So `char_at` survives, byte-indexed: the name was never the problem, the unit was. Byte-indexed it's O(1), it sits beside `byte_at` reading the same offset two ways, and every offset the API produces feeds it. `char_count` doesn't survive, because a scalar count answers nothing — you wanted `len` (indexing), `width` (layout), or to walk the graphemes (editing).
 
 **U4 (ASCII is free):** This is what makes U2 affordable. Correct text handling normally trades against speed — Swift segments graphemes on every count, Rust makes you reach for a crate so most programs just get it wrong. Rask charges by the data instead: for ASCII, bytes and columns and graphemes are the same number, so the correct call is a byte op. Since every construction path already walks the bytes, knowing which case you're in costs nothing (S10), and the branch is one flag test. Programs that never see non-ASCII pay for none of it, and — with dead code elimination — don't link the tables either.
 
@@ -727,6 +761,10 @@ Current interpreter behavior differs from spec in some areas:
 
 **Method name aliases:**
 - The interpreter still accepts `s.find(pat)` as an alias for `index_of`
+
+**`replace` has no `limit:` yet:** default arguments don't work on methods
+(rask-lang/rask#1028), so only the two-argument form exists today. The limit
+form lands with that fix.
 
 **Text units not yet implemented:**
 - `width`, `graphemes`, `truncate` and `normalized` (U2, U5) need the grapheme-break, East Asian Width and NFC tables in the runtime. Until those land, the ASCII fast path (U4) is the only path — correct for ASCII input, wrong for the rest

@@ -5194,7 +5194,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
         || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
-        || func_name.ends_with("_replace") || func_name.ends_with("_substring")
+        || func_name.ends_with("_replace")
         || func_name.ends_with("_substr")
         || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
     {

@@ -13,7 +13,7 @@ func parse_csv(text: string) -> Vec<Row> {
         if line.is_empty() { continue }
         let fields = line.split(",").to_vec()
         if fields.len() != 2 { continue }
-        let score = fields[1].trim().to_string().parse_int() catch _ => {
+        let score = fields[1].trim().to_string().parse<i64>() catch _ => {
             continue
         }
         rows.push(Row { name: fields[0].trim().to_string(), score })

@@ -175,8 +175,7 @@ int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
-int64_t     rask_string_char_at(const RaskStr *s, int64_t index);
-int64_t     rask_string_index(const RaskStr *s, int64_t index);
+int64_t     rask_string_char_at(const RaskStr *s, int64_t byte_offset);
 int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
 int64_t     rask_string_ends_with(const RaskStr *s, const RaskStr *suffix);
@@ -196,9 +195,14 @@ void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_reverse(RaskStr *out, const RaskStr *s);
 void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
-void        rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to, int64_t n);
-int64_t     rask_string_char_count(const RaskStr *s);
+void        rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to, int64_t limit);
 int64_t     rask_string_str_is_ascii(const RaskStr *s);
+
+// Text units (std.strings/U1-U5): bytes index, graphemes display.
+int64_t     rask_string_width(const RaskStr *s);
+RaskVec    *rask_string_graphemes(const RaskStr *s);
+void        rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols);
+void        rask_string_normalized(RaskStr *out, const RaskStr *s);
 void        rask_string_from_char(RaskStr *out, int64_t cp);
 
 // Builder operations (out-param: mutates string via promote-to-heap)

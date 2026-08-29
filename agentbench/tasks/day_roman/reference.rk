@@ -37,7 +37,7 @@ func from_roman(s: string) -> i32 {
         for i in 0..13 {
             let sym = symbols[i]
             let end = at + sym.len()
-            if end <= n && s.substring(at, end) == sym {
+            if end <= n && s[at..end].to_string() == sym {
                 total = total + values[i]
                 at = end
                 matched = true

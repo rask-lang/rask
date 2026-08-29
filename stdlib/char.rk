@@ -37,11 +37,14 @@ extend char {
     @native("rask_char_is_lowercase")
     public func is_lowercase(self) -> bool {}
 
-    /// Simple 1:1 lowercase mapping.
+    /// Simple 1:1 lowercase mapping. Not the same as `string.to_lowercase()`,
+    /// which does the full Unicode mapping — a scalar can only map to one
+    /// scalar here, so 'İ' and friends come back unchanged.
     @native("rask_char_to_lowercase")
     public func to_lowercase(self) -> char {}
 
-    /// Simple 1:1 uppercase mapping.
+    /// Simple 1:1 uppercase mapping. 'ß' has no single-scalar uppercase and
+    /// comes back unchanged; `string.to_uppercase()` gives "SS".
     @native("rask_char_to_uppercase")
     public func to_uppercase(self) -> char {}
 

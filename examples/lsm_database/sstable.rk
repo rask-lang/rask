@@ -168,10 +168,10 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         let parts = entry.split("\t").to_vec()
         if parts.len() < 3 { continue }
 
-        let offset = parts[1].trim().parse_int() is i64 as v else {
+        let offset = parts[1].trim().parse<i64>() is i64 as v else {
             continue
         }
-        let count = parts[2].trim().parse_int() is i64 as v else {
+        let count = parts[2].trim().parse<i64>() is i64 as v else {
             continue
         }
 
@@ -261,10 +261,10 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         let underscore = stem.index_of("_") ?? {
             continue
         }
-        let level = stem[1..underscore].parse_int() is i64 as v else {
+        let level = stem[1..underscore].parse<i64>() is i64 as v else {
             continue
         }
-        let id = stem[underscore + 1..].parse_int() is i64 as v else {
+        let id = stem[underscore + 1..].parse<i64>() is i64 as v else {
             continue
         }
 

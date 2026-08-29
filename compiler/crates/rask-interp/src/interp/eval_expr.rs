@@ -1854,19 +1854,26 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::vec(slice))
                     }
-                    (Value::String(s), Value::Int(i, _)) => {
-                        let str_val = s.lock().unwrap();
-                        match str_val.chars().nth(*i as usize) {
-                            Some(c) => Ok(Value::Char(c)),
-                            None => Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!(
-                                    "string index out of bounds: index is {} but length is {}",
-                                    i, str_val.chars().count()
-                                )),
-                                expr.span,
-                            )),
-                        }
-                    }
+                    // `[]` on a string is a byte range, never a single element
+                    // (std.strings/U1b). `s[i]` used to scan to character `i`,
+                    // so it read like Vec indexing and cost a walk from the
+                    // start — while `s[i..j]` right beside it counted bytes.
+                    (Value::String(_), Value::Int(i, _)) => Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(format!(
+                            "s[{i}] is not how you read from a string: `[]` takes a \
+                             byte range, so write `s[{i}..{}]` for the text, \
+                             `s.byte_at({i})` for the byte, or walk with \
+                             `s.chars()` / `s.graphemes()`.",
+                            i + 1
+                        )),
+                        expr.span,
+                    )),
+                    // Byte offsets (std.strings/U1, S5). Out of range clamps;
+                    // an offset inside a character panics, because the result
+                    // would be a `string` that isn't valid UTF-8. Both have to
+                    // match `rask_string_substr` — an empty range used to reach
+                    // Rust's slicing and abort the process with a Rust panic
+                    // instead of a Rask one.
                     (Value::String(s), Value::Range { start, end, inclusive, .. }) => {
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
@@ -1877,7 +1884,20 @@ impl Interpreter {
                             let e = if *inclusive { *end + 1 } else { *end };
                             e.max(0).min(len) as usize
                         };
-                        let slice = &str_val[start_idx..end_idx];
+                        if start_idx >= end_idx {
+                            return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                        }
+                        let Some(slice) = str_val.get(start_idx..end_idx) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "s[{start_idx}..{end_idx}] cuts a character in half - \
+                                     these are byte offsets, and one of them lands inside \
+                                     a multi-byte character. `char_indices()` gives offsets \
+                                     that don't."
+                                )),
+                                expr.span,
+                            ));
+                        };
                         Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
                     }
                     (

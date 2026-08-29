@@ -119,14 +119,25 @@ extend Lexer {
     }
 
     // Consume the current character and advance.
+    // `pos` is a byte offset, so stepping means the character's own UTF-8
+    // width — not 1. Advancing by 1 walked into the middle of any multi-byte
+    // character and read the rest as garbage.
     func advance(self) -> char? {
         if self.pos >= self.source.len(): return none
         let c = self.source.char_at(self.pos)
-        self.pos = self.pos + 1
-        if c? {
-            if c == '\n' { self.line = self.line + 1 }
+        if c? as ch {
+            self.pos = self.pos + ch.len_utf8()
+            if ch == '\n' { self.line = self.line + 1 }
         }
         return c
+    }
+
+    // Byte offset of the character after the one at `pos`.
+    func next_pos(self) -> usize {
+        if self.source.char_at(self.pos)? as c {
+            return self.pos + c.len_utf8()
+        }
+        return self.pos + 1
     }
 
     // Check if current char matches expected, and consume it if so.
@@ -149,8 +160,8 @@ extend Lexer {
                 self.advance()
             } else if c == '/' {
                 // Check for comments
-                if self.pos + 1 < self.source.len() {
-                    let next = self.source.char_at(self.pos + 1) ?? break
+                if self.next_pos() < self.source.len() {
+                    let next = self.source.char_at(self.next_pos()) ?? break
                     if next == '/' {
                         // Line comment — skip to end of line
                         while self.peek()? as ch {
@@ -315,13 +326,13 @@ extend Lexer {
         }
         if is_num_lit {
             
-            let int_part = self.source.substring(start, frac_start - 1).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer part
-            let frac_part = self.source.substring(frac_start, self.pos).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
+            let int_part = self.source[start..frac_start - 1].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer part
+            let frac_part = self.source[frac_start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
             let frac_digits = self.pos - frac_start
             let raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
             return Token.NumLit(raw)
         } else {
-            let value = self.source.substring(start, self.pos).parse_int() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer
+            let value = self.source[start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer
             return Token.IntLit(value)
         }
     }
@@ -351,7 +362,7 @@ extend Lexer {
                 self.advance() // consume regular character
             }
         }
-        let raw = self.source.substring(start, end)
+        let raw = self.source[start..end].to_string()
         return Token.StringLit(raw)
     }
 
@@ -364,7 +375,7 @@ extend Lexer {
                 break
             }
         }
-        let word = self.source.substring(start, self.pos)
+        let word = self.source[start..self.pos].to_string()
         return self.keyword_or_ident(word)
     }
 }

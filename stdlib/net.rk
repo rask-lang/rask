@@ -46,7 +46,7 @@ extend net {
             return IoError.Other("invalid socket address")
         }
         let start = at + 1
-        let port = addr.substring(start.wrap<usize>(), addr.len())
+        let port = addr[start.wrap<usize>()..addr.len()].to_string()
         // `parse<u16>` is the range check: a port is a u16, and #837 made a
         // narrow parse reject anything that doesn't fit rather than keeping the
         // low bits. The C side used to take `atoi` and mask, so
