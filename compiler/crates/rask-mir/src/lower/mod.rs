@@ -3439,7 +3439,7 @@ impl<'a> MirLowerer<'a> {
         // Derived from stub files via rask_stdlib::mir_metadata.
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ret_category_to_mir_type_in(&meta.ret_category, Some(ctx)),
+                ret_ty: ctx.resolve_type_str(&meta.ret_ty),
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
@@ -5253,7 +5253,14 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
         if meta.ret_category.names_a_type_param() {
             return None;
         }
-        return Some(ret_category_to_mir_type_in(&meta.ret_category, ctx));
+        // The stub's own words, parsed by the one parser that knows all the
+        // shapes. `RetCategory`'s coarser reading of the same string used to
+        // answer here, and it collapsed `f32` into `f64` and every named stdlib
+        // type into `i64` — including the ones that aren't word-sized runtime
+        // handles, which is what `StringView` needed a hard-coded exception for
+        // (#1025).
+        let Some(ctx) = ctx else { return None };
+        return Some(ctx.resolve_type_str(&meta.ret_ty));
     }
 
     // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
@@ -5306,73 +5313,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     // metadata above. Its only live effect was the wrong answer.
 
     None
-}
-
-/// Convert a stub-derived RetCategory to a MirType.
-fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> MirType {
-    ret_category_to_mir_type_in(cat, None)
-}
-
-fn ret_category_to_mir_type_in(
-    cat: &rask_stdlib::mir_metadata::RetCategory,
-    ctx: Option<&MirContext>,
-) -> MirType {
-    use rask_stdlib::mir_metadata::RetCategory;
-    match cat {
-        RetCategory::Void => MirType::Void,
-        RetCategory::Bool => MirType::Bool,
-        RetCategory::I64 => MirType::I64,
-        RetCategory::Int(w) => {
-            use rask_stdlib::mir_metadata::IntWidth;
-            match w {
-                IntWidth::I8 => MirType::I8,
-                IntWidth::I16 => MirType::I16,
-                IntWidth::I32 => MirType::I32,
-                IntWidth::I128 => MirType::I128,
-                IntWidth::U8 => MirType::U8,
-                IntWidth::U16 => MirType::U16,
-                IntWidth::U32 => MirType::U32,
-                IntWidth::U64 => MirType::U64,
-                IntWidth::U128 => MirType::U128,
-                IntWidth::Usize => MirType::usize_ty(),
-                IntWidth::Isize => MirType::isize_ty(),
-            }
-        }
-        RetCategory::F64 => MirType::F64,
-        RetCategory::String => MirType::String,
-        RetCategory::Char => MirType::Char,
-        RetCategory::Ptr => MirType::Ptr,
-        RetCategory::Option(inner) => {
-            MirType::Option(Box::new(ret_category_to_mir_type_in(inner, ctx)))
-        }
-        RetCategory::Result { ok, err } => MirType::Result {
-            ok: Box::new(ret_category_to_mir_type_in(ok, ctx)),
-            // Only the error side resolves a name. Everywhere else a named
-            // stdlib type is an opaque runtime handle (File, TcpListener,
-            // Instant) that really is a word — but an error type is an enum, and
-            // its identity is what the match needs.
-            err: Box::new(match (err.as_ref(), ctx) {
-                (RetCategory::Named(name), Some(ctx)) => ctx.resolve_type_str(name),
-                _ => ret_category_to_mir_type_in(err, ctx),
-            }),
-        },
-        // A `StringView` is a `RaskStr` sharing the source's buffer
-        // (std.strings/V1), so it has to travel as a string — the default
-        // pointer-sized `i64` handed `StringView.len()` an integer where it
-        // wanted the 16-byte value, which segfaults. The prefix stays
-        // "StringView" so the view's own methods still dispatch: `to_string`
-        // has to copy out and release the pin (V2), which the string one
-        // doesn't do.
-        RetCategory::Named(name) if name == "StringView" => MirType::String,
-        RetCategory::Named(_) => MirType::I64,
-        // A hole, and this function has to hand back *some* width. Callers that
-        // can do better ask `names_a_type_param` first and go to the checker;
-        // this is what the stub said before the hole had a name of its own.
-        RetCategory::TypeParam(_) => MirType::I64,
-        RetCategory::Tuple(elems) => MirType::Tuple(
-            elems.iter().map(|e| ret_category_to_mir_type_in(e, ctx)).collect()
-        ),
-    }
 }
 
 /// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).

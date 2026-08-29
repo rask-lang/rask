@@ -1,16 +1,27 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! MIR-level metadata derived from stdlib stub files.
 //!
-//! Parses return type strings from MethodStub/FunctionStub into a
-//! lightweight enum that rask-mir can convert to MirType. Keeps the
-//! stub files as the single source of truth for stdlib API shapes.
+//! Carries each stdlib function's return type verbatim, plus a coarse reading
+//! of it for the two questions that aren't about layout. Keeps the stub files
+//! as the single source of truth for stdlib API shapes.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::stubs::StubRegistry;
 
-/// Return type category — does not depend on rask-mir types.
+/// A coarse reading of a stub's return type.
+///
+/// No longer a type: MIR resolves `ret_ty` with `resolve_type_str`, the one
+/// parser that knows `f32` from `f64`, transparent aliases, arrays, unions,
+/// generic instantiations, and which named stdlib types are word-sized runtime
+/// handles. This answers the two questions that aren't about layout —
+/// `names_a_type_param` and `ret_type_prefix` — and nothing else reads it.
+///
+/// It used to answer the layout question too, and got two things wrong that no
+/// caller could see: `f32` and `f64` shared a variant, and every named stdlib
+/// type came back `i64`, which is right for a handle and wrong for anything
+/// else (`StringView` needed a hard-coded exception). See #1025.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RetCategory {
     Void,
@@ -84,8 +95,18 @@ pub enum IntWidth {
 pub struct StdlibMethodMeta {
     /// Qualified name as MIR sees it: "Vec_push", "fs_open".
     pub qualified_name: std::string::String,
-    /// Return type category.
+    /// Return type category. Down to one live question — does the stub's
+    /// return type name one of the type's parameters? — now that MIR resolves
+    /// the type string itself. See `ret_ty`.
     pub ret_category: RetCategory,
+    /// The stub's return type, verbatim.
+    ///
+    /// MIR's `resolve_type_str` already parses these, and does it properly: it
+    /// knows `f32` from `f64`, transparent aliases, arrays, unions, generic
+    /// instantiations, and which named stdlib types are word-sized runtime
+    /// handles. `RetCategory` was a second, coarser parser standing beside it
+    /// (#1025).
+    pub ret_ty: std::string::String,
     /// Type prefix of the return value (for local_type_prefix tracking).
     /// E.g., "fs_open" returns File → prefix "File".
     pub ret_type_prefix: Option<std::string::String>,
@@ -127,6 +148,7 @@ fn build_cache() -> MetadataCache {
             method_metas.push(StdlibMethodMeta {
                 qualified_name: qualified,
                 ret_category: ret_cat,
+                ret_ty: method.ret_ty.clone(),
                 ret_type_prefix: ret_prefix,
             });
         }
@@ -139,6 +161,7 @@ fn build_cache() -> MetadataCache {
         method_metas.push(StdlibMethodMeta {
             qualified_name: func.name.clone(),
             ret_category: ret_cat,
+            ret_ty: func.ret_ty.clone(),
             ret_type_prefix: ret_prefix,
         });
     }
