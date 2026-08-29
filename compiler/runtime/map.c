@@ -270,6 +270,27 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
     return m;
 }
 
+// Free a map whose keys or values own something, releasing each first.
+//
+// The kinds come from the caller, which knows the types; the map carries only
+// `key_size`/`val_size`, which can't tell a sixteen-byte string from a
+// sixteen-byte struct. See `container_drop.rs`.
+void rask_map_free_elems(RaskMap *m, int64_t key_kind, int64_t val_kind) {
+    if (!m) return;
+    if (key_kind == RASK_ELEM_STRING || val_kind == RASK_ELEM_STRING) {
+        for (int64_t i = 0; i < m->cap; i++) {
+            if (m->states[i] != MAP_OCCUPIED) continue;
+            if (key_kind == RASK_ELEM_STRING) {
+                rask_string_free((const RaskStr *)(m->keys + i * m->key_size));
+            }
+            if (val_kind == RASK_ELEM_STRING) {
+                rask_string_free((const RaskStr *)(m->vals + i * m->val_size));
+            }
+        }
+    }
+    rask_map_free(m);
+}
+
 void rask_map_free(RaskMap *m) {
     map_check_no_borrows(m, "free");
     if (!m) return;

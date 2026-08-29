@@ -93,6 +93,7 @@ impl PassManager {
         pm.add(ClosureOptimizationPass);
         pm.add(InliningPass);
         pm.add(TraitDropInsertionPass);
+        pm.add(ContainerDropInsertionPass);
         // Per-function passes — run after inlining for wider optimization window (IN5)
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
@@ -108,6 +109,16 @@ impl PassManager {
 }
 
 // Wrapper structs for existing passes
+
+/// Free a container this function built and never handed on (#1027).
+pub struct ContainerDropInsertionPass;
+
+impl MirPass for ContainerDropInsertionPass {
+    fn name(&self) -> &str { "container_drop_insertion" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::insert_container_drops(fns);
+    }
+}
 
 /// Cross-function closure escape analysis and stack/heap allocation decisions.
 pub struct ClosureOptimizationPass;

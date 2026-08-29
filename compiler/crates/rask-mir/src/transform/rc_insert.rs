@@ -488,6 +488,12 @@ fn is_container_boundary(name: &str) -> bool {
 fn aggregate_may_hold_string(ty: &MirType) -> bool {
     match ty {
         MirType::Struct(_) | MirType::Enum(_) => true,
+        MirType::Tuple(elems) => elems.iter().any(|e| {
+            *e == MirType::String || aggregate_may_hold_string(e)
+        }),
+        MirType::Array { elem, .. } => {
+            **elem == MirType::String || aggregate_may_hold_string(elem)
+        }
         MirType::Option(inner) => aggregate_may_hold_string(inner) || **inner == MirType::String,
         MirType::Result { ok, err } => {
             aggregate_may_hold_string(ok)

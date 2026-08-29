@@ -84,6 +84,15 @@ RaskVec *rask_vec_new(int64_t elem_size);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
 void     rask_vec_free(RaskVec *v);
+
+// What an element owns, for the container `free` entry points below. A
+// container carries only its element *size*, which can't tell a sixteen-byte
+// string from a sixteen-byte struct, so the caller — which knows the type —
+// says. Set by `container_drop.rs`.
+#define RASK_ELEM_NONE   0
+#define RASK_ELEM_STRING 1
+
+void     rask_vec_free_elems(RaskVec *v, int64_t elem_kind);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
@@ -157,6 +166,12 @@ void        rask_string_clone(const RaskStr *s);
 // and aborts instead of corrupting whatever moved into those bytes. Leaks by
 // design — a debugging mode, not a hardening one.
 extern int  rask_string_debug_enabled;
+
+// `RASK_LEAK_CHECK=1`: at the end of `main`, any heap string buffer this
+// program still owns is reported and the process exits 97. Handing them to the
+// OS on exit is not the same as not leaking.
+extern int  rask_leak_check_enabled;
+void        rask_string_leak_check(void);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
@@ -381,6 +396,7 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
 void     rask_map_free(RaskMap *m);
+void     rask_map_free_elems(RaskMap *m, int64_t key_kind, int64_t val_kind);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or

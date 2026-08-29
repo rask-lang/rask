@@ -101,6 +101,30 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
 }
 
 /// String locals that cross a container boundary — see `CONTAINER_PREFIXES`.
+/// Container calls that copy a string argument into storage they keep.
+///
+/// The rest only read theirs — `m.get(key)` compares the key and forgets it —
+/// so the caller still owns it and still has to release it. Treating every
+/// container call as consuming leaked the lookup key of every `get`, `contains`
+/// and `remove` in the language.
+///
+/// Wrong in this direction costs a leak; wrong the other way costs a double
+/// free. So the list is the storing ones, enumerated from the runtime — the
+/// functions that `memcpy` an argument into the container — and everything else
+/// is a borrow.
+fn consumes_its_argument(name: &str) -> bool {
+    const CONSUMING: &[&str] = &[
+        "Vec_push", "Vec_try_push", "Vec_set", "Vec_insert",
+        "Map_insert", "Map_set",
+        "Channel_send", "Sender_send",
+        "Shared_new", "Mutex_new", "Cell_new",
+        "Rack_insert", "Pool_insert",
+    ];
+    let head = name.rsplit("::").next().unwrap_or(name);
+    let base = head.split('$').next().unwrap_or(head);
+    CONSUMING.contains(&base)
+}
+
 fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
     let mut touched: HashSet<LocalId> = HashSet::new();
     for block in &func.blocks {
@@ -109,10 +133,17 @@ fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Ha
             if !is_container_boundary(&fref.name) {
                 continue;
             }
+            // Anything a container hands back. `get` and `index` return a
+            // pointer into storage it still owns; `pop` and `remove` transfer
+            // out. Nothing here can tell them apart, so both leak rather than
+            // risk releasing what the container still holds (#1027).
             if let Some(dst) = dst {
                 if string_locals.contains(dst) {
                     touched.insert(*dst);
                 }
+            }
+            if !consumes_its_argument(&fref.name) {
+                continue;
             }
             for arg in args {
                 if let Some(id) = crate::analysis::uses::operand_local(arg) {

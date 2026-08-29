@@ -6471,6 +6471,10 @@ impl<'a> FunctionBuilder<'a> {
                     v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
                 })
             }),
+            MirType::Tuple(elems) => {
+                elems.iter().any(|e| Self::holds_string_mir(e, ctx, depth + 1))
+            }
+            MirType::Array { elem, .. } => Self::holds_string_mir(elem, ctx, depth + 1),
             _ => false,
         }
     }
@@ -6545,9 +6549,31 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(())
             }
             MirType::Enum(id) => Self::release_enum_variants(builder, base, offset, *id, ctx, depth),
-            // Tuples aren't walked: their element offsets aren't recorded
-            // anywhere this can read, and guessing them would release the wrong
-            // sixteen bytes. A tuple of strings leaks rather than corrupts.
+            // Elements at their natural offsets, the same packing the tuple
+            // literal lowering and `emit_field_eq_mir` use.
+            MirType::Tuple(elems) => {
+                let elems = elems.clone();
+                let mut at = 0u32;
+                for e in &elems {
+                    let align = e.align().max(1);
+                    at = (at + align - 1) & !(align - 1);
+                    Self::release_strings_mir(
+                        builder, base, offset + at as i32, e, ctx, depth + 1,
+                    )?;
+                    at += e.size();
+                }
+                Ok(())
+            }
+            MirType::Array { elem, len } => {
+                let (elem, len) = ((**elem).clone(), *len);
+                let stride = elem.size() as i32;
+                for i in 0..len as i32 {
+                    Self::release_strings_mir(
+                        builder, base, offset + i * stride, &elem, ctx, depth + 1,
+                    )?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }

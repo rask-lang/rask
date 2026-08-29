@@ -21,7 +21,15 @@
 #include <string.h>
 #include <math.h>
 #include <dirent.h>
+#include <unistd.h>
 #include <errno.h>
+
+// Live heap string buffers. `RASK_LEAK_CHECK=1` makes a program that still
+// holds any at exit fail loudly instead of quietly handing them to the OS —
+// which is what "Rask is leak free" has to mean if it is to mean anything.
+static _Atomic int64_t rask_string_live_buffers = 0;
+
+int rask_leak_check_enabled = 0;
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
@@ -62,10 +70,17 @@ static void str_make_sso(RaskStr *out, const char *data, int64_t len) {
     out->sso.remaining = (uint8_t)(15 - len);
 }
 
+/// One place to allocate a string header, so one place counts them.
+static uint8_t *str_alloc_header(int64_t cap) {
+    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    __atomic_add_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+    return header;
+}
+
 static void str_make_heap(RaskStr *out, const char *data, int64_t len) {
     int64_t cap = len;
     // Header: [refcount: u32][capacity: u32][data: u8[cap+1]]
-    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    uint8_t *header = str_alloc_header(cap);
     *(uint32_t *)header = 1;              // refcount = 1
     *(uint32_t *)(header + 4) = (uint32_t)cap; // capacity
     if (len > 0) memcpy(header + 8, data, (size_t)len);
@@ -134,6 +149,7 @@ void rask_string_free(const RaskStr *s) {
     }
     if (__atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0) {
         uint32_t cap = heap_cap(s);
+        __atomic_sub_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
         if (__builtin_expect(rask_string_debug_enabled, 0)) {
             memset(s->heap.header + 8, 0xDE, (size_t)cap + 1);
             *rc = RASK_RC_POISON;
@@ -141,6 +157,23 @@ void rask_string_free(const RaskStr *s) {
         }
         rask_realloc(s->heap.header, 8 + cap + 1, 0);
     }
+}
+
+/// Every heap string this program built and never gave back.
+///
+/// Called at the end of `main`. Handing them to the OS on exit is not the same
+/// as not leaking: a long-running program never gets there, and a leak that
+/// only shows up under load is the expensive kind to find.
+void rask_string_leak_check(void) {
+    if (!rask_leak_check_enabled) return;
+    int64_t live = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
+    if (live == 0) return;
+    fprintf(stderr,
+            "rask: %lld heap string%s never released\n"
+            "  each one is a buffer this program allocated and still owns at exit\n",
+            (long long)live, live == 1 ? "" : "s");
+    fflush(stderr);
+    _exit(97);
 }
 
 void rask_string_clone(const RaskStr *s) {
@@ -504,7 +537,7 @@ void rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b) {
         if (blen > 0) memcpy(out->sso.data + alen, bd, (size_t)blen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         if (alen > 0) memcpy(header + 8, ad, (size_t)alen);
@@ -748,7 +781,7 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
             memcpy(out->sso.data + i * slen, d, (size_t)slen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         for (int64_t i = 0; i < count; i++)
@@ -1063,7 +1096,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Promote SSO to heap
         const char *d = str_data(s);
         int64_t cap = len < 8 ? 8 : len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1077,7 +1110,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Shared — detach (COW)
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1091,7 +1124,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Literal — create mutable copy
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);

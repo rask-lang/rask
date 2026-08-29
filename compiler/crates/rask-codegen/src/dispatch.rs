@@ -197,6 +197,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_free_elems", "rask_vec_free_elems", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "Vec_push", c_name: "rask_vec_push",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -778,6 +779,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Map operations ─────────────────────────────────────
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
+        StdlibEntry::simple("Map_free_elems", "rask_map_free_elems", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new", c_name: "rask_map_new",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

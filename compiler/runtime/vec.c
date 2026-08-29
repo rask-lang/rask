@@ -77,6 +77,22 @@ void rask_vec_free(RaskVec *v) {
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
+// Free a vector whose elements own something, releasing each one first.
+//
+// `elem_kind` is `RASK_ELEM_STRING` when the elements are `RaskStr`, and 0 when
+// they own nothing. The vector itself carries only `elem_size`, which can't
+// tell a sixteen-byte string from a sixteen-byte struct — so the caller, which
+// knows the element type, says. See `container_drop.rs`.
+void rask_vec_free_elems(RaskVec *v, int64_t elem_kind) {
+    if (!v) return;
+    if (elem_kind == RASK_ELEM_STRING && v->data) {
+        for (int64_t i = 0; i < v->len; i++) {
+            rask_string_free((const RaskStr *)(v->data + i * v->elem_size));
+        }
+    }
+    rask_vec_free(v);
+}
+
 int64_t rask_vec_len(const RaskVec *v) {
     return v ? v->len : 0;
 }

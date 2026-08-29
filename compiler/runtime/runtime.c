@@ -2161,10 +2161,15 @@ int main(int argc, char **argv) {
     if (strdbg_env && strdbg_env[0] == '1') {
         rask_string_debug_enabled = 1;
     }
+    const char *leak_env = getenv("RASK_LEAK_CHECK");
+    if (leak_env && leak_env[0] == '1') {
+        rask_leak_check_enabled = 1;
+    }
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();
     // O4: a detached task's panic report can't be lost to process exit.
     rask_await_detached_tasks();
+    rask_string_leak_check();
     return 0;
 }
