@@ -945,11 +945,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -1051,11 +1051,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -1091,20 +1091,20 @@ impl TypeChecker {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // CO4: f32/f64 NOT Comparable (NaN breaks totality)
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "clone" | "default" | "debug")
             }
             Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // Named types: check registered methods
             Type::Named(id) => {

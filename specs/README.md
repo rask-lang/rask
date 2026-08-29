@@ -159,12 +159,19 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 | Spec | Description |
 |------|-------------|
-| [README.md](stdlib/README.md) | **Overview**: 24 modules, batteries-included philosophy |
+| [README.md](stdlib/README.md) | **Overview**: module inventory, batteries-included philosophy |
 | [api-design.md](stdlib/api-design.md) | **API rules**: one screen per module, guess test, no Rust legacy (SD1–SD5) |
 | [collections.md](stdlib/collections.md) | Vec, Map (indexed and keyed collections) |
-| [strings.md](stdlib/strings.md) | String types, encoding |
+| [strings.md](stdlib/strings.md) | String types; bytes to index, graphemes to display (U1–U5) |
 | [iteration.md](stdlib/iteration.md) | Collection iteration patterns |
 | [bits.md](stdlib/bits.md) | Bit manipulation, binary parsing |
+| [url.md](stdlib/url.md) | URL parsing, percent-encoding |
+| [base64.md](stdlib/base64.md) | Base64 encoding |
+| [hex.md](stdlib/hex.md) | Hex encoding |
+| [csv.md](stdlib/csv.md) | CSV — typed decode into structs, raw rows, streaming |
+| [digest.md](stdlib/digest.md) | SHA-256, SHA-1, MD5, CRC32 |
+| [terminal.md](stdlib/terminal.md) | ANSI styling as a value, terminal detection |
+| [tls.md](stdlib/tls.md) | TLS client and server, dial or upgrade |
 | [testing.md](stdlib/testing.md) | Test conventions |
 
 ## Tooling — Developer tools

@@ -20,7 +20,7 @@ use crate::value::Value;
 /// Methods the interpreter derives for every struct and enum. An `extend`
 /// block that defines one of these replaces the derived version.
 const DERIVABLE_METHODS: &[&str] = &[
-    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug_string",
+    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug",
 ];
 
 /// Values whose `.clone()` is just the value again.
@@ -384,8 +384,8 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(false));
             }
-            // G2: debug_string for structs/enums — uses Display impl
-            Value::Struct(..) | Value::Enum { .. } if method == "debug_string" => {
+            // G2: debug for structs/enums — uses Display impl
+            Value::Struct(..) | Value::Enum { .. } if method == "debug" => {
                 return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),

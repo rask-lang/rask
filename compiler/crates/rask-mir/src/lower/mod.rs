@@ -3870,7 +3870,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             // String methods that produce iterators
             match method.as_str() {
-                "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
                 "bytes" => return Some(MirType::U8),
                 _ => {}
@@ -5311,6 +5311,10 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     // zero times — a user type's methods are in `func_sigs` from their own
     // declarations, which is consulted first, and the stdlib's are in the stub
     // metadata above. Its only live effect was the wrong answer.
+    //
+    // main later added `char_is_*` and `char_eq` to that block for the Unicode
+    // work. Those come from `stdlib/char.rk` like any other declared method, so
+    // deleting the block doesn't take them with it — the char suite covers it.
 
     None
 }
