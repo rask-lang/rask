@@ -103,9 +103,9 @@ test "std.strings/trim_start and trim_end" {
 
 test "std.strings/substring" {
     let s = "hello world"
-    assert s.substring(0, 5) == "hello"
-    assert s.substring(6, 11) == "world"
-    assert s.substring(0, 0) == ""
+    assert s[0..5].to_string() == "hello"
+    assert s[6..11].to_string() == "world"
+    assert s[0..0].to_string() == ""
 }
 
 test "std.strings/replace" {

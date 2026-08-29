@@ -41,7 +41,7 @@ pub enum ArgAdapt {
     /// Inject 16-byte string out-param as first arg
     StringOutParam,
     /// Two i64s written into the destination's own 16-byte slot — a
-    /// `(usize, usize)` tuple, start at +0 and end at +8 (string_trim_indices).
+    /// `(usize, usize)` tuple, start at +0 and end at +8.
     PairOutParam,
     /// Same, but the call also returns a 0/1 status that becomes the
     /// `string or E` tag. The string goes to a scratch slot rather than to
@@ -444,19 +444,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // fired and a slice taken at that index was empty (#463).
         StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        // Byte offset in, scalar out; -1 for out of range or mid-character,
+        // which is never a valid scalar.
+        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `s[i]` — one byte. Indexing panics out of range, so it needs its own
+        // entry point rather than `byte_at`'s none-on-miss.
+        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_last_index_of", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         // `char_at` answers `char?`; the runtime signals out-of-range with -1,
-        // which is never a valid scalar.
-        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
-        // `s[i]` — indexing panics on an out-of-range index, so it needs its own
-        // entry point rather than `char_at`'s none-on-miss (#353).
-        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry {
-            mir_name: "string_trim_indices", c_name: "rask_string_trim_indices",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::PairOutParam, ret_adapt: RetAdapt::None,
-        },
         StdlibEntry {
             mir_name: "json_pretty", c_name: "rask_json_pretty",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -480,16 +476,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // native truncating to 112, the interpreter keeping 70000 (#837).
         StdlibEntry {
             mir_name: "string_parse", c_name: "rask_string_parse_int_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "string_parse_int", c_name: "rask_string_parse_int_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "string_parse_float", c_name: "rask_string_parse_float_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
@@ -573,14 +559,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // stdlib exposes `substring` as the user-facing method name; the C
-        // runtime function is `rask_string_substr`. Alias so method dispatch
-        // from `.substring(...)` finds the right symbol.
-        StdlibEntry {
-            mir_name: "string_substring", c_name: "rask_string_substr",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
         StdlibEntry {
             mir_name: "string_to_lowercase", c_name: "rask_string_to_lowercase",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -622,16 +600,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "string_replacen", c_name: "rask_string_replacen",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
             mir_name: "string_from_char", c_name: "rask_string_from_char",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("string_char_count", "rask_string_char_count", &[types::I64], Some(types::I64), false),
+        // Display columns, not scalars (std.strings/U2) — this is what fmt
+        // padding counts.
+        StdlibEntry::simple("string_width", "rask_string_width", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_graphemes", "rask_string_graphemes", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "string_truncate", c_name: "rask_string_truncate",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_normalized", c_name: "rask_string_normalized",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("string_is_ascii", "rask_string_str_is_ascii", &[types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "string_append", c_name: "rask_string_append",

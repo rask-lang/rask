@@ -74,9 +74,11 @@ extend Lexer {
         return self.input.char_at(self.pos)
     }
 
+    // `pos` is a byte offset (it's compared against `input.len()`), so a step
+    // is the character's own UTF-8 width.
     func advance(mutate self) -> char? {
         let c = try self.peek_char()
-        self.pos += 1
+        self.pos += c.len_utf8()
         return c
     }
 

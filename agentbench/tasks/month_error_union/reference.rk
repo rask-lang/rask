@@ -33,7 +33,7 @@ func first_line(text: string) -> string or ReadError {
 }
 
 func to_number(text: string) -> i64 or ParseError {
-    return text.parse_int() catch _ => {
+    return text.parse<i64>() catch _ => {
         return ParseError.NotANumber(text: text)
     }
 }

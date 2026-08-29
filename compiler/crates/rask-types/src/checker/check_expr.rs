@@ -2181,7 +2181,11 @@ impl TypeChecker {
             } else {
                 *elem.clone()
             }),
-            Type::String => Some(if is_range { Type::String } else { Type::Char }),
+            // `[]` on a string means bytes in both forms (std.strings/U1b):
+            // a range slices, a scalar index reads one byte. It used to yield
+            // a `char` at a *character* index, so the same bracket counted two
+            // different units and `s[i]` in a loop scanned from byte zero.
+            Type::String => Some(if is_range { Type::String } else { Type::U8 }),
             // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
             // Map<K,V> indexed by K → value type from second arg.
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {

@@ -57,13 +57,6 @@ impl Interpreter {
             "trim_end" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
             }
-            "trim_indices" => {
-                let guard = s.lock().unwrap();
-                let trimmed = guard.trim();
-                let start = trimmed.as_ptr() as usize - guard.as_ptr() as usize;
-                let end = start + trimmed.len();
-                Ok(Value::vec(vec![Value::int(start as i64), Value::int(end as i64)]))
-            }
             // FNV-1a over the bytes — the same function the native runtime
             // and string-keyed maps use, so both backends agree. Typed `u64`,
             // which is what the signature says: as a plain int it rendered the
@@ -74,7 +67,7 @@ impl Interpreter {
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
-            "debug_string" => {
+            "debug" => {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
             }
@@ -140,65 +133,59 @@ impl Interpreter {
                 let state = IteratorState::PreComputed { items: lines, index: 0 };
                 Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
+            // No `limit:` yet — default arguments on methods are
+            // rask-lang/rask#1028. An explicit limit still works positionally.
             "replace" => {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().replace(&from, &to)))))
-            }
-            "replacen" => {
-                let from = self.expect_string(&args, 0)?;
-                let to = self.expect_string(&args, 1)?;
-                let n = self.expect_int(&args, 2)?;
-                let n = if n < 0 { 0 } else { n as usize };
-                Ok(Value::String(Arc::new(Mutex::new(
-                    s.lock().unwrap().replacen(&from, &to, n),
-                ))))
-            }
-            // Unicode scalars, not bytes — `len` is the byte count.
-            "char_count" => Ok(Value::int(s.lock().unwrap().chars().count() as i64)),
-            "is_ascii" => Ok(Value::Bool(s.lock().unwrap().is_ascii())),
-            // Byte offsets, like every other index in the string API —
-            // `index_of`, `last_index_of` and `byte_at` all hand you bytes, and
-            // `len` is a byte count. Counting chars here instead only agreed
-            // with native on ASCII: `s.substring(0, s.last_index_of("/"))` cut
-            // in the wrong place the moment the string held a multi-byte
-            // character, and the JSON parser's own slicing came out short.
-            //
-            // Out-of-range clamps rather than panicking, matching
-            // `rask_string_substr`.
-            "substring" => {
-                let sb = s.lock().unwrap();
-                let len = sb.len();
-                let start = (self.expect_int(&args, 0)? as usize).min(len);
-                let end = args
-                    .get(1)
-                    .map(|v| match v {
-                        Value::Int(i, _) => (*i as usize).min(len),
-                        _ => len,
-                    })
-                    .unwrap_or(len)
-                    .max(start);
-                // A cut inside a character would be a `string` that isn't valid
-                // UTF-8, which the type says can't exist. The caller asked for
-                // something that doesn't exist, so say so rather than handing back
-                // a nearby slice they didn't ask for (#735).
-                let Some(substring) = sb.get(start..end).map(str::to_string) else {
-                    return Err(RuntimeError::Panic(format!(
-                        "substring({}, {}) cuts a character in half - these are \
-                         byte offsets, and one of them lands inside a multi-byte \
-                         character. `char_indices()` gives offsets that don't.",
-                        start, end
-                    )));
+                let guard = s.lock().unwrap();
+                let out = match args.get(2) {
+                    Some(Value::Int(n, _)) => guard.replacen(&from, &to, *n as usize),
+                    _ => guard.replace(&from, &to),
                 };
-                Ok(Value::String(Arc::new(Mutex::new(substring))))
+                Ok(Value::String(Arc::new(Mutex::new(out))))
             }
-            "parse_int" => {
+            // Display columns (std.strings/U2) — `len` is bytes, `width`
+            // aligns. Zero-width for combining marks, two for East Asian wide.
+            "width" => Ok(Value::int(display_width(&s.lock().unwrap()) as i64)),
+            "graphemes" => {
+                let items: Vec<Value> = graphemes(&s.lock().unwrap())
+                    .into_iter()
+                    .map(|g| Value::String(Arc::new(Mutex::new(g))))
+                    .collect();
+                let state = IteratorState::PreComputed { items, index: 0 };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
+            }
+            "truncate" => {
+                let cols = self.expect_int(&args, 0)?;
+                Ok(Value::String(Arc::new(Mutex::new(truncate_to_width(
+                    &s.lock().unwrap(),
+                    cols,
+                )))))
+            }
+            // NFC (U5). ASCII is already normal, so it short-circuits (U4).
+            "normalized" => {
+                use unicode_normalization::UnicodeNormalization;
+                let guard = s.lock().unwrap();
+                let out = if guard.is_ascii() {
+                    guard.clone()
+                } else {
+                    guard.nfc().collect::<String>()
+                };
+                Ok(Value::String(Arc::new(Mutex::new(out))))
+            }
+            "is_ascii" => Ok(Value::Bool(s.lock().unwrap().is_ascii())),
+            // Internal float route for `parse<f32|f64>()`. Not a user-facing
+            // method — the registry lists only `parse` (std.strings) — but the
+            // interpreter rewrites a float-targeted parse to this name when the
+            // target came from inference rather than an explicit type argument.
+            "parse_float" => {
                 let text = s.lock().unwrap().trim().to_string();
-                match text.parse::<i64>() {
+                match text.parse::<f64>() {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::int(n)],
+                        fields: vec![Value::Float(n, FloatKind::Untyped)],
                         variant_index: 0, origin: None,
                     }),
                     Err(_) => Ok(Value::Enum {
@@ -249,22 +236,26 @@ impl Interpreter {
                     }),
                 }
             }
+            // Byte offset in, scalar out (std.strings/U1) — none when out of
+            // range or when the offset lands inside a character.
             "char_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match s.lock().unwrap().chars().nth(idx) {
-                    Some(c) => Ok(Value::Enum {
+                let guard = s.lock().unwrap();
+                let found = guard.is_char_boundary(idx).then(|| guard[idx..].chars().next()).flatten();
+                Ok(match found {
+                    Some(c) => Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Char(c)],
                         variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
+                    },
+                    None => Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
                         variant_index: 0, origin: None,
-                    }),
-                }
+                    },
+                })
             }
             "byte_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -279,23 +270,6 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
-                }
-            }
-            "parse_float" => {
-                let text = s.lock().unwrap().trim().to_string();
-                match text.parse::<f64>() {
-                    Ok(n) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Float(n, FloatKind::Untyped)],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![parse_error(&text)],
                         variant_index: 0, origin: None,
                     }),
                 }
@@ -339,9 +313,9 @@ impl Interpreter {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().repeat(n)))))
             }
             "reverse" => {
-                Ok(Value::String(Arc::new(Mutex::new(
-                    s.lock().unwrap().chars().rev().collect(),
-                ))))
+                let mut gs = graphemes(&s.lock().unwrap());
+                gs.reverse();
+                Ok(Value::String(Arc::new(Mutex::new(gs.concat()))))
             }
             "eq" => {
                 let b = self.expect_string(&args, 0)?;
@@ -484,7 +458,7 @@ fn parse_at_width(text: &str, kind: IntKind) -> Option<Value> {
     }
 }
 
-/// Build a `ParseError` variant for a failed `parse_int`/`parse_float`.
+/// Build a `ParseError` variant for a failed `parse<T>()`.
 /// Mirrors stdlib/string.rk's `ParseError` (Empty/Invalid/OutOfRange).
 fn parse_error(text: &str) -> Value {
     let variant = if text.is_empty() {
@@ -501,4 +475,47 @@ fn parse_error(text: &str) -> Value {
         variant_index: match variant { "Empty" => 0, "Invalid" => 1, _ => 2 },
         origin: None,
     }
+}
+
+// ─── Text units (std.strings/U1–U5) ────────────────────────────────────────
+//
+// Straight from the crates. The interpreter is the reference for what the
+// answer should be, and the native runtime's tables are generated from these
+// same crates by scripts/gen_unicode_text — so there is nothing here for a
+// human to keep in step with anything.
+
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+/// Display columns (U2). ASCII is the printable byte count (U4) — the common
+/// case never touches a table.
+pub(crate) fn display_width(s: &str) -> usize {
+    if s.is_ascii() {
+        return s.bytes().filter(|b| (0x20..0x7F).contains(b)).count();
+    }
+    s.width()
+}
+
+/// Grapheme clusters — what a reader calls characters.
+pub(crate) fn graphemes(s: &str) -> Vec<String> {
+    s.graphemes(true).map(str::to_string).collect()
+}
+
+/// Cut to at most `cols` display columns, never inside a grapheme (U2).
+pub(crate) fn truncate_to_width(s: &str, cols: i64) -> String {
+    if cols <= 0 {
+        return String::new();
+    }
+    let cols = cols as usize;
+    let mut used = 0;
+    let mut out = String::new();
+    for g in s.graphemes(true) {
+        let w = display_width(g);
+        if used + w > cols {
+            break;
+        }
+        used += w;
+        out.push_str(g);
+    }
+    out
 }

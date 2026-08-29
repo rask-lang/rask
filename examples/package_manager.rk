@@ -37,13 +37,13 @@ extend Version {
             return VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}")
         }
 
-        let major = parts[0].trim().parse_int() is i64 as v else {
+        let major = parts[0].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad major version in: {s}")
         }
-        let minor = parts[1].trim().parse_int() is i64 as v else {
+        let minor = parts[1].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad minor version in: {s}")
         }
-        let patch = parts[2].trim().parse_int() is i64 as v else {
+        let patch = parts[2].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad patch version in: {s}")
         }
 

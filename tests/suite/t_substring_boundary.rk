@@ -10,33 +10,33 @@
 test "std.strings — byte offsets on a boundary slice normally" {
     let s = "caf\u{e9}"
     assert s.len() == 5
-    assert s.substring(0, 3) == "caf"
-    assert s.substring(0, 5) == s
-    assert s.substring(3, 5) == "\u{e9}"
+    assert s[0..3].to_string() == "caf"
+    assert s[0..5].to_string() == s
+    assert s[3..5].to_string() == "\u{e9}"
 }
 
 test "std.strings — out of range clamps, it doesn't panic" {
     let s = "abc"
-    assert s.substring(0, 99) == "abc"
-    assert s.substring(2, 1) == ""
-    assert s.substring(9, 12) == ""
+    assert s[0..99].to_string() == "abc"
+    assert s[2..1].to_string() == ""
+    assert s[9..12].to_string() == ""
 }
 
 test "std.strings — offsets from the API feed straight back in" {
     let path = "/etc/caf\u{e9}/conf"
     let cut = path.last_index_of("/") ?? 0
-    assert path.substring(0, cut) == "/etc/caf\u{e9}"
-    assert path.substring(cut + 1, path.len()) == "conf"
+    assert path[0..cut].to_string() == "/etc/caf\u{e9}"
+    assert path[cut + 1..path.len()].to_string() == "conf"
 }
 
 test "std.strings — a boundary walk finds every safe cut" {
     let s = "na\u{ef}ve"
     // 6 bytes for 5 characters: the i-diaeresis is two.
     assert s.len() == 6
-    assert s.char_count() == 5
+    assert s.width() == 5
     // Every offset that starts a character is a legal cut.
-    assert s.substring(0, 2) == "na"
-    assert s.substring(2, 4) == "\u{ef}"
-    assert s.substring(4, 6) == "ve"
-    assert s.substring(0, 6) == s
+    assert s[0..2].to_string() == "na"
+    assert s[2..4].to_string() == "\u{ef}"
+    assert s[4..6].to_string() == "ve"
+    assert s[0..6].to_string() == s
 }

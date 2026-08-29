@@ -1424,7 +1424,7 @@ impl<'a> MirLowerer<'a> {
             }
             // String methods that always return Vec<string>
             match method.as_str() {
-                "lines" | "split" | "split_whitespace" => {
+                "lines" | "split" | "split_whitespace" | "graphemes" => {
                     self.meta_mut(name).elem_type = Some(MirType::String);
                 }
                 _ => {}

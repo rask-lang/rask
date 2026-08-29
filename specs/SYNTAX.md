@@ -478,7 +478,7 @@ extend Shape {
 
 ```rask
 trait Displayable {
-    func to_string(self) -> string
+    func display(self) -> string
 }
 
 trait Comparable {
@@ -489,7 +489,7 @@ trait Comparable {
 **Conformance is declared:** a type satisfies a trait through `extend Type with Trait` (`type.generics/G1`):
 ```rask
 extend Point with Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
@@ -504,7 +504,7 @@ If the type already has the methods, an empty declaration suffices: `extend Poin
 ```rask
 extend LogSource with Reader, Displayable, Error {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
-    func to_string(self) -> string { ... }
+    func display(self) -> string { ... }
     func message(self) -> string { ... }
 }
 ```

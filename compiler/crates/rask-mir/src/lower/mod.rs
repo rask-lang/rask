@@ -3837,7 +3837,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             // String methods that produce iterators
             match method.as_str() {
-                "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
                 "bytes" => return Some(MirType::U8),
                 _ => {}
@@ -5194,7 +5194,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
         || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
-        || func_name.ends_with("_replace") || func_name.ends_with("_substring")
+        || func_name.ends_with("_replace")
         || func_name.ends_with("_substr")
         || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
     {

@@ -113,25 +113,30 @@ extend string {
     @native("rask_string_len")
     public func len(self) -> usize {}
 
-    /// Number of Unicode scalars. O(n).
-    @native("rask_string_char_count")
-    public func char_count(self) -> usize {}
+    /// Display columns (std.strings/U2). O(1) for ASCII, else O(n).
+    /// This is what fmt padding counts — `len` is bytes, `width` aligns.
+    @native("rask_string_width")
+    public func width(self) -> usize {}
 
     /// True if the string is empty. O(1).
     @native("rask_string_is_empty")
     public func is_empty(self) -> bool {}
 
-    /// True if all bytes are ASCII. O(n) first call, cached.
+    /// True if all bytes are ASCII. Decided at construction (S10), O(1).
     @native("rask_string_str_is_ascii")
     public func is_ascii(self) -> bool {}
 
-    // ── Character and byte access ───────────────────────────
+    // ── Indexed access ──────────────────────────────────────
+    // Both take byte offsets (std.strings/U1) and both are O(1). char_at used
+    // to take a *character* index, so it scanned from byte zero every call and
+    // a cursor loop built on it was quadratic.
 
-    /// Byte at byte index. Returns none if out of bounds.
+    /// Byte at byte offset. none if out of bounds.
     @native("rask_string_byte_at")
     public func byte_at(self, idx: usize) -> u8? {}
 
-    /// Unicode scalar at char index (not byte index). Returns none if out of bounds.
+    /// The scalar starting at byte offset `idx`. none if out of bounds or if
+    /// `idx` lands inside a character. Advance a cursor with `c.len_utf8()`.
     @native("rask_string_char_at")
     public func char_at(self, idx: usize) -> char? {}
 
@@ -173,32 +178,40 @@ extend string {
     @native("rask_string_trim_end")
     public func trim_end(self) -> string {}
 
-    /// Byte indices of trimmed content: (start, end).
-    @native
-    public func trim_indices(self) -> (usize, usize) {}
+    // Positions rather than text? `s.trim().span()` — Span is the type for
+    // byte ranges, so trimming doesn't need a tuple-returning sibling.
 
-    // ── Case conversion ─────────────────────────────────────
+    // ── Case and normalization ──────────────────────────────
 
-    /// Convert to uppercase. Allocates.
+    /// Full Unicode uppercase mapping. Allocates. Length can change —
+    /// "straße" uppercases to "STRASSE".
     @native("rask_string_to_uppercase")
     public func to_uppercase(self) -> string {}
 
-    /// Convert to lowercase. Allocates.
+    /// Full Unicode lowercase mapping. Allocates.
     @native("rask_string_to_lowercase")
     public func to_lowercase(self) -> string {}
 
-    // ── Substring extraction ────────────────────────────────
+    /// NFC form (std.strings/U5). Normalize both sides before comparing text
+    /// that came from outside the program — filenames, form input, the network.
+    /// Returns self unchanged when already normal.
+    @native("rask_string_normalized")
+    public func normalized(self) -> string {}
 
-    /// Bytes from start (inclusive) to end (exclusive). Allocates.
-    /// Byte offsets, so `index_of`/`last_index_of`/`byte_at` results feed
-    /// straight in. Out of range clamps; an offset inside a character panics.
-    @native("rask_string_substr")
-    public func substring(self, start: usize, end: usize) -> string {}
+    // ── Substring extraction ────────────────────────────────
+    // Slice it: `s[start..end]`, then `.to_string()` to keep it or `.view()`
+    // to keep it without copying. No `substring` method — it was the slice
+    // under a second name (std.api/SD5).
 
     // ── Iteration ───────────────────────────────────────────
     // Iterators borrow for expression scope only. Cannot be stored.
 
-    /// Iterate over Unicode scalars.
+    /// Iterate over graphemes — what a reader calls characters (std.strings/U2).
+    /// The unit for cursor movement and truncation.
+    @native("rask_string_graphemes")
+    public func graphemes(self) -> Iterator<string> {}
+
+    /// Iterate over Unicode scalars. For lexers and protocol parsers (U3).
     @native("rask_string_chars")
     public func chars(self) -> Iterator<char> {}
 
@@ -225,16 +238,21 @@ extend string {
     // ── Manipulation ────────────────────────────────────────
 
     /// Replace all occurrences. Allocates.
+    /// The spec's `limit:` parameter (replace at most n) needs default
+    /// arguments on methods — blocked on rask-lang/rask#1028.
     @native("rask_string_replace")
     public func replace(self, from: string, to: string) -> string {}
 
-    /// Replace first n occurrences. Allocates.
-    @native("rask_string_replacen")
-    public func replacen(self, from: string, to: string, n: usize) -> string {}
-
-    /// Reverse by Unicode scalars. Allocates.
+    /// Reverse by graphemes (std.strings/U2). Allocates.
+    /// Scalar reversal has no correct use — it splits combining marks from
+    /// their base character and turns emoji into rubble.
     @native("rask_string_reverse")
     public func reverse(self) -> string {}
+
+    /// Cut to at most `cols` display columns, never splitting a grapheme.
+    /// The operation people hand-roll wrong: width and graphemes composed.
+    @native("rask_string_truncate")
+    public func truncate(self, cols: usize) -> string {}
 
     /// Repeat this string n times. Allocates.
     @native("rask_string_repeat")
@@ -246,22 +264,10 @@ extend string {
 
     // ── Parsing ─────────────────────────────────────────────
 
-    /// Parse to integer. Trims whitespace.
-    @native("rask_string_parse_int_into")
-    public func parse_int(self) -> i64 or ParseError {}
-
-    /// Parse to floating point. Trims whitespace.
-    @native("rask_string_parse_float_into")
-    public func parse_float(self) -> f64 or ParseError {}
-
-    // NOTE (#302 rename sweep): strings.md says "there is no generic
-    // s.parse()", but it's a real, widely-used, well-tested feature —
-    // t_parse_failure.rk/t_parse_float.rk test it directly, and
-    // validation/*, http_api_server.rk, text_editor.rk, 13_string_operations.rk
-    // all call `.parse<T>()`. Dropping it is a real breaking change across
-    // dozens of call sites, not a rename — left in place, flagging instead
-    // of guessing. See PR notes.
-    /// Parse to typed value.
+    /// Parse to a numeric type, answered at T's own width. Trims whitespace.
+    /// One function: `parse<i64>()` and `parse<f64>()` are what `parse_int`
+    /// and `parse_float` were, and a type parameter already does that job
+    /// (std.api/SD2).
     @native("rask_string_parse_int_into")
     public func parse<T>(self) -> T or ParseError {}
 
@@ -405,7 +411,7 @@ extend string {
 
 // ─── Parsing and encoding errors ───────────────────────────────
 
-/// Why `parse_int`/`parse_float` failed.
+/// Why `parse<T>` failed.
 public enum ParseError {
     Empty        // no digits found
     Invalid      // non-numeric character

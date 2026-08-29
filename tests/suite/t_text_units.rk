@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Text units against a reference (std.strings/U2, U5).
+//
+// The width, grapheme and NFC tables in the native runtime are generated from
+// the same crates the interpreter uses (scripts/gen_unicode_text), so the two
+// backends cannot drift by construction — but nothing checked that the
+// generator's output agrees with the reference. These cases are fuzzed against
+// Python's unicodedata, which shares no code with either backend.
+//
+// The pool is drawn from every codepoint whose NFC and NFD differ, plus the
+// combining marks. An earlier version hand-picked a couple of dozen characters
+// and missed the bug below entirely.
+//
+// Two bugs are pinned here:
+//   - A character needing two marks (Vietnamese tone vowels, polytonic Greek)
+//     came back as two codepoints. The generator only recorded a composition
+//     pair when a character's fully-unfolded form had exactly two parts, so
+//     the intermediate step was never in the table.
+//   - Native summed the scalar widths of a ZWJ sequence, so a family emoji
+//     measured six columns instead of two.
+
+func assert_eq(got: usize, want: usize) {
+    if got != want {
+        panic("expected {want}, got {got}")
+    }
+}
+
+test "std.strings — NFC matches the reference" {
+    assert_eq("\u{1EC7}".normalized().len(), 3)
+    assert_eq("\u{1EC1}".normalized().len(), 3)
+    assert_eq("\u{1ED1}".normalized().len(), 3)
+    assert_eq("\u{01ED}".normalized().len(), 2)
+    assert_eq("\u{1FB7}".normalized().len(), 3)
+    assert_eq("\u{1EAB}".normalized().len(), 3)
+    assert_eq("\u{1EF1}".normalized().len(), 3)
+    assert_eq("\u{CB58}\u{C83F}".normalized().len(), 6)
+    assert_eq("\u{BD18}\u{1F44D}".normalized().len(), 7)
+    assert_eq("\u{C3C1}\u{CD76}\u{CA97}\u{1E5F}\u{CC2D}".normalized().len(), 15)
+    assert_eq("\u{0061}".normalized().len(), 1)
+    assert_eq("\u{B604}\u{C8AB}\u{B46A}\u{B1B0}".normalized().len(), 12)
+    assert_eq("\u{C80A}\u{2F869}\u{C898}\u{C3E7}".normalized().len(), 12)
+    assert_eq("\u{CE51}\u{2F9FB}\u{AF0E}\u{B442}".normalized().len(), 13)
+    assert_eq("\u{1F44D}\u{0020}".normalized().len(), 5)
+    assert_eq("\u{BE5F}\u{D4DB}\u{0230}\u{D063}\u{D729}".normalized().len(), 14)
+    assert_eq("\u{AF9E}".normalized().len(), 3)
+    assert_eq("\u{09DC}\u{B8B2}\u{D757}\u{0622}\u{1D162}".normalized().len(), 26)
+    assert_eq("\u{C3AC}\u{CB7B}\u{D36C}".normalized().len(), 9)
+    assert_eq("\u{D31F}\u{F937}\u{0020}\u{C0BD}".normalized().len(), 10)
+    assert_eq("\u{D404}\u{FA09}\u{CA57}\u{C1DF}".normalized().len(), 12)
+    assert_eq("\u{0021}\u{BCCF}".normalized().len(), 4)
+    assert_eq("\u{07ED}".normalized().len(), 2)
+    assert_eq("\u{C517}\u{B34E}".normalized().len(), 6)
+    assert_eq("\u{D06D}\u{C155}\u{D745}".normalized().len(), 9)
+    assert_eq("\u{C05F}\u{C5E1}\u{2F838}".normalized().len(), 10)
+    assert_eq("\u{CA27}\u{BBE0}\u{C799}\u{CADC}".normalized().len(), 12)
+    assert_eq("\u{CACF}\u{B44A}\u{007A}\u{BAF8}".normalized().len(), 10)
+    assert_eq("\u{2F9B0}".normalized().len(), 4)
+    assert_eq("\u{CC30}\u{D061}\u{D1EF}".normalized().len(), 9)
+    assert_eq("\u{D221}\u{2F9F5}".normalized().len(), 6)
+    assert_eq("\u{C817}\u{00E9}\u{CA05}".normalized().len(), 8)
+    assert_eq("\u{AC14}\u{D31A}\u{CF5E}\u{B2EE}\u{CDED}".normalized().len(), 15)
+    assert_eq("\u{B682}\u{B7A7}\u{AD61}\u{1E3D}\u{C444}".normalized().len(), 15)
+    assert_eq("\u{1FFC}\u{BB70}\u{FA03}\u{1E71}".normalized().len(), 12)
+    assert_eq("\u{1F44D}\u{AF11}\u{034D}\u{B83A}".normalized().len(), 12)
+    assert_eq("\u{D69E}\u{BFFD}\u{1F44D}\u{AD07}".normalized().len(), 13)
+    assert_eq("\u{CC23}".normalized().len(), 3)
+    assert_eq("\u{D629}\u{0CCA}\u{BD98}\u{D365}\u{CAF2}".normalized().len(), 15)
+    assert_eq("\u{C8AC}\u{1F44D}\u{1F44D}".normalized().len(), 11)
+    assert_eq("\u{C5C3}\u{B484}\u{07F0}".normalized().len(), 8)
+    assert_eq("\u{0150}\u{1F2A}\u{AC56}".normalized().len(), 8)
+    assert_eq("\u{C7B1}\u{064C}\u{B20C}\u{BF86}\u{B814}".normalized().len(), 14)
+    assert_eq("\u{B646}\u{AF6A}\u{D18F}\u{095E}\u{0021}".normalized().len(), 16)
+    assert_eq("\u{B980}\u{BC78}\u{AE45}".normalized().len(), 9)
+    assert_eq("\u{BD87}\u{C2E2}\u{0021}\u{C6B3}".normalized().len(), 10)
+    assert_eq("\u{CEA0}\u{0020}\u{CB8A}\u{D100}".normalized().len(), 10)
+    assert_eq("\u{AABE}\u{CD1B}\u{6771}\u{FAC4}\u{C5DE}".normalized().len(), 15)
+    assert_eq("\u{C103}\u{CE03}\u{D384}".normalized().len(), 9)
+    assert_eq("\u{1F44D}\u{B8B0}".normalized().len(), 7)
+    assert_eq("\u{B5F1}\u{C6C5}\u{B8CF}\u{C884}".normalized().len(), 12)
+    assert_eq("\u{01E6}\u{F93C}\u{BFFD}".normalized().len(), 8)
+    assert_eq("\u{B991}\u{034C}\u{BD83}\u{CCD4}\u{CB20}".normalized().len(), 14)
+    assert_eq("\u{1E06}\u{CDF6}".normalized().len(), 6)
+    assert_eq("\u{C342}\u{BC01}\u{D0E4}".normalized().len(), 9)
+    assert_eq("\u{CC62}\u{D2A9}\u{B744}".normalized().len(), 9)
+    assert_eq("\u{0374}\u{CB23}\u{1E0E}\u{D0AE}".normalized().len(), 11)
+    assert_eq("\u{BD0B}".normalized().len(), 3)
+    assert_eq("\u{CD9B}\u{C29F}\u{B887}".normalized().len(), 9)
+    assert_eq("\u{CBE9}\u{B9E6}\u{B0C5}\u{BCB6}\u{B146}".normalized().len(), 15)
+    assert_eq("\u{D5EF}\u{BD0B}\u{2F8E2}".normalized().len(), 9)
+    assert_eq("\u{B652}\u{B8A4}\u{F92A}\u{BD8E}\u{AC21}".normalized().len(), 15)
+    assert_eq("\u{C9D9}".normalized().len(), 3)
+    assert_eq("\u{B942}\u{C56B}".normalized().len(), 6)
+    assert_eq("\u{CF41}\u{FA44}".normalized().len(), 6)
+    assert_eq("\u{B4B1}\u{BA65}\u{B169}".normalized().len(), 9)
+    assert_eq("\u{CEFD}\u{D218}\u{3073}\u{A92B}".normalized().len(), 12)
+    assert_eq("\u{BA06}\u{BAC7}\u{D09D}\u{2F839}\u{B3C8}".normalized().len(), 15)
+    assert_eq("\u{FAA8}\u{2F9A2}\u{B040}\u{1F62}".normalized().len(), 12)
+    assert_eq("\u{D4E9}\u{CF08}\u{B35F}".normalized().len(), 9)
+    assert_eq("\u{C249}\u{B6BC}\u{B3D1}\u{F925}\u{AD28}".normalized().len(), 15)
+    assert_eq("\u{C750}".normalized().len(), 3)
+    assert_eq("\u{B996}\u{FA77}".normalized().len(), 6)
+    assert_eq("\u{B12A}\u{6771}\u{B73F}\u{BB2F}\u{FA7E}".normalized().len(), 15)
+    assert_eq("\u{FA6C}".normalized().len(), 4)
+    assert_eq("\u{BB84}\u{CB25}\u{ADB7}\u{C061}\u{B81A}".normalized().len(), 15)
+    assert_eq("\u{F995}\u{2F946}\u{B6C5}\u{C328}\u{BB95}".normalized().len(), 15)
+    assert_eq("\u{B800}\u{C048}\u{C9CA}\u{BFA0}".normalized().len(), 12)
+    assert_eq("\u{1F44D}".normalized().len(), 4)
+    assert_eq("\u{AF66}\u{B230}\u{0119}\u{C3F7}".normalized().len(), 11)
+    assert_eq("\u{C611}\u{C137}\u{C92F}\u{6771}\u{D352}".normalized().len(), 15)
+    assert_eq("\u{065B}\u{D521}".normalized().len(), 5)
+    assert_eq("\u{2F86D}\u{D5A2}\u{CFD9}\u{D54A}".normalized().len(), 12)
+    assert_eq("\u{B7EA}\u{C839}\u{BB3F}\u{007A}\u{B3F9}".normalized().len(), 13)
+    assert_eq("\u{2F9CA}".normalized().len(), 3)
+    assert_eq("\u{B7C9}\u{AD19}\u{FAAF}\u{B511}\u{0CCD}".normalized().len(), 15)
+    assert_eq("\u{0020}".normalized().len(), 1)
+    assert_eq("\u{007A}\u{B21E}\u{00E9}\u{0021}\u{1F44D}".normalized().len(), 11)
+    assert_eq("\u{CA57}\u{1714}\u{0207}\u{C434}".normalized().len(), 11)
+    assert_eq("\u{B06A}".normalized().len(), 3)
+    assert_eq("\u{B89C}\u{B4B7}\u{CFD7}\u{0349}\u{C704}".normalized().len(), 14)
+    assert_eq("\u{BFE5}\u{1B6B}\u{0020}\u{0021}\u{CC98}".normalized().len(), 11)
+    assert_eq("\u{BB43}".normalized().len(), 3)
+    assert_eq("\u{B593}\u{2FA06}".normalized().len(), 6)
+    assert_eq("\u{C3F5}\u{FAC5}\u{D77C}\u{1E1B}\u{BBEF}".normalized().len(), 15)
+    assert_eq("\u{B20C}\u{AD3D}".normalized().len(), 6)
+    assert_eq("\u{6771}\u{10AE6}\u{AD0C}\u{B061}\u{B4BE}".normalized().len(), 16)
+    assert_eq("\u{00E9}\u{0061}\u{FA69}".normalized().len(), 6)
+    assert_eq("\u{1D161}\u{0021}".normalized().len(), 13)
+    assert_eq("\u{C49E}".normalized().len(), 3)
+    assert_eq("\u{2FA15}\u{BF09}\u{1A18}\u{D5D5}\u{B6C9}".normalized().len(), 15)
+    assert_eq("\u{B69B}\u{CCF9}".normalized().len(), 6)
+    assert_eq("\u{C6AD}\u{C07D}\u{1AB6}\u{C3AE}\u{BA18}".normalized().len(), 15)
+    assert_eq("\u{2F9BA}".normalized().len(), 3)
+    assert_eq("\u{D708}".normalized().len(), 3)
+    assert_eq("\u{0E4B}\u{AD64}".normalized().len(), 6)
+    assert_eq("\u{1E8E}".normalized().len(), 3)
+    assert_eq("\u{06D8}\u{2F990}\u{D308}\u{1FCF}".normalized().len(), 11)
+    assert_eq("\u{C58D}\u{C4C7}\u{B9A2}\u{AF77}\u{B98D}".normalized().len(), 15)
+    assert_eq("\u{BBE6}".normalized().len(), 3)
+    assert_eq("\u{CED2}\u{BE5A}\u{CAF6}\u{B8E1}".normalized().len(), 12)
+    assert_eq("\u{B65F}\u{B1A5}\u{BA75}".normalized().len(), 9)
+    assert_eq("\u{AD56}\u{AD95}\u{C8F8}\u{0104}".normalized().len(), 11)
+    assert_eq("\u{F9AD}\u{1F62}\u{C9B0}\u{B0D8}".normalized().len(), 12)
+    assert_eq("\u{BD4E}".normalized().len(), 3)
+    assert_eq("\u{CC1A}\u{CF09}\u{D781}\u{C810}".normalized().len(), 12)
+    assert_eq("\u{CE2A}\u{FA0D}\u{0A5B}\u{CD49}".normalized().len(), 15)
+    assert_eq("\u{1B41}\u{BD40}\u{CD93}\u{C52B}".normalized().len(), 12)
+    assert_eq("\u{C054}\u{D1D7}\u{C030}".normalized().len(), 9)
+    assert_eq("\u{0329}\u{B51A}\u{B369}\u{C7B6}".normalized().len(), 11)
+    assert_eq("\u{D1E8}\u{CB2B}\u{1EC7}".normalized().len(), 9)
+    assert_eq("\u{B3C8}\u{C0AC}\u{ADC2}\u{0020}".normalized().len(), 10)
+    assert_eq("\u{0020}".normalized().len(), 1)
+    assert_eq("\u{BD5E}\u{00E9}\u{C932}".normalized().len(), 8)
+    assert_eq("\u{AD30}\u{C31F}\u{D19D}".normalized().len(), 9)
+    assert_eq("\u{0020}".normalized().len(), 1)
+    assert_eq("\u{F97E}\u{BD82}\u{D024}\u{AC5E}\u{D460}".normalized().len(), 15)
+    assert_eq("\u{C981}\u{C776}\u{AC04}".normalized().len(), 9)
+    assert_eq("\u{D347}\u{011D}\u{C3B9}\u{AE9A}\u{B485}".normalized().len(), 14)
+    assert_eq("\u{0BCD}\u{C728}\u{2271}\u{C988}".normalized().len(), 12)
+    assert_eq("\u{CF9B}".normalized().len(), 3)
+    assert_eq("\u{B0E2}\u{112EA}\u{03CC}\u{BB45}".normalized().len(), 12)
+    assert_eq("\u{04D3}".normalized().len(), 2)
+    assert_eq("\u{D086}".normalized().len(), 3)
+    assert_eq("\u{2F865}\u{D1FB}\u{B7A0}\u{CA7A}".normalized().len(), 12)
+    assert_eq("\u{F9E5}\u{20D0}\u{07FD}".normalized().len(), 8)
+    assert_eq("\u{C624}\u{C746}\u{D330}\u{B4AB}\u{AC3F}".normalized().len(), 15)
+    assert_eq("\u{D55A}\u{A677}\u{007A}\u{C8D4}\u{1E17}".normalized().len(), 13)
+    assert_eq("\u{BA2B}\u{0020}\u{C983}\u{B0F7}\u{1E023}".normalized().len(), 14)
+    assert_eq("\u{B4E9}".normalized().len(), 3)
+    assert_eq("\u{CEC2}\u{B56A}".normalized().len(), 6)
+    assert_eq("\u{CCD7}\u{D239}\u{D5A5}\u{0061}".normalized().len(), 10)
+    assert_eq("\u{B59A}\u{BCEF}\u{CBC8}\u{BECD}".normalized().len(), 12)
+    assert_eq("\u{C90A}\u{C02F}\u{1F9B}".normalized().len(), 9)
+    assert_eq("\u{C570}\u{B479}\u{00E9}\u{BFD6}".normalized().len(), 11)
+    assert_eq("\u{BFFE}\u{D1A1}".normalized().len(), 6)
+    assert_eq("\u{D5CF}\u{CA86}\u{D08B}\u{00E9}\u{C683}".normalized().len(), 14)
+    assert_eq("\u{AF69}\u{CE91}\u{BF15}\u{00E9}".normalized().len(), 11)
+    assert_eq("\u{AFD2}\u{302E}".normalized().len(), 6)
+    assert_eq("\u{D54C}\u{C45C}\u{007A}\u{D221}".normalized().len(), 10)
+    assert_eq("\u{C1C5}\u{CAF3}\u{D36D}\u{2F9CC}\u{B154}".normalized().len(), 16)
+    assert_eq("\u{B687}\u{D58C}".normalized().len(), 6)
+    assert_eq("\u{AECC}\u{CAE5}".normalized().len(), 6)
+    assert_eq("\u{B991}\u{0020}\u{B449}\u{2F95F}\u{D1A6}".normalized().len(), 13)
+    assert_eq("\u{D74E}\u{B85A}\u{D062}\u{D28F}\u{2F99E}".normalized().len(), 15)
+    assert_eq("\u{CB83}\u{2F983}\u{CAD4}\u{CAD5}".normalized().len(), 12)
+    assert_eq("\u{1F44D}\u{B358}\u{B914}".normalized().len(), 10)
+    assert_eq("\u{B693}".normalized().len(), 3)
+    assert_eq("\u{FA49}\u{BDE9}\u{B242}\u{B071}".normalized().len(), 12)
+    assert_eq("\u{BC7C}\u{B4B3}\u{BA07}\u{C44D}\u{D6F7}".normalized().len(), 15)
+    assert_eq("\u{C032}\u{D20F}".normalized().len(), 6)
+    assert_eq("\u{D250}\u{CBC1}\u{B296}\u{C35F}".normalized().len(), 12)
+    assert_eq("\u{2F84B}\u{6771}\u{11938}\u{CF2B}\u{C912}".normalized().len(), 16)
+    assert_eq("\u{C438}".normalized().len(), 3)
+    assert_eq("\u{2F9B4}".normalized().len(), 3)
+    assert_eq("\u{D789}\u{D45E}\u{0021}\u{0E39}".normalized().len(), 10)
+    assert_eq("\u{0021}\u{B41C}\u{007A}\u{B471}".normalized().len(), 8)
+    assert_eq("\u{B354}".normalized().len(), 3)
+    assert_eq("\u{B4E9}\u{00E9}\u{B18D}".normalized().len(), 8)
+    assert_eq("\u{AE37}\u{B165}\u{CD38}".normalized().len(), 9)
+    assert_eq("\u{0020}".normalized().len(), 1)
+    assert_eq("\u{B047}\u{1F44D}\u{0CCB}".normalized().len(), 10)
+    assert_eq("\u{B125}\u{C082}\u{2209}".normalized().len(), 9)
+    assert_eq("\u{ACF7}".normalized().len(), 3)
+    assert_eq("\u{B653}".normalized().len(), 3)
+    assert_eq("\u{07F1}\u{BC3E}\u{C25E}".normalized().len(), 8)
+    assert_eq("\u{D466}\u{D0A6}\u{BAF6}\u{0147}\u{05B4}".normalized().len(), 13)
+    assert_eq("\u{BAA1}\u{C156}\u{BDB7}".normalized().len(), 9)
+    assert_eq("\u{1F3A}\u{B2DD}\u{CEA7}\u{CADD}".normalized().len(), 12)
+    assert_eq("\u{BE6F}\u{AD71}\u{C841}\u{B9D2}".normalized().len(), 12)
+    assert_eq("\u{00E9}".normalized().len(), 2)
+    assert_eq("\u{1F1C}\u{D001}\u{C11A}".normalized().len(), 9)
+    assert_eq("\u{C17A}".normalized().len(), 3)
+    assert_eq("\u{0021}\u{B57A}\u{3070}\u{C730}\u{0061}".normalized().len(), 11)
+    assert_eq("\u{D0D6}\u{D6DA}\u{BCFF}".normalized().len(), 9)
+    assert_eq("\u{B855}\u{CFD7}\u{D0AC}\u{D04B}".normalized().len(), 12)
+    assert_eq("\u{AC46}\u{D5AF}\u{00E9}".normalized().len(), 8)
+    assert_eq("\u{D07A}\u{C9A5}\u{C7BB}".normalized().len(), 9)
+    assert_eq("\u{ACAB}\u{D019}\u{C506}\u{C5F9}\u{BBF4}".normalized().len(), 15)
+    assert_eq("\u{D360}".normalized().len(), 3)
+    assert_eq("\u{D0D8}\u{D400}\u{C9AA}".normalized().len(), 9)
+    assert_eq("\u{CEC0}\u{CEBD}".normalized().len(), 6)
+    assert_eq("\u{B0E1}\u{BD25}".normalized().len(), 6)
+    assert_eq("\u{AD4C}\u{AC58}\u{0021}\u{C93E}".normalized().len(), 10)
+    assert_eq("\u{0061}\u{BAA2}".normalized().len(), 4)
+    assert_eq("\u{C04E}\u{C8EE}\u{B8A7}\u{CEDB}\u{B161}".normalized().len(), 15)
+    assert_eq("\u{C44A}\u{B96A}\u{D77A}\u{B0B4}".normalized().len(), 12)
+    assert_eq("\u{AC4A}".normalized().len(), 3)
+    assert_eq("\u{D5B4}\u{C8DB}".normalized().len(), 6)
+    assert_eq("\u{CA45}\u{D4C1}\u{BE7F}\u{BC68}\u{A677}".normalized().len(), 15)
+    assert_eq("\u{B6C0}\u{BDF4}\u{1B6F}".normalized().len(), 9)
+    assert_eq("\u{0958}\u{C40E}".normalized().len(), 9)
+    assert_eq("\u{B6C7}\u{B53D}\u{D1ED}\u{D6A0}\u{C65C}".normalized().len(), 15)
+    assert_eq("\u{6771}\u{BAB8}\u{0020}".normalized().len(), 7)
+    assert_eq("\u{C21A}\u{C812}\u{FA9E}\u{D6CE}".normalized().len(), 12)
+    assert_eq("\u{BC00}".normalized().len(), 3)
+    assert_eq("\u{2F914}\u{AC98}\u{AF1E}\u{B6BA}".normalized().len(), 12)
+}
+
+test "std.strings — two marks recompose to one character" {
+    // e + dot-below + circumflex is one Vietnamese character, not three
+    assert_eq("\u{1EC7}".normalized().len(), 3)
+    assert_eq("\u{1EC7}".normalized().chars().count(), 1)
+    // and the decomposed spelling composes to the same thing
+    assert_eq("e\u{0323}\u{0302}".normalized().len(), 3)
+    if "e\u{0323}\u{0302}".normalized() != "\u{1EC7}" {
+        panic("decomposed form should compose to the precomposed one")
+    }
+}
+
+test "std.strings — a ZWJ sequence is one glyph wide" {
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+    assert_eq(family.width(), 2)
+    assert_eq(family.graphemes().count(), 1)
+    assert_eq(family.truncate(1).len(), 0)
+    assert_eq(family.truncate(2).len(), family.len())
+}
+
+test "std.strings — a flag is one grapheme, two columns" {
+    let no = "\u{1F1F3}\u{1F1F4}"
+    assert_eq(no.graphemes().count(), 1)
+    assert_eq(no.width(), 2)
+}
+
+test "std.strings — NFC composes and singletons fold" {
+    assert_eq("\u{212B}".normalized().len(), 2)
+    assert_eq("\u{1100}\u{1161}".normalized().len(), 3)
+    assert_eq("caf\u{00E9}".normalized().len(), 5)
+    assert_eq("plain ascii".normalized().len(), 11)
+}
+
+test "std.strings — normalized makes the comparison work" {
+    let composed = "caf\u{00E9}"
+    let decomposed = "cafe\u{0301}"
+    if composed == decomposed { panic("these differ by bytes, that's the point") }
+    if composed.normalized() != decomposed.normalized() {
+        panic("normalized forms should match")
+    }
+}
+
+test "std.strings — prepend characters chain into one cluster" {
+    // Two Arabic number signs before a digit are one cluster, not three
+    assert_eq("\u{0600}\u{0601}7".graphemes().count(), 1)
+}

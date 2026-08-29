@@ -8,38 +8,42 @@
 // specifiers.
 
 func parse_or(s: string, fallback: i64) -> i64 {
-    return s.parse_int() catch _ => fallback
+    return s.parse<i64>() catch _ => fallback
 }
 
 test "std.string — parse_int on well-formed input" {
-    assert "42".parse_int()! == 42
-    assert "0".parse_int()! == 0
-    assert "-17".parse_int()! == -17
-    assert "1000000".parse_int()! == 1000000
+    assert "42".parse<i64>()! == 42
+    assert "0".parse<i64>()! == 0
+    assert "-17".parse<i64>()! == -17
+    assert "1000000".parse<i64>()! == 1000000
 }
 
 test "std.string — parse_int rejects what isn't an integer" {
-    assert ("".parse_int() catch _ => -1) == -1
-    assert ("abc".parse_int() catch _ => -1) == -1
-    assert ("12a".parse_int() catch _ => -1) == -1
-    assert ("1.5".parse_int() catch _ => -1) == -1
+    assert ("".parse<i64>() catch _ => -1) == -1
+    assert ("abc".parse<i64>() catch _ => -1) == -1
+    assert ("12a".parse<i64>() catch _ => -1) == -1
+    assert ("1.5".parse<i64>() catch _ => -1) == -1
     // Leading and trailing whitespace is trimmed, per the stdlib doc comment —
     // this is a success, not a failure.
-    assert " 42 ".parse_int()! == 42
+    assert " 42 ".parse<i64>()! == 42
 }
 
 test "std.string — parse_float" {
-    assert "1.5".parse_float()! == 1.5
-    assert "0.0".parse_float()! == 0.0
-    assert "-2.25".parse_float()! == -2.25
+    let f1: f64 = "1.5".parse<f64>()!
+    assert f1 == 1.5
+    let f2: f64 = "0.0".parse<f64>()!
+    assert f2 == 0.0
+    let f3: f64 = "-2.25".parse<f64>()!
+    assert f3 == -2.25
     // An integer literal is a valid float.
-    assert "3".parse_float()! == 3.0
+    let f4: f64 = "3".parse<f64>()!
+    assert f4 == 3.0
 }
 
 test "std.string — parse_float rejects what isn't a number" {
-    assert ("".parse_float() catch _ => -1.0) == -1.0
-    assert ("abc".parse_float() catch _ => -1.0) == -1.0
-    assert ("1.2.3".parse_float() catch _ => -1.0) == -1.0
+    assert ("".parse<f64>() catch _ => -1.0) == -1.0
+    assert ("abc".parse<f64>() catch _ => -1.0) == -1.0
+    assert ("1.2.3".parse<f64>() catch _ => -1.0) == -1.0
 }
 
 test "std.string — parse<T> takes its target from the slot" {
@@ -119,9 +123,11 @@ test "std.fmt — hex and binary" {
 
 test "a parse then a format, round-tripped" {
     let text = "123"
-    let n = text.parse_int()!
+    // The annotations are a workaround for rask-lang/rask#1029 — `!` on a
+    // generic call drops the type argument. Drop them when that closes.
+    let n: i64 = text.parse<i64>()!
     assert "{n}" == text
-    let f = "2.5".parse_float()!
+    let f: f64 = "2.5".parse<f64>()!
     assert "{f}" == "2.5"
 }
 
@@ -129,7 +135,7 @@ test "parsing a whole line of numbers" {
     let line = "1,2,3,4"
     mut total = 0
     for piece in line.split(",") {
-        total = total + piece.parse_int()!
+        total = total + piece.parse<i64>()!
     }
     assert total == 10
 }
