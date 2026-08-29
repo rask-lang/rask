@@ -69,6 +69,12 @@ func main() {
         m.insert("key-{i}-long-enough-for-the-heap", "value-{i}-also-long-here")
         n += (m.get("key-{i}-long-enough-for-the-heap") ?? "x").len().wrap<i64>()
 
+        // And a container whose elements are structs holding strings — the
+        // offsets the runtime is handed have to reach inside the element.
+        mut nested = Vec<Holder>.new()
+        nested.push(Holder { text: "nested-{i}-long-enough-to-live-on-the-heap" })
+        n += nested[0].text.len().wrap<i64>()
+
         i += 1i64
     }
     println(n)

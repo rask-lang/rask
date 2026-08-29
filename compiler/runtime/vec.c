@@ -77,17 +77,22 @@ void rask_vec_free(RaskVec *v) {
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
-// Free a vector whose elements own something, releasing each one first.
+// Free a vector whose elements own strings, releasing each one first.
 //
-// `elem_kind` is `RASK_ELEM_STRING` when the elements are `RaskStr`, and 0 when
-// they own nothing. The vector itself carries only `elem_size`, which can't
-// tell a sixteen-byte string from a sixteen-byte struct — so the caller, which
-// knows the element type, says. See `container_drop.rs`.
-void rask_vec_free_elems(RaskVec *v, int64_t elem_kind) {
+// `offsets` lists where the strings sit inside one element, and is NULL when
+// the elements own nothing. A vector carries only `elem_size`, which can't tell
+// a sixteen-byte string from a sixteen-byte struct — so the caller, which knows
+// the element type, hands over the map. `Vec<string>` is the one-entry case,
+// offset zero; a `Vec<Holder>` lists each string field. See `container_drop.rs`
+// and codegen's `string_offsets_of`.
+void rask_vec_free_elems(RaskVec *v, const int32_t *offsets, int64_t n_offsets) {
     if (!v) return;
-    if (elem_kind == RASK_ELEM_STRING && v->data) {
+    if (offsets && n_offsets > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
-            rask_string_free((const RaskStr *)(v->data + i * v->elem_size));
+            const char *elem = v->data + i * v->elem_size;
+            for (int64_t k = 0; k < n_offsets; k++) {
+                rask_string_free((const RaskStr *)(elem + offsets[k]));
+            }
         }
     }
     rask_vec_free(v);

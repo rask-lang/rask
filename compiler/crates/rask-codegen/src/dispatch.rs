@@ -32,6 +32,15 @@ pub enum ArgAdapt {
     InjectOneSize,
     /// Inject key_size=8, val_size=8 when args empty (Map_new)
     InjectTwoSizes,
+    /// Expand each element tag into (offsets pointer, count).
+    ///
+    /// `container_drop.rs` says *what* a container's elements are — nothing, a
+    /// string, or the struct with a given layout — and this turns that into
+    /// where the strings actually sit inside one, which is a question only
+    /// codegen has the layouts to answer. One tag becomes two arguments, so
+    /// `Vec_free_elems(v, tag)` reaches the runtime as
+    /// `rask_vec_free_elems(v, offsets, n)`.
+    ElementOffsets,
     /// Wrap args[1] as pointer (skip if string)
     WrapArg1,
     /// Wrap args[2] as pointer (skip if string)
@@ -197,7 +206,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
-        StdlibEntry::simple("Vec_free_elems", "rask_vec_free_elems", &[types::I64, types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Vec_free_elems", c_name: "rask_vec_free_elems",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::ElementOffsets, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Vec_push", c_name: "rask_vec_push",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -779,7 +792,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Map operations ─────────────────────────────────────
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
-        StdlibEntry::simple("Map_free_elems", "rask_map_free_elems", &[types::I64, types::I64, types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Map_free_elems", c_name: "rask_map_free_elems",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::ElementOffsets, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Map_new", c_name: "rask_map_new",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

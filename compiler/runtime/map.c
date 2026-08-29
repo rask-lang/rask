@@ -275,16 +275,20 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
 // The kinds come from the caller, which knows the types; the map carries only
 // `key_size`/`val_size`, which can't tell a sixteen-byte string from a
 // sixteen-byte struct. See `container_drop.rs`.
-void rask_map_free_elems(RaskMap *m, int64_t key_kind, int64_t val_kind) {
+void rask_map_free_elems(RaskMap *m,
+                         const int32_t *key_offs, int64_t n_key_offs,
+                         const int32_t *val_offs, int64_t n_val_offs) {
     if (!m) return;
-    if (key_kind == RASK_ELEM_STRING || val_kind == RASK_ELEM_STRING) {
+    int has_key = key_offs && n_key_offs > 0;
+    int has_val = val_offs && n_val_offs > 0;
+    if (has_key || has_val) {
         for (int64_t i = 0; i < m->cap; i++) {
             if (m->states[i] != MAP_OCCUPIED) continue;
-            if (key_kind == RASK_ELEM_STRING) {
-                rask_string_free((const RaskStr *)(m->keys + i * m->key_size));
+            for (int64_t k = 0; has_key && k < n_key_offs; k++) {
+                rask_string_free((const RaskStr *)(m->keys + i * m->key_size + key_offs[k]));
             }
-            if (val_kind == RASK_ELEM_STRING) {
-                rask_string_free((const RaskStr *)(m->vals + i * m->val_size));
+            for (int64_t k = 0; has_val && k < n_val_offs; k++) {
+                rask_string_free((const RaskStr *)(m->vals + i * m->val_size + val_offs[k]));
             }
         }
     }

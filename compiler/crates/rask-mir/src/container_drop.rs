@@ -28,9 +28,25 @@ use crate::{
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// What an element owns. Mirrors `RASK_ELEM_*` in `rask_runtime.h`.
+/// How an element's type reaches codegen, which turns it into the map of where
+/// the strings sit. Codegen has the layouts; this pass has the call sites.
+///
+///   0            the elements own nothing
+///   1            the element *is* a string
+///   2 + index    a struct with that layout
 const ELEM_NONE: i64 = 0;
 const ELEM_STRING: i64 = 1;
+const ELEM_STRUCT_BASE: i64 = 2;
+
+/// The tag for whatever `ty` is, or `ELEM_NONE` if it owns no strings this pass
+/// can point at.
+fn elem_tag(ty: Option<&MirType>) -> i64 {
+    match ty {
+        Some(MirType::String) => ELEM_STRING,
+        Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
+        _ => ELEM_NONE,
+    }
+}
 
 /// Constructors that hand back a fresh container, and the function that frees
 /// what each one made.
@@ -121,18 +137,16 @@ fn insert_for_function(func: &mut MirFunction) {
 /// A container filled some other way — decoded, built from a static — reads as
 /// owning nothing and leaks its elements as before. Narrower than the general
 /// case, not wronger: too few releases is a leak, too many is a double free.
-/// The general answer is drop glue per element type, which is the rest of
-/// #1027.
 fn element_kinds(
     func: &MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
 ) -> HashMap<LocalId, (i64, i64)> {
     let ty_of: HashMap<LocalId, MirType> =
         func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
-    let is_string = |op: &MirOperand| match op {
-        MirOperand::Local(id) => ty_of.get(id) == Some(&MirType::String),
-        MirOperand::Constant(MirConst::String(_)) => true,
-        _ => false,
+    let tag_of = |op: &MirOperand| match op {
+        MirOperand::Local(id) => elem_tag(ty_of.get(id)),
+        MirOperand::Constant(MirConst::String(_)) => ELEM_STRING,
+        _ => ELEM_NONE,
     };
 
     let mut kinds: HashMap<LocalId, (i64, i64)> =
@@ -148,18 +162,22 @@ fn element_kinds(
             match base {
                 // `push(v, x)` / `insert(v, i, x)` — the element is the last arg.
                 "Vec_push" | "Vec_set" | "Vec_insert" => {
-                    if args.last().is_some_and(is_string) {
-                        entry.0 = ELEM_STRING;
+                    if let Some(last) = args.last() {
+                        let tag = tag_of(last);
+                        if tag != ELEM_NONE {
+                            entry.0 = tag;
+                        }
                     }
                 }
                 // `insert(m, k, v)`.
                 "Map_insert" | "Map_set" => {
                     if args.len() >= 3 {
-                        if is_string(&args[1]) {
-                            entry.0 = ELEM_STRING;
+                        let (k, v) = (tag_of(&args[1]), tag_of(&args[2]));
+                        if k != ELEM_NONE {
+                            entry.0 = k;
                         }
-                        if is_string(&args[2]) {
-                            entry.1 = ELEM_STRING;
+                        if v != ELEM_NONE {
+                            entry.1 = v;
                         }
                     }
                 }

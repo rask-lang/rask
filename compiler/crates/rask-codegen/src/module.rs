@@ -25,6 +25,12 @@ pub struct CodeGenerator {
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
     string_data: HashMap<String, cranelift_module::DataId>,
+    /// Element string-offset lists, one data object per distinct list.
+    ///
+    /// A container's `free` is handed the map of where the strings sit inside
+    /// one of its elements. The lists are tiny and repeat heavily — `[0]` for
+    /// every `Vec<string>` in the program — so they're keyed by content.
+    element_offset_data: HashMap<Vec<i32>, cranelift_module::DataId>,
     /// The same literals again, laid out as a `RaskStr` heap header:
     /// `[refcount: u32 = sentinel][capacity: u32][bytes][NUL]`.
     ///
@@ -91,6 +97,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
+            element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -142,6 +149,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
+            element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -1142,6 +1150,33 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Emit one offset list as read-only data.
+    fn register_element_offsets(&mut self, offsets: &[i32]) -> CodegenResult<()> {
+        if offsets.is_empty() || self.element_offset_data.contains_key(offsets) {
+            return Ok(());
+        }
+        let name = format!(".elemoffs.{}", self.element_offset_data.len());
+        let data_id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let mut bytes = Vec::with_capacity(offsets.len() * 4);
+        for off in offsets {
+            bytes.extend_from_slice(&off.to_le_bytes());
+        }
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        desc.set_align(4);
+
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.element_offset_data.insert(offsets.to_vec(), data_id);
+        Ok(())
+    }
+
     /// Register a string as a data section (if not already registered).
     pub fn register_string(&mut self, s: &str) -> CodegenResult<()> {
         if self.string_data.contains_key(s) {
@@ -1353,6 +1388,12 @@ impl CodeGenerator {
             self.register_string(src_file)?;
         }
 
+        // Every offset list this function's container frees will ask for. Has
+        // to happen before the borrow below, and before any body references one.
+        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts) {
+            self.register_element_offsets(&offsets)?;
+        }
+
         let func_id = self.func_ids.get(&mir_fn.name)
             .ok_or_else(|| CodegenError::FunctionNotFound(mir_fn.name.clone()))?;
 
@@ -1383,6 +1424,12 @@ impl CodeGenerator {
 
         // Import only the string data globals that this function actually uses
         let needed_strings = collect_used_strings(mir_fn);
+        let mut element_offset_globals: HashMap<Vec<i32>, GlobalValue> = HashMap::new();
+        for (offsets, data_id) in &self.element_offset_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            element_offset_globals.insert(offsets.clone(), gv);
+        }
+
         let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
         let mut string_header_globals: HashMap<String, GlobalValue> = HashMap::new();
         for s in &needed_strings {
@@ -1448,6 +1495,7 @@ impl CodeGenerator {
             &self.enum_layouts,
             &string_globals,
             &string_header_globals,
+            &element_offset_globals,
             &comptime_globals,
             &vtable_globals,
             &self.panicking_fns,
@@ -1877,4 +1925,73 @@ impl crate::Backend for CodeGenerator {
         // Unbox to call the owned-self method
         (*self).emit_object(path)
     }
+}
+
+/// The offset lists this function's container frees will ask for.
+///
+/// Mirrors the tag encoding `container_drop.rs` writes and the flattening
+/// `FunctionBuilder::element_string_offsets` does — kept here because the data
+/// objects have to exist before any function body references one.
+fn collect_element_offsets(
+    mir_fn: &MirFunction,
+    struct_layouts: &[rask_mono::StructLayout],
+) -> Vec<Vec<i32>> {
+    const ELEM_STRING: i64 = 1;
+    const ELEM_STRUCT_BASE: i64 = 2;
+
+    fn flatten(
+        fields: &[rask_mono::FieldLayout],
+        base: i32,
+        layouts: &[rask_mono::StructLayout],
+        depth: u32,
+        out: &mut Vec<i32>,
+    ) {
+        if depth > 8 {
+            return;
+        }
+        for f in fields {
+            let at = base + f.offset as i32;
+            match &f.ty {
+                rask_types::Type::String => out.push(at),
+                rask_types::Type::UnresolvedNamed(name) => {
+                    if let Some(l) = layouts.iter().find(|l| &l.name == name) {
+                        flatten(&l.fields, at, layouts, depth + 1, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut lists = Vec::new();
+    for block in &mir_fn.blocks {
+        for stmt in &block.statements {
+            let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
+            let head = func.name.rsplit("::").next().unwrap_or(&func.name);
+            if head != "Vec_free_elems" && head != "Map_free_elems" {
+                continue;
+            }
+            for arg in args.iter().skip(1) {
+                let rask_mir::MirOperand::Constant(rask_mir::MirConst::Int(tag)) = arg else {
+                    continue;
+                };
+                match *tag {
+                    ELEM_STRING => lists.push(vec![0]),
+                    n if n >= ELEM_STRUCT_BASE => {
+                        if let Ok(idx) = usize::try_from(n - ELEM_STRUCT_BASE) {
+                            if let Some(layout) = struct_layouts.get(idx) {
+                                let mut offs = Vec::new();
+                                flatten(&layout.fields, 0, struct_layouts, 0, &mut offs);
+                                if !offs.is_empty() {
+                                    lists.push(offs);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    lists
 }

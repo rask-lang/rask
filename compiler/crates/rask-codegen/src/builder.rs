@@ -187,6 +187,7 @@ struct CodegenCtx<'a> {
     enum_layouts: &'a [EnumLayout],
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
+    element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     comptime_globals: &'a HashMap<String, GlobalValue>,
     vtable_globals: &'a HashMap<String, GlobalValue>,
     panicking_fns: &'a HashSet<String>,
@@ -288,6 +289,7 @@ pub struct FunctionBuilder<'a> {
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
+    element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
     /// VTable data globals (vtable name → GlobalValue for the vtable address)
@@ -331,6 +333,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
+    element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
         vtable_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
@@ -347,6 +350,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts,
             string_globals,
             string_header_globals,
+            element_offset_globals,
             comptime_globals,
             vtable_globals,
             panicking_fns,
@@ -528,6 +532,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts: self.enum_layouts,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
+            element_offset_globals: self.element_offset_globals,
             comptime_globals: self.comptime_globals,
             vtable_globals: self.vtable_globals,
             panicking_fns: self.panicking_fns,
@@ -6438,6 +6443,75 @@ impl<'a> FunctionBuilder<'a> {
     /// panicked). The JoinError variant tags and its message field's offset come
     /// from the destination's own error layout, so renaming or reordering the
     /// enum in stdlib/async.rk doesn't silently change what gets built.
+    /// Where the strings sit inside one container element.
+    ///
+    /// `container_drop.rs` says what the element *is* — nothing, a string, or a
+    /// struct with a given layout — and this answers where its strings are,
+    /// which needs the layouts. `None` means "leave the elements alone".
+    ///
+    /// Only offsets that hold a string unconditionally. Anything tag-dependent
+    /// inside an element — an optional field, an enum — is skipped rather than
+    /// guessed, because a wrong offset here releases sixteen bytes that were
+    /// never a string. Those elements leak; see #1027.
+    fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
+        const ELEM_NONE: i64 = 0;
+        const ELEM_STRING: i64 = 1;
+        const ELEM_STRUCT_BASE: i64 = 2;
+
+        match tag? {
+            ELEM_NONE => None,
+            ELEM_STRING => Some(vec![0]),
+            n => {
+                let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
+                let layout = ctx.struct_layouts.get(idx)?;
+                let mut out = Vec::new();
+                Self::collect_string_offsets(&layout.fields, 0, ctx, 0, &mut out);
+                Some(out)
+            }
+        }
+    }
+
+    fn collect_string_offsets(
+        fields: &[rask_mono::FieldLayout],
+        base: i32,
+        ctx: &CodegenCtx,
+        depth: u32,
+        out: &mut Vec<i32>,
+    ) {
+        if depth > Self::RC_WALK_DEPTH {
+            return;
+        }
+        for f in fields {
+            let at = base + f.offset as i32;
+            match &f.ty {
+                RaskType::String => out.push(at),
+                RaskType::UnresolvedNamed(name) => {
+                    // A nested struct flattens into the same list. A nested
+                    // *enum* doesn't — where its string is depends on the tag.
+                    if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
+                        let nested = l.fields.clone();
+                        Self::collect_string_offsets(&nested, at, ctx, depth + 1, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The offsets as read-only data, one object per distinct list.
+    fn element_offsets_global(
+        builder: &mut ClifFunctionBuilder,
+        offsets: &[i32],
+        ctx: &CodegenCtx,
+    ) -> Value {
+        if let Some(gv) = ctx.element_offset_globals.get(offsets) {
+            return builder.ins().global_value(types::I64, *gv);
+        }
+        // Nothing declared this list — leave the elements alone rather than
+        // hand the runtime a pointer to nowhere.
+        builder.ins().iconst(types::I64, 0)
+    }
+
     /// How deep to look for a string inside a type before giving up.
     ///
     /// A recursive type reaches MIR through a pointer, which this walk doesn't
@@ -7321,6 +7395,32 @@ impl<'a> FunctionBuilder<'a> {
             ArgAdapt::InjectOneSize => {
                 if args.is_empty() {
                     args.insert(0, builder.ins().iconst(types::I64, 8));
+                }
+                CallAdapt::None
+            }
+
+            ArgAdapt::ElementOffsets => {
+                // Each element tag becomes (offsets pointer, count). Walking
+                // backwards so the earlier tag's expansion doesn't shift the
+                // later one's index.
+                for i in (1..args.len()).rev() {
+                    let tag = mir_args.get(i).and_then(|a| match a {
+                        MirOperand::Constant(MirConst::Int(n)) => Some(*n),
+                        _ => None,
+                    });
+                    let offsets = Self::element_string_offsets(tag, ctx);
+                    let (ptr, count) = match offsets {
+                        Some(offs) if !offs.is_empty() => {
+                            let n = offs.len() as i64;
+                            let gv = Self::element_offsets_global(builder, &offs, ctx);
+                            (gv, builder.ins().iconst(types::I64, n))
+                        }
+                        _ => (
+                            builder.ins().iconst(types::I64, 0),
+                            builder.ins().iconst(types::I64, 0),
+                        ),
+                    };
+                    args.splice(i..i + 1, [ptr, count]);
                 }
                 CallAdapt::None
             }

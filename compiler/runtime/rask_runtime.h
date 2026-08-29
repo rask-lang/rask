@@ -85,14 +85,12 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
 void     rask_vec_free(RaskVec *v);
 
-// What an element owns, for the container `free` entry points below. A
-// container carries only its element *size*, which can't tell a sixteen-byte
-// string from a sixteen-byte struct, so the caller — which knows the type —
-// says. Set by `container_drop.rs`.
-#define RASK_ELEM_NONE   0
-#define RASK_ELEM_STRING 1
-
-void     rask_vec_free_elems(RaskVec *v, int64_t elem_kind);
+// Where the strings sit inside one element, for the container `free` entry
+// points below. A container carries only its element *size*, which can't tell a
+// sixteen-byte string from a sixteen-byte struct, so the caller — which knows
+// the element type — hands over the map. NULL when the elements own nothing.
+// Built by codegen's `string_offsets_of`, requested by `container_drop.rs`.
+void     rask_vec_free_elems(RaskVec *v, const int32_t *offsets, int64_t n_offsets);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
@@ -396,7 +394,9 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
 void     rask_map_free(RaskMap *m);
-void     rask_map_free_elems(RaskMap *m, int64_t key_kind, int64_t val_kind);
+void     rask_map_free_elems(RaskMap *m,
+                             const int32_t *key_offs, int64_t n_key_offs,
+                             const int32_t *val_offs, int64_t n_val_offs);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or
