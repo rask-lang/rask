@@ -1,0 +1,13 @@
+[package]
+name = "gen_unicode_text"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "gen_unicode_text"
+path = "main.rs"
+
+[dependencies]
+unicode-normalization = "0.1"
+unicode-segmentation = "1"
+unicode-width = "0.2"

@@ -3837,7 +3837,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             // String methods that produce iterators
             match method.as_str() {
-                "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
                 "bytes" => return Some(MirType::U8),
                 _ => {}

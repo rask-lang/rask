@@ -70,7 +70,7 @@ Rask picks per purpose and never leaves it ambiguous.
 | **U2: Graphemes for humans** | Anything a person sees or counts works in graphemes or display columns: `width`, `truncate`, `graphemes`, `reverse`. These are O(n) and named so the scan is visible |
 | **U3: Scalars are not a unit** | A Unicode scalar is neither a byte nor a character, so *counting* them answers no real question and there is no `char_count`. Scalars reach user code through `chars()`, `char_indices()` and `char_at(byte_index)` — the lexer's tools — and nowhere else |
 | **U4: ASCII is free** | Every string carries an ASCII flag, set at construction (S10). For an ASCII string all three units coincide, so `width`, `graphemes`, `truncate` and `normalized` take a byte-only fast path. Unicode correctness costs nothing until the bytes are actually non-ASCII |
-| **U5: Normalization is explicit** | `"café"` composed and decomposed are different byte sequences, so `==` says false. Making `==` normalize would hide an O(n) table lookup behind an operator. `s.normalized()` returns the NFC form and the cost is at the call site |
+| **U5: Normalization is explicit** | `"café"` composed and decomposed are different byte sequences, so `==` says false. Making `==` normalize would hide an O(n) table lookup behind an operator. `s.normalized()` returns the NFC form — full canonical decomposition, ordering and composition — and the cost is at the call site |
 
 `s.width()` is the load-bearing one: it's what `fmt`'s padding counts (`std.fmt/S2`), which is what makes an aligned table actually align.
 
@@ -528,7 +528,11 @@ FIX:
 | `truncate(n)` on a zero-width or combining prefix | U2 | Combining marks stay with their base character |
 | `width()` of a control character | U2 | Zero. Terminal output of raw controls is the caller's problem |
 | `width()` of an unassigned codepoint | U2 | 1 — the common terminal behavior, and stable across Unicode updates |
-| `normalized()` on already-NFC text | U5 | Returns the same string, no allocation |
+| `width()` of an emoji ZWJ sequence | U2 | 2 — it renders as one glyph, so the cluster counts once rather than summing its parts |
+| `width()` of a regional-indicator pair | U2 | 2, and one grapheme — a flag is one character to a reader |
+| `normalized()` on already-NFC text | U5 | Returns the same string. ASCII short-circuits without touching a table (U4) |
+| `normalized()` of a singleton like `U+212B` | U5 | Folds to its canonical equivalent — the Angstrom sign becomes A-with-ring |
+| `normalized()` of Hangul jamo | U5 | Composed algorithmically (UAX #15), not from a table |
 | `to_uppercase()` changing byte length | — | Expected — `"straße"` → `"STRASSE"`. Offsets into the source do not carry over |
 
 ---
@@ -779,9 +783,9 @@ Current interpreter behavior differs from spec in some areas:
 (rask-lang/rask#1028), so only the two-argument form exists today. The limit
 form lands with that fix.
 
-**Text units not yet implemented:**
-- `width`, `graphemes`, `truncate` and `normalized` (U2, U5) need the grapheme-break, East Asian Width and NFC tables in the runtime. Until those land, the ASCII fast path (U4) is the only path — correct for ASCII input, wrong for the rest
-- The ASCII flag (S10) is not stored yet; `is_ascii()` scans
+**Text units:**
+- `width`, `graphemes`, `truncate` and `normalized` (U2, U5) are implemented on both backends. The interpreter uses the `unicode-*` crates directly; the native runtime's tables are generated from those same crates by `scripts/gen_unicode_text`, so the two cannot drift. `tests/suite/t_text_units.rk` pins the output against Python's `unicodedata` as an independent reference
+- The ASCII flag (S10) is not stored yet; `is_ascii()` scans. The fast paths are correct, just not yet O(1)
 
 These will converge to spec behavior in the compiled version.
 

@@ -354,6 +354,15 @@ typedef struct {
 #define RASK_CLASS_CONTROL    4
 int rask_char_class(uint32_t cp, int which);
 
+/// Text units (std.strings/U1-U5). Generated into unicode_text.c from the same
+/// crates the interpreter uses, so the backends cannot drift.
+int      rask_scalar_width(uint32_t cp);
+int      rask_grapheme_joins_left(uint32_t cp);
+int      rask_grapheme_is_prepend(uint32_t cp);
+uint8_t  rask_ccc(uint32_t cp);
+int      rask_canonical_decompose(uint32_t cp, uint32_t *out, int cap);
+uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
+
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);

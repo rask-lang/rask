@@ -1550,130 +1550,18 @@ int64_t rask_string_builder_is_empty(int64_t handle) {
 
 // ─── Text units (std.strings/U1–U5) ────────────────────────────────────────
 //
-// Bytes index, graphemes display. The tables below are range checks rather
-// than the full Unicode character database: they cover the cases ordinary
-// programs hit — accents, CJK, emoji including ZWJ sequences and flags — and
-// the ASCII path (U4) skips them entirely. Full UCD coverage is tracked
-// separately; see the implementation notes in specs/stdlib/strings.md.
-
-typedef struct { uint32_t lo, hi; } RaskRange;
-
-static int str_in_ranges(uint32_t c, const RaskRange *r, size_t n) {
-    size_t lo = 0, hi = n;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (c < r[mid].lo) hi = mid;
-        else if (c > r[mid].hi) lo = mid + 1;
-        else return 1;
-    }
-    return 0;
-}
-
-// Combining marks, ZWJ, variation selectors, and the other scalars that render
-// on top of the previous character rather than beside it.
-static const RaskRange RASK_ZERO_WIDTH[] = {
-    {0x0300, 0x036F}, {0x0483, 0x0489}, {0x0591, 0x05BD}, {0x05BF, 0x05BF},
-    {0x05C1, 0x05C2}, {0x05C4, 0x05C5}, {0x05C7, 0x05C7}, {0x0610, 0x061A},
-    {0x064B, 0x065F}, {0x0670, 0x0670}, {0x06D6, 0x06DC}, {0x06DF, 0x06E4},
-    {0x06E7, 0x06E8}, {0x06EA, 0x06ED}, {0x0711, 0x0711}, {0x0730, 0x074A},
-    {0x07A6, 0x07B0}, {0x07EB, 0x07F3}, {0x0816, 0x0819}, {0x081B, 0x0823},
-    {0x0825, 0x0827}, {0x0829, 0x082D}, {0x0900, 0x0903}, {0x093A, 0x093C},
-    {0x093E, 0x094F}, {0x0951, 0x0957}, {0x0962, 0x0963}, {0x0981, 0x0983},
-    {0x09BC, 0x09BC}, {0x09BE, 0x09CD}, {0x09D7, 0x09D7}, {0x09E2, 0x09E3},
-    {0x0A01, 0x0A03}, {0x0A3C, 0x0A51}, {0x0A70, 0x0A71}, {0x0A75, 0x0A75},
-    {0x0A81, 0x0A83}, {0x0ABC, 0x0ACD}, {0x0AE2, 0x0AE3}, {0x0B01, 0x0B03},
-    {0x0B3C, 0x0B57}, {0x0B82, 0x0B82}, {0x0BBE, 0x0BCD}, {0x0BD7, 0x0BD7},
-    {0x0C00, 0x0C04}, {0x0C3E, 0x0C56}, {0x0C81, 0x0C83}, {0x0CBC, 0x0CD6},
-    {0x0D00, 0x0D03}, {0x0D3B, 0x0D4D}, {0x0D57, 0x0D57}, {0x0D82, 0x0D83},
-    {0x0DCA, 0x0DDF}, {0x0E31, 0x0E31}, {0x0E34, 0x0E3A}, {0x0E47, 0x0E4E},
-    {0x0EB1, 0x0EB1}, {0x0EB4, 0x0EBC}, {0x0EC8, 0x0ECD}, {0x0F18, 0x0F19},
-    {0x0F35, 0x0F35}, {0x0F37, 0x0F37}, {0x0F39, 0x0F39}, {0x0F71, 0x0F84},
-    {0x0F86, 0x0F87}, {0x0F8D, 0x0FBC}, {0x0FC6, 0x0FC6}, {0x102B, 0x103E},
-    {0x1056, 0x1059}, {0x105E, 0x1060}, {0x1062, 0x1064}, {0x1067, 0x106D},
-    {0x1071, 0x1074}, {0x1082, 0x108D}, {0x108F, 0x108F}, {0x109A, 0x109D},
-    {0x135D, 0x135F}, {0x1712, 0x1714}, {0x1732, 0x1734}, {0x1752, 0x1753},
-    {0x1772, 0x1773}, {0x17B4, 0x17D3}, {0x17DD, 0x17DD}, {0x180B, 0x180D},
-    {0x1885, 0x1886}, {0x18A9, 0x18A9}, {0x1920, 0x193B}, {0x1A17, 0x1A1B},
-    {0x1A55, 0x1A7F}, {0x1AB0, 0x1AFF}, {0x1B00, 0x1B04}, {0x1B34, 0x1B44},
-    {0x1B6B, 0x1B73}, {0x1B80, 0x1B82}, {0x1BA1, 0x1BAD}, {0x1BE6, 0x1BF3},
-    {0x1C24, 0x1C37}, {0x1CD0, 0x1CD2}, {0x1CD4, 0x1CE8}, {0x1CED, 0x1CED},
-    {0x1CF4, 0x1CF4}, {0x1CF7, 0x1CF9}, {0x1DC0, 0x1DFF}, {0x200B, 0x200F},
-    {0x202A, 0x202E}, {0x2060, 0x2064}, {0x206A, 0x206F}, {0x20D0, 0x20F0},
-    {0x2CEF, 0x2CF1}, {0x2D7F, 0x2D7F}, {0x2DE0, 0x2DFF}, {0x302A, 0x302F},
-    {0x3099, 0x309A}, {0xA66F, 0xA672}, {0xA674, 0xA67D}, {0xA69E, 0xA69F},
-    {0xA6F0, 0xA6F1}, {0xA802, 0xA802}, {0xA806, 0xA806}, {0xA80B, 0xA80B},
-    {0xA823, 0xA827}, {0xA880, 0xA881}, {0xA8B4, 0xA8C5}, {0xA8E0, 0xA8F1},
-    {0xA926, 0xA92D}, {0xA947, 0xA953}, {0xA980, 0xA983}, {0xA9B3, 0xA9C0},
-    {0xAA29, 0xAA36}, {0xAA43, 0xAA43}, {0xAA4C, 0xAA4D}, {0xAAB0, 0xAAB0},
-    {0xAAB2, 0xAAB4}, {0xAAB7, 0xAAB8}, {0xAABE, 0xAABF}, {0xAAC1, 0xAAC1},
-    {0xAAEB, 0xAAEF}, {0xAAF5, 0xAAF6}, {0xABE3, 0xABEA}, {0xABEC, 0xABED},
-    {0xFB1E, 0xFB1E}, {0xFE00, 0xFE0F}, {0xFE20, 0xFE2F}, {0xFEFF, 0xFEFF},
-    {0xFFF9, 0xFFFB},
-    {0x101FD, 0x101FD}, {0x10376, 0x1037A}, {0x10A01, 0x10A0F},
-    {0x10A38, 0x10A3F}, {0x11000, 0x11002}, {0x11038, 0x11046},
-    {0x1107F, 0x11082}, {0x110B0, 0x110BA}, {0x11100, 0x11102},
-    {0x11127, 0x11134}, {0x11180, 0x11182}, {0x111B3, 0x111C0},
-    {0x1122C, 0x11237}, {0x112DF, 0x112EA}, {0x11300, 0x11303},
-    {0x1133C, 0x1134D}, {0x11357, 0x11357}, {0x11362, 0x11374},
-    {0x114B0, 0x114C3}, {0x115AF, 0x115C0}, {0x11630, 0x11640},
-    {0x116AB, 0x116B7}, {0x1171D, 0x1172B}, {0x16AF0, 0x16AF4},
-    {0x16B30, 0x16B36}, {0x1BC9D, 0x1BC9E}, {0x1D165, 0x1D169},
-    {0x1D16D, 0x1D172}, {0x1D17B, 0x1D182}, {0x1D185, 0x1D18B},
-    {0x1D1AA, 0x1D1AD}, {0x1D242, 0x1D244}, {0x1E8D0, 0x1E8D6},
-    {0xE0100, 0xE01EF},
-};
-
-// East Asian Wide and Fullwidth, plus the emoji that render double-width.
-static const RaskRange RASK_WIDE[] = {
-    {0x1100, 0x115F}, {0x231A, 0x231B}, {0x2329, 0x232A}, {0x23E9, 0x23EC},
-    {0x23F0, 0x23F0}, {0x23F3, 0x23F3}, {0x25FD, 0x25FE}, {0x2614, 0x2615},
-    {0x2648, 0x2653}, {0x267F, 0x267F}, {0x2693, 0x2693}, {0x26A1, 0x26A1},
-    {0x26AA, 0x26AB}, {0x26BD, 0x26BE}, {0x26C4, 0x26C5}, {0x26CE, 0x26CE},
-    {0x26D4, 0x26D4}, {0x26EA, 0x26EA}, {0x26F2, 0x26F3}, {0x26F5, 0x26F5},
-    {0x26FA, 0x26FA}, {0x26FD, 0x26FD}, {0x2705, 0x2705}, {0x270A, 0x270B},
-    {0x2728, 0x2728}, {0x274C, 0x274C}, {0x274E, 0x274E}, {0x2753, 0x2755},
-    {0x2757, 0x2757}, {0x2795, 0x2797}, {0x27B0, 0x27B0}, {0x27BF, 0x27BF},
-    {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
-    {0x2E80, 0x303E}, {0x3041, 0x33FF}, {0x3400, 0x4DBF}, {0x4E00, 0x9FFF},
-    {0xA000, 0xA4CF}, {0xA960, 0xA97F}, {0xAC00, 0xD7A3},
-    {0xF900, 0xFAFF}, {0xFE10, 0xFE19}, {0xFE30, 0xFE6F},
-    {0xFF00, 0xFF60}, {0xFFE0, 0xFFE6},
-    {0x16FE0, 0x16FE4}, {0x17000, 0x18AFF}, {0x1B000, 0x1B2FF},
-    {0x1F004, 0x1F004}, {0x1F0CF, 0x1F0CF}, {0x1F18E, 0x1F18E},
-    {0x1F191, 0x1F19A}, {0x1F200, 0x1F320}, {0x1F32D, 0x1F335},
-    {0x1F337, 0x1F37C}, {0x1F37E, 0x1F393}, {0x1F3A0, 0x1F3CA},
-    {0x1F3CF, 0x1F3D3}, {0x1F3E0, 0x1F3F0}, {0x1F3F4, 0x1F3F4},
-    {0x1F3F8, 0x1F43E}, {0x1F440, 0x1F440}, {0x1F442, 0x1F4FC},
-    {0x1F4FF, 0x1F53D}, {0x1F54B, 0x1F54E}, {0x1F550, 0x1F567},
-    {0x1F57A, 0x1F57A}, {0x1F595, 0x1F596}, {0x1F5A4, 0x1F5A4},
-    {0x1F5FB, 0x1F64F}, {0x1F680, 0x1F6C5}, {0x1F6CC, 0x1F6CC},
-    {0x1F6D0, 0x1F6D2}, {0x1F6EB, 0x1F6EC}, {0x1F6F4, 0x1F6FC},
-    {0x1F7E0, 0x1F7EB}, {0x1F90C, 0x1F93A}, {0x1F93C, 0x1F945},
-    {0x1F947, 0x1F9FF}, {0x1FA70, 0x1FAFF},
-    {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
-};
-
-#define RASK_NRANGES(a) (sizeof(a) / sizeof((a)[0]))
-
-// Columns this scalar occupies in a terminal. Control characters are zero —
-// emitting them is the caller's problem, not the width's.
-static int64_t str_scalar_width(uint32_t c) {
-    if (c == 0) return 0;
-    if (c < 0x20 || (c >= 0x7F && c < 0xA0)) return 0;
-    if (c < 0x7F) return 1;
-    if (str_in_ranges(c, RASK_ZERO_WIDTH, RASK_NRANGES(RASK_ZERO_WIDTH))) return 0;
-    if (str_in_ranges(c, RASK_WIDE, RASK_NRANGES(RASK_WIDE))) return 2;
-    return 1;
-}
+// The tables live in unicode_text.c, generated from the same crates the
+// interpreter uses (scripts/gen_unicode_text). They used to be hand-written
+// here and again in the interpreter, with a comment asking a human to keep the
+// two copies in step.
 
 static int str_is_regional_indicator(uint32_t c) {
     return c >= 0x1F1E6 && c <= 0x1F1FF;
 }
 
-// End of the grapheme cluster starting at byte `i` (UAX #29, the rules that
-// matter in practice): CRLF stays together, combining marks and variation
-// selectors join what precedes them, ZWJ glues emoji sequences, and regional
-// indicators pair up into one flag.
+// End of the grapheme cluster starting at byte `i` (UAX #29): CRLF stays
+// together, marks and joiners attach to what precedes them, ZWJ glues emoji
+// sequences, and regional indicators pair into one flag.
 static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
     if (i >= len) return len;
     int64_t w;
@@ -1681,6 +1569,13 @@ static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
     int64_t j = i + w;
 
     if (first == '\r' && j < len && d[j] == '\n') return j + 1;
+
+    // Prepend attaches to what follows, so take one more cluster start.
+    if (rask_grapheme_is_prepend(first) && j < len) {
+        int64_t w2;
+        str_decode_at(d, len, j, &w2);
+        j += w2;
+    }
 
     if (str_is_regional_indicator(first) && j < len) {
         int64_t w2;
@@ -1700,13 +1595,29 @@ static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
             }
             continue;
         }
-        if (str_in_ranges(c, RASK_ZERO_WIDTH, RASK_NRANGES(RASK_ZERO_WIDTH))) {
+        if (rask_grapheme_joins_left(c)) {
             j += w2;
             continue;
         }
         break;
     }
     return j;
+}
+
+// Columns one grapheme cluster occupies. A ZWJ sequence renders as a single
+// glyph, so it counts once rather than summing its parts — 👨‍👩‍👧 is two
+// columns, not six. Everything else is the sum of its scalars, which puts a
+// base character's combining marks at zero.
+static int64_t str_cluster_width(const char *d, int64_t len, int64_t start, int64_t end) {
+    int64_t cols = 0;
+    for (int64_t k = start; k < end; ) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, k, &w);
+        if (c == 0x200D) return 2;
+        cols += rask_scalar_width(c);
+        k += w;
+    }
+    return cols;
 }
 
 // Display columns (U2). ASCII is the byte length (U4) — the common case never
@@ -1725,10 +1636,9 @@ int64_t rask_string_width(const RaskStr *s) {
     int64_t cols = 0;
     int64_t i = 0;
     while (i < len) {
-        int64_t w;
-        uint32_t c = str_decode_at(d, len, i, &w);
-        cols += str_scalar_width(c);
-        i += w;
+        int64_t end = str_grapheme_end(d, len, i);
+        cols += str_cluster_width(d, len, i, end);
+        i = end;
     }
     return cols;
 }
@@ -1743,14 +1653,7 @@ void rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols) {
     int64_t i = 0;
     while (i < len) {
         int64_t end = str_grapheme_end(d, len, i);
-        int64_t gw = 0;
-        int64_t k = i;
-        while (k < end) {
-            int64_t w;
-            uint32_t c = str_decode_at(d, len, k, &w);
-            gw += str_scalar_width(c);
-            k += w;
-        }
+        int64_t gw = str_cluster_width(d, len, i, end);
         if (used + gw > cols) break;
         used += gw;
         i = end;
@@ -1795,9 +1698,87 @@ RaskVec *rask_string_graphemes(const RaskStr *s) {
     return v;
 }
 
-// NFC (U5). ASCII is already normal, so the fast path returns the input.
-// Non-ASCII normalization needs the decomposition and composition tables;
-// until they land this returns the input unchanged rather than corrupting it.
+// NFC (U5): canonical decomposition, canonical ordering, then canonical
+// composition (UAX #15). ASCII is already normal, so the common case is a copy
+// and never touches a table (U4).
 void rask_string_normalized(RaskStr *out, const RaskStr *s) {
-    str_make(out, str_data(s), str_len(s));
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (len == 0 || rask_string_str_is_ascii(s)) {
+        str_make(out, d, len);
+        return;
+    }
+
+    // Decompose. A scalar expands to at most 4 (Hangul LVT is 3, the longest
+    // canonical decomposition is 2, applied recursively).
+    int64_t cap = 0;
+    for (int64_t i = 0; i < len; ) {
+        int64_t w;
+        str_decode_at(d, len, i, &w);
+        i += w;
+        cap += 4;
+    }
+    uint32_t *buf = (uint32_t *)rask_alloc(cap * (int64_t)sizeof(uint32_t));
+    int64_t n = 0;
+    for (int64_t i = 0; i < len; ) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, i, &w);
+        i += w;
+        uint32_t parts[3];
+        int k = rask_canonical_decompose(c, parts, 3);
+        if (k == 0) {
+            buf[n++] = c;
+            continue;
+        }
+        // One more level covers every canonical decomposition in Unicode.
+        for (int p = 0; p < k; p++) {
+            uint32_t inner[3];
+            int m = rask_canonical_decompose(parts[p], inner, 3);
+            if (m == 0) buf[n++] = parts[p];
+            else for (int q = 0; q < m; q++) buf[n++] = inner[q];
+        }
+    }
+
+    // Canonical ordering: a stable sort of each combining run by class.
+    for (int64_t i = 1; i < n; i++) {
+        uint8_t ci = rask_ccc(buf[i]);
+        if (ci == 0) continue;
+        int64_t j = i;
+        while (j > 0) {
+            uint8_t cj = rask_ccc(buf[j - 1]);
+            if (cj == 0 || cj <= ci) break;
+            uint32_t t = buf[j - 1]; buf[j - 1] = buf[j]; buf[j] = t;
+            j--;
+        }
+    }
+
+    // Compose: hold the last starter, fold what follows into it when the pair
+    // has a primary composite and nothing blocks it.
+    int64_t outn = 0;
+    int64_t starter = -1;
+    uint8_t last_class = 0;
+    for (int64_t i = 0; i < n; i++) {
+        uint32_t c = buf[i];
+        uint8_t k = rask_ccc(c);
+        if (starter >= 0 && (last_class == 0 || last_class < k)) {
+            uint32_t composed = rask_canonical_compose(buf[starter], c);
+            if (composed != 0) {
+                buf[starter] = composed;
+                continue;
+            }
+        }
+        if (k == 0) starter = outn;
+        last_class = k;
+        buf[outn++] = c;
+    }
+
+    // Back to UTF-8.
+    char *bytes = (char *)rask_alloc(outn * 4);
+    int64_t blen = 0;
+    for (int64_t i = 0; i < outn; i++) {
+        blen += str_encode_scalar(bytes + blen, buf[i]);
+    }
+    str_make(out, bytes, blen);
+    rask_realloc(bytes, outn * 4, 0);
+    rask_realloc(buf, cap * (int64_t)sizeof(uint32_t), 0);
 }
