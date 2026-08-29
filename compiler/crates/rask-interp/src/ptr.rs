@@ -269,7 +269,7 @@ pub(crate) fn call_ptr_method(
     // Rendering, the same way every other primitive answers it. A pointer
     // prints as its address (see `Display for Value`), which is what native
     // does; without this `println("{p}")` was "no method on `raw pointer`".
-    if matches!(method, "to_string" | "debug_string") {
+    if matches!(method, "to_string" | "debug") {
         return Ok(Value::String(Arc::new(Mutex::new(p.addr().to_string()))));
     }
 

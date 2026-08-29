@@ -839,7 +839,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             }]),
             "Debug" => Some(vec![MethodSig {
                 type_params: Vec::new(),
-                name: "debug_string".to_string(),
+                name: "debug".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
@@ -942,7 +942,7 @@ impl<'a> TraitChecker<'a> {
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "default" | "to_string" | "debug_string"
+                    "hash" | "clone" | "default" | "to_string" | "debug"
                 )
             }
             // Floats: eq, clone, default, but NOT hash (HA4)
@@ -951,17 +951,17 @@ impl<'a> TraitChecker<'a> {
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "default" | "to_string" | "debug_string"
+                    "clone" | "default" | "to_string" | "debug"
                 )
             }
             // Bool: eq, hash, clone, default, compare, to_string
-            Type::Bool => matches!(method, "eq" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
+            Type::Bool => matches!(method, "eq" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
             // Char: eq, hash, clone, default, comparison, to_string
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
             // String: eq, hash, clone, default, len, comparison, to_string
-            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "default" | "to_string" | "debug_string"),
+            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "default" | "to_string" | "debug"),
             // Unit: eq, hash, clone, default
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default" | "to_string" | "debug"),
             _ => false,
         }
     }

@@ -222,6 +222,20 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | `{:.n}` on a value that isn't text or float | S5 | Compile error — precision means columns or decimals, nothing else |
 | Runtime width naming an undefined variable | S6 | Compile error, same as `{name}` capture (I1) |
 
+## Implementation Notes
+
+`Debug`'s verb is `debug()` on both backends. `Displayable`'s is still spelled
+`to_string()` in the compiler — the split described in D1 is not implemented
+(rask-lang/rask#1033). It isn't a rename: the same resolution path that gives
+Displayable its method is what makes `to_string()` resolve on primitives and on
+`string`, so separating the two verbs means teaching method resolution which
+types own a text conversion, not swapping a string literal.
+
+Two more gaps in this spec, both filed: `{:debug}` is checked against
+`Displayable` instead of `Debug`, so a plain struct is rejected and the two
+backends disagree about what `{:debug}` renders (#1032); and runtime width (S6)
+isn't implemented.
+
 ## Compiler Mechanism
 
 | Rule | Description |

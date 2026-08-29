@@ -67,7 +67,7 @@ impl Interpreter {
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
-            "debug_string" => {
+            "debug" => {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
             }
