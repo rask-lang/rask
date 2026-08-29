@@ -305,11 +305,19 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_lock", Internal::SameAs("Shared_read")),
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
+    ("Cell_get", Internal::SameAs("Shared_get")),
+    ("Mutex_get", Internal::SameAs("Shared_get")),
 
     // ── Keep what they are handed ───────────────────────────────
     ("Cell_new", Internal::SameAs("Shared_local")),
     ("Mutex_new", Internal::SameAs("Shared_mutex")),
     ("Receiver_receive_struct", Internal::SameAs("Receiver_receive")),
+    ("Cell_set", Internal::SameAs("Shared_set")),
+    ("Mutex_set", Internal::SameAs("Shared_set")),
+    ("Cell_replace", Internal::SameAs("Shared_replace")),
+    ("Mutex_replace", Internal::SameAs("Shared_replace")),
+    ("Map_set", Internal::SameAs("Map_insert")),
+    ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Vec_slice", Internal::FreshFromReceiver),
@@ -328,6 +336,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("string_parse_i64", Internal::FreshFromReceiver),
     ("string_parse_u16", Internal::FreshFromReceiver),
     ("string_parse_f64", Internal::FreshFromReceiver),
+    ("string_lt", Internal::FreshFromReceiver),
+    ("string_debug", Internal::FreshFromReceiver),
+    ("string_pad", Internal::FreshFromReceiver),
+    ("string_concat", Internal::FreshFromReceiver),
+    ("string_new", Internal::NoReceiver),
 
     // Hand a lent element or a `with` borrow back. The container and the box
     // keep what they held either way, so nothing changes owner here.
@@ -343,6 +356,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_register_struct", Internal::FreshFromReceiver),
     ("Link_register_element", Internal::FreshFromReceiver),
     ("Link_register_vec", Internal::FreshFromReceiver),
+    ("Link_register_entry", Internal::FreshFromReceiver),
 
     // ── Consume the receiver ────────────────────────────────────
     // The frees this pipeline emits for itself. They take the container and it
@@ -389,48 +403,51 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         | Some(Internal::ConsumesReceiver)
         | Some(Internal::NoReceiver) => None,
         None => {
-            // Not declared, not listed. If it doesn't even name a stdlib type
-            // it's an ordinary user function, which owns what it returns like
-            // any other — that's the honest answer, not a gap.
+            // A name that doesn't belong to an accountable family is an
+            // ordinary user function, which owns what it returns like any
+            // other. That's the honest answer, not a gap.
             let Some(family) = accountable_family_of(base) else { return None };
-            // Filling the table is a sweep: the panic stops at the first name
-            // in a program, so finding the rest one compile at a time is slow.
-            // `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each once and carries on
-            // instead, so one pass over the corpus lists them all. For finding
-            // them, never for shipping — the answer it carries on with is the
-            // guess this whole table exists to stop.
-            if std::env::var_os("RASK_LIST_UNMAPPED_SPELLINGS").is_some() {
-                use std::sync::Mutex;
-                static SEEN: Mutex<Option<HashSet<std::string::String>>> = Mutex::new(None);
-                let mut seen = SEEN.lock().unwrap();
-                let seen = seen.get_or_insert_with(HashSet::new);
-                if seen.insert(base.to_string()) {
-                    eprintln!("[unmapped-spelling] {base}");
-                }
-                return None;
-            }
-            panic!(
-                "`{base}` belongs to `{family}`, but no stdlib file declares it and\n\
-                 `INTERNAL_SPELLINGS` in rask-stdlib/src/mir_metadata.rs doesn't say what\n\
-                 it stands for. Add a line for it, whichever of these it is:\n\
-                 \n\
-                 \x20   SameAs(\"{family}_<method>\")\n\
-                 \x20       the same operation as that declared method, under another name\n\
-                 \x20   FreshFromReceiver\n\
-                 \x20       borrows its receiver, keeps none of its arguments, and what it\n\
-                 \x20       hands back was made fresh rather than pointed at inside it\n\
-                 \x20   ConsumesReceiver\n\
-                 \x20       takes the receiver and it is gone afterwards\n\
-                 \x20   NoReceiver\n\
-                 \x20       a static: nothing to borrow at all\n\
-                 \n\
-                 Leaving it out is not an option. The answer it would fall back to —\n\
-                 nobody owns this, so the caller does — is a miscompile in both\n\
-                 directions: for a read that points into a container the caller frees\n\
-                 what the container still holds, and for one that transfers out it leaks."
-            )
+            // Otherwise: not declared, not listed. Rather than guess — or
+            // crash a build over it — answer every question the way that
+            // leaks.
+            //
+            // The two directions are not symmetrical. Guess that a read into a
+            // container's storage is the caller's and the caller frees what
+            // the container still holds; guess that it is the container's and
+            // nothing frees it. One is a use-after-free, the other is a leak
+            // the leak gate already catches by name. So an unaccounted-for
+            // name leaks, loudly, and `tests/spellings_gate.sh` fails on the
+            // report so it gets a line here instead of staying that way.
+            report_unmapped(base, family);
+            None
         }
     }
+}
+
+/// Note an internal spelling nothing accounts for. Once per name per process:
+/// a `Vec_get_unchecked` in a loop would otherwise bury the report.
+fn report_unmapped(base: &str, family: &str) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<std::string::String>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap();
+    let seen = seen.get_or_insert_with(HashSet::new);
+    if seen.insert(base.to_string()) {
+        eprintln!(
+            "[unmapped-spelling] {base} (family {family}): no stdlib file declares it and \
+             INTERNAL_SPELLINGS in rask-stdlib/src/mir_metadata.rs doesn't say what it \
+             stands for, so it is being treated as owning everything it touches — which \
+             leaks. Add a line for it."
+        );
+    }
+}
+
+/// The answers for a name nothing accounts for: whichever way leaks.
+fn unmapped_leans_to_leaking(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    lookup(base).is_none()
+        && internal_spelling(base).is_none()
+        && accountable_family_of(base).is_some()
 }
 
 #[cfg(test)]
@@ -496,9 +513,11 @@ mod internal_spelling_tests {
 /// counts the receiver as argument zero, so a declared parameter sits one
 /// further along on a method.
 pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
-    // Neither undeclared shape keeps anything; both say so rather than
-    // inheriting it from "we couldn't find a declaration".
-    let Some(m) = declared(qualified_name) else { return false };
+    let Some(m) = declared(qualified_name) else {
+        // Unaccounted for: say it keeps everything. The caller then releases
+        // nothing it passed, which leaks rather than double-frees.
+        return unmapped_leans_to_leaking(qualified_name);
+    };
     let param_index = if m.takes_self {
         match arg_index.checked_sub(1) {
             Some(i) => i,
@@ -519,8 +538,13 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
 /// being made here. `Vec.len() -> usize` doesn't, and neither does
 /// `string.trim() -> string`, which builds a new one.
 pub fn returns_a_view(qualified_name: &str) -> bool {
-    declared(qualified_name)
-        .is_some_and(|m| m.takes_self && m.ret_category.names_a_type_param())
+    match declared(qualified_name) {
+        Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
+        // Unaccounted for: say it points into its receiver. The caller then
+        // releases nothing it got back — a leak, where the other guess is a
+        // free of memory the container still holds.
+        None => unmapped_leans_to_leaking(qualified_name),
+    }
 }
 
 /// What an internal spelling stands for, by the name MIR uses.
@@ -538,6 +562,11 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     // An undeclared spelling that is still a method borrows its receiver.
     // Getting this wrong is a leak: the drop pass reads argument zero as
     // escaping and never frees the container the call was made on.
+    //
+    // Unaccounted for gets `false` for the same reason the other two lean the
+    // way they do — this is the one where "borrows it" is the *unsafe* guess,
+    // since a call that actually consumes its receiver would then be freed
+    // twice.
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     matches!(internal_spelling(base), Some(Internal::FreshFromReceiver))

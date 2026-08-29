@@ -74,11 +74,11 @@ extend Shared<T, S> {
 
     /// Replace the inner value.
     @native("rask_cell_set")
-    public func set(self, value: T) {}
+    public func set(self, take value: T) {}
 
     /// Swap in a new value, return the old one.
     @native("rask_cell_replace")
-    public func replace(self, value: T) -> T {}
+    public func replace(self, take value: T) -> T {}
 
     /// Consume the box, return what it held.
     @native("rask_cell_get")
