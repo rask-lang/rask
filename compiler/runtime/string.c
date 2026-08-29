@@ -159,19 +159,51 @@ void rask_string_free(const RaskStr *s) {
     }
 }
 
-/// Every heap string this program built and never gave back.
+/// Everything this program allocated and never gave back.
 ///
-/// Called at the end of `main`. Handing them to the OS on exit is not the same
-/// as not leaking: a long-running program never gets there, and a leak that
-/// only shows up under load is the expensive kind to find.
-void rask_string_leak_check(void) {
+/// Called at the end of `main`. Handing memory to the OS on exit is not the
+/// same as not leaking: a long-running program never gets there, and a leak
+/// that only shows up under load is the expensive kind to find.
+///
+/// The count is every `rask_alloc` the runtime made, not just strings — so a
+/// `Vec` handle, a data array, a closure box and a trait object are all in it.
+/// A clean program ends at exactly zero, which is what makes this usable as a
+/// gate rather than a threshold: the runtime itself holds nothing at exit.
+///
+/// The string tally comes out alongside when it's nonzero, because a leaked
+/// refcount is a different bug from a leaked allocation and it saves a bisect
+/// to know which one this is.
+void rask_leak_check(void) {
     if (!rask_leak_check_enabled) return;
-    int64_t live = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
-    if (live == 0) return;
+
+    // The two debugging modes don't compose. `RASK_STRING_DEBUG` keeps every
+    // released buffer on purpose so a later touch of it can be caught, which
+    // makes every correct release look like a leak. Say so rather than
+    // reporting thousands of phantoms.
+    if (rask_string_debug_enabled) {
+        fprintf(stderr,
+                "rask: RASK_LEAK_CHECK is off — RASK_STRING_DEBUG keeps released\n"
+                "  buffers on purpose, so the two can't be used together. Run them\n"
+                "  one at a time.\n");
+        fflush(stderr);
+        return;
+    }
+
+    RaskAllocStats st;
+    rask_alloc_stats(&st);
+    int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
+    if (live_bytes <= 0) return;
+
+    int64_t live_strings = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
     fprintf(stderr,
-            "rask: %lld heap string%s never released\n"
-            "  each one is a buffer this program allocated and still owns at exit\n",
-            (long long)live, live == 1 ? "" : "s");
+            "rask: %lld bytes never released, in %lld allocation%s\n",
+            (long long)live_bytes,
+            (long long)(st.alloc_count - st.free_count),
+            (st.alloc_count - st.free_count) == 1 ? "" : "s");
+    if (live_strings > 0) {
+        fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
+                (long long)live_strings, live_strings == 1 ? "is" : "are");
+    }
     fflush(stderr);
     _exit(97);
 }

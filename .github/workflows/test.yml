@@ -95,6 +95,15 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # Memory leak gate. Every heap string in the language leaked for as long
+    # as the compiler had strings (#1024) and nothing went red — a leak has no
+    # symptom, the answers are all correct and there's just no memory coming
+    # back. This runs the suite with the runtime counting what it allocated and
+    # never gave back; a clean program ends at exactly zero.
+    - name: Memory leak gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/leak_gate.sh
+
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
     # and exits 0 — so the programs written to show Rack/Link working end to end

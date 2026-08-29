@@ -6578,3 +6578,45 @@ fn string_release_loop_does_not_grow() {
          string per turn is ~17500 kB, so this is a leak"
     );
 }
+
+/// A program that builds every shape which owns memory must end owning none.
+///
+/// `RASK_LEAK_CHECK=1` makes the runtime report anything it allocated and never
+/// gave back and exit 97. A clean program ends at exactly zero — the runtime
+/// itself holds nothing at exit — so this is a gate rather than a threshold.
+///
+/// What it guards, #1024 and #1027: a heap string built and dropped in one
+/// frame, one handed over by a callee, one held by a struct field, a `T?`
+/// payload, a `T or E` payload, a tuple element, and a `Vec` and a `Map` —
+/// their handles, their data arrays, and their elements. Every one of those
+/// leaked, and none of them had a symptom: the answers were all correct.
+#[test]
+fn nothing_leaks_at_exit() {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_leak_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("leak_free_shapes.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let run = Command::new(&bin)
+        .env("RASK_LEAK_CHECK", "1")
+        .output()
+        .expect("failed to run the compiled binary");
+    assert!(
+        run.status.success(),
+        "the program leaked:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

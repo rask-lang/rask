@@ -167,11 +167,11 @@ void        rask_string_clone(const RaskStr *s);
 // design — a debugging mode, not a hardening one.
 extern int  rask_string_debug_enabled;
 
-// `RASK_LEAK_CHECK=1`: at the end of `main`, any heap string buffer this
-// program still owns is reported and the process exits 97. Handing them to the
-// OS on exit is not the same as not leaking.
+// `RASK_LEAK_CHECK=1`: at the end of `main`, anything this program allocated
+// and never gave back is reported and the process exits 97. Every
+// `rask_alloc`, not just strings — a clean program ends at exactly zero.
 extern int  rask_leak_check_enabled;
-void        rask_string_leak_check(void);
+void        rask_leak_check(void);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);

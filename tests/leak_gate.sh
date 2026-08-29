@@ -8,19 +8,19 @@
 # the compiler has had strings (#1024), and nothing went red. A leak has no
 # symptom: the answers are all correct, there's just no memory coming back.
 #
-# `RASK_LEAK_CHECK=1` makes the runtime count live heap string buffers and, at
-# the end of `main`, report any it still holds and exit 97. This gate runs every
-# suite file under it and fails on the first one that leaks.
+# `RASK_LEAK_CHECK=1` makes the runtime report anything it allocated and never
+# gave back, at the end of `main`, and exit 97. This gate runs every suite file
+# under it and fails on any that leak.
 #
 # Files that are still expected to leak go in tests/known_leaks.txt with the
 # issue that tracks them. The gate holds them to it: one that stops leaking is
 # reported so the line can be deleted, the same way the differential harness
 # treats a known divergence.
 #
-# What it does not catch yet: a leaked `Vec` handle or data array, a leaked
-# closure, a leaked trait object. The counter is strings only, because strings
-# are what refcounting is for — the rest are single-owner and freed by their own
-# drop passes. Widening it is worth doing.
+# The count is every `rask_alloc` the runtime made — a `Vec` handle, a data
+# array, a closure box, a trait object, a string buffer. A clean program ends at
+# exactly zero, which is what makes this a gate rather than a threshold: the
+# runtime itself holds nothing at exit.
 
 set -uo pipefail
 

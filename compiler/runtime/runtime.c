@@ -2170,6 +2170,6 @@ int main(int argc, char **argv) {
     rask_main();
     // O4: a detached task's panic report can't be lost to process exit.
     rask_await_detached_tasks();
-    rask_string_leak_check();
+    rask_leak_check();
     return 0;
 }
