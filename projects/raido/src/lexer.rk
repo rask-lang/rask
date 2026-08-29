@@ -126,16 +126,18 @@ extend Lexer {
         if self.pos >= self.source.len(): return none
         let c = self.source.char_at(self.pos)
         if c? as ch {
-            self.pos = self.pos + ch.len_utf8()
+            // `pos` is signed here; the width is 1-4, so the conversion can't
+            // lose anything.
+            self.pos = self.pos + ch.len_utf8().wrap<i64>()
             if ch == '\n' { self.line = self.line + 1 }
         }
         return c
     }
 
     // Byte offset of the character after the one at `pos`.
-    func next_pos(self) -> usize {
+    func next_pos(self) -> i64 {
         if self.source.char_at(self.pos)? as c {
-            return self.pos + c.len_utf8()
+            return self.pos + c.len_utf8().wrap<i64>()
         }
         return self.pos + 1
     }
