@@ -38,6 +38,10 @@ struct RaskMap {
     // and reused; good until the next one, which is the same window
     // `rask_map_take`'s pointer already gets.
     char      *displaced;
+    // Where the strings sit inside one key and inside one value, handed over
+    // once at construction. See `RaskElemStrs` in rask_runtime.h.
+    RaskElemStrs key_strs;
+    RaskElemStrs val_strs;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -247,12 +251,42 @@ static void map_rehash(RaskMap *m) {
 
 // ─── Public API ─────────────────────────────────────────────
 
-RaskMap *rask_map_new(int64_t key_size, int64_t val_size) {
-    return rask_map_new_custom(key_size, val_size, rask_hash_bytes, rask_eq_bytes);
+// Take a reference to the strings in one key/value pair, for a map that copied
+// them out of another. Without it the clone and the original point at one
+// buffer and the second free reads memory that is already gone.
+static void map_retain_entry(const RaskMap *m, const char *key, const char *val) {
+    for (int64_t k = 0; k < m->key_strs.count; k++) {
+        rask_string_clone((const RaskStr *)(key + m->key_strs.offsets[k]));
+    }
+    for (int64_t k = 0; k < m->val_strs.count; k++) {
+        rask_string_clone((const RaskStr *)(val + m->val_strs.offsets[k]));
+    }
 }
 
-RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size) {
-    return rask_map_new_custom(key_size, val_size, rask_hash_string_key, rask_eq_string_key);
+static RaskMap *map_with_elem_strs(RaskMap *m,
+                                   const int32_t *key_offs, int64_t n_key_offs,
+                                   const int32_t *val_offs, int64_t n_val_offs) {
+    m->key_strs.offsets = key_offs;
+    m->key_strs.count = n_key_offs;
+    m->val_strs.offsets = val_offs;
+    m->val_strs.count = n_val_offs;
+    return m;
+}
+
+RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
+                      const int32_t *key_offs, int64_t n_key_offs,
+                      const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        rask_map_new_custom(key_size, val_size, rask_hash_bytes, rask_eq_bytes),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
+                                  const int32_t *key_offs, int64_t n_key_offs,
+                                  const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        rask_map_new_custom(key_size, val_size, rask_hash_string_key, rask_eq_string_key),
+        key_offs, n_key_offs, val_offs, n_val_offs);
 }
 
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
@@ -266,38 +300,32 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
     m->eq_fn = eq;
     m->borrows = 0;
     m->displaced = NULL;
+    m->key_strs.offsets = NULL;
+    m->key_strs.count = 0;
+    m->val_strs.offsets = NULL;
+    m->val_strs.count = 0;
     map_alloc_tables(m, MAP_INITIAL_CAP);
     return m;
 }
 
-// Free a map whose keys or values own something, releasing each first.
-//
-// The kinds come from the caller, which knows the types; the map carries only
-// `key_size`/`val_size`, which can't tell a sixteen-byte string from a
-// sixteen-byte struct. See `container_drop.rs`.
-void rask_map_free_elems(RaskMap *m,
-                         const int32_t *key_offs, int64_t n_key_offs,
-                         const int32_t *val_offs, int64_t n_val_offs) {
-    if (!m) return;
-    int has_key = key_offs && n_key_offs > 0;
-    int has_val = val_offs && n_val_offs > 0;
-    if (has_key || has_val) {
-        for (int64_t i = 0; i < m->cap; i++) {
-            if (m->states[i] != MAP_OCCUPIED) continue;
-            for (int64_t k = 0; has_key && k < n_key_offs; k++) {
-                rask_string_free((const RaskStr *)(m->keys + i * m->key_size + key_offs[k]));
-            }
-            for (int64_t k = 0; has_val && k < n_val_offs; k++) {
-                rask_string_free((const RaskStr *)(m->vals + i * m->val_size + val_offs[k]));
-            }
-        }
-    }
-    rask_map_free(m);
-}
-
+// Releases every string the keys and values hold, then the map itself. The two
+// maps came from the constructor — see `RaskElemStrs`.
 void rask_map_free(RaskMap *m) {
     map_check_no_borrows(m, "free");
     if (!m) return;
+    int has_key = m->key_strs.offsets && m->key_strs.count > 0;
+    int has_val = m->val_strs.offsets && m->val_strs.count > 0;
+    if ((has_key || has_val) && m->states) {
+        for (int64_t i = 0; i < m->cap; i++) {
+            if (m->states[i] != MAP_OCCUPIED) continue;
+            for (int64_t k = 0; has_key && k < m->key_strs.count; k++) {
+                rask_string_free((const RaskStr *)(m->keys + i * m->key_size + m->key_strs.offsets[k]));
+            }
+            for (int64_t k = 0; has_val && k < m->val_strs.count; k++) {
+                rask_string_free((const RaskStr *)(m->vals + i * m->val_size + m->val_strs.offsets[k]));
+            }
+        }
+    }
     if (m->states) rask_realloc(m->states, m->cap, 0);
     if (m->keys) rask_realloc(m->keys, rask_safe_mul(m->cap, m->key_size), 0);
     if (m->vals) rask_realloc(m->vals, rask_safe_mul(m->cap, m->val_size), 0);
@@ -443,24 +471,30 @@ void rask_map_clear(RaskMap *m) {
 }
 
 RaskVec *rask_map_keys(const RaskMap *m) {
-    RaskVec *v = rask_vec_new(m ? m->key_size : 8);
+    RaskVec *v = rask_vec_new(m ? m->key_size : 8,
+                              m ? m->key_strs.offsets : NULL,
+                              m ? m->key_strs.count : 0);
     if (!m) return v;
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
             rask_vec_push(v, m->keys + i * m->key_size);
         }
     }
+    rask_vec_retain_all(v);
     return v;
 }
 
 RaskVec *rask_map_values(const RaskMap *m) {
-    RaskVec *v = rask_vec_new(m ? m->val_size : 8);
+    RaskVec *v = rask_vec_new(m ? m->val_size : 8,
+                              m ? m->val_strs.offsets : NULL,
+                              m ? m->val_strs.count : 0);
     if (!m) return v;
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
             rask_vec_push(v, m->vals + i * m->val_size);
         }
     }
+    rask_vec_retain_all(v);
     return v;
 }
 
@@ -471,10 +505,28 @@ RaskVec *rask_map_values(const RaskMap *m) {
 // copied a fixed 8 bytes of each, which truncated a string key to its first
 // word and handed iteration a corrupt RaskStr.
 RaskVec *rask_map_entries(const RaskMap *m) {
-    if (!m) return rask_vec_new(16);
+    if (!m) return rask_vec_new(16, NULL, 0);
     int64_t voff = (m->key_size + 7) & ~(int64_t)7;
     int64_t stride = (voff + m->val_size + 7) & ~(int64_t)7;
-    RaskVec *v = rask_vec_with_capacity(stride, m->len);
+    // Where the pair's strings land. The two shapes worth a static map are the
+    // ones programs actually iterate: a string key with a string value, and a
+    // string key with anything else. Any other arrangement would need an
+    // offsets array with the vector's own lifetime, so it gets none — and is
+    // exactly the case #1027 tracks.
+    const int32_t *pair_offs = NULL;
+    int64_t n_pair_offs = 0;
+    int key_is_str = m->key_strs.count == 1 && m->key_strs.offsets
+                     && m->key_strs.offsets[0] == 0;
+    int val_is_str = m->val_strs.count == 1 && m->val_strs.offsets
+                     && m->val_strs.offsets[0] == 0;
+    if (key_is_str && val_is_str && voff == 16) {
+        pair_offs = rask_elem_strs_pair;
+        n_pair_offs = 2;
+    } else if (key_is_str) {
+        pair_offs = rask_elem_strs_one;
+        n_pair_offs = 1;
+    }
+    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs);
     char *pair = (char *)rask_alloc(stride);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
@@ -485,15 +537,19 @@ RaskVec *rask_map_entries(const RaskMap *m) {
         }
     }
     rask_free(pair);
+    rask_vec_retain_all(v);
     return v;
 }
 
 RaskMap *rask_map_clone(const RaskMap *m) {
-    if (!m) return rask_map_new(8, 8);
+    if (!m) return rask_map_new(8, 8, NULL, 0, NULL, 0);
     RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);
+    map_with_elem_strs(dst, m->key_strs.offsets, m->key_strs.count,
+                       m->val_strs.offsets, m->val_strs.count);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
             rask_map_insert(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
+            map_retain_entry(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
         }
     }
     return dst;

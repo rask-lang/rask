@@ -1936,59 +1936,23 @@ fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],
 ) -> Vec<Vec<i32>> {
-    const ELEM_STRING: i64 = 1;
-    const ELEM_STRUCT_BASE: i64 = 2;
-
-    fn flatten(
-        fields: &[rask_mono::FieldLayout],
-        base: i32,
-        layouts: &[rask_mono::StructLayout],
-        depth: u32,
-        out: &mut Vec<i32>,
-    ) {
-        if depth > 8 {
-            return;
-        }
-        for f in fields {
-            let at = base + f.offset as i32;
-            match &f.ty {
-                rask_types::Type::String => out.push(at),
-                rask_types::Type::UnresolvedNamed(name) => {
-                    if let Some(l) = layouts.iter().find(|l| &l.name == name) {
-                        flatten(&l.fields, at, layouts, depth + 1, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
             let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
-            let head = func.name.rsplit("::").next().unwrap_or(&func.name);
-            if head != "Vec_free_elems" && head != "Map_free_elems" {
+            let Some((leading, tags)) = rask_mir::elem_strs::ctor_shape(&func.name) else {
                 continue;
-            }
-            for arg in args.iter().skip(1) {
-                let rask_mir::MirOperand::Constant(rask_mir::MirConst::Int(tag)) = arg else {
+            };
+            for i in 0..tags {
+                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Int(tag))) =
+                    args.get(leading + i)
+                else {
                     continue;
                 };
-                match *tag {
-                    ELEM_STRING => lists.push(vec![0]),
-                    n if n >= ELEM_STRUCT_BASE => {
-                        if let Ok(idx) = usize::try_from(n - ELEM_STRUCT_BASE) {
-                            if let Some(layout) = struct_layouts.get(idx) {
-                                let mut offs = Vec::new();
-                                flatten(&layout.fields, 0, struct_layouts, 0, &mut offs);
-                                if !offs.is_empty() {
-                                    lists.push(offs);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+                if let Some(offs) =
+                    crate::elem_offsets::string_offsets_for_tag(*tag, struct_layouts)
+                {
+                    lists.push(offs);
                 }
             }
         }

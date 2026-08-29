@@ -28,26 +28,6 @@ use crate::{
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// How an element's type reaches codegen, which turns it into the map of where
-/// the strings sit. Codegen has the layouts; this pass has the call sites.
-///
-///   0            the elements own nothing
-///   1            the element *is* a string
-///   2 + index    a struct with that layout
-const ELEM_NONE: i64 = 0;
-const ELEM_STRING: i64 = 1;
-const ELEM_STRUCT_BASE: i64 = 2;
-
-/// The tag for whatever `ty` is, or `ELEM_NONE` if it owns no strings this pass
-/// can point at.
-fn elem_tag(ty: Option<&MirType>) -> i64 {
-    match ty {
-        Some(MirType::String) => ELEM_STRING,
-        Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
-        _ => ELEM_NONE,
-    }
-}
-
 /// Constructors that hand back a fresh container, and the function that frees
 /// what each one made.
 ///
@@ -55,11 +35,11 @@ fn elem_tag(ty: Option<&MirType>) -> i64 {
 /// `Pool` is usually held for a scope by design rather than built and dropped,
 /// but the rule is the same and costs nothing extra.
 const CONTAINERS: &[(&str, &str)] = &[
-    ("Vec_new", "Vec_free_elems"),
-    ("Vec_with_capacity", "Vec_free_elems"),
-    ("Vec_fixed", "Vec_free_elems"),
-    ("Map_new", "Map_free_elems"),
-    ("Map_new_string_keys", "Map_free_elems"),
+    ("Vec_new", "Vec_free"),
+    ("Vec_with_capacity", "Vec_free"),
+    ("Vec_fixed", "Vec_free"),
+    ("Map_new", "Map_free"),
+    ("Map_new_string_keys", "Map_free"),
 ];
 
 fn free_for(ctor: &str) -> Option<&'static str> {
@@ -123,8 +103,7 @@ fn insert_for_function(func: &mut MirFunction) {
     if droppable.is_empty() {
         return;
     }
-    let kinds = element_kinds(func, &droppable);
-    insert_drops(func, &droppable, &kinds);
+    insert_drops(func, &droppable);
 }
 
 /// What each container's elements own, read off what gets put into it.
@@ -137,57 +116,6 @@ fn insert_for_function(func: &mut MirFunction) {
 /// A container filled some other way — decoded, built from a static — reads as
 /// owning nothing and leaks its elements as before. Narrower than the general
 /// case, not wronger: too few releases is a leak, too many is a double free.
-fn element_kinds(
-    func: &MirFunction,
-    droppable: &HashMap<LocalId, &'static str>,
-) -> HashMap<LocalId, (i64, i64)> {
-    let ty_of: HashMap<LocalId, MirType> =
-        func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
-    let tag_of = |op: &MirOperand| match op {
-        MirOperand::Local(id) => elem_tag(ty_of.get(id)),
-        MirOperand::Constant(MirConst::String(_)) => ELEM_STRING,
-        _ => ELEM_NONE,
-    };
-
-    let mut kinds: HashMap<LocalId, (i64, i64)> =
-        droppable.keys().map(|id| (*id, (ELEM_NONE, ELEM_NONE))).collect();
-
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
-            let Some(MirOperand::Local(receiver)) = args.first() else { continue };
-            let Some(entry) = kinds.get_mut(receiver) else { continue };
-            let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-            let base = head.split('$').next().unwrap_or(head);
-            match base {
-                // `push(v, x)` / `insert(v, i, x)` — the element is the last arg.
-                "Vec_push" | "Vec_set" | "Vec_insert" => {
-                    if let Some(last) = args.last() {
-                        let tag = tag_of(last);
-                        if tag != ELEM_NONE {
-                            entry.0 = tag;
-                        }
-                    }
-                }
-                // `insert(m, k, v)`.
-                "Map_insert" | "Map_set" => {
-                    if args.len() >= 3 {
-                        let (k, v) = (tag_of(&args[1]), tag_of(&args[2]));
-                        if k != ELEM_NONE {
-                            entry.0 = k;
-                        }
-                        if v != ELEM_NONE {
-                            entry.1 = v;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    kinds
-}
-
 /// Locals holding a container this function made, mapped to how to free it.
 fn collect_fresh_containers(func: &MirFunction) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
@@ -424,11 +352,7 @@ fn find_moved_away(
 /// every loop back-edge it was built inside. Same placement rules as
 /// `trait_drop.rs`, and for the same reasons — see the comments there on why
 /// dominance is what decides it rather than block order.
-fn insert_drops(
-    func: &mut MirFunction,
-    droppable: &HashMap<LocalId, &'static str>,
-    kinds: &HashMap<LocalId, (i64, i64)>,
-) {
+fn insert_drops(func: &mut MirFunction, droppable: &HashMap<LocalId, &'static str>) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
 
     let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
@@ -480,15 +404,10 @@ fn insert_drops(
     for (block_idx, locals) in to_insert {
         for local in locals {
             let free = droppable[&local];
-            let (a, b) = kinds.get(&local).copied().unwrap_or((ELEM_NONE, ELEM_NONE));
-            let mut args = vec![MirOperand::Local(local), MirOperand::Constant(MirConst::Int(a))];
-            if free.starts_with("Map_") {
-                args.push(MirOperand::Constant(MirConst::Int(b)));
-            }
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal(free.to_string()),
-                args,
+                args: vec![MirOperand::Local(local)],
             }));
         }
     }

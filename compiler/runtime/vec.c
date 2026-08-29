@@ -22,11 +22,34 @@ struct RaskVec {
     // a promise about how large the vector is allowed to get. `Vec.fixed(0)` is
     // a legitimate bound of zero, so unbounded can't be spelled 0.
     int64_t bound;
+    // Where the strings sit inside one element, handed over once at
+    // construction. See `RaskElemStrs` in rask_runtime.h for why the container
+    // carries this rather than every `free` site working it out.
+    RaskElemStrs strs;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
 
-RaskVec *rask_vec_new(int64_t elem_size) {
+const int32_t rask_elem_strs_one[1] = {0};
+const int32_t rask_elem_strs_pair[2] = {0, 16};
+
+// Take a reference to every string in `count` elements starting at `from`.
+//
+// A vector derived from another — clone, slice, chunk, skip — copies element
+// bytes. Two vectors then point at one string buffer, and whichever is freed
+// second reads memory that is already gone. Copying the map is what makes the
+// copy an owner, so it has to take the reference that goes with it.
+static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
+    if (!v || !v->strs.offsets || v->strs.count <= 0 || !v->data) return;
+    for (int64_t i = from; i < from + count; i++) {
+        const char *elem = v->data + i * v->elem_size;
+        for (int64_t k = 0; k < v->strs.count; k++) {
+            rask_string_clone((const RaskStr *)(elem + v->strs.offsets[k]));
+        }
+    }
+}
+
+RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->data = NULL;
     v->len = 0;
@@ -34,16 +57,21 @@ RaskVec *rask_vec_new(int64_t elem_size) {
     v->elem_size = elem_size;
     v->borrows = 0;
     v->bound = -1;
+    v->strs.offsets = str_offs;
+    v->strs.count = n_str_offs;
     return v;
 }
 
-RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
+RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
+                                const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->len = 0;
     v->elem_size = elem_size;
     v->borrows = 0;
     // CP1: a capacity hint pre-allocates but sets no ceiling.
     v->bound = -1;
+    v->strs.offsets = str_offs;
+    v->strs.count = n_str_offs;
     if (cap > 0) {
         v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
@@ -64,38 +92,34 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     v->elem_size = elem_size;
     v->borrows = 0;
     v->bound = -1;
+    // Static data: any string in it is a literal with a sentinel refcount, so
+    // there is nothing to give back.
+    v->strs.offsets = NULL;
+    v->strs.count = 0;
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
     return v;
 }
 
+// Releases every string the elements hold, then the vector itself.
+//
+// The map came from the constructor: `Vec<string>` is the one-entry case at
+// offset zero, a `Vec<Holder>` lists each string field, and elements that own
+// nothing have no map at all.
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
-    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
-    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
-}
-
-// Free a vector whose elements own strings, releasing each one first.
-//
-// `offsets` lists where the strings sit inside one element, and is NULL when
-// the elements own nothing. A vector carries only `elem_size`, which can't tell
-// a sixteen-byte string from a sixteen-byte struct — so the caller, which knows
-// the element type, hands over the map. `Vec<string>` is the one-entry case,
-// offset zero; a `Vec<Holder>` lists each string field. See `container_drop.rs`
-// and codegen's `string_offsets_of`.
-void rask_vec_free_elems(RaskVec *v, const int32_t *offsets, int64_t n_offsets) {
-    if (!v) return;
-    if (offsets && n_offsets > 0 && v->data) {
+    if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
             const char *elem = v->data + i * v->elem_size;
-            for (int64_t k = 0; k < n_offsets; k++) {
-                rask_string_free((const RaskStr *)(elem + offsets[k]));
+            for (int64_t k = 0; k < v->strs.count; k++) {
+                rask_string_free((const RaskStr *)(elem + v->strs.offsets[k]));
             }
         }
     }
-    rask_vec_free(v);
+    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
 int64_t rask_vec_len(const RaskVec *v) {
@@ -108,9 +132,10 @@ int64_t rask_vec_capacity(const RaskVec *v) {
 
 // CP3: bounded and pre-allocated at creation. A bound of 0 is legal — the
 // vector is permanently full — so unbounded is -1, never 0.
-RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n) {
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
+                        const int32_t *str_offs, int64_t n_str_offs) {
     if (n < 0) rask_panic("Vec.fixed needs a non-negative bound");
-    RaskVec *v = rask_vec_with_capacity(elem_size, n);
+    RaskVec *v = rask_vec_with_capacity(elem_size, n, str_offs, n_str_offs);
     v->bound = n;
     return v;
 }
@@ -324,12 +349,14 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
 
 // clone — deep copy of the Vec (copies element bytes, not deep-cloning elements).
 RaskVec *rask_vec_clone(const RaskVec *src) {
-    if (!src) return rask_vec_new(8);
-    RaskVec *dst = rask_vec_with_capacity(src->elem_size, src->len);
+    if (!src) return rask_vec_new(8, NULL, 0);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, src->len,
+                                          src->strs.offsets, src->strs.count);
     if (src->len > 0) {
         memcpy(dst->data, src->data, (size_t)(src->len * src->elem_size));
     }
     dst->len = src->len;
+    vec_retain_elems(dst, 0, dst->len);
     return dst;
 }
 
@@ -388,32 +415,42 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     }
 }
 
+// Take a reference to every string in every element. A container built by
+// copying another's elements is an owner only once it has done this.
+void rask_vec_retain_all(RaskVec *v) {
+    if (v) vec_retain_elems(v, 0, v->len);
+}
+
 // slice(vec, start, end) — returns a new Vec with elements [start..end).
 RaskVec *rask_vec_slice(const RaskVec *src, int64_t start, int64_t end) {
-    if (!src) return rask_vec_new(8);
+    if (!src) return rask_vec_new(8, NULL, 0);
     if (start < 0) start = 0;
     if (end > src->len) end = src->len;
     int64_t new_len = end - start;
-    if (new_len <= 0) return rask_vec_new(src->elem_size);
-    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len);
+    if (new_len <= 0) return rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len,
+                                          src->strs.offsets, src->strs.count);
     memcpy(dst->data, src->data + start * src->elem_size,
            (size_t)(new_len * src->elem_size));
     dst->len = new_len;
+    vec_retain_elems(dst, 0, dst->len);
     return dst;
 }
 
 // chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.
 // Each chunk is a freshly allocated Vec with copied elements.
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
-    RaskVec *result = rask_vec_new(8); // Vec of pointers (8 bytes each)
+    RaskVec *result = rask_vec_new(8, NULL, 0); // Vec of pointers (8 bytes each)
     if (!src || chunk_size <= 0) return result;
     for (int64_t i = 0; i < src->len; i += chunk_size) {
         int64_t remaining = src->len - i;
         int64_t this_chunk = remaining < chunk_size ? remaining : chunk_size;
-        RaskVec *chunk = rask_vec_with_capacity(src->elem_size, this_chunk);
+        RaskVec *chunk = rask_vec_with_capacity(src->elem_size, this_chunk,
+                                                src->strs.offsets, src->strs.count);
         memcpy(chunk->data, src->data + i * src->elem_size,
                (size_t)(this_chunk * src->elem_size));
         chunk->len = this_chunk;
+        vec_retain_elems(chunk, 0, chunk->len);
         int64_t chunk_ptr = (int64_t)(uintptr_t)chunk;
         rask_vec_push(result, &chunk_ptr);
     }
@@ -451,8 +488,8 @@ static inline int64_t closure_call_map(int64_t closure, int64_t arg) {
 
 // map(vec, closure) — apply fn to each element, returning new Vec.
 RaskVec *rask_vec_map(const RaskVec *src, int64_t closure) {
-    if (!src || !closure) return rask_vec_new(8);
-    RaskVec *dst = rask_vec_with_capacity(8, src->len);
+    if (!src || !closure) return rask_vec_new(8, NULL, 0);
+    RaskVec *dst = rask_vec_with_capacity(8, src->len, NULL, 0);
     for (int64_t i = 0; i < src->len; i++) {
         int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
         int64_t result = closure_call_map(closure, elem);
@@ -480,8 +517,8 @@ int64_t rask_wide_sum(const RaskVec *v) {
 
 // filter(vec, closure) — keep elements where fn returns non-zero.
 RaskVec *rask_vec_filter(const RaskVec *src, int64_t closure) {
-    if (!src || !closure) return rask_vec_new(8);
-    RaskVec *dst = rask_vec_new(src->elem_size);
+    if (!src || !closure) return rask_vec_new(8, NULL, 0);
+    RaskVec *dst = rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
     for (int64_t i = 0; i < src->len; i++) {
         int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
         if (closure_call_pred(closure, elem)) {
@@ -767,13 +804,15 @@ void *rask_vec_last(const RaskVec *v) {
 
 // skip(vec, n) — returns a new Vec with the first n elements removed.
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
-    if (!src) return rask_vec_new(8);
+    if (!src) return rask_vec_new(8, NULL, 0);
     if (n < 0) n = 0;
     int64_t new_len = src->len - n;
-    if (new_len <= 0) return rask_vec_new(src->elem_size);
-    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len);
+    if (new_len <= 0) return rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len,
+                                          src->strs.offsets, src->strs.count);
     memcpy(dst->data, src->data + n * src->elem_size, (size_t)(new_len * src->elem_size));
     dst->len = new_len;
+    vec_retain_elems(dst, 0, dst->len);
     return dst;
 }
 

@@ -80,20 +80,42 @@ void    rask_resource_scope_check(int64_t scope_depth);
 
 typedef struct RaskVec RaskVec;
 
-RaskVec *rask_vec_new(int64_t elem_size);
-RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
-RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
-void     rask_vec_free(RaskVec *v);
+// Where the strings sit inside one element.
+//
+// A container is a byte store: it knows how big an element is and nothing
+// else, so it can't tell a sixteen-byte string from a sixteen-byte struct. It
+// is told once, at construction, by the only place that knows the element type
+// — lowering, reading the checker. From then on the map travels with the
+// value, through a return, into another function, across an inlining, so
+// `free` needs no argument and no caller has to work the answer out again.
+//
+// `offsets` is NULL and `count` 0 when the elements own nothing. Built by
+// codegen's `string_offsets_of` from the element tag lowering emitted.
+typedef struct {
+    const int32_t *offsets;
+    int64_t        count;
+} RaskElemStrs;
 
-// Where the strings sit inside one element, for the container `free` entry
-// points below. A container carries only its element *size*, which can't tell a
-// sixteen-byte string from a sixteen-byte struct, so the caller — which knows
-// the element type — hands over the map. NULL when the elements own nothing.
-// Built by codegen's `string_offsets_of`, requested by `container_drop.rs`.
-void     rask_vec_free_elems(RaskVec *v, const int32_t *offsets, int64_t n_offsets);
+// Two maps the runtime needs constantly: a container of bare strings (one
+// string, at offset zero) and one of (string, string) pairs — `split`,
+// `lines`, `os.args`, `env_vars`, HTTP headers. The runtime builds those
+// itself and hands them to the program, which is what frees them.
+extern const int32_t rask_elem_strs_one[1];
+extern const int32_t rask_elem_strs_pair[2];
+
+RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
+                                const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
+// Releases every string the elements hold, then the vector itself.
+void     rask_vec_free(RaskVec *v);
+// Takes a reference to every string the elements hold. A container built by
+// copying another's elements owns them only after this.
+void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
-RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
+                        const int32_t *str_offs, int64_t n_str_offs);
 int64_t  rask_vec_bound(const RaskVec *v);
 int64_t  rask_vec_remaining(const RaskVec *v);
 int64_t  rask_vec_is_bounded(const RaskVec *v);
@@ -389,14 +411,17 @@ typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
 void    *rask_map_borrow_elem(RaskMap *m, const void *key);
 void     rask_map_release_elem(RaskMap *m);
 
-RaskMap *rask_map_new(int64_t key_size, int64_t val_size);
-RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
+// The two element maps are the keys' and the values'. See `RaskElemStrs`.
+RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
+                      const int32_t *key_offs, int64_t n_key_offs,
+                      const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
+                                  const int32_t *key_offs, int64_t n_key_offs,
+                                  const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
+// Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
-void     rask_map_free_elems(RaskMap *m,
-                             const int32_t *key_offs, int64_t n_key_offs,
-                             const int32_t *val_offs, int64_t n_val_offs);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or

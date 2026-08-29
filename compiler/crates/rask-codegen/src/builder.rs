@@ -6454,48 +6454,7 @@ impl<'a> FunctionBuilder<'a> {
     /// guessed, because a wrong offset here releases sixteen bytes that were
     /// never a string. Those elements leak; see #1027.
     fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        const ELEM_NONE: i64 = 0;
-        const ELEM_STRING: i64 = 1;
-        const ELEM_STRUCT_BASE: i64 = 2;
-
-        match tag? {
-            ELEM_NONE => None,
-            ELEM_STRING => Some(vec![0]),
-            n => {
-                let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
-                let layout = ctx.struct_layouts.get(idx)?;
-                let mut out = Vec::new();
-                Self::collect_string_offsets(&layout.fields, 0, ctx, 0, &mut out);
-                Some(out)
-            }
-        }
-    }
-
-    fn collect_string_offsets(
-        fields: &[rask_mono::FieldLayout],
-        base: i32,
-        ctx: &CodegenCtx,
-        depth: u32,
-        out: &mut Vec<i32>,
-    ) {
-        if depth > Self::RC_WALK_DEPTH {
-            return;
-        }
-        for f in fields {
-            let at = base + f.offset as i32;
-            match &f.ty {
-                RaskType::String => out.push(at),
-                RaskType::UnresolvedNamed(name) => {
-                    // A nested struct flattens into the same list. A nested
-                    // *enum* doesn't — where its string is depends on the tag.
-                    if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
-                        let nested = l.fields.clone();
-                        Self::collect_string_offsets(&nested, at, ctx, depth + 1, out);
-                    }
-                }
-                _ => {}
-            }
-        }
+        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts)
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -7399,29 +7358,38 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            ArgAdapt::ElementOffsets => {
-                // Each element tag becomes (offsets pointer, count). Walking
-                // backwards so the earlier tag's expansion doesn't shift the
-                // later one's index.
-                for i in (1..args.len()).rev() {
-                    let tag = mir_args.get(i).and_then(|a| match a {
+            ArgAdapt::ContainerCtor { leading, tags } => {
+                let leading = leading as usize;
+                // The sizes, when a lowering path emitted none — a Vec built by
+                // the compiler for its own use holds machine words.
+                if args.is_empty() {
+                    for _ in 0..leading {
+                        args.push(builder.ins().iconst(types::I64, 8));
+                    }
+                }
+                // Then one element tag per container slot, each becoming
+                // (offsets pointer, count). A path that emitted no tag gets the
+                // null map, which says the elements own nothing.
+                let mut expanded: Vec<Value> = Vec::new();
+                for i in 0..tags as usize {
+                    let tag = mir_args.get(leading + i).and_then(|a| match a {
                         MirOperand::Constant(MirConst::Int(n)) => Some(*n),
                         _ => None,
                     });
-                    let offsets = Self::element_string_offsets(tag, ctx);
-                    let (ptr, count) = match offsets {
+                    match Self::element_string_offsets(tag, ctx) {
                         Some(offs) if !offs.is_empty() => {
                             let n = offs.len() as i64;
-                            let gv = Self::element_offsets_global(builder, &offs, ctx);
-                            (gv, builder.ins().iconst(types::I64, n))
+                            expanded.push(Self::element_offsets_global(builder, &offs, ctx));
+                            expanded.push(builder.ins().iconst(types::I64, n));
                         }
-                        _ => (
-                            builder.ins().iconst(types::I64, 0),
-                            builder.ins().iconst(types::I64, 0),
-                        ),
-                    };
-                    args.splice(i..i + 1, [ptr, count]);
+                        _ => {
+                            expanded.push(builder.ins().iconst(types::I64, 0));
+                            expanded.push(builder.ins().iconst(types::I64, 0));
+                        }
+                    }
                 }
+                args.truncate(leading);
+                args.extend(expanded);
                 CallAdapt::None
             }
 

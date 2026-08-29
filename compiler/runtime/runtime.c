@@ -426,7 +426,7 @@ int64_t rask_clone(int64_t value) { return value; }
 // cli.args() → Vec of RaskStr values (16 bytes each).
 
 RaskVec *rask_cli_args(void) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t count = rask_args_count();
     for (int64_t i = 0; i < count; i++) {
         const char *arg = rask_args_get(i);
@@ -440,7 +440,7 @@ RaskVec *rask_cli_args(void) {
 // ─── FS module ────────────────────────────────────────────────────
 
 RaskVec *rask_fs_read_lines(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     const char *p = rask_string_ptr(path);
 
     FILE *f = fopen(p, "r");
@@ -513,7 +513,7 @@ void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
 }
 
 RaskVec *rask_fs_read_bytes(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(1);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "rb");
     if (!f) return v;
@@ -830,7 +830,7 @@ void rask_file_write_line(int64_t file, const RaskStr *content) {
 }
 
 RaskVec *rask_file_lines(int64_t file) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return v;
     // Rewind to start
@@ -1074,7 +1074,7 @@ int64_t rask_io_std_flush(int64_t which) {
 // Read up to `max` bytes from stdin, stopping at end of input. Returns a
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
-    RaskVec *v = rask_vec_new(1);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
@@ -1109,7 +1109,7 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
         rask_string_from_bytes(method, "GET", 3);
         rask_string_from_bytes(path, "/", 1);
         rask_string_new(body);
-        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16);
+        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
         return (int64_t)(uintptr_t)req;
     }
 
@@ -1161,7 +1161,7 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
     }
 
     // Parse headers — map stores RaskStr keys and values (16B each)
-    RaskMap *headers = rask_map_new_string_keys(16, 16);
+    RaskMap *headers = rask_map_new_string_keys(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
     int64_t line_start = -1;
     // Find start of second line (after first \r\n)
     for (int64_t i = 0; i < header_end; i++) {
@@ -1422,9 +1422,9 @@ int64_t rask_args_parse(void) {
         if (p) rask_string_from(program, p);
     }
 
-    RaskVec *positional = rask_vec_new(16);
-    RaskVec *flags = rask_vec_new(16);
-    RaskMap *options = rask_map_new(16, 16);
+    RaskVec *positional = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskVec *flags = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskMap *options = rask_map_new(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
 
     int past_separator = 0;
     for (int64_t i = 1; i < count; i++) {
@@ -1661,7 +1661,7 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
     if (hdr_end < 0) hdr_end = rlen;
 
     // Parse response headers
-    RaskMap *resp_headers = rask_map_new_string_keys(16, 16);
+    RaskMap *resp_headers = rask_map_new_string_keys(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
     // Skip status line
     int64_t lstart = -1;
     for (int64_t i = 0; i < hdr_end; i++) {
@@ -1719,7 +1719,7 @@ int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
 // Stub: create a Map from a static array of key-value pairs.
 int64_t rask_map_from(int64_t pairs_ptr) {
     (void)pairs_ptr;
-    return (int64_t)(uintptr_t)rask_map_new(8, 8);
+    return (int64_t)(uintptr_t)rask_map_new(8, 8, NULL, 0, NULL, 0);
 }
 
 // Stub: generic json.encode — returns JSON string representation.

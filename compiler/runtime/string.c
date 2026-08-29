@@ -978,7 +978,7 @@ void rask_string_from_char(RaskStr *out, int64_t cp) {
 // ─── Split / lines / chars → Vec ────────────────────────────
 
 RaskVec *rask_string_lines(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16); // elem_size = sizeof(RaskStr) = 16
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1); // elem_size = sizeof(RaskStr) = 16
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *p = str_data(s);
@@ -995,7 +995,7 @@ RaskVec *rask_string_lines(const RaskStr *s) {
 }
 
 RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     int64_t sep_len = str_len(sep);
     const char *p = str_data(s);
@@ -1046,7 +1046,7 @@ RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
 }
 
 RaskVec *rask_string_split_whitespace(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *d = str_data(s);
@@ -1072,7 +1072,7 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
 // 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
 // the Vec is iterated exactly like any other `Vec<(usize, char)>`.
 RaskVec *rask_string_char_indices(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -1088,7 +1088,7 @@ RaskVec *rask_string_char_indices(const RaskStr *s) {
 }
 
 RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(8);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -1108,7 +1108,7 @@ RaskVec *rask_string_chars(const RaskStr *s) {
 // string_bytes".
 RaskVec *rask_string_bytes(const RaskStr *s) {
     int64_t len = str_len(s);
-    RaskVec *v = rask_vec_new(len < 8 ? 8 : len);
+    RaskVec *v = rask_vec_new(len < 8 ? 8 : len, NULL, 0);
     const char *d = str_data(s);
     for (int64_t i = 0; i < len; i++) {
         int64_t b = (int64_t)(unsigned char)d[i];
@@ -1633,7 +1633,7 @@ int64_t rask_char_eq(int32_t a, int32_t b) {
 // ─── Filesystem ─────────────────────────────────────────────
 
 RaskVec *rask_fs_list_dir(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t plen = str_len(path);
     if (plen == 0) return v;
 

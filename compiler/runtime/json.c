@@ -736,7 +736,12 @@ static int json_decode_vec(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         return 0;
     }
     int64_t slot = shape->slot > 0 ? shape->slot : 8;
-    RaskVec *vec = rask_vec_with_capacity(slot, v->as.arr.len);
+    // A list of bare strings owns them; a list of structs would need the
+    // struct's own offsets, which the shape doesn't carry (#1027).
+    int elem_is_str = shape->elem && shape->elem->kind == RASK_JSHAPE_STRING;
+    RaskVec *vec = rask_vec_with_capacity(slot, v->as.arr.len,
+                                          elem_is_str ? rask_elem_strs_one : NULL,
+                                          elem_is_str ? 1 : 0);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot
@@ -765,7 +770,11 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         return 0;
     }
     int64_t slot = shape->slot > 0 ? shape->slot : 8;
-    RaskMap *map = rask_map_new_string_keys(16, slot);
+    int val_is_str = shape->elem && shape->elem->kind == RASK_JSHAPE_STRING;
+    RaskMap *map = rask_map_new_string_keys(16, slot,
+                                            rask_elem_strs_one, 1,
+                                            val_is_str ? rask_elem_strs_one : NULL,
+                                            val_is_str ? 1 : 0);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot

@@ -10,6 +10,7 @@
 pub mod analysis;
 mod builder;
 pub mod dispatch_trace;
+pub mod elem_strs;
 pub mod fallback;
 mod closures;
 mod display;

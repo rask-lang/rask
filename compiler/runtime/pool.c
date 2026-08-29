@@ -349,7 +349,7 @@ int64_t rask_pool_is_valid_packed(const RaskPool *p, int64_t packed) {
 }
 
 RaskVec *rask_pool_handles_packed(const RaskPool *p) {
-    RaskVec *v = rask_vec_new(8);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     if (!p) return v;
     for (int64_t i = 0; i < p->cap; i++) {
         char *slot = slot_at(p, i);
@@ -365,7 +365,7 @@ RaskVec *rask_pool_handles_packed(const RaskPool *p) {
 }
 
 RaskVec *rask_pool_values(const RaskPool *p) {
-    RaskVec *v = rask_vec_new(p ? p->elem_size : 8);
+    RaskVec *v = rask_vec_new(p ? p->elem_size : 8, NULL, 0);
     if (!p) return v;
     for (int64_t i = 0; i < p->cap; i++) {
         char *slot = slot_at(p, i);
@@ -376,7 +376,7 @@ RaskVec *rask_pool_values(const RaskPool *p) {
 }
 
 RaskVec *rask_pool_drain(RaskPool *p) {
-    RaskVec *v = rask_vec_new(p ? p->elem_size : 8);
+    RaskVec *v = rask_vec_new(p ? p->elem_size : 8, NULL, 0);
     if (!p) return v;
     for (int64_t i = 0; i < p->cap; i++) {
         char *slot = slot_at(p, i);

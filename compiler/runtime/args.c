@@ -72,7 +72,7 @@ _Noreturn void rask_os_exit(int64_t code) {
 // Pairs laid out the way a tuple is: name at 0, value at 16. `environ` gives
 // them as "NAME=VALUE"; the first '=' splits them.
 RaskVec *rask_os_env_vars(void) {
-    RaskVec *v = rask_vec_new(32);
+    RaskVec *v = rask_vec_new(32, rask_elem_strs_pair, 2);
     if (!environ) return v;
     char pair[32];
     for (char **e = environ; *e; e++) {
@@ -118,7 +118,7 @@ void rask_os_remove_env(const RaskStr *name) {
 
 // os.args() -> Vec<string>. The argv the runtime was started with.
 RaskVec *rask_os_args(void) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t n = rask_args_count();
     for (int64_t i = 0; i < n; i++) {
         const char *a = rask_args_get(i);

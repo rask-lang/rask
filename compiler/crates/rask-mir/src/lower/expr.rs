@@ -4844,6 +4844,13 @@ impl<'a> MirLowerer<'a> {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
+                                // What the elements are, settled here and kept
+                                // by the container for the rest of its life —
+                                // see `elem_strs`.
+                                let tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
+                                );
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
                             }
                             // Map.new(): inject key_size, val_size
                             if (base_name == "Map") && method == "new" {
@@ -4851,6 +4858,14 @@ impl<'a> MirLowerer<'a> {
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
+                                let key_tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
+                                );
+                                let val_tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 1).as_ref(),
+                                );
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
                             }
 
                             // Map.new() with string keys → use string hash/eq.
