@@ -60,7 +60,7 @@ No new syntax. The signature already says which types can't collide; writing a s
 | Rule | Description |
 |------|-------------|
 | **ER6: Auto-derived for enums** | `Error` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `Error` delegates to it. Override with `extend E with Error { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
-| **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `to_string()` delegates to `message()` |
+| **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `display()` delegates to `message()` |
 | **ER8: Layered traits** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in traits on top of `Error`. The minimum bound is just `message() -> string` |
 
 <!-- test: skip -->

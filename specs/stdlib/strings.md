@@ -1,6 +1,6 @@
 <!-- id: std.strings -->
 <!-- status: decided -->
-<!-- summary: Immutable refcounted string (Copy), inline slicing, StringView for storable zero-copy substrings, StringBuilder for construction -->
+<!-- summary: Immutable refcounted string (Copy), bytes for indexing and graphemes for display, inline slicing, StringView for storable zero-copy substrings, StringBuilder for construction -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 
 # String Handling
@@ -20,6 +20,7 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 | **S7: Builder for mutation** | `push`, `push_char` live on `StringBuilder` only. `string` has no mutation methods |
 | **S8: Small string optimization** | Strings ≤ 15 bytes are stored inline in the 16-byte value (no heap allocation, no refcount). Longer strings use heap mode with refcounted header. Layout is a tagged union — discriminant is the MSB of the last byte. User-facing semantics are identical in both modes |
 | **S9: Storable views** | `StringView` is the storable form of a slice — zero-copy, shares the source's buffer, holds a refcount on it. 16 bytes, Copy. See V1–V6 |
+| **S10: ASCII flag** | Every string knows whether it is pure ASCII, decided at construction and stored in the value. `is_ascii()` is O(1). This is what makes U4 work |
 
 ### Internal Layout (S1 + S8)
 
@@ -28,14 +29,17 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 ```
 Heap mode (last byte MSB = 0):
   [header_ptr: *u8 (8B)][len: usize (8B)]
-  Header at ptr: { refcount: atomic_u32, capacity: u32, data: [u8] }
+  Header at ptr: { refcount: atomic_u32, flags: u32, capacity: u32, data: [u8] }
+                                         ^ bit 0: ASCII
 
 SSO mode (last byte MSB = 1):
   [inline_data: [u8; 15]][len_tag: u8]
-  Length = len_tag & 0x7F (range 0..15)
+  Length = len_tag & 0x0F (range 0..15), bit 6 = ASCII, bit 7 = SSO tag
 ```
 
 SSO strings are pure value copies — no heap, no refcount. Heap strings share backing storage via atomic refcount. Both modes are 16 bytes, both are Copy. The mode is invisible to user code.
+
+**Where the ASCII flag comes from (S10):** every way to build a string already touches every byte — a literal is scanned at compile time, `from_utf8` validates, `StringBuilder` sees each push, a slice copies. So the flag is computed on a pass that was happening anyway; it is not a lazy cache and there is no "unknown" state. Views inherit what they can: a view of an ASCII string is ASCII for free. A view of a non-ASCII string answers `is_ascii()` by scanning its own range — O(range), not O(1) — because computing it at `.view()` time would cost the zero-copy guarantee (V1).
 
 | String variant | Refcount | Allocation | Copy cost |
 |----------------|----------|------------|-----------|
@@ -52,6 +56,37 @@ SSO strings are pure value copies — no heap, no refcount. Heap strings share b
 | `Span` | Plain indices into a string | Copy (2 words) | Yes |
 | `StringBuilder` | Growable mutable buffer | Move on assignment | Yes |
 | `cstring` | Null-terminated for C FFI | Move on assignment | Yes (unsafe only) |
+
+## Text Units
+
+Text has three possible units — bytes, Unicode scalars, and graphemes (what a reader calls "a character"). Mixing them is where string APIs go wrong: an index that means bytes coming out and characters going in, a padding width that counts the wrong thing, a truncation that splits an emoji in half.
+
+Rask picks per purpose and never leaves it ambiguous.
+
+| Rule | Description |
+|------|-------------|
+| **U1: Bytes for machines** | Every index, length, offset and range is a byte offset. `len`, `s[i..j]`, `index_of`, `byte_at`, `char_indices`, `Span` all speak bytes, so a result feeds straight back in as an argument. No operation takes an index in any other unit |
+| **U2: Graphemes for humans** | Anything a person sees or counts works in graphemes or display columns: `width`, `truncate`, `graphemes`, `reverse`. These are O(n) and named so the scan is visible |
+| **U3: Scalars are not a unit** | A Unicode scalar is neither a byte nor a character, and counting or indexing them is always someone reaching for the wrong one of U1/U2. Scalars leak out through `chars()` and `char_indices()` — for lexers and protocol parsers — and nowhere else. There is no `char_count`, no `char_at` |
+| **U4: ASCII is free** | Every string carries an ASCII flag, set at construction (S10). For an ASCII string all three units coincide, so `width`, `graphemes`, `truncate` and `normalized` take a byte-only fast path. Unicode correctness costs nothing until the bytes are actually non-ASCII |
+| **U5: Normalization is explicit** | `"café"` composed and decomposed are different byte sequences, so `==` says false. Making `==` normalize would hide an O(n) table lookup behind an operator. `s.normalized()` returns the NFC form and the cost is at the call site |
+
+`s.width()` is the load-bearing one: it's what `fmt`'s padding counts (`std.fmt/S2`), which is what makes an aligned table actually align.
+
+<!-- test: skip -->
+```rask
+let s = "héllo"
+
+s.len()          // 6 — bytes
+s.width()        // 5 — display columns
+s.graphemes()    // iterator: "h", "é", "l", "l", "o"
+
+// The four operations people get wrong, done right:
+s.truncate(3)                    // "hél" — never splits a grapheme
+s.reverse()                      // "olléh" — not scalar-reversed mojibake
+format("{:<10}|", s)             // pads to 10 columns, not 10 bytes
+a.normalized() == b.normalized() // "café" == "café" regardless of source
+```
 
 ## Ownership Rules
 
@@ -146,6 +181,7 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `Span(i, j)` | `Span` | Create span (just start, end indices) |
+| `s[i..j].span()` | `Span` | The slice's byte range. Works on any expression-scoped slice — `s.trim().span()`, split items |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
 | `span.to_string(source)` | `string` | Allocates copy (panics if OOB) |
@@ -168,9 +204,10 @@ Iterators borrow for expression scope only. Cannot be stored.
 
 | Method | Yields | Notes |
 |--------|--------|-------|
-| `s.chars()` | `char` (u32 Unicode scalar) | Expression-scoped iterator |
+| `s.graphemes()` | Expression-scoped slices | What a reader calls characters (U2). The unit for cursors and truncation |
+| `s.chars()` | `char` (u32 Unicode scalar) | Expression-scoped iterator. For lexers and protocol parsers (U3) |
 | `s.bytes()` | `u8` | Raw byte iterator |
-| `s.char_indices()` | `(usize, char)` | Index + char pairs |
+| `s.char_indices()` | `(usize, char)` | Byte offset + scalar pairs. The offset is a byte index (U1) |
 | `s.lines()` | Expression-scoped slices | Split on newlines |
 | `s.split(pat)` | Expression-scoped slices | Split on pattern |
 | `s.split_whitespace()` | Expression-scoped slices | Split on Unicode whitespace, skip empty |
@@ -181,10 +218,15 @@ Slice-yielding iterators are zero-cost per item. To keep items, convert each: `.
 
 | Operation | Return | Cost |
 |-----------|--------|------|
-| `s.len()` | `usize` | O(1), byte length |
-| `s.char_count()` | `usize` | O(n), count Unicode scalars |
+| `s.len()` | `usize` | O(1), byte length (U1) |
+| `s.width()` | `usize` | Display columns (U2). O(1) for ASCII, else O(n) |
 | `s.is_empty()` | `bool` | O(1) |
-| `s.is_ascii()` | `bool` | O(n) first call, cached |
+| `s.is_ascii()` | `bool` | O(1) — decided at construction (S10) |
+
+`len` is what you index with; `width` is what you align with. There is no third
+count. "How many characters" as a bare number answers no real question — the
+caller either wants bytes (indexing), columns (layout), or to walk the graphemes
+(editing), and `char_count` was none of those (U3).
 
 ## Construction
 
@@ -252,48 +294,70 @@ let csv = headers.join(",")      // CSV header row
 | `s.trim()` | Expression-scoped slice | Zero-copy, removes leading/trailing whitespace |
 | `s.trim_start()` | Expression-scoped slice | Leading whitespace only |
 | `s.trim_end()` | Expression-scoped slice | Trailing whitespace only |
-| `s.trim_indices()` | `(usize, usize)` | Returns (start, end) byte indices of the trimmed region |
 
-## Case Conversion
+Need the trimmed region's offsets rather than its text? `s.trim().span()` — `Span`
+is the type for positions, so trimming doesn't need a second spelling that returns
+a bare `(usize, usize)`.
 
-| Operation | Return | Notes |
-|-----------|--------|-------|
-| `s.to_uppercase()` | `string` | Allocates new string |
-| `s.to_lowercase()` | `string` | Allocates new string |
-
-## Character and Byte Access
+## Case and Normalization
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.char_at(idx)` | `char?` | Get Unicode scalar at char index (not byte index) |
-| `s.byte_at(idx)` | `u8?` | Get byte at byte index |
+| `s.to_uppercase()` | `string` | Full Unicode case mapping — allocates. `"straße"` → `"STRASSE"`, so length can change |
+| `s.to_lowercase()` | `string` | Full Unicode case mapping — allocates |
+| `s.normalized()` | `string` | NFC form (U5). O(1) return for ASCII (already normal), else allocates |
+
+Case mapping on `string` is the full 1:many mapping; `char.to_uppercase()` is a
+1:1 scalar mapping and cannot be otherwise, since `ß` uppercases to two
+characters. They disagree on purpose, and the `char` version says so — reach for
+the `string` one unless you're doing scalar work.
+
+`normalized()` is the fix for the comparison that surprises everyone: text typed
+on macOS is usually NFD, text from a web form usually NFC, and the same visible
+word compares unequal. Normalize both sides when the source is outside your
+program — filenames, form input, anything off the network:
+
+<!-- test: skip -->
+```rask
+if a.normalized() == b.normalized() { … }
+```
+
+Not built into `==`. That would put a table lookup behind an operator, on the
+one comparison that must stay O(1) on the fast path.
+
+## Byte Access
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.byte_at(idx)` | `u8?` | Byte at byte index (U1) |
+
+To walk characters, iterate — `s.chars()` for scalars, `s.graphemes()` for what a
+reader sees. Neither is an indexed lookup, because a `char_at(n)` that takes a
+character index has to scan from the start every call: it reads like `Vec` indexing
+and costs a loop, so a cursor built on it turns a linear scan quadratic (U3).
 
 ## Substring Extraction
 
-| Operation | Return | Notes |
-|-----------|--------|-------|
-| `s.substring(start, end)` | `string` | Bytes from start (inclusive) to end (exclusive), allocates. Out-of-range clamps; a cut inside a character panics |
+Slice it: `s[start..end]` for expression scope, `.to_string()` to keep it,
+`.view()` to keep it without copying. There is no `substring` method — it was
+`s[a..b].to_string()` under a second name (`std.api/SD5`), and the Java spelling
+invited the character-index reading that U1 rules out.
 
-Indices are byte offsets, like everything else here: `len` is a byte count, and
-`index_of` / `last_index_of` / `byte_at` all hand you byte offsets, so their
-results feed straight back into `substring`. Counting characters instead would
-make an index mean one thing coming out and another going in — and it hides an
-O(n) scan behind what looks like a slice.
-
-An out-of-range offset clamps — there's no ambiguity about what was meant. An
-offset that lands *inside* a character panics: the slice would be a `string` that
-isn't valid UTF-8, which the type says can't exist, and quietly returning a nearby
-slice hides the bug rather than reporting it. Every offset the API hands you
-(`index_of`, `last_index_of`, `char_indices`) is a boundary, so this only fires on
-arithmetic the caller did themselves.
+Out-of-range clamps; a cut that lands *inside* a character panics, because the
+result would be a `string` that isn't valid UTF-8, which the type says can't
+exist. Every offset the API hands you (`index_of`, `last_index_of`,
+`char_indices`) is already a boundary, so this only fires on arithmetic the caller
+did themselves.
 
 ## Parsing
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.parse_int()` | `i64 or ParseError` | Parse to integer, trims whitespace |
-| `s.parse_float()` | `f64 or ParseError` | Parse to floating point, trims whitespace |
-| `s.parse<T>()` | `T or ParseError` | Any numeric `T`, answered at `T`'s width |
+| `s.parse<T>()` | `T or ParseError` | Any numeric `T`, answered at `T`'s width. Trims whitespace |
+
+One function. `parse<i64>()` and `parse<f64>()` are what `parse_int` and
+`parse_float` were, and three names for one operation is surface growth by name
+where a type parameter already does the job (`std.api/SD2`).
 
 `parse<T>` answers at the target's own width: `"70000".parse<u8>()` and
 `"-1".parse<u64>()` are both `OutOfRange`, and `parse<u64>` reaches `u64::MAX`.
@@ -312,8 +376,18 @@ enum ParseError {
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.replace(from, to)` | `string` | Replace all occurrences of pattern, allocates new string |
-| `s.reverse()` | `string` | Reverse string by Unicode scalars, allocates new string |
+| `s.replace(from, to)` | `string` | Replace all occurrences, allocates new string |
+| `s.replace(from, to, limit: n)` | `string` | Replace at most `n`, left to right |
+| `s.reverse()` | `string` | Reverse by graphemes (U2), allocates new string |
+| `s.truncate(cols)` | `string` | Cut to at most `cols` display columns, never splitting a grapheme (U2) |
+
+`replace` takes a count as an optional parameter rather than splitting into a
+`replacen` sibling — same operation, one more knob (`std.api/SD2`).
+
+`reverse` works in graphemes because scalar reversal has no correct use: it turns
+`"né"` into a combining accent looking for a letter, and any emoji into rubble.
+`truncate` is the operation people hand-roll wrong — it's `width` and `graphemes`
+composed correctly, so the stdlib does it once.
 
 ## Equality and Comparison
 
@@ -418,6 +492,12 @@ FIX:
 | Last view outlives all copies of source string | V1 | Fine — buffer freed when last holder (string or view) drops |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
 | Multiple simultaneous iterators | — | Allowed (string is immutable) |
+| `truncate(n)` where column `n` lands mid-grapheme | U2 | Cuts before it — result is narrower than `n`, never wider |
+| `truncate(n)` on a zero-width or combining prefix | U2 | Combining marks stay with their base character |
+| `width()` of a control character | U2 | Zero. Terminal output of raw controls is the caller's problem |
+| `width()` of an unassigned codepoint | U2 | 1 — the common terminal behavior, and stable across Unicode updates |
+| `normalized()` on already-NFC text | U5 | Returns the same string, no allocation |
+| `to_uppercase()` changing byte length | — | Expected — `"straße"` → `"STRASSE"`. Offsets into the source do not carry over |
 
 ---
 
@@ -440,6 +520,21 @@ This is one of the few cases where a type owns heap memory but is still Copy. Th
 **S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
 
 **S5 (byte indices):** Byte indexing matches the underlying UTF-8 representation. Character indexing would be O(n) and misleading for multi-byte characters.
+
+**U1–U3 (text units):** The first draft of this API had it both ways. S5 argued for byte indices and gave the reason — "counting characters would make an index mean one thing coming out and another going in, and it hides an O(n) scan behind what looks like a slice" — and then `char_at(idx)` shipped taking a character index, doing exactly that. Three lexers in this repo were built on it:
+
+```rask
+// projects/raido/src/lexer.rk — self.pos advances per character
+return self.source.char_at(self.pos)
+```
+
+Every call rescans from byte zero, so each lexer was quadratic in its input. Not a Unicode problem — a units problem, in a language whose pitch is removing abstraction tax. `char_count` was the same mistake with the count instead of the index, and it never even reached real code: all six call sites in the repo were tests asserting `"hello".char_count() == 5`.
+
+The fix isn't to pick one unit, it's to stop leaving it implicit. Bytes are what indexing means, graphemes are what people mean, and scalars are neither — they're a UTF-8 implementation detail that lexers legitimately want and nobody else does.
+
+**U4 (ASCII is free):** This is what makes U2 affordable. Correct text handling normally trades against speed — Swift segments graphemes on every count, Rust makes you reach for a crate so most programs just get it wrong. Rask charges by the data instead: for ASCII, bytes and columns and graphemes are the same number, so the correct call is a byte op. Since every construction path already walks the bytes, knowing which case you're in costs nothing (S10), and the branch is one flag test. Programs that never see non-ASCII pay for none of it, and — with dead code elimination — don't link the tables either.
+
+**U5 (explicit normalization):** The guess test (`std.api/SD3`) says a developer types `a == b` and expects `"café" == "café"` regardless of how each was typed. That guess is reasonable and we're refusing it, which the rule normally forbids. It loses to transparency of cost: `==` on strings has an O(1) fast path (same buffer, same length) that a normalizing comparison would destroy, on the most-called operation in most programs. So the guess fails, and the compensation is that the right call is short, obvious, and mentioned wherever text crosses into the program.
 
 **S6 (refcount semantics):** Atomic refcount enables safe sharing across tasks. Sentinel refcount for literals avoids overhead on the most common case. Compiler optimization for provably sole-owner strings eliminates atomic ops when sharing can't happen.
 
@@ -631,7 +726,11 @@ Current interpreter behavior differs from spec in some areas:
 - Read-only API on a view is `len`, `is_empty`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (`index_of`, `chars`, sub-slicing, comparison) isn't wired up
 
 **Method name aliases:**
-- The interpreter still accepts the removed aliases `s.parse()` (for `parse_int`) and `s.find(pat)` (for `index_of`)
+- The interpreter still accepts `s.find(pat)` as an alias for `index_of`
+
+**Text units not yet implemented:**
+- `width`, `graphemes`, `truncate` and `normalized` (U2, U5) need the grapheme-break, East Asian Width and NFC tables in the runtime. Until those land, the ASCII fast path (U4) is the only path — correct for ASCII input, wrong for the rest
+- The ASCII flag (S10) is not stored yet; `is_ascii()` scans
 
 These will converge to spec behavior in the compiled version.
 

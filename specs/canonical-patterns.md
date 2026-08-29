@@ -103,8 +103,11 @@ let slice = vec.as_slice()
 let str = path.as_string()
 
 // to_* — allocates a new value, doesn't consume source
-let s = number.to_string()
+let s = view.to_string()
 let lower = name.to_lowercase()
+
+// display — render a value for a person to read (Displayable)
+let s = point.display()
 
 // into_* — consumes source, produces new type
 let owned = view.into_string()
@@ -119,13 +122,19 @@ let vec = list.into_vec()
 | `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
 | `as_*` | Cheap view or cast | reference or copy | `as_slice()`, `as_string()` |
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
+| `display` | Render for a person | `string` | `Displayable` — `point.display()` |
+| `debug` | Render for a developer | `string` | `Debug` — `value.debug()` |
 | `is_*` | Boolean predicate | `bool` | `is_empty()`, `is_valid()` |
 | `has_*` | Containment predicate | `bool` | `has_field(name)`, `has_extension(ext)` |
 | `with_*` | Builder-style setter (one-shot setting) | `Self` | `with_capacity(n)`, `with_timeout(d)` |
 | `*_or(default)` | Value with fallback | `T` | `env_or(k, d)` |
 | `try_*` | Fallible variant of a panicking sibling | `T or E` | `try_push()`, `try_insert()` |
 
-**`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse_int`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
+**`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse<T>`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
+
+**Rendering is not conversion:** `to_string()` is for types that already hold text — a `StringView`, a slice, a `Span`, a `cstring`. `display()` is for turning a value into something a person reads. A `Point` has no text in it to convert, so it gets `display()`; keeping one verb for both also collided with fallible conversions like `cstring.to_string() -> string or Utf8Error`, which no `Displayable` signature can match (`std.fmt/D1`).
+
+**Text units — bytes for machines, graphemes for humans, scalars never:** every index and length is a byte offset; anything a person sees or counts (`width`, `truncate`, `graphemes`, `reverse`) works in graphemes or display columns; Unicode scalars reach user code only through `chars()`. A method taking a "character index" is the anti-pattern — it reads like array indexing and costs a scan from the start, which is how a cursor loop silently goes quadratic (`std.strings/U1`–`U3`).
 
 **Probes return `T?`, not `T or E`:** when failure is a non-answer carrying nothing — env lookup, map/find, "does this parse as an IP" — the error branch shouldn't exist. If callers would routinely discard the error, that's the API telling you it's absence-shaped. (This is why Rust corpora are full of one-armed `if let Ok` on `env::var` and `metadata`: `Result` standing in for the optional Rust's stdlib didn't give them.)
 
