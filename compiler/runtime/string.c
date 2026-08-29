@@ -1570,11 +1570,16 @@ static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
 
     if (first == '\r' && j < len && d[j] == '\n') return j + 1;
 
-    // Prepend attaches to what follows, so take one more cluster start.
-    if (rask_grapheme_is_prepend(first) && j < len) {
-        int64_t w2;
-        str_decode_at(d, len, j, &w2);
-        j += w2;
+    // Prepend attaches to what follows, and chains: two in a row before a
+    // base letter are still one cluster. Absorbing exactly one left the second
+    // starting a cluster of its own, where the segmenter kept them together.
+    if (rask_grapheme_is_prepend(first)) {
+        while (j < len) {
+            int64_t w2;
+            uint32_t c = str_decode_at(d, len, j, &w2);
+            j += w2;
+            if (!rask_grapheme_is_prepend(c)) break;
+        }
     }
 
     if (str_is_regional_indicator(first) && j < len) {

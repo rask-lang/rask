@@ -38,8 +38,10 @@ actually puts it back together, so the generator asks rather than transcribes.
 
 ## Checking it
 
-`tests/suite/t_text_units.rk` holds 120 NFC cases fuzzed against Python's
-`unicodedata` — an implementation that shares no code with either backend — plus
-the emoji and Hangul cases that caught real bugs. Regenerate when the crates'
+`tests/suite/t_text_units.rk` fuzzes against Python's `unicodedata` — an
+implementation sharing no code with either backend. The pool is drawn from every
+codepoint whose NFC and NFD differ, plus the combining marks: an earlier version
+hand-picked a couple of dozen characters and missed a real bug, because none of
+them needed two marks to recompose. Regenerate when the crates'
 Unicode version moves, and run that test: if the generator and the reference
 disagree, it fails.

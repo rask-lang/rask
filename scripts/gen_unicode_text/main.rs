@@ -75,6 +75,14 @@ fn main() {
     // Canonical decomposition, the combining classes canonical ordering needs,
     // and the pairs that recompose. Composition exclusions fall out for free:
     // a pair is only listed if NFC actually puts it back together.
+    //
+    // The pairs have to come from walking the decomposition left to right, not
+    // from "does this character's fully-unfolded form have exactly 2 parts".
+    // `nfd()` is already recursive, so a character needing two marks — every
+    // Vietnamese tone vowel, much of polytonic Greek — unfolds to 3 parts and
+    // that test skipped it entirely. The intermediate pair was never recorded,
+    // so the runtime composed e+dot-below into ẹ and then had nothing for
+    // ẹ+circumflex, leaving ệ as two codepoints where the interpreter had one.
     let mut decomp: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     let mut ccc: Vec<(u32, u8)> = Vec::new();
     let mut compose: Vec<(u32, u32, u32)> = Vec::new();
@@ -95,21 +103,27 @@ fn main() {
                 decomp.remove(&cp);
                 continue;
             }
-            if d.len() == 2 {
+            // Walk the marks, composing as far as each step allows. Every
+            // primary composite shows up as one of these steps, including the
+            // intermediates that never appear as anyone's full decomposition.
+            let mut cur = d[0];
+            for &mark in &d[1..] {
                 let pair: String = [
-                    char::from_u32(d[0]).unwrap(),
-                    char::from_u32(d[1]).unwrap(),
+                    char::from_u32(cur).unwrap(),
+                    char::from_u32(mark).unwrap(),
                 ]
                 .iter()
                 .collect();
                 let back: Vec<char> = pair.nfc().collect();
-                if back.len() == 1 && back[0] as u32 == cp {
-                    compose.push((d[0], d[1], cp));
+                if back.len() == 1 {
+                    compose.push((cur, mark, back[0] as u32));
+                    cur = back[0] as u32;
                 }
             }
         }
     }
     compose.sort_unstable();
+    compose.dedup();
 
     // ── Emit ───────────────────────────────────────────────────────────
     let mut out = String::new();
