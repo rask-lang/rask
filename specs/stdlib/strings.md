@@ -66,7 +66,7 @@ Rask picks per purpose and never leaves it ambiguous.
 | Rule | Description |
 |------|-------------|
 | **U1: Bytes for machines** | Every index, length, offset and range is a byte offset. `len`, `s[i..j]`, `index_of`, `byte_at`, `char_indices`, `Span` all speak bytes, so a result feeds straight back in as an argument. No operation takes an index in any other unit |
-| **U1b: `[]` on a string is a range** | `s[i..j]` slices; `s[i]` does not exist. A single-element index is ambiguous about what it yields, and `s[i]` counting characters while `s[i..j]` counted bytes is exactly the bug this rule closes. Read one position with `byte_at(i)` or `char_at(i)` — both byte-offset, both O(1) — and walk with `chars()`/`graphemes()` |
+| **U1b: `[]` means bytes, both forms** | `s[i..j]` slices a byte range; `s[i]` reads one byte, as a `u8`. Same unit either way, and the same shape as `Vec` — indexing panics out of range, `byte_at(i)` is the probe that returns `u8?`. `char_at(i)` reads the character starting at that offset |
 | **U2: Graphemes for humans** | Anything a person sees or counts works in graphemes or display columns: `width`, `truncate`, `graphemes`, `reverse`. These are O(n) and named so the scan is visible |
 | **U3: Scalars are not a unit** | A Unicode scalar is neither a byte nor a character, so *counting* them answers no real question and there is no `char_count`. Scalars reach user code through `chars()`, `char_indices()` and `char_at(byte_index)` — the lexer's tools — and nowhere else |
 | **U4: ASCII is free** | Every string carries an ASCII flag, set at construction (S10). For an ASCII string all three units coincide, so `width`, `graphemes`, `truncate` and `normalized` take a byte-only fast path. Unicode correctness costs nothing until the bytes are actually non-ASCII |
@@ -330,12 +330,23 @@ one comparison that must stay O(1) on the fast path.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.byte_at(i)` | `u8?` | The byte at byte offset `i` |
+| `s[i]` | `u8` | The byte at byte offset `i`. Panics out of range, like `Vec` |
+| `s.byte_at(i)` | `u8?` | Same read, absent instead of panicking |
 | `s.char_at(i)` | `char?` | The scalar *starting* at byte offset `i`. `none` when out of range or when `i` is inside a character |
 
-Both take byte offsets (U1) and both are O(1). That's the whole fix: `char_at`
-used to take a *character* index, so it scanned from byte zero on every call and a
-cursor loop built on it was quadratic while reading like `Vec` indexing.
+All three take byte offsets (U1) and all three are O(1). That's the whole fix:
+`s[i]` used to yield the character at index `i` while `s[i..j]` right beside it
+counted bytes, and `char_at` took a character index too — so both scanned from byte
+zero and a cursor loop was quadratic while reading like `Vec` indexing.
+
+`s[i]` yields a byte because that is what `[]` means on a string in both forms.
+Reading it as text is `char_at`:
+
+<!-- test: skip -->
+```rask
+line[i] == 44u8              // is this byte a comma
+line.char_at(i) ?? ' ' == ',' // is this character a comma
+```
 
 With byte offsets a cursor is O(1) per step, and `char.len_utf8()` advances it:
 
@@ -551,7 +562,9 @@ s[1..3]           // "ö"  — bytes 1 through 3
 s.len()           // 4    — bytes
 ```
 
-Every `s[i]` rescans from byte zero, so a loop over a string by index is quadratic while looking exactly like `Vec` indexing.
+Every `s[i]` rescanned from byte zero, so a loop over a string by index was quadratic while looking exactly like `Vec` indexing.
+
+The first draft of this rule deleted `s[i]` outright, on the grounds that a `u8` from `s[0]` is a trap in code that looks like it reads characters. That was the wrong fix: it removes an operator every language has, `Vec` keeps, and `s[i..j]` is already consistent with — and it doesn't close the trap, which lives in comparison (`some_u8 == 'h'` type-checks with no string in sight, rask-lang/rask#1034). Byte in both forms, and the trap gets fixed where it is.
 
 S5 had argued for byte indices and given the reason — "counting characters would make an index mean one thing coming out and another going in, and it hides an O(n) scan behind what looks like a slice" — and then `char_at(idx)` shipped taking a character index, doing exactly that. Three lexers in this repo were built on it:
 

@@ -1854,20 +1854,26 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::vec(slice))
                     }
-                    // `[]` on a string is a byte range, never a single element
-                    // (std.strings/U1b). `s[i]` used to scan to character `i`,
-                    // so it read like Vec indexing and cost a walk from the
-                    // start — while `s[i..j]` right beside it counted bytes.
-                    (Value::String(_), Value::Int(i, _)) => Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(format!(
-                            "s[{i}] is not how you read from a string: `[]` takes a \
-                             byte range, so write `s[{i}..{}]` for the text, \
-                             `s.byte_at({i})` for the byte, or walk with \
-                             `s.chars()` / `s.graphemes()`.",
-                            i + 1
-                        )),
-                        expr.span,
-                    )),
+                    // `[]` on a string means bytes in both forms
+                    // (std.strings/U1b): a range slices, a scalar index reads
+                    // one byte. It used to yield the character at index `i`,
+                    // scanning from byte zero, so the same bracket counted two
+                    // different units. Indexing panics out of range; `byte_at`
+                    // is the probe.
+                    (Value::String(s), Value::Int(i, _)) => {
+                        let str_val = s.lock().unwrap();
+                        match usize::try_from(*i).ok().and_then(|n| str_val.as_bytes().get(n)) {
+                            Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
+                            None => Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "string index out of bounds: index is {} but length is {} bytes",
+                                    i,
+                                    str_val.len()
+                                )),
+                                expr.span,
+                            )),
+                        }
+                    }
                     // Byte offsets (std.strings/U1, S5). Out of range clamps;
                     // an offset inside a character panics, because the result
                     // would be a `string` that isn't valid UTF-8. Both have to

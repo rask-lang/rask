@@ -445,6 +445,20 @@ static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *wi
     return ch;
 }
 
+// `s[i]` — one byte at byte offset `i` (std.strings/U1b). Indexing panics on
+// an out-of-range index rather than answering none; `byte_at` is the probe.
+int64_t rask_string_index(const RaskStr *s, int64_t index) {
+    int64_t len = str_len(s);
+    if (index < 0 || index >= len) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "string index out of bounds: index is %lld but length is %lld bytes",
+                 (long long)index, (long long)len);
+        rask_panic(buf);
+    }
+    return (int64_t)(unsigned char)str_data(s)[index];
+}
+
 // The scalar starting at *byte* offset `index`, or -1 when the offset is out
 // of range or lands inside a character. Byte-offset like every other index
 // (std.strings/U1), so it's O(1): the old character-indexed version scanned
