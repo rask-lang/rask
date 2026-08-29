@@ -289,15 +289,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // container will. Guessing the other way here is what printed freed bytes
     // where a code fence's language should be.
     ("Vec_index", Internal::SameAs("Vec_get")),
-    ("Vec_get_opt", Internal::SameAs("Vec_get")),
-    ("Vec_get_unchecked", Internal::SameAs("Vec_get")),
     ("Vec_borrow_elem", Internal::SameAs("Vec_get")),
     ("Map_borrow_elem", Internal::SameAs("Map_get")),
-    ("Map_get_unwrap", Internal::SameAs("Map_get")),
 
     // A `with` block on a `Shared`: three strategies, one declared accessor.
-    ("Shared_read_acquire", Internal::SameAs("Shared_read")),
-    ("Shared_write_acquire", Internal::SameAs("Shared_read")),
     ("Cell_acquire", Internal::SameAs("Shared_read")),
     ("Cell_data", Internal::SameAs("Shared_read")),
     ("Mutex_acquire", Internal::SameAs("Shared_read")),
@@ -306,13 +301,14 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
     ("Cell_get", Internal::SameAs("Shared_get")),
+    ("Shared_data", Internal::SameAs("Shared_read")),
     ("Mutex_get", Internal::SameAs("Shared_get")),
 
     // ── Keep what they are handed ───────────────────────────────
     ("Cell_new", Internal::SameAs("Shared_local")),
     ("Mutex_new", Internal::SameAs("Shared_mutex")),
-    ("Receiver_receive_struct", Internal::SameAs("Receiver_receive")),
     ("Cell_set", Internal::SameAs("Shared_set")),
+    ("Cell_into_inner", Internal::SameAs("Shared_into_inner")),
     ("Mutex_set", Internal::SameAs("Shared_set")),
     ("Cell_replace", Internal::SameAs("Shared_replace")),
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
@@ -321,8 +317,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Vec_slice", Internal::FreshFromReceiver),
-    ("Vec_sort_f64", Internal::FreshFromReceiver),
-    ("Vec_join_i64", Internal::FreshFromReceiver),
     ("Map_entries", Internal::FreshFromReceiver),
     ("Sender_clone", Internal::FreshFromReceiver),
     ("Mutex_clone", Internal::FreshFromReceiver),
@@ -332,11 +326,9 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("string_compare", Internal::FreshFromReceiver),
     ("string_substr", Internal::FreshFromReceiver),
     ("string_clone", Internal::FreshFromReceiver),
-    ("string_parse_i32", Internal::FreshFromReceiver),
-    ("string_parse_i64", Internal::FreshFromReceiver),
-    ("string_parse_u16", Internal::FreshFromReceiver),
-    ("string_parse_f64", Internal::FreshFromReceiver),
     ("string_lt", Internal::FreshFromReceiver),
+    ("string_le", Internal::FreshFromReceiver),
+    ("string_index", Internal::FreshFromReceiver),
     ("string_debug", Internal::FreshFromReceiver),
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
@@ -347,6 +339,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_release_elem", Internal::FreshFromReceiver),
     ("Map_release_elem", Internal::FreshFromReceiver),
     ("Shared_release", Internal::FreshFromReceiver),
+    ("Shared_staged_commit", Internal::FreshFromReceiver),
     ("Mutex_release", Internal::FreshFromReceiver),
     ("Mutex_staged_commit", Internal::FreshFromReceiver),
 
@@ -365,7 +358,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Map_free", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
-    ("Map_new_string_keys", Internal::NoReceiver),
 ];
 
 /// The family a `<Head>_<method>` name belongs to, when that family is one
@@ -397,31 +389,42 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     if let Some(meta) = lookup(base) {
         return Some(meta);
     }
+    // An explicit line comes next, so it can override the rule below for a
+    // name that only *looks* like a specialisation. `Shared_staged_commit`
+    // shares a prefix with `Shared.staged` and is a different operation.
     match internal_spelling(base) {
-        Some(Internal::SameAs(decl)) => lookup(decl),
+        Some(Internal::SameAs(decl)) => return lookup(decl),
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
-        | Some(Internal::NoReceiver) => None,
-        None => {
-            // A name that doesn't belong to an accountable family is an
-            // ordinary user function, which owns what it returns like any
-            // other. That's the honest answer, not a gap.
-            let Some(family) = accountable_family_of(base) else { return None };
-            // Otherwise: not declared, not listed. Rather than guess — or
-            // crash a build over it — answer every question the way that
-            // leaks.
-            //
-            // The two directions are not symmetrical. Guess that a read into a
-            // container's storage is the caller's and the caller frees what
-            // the container still holds; guess that it is the container's and
-            // nothing frees it. One is a use-after-free, the other is a leak
-            // the leak gate already catches by name. So an unaccounted-for
-            // name leaks, loudly, and `tests/spellings_gate.sh` fails on the
-            // report so it gets a line here instead of staying that way.
-            report_unmapped(base, family);
-            None
-        }
+        | Some(Internal::NoReceiver) => return None,
+        None => {}
     }
+    // A generic method reaches MIR with its type argument welded on —
+    // `string.parse<i32>` as `string_parse_i32` — and a specialised form of a
+    // declared one gets a suffix the same way: `Vec_get_unchecked`,
+    // `Vec_sort_str`. Both are the declared operation, so trimming back to the
+    // longest declared prefix answers for every width and every specialisation
+    // at once, instead of a line each.
+    if let Some(meta) = declared_prefix_of(base) {
+        return Some(meta);
+    }
+    // A name that doesn't belong to an accountable family is an ordinary user
+    // function, which owns what it returns like any other. That's the honest
+    // answer, not a gap.
+    let family = accountable_family_of(base)?;
+    // Otherwise: not declared, not listed, not a specialisation of anything.
+    // Rather than guess — or crash a build over it — answer every question the
+    // way that leaks.
+    //
+    // The two directions are not symmetrical. Guess that a read into a
+    // container's storage is the caller's and the caller frees what the
+    // container still holds; guess that it is the container's and nothing
+    // frees it. One is a use-after-free, the other is a leak the leak gate
+    // already catches by name. So an unaccounted-for name leaks, loudly, and
+    // `tests/spellings_gate.sh` fails on the report so it gets a line here
+    // instead of staying that way.
+    report_unmapped(base, family);
+    None
 }
 
 /// Note an internal spelling nothing accounts for. Once per name per process:
@@ -480,6 +483,39 @@ mod internal_spelling_tests {
             assert!(
                 lookup(internal).is_none(),
                 "{internal} is declared in a stdlib file, so its line here never fires — delete it"
+            );
+        }
+    }
+
+    /// No line merely repeats what the prefix rule would have said.
+    ///
+    /// `string_parse_i32` needs no entry: trimming the welded-on type argument
+    /// finds `string.parse`, the same operation, with the same answers. A line
+    /// for it would suggest the table has to grow a row per integer width,
+    /// which is the hand-maintained-list shape this replaced.
+    ///
+    /// A line that *disagrees* with the rule stays, and is the point of the
+    /// override — `Shared_staged_commit` shares a prefix with `Shared.staged`
+    /// without being a specialisation of it.
+    #[test]
+    fn no_internal_spelling_merely_repeats_the_prefix_rule() {
+        for (internal, _) in INTERNAL_SPELLINGS {
+            let Some(by_rule) = declared_prefix_of(internal) else { continue };
+            let rule = (
+                by_rule.takes_self && !by_rule.take_self,
+                by_rule.takes_self && by_rule.ret_category.names_a_type_param(),
+                by_rule.takes.clone(),
+            );
+            let listed = (
+                borrows_receiver(internal),
+                returns_a_view(internal),
+                declared(internal).map(|m| m.takes.clone()).unwrap_or_default(),
+            );
+            assert_ne!(
+                rule, listed,
+                "{internal} says exactly what trimming back to `{}` already says — \
+                 delete its line",
+                by_rule.qualified_name
             );
         }
     }
@@ -545,6 +581,25 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         // free of memory the container still holds.
         None => unmapped_leans_to_leaking(qualified_name),
     }
+}
+
+/// The declared method a suffixed name specialises, if any: trim trailing
+/// `_<segment>`s until something is declared, keeping the longest match.
+///
+/// Stops before the bare type name, so `Vec_get` never degrades to `Vec`.
+fn declared_prefix_of(base: &str) -> Option<&'static StdlibMethodMeta> {
+    let mut candidate = base;
+    while let Some((shorter, _)) = candidate.rsplit_once('_') {
+        if !shorter.contains('_') {
+            // `<Type>` alone is not a method.
+            return None;
+        }
+        if let Some(meta) = lookup(shorter) {
+            return Some(meta);
+        }
+        candidate = shorter;
+    }
+    None
 }
 
 /// What an internal spelling stands for, by the name MIR uses.
