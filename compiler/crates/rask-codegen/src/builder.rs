@@ -186,6 +186,7 @@ struct CodegenCtx<'a> {
     struct_layouts: &'a [StructLayout],
     enum_layouts: &'a [EnumLayout],
     string_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<String, GlobalValue>,
     comptime_globals: &'a HashMap<String, GlobalValue>,
     vtable_globals: &'a HashMap<String, GlobalValue>,
     panicking_fns: &'a HashSet<String>,
@@ -286,6 +287,7 @@ pub struct FunctionBuilder<'a> {
     enum_layouts: &'a [EnumLayout],
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<String, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
     /// VTable data globals (vtable name → GlobalValue for the vtable address)
@@ -328,6 +330,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         string_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<String, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
         vtable_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
@@ -343,6 +346,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts,
             enum_layouts,
             string_globals,
+            string_header_globals,
             comptime_globals,
             vtable_globals,
             panicking_fns,
@@ -523,6 +527,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
             string_globals: self.string_globals,
+            string_header_globals: self.string_header_globals,
             comptime_globals: self.comptime_globals,
             vtable_globals: self.vtable_globals,
             panicking_fns: self.panicking_fns,
@@ -7598,8 +7603,41 @@ impl<'a> FunctionBuilder<'a> {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
                     MirConst::String(s) => {
-                        // String constants: allocate a 16-byte stack slot,
-                        // get raw char* from data section, call rask_string_from(out, cstr).
+                        // Build the 16-byte `RaskStr` in a stack slot directly.
+                        //
+                        // This used to call `rask_string_from`, which allocates
+                        // and sets the refcount to 1 — so every evaluation of a
+                        // literal too long for SSO was a fresh allocation, and
+                        // nothing ever released it: RE3 skips RC ops on literals
+                        // because they're supposed to carry a sentinel refcount.
+                        // They didn't, so `"…{i}…"` in a loop leaked its trailing
+                        // literal every turn, ~37 bytes each (#1024). Now the
+                        // header is static data with the sentinel already in it,
+                        // the premise is true, and the call and the allocation
+                        // are both gone.
+                        if let Some((lo, hi)) = sso_words(s) {
+                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, 16, 0,
+                            ));
+                            let lo_v = builder.ins().iconst(types::I64, lo);
+                            builder.ins().stack_store(lo_v, tmp_slot, 0);
+                            let hi_v = builder.ins().iconst(types::I64, hi);
+                            builder.ins().stack_store(hi_v, tmp_slot, 8);
+                            return Ok(builder.ins().stack_addr(types::I64, tmp_slot, 0));
+                        }
+                        if let Some(gv) = ctx.string_header_globals.get(s.as_str()) {
+                            let header = builder.ins().global_value(types::I64, *gv);
+                            let tagged = (s.len() as u64) | crate::layouts::STRING_HEAP_FLAG;
+                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, 16, 0,
+                            ));
+                            builder.ins().stack_store(header, tmp_slot, 0);
+                            let tagged_v = builder.ins().iconst(types::I64, tagged as i64);
+                            builder.ins().stack_store(tagged_v, tmp_slot, 8);
+                            return Ok(builder.ins().stack_addr(types::I64, tmp_slot, 0));
+                        }
+                        // No header emitted for this literal — fall back to the
+                        // allocating path rather than producing a wrong value.
                         if let Some(gv) = ctx.string_globals.get(s.as_str()) {
                             let raw_ptr = builder.ins().global_value(types::I64, *gv);
                             let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -7629,4 +7667,21 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
     }
+}
+
+/// A literal short enough for SSO, as the two little-endian words of a
+/// `RaskStr`: fifteen bytes of data then `15 - len`. `None` if it needs the
+/// heap form.
+fn sso_words(s: &str) -> Option<(i64, i64)> {
+    const SSO_MAX: usize = 15;
+    if s.len() > SSO_MAX {
+        return None;
+    }
+    let mut raw = [0u8; 16];
+    raw[..s.len()].copy_from_slice(s.as_bytes());
+    raw[15] = (SSO_MAX - s.len()) as u8;
+    Some((
+        i64::from_le_bytes(raw[0..8].try_into().unwrap()),
+        i64::from_le_bytes(raw[8..16].try_into().unwrap()),
+    ))
 }

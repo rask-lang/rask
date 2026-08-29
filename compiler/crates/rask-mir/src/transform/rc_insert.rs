@@ -12,6 +12,8 @@
 //!
 //! See `comp.architecture/RC1-RC2` and `comp.string-refcount-elision`.
 
+use std::collections::HashSet;
+
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
 use crate::analysis::uses;
@@ -32,6 +34,9 @@ pub fn insert_rc_ops(func: &mut MirFunction) {
 
     // Insert RcDec at last-use points
     insert_rc_dec(func, &string_locals);
+
+    // A returned parameter is handed out, not owned — take a reference for it.
+    retain_returned_params(func, &string_locals);
 }
 
 /// Insert `RcInc` after each assignment that copies a string local.
@@ -101,6 +106,31 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
     }
 }
 
+/// Take a reference before handing a borrowed parameter back to the caller.
+///
+/// The caller keeps its own and releases it at its own last use, so `return s`
+/// on a `s: string` parameter would give the caller a second name for a buffer
+/// with one reference — `let b = id(a)` then frees it twice. Anything else
+/// returned is a value this function owns, and returning it moves that
+/// ownership out, which is why `insert_rc_dec` skips the release there.
+fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+
+    for block in &mut func.blocks {
+        let returned = match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => *id,
+            _ => continue,
+        };
+        if !params.contains(&returned) || !strings.contains(&returned) {
+            continue;
+        }
+        let span = block.terminator.span;
+        block.statements.push(MirStmt::new(MirStmtKind::RcInc { local: returned }, span));
+    }
+}
+
 /// Insert `RcDec` at last-use points for string locals.
 ///
 /// Uses liveness analysis: when a string local is live at a statement but dead
@@ -108,6 +138,18 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // A string parameter is borrowed from the caller, which keeps its own
+    // reference and releases it at its own last use. Releasing here as well is
+    // two releases for one reference:
+    //
+    //     open_result("/tmp/missing")   // main holds the only reference
+    //       -> open_result decs `path` after fs.open(path)
+    //       -> fs.open decs `path` too
+    //
+    // Nothing noticed because the elision pass deleted both. A callee that
+    // needs to outlive the call takes its own reference: storing incs, and
+    // returning a parameter incs just below.
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
 
     for block_idx in 0..func.blocks.len() {
         let block_id = func.blocks[block_idx].id;
@@ -116,6 +158,9 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
         let stmts_len = func.blocks[block_idx].statements.len();
 
         for local in string_locals {
+            if params.contains(local) {
+                continue;
+            }
             // Find the last use of this local in the block
             let mut last_use_idx: Option<usize> = None;
 
@@ -259,14 +304,20 @@ mod tests {
         stmts.iter().filter(|s| matches!(&s.kind, MirStmtKind::RcDec { .. })).count()
     }
 
-    /// A string parameter gets exactly one RcDec. `add_param` registers a
-    /// parameter in both `params` and `locals`, and this pass used to walk the
-    /// two lists back to back — so every string parameter was visited twice and
-    /// got two decs for one inc. `self.last = title` then freed the caller's
-    /// buffer, and the field pointed at memory the next allocation reused
-    /// (#698).
+    /// A string parameter gets no release at all, and storing it takes a
+    /// reference of its own.
+    ///
+    /// It used to get one, which was already one too many: the caller keeps its
+    /// own reference and releases it at its own last use, so a callee that
+    /// releases as well is two releases for one reference. (Before that it got
+    /// *two*, because the pass walked `params` and `locals` back to back and
+    /// visited every parameter twice — #698. That was the visible half of the
+    /// same mistake; the elision pass hid the other half by deleting both.)
+    ///
+    /// `self.last = title` still needs the increment: the field outlives the
+    /// call, so it takes a reference the caller isn't going to give up.
     #[test]
-    fn string_param_gets_one_dec_not_two() {
+    fn string_param_is_borrowed_and_stores_retain() {
         let param = MirLocal {
             id: local(1),
             name: Some("title".into()),
@@ -298,7 +349,7 @@ mod tests {
         insert_rc_ops(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
-        assert_eq!(count_rc_dec(stmts), 1, "one dec for the param: {stmts:?}");
+        assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
     }
 
     #[test]

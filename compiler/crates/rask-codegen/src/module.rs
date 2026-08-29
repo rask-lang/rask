@@ -25,6 +25,16 @@ pub struct CodeGenerator {
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
     string_data: HashMap<String, cranelift_module::DataId>,
+    /// The same literals again, laid out as a `RaskStr` heap header:
+    /// `[refcount: u32 = sentinel][capacity: u32][bytes][NUL]`.
+    ///
+    /// A literal used to be materialized by calling `rask_string_from` at every
+    /// use, which allocates and sets the refcount to 1 — so every use of a
+    /// literal longer than fifteen bytes was a fresh allocation that nothing
+    /// ever freed, because `RE3` exempts literals from RC ops on the grounds
+    /// that they carry a sentinel refcount. They didn't. Now they do, and the
+    /// call goes away with the allocation.
+    string_header_data: HashMap<String, cranelift_module::DataId>,
     /// Comptime global data (const name → DataId in the object module)
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
     /// MIR names of stdlib functions that can panic at runtime
@@ -80,6 +90,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            string_header_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -130,6 +141,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            string_header_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -1086,8 +1098,47 @@ impl CodeGenerator {
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
                 self.string_data.insert(s.clone(), data_id);
+                self.register_string_header(s)?;
             }
         }
+        Ok(())
+    }
+
+    /// Emit a literal in `RaskStr` heap-header form, with a sentinel refcount.
+    ///
+    /// Only for literals that don't fit SSO — a short one is built from two
+    /// immediates at the use site and has no refcount at all.
+    fn register_string_header(&mut self, s: &str) -> CodegenResult<()> {
+        const SSO_MAX: usize = 15;
+        if s.len() <= SSO_MAX || self.string_header_data.contains_key(s) {
+            return Ok(());
+        }
+        // Numbered from this map's own length — sharing the `.str.N` counter
+        // let the two sequences collide once anything registered a string
+        // outside the MIR walk.
+        let name = format!(".strhdr.{}", self.string_header_data.len());
+
+        let data_id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let mut bytes = Vec::with_capacity(8 + s.len() + 1);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // refcount: never freed
+        bytes.extend_from_slice(&(s.len() as u32).to_le_bytes()); // capacity
+        bytes.extend_from_slice(s.as_bytes());
+        bytes.push(0);
+
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        // The runtime reads the two u32s straight out of the header.
+        desc.set_align(8);
+
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.string_header_data.insert(s.to_string(), data_id);
         Ok(())
     }
 
@@ -1111,6 +1162,7 @@ impl CodeGenerator {
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         self.string_data.insert(s.to_string(), data_id);
+        self.register_string_header(s)?;
         Ok(())
     }
 
@@ -1332,10 +1384,15 @@ impl CodeGenerator {
         // Import only the string data globals that this function actually uses
         let needed_strings = collect_used_strings(mir_fn);
         let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        let mut string_header_globals: HashMap<String, GlobalValue> = HashMap::new();
         for s in &needed_strings {
             if let Some(data_id) = self.string_data.get(s) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                 string_globals.insert(s.clone(), gv);
+            }
+            if let Some(data_id) = self.string_header_data.get(s) {
+                let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                string_header_globals.insert(s.clone(), gv);
             }
         }
         // The checked-arithmetic panic messages are emitted by codegen, not
@@ -1390,6 +1447,7 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &string_globals,
+            &string_header_globals,
             &comptime_globals,
             &vtable_globals,
             &self.panicking_fns,

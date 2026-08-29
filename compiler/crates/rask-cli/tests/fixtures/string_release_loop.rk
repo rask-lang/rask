@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two shapes that leaked a heap string on every turn of the loop, until the
+// elision pass stopped deleting the release along with the atomics (#1024).
+// Driven by `string_release_loop_does_not_grow` in compile_run.rs, which reads
+// peak RSS out of /proc rather than trusting the program's own report.
+
+func build(i: i64) -> string {
+    return "payload-number-{i}-and-then-some-more-text-to-clear-SSO"
+}
+
+func main() {
+    mut n = 0i64
+    mut i = 0i64
+    while i < 200000i64 {
+        // Built here, dropped here. The whole reference belongs to this frame.
+        let local = "made-right-here-{i}-and-long-enough-to-need-the-heap"
+        n += local.len().wrap<i64>()
+
+        // Handed over by a callee, which gave up its reference on the way out.
+        let returned = build(i)
+        n += returned.len().wrap<i64>()
+
+        i += 1i64
+    }
+    println(n)
+}

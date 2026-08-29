@@ -6493,3 +6493,80 @@ fn open_nodes_pattern_bindings() {
         "{count} node(s) left holding an inference variable:\n{stderr}"
     );
 }
+
+/// A loop that builds and drops heap strings must not grow.
+///
+/// This is a memory test, so it reads peak RSS out of `/proc/<pid>/status`
+/// rather than believing the program. Two hundred thousand turns, two heap
+/// strings each: leaking one is about 12 MB of growth, and the threshold below
+/// is far enough above the flat case (~2.2 MB) and below the leaking one
+/// (~17.5 MB) that it doesn't care about allocator behaviour.
+///
+/// What it guards: `comp.string-refcount-elision/RE2` says a string that never
+/// escapes should "skip all *atomic* ops — refcount stays at 1, free on drop".
+/// The pass dropped the free along with the atomics, so every heap string in
+/// the language leaked (#1024). Nothing else in the suite could see it: the
+/// values are all correct, there's just no memory coming back.
+#[test]
+#[cfg(target_os = "linux")]
+fn string_release_loop_does_not_grow() {
+    use std::io::Read;
+
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_rss_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("string_release_loop.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let mut child = Command::new(&bin)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start the compiled binary");
+
+    // Poll while it runs; VmHWM is gone once the process is reaped.
+    let mut peak_kb: u64 = 0;
+    loop {
+        match child.try_wait().expect("wait failed") {
+            Some(status) => {
+                assert!(status.success(), "the compiled binary exited {status}");
+                break;
+            }
+            None => {
+                if let Ok(mut f) = std::fs::File::open(format!("/proc/{}/status", child.id())) {
+                    let mut s = String::new();
+                    if f.read_to_string(&mut s).is_ok() {
+                        for line in s.lines() {
+                            if let Some(rest) = line.strip_prefix("VmHWM:") {
+                                if let Some(n) = rest.split_whitespace().next() {
+                                    if let Ok(kb) = n.parse::<u64>() {
+                                        peak_kb = peak_kb.max(kb);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    assert!(peak_kb > 0, "never managed to read VmHWM — the poll lost the race");
+    assert!(
+        peak_kb < 6_000,
+        "peak RSS {peak_kb} kB over 200k turns — flat is ~2200 kB and leaking one \
+         string per turn is ~17500 kB, so this is a leak"
+    );
+}
