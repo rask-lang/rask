@@ -6497,16 +6497,24 @@ fn open_nodes_pattern_bindings() {
 /// A loop that builds and drops heap strings must not grow.
 ///
 /// This is a memory test, so it reads peak RSS out of `/proc/<pid>/status`
-/// rather than believing the program. Two hundred thousand turns, two heap
-/// strings each: leaking one is about 12 MB of growth, and the threshold below
-/// is far enough above the flat case (~2.2 MB) and below the leaking one
-/// (~17.5 MB) that it doesn't care about allocator behaviour.
+/// rather than believing the program. Two hundred thousand turns, five heap
+/// strings each: leaking any one of them is several MB of growth, and the
+/// threshold below is far enough above the flat case (~2.2 MB) that it doesn't
+/// care about allocator behaviour.
 ///
-/// What it guards: `comp.string-refcount-elision/RE2` says a string that never
-/// escapes should "skip all *atomic* ops — refcount stays at 1, free on drop".
-/// The pass dropped the free along with the atomics, so every heap string in
-/// the language leaked (#1024). Nothing else in the suite could see it: the
-/// values are all correct, there's just no memory coming back.
+/// What it guards, all of it #1024:
+///
+/// - `comp.string-refcount-elision/RE2` says a string that never escapes
+///   should "skip all *atomic* ops — refcount stays at 1, free on drop". The
+///   pass dropped the free along with the atomics.
+/// - A literal too long for SSO was materialized by a call that allocates, so
+///   every evaluation of one leaked it — while RE3 skipped its RC ops on the
+///   grounds that literals carry a sentinel refcount and are never freed.
+/// - An aggregate owns the strings it holds, and nothing released them when
+///   the aggregate died: a struct field, a `T?` payload, a `T or E` payload.
+///
+/// Nothing else in the suite can see any of it. The values are all correct;
+/// there's just no memory coming back.
 #[test]
 #[cfg(target_os = "linux")]
 fn string_release_loop_does_not_grow() {

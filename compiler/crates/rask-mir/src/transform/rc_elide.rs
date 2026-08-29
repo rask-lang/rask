@@ -229,8 +229,10 @@ fn elide_local_only(func: &mut MirFunction) -> usize {
 /// "Provably" has to mean *on every path*. The old version walked the blocks in
 /// order and kept a running set, so the last write to a local won:
 ///
-///     bb3:  _5 = concat("not found: ", p)   // removes _5 from the set
-///     bb4:  _5 = "timed out"                // puts it back
+/// ```text
+/// bb3:  _5 = concat("not found: ", p)   // removes _5 from the set
+/// bb4:  _5 = "timed out"                // puts it back
+/// ```
 ///
 /// `_5` came out marked literal, its RC ops were dropped, and the concat
 /// result on the other arm was released by nobody — or, once releases started

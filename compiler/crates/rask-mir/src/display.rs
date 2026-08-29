@@ -269,6 +269,9 @@ impl fmt::Display for MirStmt {
             MirStmtKind::RcDec { local } => {
                 write!(f, "rc_dec(_{})", local.0)
             }
+            MirStmtKind::RcDecContents { local } => {
+                write!(f, "rc_dec_contents(_{})", local.0)
+            }
         }
     }
 }

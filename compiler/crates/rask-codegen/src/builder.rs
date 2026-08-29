@@ -1156,6 +1156,19 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
                 builder.ins().call(*free_ref, &[val]);
             }
+
+            MirStmtKind::RcDecContents { local } => {
+                // An aggregate dying gives back the strings it holds.
+                let Some(ty) = ctx.locals.iter().find(|l| l.id == *local).map(|l| l.ty.clone())
+                else {
+                    return Ok(());
+                };
+                if !Self::holds_string_mir(&ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
+                Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
+            }
         }
         Ok(())
     }
@@ -6425,6 +6438,331 @@ impl<'a> FunctionBuilder<'a> {
     /// panicked). The JoinError variant tags and its message field's offset come
     /// from the destination's own error layout, so renaming or reordering the
     /// enum in stdlib/async.rk doesn't silently change what gets built.
+    /// How deep to look for a string inside a type before giving up.
+    ///
+    /// A recursive type reaches MIR through a pointer, which this walk doesn't
+    /// follow, so the bound is only there so a pathological nesting can't turn
+    /// a compile into a hang.
+    const RC_WALK_DEPTH: u32 = 8;
+
+    /// Does this type hold a string anywhere inside it?
+    ///
+    /// Asked first so the common aggregate — no strings at all — costs nothing
+    /// and doesn't grow blocks for a tag branch that would release nothing.
+    fn holds_string_mir(ty: &MirType, ctx: &CodegenCtx, depth: u32) -> bool {
+        if depth > Self::RC_WALK_DEPTH {
+            return false;
+        }
+        match ty {
+            MirType::String => true,
+            MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
+            MirType::Result { ok, err } => {
+                Self::holds_string_mir(ok, ctx, depth + 1)
+                    || Self::holds_string_mir(err, ctx, depth + 1)
+            }
+            MirType::Struct(id) => ctx
+                .struct_layouts
+                .get(id.id as usize)
+                .is_some_and(|l| {
+                    l.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
+                }),
+            MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| {
+                    v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
+                })
+            }),
+            _ => false,
+        }
+    }
+
+    /// The same question about a field's declared type. Layouts record fields
+    /// as `rask_types::Type`, so the walk crosses between the two languages.
+    fn holds_string_ty(ty: &RaskType, ctx: &CodegenCtx, depth: u32) -> bool {
+        if depth > Self::RC_WALK_DEPTH {
+            return false;
+        }
+        match ty {
+            RaskType::String => true,
+            RaskType::Result { ok, err } => {
+                Self::holds_string_ty(ok, ctx, depth + 1)
+                    || Self::holds_string_ty(err, ctx, depth + 1)
+            }
+            RaskType::UnresolvedNamed(name) => {
+                if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
+                    return l.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1));
+                }
+                if let Some(l) = ctx.enum_layouts.iter().find(|l| &l.name == name) {
+                    return l.variants.iter().any(|v| {
+                        v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
+                    });
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Emit `rask_string_free` for every string `ty` holds at `base + offset`.
+    fn release_strings_mir(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &MirType,
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        if depth > Self::RC_WALK_DEPTH || !Self::holds_string_mir(ty, ctx, 0) {
+            return Ok(());
+        }
+        match ty {
+            MirType::String => Self::emit_string_release(builder, base, offset, ctx),
+            MirType::Option(inner) => Self::release_tagged(
+                builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
+                |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
+            ),
+            // Tag 0 is the good side for both shapes; 1 is `none` / the error.
+            MirType::Result { ok, err } => {
+                let ok = ok.clone();
+                let err = err.clone();
+                Self::release_either(
+                    builder, base, offset, crate::layouts::RESULT_PAYLOAD_OFFSET, ctx,
+                    |b, p, ctx| Self::release_strings_mir(b, p, 0, &ok, ctx, depth + 1),
+                    |b, p, ctx| Self::release_strings_mir(b, p, 0, &err, ctx, depth + 1),
+                )
+            }
+            MirType::Struct(id) => {
+                let Some(layout) = ctx.struct_layouts.get(id.id as usize) else { return Ok(()) };
+                let fields: Vec<_> = layout
+                    .fields
+                    .iter()
+                    .map(|f| (f.offset as i32, f.ty.clone()))
+                    .collect();
+                for (field_offset, field_ty) in fields {
+                    Self::release_strings_ty(
+                        builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
+                    )?;
+                }
+                Ok(())
+            }
+            MirType::Enum(id) => Self::release_enum_variants(builder, base, offset, *id, ctx, depth),
+            // Tuples aren't walked: their element offsets aren't recorded
+            // anywhere this can read, and guessing them would release the wrong
+            // sixteen bytes. A tuple of strings leaks rather than corrupts.
+            _ => Ok(()),
+        }
+    }
+
+    fn release_strings_ty(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &RaskType,
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        if depth > Self::RC_WALK_DEPTH || !Self::holds_string_ty(ty, ctx, 0) {
+            return Ok(());
+        }
+        match ty {
+            RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
+            RaskType::Result { ok, err } => {
+                let (ok, err) = ((**ok).clone(), (**err).clone());
+                let payload = if err == RaskType::None {
+                    crate::layouts::PAYLOAD_OFFSET
+                } else {
+                    crate::layouts::RESULT_PAYLOAD_OFFSET
+                };
+                Self::release_either(
+                    builder, base, offset, payload, ctx,
+                    |b, p, ctx| Self::release_strings_ty(b, p, 0, &ok, ctx, depth + 1),
+                    |b, p, ctx| Self::release_strings_ty(b, p, 0, &err, ctx, depth + 1),
+                )
+            }
+            RaskType::UnresolvedNamed(name) => {
+                if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
+                    let fields: Vec<_> =
+                        l.fields.iter().map(|f| (f.offset as i32, f.ty.clone())).collect();
+                    for (field_offset, field_ty) in fields {
+                        Self::release_strings_ty(
+                            builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
+                        )?;
+                    }
+                    return Ok(());
+                }
+                if let Some(idx) = ctx.enum_layouts.iter().position(|l| &l.name == name) {
+                    let id = rask_mir::EnumLayoutId::new(
+                        idx as u32,
+                        ctx.enum_layouts[idx].size,
+                        ctx.enum_layouts[idx].align,
+                    );
+                    return Self::release_enum_variants(builder, base, offset, id, ctx, depth);
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn emit_string_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let free_ref = ctx
+            .func_refs
+            .get("rask_string_free")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
+        let addr = if offset == 0 {
+            base
+        } else {
+            builder.ins().iadd_imm(base, offset as i64)
+        };
+        builder.ins().call(*free_ref, &[addr]);
+        Ok(())
+    }
+
+    /// Run `body` on the payload only when the tag says the payload is there.
+    fn release_tagged(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        payload_offset: i32,
+        ctx: &CodegenCtx,
+        body: impl FnOnce(&mut ClifFunctionBuilder, Value, &CodegenCtx) -> CodegenResult<()>,
+    ) -> CodegenResult<()> {
+        let tag = builder.ins().load(
+            types::I64,
+            MemFlags::new(),
+            base,
+            offset + crate::layouts::TAG_OFFSET,
+        );
+        let present = builder.create_block();
+        let done = builder.create_block();
+        let zero = builder.ins().iconst(types::I64, 0);
+        let is_present = builder.ins().icmp(IntCC::Equal, tag, zero);
+        builder.ins().brif(is_present, present, &[], done, &[]);
+
+        builder.switch_to_block(present);
+        builder.seal_block(present);
+        let payload = builder.ins().iadd_imm(base, (offset + payload_offset) as i64);
+        body(builder, payload, ctx)?;
+        builder.ins().jump(done, &[]);
+
+        builder.switch_to_block(done);
+        builder.seal_block(done);
+        Ok(())
+    }
+
+    /// The same, for a shape where both sides can hold a string.
+    fn release_either(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        payload_offset: i32,
+        ctx: &CodegenCtx,
+        on_ok: impl FnOnce(&mut ClifFunctionBuilder, Value, &CodegenCtx) -> CodegenResult<()>,
+        on_err: impl FnOnce(&mut ClifFunctionBuilder, Value, &CodegenCtx) -> CodegenResult<()>,
+    ) -> CodegenResult<()> {
+        let tag = builder.ins().load(
+            types::I64,
+            MemFlags::new(),
+            base,
+            offset + crate::layouts::TAG_OFFSET,
+        );
+        let ok_block = builder.create_block();
+        let err_block = builder.create_block();
+        let done = builder.create_block();
+        let zero = builder.ins().iconst(types::I64, 0);
+        let is_ok = builder.ins().icmp(IntCC::Equal, tag, zero);
+        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+        builder.switch_to_block(ok_block);
+        builder.seal_block(ok_block);
+        let payload = builder.ins().iadd_imm(base, (offset + payload_offset) as i64);
+        on_ok(builder, payload, ctx)?;
+        builder.ins().jump(done, &[]);
+
+        builder.switch_to_block(err_block);
+        builder.seal_block(err_block);
+        let payload = builder.ins().iadd_imm(base, (offset + payload_offset) as i64);
+        on_err(builder, payload, ctx)?;
+        builder.ins().jump(done, &[]);
+
+        builder.switch_to_block(done);
+        builder.seal_block(done);
+        Ok(())
+    }
+
+    /// One tag comparison per variant that actually holds a string.
+    fn release_enum_variants(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        id: rask_mir::EnumLayoutId,
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        let Some(layout) = ctx.enum_layouts.get(id.id as usize) else { return Ok(()) };
+        let tag_offset = layout.tag_offset as i32;
+        let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+        let tag_ty = match tag_size {
+            2 => types::I16,
+            4 => types::I32,
+            8 => types::I64,
+            _ => types::I8,
+        };
+        // Snapshot first: emitting reborrows the builder, and the layout lives
+        // in `ctx`.
+        let arms: Vec<(u64, Vec<(i32, RaskType)>)> = layout
+            .variants
+            .iter()
+            .filter(|v| v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, 0)))
+            .map(|v| {
+                (
+                    v.tag,
+                    v.fields
+                        .iter()
+                        .map(|f| ((v.payload_offset + f.offset) as i32, f.ty.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+        if arms.is_empty() {
+            return Ok(());
+        }
+
+        let tag = builder
+            .ins()
+            .load(tag_ty, MemFlags::new(), base, offset + tag_offset);
+        let tag = if tag_ty == types::I64 {
+            tag
+        } else {
+            builder.ins().uextend(types::I64, tag)
+        };
+
+        for (want, fields) in arms {
+            let hit = builder.create_block();
+            let next = builder.create_block();
+            let want_v = builder.ins().iconst(types::I64, want as i64);
+            let is_hit = builder.ins().icmp(IntCC::Equal, tag, want_v);
+            builder.ins().brif(is_hit, hit, &[], next, &[]);
+
+            builder.switch_to_block(hit);
+            builder.seal_block(hit);
+            for (field_offset, field_ty) in fields {
+                Self::release_strings_ty(
+                    builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
+                )?;
+            }
+            builder.ins().jump(next, &[]);
+
+            builder.switch_to_block(next);
+            builder.seal_block(next);
+        }
+        Ok(())
+    }
+
     fn build_join_result(
         builder: &mut ClifFunctionBuilder,
         dst_ss: StackSlot,
