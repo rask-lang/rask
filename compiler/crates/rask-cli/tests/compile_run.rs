@@ -6449,3 +6449,45 @@ fn float_assertion_message_agrees_across_backends() {
         "native and interpreter must render the same float assertion message"
     );
 }
+
+/// Every node this program types must come out with a real type — no inference
+/// variable left over.
+///
+/// The census (`RASK_TRACE_OPEN_NODES`) is the only way to see this. A leftover
+/// variable is invisible in a compiled program: MIR falls back to a machine word
+/// and an `i64` payload comes out right by coincidence, so the ordinary tests
+/// pass either way. They also passed before the two pattern fixes this guards.
+///
+/// What it guards: a generic enum reaches the constructor pattern as
+/// `Holder<f64>`, not as a plain named type, and only the plain shape used to be
+/// handled — every binding in the arm fell through to a fresh variable. A tuple
+/// pattern made a variable per element and left the "this is a (Value, Value)"
+/// constraint for the solver, which runs after the sub-patterns are checked, so
+/// they saw nothing either.
+#[test]
+fn open_nodes_pattern_bindings() {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture("pattern_bindings_typed.rk"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .env("RASK_TRACE_OPEN_NODES", "1")
+        .output()
+        .expect("failed to run rask check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "check failed:\n{stderr}");
+
+    let census = stderr
+        .lines()
+        .find(|l| l.contains("recorded types still hold an inference variable"))
+        .unwrap_or_else(|| panic!("no open-node census in:\n{stderr}"));
+    let count: u32 = census
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("could not read the count from: {census}"));
+    assert_eq!(
+        count, 0,
+        "{count} node(s) left holding an inference variable:\n{stderr}"
+    );
+}

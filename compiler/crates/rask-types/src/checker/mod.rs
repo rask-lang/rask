@@ -124,6 +124,10 @@ pub struct TypeChecker {
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
     stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
+    /// Where each node came from, for the census. A shape on its own says a
+    /// variable survived but not which expression produced it, which is the
+    /// only part you can act on. Only populated under `tracing_open_nodes`.
+    pub(super) node_origins: HashMap<NodeId, (rask_ast::Span, &'static str)>,
     /// Types assigned to symbols (for bindings without annotations).
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
@@ -361,6 +365,7 @@ impl TypeChecker {
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
+            node_origins: HashMap::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
@@ -599,10 +604,29 @@ impl TypeChecker {
                 "[open-nodes] {total} of {} recorded types still hold an inference variable ({stdlib_open} more in stdlib signatures, abstract-but-known)",
                 node_types.len(),
             );
-            let mut v: Vec<_> = shapes.into_iter().collect();
+            // Group by where the node came from, not by which variable id it
+            // holds. Ids are allocation order — two nodes with the same gap get
+            // different ids and look like two problems, while one line of source
+            // that produces eight open nodes looks like eight.
+            let mut sites: std::collections::BTreeMap<(usize, usize, &'static str), u32> =
+                Default::default();
+            let mut unattributed = 0u32;
+            for (id, ty) in node_types.iter() {
+                if !resolved_types::is_open_type(ty) || from_stdlib.contains(id) {
+                    continue;
+                }
+                match self.node_origins.get(id) {
+                    Some((span, kind)) => *sites.entry((span.start, span.end, kind)).or_insert(0) += 1,
+                    None => unattributed += 1,
+                }
+            }
+            let mut v: Vec<_> = sites.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1));
-            for (shape, n) in v.iter().take(25) {
-                eprintln!("[open-nodes] {n:>5}  {shape}");
+            for ((start, end, kind), n) in v.iter().take(25) {
+                eprintln!("[open-nodes] {n:>5}  bytes {start}..{end}  {kind}");
+            }
+            if unattributed > 0 {
+                eprintln!("[open-nodes] {unattributed:>5}  (no recorded origin)");
             }
         }
 

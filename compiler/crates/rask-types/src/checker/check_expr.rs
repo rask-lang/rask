@@ -2099,7 +2099,20 @@ impl TypeChecker {
         let ty = self.unwrap_try_chain_step(expr, ty);
 
         self.node_types.insert(expr.id, ty.clone());
+        self.note_node_origin(expr);
         ty
+    }
+
+
+    /// Remember where a node came from, for the open-node census. Off unless
+    /// `RASK_TRACE_OPEN_NODES` is set — a span and a kind name per expression
+    /// is not worth carrying otherwise.
+    fn note_node_origin(&mut self, expr: &Expr) {
+        if !crate::checker::resolved_types::tracing_open_nodes() {
+            return;
+        }
+        let kind = rask_ast::expr::expr_kind_name(&expr.kind);
+        self.node_origins.insert(expr.id, (expr.span, kind));
     }
 
     /// ER16a: mark every postfix step below `chain` as a candidate for the
