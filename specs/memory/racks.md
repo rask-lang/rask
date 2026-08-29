@@ -43,7 +43,7 @@ silent if you forget it.
 | Rule | Description |
 |------|-------------|
 | **RK1: Nodes live in a rack** | A `Rack<T>` owns its nodes' lifetime. Nodes have stable addresses: nothing the rack does moves them, so a link stays valid for as long as its node does |
-| **RK2: A link is a stored reference** | `Link<T>` may be held in a struct field, which no other Rask reference may be (`mem.borrowing/B1`). That is the whole point of the type |
+| **RK2: A link is a stored reference** | `Link<T>` may be held in a struct field, which no other Rask reference may be (`mem.borrowing/B1`). That is the whole point of the type. It is a machine word naming a node, so it copies rather than moves — pushing a link into a `Vec` leaves you with the link you started with, and the rack still owns the node. What kills a link is the delete, not the handing over: see RK5 |
 | **RK3: Delete nulls every incoming edge** | `rack.delete(n)` sets every `Link<T>?` field pointing at `n` to `none` before it returns. A link to a deleted node therefore cannot be observed — there is no stale link to check for, and no cleanup for the program to remember |
 | **RK4: Reads are unchecked** | Following a link is a pointer dereference. RK3 is what earns that: the invalid state doesn't exist, so nothing needs testing for it |
 

@@ -7,7 +7,7 @@ func reg_get(regs: Vec<Value>, idx: i64) -> Value {
     return regs.get(idx) ?? Value.None
 }
 
-func reg_set(mutate regs: Vec<Value>, idx: i64, val: Value) {
+func reg_set(mutate regs: Vec<Value>, idx: i64, take val: Value) {
     regs.set(idx, val)
 }
 

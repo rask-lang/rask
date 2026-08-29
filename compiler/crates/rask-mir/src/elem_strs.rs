@@ -27,8 +27,10 @@ pub const ELEM_STRUCT_BASE: i64 = 2;
 
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
-/// An enum is `ELEM_NONE` on purpose: where its string sits depends on its tag,
-/// so a flat list of offsets can't describe it. That case is #1027.
+/// An enum is `ELEM_NONE`: where its string sits depends on its tag, so a flat
+/// list of offsets can't describe one. Codegen walks the tag branches for an
+/// enum reached any other way, so what is uncovered is narrow — an enum nested
+/// inside a container element.
 pub fn tag_of(ty: Option<&MirType>) -> i64 {
     match ty {
         Some(MirType::String) => ELEM_STRING,
@@ -47,6 +49,9 @@ pub fn tag_of(ty: Option<&MirType>) -> i64 {
 /// come out of a call to one of these.
 pub const CTORS: &[(&str, u8, u8)] = &[
     ("Vec_new", 1, 1),
+    // `mut v: Vec<T> = []` and `Vec.from([...])`: the elements come from a
+    // static blob, but anything pushed later does not.
+    ("rask_vec_from_static", 3, 1),
     ("Vec_with_capacity", 2, 1),
     ("Vec_fixed", 2, 1),
     ("Map_new", 2, 2),

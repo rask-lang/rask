@@ -50,7 +50,7 @@ fn flatten(
         match &f.ty {
             RaskType::String => out.push(at),
             // A nested struct flattens into the same list. A nested *enum*
-            // doesn't — where its string is depends on the tag (#1027).
+            // doesn't — where its string is depends on the tag.
             RaskType::UnresolvedNamed(name) => {
                 if let Some(l) = layouts.iter().find(|l| &l.name == name) {
                     let nested = l.fields.clone();

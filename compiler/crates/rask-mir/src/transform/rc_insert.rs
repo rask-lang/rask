@@ -184,12 +184,13 @@ fn insert_aggregate_release(func: &mut MirFunction) {
                     MirRValue::Use(MirOperand::Local(_)) | MirRValue::Field { .. }
                 ),
                 MirStmtKind::Phi { .. } => true,
-                // A call gives up what it returns — unless it's a container
-                // accessor, which hands back a pointer into storage it keeps.
-                // A `Vec` or a `Map` is a byte store that doesn't touch
-                // refcounts, so who owns an element that came out of one is the
-                // question this pass can't answer (#1027).
-                MirStmtKind::Call { func: fref, .. } => !is_container_boundary(&fref.name),
+                // A call gives up what it returns — unless it hands back a
+                // view into storage its receiver keeps, the way `v.get(i)`
+                // points into the vector's own buffer. The declaration says
+                // which (`mir_metadata::returns_a_view`).
+                MirStmtKind::Call { func: fref, .. } => {
+                    !rask_stdlib::mir_metadata::returns_a_view(&fref.name)
+                }
                 // A pool element, a capture, a global, a dynamic call: all
                 // views into storage somebody else keeps.
                 _ => false,
@@ -468,19 +469,6 @@ fn aggregate_live_out(func: &MirFunction, groups: &[HashSet<LocalId>]) -> Vec<Ve
         }
     }
     live_out
-}
-
-/// Type prefixes whose functions store values, or hand them back out of
-/// storage they keep owning. Mirrors the list in `rc_elide`.
-const CONTAINER_PREFIXES: &[&str] = &[
-    "Vec_", "Map_", "Set_", "Deque_", "Rack_", "Pool_", "Link_",
-    "Channel_", "Sender_", "Receiver_",
-    "Shared_", "Mutex_", "Cell_", "Atomic",
-];
-
-fn is_container_boundary(name: &str) -> bool {
-    let head = name.rsplit("::").next().unwrap_or(name);
-    CONTAINER_PREFIXES.iter().any(|p| head.starts_with(p))
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would

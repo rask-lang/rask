@@ -13,7 +13,7 @@ extend Bin<T> {
         return Bin<T> { items: Vec.new() }
     }
 
-    func put(mutate self, value: T) {
+    func put(mutate self, take value: T) {
         self.items.push(value)
     }
 

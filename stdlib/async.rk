@@ -95,7 +95,7 @@ public struct Sender<T> { }
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
-    public func send(self, value: T) -> void or SendError {}
+    public func send(self, take value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
     @native("rask_channel_try_send_i64")

@@ -512,7 +512,7 @@ RaskVec *rask_map_entries(const RaskMap *m) {
     // ones programs actually iterate: a string key with a string value, and a
     // string key with anything else. Any other arrangement would need an
     // offsets array with the vector's own lifetime, so it gets none — and is
-    // exactly the case #1027 tracks.
+    // exactly the case #1035 tracks.
     const int32_t *pair_offs = NULL;
     int64_t n_pair_offs = 0;
     int key_is_str = m->key_strs.count == 1 && m->key_strs.offsets

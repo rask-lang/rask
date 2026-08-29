@@ -81,6 +81,14 @@ pub struct MethodStub {
     /// True if declared `take self` — method consumes the receiver.
     pub take_self: bool,
     pub params: Vec<(String, String)>, // (name, type)
+    /// Each parameter's declared mode, positionally matching `params`.
+    ///
+    /// `take` on a parameter is the declaration saying the callee keeps what it
+    /// is handed. That is the fact MIR needs to decide whether the caller still
+    /// owes a release on a string it passed — `v.push(s)` hands the reference
+    /// over, `m.get(k)` only reads it — and before this it had to guess from a
+    /// list of method names kept by hand in two passes.
+    pub param_modes: Vec<StubParamMode>,
     pub ret_ty: String,
     pub doc: Option<String>,
     pub source_file: String,
@@ -497,6 +505,14 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         .filter(|p| p.name != "self")
         .map(|p| (p.name.clone(), p.ty.clone()))
         .collect();
+    let param_modes: Vec<StubParamMode> = f.params.iter()
+        .filter(|p| p.name != "self")
+        .map(|p| StubParamMode {
+            is_take: p.is_take,
+            is_mutate: p.is_mutate,
+            is_deleting: p.is_deleting,
+        })
+        .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = strip_type_params(&f.name);
@@ -508,6 +524,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         mutate_self,
         take_self,
         params,
+        param_modes,
         ret_ty: f.ret_ty.clone().unwrap_or_default(),
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),

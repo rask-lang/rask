@@ -279,7 +279,7 @@ extend Compiler {
         self.scope.depth = self.scope.depth - 1
     }
 
-    func make_constant(self, val: Value) -> i64 {
+    func make_constant(self, take val: Value) -> i64 {
         // --- Add a constant to the pool ---
         return self.proto.add_constant(val)
     }

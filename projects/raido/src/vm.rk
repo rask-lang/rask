@@ -103,7 +103,7 @@ extend Vm {
         return self.registers.get(base + idx)!
     }
 
-    func set_reg(self, idx: i64, val: Value) {
+    func set_reg(self, idx: i64, take val: Value) {
         let base = if self.call_stack.len() > 0 {
             self.call_stack.last().base_reg
         } else {

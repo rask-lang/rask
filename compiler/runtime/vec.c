@@ -84,7 +84,8 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
 
 // elem_size comes from the caller: a static array of fat pointers (trait
 // objects, slices) has 16-byte elements, not 8.
-RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size) {
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
+                              const int32_t *str_offs, int64_t n_str_offs) {
     if (elem_size <= 0) elem_size = 8;
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     v->len = count;
@@ -92,13 +93,16 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     v->elem_size = elem_size;
     v->borrows = 0;
     v->bound = -1;
-    // Static data: any string in it is a literal with a sentinel refcount, so
-    // there is nothing to give back.
-    v->strs.offsets = NULL;
-    v->strs.count = 0;
+    v->strs.offsets = str_offs;
+    v->strs.count = n_str_offs;
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
+    // The elements are copied in, so this vector is a second owner of whatever
+    // they hold. A literal's sentinel refcount makes that free; a `["{a}",
+    // "{b}"]` built at runtime is the case that needs it, since the locals that
+    // made those strings release their own reference on the way out.
+    vec_retain_elems(v, 0, v->len);
     return v;
 }
 

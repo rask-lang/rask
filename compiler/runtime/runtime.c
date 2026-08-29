@@ -789,7 +789,7 @@ int64_t rask_file_read_bytes(int64_t file) {
     if (size < 0) size = 0;
     char *buf = (char *)rask_alloc((int64_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1);
+    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1, NULL, 0);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -1334,7 +1334,7 @@ int64_t rask_net_read_bytes(int64_t fd) {
             buf = (char *)rask_realloc(buf, cap / 2, cap);
         }
     }
-    RaskVec *v = rask_vec_from_static(buf, total, 1);
+    RaskVec *v = rask_vec_from_static(buf, total, 1, NULL, 0);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }

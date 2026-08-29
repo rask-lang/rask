@@ -28,42 +28,87 @@ use crate::{
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// Constructors that hand back a fresh container, and the function that frees
-/// what each one made.
+/// What frees a container made by `ctor`, or `None` if this isn't one.
 ///
-/// Only containers whose `free` the runtime actually exposes. A `Rack` or a
-/// `Pool` is usually held for a scope by design rather than built and dropped,
-/// but the rule is the same and costs nothing extra.
-const CONTAINERS: &[(&str, &str)] = &[
-    ("Vec_new", "Vec_free"),
-    ("Vec_with_capacity", "Vec_free"),
-    ("Vec_fixed", "Vec_free"),
-    ("Map_new", "Map_free"),
-    ("Map_new_string_keys", "Map_free"),
-];
-
+/// The constructors are `elem_strs::CTORS` — the same list lowering appends
+/// element tags to and codegen builds C signatures from. The free is that
+/// type's own, and it now takes nothing but the container: it knows what its
+/// elements are.
 fn free_for(ctor: &str) -> Option<&'static str> {
-    CONTAINERS.iter().find(|(c, _)| *c == ctor).map(|(_, f)| *f)
-}
-
-/// Type prefixes whose methods borrow their receiver. Mirrors the lists in
-/// `rc_insert` and `rc_elide`.
-fn is_container_method(name: &str) -> bool {
-    const PREFIXES: &[&str] = &[
-        "Vec_", "Map_", "Set_", "Deque_", "Rack_", "Pool_", "Link_",
-    ];
-    let head = name.rsplit("::").next().unwrap_or(name);
-    PREFIXES.iter().any(|p| head.starts_with(p))
-}
-
-pub fn insert_container_drops(fns: &mut [MirFunction]) {
-    for func in fns.iter_mut() {
-        insert_for_function(func);
+    match crate::elem_strs::CTORS.iter().find(|(c, _, _)| *c == ctor)?.0 {
+        c if c.starts_with("Vec_") || c.starts_with("rask_vec_") => Some("Vec_free"),
+        c if c.starts_with("Map_") => Some("Map_free"),
+        _ => None,
     }
 }
 
-fn insert_for_function(func: &mut MirFunction) {
-    let fresh = collect_fresh_containers(func);
+pub fn insert_container_drops(fns: &mut [MirFunction]) {
+    let handing_over = functions_that_hand_a_container_back(fns);
+    for func in fns.iter_mut() {
+        insert_for_function(func, &handing_over);
+    }
+}
+
+/// Functions that build a container and return it, so the caller owns what
+/// comes back.
+///
+/// Without this a container only ever belonged to the frame that called the
+/// constructor. `make_vec()` returning a `Vec<string>` was freed by nobody:
+/// the callee saw it escape through the return and left it alone, and the
+/// caller saw a call result, which is somebody else's by default. Nine
+/// allocations a call, silently.
+///
+/// It's a fixed point because handing one back is transitive — a wrapper that
+/// returns what `make_vec` gave it is handing one back too. Only functions
+/// this pass can see count: a container from the runtime (`split`, `map.keys`)
+/// still has no owner named here, because reading an element out of one
+/// doesn't take a reference — #1035.
+fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, &'static str> {
+    let mut handing: HashMap<String, &'static str> = HashMap::new();
+    loop {
+        let mut grew = false;
+        for func in fns {
+            if handing.contains_key(&func.name) {
+                continue;
+            }
+            let fresh = collect_fresh_containers_with(func, &handing);
+            if fresh.is_empty() {
+                continue;
+            }
+            // Every returning path has to hand back one this frame made. One
+            // that doesn't is the whole risk here: `lookup` returns
+            // `index.get(word) ?? Vec.new()` — a fresh vector on one path and
+            // the map's own on the other — and calling that "the caller's"
+            // frees a vector the map still holds.
+            let mut free_fn: Option<&'static str> = None;
+            let mut all_fresh = true;
+            let mut any = false;
+            for b in &func.blocks {
+                let MirTerminatorKind::Return { value: Some(v), .. } = &b.terminator.kind else {
+                    continue;
+                };
+                any = true;
+                match v {
+                    MirOperand::Local(id) => match fresh.get(id) {
+                        Some(f) => free_fn = Some(f),
+                        None => all_fresh = false,
+                    },
+                    _ => all_fresh = false,
+                }
+            }
+            if let (true, true, Some(free)) = (any, all_fresh, free_fn) {
+                handing.insert(func.name.clone(), free);
+                grew = true;
+            }
+        }
+        if !grew {
+            return handing;
+        }
+    }
+}
+
+fn insert_for_function(func: &mut MirFunction, handing_over: &HashMap<String, &'static str>) {
+    let fresh = collect_fresh_containers_with(func, handing_over);
     if fresh.is_empty() {
         return;
     }
@@ -106,18 +151,13 @@ fn insert_for_function(func: &mut MirFunction) {
     insert_drops(func, &droppable);
 }
 
-/// What each container's elements own, read off what gets put into it.
-///
-/// The container carries only its element *size*, which can't tell a
-/// sixteen-byte string from a sixteen-byte struct — and the element type isn't
-/// on the local either, which is an opaque handle by the time it reaches MIR.
-/// But the pushes and inserts are right here, and their arguments are typed.
-///
-/// A container filled some other way — decoded, built from a static — reads as
-/// owning nothing and leaks its elements as before. Narrower than the general
-/// case, not wronger: too few releases is a leak, too many is a double free.
-/// Locals holding a container this function made, mapped to how to free it.
-fn collect_fresh_containers(func: &MirFunction) -> HashMap<LocalId, &'static str> {
+/// Locals holding a container this frame owns, mapped to how to free it: the
+/// destination of a constructor, and of a call to a function that builds one
+/// and hands it back.
+fn collect_fresh_containers_with(
+    func: &MirFunction,
+    handing_over: &HashMap<String, &'static str>,
+) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -127,6 +167,9 @@ fn collect_fresh_containers(func: &MirFunction) -> HashMap<LocalId, &'static str
                 let base = head.split('$').next().unwrap_or(head);
                 if let Some(free) = free_for(base) {
                     fresh.insert(*dst, free);
+                } else if let Some(free) = handing_over.get(&fref.name) {
+                    // The callee's own constructor decided which free this is.
+                    fresh.insert(*dst, free);
                 }
             }
         }
@@ -134,6 +177,8 @@ fn collect_fresh_containers(func: &MirFunction) -> HashMap<LocalId, &'static str
     if fresh.is_empty() {
         return fresh;
     }
+
+    let made_here: HashSet<LocalId> = fresh.keys().copied().collect();
 
     // The same value under a new name: follow it, so the name still holding it
     // at its death is the one that gets freed.
@@ -168,7 +213,62 @@ fn collect_fresh_containers(func: &MirFunction) -> HashMap<LocalId, &'static str
             break;
         }
     }
+
+    // A name is only this frame's if *every* way of reaching it is. Following
+    // a copy forwards says "one path put a fresh container here"; it doesn't
+    // say the other path didn't put somebody else's there.
+    //
+    //     func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
+    //         return index.get(word) ?? Vec.new()
+    //     }
+    //
+    // One name holds the map's own vector on one path and a fresh one on the
+    // other. Calling that name this frame's freed the map's vector, and the
+    // next lookup read memory that was already gone.
+    loop {
+        let doomed: Vec<LocalId> = fresh
+            .keys()
+            .copied()
+            .filter(|id| !made_here.contains(id) && !every_def_is_fresh(func, *id, &fresh))
+            .collect();
+        if doomed.is_empty() {
+            break;
+        }
+        for id in doomed {
+            fresh.remove(&id);
+        }
+    }
     fresh
+}
+
+/// Does every definition of `local` put a container this frame made into it?
+fn every_def_is_fresh(
+    func: &MirFunction,
+    local: LocalId,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> bool {
+    let mut any = false;
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if crate::analysis::uses::stmt_def(stmt) != Some(local) {
+                continue;
+            }
+            any = true;
+            let ok = match &stmt.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
+                    fresh.contains_key(src)
+                }
+                MirStmtKind::Phi { args, .. } => args.iter().all(|(_, op)| {
+                    matches!(op, MirOperand::Local(src) if fresh.contains_key(src))
+                }),
+                _ => false,
+            };
+            if !ok {
+                return false;
+            }
+        }
+    }
+    any
 }
 
 /// Containers the lowering already frees itself.
@@ -275,7 +375,7 @@ fn find_escaping(
             match &stmt.kind {
                 MirStmtKind::Call { func: fref, args, .. } => {
                     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                    let skip_receiver = is_container_method(head) && !args.is_empty();
+                    let skip_receiver = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
                     let start = if skip_receiver { 1 } else { 0 };
                     for arg in &args[start..] {
                         mark(arg, &mut escaping);

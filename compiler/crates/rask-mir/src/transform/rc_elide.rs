@@ -21,33 +21,6 @@ pub fn elide_rc_ops(func: &mut MirFunction) {
     cancel_inc_dec_pairs(func);
 }
 
-/// Type prefixes whose functions store a string, or hand one back out of
-/// storage they keep owning.
-///
-/// A `Vec` or a `Map` is a byte store: `push` memcpys the sixteen bytes in and
-/// `get` hands back a pointer to them, and neither touches the refcount. So a
-/// string that crosses one of these has no owner the count knows about, and the
-/// only rule that doesn't crash is the one in force today — the reference moves
-/// in and is never released, and a read borrows without taking one. That leaks
-/// the elements when the container dies, which is a real bug (#1027) and a
-/// different one: fixing it means the container releasing what it holds, which
-/// means it has to know its elements are strings.
-///
-/// Until then, a string that touches one of these keeps its ops elided, exactly
-/// as before. Everything that doesn't gets its release back.
-const CONTAINER_PREFIXES: &[&str] = &[
-    "Vec_", "Map_", "Set_", "Deque_", "Rack_", "Pool_", "Link_",
-    "Channel_", "Sender_", "Receiver_",
-    "Shared_", "Mutex_", "Cell_", "Atomic",
-];
-
-fn is_container_boundary(name: &str) -> bool {
-    // MIR names a stdlib method `<Type>_<method>`, and a monomorphized one
-    // carries a `$` suffix. Match on the head so `Vec_push$string` counts.
-    let head = name.rsplit("::").next().unwrap_or(name);
-    CONTAINER_PREFIXES.iter().any(|p| head.starts_with(p))
-}
-
 /// String locals holding a reference this function didn't take itself.
 ///
 /// RE2's premise is that a string that never escapes has balanced RC ops: the
@@ -100,52 +73,32 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
     owned
 }
 
-/// String locals that cross a container boundary — see `CONTAINER_PREFIXES`.
-/// Container calls that copy a string argument into storage they keep.
-///
-/// The rest only read theirs — `m.get(key)` compares the key and forgets it —
-/// so the caller still owns it and still has to release it. Treating every
-/// container call as consuming leaked the lookup key of every `get`, `contains`
-/// and `remove` in the language.
-///
-/// Wrong in this direction costs a leak; wrong the other way costs a double
-/// free. So the list is the storing ones, enumerated from the runtime — the
-/// functions that `memcpy` an argument into the container — and everything else
-/// is a borrow.
-fn consumes_its_argument(name: &str) -> bool {
-    const CONSUMING: &[&str] = &[
-        "Vec_push", "Vec_try_push", "Vec_set", "Vec_insert",
-        "Map_insert", "Map_set",
-        "Channel_send", "Sender_send",
-        "Shared_new", "Mutex_new", "Cell_new",
-        "Rack_insert", "Pool_insert",
-    ];
-    let head = name.rsplit("::").next().unwrap_or(name);
-    let base = head.split('$').next().unwrap_or(head);
-    CONSUMING.contains(&base)
-}
-
+/// String locals that cross a stdlib boundary that takes the reference with it.
 fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
     let mut touched: HashSet<LocalId> = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
             let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
-            if !is_container_boundary(&fref.name) {
-                continue;
-            }
-            // Anything a container hands back. `get` and `index` return a
-            // pointer into storage it still owns; `pop` and `remove` transfer
-            // out. Nothing here can tell them apart, so both leak rather than
-            // risk releasing what the container still holds (#1027).
-            if let Some(dst) = dst {
-                if string_locals.contains(dst) {
-                    touched.insert(*dst);
+            // A string the call points at rather than hands over: `v.get(i)`
+            // returns the buffer's own sixteen bytes, and the vector releases
+            // them when it dies. Releasing here as well would free it twice.
+            //
+            // `pop` and `remove` do transfer out, and read the same way from a
+            // signature — so they stay elided too, and leak rather than risk
+            // the double free (#1035).
+            if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+                if let Some(dst) = dst {
+                    if string_locals.contains(dst) {
+                        touched.insert(*dst);
+                    }
                 }
             }
-            if !consumes_its_argument(&fref.name) {
-                continue;
-            }
-            for arg in args {
+            // An argument the callee keeps. The reference moves in with it, so
+            // this function no longer owes a release on it.
+            for (i, arg) in args.iter().enumerate() {
+                if !rask_stdlib::mir_metadata::keeps_argument(&fref.name, i) {
+                    continue;
+                }
                 if let Some(id) = crate::analysis::uses::operand_local(arg) {
                     if string_locals.contains(&id) {
                         touched.insert(id);

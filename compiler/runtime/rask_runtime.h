@@ -106,7 +106,8 @@ extern const int32_t rask_elem_strs_pair[2];
 RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs);
-RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
+                              const int32_t *str_offs, int64_t n_str_offs);
 // Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
 // Takes a reference to every string the elements hold. A container built by
