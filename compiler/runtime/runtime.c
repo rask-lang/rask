@@ -2157,6 +2157,10 @@ int main(int argc, char **argv) {
     if (checks_env && checks_env[0] == '1') {
         rask_runtime_checks_enabled = 1;
     }
+    const char *strdbg_env = getenv("RASK_STRING_DEBUG");
+    if (strdbg_env && strdbg_env[0] == '1') {
+        rask_string_debug_enabled = 1;
+    }
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();

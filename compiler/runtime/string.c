@@ -98,12 +98,47 @@ void rask_string_from_bytes(RaskStr *out, const char *data, int64_t len) {
 
 // ─── RC operations ──────────────────────────────────────────
 
+// `RASK_STRING_DEBUG=1` turns a wrong refcount into a message instead of a
+// silent wrong answer.
+//
+// Getting string ownership wrong reads as data corruption several steps later:
+// the buffer is freed, malloc hands the same bytes to the next allocation, and
+// what comes out is the *other* value. That's most of a day of bisecting, every
+// time. Under this flag a buffer that reaches zero is filled with 0xDE and its
+// refcount is set to a poison word, and the allocation is deliberately kept —
+// so the next touch of the same header lands on the poison and says so, naming
+// the operation, instead of landing on whatever moved in.
+//
+// It leaks by construction. That's the point: the process is meant to die on
+// the first mistake, not to survive.
+#define RASK_RC_POISON ((uint32_t)0xDEADBEEF)
+
+int rask_string_debug_enabled = 0;
+
+static void rc_poison_check(const uint32_t *rc, const char *op) {
+    if (*rc != RASK_RC_POISON) return;
+    fprintf(stderr,
+            "rask: string %s on a buffer that was already released\n"
+            "  the last reference was dropped and something still points at it\n",
+            op);
+    fflush(stderr);
+    abort();
+}
+
 void rask_string_free(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "release");
+    }
     if (__atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0) {
         uint32_t cap = heap_cap(s);
+        if (__builtin_expect(rask_string_debug_enabled, 0)) {
+            memset(s->heap.header + 8, 0xDE, (size_t)cap + 1);
+            *rc = RASK_RC_POISON;
+            return;
+        }
         rask_realloc(s->heap.header, 8 + cap + 1, 0);
     }
 }
@@ -112,6 +147,9 @@ void rask_string_clone(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "retain");
+    }
     __atomic_add_fetch(rc, 1, __ATOMIC_RELAXED);
 }
 

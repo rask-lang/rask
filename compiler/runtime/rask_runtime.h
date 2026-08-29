@@ -152,6 +152,12 @@ void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
 void        rask_string_free(const RaskStr *s);
 void        rask_string_clone(const RaskStr *s);
 
+// `RASK_STRING_DEBUG=1`: a released string buffer is poisoned and kept rather
+// than returned to the allocator, so the next retain or release of it says so
+// and aborts instead of corrupting whatever moved into those bytes. Leaks by
+// design — a debugging mode, not a hardening one.
+extern int  rask_string_debug_enabled;
+
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
