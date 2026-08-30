@@ -183,6 +183,9 @@ pub struct InferenceContext {
     /// What each unsuffixed integer literal said, so the default can widen when
     /// i32 is too narrow to hold it.
     pub(super) literal_int_values: HashMap<TypeVarId, i128>,
+    /// Variables with an answer of last resort: used only if nothing else
+    /// constrains them. See `default_var_to`.
+    pub(super) var_defaults: HashMap<TypeVarId, Type>,
 }
 
 impl InferenceContext {
@@ -283,6 +286,39 @@ impl InferenceContext {
             }
         }
         self.substitutions.extend(defaults);
+    }
+
+    /// Give a variable an answer of last resort.
+    ///
+    /// A closure whose body diverges is the case this exists for.
+    /// `spawn(|| { panic("boom") })` never returns, so no constraint ever
+    /// reaches the closure's return variable and inference finishes with it
+    /// open — which used to leave every consumer inventing a width for a value
+    /// that doesn't exist. `Never` is the honest answer and it already lowers
+    /// to void.
+    ///
+    /// A default, not a binding, because a `return` in the same body is a real
+    /// constraint and has to win. Return coercions are deferred, so at the
+    /// point the closure is checked there is no way to know yet whether one
+    /// exists.
+    pub fn default_var_to(&mut self, id: TypeVarId, ty: Type) {
+        self.var_defaults.insert(id, ty);
+    }
+
+    /// Apply the answers of last resort, for variables nothing else solved.
+    pub fn apply_var_defaults(&mut self) {
+        let pending: Vec<(TypeVarId, Type)> = self
+            .var_defaults
+            .iter()
+            .map(|(&id, ty)| (id, ty.clone()))
+            .collect();
+        for (id, ty) in pending {
+            // Follow the chain, the same way literal defaults do: the variable
+            // may have been unified with another that is itself still open.
+            if let Type::Var(tail) = self.apply(&Type::Var(id)) {
+                self.substitutions.insert(tail, ty);
+            }
+        }
     }
 
     /// Add a constraint.

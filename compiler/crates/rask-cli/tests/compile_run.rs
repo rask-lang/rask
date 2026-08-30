@@ -6449,3 +6449,174 @@ fn float_assertion_message_agrees_across_backends() {
         "native and interpreter must render the same float assertion message"
     );
 }
+
+/// Every node this program types must come out with a real type — no inference
+/// variable left over.
+///
+/// The census (`RASK_TRACE_OPEN_NODES`) is the only way to see this. A leftover
+/// variable is invisible in a compiled program: MIR falls back to a machine word
+/// and an `i64` payload comes out right by coincidence, so the ordinary tests
+/// pass either way. They also passed before the two pattern fixes this guards.
+///
+/// What it guards. A generic enum reaches the constructor pattern as
+/// `Holder<f64>`, not as a plain named type, and only the plain shape used to be
+/// handled — every binding in the arm fell through to a fresh variable. A tuple
+/// pattern made a variable per element and left the "this is a (Value, Value)"
+/// constraint for the solver, which runs after the sub-patterns are checked, so
+/// they saw nothing either. And `none` has no payload type of its own: neither
+/// `x == none` nor `catch _ => none` tied it to the type it was standing in
+/// for.
+#[test]
+fn open_nodes_pattern_bindings() {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture("pattern_bindings_typed.rk"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .env("RASK_TRACE_OPEN_NODES", "1")
+        .output()
+        .expect("failed to run rask check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "check failed:\n{stderr}");
+
+    let census = stderr
+        .lines()
+        .find(|l| l.contains("recorded types still hold an inference variable"))
+        .unwrap_or_else(|| panic!("no open-node census in:\n{stderr}"));
+    let count: u32 = census
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("could not read the count from: {census}"));
+    assert_eq!(
+        count, 0,
+        "{count} node(s) left holding an inference variable:\n{stderr}"
+    );
+}
+
+/// A loop that builds and drops heap strings must not grow.
+///
+/// This is a memory test, so it reads peak RSS out of `/proc/<pid>/status`
+/// rather than believing the program. Two hundred thousand turns, five heap
+/// strings each: leaking any one of them is several MB of growth, and the
+/// threshold below is far enough above the flat case (~2.2 MB) that it doesn't
+/// care about allocator behaviour.
+///
+/// What it guards, all of it #1024:
+///
+/// - `comp.string-refcount-elision/RE2` says a string that never escapes
+///   should "skip all *atomic* ops — refcount stays at 1, free on drop". The
+///   pass dropped the free along with the atomics.
+/// - A literal too long for SSO was materialized by a call that allocates, so
+///   every evaluation of one leaked it — while RE3 skipped its RC ops on the
+///   grounds that literals carry a sentinel refcount and are never freed.
+/// - An aggregate owns the strings it holds, and nothing released them when
+///   the aggregate died: a struct field, a `T?` payload, a `T or E` payload.
+///
+/// Nothing else in the suite can see any of it. The values are all correct;
+/// there's just no memory coming back.
+#[test]
+#[cfg(target_os = "linux")]
+fn string_release_loop_does_not_grow() {
+    use std::io::Read;
+
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_rss_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("string_release_loop.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let mut child = Command::new(&bin)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start the compiled binary");
+
+    // Poll while it runs; VmHWM is gone once the process is reaped.
+    let mut peak_kb: u64 = 0;
+    loop {
+        match child.try_wait().expect("wait failed") {
+            Some(status) => {
+                assert!(status.success(), "the compiled binary exited {status}");
+                break;
+            }
+            None => {
+                if let Ok(mut f) = std::fs::File::open(format!("/proc/{}/status", child.id())) {
+                    let mut s = String::new();
+                    if f.read_to_string(&mut s).is_ok() {
+                        for line in s.lines() {
+                            if let Some(rest) = line.strip_prefix("VmHWM:") {
+                                if let Some(n) = rest.split_whitespace().next() {
+                                    if let Ok(kb) = n.parse::<u64>() {
+                                        peak_kb = peak_kb.max(kb);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    assert!(peak_kb > 0, "never managed to read VmHWM — the poll lost the race");
+    assert!(
+        peak_kb < 6_000,
+        "peak RSS {peak_kb} kB over 200k turns — flat is ~2200 kB and leaking one \
+         string per turn is ~17500 kB, so this is a leak"
+    );
+}
+
+/// A program that builds every shape which owns memory must end owning none.
+///
+/// `RASK_LEAK_CHECK=1` makes the runtime report anything it allocated and never
+/// gave back and exit 97. A clean program ends at exactly zero — the runtime
+/// itself holds nothing at exit — so this is a gate rather than a threshold.
+///
+/// What it guards, #1024 and #1027: a heap string built and dropped in one
+/// frame, one handed over by a callee, one held by a struct field, a `T?`
+/// payload, a `T or E` payload, a tuple element, and a `Vec` and a `Map` —
+/// their handles, their data arrays, and their elements. Every one of those
+/// leaked, and none of them had a symptom: the answers were all correct.
+#[test]
+fn nothing_leaks_at_exit() {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_leak_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("leak_free_shapes.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let run = Command::new(&bin)
+        .env("RASK_LEAK_CHECK", "1")
+        .output()
+        .expect("failed to run the compiled binary");
+    assert!(
+        run.status.success(),
+        "the program leaked:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

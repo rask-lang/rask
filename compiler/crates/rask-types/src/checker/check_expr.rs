@@ -160,6 +160,17 @@ impl TypeChecker {
                 self.node_types.insert(expr.id, ty.clone());
                 return ty;
             }
+            // `none` carries no payload type of its own, so the slot it lands in
+            // is the only thing that can say what it's an absent *what*. Typed
+            // from itself it comes out `Option<?>` and the variable is still
+            // there at the end — the unification that should have closed it runs
+            // after the node has been recorded.
+            ExprKind::None if expected.is_option() => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                self.note_node_origin(expr);
+                return ty;
+            }
             // CV1a: push the expectation into a tuple literal's elements, so each
             // one is checked against the slot it fills and the tuple's recorded
             // type is the annotated shape. Typed from its elements instead, the
@@ -1351,11 +1362,19 @@ impl TypeChecker {
                     // the whole expression produces, so it passes straight
                     // through — marking it "keeps shape" would make both
                     // backends re-wrap and hand back a `T??` (#634).
+                    //
+                    // Either way the `none` is that same optional. Its own node
+                    // was typed before we knew which, from nothing but the word
+                    // `none`, so it kept an empty payload variable unless it's
+                    // tied to the answer here.
                     if ok_ty.is_option() {
+                        let _ = self.unify(&body_ty, &ok_ty, clause.body.span);
                         return ok_ty;
                     }
                     self.fallback_keeps_shape.insert(expr.id);
-                    return Type::option(ok_ty);
+                    let result = Type::option(ok_ty);
+                    let _ = self.unify(&body_ty, &result, clause.body.span);
+                    return result;
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
@@ -1545,6 +1564,17 @@ impl TypeChecker {
                     }
                     expected_ret
                 } else {
+                    // A body that diverges returns nothing, so no constraint
+                    // reaches the return variable: `spawn(|| { panic("boom") })`
+                    // finished inference with it open, and every consumer
+                    // downstream then invented a width for a value that never
+                    // exists. Register `Never` as the answer of last resort — a
+                    // `return` in the same body coerces later and wins.
+                    if matches!(inferred_ret, Type::Never) && !body_returns_a_value(body) {
+                        if let Type::Var(id) = self.ctx.apply(&closure_return_type) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                     closure_return_type
                 };
 
@@ -2088,7 +2118,20 @@ impl TypeChecker {
         let ty = self.unwrap_try_chain_step(expr, ty);
 
         self.node_types.insert(expr.id, ty.clone());
+        self.note_node_origin(expr);
         ty
+    }
+
+
+    /// Remember where a node came from, for the open-node census. Off unless
+    /// `RASK_TRACE_OPEN_NODES` is set — a span and a kind name per expression
+    /// is not worth carrying otherwise.
+    fn note_node_origin(&mut self, expr: &Expr) {
+        if !crate::checker::resolved_types::tracing_open_nodes() {
+            return;
+        }
+        let kind = rask_ast::expr::expr_kind_name(&expr.kind);
+        self.node_origins.insert(expr.id, (expr.span, kind));
     }
 
     /// ER16a: mark every postfix step below `chain` as a candidate for the
@@ -2573,6 +2616,19 @@ impl TypeChecker {
 
 
     /// Validate that call-site annotations match parameter declarations.
+    /// Check that call-site `mutate`/`take` annotations match the declaration.
+    ///
+    /// This reads the callee's parameter *symbols*, so it does nothing for a
+    /// callee that has none. Stdlib stubs used to be exactly that — the resolver
+    /// registered them with an empty parameter list — which meant these rules
+    /// silently did not apply to any stdlib call. Stubs carry their real
+    /// parameters and modes now, so the checks apply there like anywhere else.
+    ///
+    /// Nothing changed for existing code: the only `public func` stub taking a
+    /// mode is `drop(take ptr: Heap)`, and `drop` returns before reaching here.
+    /// A stub added later with a `mutate` parameter will start enforcing at its
+    /// call sites, which is the intent — noted because it turned on as a side
+    /// effect of fixing the parameter list, not as a change written here.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
         use rask_ast::expr::ArgMode;
         use rask_resolve::SymbolKind;
@@ -4927,4 +4983,49 @@ fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
         }
         _ => InvalidCastClass::Other,
     }
+}
+
+/// Does this closure body hand a value out through a `return`?
+///
+/// A body's type is `Never` both when it panics and when it ends in `return x`
+/// — control doesn't fall off the end either way. Only the first means no value
+/// ever comes out, and that's the one whose return type nothing constrains.
+/// Nested closures don't count: their `return` returns from them.
+fn body_returns_a_value(body: &Expr) -> bool {
+    fn in_stmts(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(in_stmt)
+    }
+    fn in_stmt(stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return(Some(_)) => true,
+            StmtKind::Expr(e) => in_expr(e),
+            StmtKind::Let { init, .. } => in_expr(init),
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::Loop { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Comptime(body) => in_stmts(body),
+            StmtKind::Ensure { body, else_handler } => {
+                in_stmts(body)
+                    || else_handler.as_ref().map_or(false, |(_, h)| in_stmts(h))
+            }
+            _ => false,
+        }
+    }
+    fn in_expr(expr: &Expr) -> bool {
+        match &expr.kind {
+            // A nested closure's `return` is its own.
+            ExprKind::Closure { .. } => false,
+            ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+                in_stmts(body)
+            }
+            ExprKind::If { then_branch, else_branch, .. } => {
+                in_expr(then_branch)
+                    || else_branch.as_ref().map_or(false, |e| in_expr(e))
+            }
+            ExprKind::Match { arms, .. } => arms.iter().any(|a| in_expr(&a.body)),
+            _ => false,
+        }
+    }
+    in_expr(body)
 }

@@ -80,13 +80,43 @@ void    rask_resource_scope_check(int64_t scope_depth);
 
 typedef struct RaskVec RaskVec;
 
-RaskVec *rask_vec_new(int64_t elem_size);
-RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
-RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
+// Where the strings sit inside one element.
+//
+// A container is a byte store: it knows how big an element is and nothing
+// else, so it can't tell a sixteen-byte string from a sixteen-byte struct. It
+// is told once, at construction, by the only place that knows the element type
+// — lowering, reading the checker. From then on the map travels with the
+// value, through a return, into another function, across an inlining, so
+// `free` needs no argument and no caller has to work the answer out again.
+//
+// `offsets` is NULL and `count` 0 when the elements own nothing. Built by
+// codegen's `string_offsets_of` from the element tag lowering emitted.
+typedef struct {
+    const int32_t *offsets;
+    int64_t        count;
+} RaskElemStrs;
+
+// Two maps the runtime needs constantly: a container of bare strings (one
+// string, at offset zero) and one of (string, string) pairs — `split`,
+// `lines`, `os.args`, `env_vars`, HTTP headers. The runtime builds those
+// itself and hands them to the program, which is what frees them.
+extern const int32_t rask_elem_strs_one[1];
+extern const int32_t rask_elem_strs_pair[2];
+
+RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
+                                const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
+                              const int32_t *str_offs, int64_t n_str_offs);
+// Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
+// Takes a reference to every string the elements hold. A container built by
+// copying another's elements owns them only after this.
+void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
-RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
+                        const int32_t *str_offs, int64_t n_str_offs);
 int64_t  rask_vec_bound(const RaskVec *v);
 int64_t  rask_vec_remaining(const RaskVec *v);
 int64_t  rask_vec_is_bounded(const RaskVec *v);
@@ -151,6 +181,18 @@ void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
 // RC operations — codegen calls after inline tag check (RC5)
 void        rask_string_free(const RaskStr *s);
 void        rask_string_clone(const RaskStr *s);
+
+// `RASK_STRING_DEBUG=1`: a released string buffer is poisoned and kept rather
+// than returned to the allocator, so the next retain or release of it says so
+// and aborts instead of corrupting whatever moved into those bytes. Leaks by
+// design — a debugging mode, not a hardening one.
+extern int  rask_string_debug_enabled;
+
+// `RASK_LEAK_CHECK=1`: at the end of `main`, anything this program allocated
+// and never gave back is reported and the process exits 97. Every
+// `rask_alloc`, not just strings — a clean program ends at exactly zero.
+extern int  rask_leak_check_enabled;
+void        rask_leak_check(void);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
@@ -384,10 +426,16 @@ typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
 void    *rask_map_borrow_elem(RaskMap *m, const void *key);
 void     rask_map_release_elem(RaskMap *m);
 
-RaskMap *rask_map_new(int64_t key_size, int64_t val_size);
-RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
+// The two element maps are the keys' and the values'. See `RaskElemStrs`.
+RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
+                      const int32_t *key_offs, int64_t n_key_offs,
+                      const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
+                                  const int32_t *key_offs, int64_t n_key_offs,
+                                  const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
+// Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
@@ -923,7 +971,7 @@ int64_t   rask_green_join_simple(void *handle);
 int64_t   rask_green_cancel_simple(void *handle);
 
 // Closure-based spawn (bridge for codegen before state machine transform).
-void     *rask_green_closure_spawn(void *closure_ptr);
+void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // Yield helpers — called by state machines to pause on I/O.
 void      rask_yield_read(int fd, void *buf, size_t len);
@@ -976,7 +1024,7 @@ int64_t rask_sleep_ns(int64_t ns);
 
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are
@@ -992,7 +1040,9 @@ void rask_threadpool_shutdown(void);
 // ThreadPool.spawn — enqueues a job and hands back the same handle shape
 // Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
 // `using ThreadPool` block there is no pool, so it falls back to one thread.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+struct RaskTaskState;
+void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);

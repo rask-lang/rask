@@ -8,7 +8,7 @@ extend Stack<T> {
         return Stack { items: Vec.new() }
     }
 
-    func push(mutate self, value: T) {
+    func push(mutate self, take value: T) {
         self.items.push(value)
     }
 

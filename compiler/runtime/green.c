@@ -51,6 +51,16 @@ typedef struct GreenTask {
     atomic_int      task_state;
     atomic_int      cancel_flag;
     int64_t         result;
+    // Non-zero when `result` is a heap box this task owns rather than a plain
+    // value. A task's result travels as one machine word, so anything wider —
+    // and anything that comes back in a float register — is allocated by the
+    // spawn thunk and the word is its address. Somebody has to free it, and the
+    // task is the only party present at every ending: joined, cancelled, or
+    // detached and never looked at.
+    //
+    // `rask_green_join` hands ownership to the joiner by clearing `result`, so
+    // exactly one of the two frees it (#963).
+    int64_t         result_owned;
     char           *panic_msg;
 
     // Completion signaling
@@ -283,6 +293,9 @@ static void task_release(GreenTask *t) {
         pthread_cond_destroy(&t->done_cond);
         if (t->panic_msg) free(t->panic_msg);
         if (t->state) free(t->state);
+        // Still set means nobody took it — a detached task whose value no join
+        // ever came for.
+        if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
         free(t);
     }
 }
@@ -628,6 +641,9 @@ int64_t rask_green_join(void *handle, char **msg_out) {
     pthread_mutex_unlock(&t->done_lock);
 
     int64_t result = t->result;
+    // Ownership of a boxed result moves to the caller here: clearing it stops
+    // `task_release` below from freeing what the caller is about to read.
+    t->result = 0;
 
     // If task panicked, hand the message back instead of re-panicking here —
     // the joiner decides what to do with it (matches thread.c's convention).
@@ -820,7 +836,10 @@ static int closure_poll_fn(void *state, void *task_ctx) {
     return RASK_POLL_READY;
 }
 
-void *rask_green_closure_spawn(void *closure_ptr) {
+// `result_owned` says the closure hands back a heap box rather than a plain
+// value — see `GreenTask::result_owned`. The compiler knows the payload type and
+// passes it; the runtime only needs to know whether to free.
+void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     int64_t (*func)(void *) = *(int64_t (**)(void *))(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
@@ -833,7 +852,10 @@ void *rask_green_closure_spawn(void *closure_ptr) {
     ps->env  = env;
     ps->alloc_base = closure_ptr;
 
-    return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
+    void *handle = rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
+    GreenHandle *h = (GreenHandle *)handle;
+    if (h && h->task) h->task->result_owned = result_owned;
+    return handle;
 }
 
 // ─── I/O wrappers ───────────────────────────────────────────

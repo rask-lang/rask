@@ -32,6 +32,17 @@ pub enum ArgAdapt {
     InjectOneSize,
     /// Inject key_size=8, val_size=8 when args empty (Map_new)
     InjectTwoSizes,
+    /// A container constructor: `leading` size arguments, then one element tag
+    /// per `tags`, each expanded into (offsets pointer, count).
+    ///
+    /// Lowering says *what* the elements are — nothing, a string, or the struct
+    /// with a given layout (`rask_mir::elem_strs`) — and this turns that into
+    /// where the strings actually sit inside one element, which is a question
+    /// only codegen has the layouts to answer. The runtime keeps the answer on
+    /// the container, so `free` needs no argument and nothing downstream works
+    /// it out again. A missing or unreadable tag means "owns nothing", which is
+    /// what a container built by a path that doesn't know its element type gets.
+    ContainerCtor { leading: u8, tags: u8 },
     /// Wrap args[1] as pointer (skip if string)
     WrapArg1,
     /// Wrap args[2] as pointer (skip if string)
@@ -189,12 +200,22 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Vec operations ─────────────────────────────────────
         StdlibEntry {
             mir_name: "Vec_new", c_name: "rask_vec_new",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectOneSize, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 1, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         // Vec.with_capacity(n): (elem_size, cap) — elem_size injected at lowering.
-        StdlibEntry::simple("Vec_with_capacity", "rask_vec_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Vec_with_capacity", c_name: "rask_vec_with_capacity",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {
@@ -254,7 +275,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
         // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
         // with_capacity. The difference is the bound it sets.
-        StdlibEntry::simple("Vec_fixed", "rask_vec_fixed", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Vec_fixed", c_name: "rask_vec_fixed",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Vec_insert", c_name: "rask_vec_insert_at",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
@@ -766,13 +792,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new", c_name: "rask_map_new",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
         // `insert` answers `V?` — the value it displaced. The C side hands
@@ -1217,8 +1245,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
         StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
@@ -1229,7 +1257,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // join/cancel report how the task ended alongside its value, same as
         // the OS-thread path — a panicked task no longer re-panics in the
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64], Some(types::I64), false),
+        // Two args: the closure, then whether its result is a heap box the task
+        // owns and must free if no join ever comes for it (#963).
+        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("join", "rask_green_join_outcome"),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("cancel", "rask_green_cancel_outcome"),

@@ -330,3 +330,22 @@ impl std::hash::Hash for EnumLayoutId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SignatureId(pub u32);
+
+/// Does a spawned task box this result before handing it to the runtime?
+///
+/// A task's result travels as one machine word — `GreenTask::result` is an
+/// `int64_t` — so anything that doesn't fit goes on the heap and the word is its
+/// address. A float is boxed too even though it fits: it comes back in a *float*
+/// register, and the runtime calls the closure through `int64_t (*)(void *)`, so
+/// the value was never in the register it read (#963).
+///
+/// Both sides ask this: MIR lowering when it decides to put a boxing thunk in
+/// front of the closure, and codegen when the join decides whether to copy
+/// through an address. One definition, so they can't drift apart.
+pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
+    match ty {
+        MirType::Void => false,
+        MirType::F32 | MirType::F64 => true,
+        other => other.size() > 8,
+    }
+}

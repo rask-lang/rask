@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure body's type is `Never` both when it panics and when it ends in
+// `return x` — control doesn't fall off the end either way. Only the first
+// means no value ever comes out.
+//
+// Nothing constrained the return type of a purely diverging closure, so
+// inference finished with it open and every consumer downstream invented a
+// width for a value that doesn't exist. It now defaults to `Never`, which
+// lowers to void. The default must not reach the `return` form: typing
+// `|t| { return t.key }` as void made `sort_by_key` compare nothing and the
+// sort came back in input order.
+import async.JoinError
+
+struct Tagged { key: i64, tag: string }
+
+func joins_a_panicking_task() -> bool {
+    using Multitasking {
+        let h = spawn(|| { panic("boom") })
+        let _ = h.join()
+    }
+    return true
+}
+
+func joins_a_returning_task() -> i64 or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return 42 })
+        return try h.join()
+    }
+}
+
+test "a closure that only diverges returns nothing" {
+    assert joins_a_panicking_task()
+}
+
+test "a closure that returns a value keeps its type" {
+    assert joins_a_returning_task()! == 42
+}
+
+test "a block closure ending in return still yields its value" {
+    mut v: Vec<Tagged> = []
+    v.push(Tagged { key: 5, tag: "a" })
+    v.push(Tagged { key: 1, tag: "b" })
+    v.push(Tagged { key: 3, tag: "c" })
+    v.sort_by_key(|t| { return t.key })
+    assert v[0].tag == "b"
+    assert v[1].tag == "c"
+    assert v[2].tag == "a"
+}

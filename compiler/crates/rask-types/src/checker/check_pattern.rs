@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pattern type checking.
 
+use std::collections::HashMap;
+
 use rask_ast::expr::Pattern;
 use rask_ast::Span;
 
@@ -304,7 +306,18 @@ impl TypeChecker {
             }
 
             Pattern::Tuple(patterns) => {
-                let elem_types: Vec<_> = patterns.iter().map(|_| self.ctx.fresh_var()).collect();
+                // Use the scrutinee's own element types when it already has
+                // them. Fresh variables plus an `Equal` constraint says the same
+                // thing, but the constraint isn't solved until later, so the
+                // sub-patterns were checked against variables that were still
+                // empty — `(Value.Int(x), Value.Int(y))` matched on a known
+                // `(Value, Value)` couldn't see either element was a `Value`, and
+                // every binding in the arm came out untyped.
+                let resolved = self.ctx.apply(scrutinee_ty);
+                let elem_types: Vec<_> = match &resolved {
+                    Type::Tuple(elems) if elems.len() == patterns.len() => elems.clone(),
+                    _ => patterns.iter().map(|_| self.ctx.fresh_var()).collect(),
+                };
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     scrutinee_ty.clone(),
                     Type::Tuple(elem_types.clone()),
@@ -589,35 +602,63 @@ impl TypeChecker {
         // bare variant name, not the enum-qualified path.
         let variant_lookup_name = name.rsplit('.').next().unwrap_or(name);
 
-        match &resolved_scrutinee {
-            Type::Named(type_id) => {
-                let variant_fields = self.types.get(*type_id).and_then(|def| {
-                    if let TypeDef::Enum { variants, .. } = def {
-                        variants.iter()
-                            .find(|(n, _)| n == variant_lookup_name)
-                            .map(|(_, f)| f.clone())
-                    } else {
-                        None
-                    }
-                });
+        // `Holder<i64>` reaches here as `Generic`, not `Named`, so read the base
+        // id out of either and remember what its parameters were bound to. Only
+        // `Named` used to be handled: matching a generic enum fell through to the
+        // fresh-variable path below, and `Holder.Full(v)` bound `v` to a variable
+        // nothing ever solved. The value came out right anyway because MIR's
+        // fallback guesses a machine word, which is what an `i64` payload is —
+        // a `string` or `f64` payload in the same position would not have been.
+        let (base_id, type_args) = match &resolved_scrutinee {
+            Type::Named(id) => (Some(*id), Vec::new()),
+            Type::Generic { base, args } => (
+                Some(*base),
+                args.iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => (None, Vec::new()),
+        };
 
-                if let Some(variant_field_types) = variant_fields {
-                    if fields.len() != variant_field_types.len() {
-                        self.errors.push(TypeError::ArityMismatch {
-                            expected: variant_field_types.len(),
-                            found: fields.len(),
-                            span,
-                        });
-                        return vec![];
-                    }
-                    let mut bindings = vec![];
-                    for (pat, field_ty) in fields.iter().zip(variant_field_types.iter()) {
-                        bindings.extend(self.check_pattern(pat, field_ty, span));
-                    }
-                    return bindings;
+        if let Some(type_id) = base_id {
+            let found = self.types.get(type_id).and_then(|def| {
+                if let TypeDef::Enum { variants, type_params, .. } = def {
+                    variants.iter()
+                        .find(|(n, _)| n == variant_lookup_name)
+                        .map(|(_, f)| (f.clone(), type_params.clone()))
+                } else {
+                    None
                 }
+            });
+
+            if let Some((variant_field_types, type_params)) = found {
+                if fields.len() != variant_field_types.len() {
+                    self.errors.push(TypeError::ArityMismatch {
+                        expected: variant_field_types.len(),
+                        found: fields.len(),
+                        span,
+                    });
+                    return vec![];
+                }
+                let subst: HashMap<&str, Type> = type_params
+                    .iter()
+                    .map(|p| p.as_str())
+                    .zip(type_args.iter().cloned())
+                    .collect();
+                let mut bindings = vec![];
+                for (pat, field_ty) in fields.iter().zip(variant_field_types.iter()) {
+                    let field_ty = if subst.is_empty() {
+                        field_ty.clone()
+                    } else {
+                        Self::substitute_type_params(field_ty, &subst)
+                    };
+                    bindings.extend(self.check_pattern(pat, &field_ty, span));
+                }
+                return bindings;
             }
-            _ => {}
         }
 
         let mut bindings = vec![];

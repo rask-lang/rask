@@ -26,7 +26,7 @@ mod unify;
 mod generics;
 mod resolve;
 mod validate;
-mod resolved_types;
+pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
@@ -121,6 +121,13 @@ pub struct TypeChecker {
     pub(super) ctx: InferenceContext,
     /// Types assigned to nodes.
     pub(super) node_types: HashMap<NodeId, Type>,
+    /// Node ids typed while checking stdlib declarations. Only populated when
+    /// the open-node census is switched on; see `tracing_open_nodes`.
+    stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
+    /// Where each node came from, for the census. A shape on its own says a
+    /// variable survived but not which expression produced it, which is the
+    /// only part you can act on. Only populated under `tracing_open_nodes`.
+    pub(super) node_origins: HashMap<NodeId, (rask_ast::Span, &'static str)>,
     /// Types assigned to symbols (for bindings without annotations).
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
@@ -358,6 +365,8 @@ impl TypeChecker {
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
+            node_origins: HashMap::new(),
+            stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
@@ -475,6 +484,12 @@ impl TypeChecker {
                 self.check_decl(decl);
             }
             self.types.stdlib_mode = false;
+            // Everything recorded up to here came from a stdlib declaration.
+            // Only collected when the census is on — it's a set of every node id
+            // so far, which is not worth building otherwise.
+            if resolved_types::tracing_open_nodes() {
+                self.stdlib_typed_nodes = Some(self.node_types.keys().copied().collect());
+            }
         }
 
         // Everything that isn't a body first — imports, module-level consts, type
@@ -523,6 +538,11 @@ impl TypeChecker {
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
 
+        // Then the answers of last resort — a diverging closure's return type,
+        // which no constraint ever reaches. After the return coercions above,
+        // so a `return` in the same body wins.
+        self.ctx.apply_var_defaults();
+
         // A method call that deferred on an unsuffixed literal receiver can be
         // resolved now that the literal has a type.
         self.retry_deferred_methods();
@@ -544,11 +564,73 @@ impl TypeChecker {
         // answer it didn't have during the walk.
         self.validate_pending_view_bindings();
 
+        // Every recorded type, with inference's answers substituted in.
+        //
+        // Some still hold a variable inference never solved. They stay: a
+        // consumer reading the *head* of a type is right to — `TaskHandle<?>`
+        // is still a `TaskHandle`, and that's what the ownership checker needs
+        // to know a handle got dropped. What can't be done with one is compute
+        // a layout, and that's guarded where layouts are made
+        // (`MirContext::lookup_node_type`), not by throwing the type away here.
+        //
+        // `RASK_TRACE_OPEN_NODES=1` counts and shapes them, which is how you
+        // find the inference gaps behind them rather than assuming.
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
+
+        if resolved_types::tracing_open_nodes() {
+            // Split by origin. A stub's type parameter is abstract-but-known
+            // rather than unresolved — `string.parse<T>`'s two nodes are in every
+            // program ever compiled — and counting those alongside the real gaps
+            // buries the handful a person can act on.
+            let from_stdlib = self.stdlib_typed_nodes.take().unwrap_or_default();
+            let mut shapes: std::collections::BTreeMap<String, u32> = Default::default();
+            let mut stdlib_open = 0u32;
+            for (id, ty) in node_types.iter() {
+                if !resolved_types::is_open_type(ty) {
+                    continue;
+                }
+                if from_stdlib.contains(id) {
+                    stdlib_open += 1;
+                } else {
+                    *shapes.entry(format!("{ty:?}")).or_insert(0) += 1;
+                }
+            }
+            let total: u32 = shapes.values().sum();
+            eprintln!(
+                "[open-nodes] {total} of {} recorded types still hold an inference variable ({stdlib_open} more in stdlib signatures, abstract-but-known)",
+                node_types.len(),
+            );
+            // Group by where the node came from, not by which variable id it
+            // holds. Ids are allocation order — two nodes with the same gap get
+            // different ids and look like two problems, while one line of source
+            // that produces eight open nodes looks like eight.
+            let mut sites: std::collections::BTreeMap<(usize, usize, &'static str, String), u32> =
+                Default::default();
+            let mut unattributed = 0u32;
+            for (id, ty) in node_types.iter() {
+                if !resolved_types::is_open_type(ty) || from_stdlib.contains(id) {
+                    continue;
+                }
+                match self.node_origins.get(id) {
+                    Some((span, kind)) => {
+                        *sites.entry((span.start, span.end, kind, format!("{ty:?}"))).or_insert(0) += 1
+                    }
+                    None => unattributed += 1,
+                }
+            }
+            let mut v: Vec<_> = sites.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            for ((start, end, kind, shape), n) in v.iter().take(25) {
+                eprintln!("[open-nodes] {n:>5}  bytes {start}..{end}  {kind}  {shape}");
+            }
+            if unattributed > 0 {
+                eprintln!("[open-nodes] {unattributed:>5}  (no recorded origin)");
+            }
+        }
 
         self.validate_resolved_binding_types(decls, &node_types);
 

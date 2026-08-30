@@ -131,6 +131,8 @@ Releases: https://github.com/rask-lang/rask/releases
 
 `RASK_POISON_STACK=1 ./binary` fills the stack with `0xAA` before `main` and before each worker thread's tasks. A slot codegen forgot to write reads as zero on a fresh stack and looks fine, so those bugs only appear once a program has run a while — and vanish the moment you reduce them. Poisoning makes them fire on the first call instead. That's what turned #577 from 40% flaky into 10/10.
 
+If the compiler panics saying a name "belongs to `Vec`" but nothing declares it, MIR has minted an internal spelling nobody accounted for. `INTERNAL_SPELLINGS` in `rask-stdlib/src/mir_metadata.rs` says what each one stands for, and the panic is deliberate — the alternative answer, "no declaration, so the caller owns what came back", frees a string the container still holds. `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each one and carries on instead of stopping at the first, so one sweep over the corpus lists them all.
+
 SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
 
 **Three things that will waste your time:**

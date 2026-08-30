@@ -10,6 +10,7 @@
 pub mod analysis;
 mod builder;
 pub mod dispatch_trace;
+pub mod elem_strs;
 pub mod fallback;
 mod closures;
 mod display;
@@ -22,10 +23,12 @@ mod types;
 
 pub mod hidden_params;
 pub mod lower;
+mod container_drop;
 mod trait_drop;
 
 pub use builder::BlockBuilder;
 pub use closures::optimize_all_closures;
+pub use container_drop::insert_container_drops;
 pub use trait_drop::insert_trait_drops;
 pub use transform::clone_elision::elide_clones;
 pub use transform::gen_coalesce::coalesce_generation_checks;
@@ -38,4 +41,4 @@ pub use rask_ast::expr::ConvertKind;
 pub use stmt::{ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
 pub use lower::ComptimeGlobalMeta;
 pub use program::MirProgram;
-pub use types::{MirType, StructLayoutId, EnumLayoutId};
+pub use types::{spawn_payload_is_boxed, MirType, StructLayoutId, EnumLayoutId};

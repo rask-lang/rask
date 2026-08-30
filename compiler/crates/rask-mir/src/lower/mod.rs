@@ -1301,11 +1301,36 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// Look up the MIR type for an expression node.
+    /// The MIR type for an expression node — `None` when the checker's answer
+    /// can't be one.
+    ///
+    /// This is the only place a checker type becomes a layout, which makes it
+    /// the only place that can invent a width. Two answers can't be layouts: a
+    /// type still holding an inference variable nobody solved, and one still
+    /// naming a type parameter the substitution missed. Both convert to a
+    /// plausible 8-byte scalar — `Ptr` for a bare variable, `i64` through a
+    /// stub's spelling of one — and nothing downstream can tell either from a
+    /// real answer.
+    ///
+    /// That's why call sites around this crate grew
+    /// `.filter(|t| !matches!(t, MirType::Ptr))`: each was reaching for this
+    /// check and catching one half of it. The guard belongs here, where no call
+    /// site can miss it, and `None` then means one thing — the checker has no
+    /// answer. Absence every consumer already handles; a wrong width none of
+    /// them can (#1020).
+    ///
+    /// `lookup_raw_type` deliberately hands both over: reading the *head* of a
+    /// type is fine with an open argument. `TaskHandle<?>` is still a
+    /// `TaskHandle`, which is how the ownership checker knows a handle was
+    /// dropped.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         let found = self.node_types.get(&node_id);
         crate::fallback::record_lookup(found);
-        found.map(|ty| self.type_to_mir(ty))
+        let ty = found?;
+        if crate::fallback::type_is_open(ty) || type_names_a_parameter(ty).is_some() {
+            return None;
+        }
+        Some(self.type_to_mir(ty))
     }
 
     /// Look up the raw Type for an expression node (preserves generic info).
@@ -1500,6 +1525,13 @@ pub struct MirLowerer<'a> {
     synthesized_functions: Vec<MirFunction>,
     /// Counter for generating unique closure function names
     closure_counter: u32,
+    /// Whether the closure just lowered for a `spawn` boxes its result.
+    ///
+    /// Written by `lower_closure_expecting` and read by the spawn call it was
+    /// lowered for, which is the very next thing lowered. A one-shot handoff
+    /// rather than a return value because the decision is made three call
+    /// frames below the argument list it has to reach.
+    spawn_result_boxed: bool,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable names known to hold closure values
@@ -3407,7 +3439,7 @@ impl<'a> MirLowerer<'a> {
         // Derived from stub files via rask_stdlib::mir_metadata.
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ret_category_to_mir_type_in(&meta.ret_category, Some(ctx)),
+                ret_ty: ctx.resolve_type_str(&meta.ret_ty),
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
@@ -3469,6 +3501,7 @@ impl<'a> MirLowerer<'a> {
             ctx,
             synthesized_functions: Vec::new(),
             closure_counter: 0,
+            spawn_result_boxed: false,
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
@@ -5134,6 +5167,54 @@ fn is_scalar_return(func_name: &str) -> bool {
         || func_name.ends_with("_set")
 }
 
+/// The type parameter this type still names, if any.
+///
+/// A monomorphized body must not contain one. Mono substitutes every record it
+/// copies into an instance and drops the record when it can't, so a parameter
+/// that survives to here means a substitution went missing — and it has to stay
+/// tellable apart from a real type, because `T` maps to `Ptr` or to `i64`
+/// depending on how it is spelled and both read back as a plausible 8-byte
+/// scalar. That is how a `string` element ended up in an 8-byte slot with no
+/// refcount on it (#1020).
+///
+/// Same rule mono binds parameters by — one uppercase letter — so the two
+/// agree on what counts as one.
+pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
+    fn is_param(name: &str) -> bool {
+        let mut chars = name.chars();
+        matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+    }
+    fn arg_ty(arg: &rask_types::GenericArg) -> Option<&Type> {
+        match arg {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        }
+    }
+    match ty {
+        Type::UnresolvedNamed(name) if is_param(name) => Some(name.clone()),
+        Type::UnresolvedGeneric { name, args } => {
+            if is_param(name) {
+                return Some(name.clone());
+            }
+            args.iter().filter_map(arg_ty).find_map(type_names_a_parameter)
+        }
+        Type::Generic { args, .. } => {
+            args.iter().filter_map(arg_ty).find_map(type_names_a_parameter)
+        }
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().find_map(type_names_a_parameter),
+        Type::Array { elem, .. } => type_names_a_parameter(elem),
+        Type::Slice(inner) | Type::RawPtr(inner) => type_names_a_parameter(inner),
+        Type::Result { ok, err } => {
+            type_names_a_parameter(ok).or_else(|| type_names_a_parameter(err))
+        }
+        Type::Fn { params, ret } => params
+            .iter()
+            .find_map(type_names_a_parameter)
+            .or_else(|| type_names_a_parameter(ret)),
+        _ => None,
+    }
+}
+
 /// Return type for known stdlib functions that don't return I64.
 /// Supplements func_sigs (which only has user-defined functions).
 ///
@@ -5152,9 +5233,34 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
 /// address (#677). With a context in hand the declared name resolves to its
 /// real layout.
 fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirType {
+    stdlib_return_mir_type_known(func_name, ctx).unwrap_or(MirType::I64)
+}
+
+/// The same answer, but `None` where the old code shrugged and said i64.
+///
+/// Telling "the stubs declare this" apart from "nobody here knows" is what lets
+/// a caller ask the checker before it guesses. `s.clone()` is the case that
+/// forced it: no stub declares `string_clone`, so the chain ran off the end and
+/// typed the destination i64 — half a string, no refcount, and a pointer
+/// printed as a number.
+fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Option<MirType> {
     // Try stub-derived metadata first
     if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
-        return ret_category_to_mir_type_in(&meta.ret_category, ctx);
+        // Unless what it says is `T`. `Vec.remove` is declared `-> T` and the
+        // stub has no idea what the caller instantiated — recording that as i64
+        // is where every "eight bytes of a sixteen-byte string" in this area
+        // came from. Let the caller ask the checker instead (#1020).
+        if meta.ret_category.names_a_type_param() {
+            return None;
+        }
+        // The stub's own words, parsed by the one parser that knows all the
+        // shapes. `RetCategory`'s coarser reading of the same string used to
+        // answer here, and it collapsed `f32` into `f64` and every named stdlib
+        // type into `i64` — including the ones that aren't word-sized runtime
+        // handles, which is what `StringView` needed a hard-coded exception for
+        // (#1025).
+        let Some(ctx) = ctx else { return None };
+        return Some(ctx.resolve_type_str(&meta.ret_ty));
     }
 
     // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
@@ -5164,7 +5270,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     if let Some(name) = func_name.strip_prefix("f64_") {
         if let Some(m) = rask_stdlib::float_methods::lookup(name) {
             use rask_stdlib::FloatSig;
-            return match m.sig {
+            return Some(match m.sig {
                 FloatSig::Unary | FloatSig::BinaryFloat | FloatSig::BinaryInt => MirType::F64,
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
@@ -5172,7 +5278,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
                 FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
-            };
+            });
         }
     }
 
@@ -5180,99 +5286,37 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     // this it took the i64 default below and the result was truncated on the way
     // out of the call — `(-18446744073709551614).abs()` printed -2 (#762).
     if func_name == "i128_abs" {
-        return MirType::I128;
+        return Some(MirType::I128);
     }
 
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
-            return MirType::F64;
+            return Some(MirType::F64);
         }
     }
 
-    // Suffix-based fallbacks for methods not in stubs (user types, etc.)
-    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
-        || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
-        || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
-        || func_name.ends_with("_replace")
-        || func_name.ends_with("_substr")
-        || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
-    {
-        return MirType::String;
-    }
-    if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
-        || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
-    {
-        return MirType::Bool;
-    }
-    if func_name.starts_with("char_is_") || func_name == "char_eq" {
-        return MirType::Bool;
-    }
+    // No suffix guessing. There used to be a block here that answered from the
+    // *end* of the mangled name — `_to_string`, `_trim`, `_replace`,
+    // `_is_empty`, `_contains` and friends — for "user type methods and methods
+    // not yet in stubs". It was blind to the receiver, so it answered for any
+    // type whose method happened to share a name with a string's.
+    //
+    // That is how `Shared<i32>.replace(7)` came back as a `string`: the strategy
+    // rewrite turns it into `Cell_replace`, which ends in `_replace`. The box
+    // arm in lower/expr.rs existed to shadow this, which is why it looked
+    // redundant and wasn't.
+    //
+    // Instrumented across the 362 suite files and every example, the block fired
+    // zero times — a user type's methods are in `func_sigs` from their own
+    // declarations, which is consulted first, and the stdlib's are in the stub
+    // metadata above. Its only live effect was the wrong answer.
+    //
+    // main later added `char_is_*` and `char_eq` to that block for the Unicode
+    // work. Those come from `stdlib/char.rk` like any other declared method, so
+    // deleting the block doesn't take them with it — the char suite covers it.
 
-    MirType::I64
-}
-
-/// Convert a stub-derived RetCategory to a MirType.
-fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> MirType {
-    ret_category_to_mir_type_in(cat, None)
-}
-
-fn ret_category_to_mir_type_in(
-    cat: &rask_stdlib::mir_metadata::RetCategory,
-    ctx: Option<&MirContext>,
-) -> MirType {
-    use rask_stdlib::mir_metadata::RetCategory;
-    match cat {
-        RetCategory::Void => MirType::Void,
-        RetCategory::Bool => MirType::Bool,
-        RetCategory::I64 => MirType::I64,
-        RetCategory::Int(w) => {
-            use rask_stdlib::mir_metadata::IntWidth;
-            match w {
-                IntWidth::I8 => MirType::I8,
-                IntWidth::I16 => MirType::I16,
-                IntWidth::I32 => MirType::I32,
-                IntWidth::I128 => MirType::I128,
-                IntWidth::U8 => MirType::U8,
-                IntWidth::U16 => MirType::U16,
-                IntWidth::U32 => MirType::U32,
-                IntWidth::U64 => MirType::U64,
-                IntWidth::U128 => MirType::U128,
-                IntWidth::Usize => MirType::usize_ty(),
-                IntWidth::Isize => MirType::isize_ty(),
-            }
-        }
-        RetCategory::F64 => MirType::F64,
-        RetCategory::String => MirType::String,
-        RetCategory::Char => MirType::Char,
-        RetCategory::Ptr => MirType::Ptr,
-        RetCategory::Option(inner) => {
-            MirType::Option(Box::new(ret_category_to_mir_type_in(inner, ctx)))
-        }
-        RetCategory::Result { ok, err } => MirType::Result {
-            ok: Box::new(ret_category_to_mir_type_in(ok, ctx)),
-            // Only the error side resolves a name. Everywhere else a named
-            // stdlib type is an opaque runtime handle (File, TcpListener,
-            // Instant) that really is a word — but an error type is an enum, and
-            // its identity is what the match needs.
-            err: Box::new(match (err.as_ref(), ctx) {
-                (RetCategory::Named(name), Some(ctx)) => ctx.resolve_type_str(name),
-                _ => ret_category_to_mir_type_in(err, ctx),
-            }),
-        },
-        // A `StringView` is a `RaskStr` sharing the source's buffer
-        // (std.strings/V1), so it has to travel as a string — the default
-        // pointer-sized `i64` handed `StringView.len()` an integer where it
-        // wanted the 16-byte value, which segfaults. The prefix stays
-        // "StringView" so the view's own methods still dispatch: `to_string`
-        // has to copy out and release the pin (V2), which the string one
-        // doesn't do.
-        RetCategory::Named(name) if name == "StringView" => MirType::String,
-        RetCategory::Named(_) => MirType::I64,
-        RetCategory::Tuple(elems) => MirType::Tuple(
-            elems.iter().map(|e| ret_category_to_mir_type_in(e, ctx)).collect()
-        ),
-    }
+    None
 }
 
 /// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).
@@ -5869,6 +5913,56 @@ mod tests {
         f.blocks.iter().any(|b| {
             b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Type parameters that shouldn't have got this far
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn spots_a_type_parameter_the_substitution_missed() {
+        use rask_types::{GenericArg, Type};
+        let t = || Type::UnresolvedNamed("T".to_string());
+
+        assert_eq!(type_names_a_parameter(&t()), Some("T".to_string()));
+        assert_eq!(
+            type_names_a_parameter(&Type::Result {
+                ok: Box::new(t()),
+                err: Box::new(Type::None),
+            }),
+            Some("T".to_string())
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![GenericArg::Type(Box::new(t()))],
+            }),
+            Some("T".to_string())
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::Tuple(vec![Type::I64, t()])),
+            Some("T".to_string())
+        );
+    }
+
+    #[test]
+    fn a_real_type_is_not_a_parameter() {
+        use rask_types::{GenericArg, Type};
+
+        assert_eq!(type_names_a_parameter(&Type::String), None);
+        assert_eq!(type_names_a_parameter(&Type::I64), None);
+        // Two letters, so it names something — `Ok` is a type, `T` is a hole.
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedNamed("Ok".to_string())),
+            None
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![GenericArg::Type(Box::new(Type::String))],
+            }),
+            None
+        );
     }
 
     // ═══════════════════════════════════════════════════════════

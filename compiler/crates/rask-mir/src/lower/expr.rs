@@ -247,12 +247,63 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
+    /// A declared return type, unless the declaration is a stdlib stub saying `T`.
+    ///
+    /// `func_sigs` is seeded from the stub metadata, and a `-> T` was baked into
+    /// it as `i64` — so the signature lookup answered with a width the stub
+    /// never knew, in front of everything that could have done better. That is
+    /// what each per-call-site arm in this file was reaching around. Refusing
+    /// the entry here lets the chain fall through to the checker instead
+    /// (#1020).
+    fn sig_ret_ty(&self, name: &str) -> Option<MirType> {
+        let stub_says_t = rask_stdlib::mir_metadata::lookup(name)
+            .is_some_and(|m| m.ret_category.names_a_type_param());
+        if stub_says_t {
+            return None;
+        }
+        self.func_sigs.get(name).map(|s| s.ret_ty.clone())
+    }
+
+    /// The return type of a call once the declared signatures have had their
+    /// say — the stdlib's stub metadata, then the checker's own type for the
+    /// call expression.
+    ///
+    /// The checker comes after the stubs because a declared return beats an
+    /// inference variable. But it has to be asked at all, and it wasn't: a
+    /// method no stub declares ran off the end of the chain into a bare `i64`.
+    /// `s.clone()` is exactly that method. Nothing declares `string_clone`, so
+    /// the destination was an 8-byte slot, the 16-byte string was half-copied
+    /// with no `rc_inc`, and `println` printed the address as a number (#1020).
+    ///
+    /// When nobody knows, that is a lowering failure naming the site rather
+    /// than a slot sized by hope.
+    fn call_ret_ty(&self, qualified: &str, node: rask_ast::NodeId) -> MirType {
+        super::stdlib_return_mir_type_known(qualified, Some(self.ctx))
+            .or_else(|| self.ctx.lookup_node_type(node))
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:call-return"))
+    }
+
+    /// The element type push tracking recorded for this receiver.
+    ///
+    /// Two maps, always consulted in this order: what this function's own pushes
+    /// said, then the cross-function record. They were written out longhand at
+    /// eight call sites, which is how arms that answer the same question came to
+    /// consult different subsets of it.
+    fn tracked_elem_of(&self, object: &Expr) -> Option<MirType> {
+        self.tracked_elem_for_key(&Self::vec_tracking_key(object)?)
+    }
+
+    /// Same, for a caller that already has the key.
+    fn tracked_elem_for_key(&self, key: &str) -> Option<MirType> {
+        self.meta(key)
+            .and_then(|m| m.elem_type.clone())
+            .or_else(|| self.ctx.shared_elem_types.borrow().get(key).cloned())
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
-        Self::vec_tracking_key(object)
-            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+        self.tracked_elem_of(object)
             // Push tracking only sees a Vec built in this function. A Vec that
             // came back from a call has none, so `p.components().join(",")`
             // took the integer join and printed the bytes of each component as
@@ -270,9 +321,7 @@ impl<'a> MirLowerer<'a> {
     /// type-specific runtime comparator, which is the same order its `compare`
     /// would give and cheaper to reach.
     fn vec_elem_compare_fn(&self, object: &Expr) -> Option<String> {
-        let elem = Self::vec_tracking_key(object)
-            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+        let elem = self.tracked_elem_of(object)
             .or_else(|| self.collection_elem_of_expr(object))?;
         if !matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
             return None;
@@ -284,9 +333,7 @@ impl<'a> MirLowerer<'a> {
     /// Does this Vec receiver hold floats? Picks the sort that uses the float
     /// total order rather than an integer compare over the bit patterns.
     fn vec_elem_is_float(&self, object: &Expr) -> bool {
-        Self::vec_tracking_key(object)
-            .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
-                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+        self.tracked_elem_of(object)
             .or_else(|| self.collection_elem_of_expr(object))
             .map_or(false, |ty| matches!(ty, MirType::F64 | MirType::F32))
     }
@@ -573,10 +620,7 @@ impl<'a> MirLowerer<'a> {
     fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<String> {
         let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
         let Some(key) = Self::vec_tracking_key(object) else { return Vec::new() };
-        let elem = self
-            .meta(&key)
-            .and_then(|m| m.elem_type.clone())
-            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned());
+        let elem = self.tracked_elem_for_key(&key);
         let Some(name) = elem.and_then(|ty| self.mir_type_name(&ty)) else { return Vec::new() };
         vec![name; arity]
     }
@@ -1027,10 +1071,7 @@ impl<'a> MirLowerer<'a> {
                     // narrowed type recorded, extract the payload from the
                     // wider Result/Option so downstream Field / method lookup
                     // operates on the narrowed type, not the wrapper.
-                    let narrow_ty = self
-                        .ctx
-                        .lookup_node_type(expr.id)
-                        .filter(|t| !matches!(t, MirType::Ptr));
+                    let narrow_ty = self.ctx.lookup_node_type(expr.id);
                     let needs_narrow = matches!(
                         (&ty, &narrow_ty),
                         (MirType::Result { .. }, Some(n)) if !matches!(n, MirType::Result { .. })
@@ -1284,14 +1325,24 @@ impl<'a> MirLowerer<'a> {
                 };
                 let mut arg_operands = Vec::new();
                 let mut arg_mir_types = Vec::new();
+                let mut spawn_boxes_result = false;
                 for (i, a) in args.iter().enumerate() {
                     let smut = callee_smut.get(i).and_then(|o| o.as_ref());
                     let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &a.expr.kind {
                         let expected = Self::expected_closure_param_tys(&callee_params, i);
-                        self.lower_closure_expecting(
+                        let lowered = self.lower_closure_expecting(
                             params, ret_ty.as_deref(), body,
                             *is_own || spawns_closure, &expected, Some(a.expr.id),
-                        )?
+                            spawns_closure,
+                        )?;
+                        if spawns_closure {
+                            // Tell the runtime whether the word this task hands
+                            // back is a box it owns and must free when nobody
+                            // joins. The closure lowering just decided; this is
+                            // the call that carries it (#963).
+                            spawn_boxes_result = self.spawn_result_boxed;
+                        }
+                        lowered
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
@@ -1320,6 +1371,12 @@ impl<'a> MirLowerer<'a> {
                     // outer one had no concrete type to name its vtable after.
                     arg_operands.push(op);
                     arg_mir_types.push(mir_ty);
+                }
+                if spawns_closure {
+                    arg_operands.push(MirOperand::Constant(
+                        crate::operand::MirConst::Int(i64::from(spawn_boxes_result)),
+                    ));
+                    arg_mir_types.push(MirType::I64);
                 }
 
                 // Non-ident callees: field access, returned functions, etc.
@@ -1925,7 +1982,6 @@ impl<'a> MirLowerer<'a> {
 
                     if !resolved {
                         rt = self.ctx.lookup_node_type(expr.id)
-                            .filter(|t| !matches!(t, MirType::Ptr))
                             .unwrap_or_else(|| {
                                 eprintln!(
                                     "[mir] unresolved field `{}` — defaulting to I64 (should be caught by type checker)",
@@ -2121,13 +2177,7 @@ impl<'a> MirLowerer<'a> {
                 // Try to determine the element type from the type checker,
                 // then from tracked push/set calls, then default to I64
                 let result_ty = self.ctx.lookup_node_type(expr.id)
-                    .filter(|t| !matches!(t, MirType::Ptr))
-                    .or_else(|| {
-                        Self::vec_tracking_key(object).and_then(|key| {
-                            self.meta(&key).and_then(|m| m.elem_type.clone())
-                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                        })
-                    })
+                    .or_else(|| self.tracked_elem_of(object))
                     // Last resort: the receiver's own `Vec<T>`. Push tracking
                     // only sees Vecs built in this function, and the checker
                     // doesn't type every index node, so a Vec that arrived some
@@ -4193,7 +4243,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_module_type_method(object, method, args)? {
+        if let Some(r) = self.try_lower_module_type_method(expr, object, method, args)? {
             return Ok(r);
         }
 
@@ -4384,10 +4434,8 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.push(op);
                             }
                             let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                                .sig_ret_ty(&func_name)
+                                .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
@@ -4729,6 +4777,7 @@ impl<'a> MirLowerer<'a> {
                             // `Thread.spawn` never is; it arrives here instead.
                             let spawns_closure = method == "spawn"
                                 && (base_name == "Thread" || base_name == "ThreadPool");
+                            let mut method_spawn_boxes = false;
                             for (i, arg) in args.iter().enumerate() {
                                 // An unannotated closure parameter takes its type
                                 // from the callee's declared `func(...)` parameter;
@@ -4736,15 +4785,27 @@ impl<'a> MirLowerer<'a> {
                                 // otherwise defaulted to i64 (#463).
                                 let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
-                                    self.lower_closure_expecting(
+                                    let lowered = self.lower_closure_expecting(
                                         params, ret_ty.as_deref(), body,
                                         *is_own || spawns_closure, &expected,
                                         Some(arg.expr.id),
-                                    )?
+                                        spawns_closure,
+                                    )?;
+                                    if spawns_closure {
+                                        method_spawn_boxes = self.spawn_result_boxed;
+                                    }
+                                    lowered
                                 } else {
                                     self.lower_expr(&arg.expr)?
                                 };
                                 arg_operands.push(op);
+                            }
+                            if spawns_closure {
+                                // Same handover as the free-function `spawn`:
+                                // the runtime frees the box when no join comes.
+                                arg_operands.push(MirOperand::Constant(
+                                    crate::operand::MirConst::Int(i64::from(method_spawn_boxes)),
+                                ));
                             }
 
                             // Inject elem_size/data_size for generic constructors.
@@ -4783,6 +4844,13 @@ impl<'a> MirLowerer<'a> {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
+                                // What the elements are, settled here and kept
+                                // by the container for the rest of its life —
+                                // see `elem_strs`.
+                                let tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
+                                );
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
                             }
                             // Map.new(): inject key_size, val_size
                             if (base_name == "Map") && method == "new" {
@@ -4790,6 +4858,14 @@ impl<'a> MirLowerer<'a> {
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
+                                let key_tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
+                                );
+                                let val_tag = crate::elem_strs::tag_of(
+                                    self.container_elem_mir_type(expr.id, 1).as_ref(),
+                                );
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
                             }
 
                             // Map.new() with string keys → use string hash/eq.
@@ -4838,10 +4914,8 @@ impl<'a> MirLowerer<'a> {
                                 self.resolve_shared_strategy_call(&func_name, object);
 
                             let ret_ty = self
-                                .func_sigs
-                                .get(&func_name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                                .sig_ret_ty(&func_name)
+                                .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                             // Channel.buffered()/unbuffered() C runtime returns a
                             // single i64 (raw channel pair pointer), not a tuple.
                             // Override the Tuple return type from stubs to I64 so the
@@ -4990,7 +5064,7 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id))?
+                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false)?
             } else {
                 let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
                 let declared = callee_params
@@ -5239,12 +5313,8 @@ impl<'a> MirLowerer<'a> {
         // a tag out of a bare i32 slot and the loop segfaulted — on three
         // elements but not two, purely by which push happened to be last.
         let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-            self.container_elem_mir_type(object.id, 0).or_else(|| {
-                Self::vec_tracking_key(object).and_then(|key| {
-                    self.meta(&key).and_then(|m| m.elem_type.clone())
-                        .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                })
-            })
+            self.container_elem_mir_type(object.id, 0)
+                .or_else(|| self.tracked_elem_of(object))
         } else {
             None
         };
@@ -5264,10 +5334,7 @@ impl<'a> MirLowerer<'a> {
             // sizes the result slot. From the stub metadata the result came back
             // as a bare `T`, so a `Vec<i64?>` got a 16-byte slot for a 24-byte
             // answer and the tag was read off the wrong bytes.
-            let tracked = Self::vec_tracking_key(object).and_then(|key| {
-                self.meta(&key).and_then(|m| m.elem_type.clone())
-                    .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-            });
+            let tracked = self.tracked_elem_of(object);
             // In a generic body the checker's payload is still the unresolved
             // type parameter; the receiver's tracked element type is the
             // concrete one after monomorphization.
@@ -5321,28 +5388,32 @@ impl<'a> MirLowerer<'a> {
             // `positional.remove(0)` produced half a string's bytes as a number
             // (#203's grep_clone entry).
             //
-            // Tracking first, like `v[i]`; then the receiver's own element type,
-            // because inside a generic method the checker's type for the call is
-            // the type parameter itself and that reads back as a bare i64. A
-            // `Stack<T>` whose `pop` did `self.items.remove(last)` came out as
-            // `let _44: i64` at `T = string` — eight bytes of a string, and no
-            // `rc_inc` on the payload either, since those follow the slot's
-            // type. It printed fine and segfaulted on the next comparison.
-            // The checker's type stays as the last word: a `test` body doesn't
-            // carry push tracking, and the receiver isn't always a collection
-            // the layout can answer for. Either way the width is rounded up to
-            // a word: a Vec keeps scalars in 8-byte slots, and an i32-typed
-            // destination read back only half of what the out-param wrote.
-            tracked_elem
-                .or_else(|| self.collection_elem_of_expr(object))
+            // The receiver's own element type first — `self.items` is a
+            // `Vec<string>` once the struct is monomorphized and the layout
+            // knows it — then the checker. A `Stack<T>` whose `pop` did
+            // `self.items.remove(last)` came out as `let _44: i64` at
+            // `T = string`: eight bytes of a string, and no `rc_inc` on the
+            // payload either, since those follow the slot's type. It printed
+            // fine and segfaulted on the next comparison.
+            //
+            // This chain used to start with `tracked_elem`, which is only
+            // computed for `Vec_get` and `Vec_index` and so was always `None`
+            // here — the receiver's layout was doing all the work.
+            //
+            // Either way the width is rounded up to a word: a Vec keeps scalars
+            // in 8-byte slots, and an i32-typed destination read back only half
+            // of what the out-param wrote.
+            self.collection_elem_of_expr(object)
                 .or_else(|| self.ctx.lookup_node_type(expr.id))
                 .map(vec_slot_type)
         } else if qualified_name == "Vec_pop" {
             // Same, one level in: `.pop()` is `T?`, and the payload type sizes
             // the slot the DerefOption adapter copies into. A bare `i64?` slot
             // took 8 of a string's 16 bytes and reading it segfaulted.
-            tracked_elem
-                .or_else(|| self.extract_payload_type(expr))
+            //
+            // `tracked_elem` was in front of this too, and `None` here for the
+            // same reason.
+            self.extract_payload_type(expr)
                 .map(|elem| super::option_of(vec_slot_type(elem)))
         } else if qualified_name == "Pool_try_insert" {
             // `try_insert` answers `Handle<T>?`, not `T?` — a niche, one word
@@ -5356,17 +5427,12 @@ impl<'a> MirLowerer<'a> {
             // this `remove` answered `i64?` regardless of what the pool held,
             // so reading a struct back out of it dereferenced a field offset
             // into a scalar (#356).
-            let elem_ty = Self::vec_tracking_key(object)
-                .and_then(|key| {
-                    self.meta(&key).and_then(|m| m.elem_type.clone())
-                        .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
-                })
+            let elem_ty = self.tracked_elem_of(object)
                 // Then whatever the receiver's own type says it holds — a
                 // `Vec<T>`/`Pool<T>` element or a `Map<K, V>` value, resolved or
                 // not. This used to read the first generic arg of an
                 // `UnresolvedGeneric` only, so a resolved type or a Map missed.
-                .or_else(|| self.collection_elem_of_expr(object)
-                    .filter(|t| !matches!(t, MirType::Ptr)))
+                .or_else(|| self.collection_elem_of_expr(object))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
             Some(super::option_of(elem_ty))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
@@ -5374,39 +5440,12 @@ impl<'a> MirLowerer<'a> {
             // without `T`'s layout attached — and a link without its layout
             // can't project a field, so `rack.insert(n).health` had nothing to
             // offset from. The call site knows what `T` became.
-            {
-                if std::env::var("RASK_DEBUG_LINK").is_ok() {
-                    let raw = self.ctx.lookup_raw_type(expr.id);
-                    let base_name = match raw {
-                        Some(rask_types::Type::Generic { base, args }) => format!(
-                            "base={:?} arg0={:?}",
-                            self.ctx.type_names.get(base),
-                            args.first().map(|a| match a {
-                                rask_types::GenericArg::Type(t) => self.ctx.type_to_mir(t),
-                                _ => MirType::Void,
-                            })),
-                        _ => String::new(),
-                    };
-                    eprintln!("[link] {} raw={:?} {} mir={:?}", qualified_name,
-                        raw, base_name, self.ctx.lookup_node_type(expr.id));
-                }
-                // `insert` answers a bare `Link<T>`; `corresponding` answers
-                // `Link<T>?`, which is the same word with the null address for
-                // `none`. Accept both spellings — filtering to the bare one
-                // dropped the return type for `corresponding` entirely, and its
-                // `?` test then read a tag that isn't there.
-                self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
-            }
-        } else if matches!(qualified_name.as_str(),
-            "Cell_get" | "Cell_replace" | "Cell_into_inner"
-            | "Shared_get" | "Shared_replace"
-            | "Mutex_get" | "Mutex_replace")
-        {
-            // What the box holds — all of these hand back the payload. The stub's
-            // return type is a bare `T`, which maps to i64, so a `Shared<string>`
-            // read came back as a pointer and a `Shared<i32>` got loaded eight
-            // bytes wide.
-            self.ctx.lookup_node_type(expr.id).filter(|t| !matches!(t, MirType::Ptr))
+            // `insert` answers a bare `Link<T>`; `corresponding` answers
+            // `Link<T>?`, which is the same word with the null address for
+            // `none`. Accept both spellings — filtering to the bare one dropped
+            // the return type for `corresponding` entirely, and its `?` test
+            // then read a tag that isn't there.
+            self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
         } else if matches!(qualified_name.as_str(),
             "Receiver_receive_struct" | "Receiver_try_receive")
         {
@@ -5427,11 +5466,14 @@ impl<'a> MirLowerer<'a> {
             } else {
                 "Receiver_receive"
             };
+            // The checker's answer has to be a wrapper — a `Result` or an
+            // `Option`. The nested `!matches!(**ok, MirType::Ptr)` this used to
+            // carry was the same guess at "the ok side is still `T`" the rest of
+            // the file made; `lookup_node_type` refuses a real type parameter
+            // and keeps a channel of `Vec`s, which is legitimately `Ptr`
+            // inside.
             self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t,
-                    MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
-                .or_else(|| self.ctx.lookup_node_type(expr.id)
-                    .filter(|t| matches!(t, MirType::Option(_))))
+                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
         } else if qualified_name == "string_parse"
@@ -5460,11 +5502,9 @@ impl<'a> MirLowerer<'a> {
             // the bare method name is whatever else in the program shares it,
             // so consulting it first let an unrelated `join` answer for
             // `ThreadHandle_join`.
-            .func_sigs
-            .get(&qualified_name)
-            .or_else(|| self.func_sigs.get(&method))
-            .map(|s| s.ret_ty.clone())
-            .unwrap_or_else(|| super::stdlib_return_mir_type_in(&qualified_name, Some(self.ctx))));
+            .sig_ret_ty(&qualified_name)
+            .or_else(|| self.sig_ret_ty(&method))
+            .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
 
         // A method on a generic type is lowered once, so its signature says `T`
         // — which reaches MIR as a bare `Ptr`. The call site knows what `T`
@@ -6284,6 +6324,7 @@ impl<'a> MirLowerer<'a> {
     /// `module.Type.method()` → flattened `Type_method` qualified call.
     fn try_lower_module_type_method(
         &mut self,
+        expr: &Expr,
         object: &Expr,
         method: &String,
         args: &[CallArg],
@@ -6322,10 +6363,8 @@ impl<'a> MirLowerer<'a> {
                         arg_operands.push(op);
                     }
                     let ret_ty = self
-                        .func_sigs
-                        .get(&func_name)
-                        .map(|s| s.ret_ty.clone())
-                        .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                        .sig_ret_ty(&func_name)
+                        .unwrap_or_else(|| self.call_ret_ty(&func_name, expr.id));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),

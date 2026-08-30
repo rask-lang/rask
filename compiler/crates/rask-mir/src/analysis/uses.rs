@@ -92,7 +92,9 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         MirStmtKind::Phi { args, .. } => {
             args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
-        MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => f(*local),
+        MirStmtKind::RcInc { local }
+        | MirStmtKind::RcDec { local }
+        | MirStmtKind::RcDecContents { local } => f(*local),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }

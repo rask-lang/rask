@@ -21,7 +21,15 @@
 #include <string.h>
 #include <math.h>
 #include <dirent.h>
+#include <unistd.h>
 #include <errno.h>
+
+// Live heap string buffers. `RASK_LEAK_CHECK=1` makes a program that still
+// holds any at exit fail loudly instead of quietly handing them to the OS —
+// which is what "Rask is leak free" has to mean if it is to mean anything.
+static _Atomic int64_t rask_string_live_buffers = 0;
+
+int rask_leak_check_enabled = 0;
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
@@ -62,10 +70,17 @@ static void str_make_sso(RaskStr *out, const char *data, int64_t len) {
     out->sso.remaining = (uint8_t)(15 - len);
 }
 
+/// One place to allocate a string header, so one place counts them.
+static uint8_t *str_alloc_header(int64_t cap) {
+    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    __atomic_add_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+    return header;
+}
+
 static void str_make_heap(RaskStr *out, const char *data, int64_t len) {
     int64_t cap = len;
     // Header: [refcount: u32][capacity: u32][data: u8[cap+1]]
-    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    uint8_t *header = str_alloc_header(cap);
     *(uint32_t *)header = 1;              // refcount = 1
     *(uint32_t *)(header + 4) = (uint32_t)cap; // capacity
     if (len > 0) memcpy(header + 8, data, (size_t)len);
@@ -98,20 +113,108 @@ void rask_string_from_bytes(RaskStr *out, const char *data, int64_t len) {
 
 // ─── RC operations ──────────────────────────────────────────
 
+// `RASK_STRING_DEBUG=1` turns a wrong refcount into a message instead of a
+// silent wrong answer.
+//
+// Getting string ownership wrong reads as data corruption several steps later:
+// the buffer is freed, malloc hands the same bytes to the next allocation, and
+// what comes out is the *other* value. That's most of a day of bisecting, every
+// time. Under this flag a buffer that reaches zero is filled with 0xDE and its
+// refcount is set to a poison word, and the allocation is deliberately kept —
+// so the next touch of the same header lands on the poison and says so, naming
+// the operation, instead of landing on whatever moved in.
+//
+// It leaks by construction. That's the point: the process is meant to die on
+// the first mistake, not to survive.
+#define RASK_RC_POISON ((uint32_t)0xDEADBEEF)
+
+int rask_string_debug_enabled = 0;
+
+static void rc_poison_check(const uint32_t *rc, const char *op) {
+    if (*rc != RASK_RC_POISON) return;
+    fprintf(stderr,
+            "rask: string %s on a buffer that was already released\n"
+            "  the last reference was dropped and something still points at it\n",
+            op);
+    fflush(stderr);
+    abort();
+}
+
 void rask_string_free(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "release");
+    }
     if (__atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0) {
         uint32_t cap = heap_cap(s);
+        __atomic_sub_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+        if (__builtin_expect(rask_string_debug_enabled, 0)) {
+            memset(s->heap.header + 8, 0xDE, (size_t)cap + 1);
+            *rc = RASK_RC_POISON;
+            return;
+        }
         rask_realloc(s->heap.header, 8 + cap + 1, 0);
     }
+}
+
+/// Everything this program allocated and never gave back.
+///
+/// Called at the end of `main`. Handing memory to the OS on exit is not the
+/// same as not leaking: a long-running program never gets there, and a leak
+/// that only shows up under load is the expensive kind to find.
+///
+/// The count is every `rask_alloc` the runtime made, not just strings — so a
+/// `Vec` handle, a data array, a closure box and a trait object are all in it.
+/// A clean program ends at exactly zero, which is what makes this usable as a
+/// gate rather than a threshold: the runtime itself holds nothing at exit.
+///
+/// The string tally comes out alongside when it's nonzero, because a leaked
+/// refcount is a different bug from a leaked allocation and it saves a bisect
+/// to know which one this is.
+void rask_leak_check(void) {
+    if (!rask_leak_check_enabled) return;
+
+    // The two debugging modes don't compose. `RASK_STRING_DEBUG` keeps every
+    // released buffer on purpose so a later touch of it can be caught, which
+    // makes every correct release look like a leak. Say so rather than
+    // reporting thousands of phantoms.
+    if (rask_string_debug_enabled) {
+        fprintf(stderr,
+                "rask: RASK_LEAK_CHECK is off — RASK_STRING_DEBUG keeps released\n"
+                "  buffers on purpose, so the two can't be used together. Run them\n"
+                "  one at a time.\n");
+        fflush(stderr);
+        return;
+    }
+
+    RaskAllocStats st;
+    rask_alloc_stats(&st);
+    int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
+    if (live_bytes <= 0) return;
+
+    int64_t live_strings = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
+    fprintf(stderr,
+            "rask: %lld bytes never released, in %lld allocation%s\n",
+            (long long)live_bytes,
+            (long long)(st.alloc_count - st.free_count),
+            (st.alloc_count - st.free_count) == 1 ? "" : "s");
+    if (live_strings > 0) {
+        fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
+                (long long)live_strings, live_strings == 1 ? "is" : "are");
+    }
+    fflush(stderr);
+    _exit(97);
 }
 
 void rask_string_clone(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "retain");
+    }
     __atomic_add_fetch(rc, 1, __ATOMIC_RELAXED);
 }
 
@@ -398,7 +501,7 @@ void rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b) {
         if (blen > 0) memcpy(out->sso.data + alen, bd, (size_t)blen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         if (alen > 0) memcpy(header + 8, ad, (size_t)alen);
@@ -645,7 +748,7 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
             memcpy(out->sso.data + i * slen, d, (size_t)slen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         for (int64_t i = 0; i < count; i++)
@@ -780,7 +883,7 @@ void rask_string_from_char(RaskStr *out, int64_t cp) {
 // ─── Split / lines / chars → Vec ────────────────────────────
 
 RaskVec *rask_string_lines(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16); // elem_size = sizeof(RaskStr) = 16
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1); // elem_size = sizeof(RaskStr) = 16
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *p = str_data(s);
@@ -797,7 +900,7 @@ RaskVec *rask_string_lines(const RaskStr *s) {
 }
 
 RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     int64_t sep_len = str_len(sep);
     const char *p = str_data(s);
@@ -848,7 +951,7 @@ RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
 }
 
 RaskVec *rask_string_split_whitespace(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *d = str_data(s);
@@ -874,7 +977,7 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
 // 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
 // the Vec is iterated exactly like any other `Vec<(usize, char)>`.
 RaskVec *rask_string_char_indices(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -890,7 +993,7 @@ RaskVec *rask_string_char_indices(const RaskStr *s) {
 }
 
 RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(8);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -910,7 +1013,7 @@ RaskVec *rask_string_chars(const RaskStr *s) {
 // string_bytes".
 RaskVec *rask_string_bytes(const RaskStr *s) {
     int64_t len = str_len(s);
-    RaskVec *v = rask_vec_new(len < 8 ? 8 : len);
+    RaskVec *v = rask_vec_new(len < 8 ? 8 : len, NULL, 0);
     const char *d = str_data(s);
     for (int64_t i = 0; i < len; i++) {
         int64_t b = (int64_t)(unsigned char)d[i];
@@ -930,7 +1033,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Promote SSO to heap
         const char *d = str_data(s);
         int64_t cap = len < 8 ? 8 : len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -944,7 +1047,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Shared — detach (COW)
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -958,7 +1061,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Literal — create mutable copy
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1429,7 +1532,7 @@ int64_t rask_char_eq(int32_t a, int32_t b) {
 // ─── Filesystem ─────────────────────────────────────────────
 
 RaskVec *rask_fs_list_dir(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t plen = str_len(path);
     if (plen == 0) return v;
 
@@ -1689,7 +1792,7 @@ void rask_string_reverse(RaskStr *out, const RaskStr *s) {
 // One string per grapheme (U2) — the unit for cursors and truncation, and
 // what split() would give if the separator were "between characters".
 RaskVec *rask_string_graphemes(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;

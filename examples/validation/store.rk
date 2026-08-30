@@ -323,7 +323,8 @@ extend TaskTx {
         return TaskTx { ops: Vec.new(), done: false }
     }
 
-    func stage(mutate self, op: TxOp) {
+    // `take`: the transaction keeps the op, so the call site shows it going.
+    func stage(mutate self, take op: TxOp) {
         self.ops.push(op)
     }
 

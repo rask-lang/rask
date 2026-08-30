@@ -28,18 +28,18 @@ extend Shared<T, S> {
     /// Many tasks, concurrent reads. The default — what you write unless you
     /// have a reason not to.
     @native("rask_shared_new_ptr")
-    public func new(value: T) -> Shared<T, Readers> {}
+    public func new(take value: T) -> Shared<T, Readers> {}
 
     /// Many tasks, one at a time — reader or writer. Cheaper than `Readers`
     /// when writes dominate, since there is no reader count to keep.
     @native("rask_mutex_new_ptr")
-    public func mutex(value: T) -> Shared<T, Mutex> {}
+    public func mutex(take value: T) -> Shared<T, Mutex> {}
 
     /// No lock at all. One task, several accessors — the box `Cell` used to be.
     /// Sending one is a compile error (SH7), which is what makes it safe to
     /// reach for.
     @native("rask_cell_new")
-    public func local(value: T) -> Shared<T, Local> {}
+    public func local(take value: T) -> Shared<T, Local> {}
 
     /// Shared access, scoped to the expression or the `with` block.
     /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would
@@ -74,11 +74,11 @@ extend Shared<T, S> {
 
     /// Replace the inner value.
     @native("rask_cell_set")
-    public func set(self, value: T) {}
+    public func set(self, take value: T) {}
 
     /// Swap in a new value, return the old one.
     @native("rask_cell_replace")
-    public func replace(self, value: T) -> T {}
+    public func replace(self, take value: T) -> T {}
 
     /// Consume the box, return what it held.
     @native("rask_cell_get")

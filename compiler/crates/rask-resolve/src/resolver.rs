@@ -188,10 +188,50 @@ impl Resolver {
                 continue;
             }
             let ret_ty = if f.ret_ty.is_empty() { None } else { Some(f.ret_ty.clone()) };
+            // A symbol per declared parameter, so the signature has an arity and
+            // the parameter types the checker unifies arguments against.
+            //
+            // This was `vec![]`, which made every stdlib function look nullary.
+            // Nothing could bind a signature's type parameter from an argument:
+            // `spawn(f: func() -> T) -> TaskHandle<T>` came out as
+            // `Fn { params: [], ret: TaskHandle<T> }`, so the closure had nothing
+            // to unify with, `T` stayed an inference variable through to MIR, and
+            // the join's payload was whatever a fallback invented — i64, always,
+            // whatever the task returned (#963).
+            //
+            // Inserted into the symbol table but deliberately not defined in any
+            // scope: they exist to be read through the function's own symbol, not
+            // to be named.
+            //
+            // Giving them modes also switches on `check_call_annotations` for
+            // stdlib calls, which was a no-op while the list was empty. No
+            // existing call site changes — `drop` is the only `public func` stub
+            // with a mode and the checker handles it before that point — but a
+            // stub added later with a `mutate` parameter will start enforcing.
+            let param_syms: Vec<SymbolId> = f
+                .params
+                .iter()
+                .zip(f.param_modes.iter().copied().chain(std::iter::repeat(
+                    rask_stdlib::StubParamMode::default(),
+                )))
+                .map(|((pname, pty), mode)| {
+                    self.symbols.insert(
+                        pname.clone(),
+                        SymbolKind::Parameter {
+                            is_take: mode.is_take,
+                            is_mutate: mode.is_mutate,
+                            is_deleting: mode.is_deleting,
+                        },
+                        Some(pty.clone()),
+                        Span::new(0, 0),
+                        false,
+                    )
+                })
+                .collect();
             let sym_id = self.symbols.insert(
                 f.name.clone(),
                 SymbolKind::Function {
-                    params: vec![],
+                    params: param_syms,
                     ret_ty,
                     context_clauses: vec![],
                     is_unsafe: false,

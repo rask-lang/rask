@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Everything that has to give its memory back. Driven by
+// `nothing_leaks_at_exit` in compile_run.rs, which runs this under
+// RASK_LEAK_CHECK=1 — the runtime counts what it allocated and never freed, and
+// a clean program ends at exactly zero.
+//
+// Each of these leaked once (#1024, #1027), and none of them had a symptom: the
+// answers were all correct.
+
+struct Holder {
+    text: string
+}
+
+enum Gone {
+    Yes
+}
+
+extend Gone {
+    func message(self) -> string {
+        return "gone"
+    }
+}
+
+func build(i: i64) -> string {
+    return "payload-number-{i}-and-then-some-more-text-to-clear-SSO"
+}
+
+func wrapped(i: i64) -> string or Gone {
+    if i < 0 { return Gone.Yes }
+    return "wrapped-{i}-and-long-enough-that-it-lives-on-the-heap"
+}
+
+func optional(i: i64) -> string? {
+    if i < 0 { return none }
+    return "optional-{i}-and-long-enough-that-it-lives-on-the-heap"
+}
+
+func held(i: i64) -> Holder {
+    return Holder { text: "held-{i}-and-long-enough-that-it-lives-on-the-heap" }
+}
+
+func paired(i: i64) -> (string, i64) {
+    return ("tuple-{i}-and-long-enough-that-it-lives-on-the-heap", i)
+}
+
+func main() {
+    mut n = 0i64
+    mut i = 0i64
+    while i < 200i64 {
+        // Built here, dropped here.
+        let local = "made-right-here-{i}-and-long-enough-to-need-the-heap"
+        n += local.len().wrap<i64>()
+
+        // Handed over by a callee, which gave up its reference on the way out.
+        n += build(i).len().wrap<i64>()
+
+        // Aggregates: each owns a string, and the aggregate dying releases it.
+        n += (wrapped(i) catch _ => "x").len().wrap<i64>()
+        n += (optional(i) ?? "x").len().wrap<i64>()
+        n += held(i).text.len().wrap<i64>()
+        n += paired(i).0.len().wrap<i64>()
+
+        // Containers: the handle, the data array, and the elements.
+        mut v = Vec<string>.new()
+        v.push("element-{i}-long-enough-to-live-on-the-heap")
+        n += v[0].len().wrap<i64>()
+
+        mut m = Map<string, string>.new()
+        m.insert("key-{i}-long-enough-for-the-heap", "value-{i}-also-long-here")
+        n += (m.get("key-{i}-long-enough-for-the-heap") ?? "x").len().wrap<i64>()
+
+        // And a container whose elements are structs holding strings — the
+        // offsets the runtime is handed have to reach inside the element.
+        mut nested = Vec<Holder>.new()
+        nested.push(Holder { text: "nested-{i}-long-enough-to-live-on-the-heap" })
+        n += nested[0].text.len().wrap<i64>()
+
+        i += 1i64
+    }
+    println(n)
+}

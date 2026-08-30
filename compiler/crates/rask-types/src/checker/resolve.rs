@@ -3607,6 +3607,15 @@ impl TypeChecker {
                         let _ = self.unify(&args[0], inner, span);
                     }
                 }
+                // The other side is an optional too — `x == none` most of the
+                // time. `none` has no payload type of its own, so unless it's
+                // tied to the receiver here it stays `?` forever: the node came
+                // out of the checker still holding a variable, and MIR had to
+                // guess a width for it. Comparing two optionals means comparing
+                // the same optional, so say so.
+                if self.ctx.apply(&args[0]).is_option() {
+                    let _ = self.unify(&args[0], &self_ty, span);
+                }
                 self.unify(ret, &Type::Bool, span)
             }
             _ => Err(Self::wrapper_method_cut(self_ty, method, span)),
