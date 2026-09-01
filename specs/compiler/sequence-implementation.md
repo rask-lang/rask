@@ -21,7 +21,8 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 
 | Stage | Status | Commit |
 |-------|--------|--------|
-| 0 — Implicit mutable capture for desugared bodies (`SEQ40`/`MC5`) | pending | — |
+| 0a — Settle the capture/parameter spelling (`mem.closures`, #1039) | **blocked — needs a decision** | — |
+| 0b — Desugar emits declared mutable captures (`SEQ40`) | pending | — |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | redo — landed as an alias, `SEQ1` now says nominal | `4d1eaa0` |
 | 3 — MIR for-loop lowering for Sequence | pending | — |
@@ -35,7 +36,9 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 11 — Closure devirtualization pass (`SEQ17`–`SEQ19`) | pending | — |
 | 12 — Zero-cost fusion test | pending | — |
 
-**Stage 0 is the gate.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that must capture it mutably. Until that works, no sequence loop can accumulate, so stages 3 and 4 have nothing to prove. It was missing from the previous plan entirely, which started at MIR lowering.
+**Stage 0 is the gate, and 0a is a decision not a task.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that captures it mutably, and `MC1` says that capture is declared. So the desugar must emit something like `|mutate total, x|`: one capture and one parameter in one bracket, which today are told apart only by whether a type annotation is present (`CP2` vs `CP3`). Nobody should build a lowering on top of that rule, so the spelling gets settled first — options are in `mem.closures`. `|mutate x|` also doesn't parse at all yet (#1039).
+
+An earlier draft dodged this by exempting generated closures from `MC1` (an "`MC5`"). Withdrawn: the escape it assumed is unchecked (scope-limit tracking doesn't follow a closure through a `func(T) -> bool` parameter into a callee), and an exemption for compiler-written code is a second rule for no gain. One rule, and the desugar obeys it.
 
 ### Prerequisites — bugs that block this work
 
@@ -234,7 +237,8 @@ Each stage is independently shippable and testable.
 Recorded here because they changed after the first draft and the stages depend on them:
 
 - **`Sequence<T>` is nominal**, not a `type alias` (`SEQ1`). A closure literal fills a Sequence-typed slot without a constructor (`SEQ36`).
-- **Yields lend, never give** (`SEQ34`). `take_all()` returns the drained `Vec<T>`, not a Sequence (`SEQ35`), so there is no consuming-adapter story to build and no linearity to thread through adapters.
+- **Yields lend, except to a terminal** (`SEQ34`). A terminal may move a value the chain owns, because nothing observes it afterwards; ownership is read off the chain's shape (`map` makes values, `filter`/`take`/`skip` pass on what they were lent), so `Sequence<T>` stays one type. `take_all()` returns the drained `Vec<T>`, not a Sequence (`SEQ35`).
+- **`to_vec` never deep-clones for you** (`SEQ47`). It copies `Copy` elements and moves chain-owned ones; a chain that only lends non-`Copy` items is a compile error naming the `map(|u| u.clone())` you meant. An earlier draft had it clone silently and justified that with the `to_` prefix — wrong, because `to_vec()` on `Sequence<i32>` and on `Sequence<User>` would then be the same spelling for a memcpy and for N allocations.
 - **Lazy but not resumable** (`SEQ37`, `SEQ38`). No `next()`, no peek, no zip — all one restriction, and indices are the answer (`SEQ39`).
 - **Collections carry no eager adapters** (`SEQ41`). `Vec.map`/`filter`/`take`/`skip`/`fold`/`sum`/… are deleted; the chain is the spelling.
 - **One `Range<T>`** with step and inclusivity as fields (`ctrl.ranges/R6`), not seven types.

@@ -12,9 +12,10 @@
 // closure of the right shape still fills a Sequence-typed slot with no
 // constructor (SEQ36).
 //
-// A yield lends its item for the length of one call (SEQ34). Nothing here ever
-// hands over ownership — draining a collection is `take_all()`, which returns a
-// Vec (SEQ35).
+// A yield lends its item for the length of one call (SEQ34). The one exception
+// is a terminal consuming a value the chain owns — nothing can observe that item
+// afterwards, so it moves rather than copies (SEQ47). Draining a collection is
+// `take_all()`, which returns a Vec (SEQ35).
 
 /// A push-iteration source: calls its yield closure once per item.
 public struct Sequence<T> { }
@@ -84,21 +85,20 @@ extend Sequence<T> {
 // the source by returning `false` from their yield.
 //
 // Bounds are compiler-enforced rather than written: `sum` needs a numeric
-// element, `min`/`max` an ordered one, `to_vec` a cloneable one. Same as
+// element, `min`/`max` an ordered one, `to_vec` a Copy or chain-owned one. As
 // `Vec.sum` and `Vec.min` today — the stdlib has no Numeric or Cloneable trait
 // to name, and inventing one only for these signatures would be a trait nobody
 // implements.
 // ---------------------------------------------------------------------------
 
 extend Sequence<T> {
-    /// Collect into a Vec, cloning each item.
+    /// Collect into a Vec. Copies a Copy element, moves one the chain owns.
     ///
-    /// A yield lends (SEQ34) and a Vec owns, so materializing copies. The `to_`
-    /// prefix is what makes that visible — it means "allocates a new value"
-    /// (canonical-patterns), the same contract `to_string` and `to_lowercase`
-    /// carry. This is not the implicit-copy case VS1 guards against: that rule
-    /// is about a bare binding silently deep-copying, not about a method whose
-    /// name advertises the allocation.
+    /// Never deep-clones on your behalf (SEQ47). A chain that only lends
+    /// non-Copy items has nothing it may give away, and asking for a Vec of
+    /// them is a compile error pointing at the clone you meant to write:
+    /// `map` is the ownership boundary, so `.map(|u| u.clone()).to_vec()`
+    /// clones exactly once, at the call site that asked for it.
     @unimplemented
     public func to_vec(self) -> Vec<T> {}
 

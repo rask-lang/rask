@@ -8,7 +8,8 @@
 //   SEQ8  `return` in a for-body exits the enclosing function
 //   SEQ36 a closure literal fills a Sequence-typed slot with no constructor
 //   SEQ37 building a chain runs nothing
-//   SEQ40 the desugared body captures enclosing locals mutably, unannotated
+//   SEQ40 the desugared body declares a mutable capture per local it writes
+//   SEQ47 to_vec copies Copy elements and moves chain-owned ones, never clones
 //
 // Sequence<T> comes from the stdlib (stdlib/sequence.rk) — this file must not
 // declare its own, and a `type alias` here would be the old design (SEQ1).
@@ -28,8 +29,9 @@ func count_to_three() -> Sequence<i32> {
 
 // --- SEQ6 + SEQ40: the accumulating body, which is the common shape ---
 // `sum` is a local of this test, on the far side of a capture boundary the
-// programmer never wrote. SEQ40 says the desugar captures it mutably with no
-// annotation, so this reads the same as `for` over a Vec.
+// programmer never wrote. The desugar declares the mutable capture for it
+// (MC1 applies to generated closures too), so this reads the same as `for`
+// over a Vec while obeying the ordinary capture rule.
 
 test "type.sequence/SEQ6 — for over a Sequence sums yielded values" {
     mut sum = 0

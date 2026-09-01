@@ -14,7 +14,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ1: Core type** | `Sequence<T>` is a nominal type wrapping `func(yield: \|T\| -> bool)`. Nominal, not an alias — methods need a name to attach to, and an alias is transparent by the time the checker sees a value |
 | **SEQ2: Mutable variant** | `SequenceMut<T>` wraps `func(yield: \|mutate item: T\| -> bool)` |
 | **SEQ3: Yield return** | `yield` returns `true` to continue, `false` to stop. The sequence must honor the return — on `false`, stop yielding and return |
-| **SEQ34: Yields are borrows** | A yield lends its item for the length of one call. `Sequence<T>` yields a read-only borrow, `SequenceMut<T>` a mutable one. No sequence hands over ownership: `mem.closures/CP1` already says what `\|T\|` means, and `CP4` (no `take` parameter on a closure) stands unamended |
+| **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP4`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
 | **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
 | **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
 | **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C4`) |
@@ -32,7 +32,7 @@ A `Sequence<T>` is a first-class value. It can be stored, passed, returned — s
 
 **Why nominal.** The earlier draft made `Sequence<T>` a bare `type alias`, on the grounds that it's "just a function type." That reads well and it doesn't work: `extend` blocks attach methods to a *name*, and an alias has dissolved into `func(func(T) -> bool)` before method resolution runs. There would be nothing for `seq.filter(p)` to find. Making the type nominal costs one sentence of framing and buys ordinary dispatch, chains that can be split across statements, and a type users can write in a signature.
 
-## Yields Lend, They Don't Give
+## Yields Lend, Except to a Terminal
 
 The yield closure's parameter is a parameter like any other, so `mem.closures` has already decided this: `|T|` is a read-only borrow, `|mutate item: T|` a mutable one, and a closure cannot take ownership through a parameter at all. A sequence lends each item for one call and takes it back.
 
@@ -43,6 +43,10 @@ Two things fall out.
 **Nothing needs a linearity story.** There is no once-only sequence, no consumed-ness to thread through ten adapters, no second protocol type. `filter` lends on what its source lent it.
 
 The cost: `files.take_all().filter(|f| f.stale)` does not exist. Draining and adapting are separate steps (SEQ35).
+
+**The one exception, and why it isn't a second kind of sequence.** A terminal is the last thing that touches an item — after `to_vec` has run, nothing can observe what it consumed. So where the chain *owns* the value, the terminal may move it rather than copy it (SEQ47). Ownership is a property of the chain's shape, not a second type: `map` returns values its closure made, so they belong to the chain; `filter`, `take` and `skip` pass along whatever they were lent. The compiler reads that off the chain, so `Sequence<T>` stays one type.
+
+This is what keeps the cost honest. `to_vec` copies `Copy` elements and moves owned ones, and it never deep-clones on your behalf — a chain that only lends non-`Copy` items is a compile error, with the fix being a `map` that clones.
 
 | Rule | Description |
 |------|-------------|
@@ -91,7 +95,7 @@ for i in 0..min(a.len(), b.len()) {
 | **SEQ6: Custom types** | `for x in seq_expr { body }` where `seq_expr: Sequence<T>` desugars to a yield-closure call |
 | **SEQ7: Break/continue translation** | Inside the desugared closure: `break` becomes `return false`, `continue` becomes `return true`. The closure returns `true` at end-of-body |
 | **SEQ8: Return propagation** | `return` in a for-body exits the enclosing function, not the yield closure. The closure writes the return value to a slot in the enclosing frame, sets a flag beside it, and returns `false`; the frame checks the flag after the call and returns if set. This is why SEQ13a is load-bearing — an adapter that swallowed the `false` would swallow the `return` with it |
-| **SEQ40: Desugared closures capture mutably** | The yield closure the compiler builds for a for-body gets mutable access to every enclosing local the body writes, without anyone spelling `mutate`. The explicit-capture rule (`mem.closures/MC1`) exists so an *escaping* closure can't quietly alias a local; this one is called and discarded inside a single statement, so the hazard it guards against doesn't arise. Hand-written closures are unaffected |
+| **SEQ40: Desugared closures declare their captures** | The yield closure the compiler builds for a for-body declares a mutable capture for every enclosing local the body writes — the same `mem.closures/MC1` every hand-written closure obeys, with no carve-out for generated code. The desugar emits the capture list; the programmer never writes it, but the rule it satisfies is the ordinary one |
 
 A `Sequence<T>` is nominal but still callable — `seq(f)` invokes it. The wrapper exists for method dispatch, not to hide the call.
 
@@ -132,7 +136,9 @@ tree.in_order()(|mutate total, v| {
 })
 ```
 
-Without SEQ40 every accumulating loop would need the programmer to write the capture list of a closure they never wrote. With it, `for` over a sequence reads exactly like `for` over a Vec, which is the point.
+An earlier draft gave generated closures an exemption from `MC1` instead — capture implicitly, on the grounds that a desugared body provably can't escape. Two things killed it. The escape isn't actually checked: scope-limit tracking is keyed by variable name in the function being checked (`rask-ownership`), so it doesn't follow a closure through a `func(T) -> bool` parameter into a callee that might store it. And an exemption for code the compiler writes is a second rule to hold in your head, for no gain over emitting the annotation. One rule, obeyed by everyone, including the desugar.
+
+**Open: the spelling.** The emitted form above puts a capture and a parameter in one bracket, told apart by whether a type annotation is present (`CP2` vs `CP3`). That reads badly and it needs settling before the desugar can emit anything — see `mem.closures`.
 
 ## Laziness and Re-Consumption
 
@@ -318,7 +324,7 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 ```rask
 let total = orders.iter().map(|o| o.amount).sum()
 let admin = users.iter().find(|u| u.is_admin)
-let active = users.iter().filter(|u| u.active).to_vec()   // clones each User (SEQ43)
+let active = users.iter().filter(|u| u.active).map(|u| u.clone()).to_vec()
 ```
 
 ## Specialized Terminals
@@ -340,7 +346,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ29: `to_map()` builds a `Map<K, V>`** | Defined only on `Sequence<(K, V)>`. Later keys overwrite earlier ones — identical to repeated `insert`. A sequence of non-pairs is a type error at the call, not a silent tuple coercion |
 | **SEQ30: `join(sep)` builds a `string`** | Defined only on `Sequence<string>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
 | **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` trait, no turbofish. Adding a materializing target means adding a named terminal to this table |
-| **SEQ43: `to_vec` clones each item** | A yield lends (SEQ34) and a `Vec` owns, so materializing copies — `to_vec` needs a cloneable element and allocates one clone per item. The `to_` prefix is what makes that visible: it means "allocates a new value" (`canonical-patterns`), the same contract `to_string` and `to_lowercase` already carry. This is not the implicit-copy case `mem.value-semantics/VS1` guards against — that rule is about a bare binding silently deep-copying, not a method whose name advertises the allocation |
+| **SEQ47: `to_vec` never clones for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
 
@@ -610,17 +616,38 @@ FIX: index both, up to the shorter:
   }
 ```
 
-**Materializing something that cannot be cloned [type.sequence/SEQ43]:**
+**Materializing borrowed items [type.sequence/SEQ47]:**
 ```
-ERROR [type.sequence/SEQ43]: `to_vec` needs a cloneable element, and `File` isn't
+ERROR [type.sequence/SEQ47]: `to_vec` has nothing it may move — `User` is lent, not owned
    |
-6  |  let open = files.iter().filter(|f| f.is_open).to_vec()
-   |                                                ^^^^^^ would clone each item
+6  |  let active = users.iter().filter(|u| u.active).to_vec()
+   |                                                 ^^^^^^ needs an owned element
 
-WHY: a yield lends its item and a Vec owns what it holds, so materializing
-     copies. `File` is a resource — copying it would duplicate the handle.
+WHY: this chain filters what `users` lent it, so every item still belongs to
+     `users`. A Vec owns what it holds, and `to_vec` will not deep-clone on
+     your behalf — at 10k users that is 10k allocations the line doesn't show.
 
-FIX: do the work in the loop instead of collecting:
+FIX: clone where you mean it. A `map` closure's result belongs to the chain,
+     so the terminal moves it in and clones exactly once:
+
+  let active = users.iter().filter(|u| u.active).map(|u| u.clone()).to_vec()
+
+  // Copy elements need none of this — `string` and the small structs move
+  // straight in:
+  let names = users.iter().map(|u| u.name).to_vec()
+```
+
+**Materializing a resource [type.sequence/SEQ47]:**
+```
+ERROR [type.sequence/SEQ47]: `File` is a resource — it can't be cloned into a Vec
+   |
+6  |  let open = files.iter().filter(|f| f.is_open).map(|f| f.clone()).to_vec()
+   |                                                        ^^^^^ File has no clone
+
+WHY: cloning a file handle would duplicate the resource, so `@resource` types
+     have no clone to call.
+
+FIX: do the work in the loop, where each item is still just lent:
 
   for f in files.iter().filter(|f| f.is_open) { use(f) }
 
@@ -653,7 +680,7 @@ FIX: test inside the loop, where the item is yours:
 | Empty sequence | SEQ1 | For-loop body never runs |
 | Break in sequence body | SEQ7 | Yield closure returns `false`; sequence must stop |
 | Continue in sequence body | SEQ7 | Yield closure returns `true` |
-| Sequence yields owned non-Copy | SEQ34 | Impossible — a yield lends. Draining is `take_all()`, which is a `Vec<T>` (SEQ35) |
+| Sequence yields owned non-Copy | SEQ34 | Only to a terminal, and only where the chain owns the item (SEQ47). Draining a collection is `take_all()`, which is a `Vec<T>` (SEQ35) |
 | Sequence yields borrow | SEQ1 | Each yield passes a borrow for the closure duration only |
 | SequenceMut yields mutable | SEQ2 | Each yield passes a fresh mutable borrow; ends when closure returns |
 | Re-consuming a Sequence | SEQ11 | Runs the chain again; side effects repeat |
@@ -679,7 +706,7 @@ An earlier draft justified push with "Rask has no storable references, so a pull
 
 Making it uniform needs a struct that is scope-limited by a borrow it holds. Closures already have that property (`mem.closures/SL1-SL2`) and so do links (`mem.racks/RK6`); generalizing it to structs is lifetime annotations with the serial numbers filed off, which is the one bill Rask has refused to pay since the start.
 
-Push has no such asymmetry. The closure captures its source *by borrow*, which is legal precisely because the closure can't escape — Vec, Map, string, Heap, Rack, channels, one mechanism, all of it user-authorable. That is the reason, and it costs what SEQ34 (no owned yields), SEQ38 (no resuming), SEQ8 (return needs a flag) and SEQ40 (the desugar captures for you) say it costs.
+Push has no such asymmetry. The closure captures its source *by borrow*, which is legal precisely because the closure can't escape — Vec, Map, string, Heap, Rack, channels, one mechanism, all of it user-authorable. That is the reason, and it costs what SEQ34 (no owned yields), SEQ38 (no resuming), SEQ8 (return needs a flag) and SEQ40 (the desugar spells out its captures) say it costs.
 
 Go reached the same shape in 1.23 — `func(yield func(V) bool)`, same `bool`, same short-circuit — for the same reason: iteration that works without lifetimes and without coroutines. It has since been through a large ecosystem, no `zip`, `break` on the bool, compiler help for `return`. Corroboration, not the argument.
 

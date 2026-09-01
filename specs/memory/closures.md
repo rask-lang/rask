@@ -94,11 +94,21 @@ unusual (mutate implies the closure needs a live reference, which conflicts with
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
 | **MC3: Scope-limited** | Closure can't outlive the captured variable |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
-| **MC5: Compiler-generated bodies capture implicitly** | A closure the compiler synthesizes for a `for`-body over a sequence (`type.sequence/SEQ40`) captures mutably whatever the body writes, with no annotation. MC1 exists so an *escaping* closure can't quietly alias a local; a desugared loop body is called and discarded inside one statement, so there is no aliasing window to guard. This applies only to closures the compiler writes — anything a user writes still declares its mutable captures |
+**No exemption for generated closures.** `for x in seq { total = total + x }` desugars into a closure, which puts `total` — an ordinary local of the enclosing function — on the far side of a capture boundary the programmer never asked for. A draft of `type.sequence` gave those generated closures a pass on MC1, capturing implicitly on the grounds that a desugared body provably cannot escape its statement.
 
-**Why MC5 is narrow.** `for x in seq { total = total + x }` desugars into a closure, which puts `total` — an ordinary local of the enclosing function — on the far side of a capture boundary the programmer never asked for. Requiring the annotation would mean writing the capture list of a closure you didn't write, to make a loop look like a loop. The carve-out is what keeps `for` over a sequence reading the same as `for` over a Vec.
+That's withdrawn. The claim isn't checked — scope-limit tracking is keyed by variable name in the function being checked, so it doesn't follow a closure through a `func(T) -> bool` parameter into a callee that could store it — and an exemption for compiler-written code is a second rule to carry for no gain over emitting the annotation. MC1 holds for everything; the desugar spells out its captures like any other closure (`type.sequence/SEQ40`).
 
-It is safe for the same reason the annotation is normally required: the whole point of MC1 is that a closure outliving the borrow can observe or corrupt it later. A desugared body cannot escape its statement — it is constructed, passed, called, and dropped in one expression — so nothing survives to alias. The rule is about escape, and this closure provably doesn't.
+### Open: captures and parameters in one bracket
+
+The desugar has to emit something like `|mutate total, x|` — one capture, one parameter, in one list. Today the only thing separating them is `CP2` vs `CP3`: a `mutate` binding **with** a type annotation is a mutable parameter, **without** one it's a mutable capture. So `|mutate total, x: i32|` and `|mutate total: i32, x|` mean different things, and a reader has to check for annotations to find out which. That's a bad rule for the construct every sequence loop lowers to.
+
+Nothing in this spec settles it, and it blocks the desugar. The shapes worth weighing:
+
+- **Separate the lists.** Captures before a marker, parameters after — `|mutate total; x|`. Unambiguous, one new token.
+- **Re-spell mutable parameters.** If `mutate` in a closure head always meant capture, the collision disappears — but `SequenceMut`'s yield parameter is exactly `|mutate item: T|`, so that spelling needs somewhere to go.
+- **Keep `CP2`/`CP3`.** No change, and the ambiguity stays in the language's most-lowered construct.
+
+Also unresolved as a consequence: `|mutate x|` doesn't parse at all today (rask-lang/rask#1039), so the capture form has no working spelling to build on.
 
 ```rask
 mut count = 0
