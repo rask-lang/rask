@@ -21,8 +21,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 
 | Stage | Status | Commit |
 |-------|--------|--------|
-| 0a — Settle the capture/parameter spelling (`mem.closures`, #1039) | **blocked — needs a decision** | — |
-| 0b — Desugar emits declared mutable captures (`SEQ40`) | pending | — |
+| 0 — Infer mutable captures (`mem.closures/MC1`, #1038) | pending | — |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | redo — landed as an alias, `SEQ1` now says nominal | `4d1eaa0` |
 | 3 — MIR for-loop lowering for Sequence | pending | — |
@@ -36,9 +35,9 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 11 — Closure devirtualization pass (`SEQ17`–`SEQ19`) | pending | — |
 | 12 — Zero-cost fusion test | pending | — |
 
-**Stage 0 is the gate, and 0a is a decision not a task.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that captures it mutably, and `MC1` says that capture is declared. So the desugar must emit something like `|mutate total, x|`: one capture and one parameter in one bracket, which today are told apart only by whether a type annotation is present (`CP2` vs `CP3`). Nobody should build a lowering on top of that rule, so the spelling gets settled first — options are in `mem.closures`. `|mutate x|` also doesn't parse at all yet (#1039).
+**Stage 0 is the gate, and it shrank.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that captures it. Two drafts tried to make that spellable: first an exemption from `MC1` for generated closures, then an emitted capture list. Both are gone. `MC1` now infers a closure's captures from its body, the way read captures already worked, so the desugar emits a plain `|v|` and does nothing special.
 
-An earlier draft dodged this by exempting generated closures from `MC1` (an "`MC5`"). Withdrawn: the escape it assumed is unchecked (scope-limit tracking doesn't follow a closure through a `func(T) -> bool` parameter into a callee), and an exemption for compiler-written code is a second rule for no gain. One rule, and the desugar obeys it.
+What's left is a bug rather than a design task: writing an inferred mutable capture currently compiles and silently drops the write (#1038, both backends). Under the old rule the fix was "reject it"; under inference the fix is "make it work". That's stage 0, and stages 3 and 4 have nothing to prove until it does.
 
 ### Prerequisites — bugs that block this work
 
@@ -46,7 +45,7 @@ An earlier draft dodged this by exempting generated closures from `MC1` (an "`MC
 |---|---|
 | `not` is not a lexer keyword (#1040) | `if not f(x)` doesn't parse; specs use it in eight places. Either add the keyword or the specs are wrong — the style guide says prefer readable keywords |
 | A write to an implicitly-captured local is silently dropped (#1038) | `mut a = 0; let f = \|x\| { a = a + 1 }; f(5)` leaves `a == 0`. Should be a compile error. Stage 0 cannot be tested against a backend that quietly discards the write it is supposed to make |
-| `\|mutate x\|` (the `CP3` capture form) is rejected by the parser (#1039) | It demands a type and turns the capture into a parameter, so mutable capture is currently unspellable and the bug above has no correct workaround |
+| ~~`\|mutate x\|` is rejected by the parser (#1039)~~ | No longer a bug. Captures are inferred, so there is no capture syntax to parse — everything in the pipes is a parameter (`CP3`). Closed as by-design |
 | A stale `rask` binary fails to link (#1041) | The runtime source list is compiled into the binary, so a `.c` file added since it was built isn't linked — raw `ld` output about Unicode internals, on programs with no strings in them. `cargo build --release -p rask-cli`. Silently pushes work onto `--interp`, which isn't the backend that ships |
 
 ## Stages
@@ -237,6 +236,7 @@ Each stage is independently shippable and testable.
 Recorded here because they changed after the first draft and the stages depend on them:
 
 - **`Sequence<T>` is nominal**, not a `type alias` (`SEQ1`). A closure literal fills a Sequence-typed slot without a constructor (`SEQ36`).
+- **Captures are inferred** (`mem.closures/MC1`). A closure that writes an enclosing local borrows it mutably with no annotation, as read captures already did; `own` stays explicit because it moves or clones. This deletes the whole capture-spelling problem and the desugar's special case with it.
 - **Yields lend, except to a terminal** (`SEQ34`). A terminal may move a value the chain owns, because nothing observes it afterwards; ownership is read off the chain's shape (`map` makes values, `filter`/`take`/`skip` pass on what they were lent), so `Sequence<T>` stays one type. `take_all()` returns the drained `Vec<T>`, not a Sequence (`SEQ35`).
 - **`to_vec` never deep-clones for you** (`SEQ47`). It copies `Copy` elements and moves chain-owned ones; a chain that only lends non-`Copy` items is a compile error naming the `map(|u| u.clone())` you meant. An earlier draft had it clone silently and justified that with the `to_` prefix — wrong, because `to_vec()` on `Sequence<i32>` and on `Sequence<User>` would then be the same spelling for a memcpy and for N allocations.
 - **Lazy but not resumable** (`SEQ37`, `SEQ38`). No `next()`, no peek, no zip — all one restriction, and indices are the answer (`SEQ39`).

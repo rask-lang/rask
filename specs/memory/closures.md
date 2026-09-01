@@ -57,8 +57,8 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | Rule | Description |
 |------|-------------|
 | **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
-| **CP2: Mutable parameter with explicit type** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. Explicit type required to distinguish from mutable-capture syntax |
-| **CP3: No untyped mutable parameter** | `\|mutate x\|` without a type is always mutable-capture syntax, never a parameter |
+| **CP2: Mutable parameter** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. The type is required for the same reason a public function's is — this parameter writes back to the caller, so the shape it writes gets named |
+| **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
 | **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
 
 ```rask
@@ -84,123 +84,45 @@ let parse = |s| {
 
 ## Mutable capture
 
-Closures can borrow mutable locals with explicit `mutate` in the capture list. Works the same
-for both scope-limited and owned closures, though owned closures with mutable captures are
-unusual (mutate implies the closure needs a live reference, which conflicts with escaping).
+A closure that writes an enclosing local mutably borrows it. Nobody writes that down — it's
+inferred from the body, exactly as a read capture already is.
 
 | Rule | Description |
 |------|-------------|
-| **MC1: Explicit annotation** | `mutate var` in closure capture list declares mutable borrow |
+| **MC1: Inferred from use** | A closure's captures are inferred: read the variable and it's borrowed, write it and it's borrowed mutably. There is no capture list and no `mutate` annotation on a capture |
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
 | **MC3: Scope-limited** | Closure can't outlive the captured variable |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
-**No exemption for generated closures.** `for x in seq { total = total + x }` desugars into a closure, which puts `total` — an ordinary local of the enclosing function — on the far side of a capture boundary the programmer never asked for. A draft of `type.sequence` gave those generated closures a pass on MC1, capturing implicitly on the grounds that a desugared body provably cannot escape its statement.
-
-That's withdrawn. The claim isn't checked — scope-limit tracking is keyed by variable name in the function being checked, so it doesn't follow a closure through a `func(T) -> bool` parameter into a callee that could store it — and an exemption for compiler-written code is a second rule to carry for no gain over emitting the annotation. MC1 holds for everything; the desugar spells out its captures like any other closure (`type.sequence/SEQ40`).
-
-### Open: captures and parameters in one bracket
-
-The desugar has to emit something like `|mutate total, x|` — one capture, one parameter, in one list. Today the only thing separating them is `CP2` vs `CP3`: a `mutate` binding **with** a type annotation is a mutable parameter, **without** one it's a mutable capture. So `|mutate total, x: i32|` and `|mutate total: i32, x|` mean different things, and a reader has to check for annotations to find out which. That's a bad rule for the construct every sequence loop lowers to.
-
-Nothing in this spec settles it, and it blocks the desugar. The shapes worth weighing:
-
-- **Separate the lists.** Captures before a marker, parameters after — `|mutate total; x|`. Unambiguous, one new token.
-- **Re-spell mutable parameters.** If `mutate` in a closure head always meant capture, the collision disappears — but `SequenceMut`'s yield parameter is exactly `|mutate item: T|`, so that spelling needs somewhere to go.
-- **Keep `CP2`/`CP3`.** No change, and the ambiguity stays in the language's most-lowered construct.
-
-Also unresolved as a consequence: `|mutate x|` doesn't parse at all today (rask-lang/rask#1039), so the capture form has no working spelling to build on.
-
 ```rask
-mut count = 0
-let inc = |mutate count| { count += 1 }
-inc()
-inc()
-// count == 2
-
-// Iterator example
 mut total = 0
-items.for_each(|item, mutate total| { total += item.value })
-print(total)  // sees accumulated value
+let add = |x| { total = total + x }   // `total` captured mutably, inferred
+add(5)
+add(3)
+// total == 8
 ```
 
-Without `mutate`, a captured variable is borrowed (scope-limited) or moved (own). Mutation
-inside the closure stays inside:
+**Why inferred, when `ensure`, `take` and `mutate`-on-a-parameter are all explicit.** Those three
+are visible because each one costs something or changes what the caller may do afterwards: `take`
+kills the variable, a `mutate` parameter writes back through the call, `ensure` schedules code.
+A mutable *borrow* capture does none of that. It's one pointer in an environment that's
+stack-allocated when the closure doesn't escape — no allocation, no move, no clone, nothing the
+caller has to know.
 
-```rask
-mut count = 0
-let inc = || { count += 1 }  // borrows count read-only; mutation not visible
-inc()
-// count is still 0
-```
+What it does buy is a safety guarantee (MC2, MC3), and that guarantee is mechanical: the compiler
+enforces it whether or not you wrote a word. Principle 5 says where that kind of fact belongs —
+"track effects, **captures**, and modes as metadata surfaced via tooling (IDE ghosts, lints)
+instead of type-system constraints". An annotation the compiler doesn't need is an experience of
+safety, and the goal is for safety to be a property instead.
 
-**Multiple closures can't share a mutable capture:**
+The split that matters is already in this spec, one section up: read captures are inferred, and
+`own` — the one that moves or clones — is a visible prefix. Requiring `mutate` on a capture was
+the odd rule out, not the pattern.
 
-```rask
-mut x = 0
-let a = |mutate x| { x += 1 }
-let b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
-```
-
-Use `Shared<T>` for shared mutable state across multiple closures.
-
-## Scope-limited closures (non-own)
-
-All non-`own` closures are scope-limited. They cannot escape the scope where their borrows live.
-
-| Rule | Description |
-|------|-------------|
-| **SL1: Scope inheritance** | Closure is limited to the scope of its outermost captured variable |
-| **SL2: No escape** | Cannot return, store in struct, or send cross-task |
-
-```rask
-let tags = get_tags()
-let f = || process(tags)   // f inherits tags' scope
-f()                           // OK: called in same scope
-return f                      // ERROR: cannot escape scope
-```
-
-```rask
-// ERROR: closure outlives the binding it captures
-mut outer_closure
-{
-    let tags = get_tags()
-    outer_closure = || process(tags)  // ERROR: outer_closure outlives tags
-}
-```
-
-**Fix: use own and move the value in:**
-
-```rask
-let tags = get_tags()
-let f = own || process(tags)  // tags moved into closure
-return f                         // OK: self-contained
-```
-
-## Generic propagation
-
-Functions don't need to declare whether they store or consume closures. The constraint propagates
-through generics, and violations surface where storage is attempted.
-
-| Rule | Description |
-|------|-------------|
-| **GP1: Constraint propagation** | Scope constraints propagate through generic type parameters when the compiler generates specialized code |
-
-```rask
-func run_twice<F: Fn()>(f: F) {
-    f()
-    f()
-}  // F dropped, never stored — works with scope-limited closures
-
-func store_callback<F: Fn()>(f: F) {
-    let holder = Holder { callback: f }  // ERROR if F is scope-limited
-}
-
-let tags = get_tags()
-let greet = || print(tags)   // scope-limited
-
-run_twice(greet)               // OK: run_twice doesn't store F
-store_callback(greet)          // ERROR: store_callback tries to store F
-```
+**The desugar needs nothing special.** `for x in seq { total = total + x }` lowers to
+`seq(|x| { total = total + x; return true })`. `total` is captured mutably by inference, like any
+other closure. There is no capture list to emit, no mixed capture-and-parameter bracket to
+design, and no exemption for compiler-generated code — an earlier draft invented one (an "MC5")
+and it is not needed once captures are inferred.
 
 ## spawn
 
@@ -333,7 +255,7 @@ task takes ownership of its captures. Extending `own` to all closures unifies th
 | Iterator adapter | `items.filter(\|i\| condition)` (borrows, scope-limited) |
 | Simple callback | `\|x\| x * 2` (pure, no captures) |
 | Callback with context | `own \|event\| process(context, event)` (moves context) |
-| Mutating a local | `\|mutate count\| count += 1` (mutable capture) |
+| Mutating a local | `\|x\| count += x` — the mutable capture is inferred (MC1) |
 | Shared mutable state (multiple closures) | `Shared<T>` |
 | Callback stored for later | `own \|...\|` — capture owned values |
 

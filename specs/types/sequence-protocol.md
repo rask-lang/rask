@@ -95,7 +95,7 @@ for i in 0..min(a.len(), b.len()) {
 | **SEQ6: Custom types** | `for x in seq_expr { body }` where `seq_expr: Sequence<T>` desugars to a yield-closure call |
 | **SEQ7: Break/continue translation** | Inside the desugared closure: `break` becomes `return false`, `continue` becomes `return true`. The closure returns `true` at end-of-body |
 | **SEQ8: Return propagation** | `return` in a for-body exits the enclosing function, not the yield closure. The closure writes the return value to a slot in the enclosing frame, sets a flag beside it, and returns `false`; the frame checks the flag after the call and returns if set. This is why SEQ13a is load-bearing — an adapter that swallowed the `false` would swallow the `return` with it |
-| **SEQ40: Desugared closures declare their captures** | The yield closure the compiler builds for a for-body declares a mutable capture for every enclosing local the body writes — the same `mem.closures/MC1` every hand-written closure obeys, with no carve-out for generated code. The desugar emits the capture list; the programmer never writes it, but the rule it satisfies is the ordinary one |
+| **SEQ40: The desugar needs nothing special** | The yield closure the compiler builds for a for-body captures what the body writes, mutably, by ordinary inference (`mem.closures/MC1`) — the same way every hand-written closure does. No capture list to emit, no annotation, no carve-out for generated code |
 
 A `Sequence<T>` is nominal but still callable — `seq(f)` invokes it. The wrapper exists for method dispatch, not to hide the call.
 
@@ -129,16 +129,16 @@ for v in tree.in_order() {
     total = total + v
 }
 
-// Desugars to — `total` is a mutable capture the compiler added:
-tree.in_order()(|mutate total, v| {
+// Desugars to — nothing special; `total` is captured mutably by inference:
+tree.in_order()(|v| {
     total = total + v
     return true
 })
 ```
 
-An earlier draft gave generated closures an exemption from `MC1` instead — capture implicitly, on the grounds that a desugared body provably can't escape. Two things killed it. The escape isn't actually checked: scope-limit tracking is keyed by variable name in the function being checked (`rask-ownership`), so it doesn't follow a closure through a `func(T) -> bool` parameter into a callee that might store it. And an exemption for code the compiler writes is a second rule to hold in your head, for no gain over emitting the annotation. One rule, obeyed by everyone, including the desugar.
+This took three tries to get right, and the two dead ends are worth recording. First draft had generated closures exempt from `MC1` — capture implicitly, because a desugared body can't escape. Withdrawn: the escape isn't actually checked, and an exemption for compiler-written code is a second rule for no gain. Second draft had the desugar emit an explicit capture list, `|mutate total, v|` — which needed a capture and a parameter in one bracket, told apart by whether a type annotation was present. That made an annotation load-bearing when annotations are inert everywhere else in Rask.
 
-**Open: the spelling.** The emitted form above puts a capture and a parameter in one bracket, told apart by whether a type annotation is present (`CP2` vs `CP3`). That reads badly and it needs settling before the desugar can emit anything — see `mem.closures`.
+Both dead ends existed only because `MC1` demanded the annotation. Once captures are inferred (`mem.closures/MC1`) there is no capture list, no bracket to design, and nothing for the desugar to do differently from any other closure. The rule that generated the problem was the problem.
 
 ## Laziness and Re-Consumption
 
