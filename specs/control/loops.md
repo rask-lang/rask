@@ -272,6 +272,7 @@ For-loops over a `Sequence<T>` or `SequenceMut<T>` desugar to a yield-closure ca
 | Rule | Description |
 |------|-------------|
 | **LP18: Sequence desugar** | `for x in seq_expr { body }` where `seq_expr: Sequence<T>` desugars to `seq_expr(\|x\| { body_with_break_continue_translated; return true })` |
+| **LP18a: Body writes are captured for you** | The desugared closure captures every enclosing local the body writes, mutably, with no annotation (`type.sequence/SEQ40`, `mem.closures/MC5`). Accumulating in a sequence loop reads exactly like accumulating in a Vec loop |
 | **LP19: SequenceMut desugar** | `for mutate x in seq_expr { body }` where `seq_expr: SequenceMut<T>` desugars to `seq_expr(\|mutate x: T\| { body_with_break_continue_translated; return true })` |
 | **LP20: Break translation** | Inside the desugared closure body, `break` becomes `return false` |
 | **LP21: Continue translation** | Inside the desugared closure body, `continue` becomes `return true` |

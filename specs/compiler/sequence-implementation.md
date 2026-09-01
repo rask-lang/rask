@@ -21,16 +21,30 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 
 | Stage | Status | Commit |
 |-------|--------|--------|
+| 0 — Implicit mutable capture for desugared bodies (`SEQ40`/`MC5`) | pending | — |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
-| 2 — Stdlib `Sequence<T>` / `SequenceMut<T>` aliases | ✓ done | `4d1eaa0` |
+| 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | redo — landed as an alias, `SEQ1` now says nominal | `4d1eaa0` |
 | 3 — MIR for-loop lowering for Sequence | pending | — |
-| 4 — Interpreter for-loop over callable | pending | — |
-| 5 — Stdlib adapters as extension methods | pending | — |
-| 6 — Migrate collection iteration methods | pending | — |
-| 7 — Channel `stream()` method | pending | — |
-| 8 — Retire `Iterator<Item>` trait | pending | — |
-| 9 — Test suite migration | pending | — |
-| 10 — Zero-cost fusion test | pending | — |
+| 4 — Interpreter for-loop over a Sequence | pending | — |
+| 5 — Adapters + terminals as `extend Sequence<T>` | pending | — |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | pending | — |
+| 7 — `Range<T>` as one nominal type with `iter()` (#920) | pending | — |
+| 8 — Channel `stream()` method | pending | — |
+| 9 — Retire `Iterator<Item>` trait | pending | — |
+| 10 — Test suite migration | pending | — |
+| 11 — Closure devirtualization pass (`SEQ17`–`SEQ19`) | pending | — |
+| 12 — Zero-cost fusion test | pending | — |
+
+**Stage 0 is the gate.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that must capture it mutably. Until that works, no sequence loop can accumulate, so stages 3 and 4 have nothing to prove. It was missing from the previous plan entirely, which started at MIR lowering.
+
+### Prerequisites — bugs that block this work
+
+| What | Effect |
+|---|---|
+| `not` is not a lexer keyword (#1040) | `if not f(x)` doesn't parse; specs use it in eight places. Either add the keyword or the specs are wrong — the style guide says prefer readable keywords |
+| A write to an implicitly-captured local is silently dropped (#1038) | `mut a = 0; let f = \|x\| { a = a + 1 }; f(5)` leaves `a == 0`. Should be a compile error. Stage 0 cannot be tested against a backend that quietly discards the write it is supposed to make |
+| `\|mutate x\|` (the `CP3` capture form) is rejected by the parser (#1039) | It demands a type and turns the capture into a parameter, so mutable capture is currently unspellable and the bug above has no correct workaround |
+| Stale runtime static lib (#1041) | Native builds fail to link (`rask_grapheme_is_prepend`, `rask_ccc`, …); `cd compiler/runtime && make`. Silently pushes work onto `--interp` |
 
 ## Stages
 
@@ -208,12 +222,23 @@ Each stage is independently shippable and testable.
 - `vec.iter().sum()` on 1M i32s matches hand-written `for i in 0..vec.len() { sum += vec[i] }` within ±5%
 - `cargo test -p rask-mir --test sequence_fusion` confirms fusion MIR shape
 
-## Open questions
+## Resolved questions
 
-1. **Extending a type alias**: can Rask `extend Sequence<T> { ... }` where `Sequence<T>` is a function-type alias? If not, adapters must be free functions. Verify in Stage 5.
-2. **Non-local return mechanism**: MIR and interp need a frame-scoped flag to propagate `return expr` out of the yield closure. Check existing `ControlFlow`/`ReturnError` infrastructure before adding a one-off flag.
-3. **Generic function-type aliases**: confirm `type alias Sequence<T> = func(...)` with generic `T` expands correctly through monomorphization.
-4. **Iterator runtime tear-down**: in Stage 8, decide whether to remove `Value::Iterator` / `IteratorState` outright or keep as internal-only.
+1. **Extending a type alias** — you can't, and that's why `Sequence<T>` is nominal now (`SEQ1`). `extend` attaches methods to a name; an alias has dissolved into `func(func(T) -> bool)` before method resolution runs, so `seq.filter(p)` would have nothing to find. This was filed as "verify in Stage 5" and was actually a design hole under the whole adapter surface.
+2. **Non-local return** — the yield closure writes the return value to a slot in the enclosing frame, sets a flag beside it, and returns `false`; the frame tests the flag after the call (`SEQ8`). On the interpreter, `RuntimeError::Return` already unwinds — it needs a variant the intermediate adapter frames pass through and only the originating frame catches, or the innermost adapter swallows it. Note this makes `SEQ13a` load-bearing for correctness, not just for `.take(n)`: an adapter that drops the `false` drops the `return` with it.
+3. **Generics through a nominal wrapper** — `Sequence<T>` is now an ordinary generic type, so it monomorphizes like `Vec<T>`. The alias-expansion question doesn't arise.
+4. **Iterator runtime tear-down** — remove outright. `Iterator<Item>`, `Value::Iterator` and `IteratorState` all go in Stage 9; nothing keeps a compatibility path, and the eager `Vec` adapters go with them (`SEQ41`).
+
+## Design decisions this plan now assumes
+
+Recorded here because they changed after the first draft and the stages depend on them:
+
+- **`Sequence<T>` is nominal**, not a `type alias` (`SEQ1`). A closure literal fills a Sequence-typed slot without a constructor (`SEQ36`).
+- **Yields lend, never give** (`SEQ34`). `take_all()` returns the drained `Vec<T>`, not a Sequence (`SEQ35`), so there is no consuming-adapter story to build and no linearity to thread through adapters.
+- **Lazy but not resumable** (`SEQ37`, `SEQ38`). No `next()`, no peek, no zip — all one restriction, and indices are the answer (`SEQ39`).
+- **Collections carry no eager adapters** (`SEQ41`). `Vec.map`/`filter`/`take`/`skip`/`fold`/`sum`/… are deleted; the chain is the spelling.
+- **One `Range<T>`** with step and inclusivity as fields (`ctrl.ranges/R6`), not seven types.
+- **Fusion is a target, not a fact.** `SEQ17`–`SEQ19` need Stage 11's devirtualization pass; the general inliner only inlines direct calls, and an adapter chain is indirect calls all the way down.
 
 ## Out of scope
 

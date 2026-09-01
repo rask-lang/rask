@@ -94,6 +94,11 @@ unusual (mutate implies the closure needs a live reference, which conflicts with
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
 | **MC3: Scope-limited** | Closure can't outlive the captured variable |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
+| **MC5: Compiler-generated bodies capture implicitly** | A closure the compiler synthesizes for a `for`-body over a sequence (`type.sequence/SEQ40`) captures mutably whatever the body writes, with no annotation. MC1 exists so an *escaping* closure can't quietly alias a local; a desugared loop body is called and discarded inside one statement, so there is no aliasing window to guard. This applies only to closures the compiler writes — anything a user writes still declares its mutable captures |
+
+**Why MC5 is narrow.** `for x in seq { total = total + x }` desugars into a closure, which puts `total` — an ordinary local of the enclosing function — on the far side of a capture boundary the programmer never asked for. Requiring the annotation would mean writing the capture list of a closure you didn't write, to make a loop look like a loop. The carve-out is what keeps `for` over a sequence reading the same as `for` over a Vec.
+
+It is safe for the same reason the annotation is normally required: the whole point of MC1 is that a closure outliving the borrow can observe or corrupt it later. A desugared body cannot escape its statement — it is constructed, passed, called, and dropped in one expression — so nothing survives to alias. The rule is about escape, and this closure provably doesn't.
 
 ```rask
 mut count = 0
