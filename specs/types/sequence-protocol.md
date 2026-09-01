@@ -41,6 +41,10 @@ Two things fall out.
 
 The cost: `files.take_all().filter(|f| f.stale)` does not exist. Draining and adapting are separate steps (SEQ35).
 
+| Rule | Description |
+|------|-------------|
+| **SEQ44: A yield parameter is not storage** | A yielded value may be an aggregate carrying a borrow — `enumerate()` yields `(usize, T)` where `T` is the lent item. The no-storable-references rule (`mem.relocatable`) is about what a value keeps between statements; a yield parameter lives for one call and is gone. Without this, `enumerate` would only work for `Copy` elements |
+
 <!-- test: skip -->
 ```rask
 for file in files.take_all() {     // drained Vec — the loop owns each file
@@ -311,7 +315,7 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 ```rask
 let total = orders.iter().map(|o| o.amount).sum()
 let admin = users.iter().find(|u| u.is_admin)
-let active = users.iter().filter(|u| u.active).to_vec()
+let active = users.iter().filter(|u| u.active).to_vec()   // clones each User (SEQ43)
 ```
 
 ## Specialized Terminals
@@ -333,6 +337,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ29: `to_map()` builds a `Map<K, V>`** | Defined only on `Sequence<(K, V)>`. Later keys overwrite earlier ones — identical to repeated `insert`. A sequence of non-pairs is a type error at the call, not a silent tuple coercion |
 | **SEQ30: `join(sep)` builds a `string`** | Defined only on `Sequence<string>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
 | **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` trait, no turbofish. Adding a materializing target means adding a named terminal to this table |
+| **SEQ43: `to_vec` clones each item** | A yield lends (SEQ34) and a `Vec` owns, so materializing copies — `to_vec` needs a cloneable element and allocates one clone per item. The `to_` prefix is what makes that visible: it means "allocates a new value" (`canonical-patterns`), the same contract `to_string` and `to_lowercase` already carry. This is not the implicit-copy case `mem.value-semantics/VS1` guards against — that rule is about a bare binding silently deep-copying, not a method whose name advertises the allocation |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
 
@@ -383,6 +388,26 @@ func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
     })
 }
 ```
+
+## SequenceMut Has No Adapters
+
+| Rule | Description |
+|------|-------------|
+| **SEQ45: Mutable sequences are terminal-only** | `SequenceMut<T>` supports `for mutate x in seq` and nothing else. No `filter`, no `map`, no terminals |
+
+`filter` on a mutable sequence would work. `map` cannot: it produces new values, and there is nothing to hand back a mutable borrow *of* — the mapped value belongs to the adapter's frame and dies when the yield returns, so writing through it would write to a temporary.
+
+That leaves a half-surface where the adapters that survive are the ones nobody reaches for first, which is worse than none. So `SequenceMut` does one job. A mutable walk that needs filtering puts the test in the loop body, where it reads better anyway:
+
+<!-- test: skip -->
+```rask
+for mutate node in tree.in_order_mut() {
+    if node.value < 0 { continue }
+    node.value += 1
+}
+```
+
+Anything needing more than that — reordering, removal, two positions — is index work (SEQ39).
 
 ## Zero-Cost Contract
 

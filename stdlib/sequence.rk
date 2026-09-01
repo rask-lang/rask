@@ -1,9 +1,177 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 // Sequence<T>: push iteration protocol (see specs/types/sequence-protocol.md).
-// A Sequence is a function that takes a yield closure and calls it per item.
-// Returning `false` from the yield closure stops iteration early.
+//
+// A Sequence wraps a function that takes a yield closure and calls it once per
+// item. Returning `false` from the yield stops the traversal — every source and
+// every adapter must honour that (SEQ13a), because `break`, `.take(n)`, the
+// short-circuit terminals and non-local `return` all ride on it.
+//
+// Nominal, not a type alias: `extend` attaches methods to a name, and an alias
+// has dissolved into its function type before method resolution runs (SEQ1). A
+// closure of the right shape still fills a Sequence-typed slot with no
+// constructor (SEQ36).
+//
+// A yield lends its item for the length of one call (SEQ34). Nothing here ever
+// hands over ownership — draining a collection is `take_all()`, which returns a
+// Vec (SEQ35).
 
-public type alias Sequence<T> = func(func(T) -> bool)
-// SequenceMut<T> = func(|mutate T| -> bool) — pending type parser support for
-// `mutate` in closure-type parameter position.
+/// A push-iteration source: calls its yield closure once per item.
+public struct Sequence<T> { }
+
+/// Yields a mutable borrow per item. Same protocol, `mutate` yield parameter.
+public struct SequenceMut<T> { }
+
+// ---------------------------------------------------------------------------
+// Adapters — each returns a new Sequence composed over `self`. Lazy: building
+// one runs nothing (SEQ37). Each borrows `self`, so an adapter chain lives as
+// long as its source does and no longer (SEQ26).
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> {
+    /// Yield only the items `pred` accepts.
+    @unimplemented
+    public func filter(self, pred: func(T) -> bool) -> Sequence<T> {}
+
+    /// Yield `f` applied to each item.
+    @unimplemented
+    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {}
+
+    /// Yield at most the first `n` items, then stop.
+    @unimplemented
+    public func take(self, n: usize) -> Sequence<T> {}
+
+    /// Skip the first `n` items, yield the rest.
+    @unimplemented
+    public func skip(self, n: usize) -> Sequence<T> {}
+
+    /// Yield items until `pred` first fails, then stop.
+    @unimplemented
+    public func take_while(self, pred: func(T) -> bool) -> Sequence<T> {}
+
+    /// Skip while `pred` holds, yield everything after the first failure.
+    @unimplemented
+    public func skip_while(self, pred: func(T) -> bool) -> Sequence<T> {}
+
+    /// Yield this sequence's items, then `other`'s.
+    @unimplemented
+    public func chain(self, other: Sequence<T>) -> Sequence<T> {}
+
+    /// Pair each item with its position. The tuple carries a borrow and lives
+    /// for one yield call — a yield parameter is not storage (SEQ44).
+    @unimplemented
+    public func enumerate(self) -> Sequence<(usize, T)> {}
+
+    /// Flatten one level: yield every item of every inner sequence.
+    @unimplemented
+    public func flatten<U>(self) -> Sequence<U> {}
+
+    /// Map each item to a sequence, then flatten one level.
+    @unimplemented
+    public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {}
+}
+
+// ---------------------------------------------------------------------------
+// Terminals — drive the chain and produce a value. Short-circuiting ones stop
+// the source by returning `false` from their yield.
+//
+// Bounds are compiler-enforced rather than written: `sum` needs a numeric
+// element, `min`/`max` an ordered one, `to_vec` a cloneable one. Same as
+// `Vec.sum` and `Vec.min` today — the stdlib has no Numeric or Cloneable trait
+// to name, and inventing one only for these signatures would be a trait nobody
+// implements.
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> {
+    /// Collect into a Vec, cloning each item.
+    ///
+    /// A yield lends (SEQ34) and a Vec owns, so materializing copies. The `to_`
+    /// prefix is what makes that visible — it means "allocates a new value"
+    /// (canonical-patterns), the same contract `to_string` and `to_lowercase`
+    /// carry. This is not the implicit-copy case VS1 guards against: that rule
+    /// is about a bare binding silently deep-copying, not about a method whose
+    /// name advertises the allocation.
+    @unimplemented
+    public func to_vec(self) -> Vec<T> {}
+
+    /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
+    /// ones, exactly like repeated `insert`.
+    @unimplemented
+    public func to_map<K, V>(self) -> Map<K, V> {}
+
+    /// Concatenate a sequence of strings with `sep` between them.
+    @unimplemented
+    public func join(self, sep: string) -> string {}
+
+    /// Reduce with a starting value.
+    @unimplemented
+    public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {}
+
+    /// Reduce without one. `none` on an empty sequence.
+    @unimplemented
+    public func reduce(self, f: func(T, T) -> T) -> T? {}
+
+    /// Add every item. Zero on an empty sequence.
+    @unimplemented
+    public func sum(self) -> T {}
+
+    /// Multiply every item. One on an empty sequence.
+    @unimplemented
+    public func product(self) -> T {}
+
+    /// How many items the sequence yields.
+    @unimplemented
+    public func count(self) -> usize {}
+
+    /// Smallest item, or `none` if empty.
+    @unimplemented
+    public func min(self) -> T? {}
+
+    /// Largest item, or `none` if empty.
+    @unimplemented
+    public func max(self) -> T? {}
+
+    /// Smallest by comparator.
+    @unimplemented
+    public func min_by(self, cmp: func(T, T) -> i32) -> T? {}
+
+    /// Largest by comparator.
+    @unimplemented
+    public func max_by(self, cmp: func(T, T) -> i32) -> T? {}
+
+    /// Smallest by extracted key.
+    @unimplemented
+    public func min_by_key<K>(self, key: func(T) -> K) -> T? {}
+
+    /// Largest by extracted key.
+    @unimplemented
+    public func max_by_key<K>(self, key: func(T) -> K) -> T? {}
+
+    /// True if any item satisfies `pred`. Stops at the first that does.
+    @unimplemented
+    public func any(self, pred: func(T) -> bool) -> bool {}
+
+    /// True if every item satisfies `pred`. Stops at the first that doesn't.
+    @unimplemented
+    public func all(self, pred: func(T) -> bool) -> bool {}
+
+    /// The first item satisfying `pred`, or `none`. Stops there.
+    @unimplemented
+    public func find(self, pred: func(T) -> bool) -> T? {}
+
+    /// Run `f` for each item. The loop form reads better — this is for passing
+    /// a function that already exists.
+    @unimplemented
+    public func for_each(self, f: func(T)) {}
+}
+
+// ---------------------------------------------------------------------------
+// SequenceMut — no adapters.
+//
+// `filter` would work and `map` cannot: it produces new values, and there is
+// nothing to hand back a mutable borrow of. Rather than a half-surface where
+// some adapters exist and the useful one doesn't, SequenceMut does one job —
+// `for mutate x in seq` — and anything else goes through indices. A mutable
+// walk that needs filtering puts the test in the loop body, which is where it
+// reads better anyway (SEQ45).
+// ---------------------------------------------------------------------------
