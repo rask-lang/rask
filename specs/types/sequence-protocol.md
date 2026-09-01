@@ -16,6 +16,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ3: Yield return** | `yield` returns `true` to continue, `false` to stop. The sequence must honor the return — on `false`, stop yielding and return |
 | **SEQ34: Yields are borrows** | A yield lends its item for the length of one call. `Sequence<T>` yields a read-only borrow, `SequenceMut<T>` a mutable one. No sequence hands over ownership: `mem.closures/CP1` already says what `\|T\|` means, and `CP4` (no `take` parameter on a closure) stands unamended |
 | **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
+| **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
 | **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C4`) |
 
 <!-- test: skip -->
@@ -26,6 +27,8 @@ public func in_order(self) -> Sequence<i32> {
 ```
 
 A `Sequence<T>` is a first-class value. It can be stored, passed, returned — subject to the same scope rules as any closure (`mem.closures/SL1-SL2`).
+
+**Why it isn't a reserved name.** `Vec`, `Map`, `Set`, `string`, `Error` and `Channel` are in scope everywhere and can't be redeclared. `Sequence` deliberately isn't: it's a far more likely thing for a program to want for itself — a DNA sequence, an animation sequence, a sequence number — and rask-lang/rask#977 already taught this lesson once, when `Handle` was reserved and programs couldn't declare their own. The import costs one line in the files that author sequences and nothing anywhere else.
 
 **Why nominal.** The earlier draft made `Sequence<T>` a bare `type alias`, on the grounds that it's "just a function type." That reads well and it doesn't work: `extend` blocks attach methods to a *name*, and an alias has dissolved into `func(func(T) -> bool)` before method resolution runs. There would be nothing for `seq.filter(p)` to find. Making the type nominal costs one sentence of framing and buys ordinary dispatch, chains that can be split across statements, and a type users can write in a signature.
 
