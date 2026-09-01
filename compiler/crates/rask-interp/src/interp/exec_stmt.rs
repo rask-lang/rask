@@ -324,7 +324,7 @@ impl Interpreter {
                             // However the body ended — see the Vec arm above (#650).
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
-                                    if let Some(v) = self.env.get(&names[1]).cloned() {
+                                    if let Some(v) = self.env.get(&names[1]) {
                                         let mut guard = map_arc.lock().unwrap();
                                         if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
                                             *slot = v;
@@ -374,7 +374,7 @@ impl Interpreter {
                             // However the body ended — see the Vec arm above (#650).
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
-                                    if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]).cloned(), &handle) {
+                                    if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]), &handle) {
                                         let mut pool = pool_arc.lock().unwrap();
                                         if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
                                             *slot = Some(v);

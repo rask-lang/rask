@@ -2238,7 +2238,7 @@ impl Interpreter {
             }
 
             ExprKind::Closure { params, body, .. } => {
-                let captured = self.env.capture();
+                let captured = self.env.capture_shared();
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
@@ -2372,7 +2372,7 @@ impl Interpreter {
 
             ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 let join_handle = crate::spawn_interp_thread(move || {
@@ -2395,7 +2395,7 @@ impl Interpreter {
             }
 
             ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
-                let pool = self.env.get("__thread_pool").cloned();
+                let pool = self.env.get("__thread_pool");
                 let pool = match pool {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {
@@ -2409,7 +2409,7 @@ impl Interpreter {
                 };
 
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
@@ -2593,7 +2593,7 @@ impl Interpreter {
                 use crate::value::ACTIVE_RUNTIME;
 
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 // Read the active runtime from the process-global slot (CC3 fallback if None)
@@ -2909,7 +2909,7 @@ impl Interpreter {
                 if !matches!(info.source, WithSource::SharedRead(_))
                     && !discard.contains(info.name.as_str())
                 {
-                    if let Some(updated) = self.env.get(&info.name).cloned() {
+                    if let Some(updated) = self.env.get(&info.name) {
                         match &info.source {
                             WithSource::Index { collection, key } => {
                                 if let Err(e) = self.write_back_index(collection, key, updated) {

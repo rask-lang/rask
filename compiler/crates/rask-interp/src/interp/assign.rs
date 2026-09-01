@@ -172,7 +172,7 @@ impl Interpreter {
     fn eval_index_target(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match &expr.kind {
             ExprKind::Ident(var_name) => {
-                self.env.get(var_name).cloned()
+                self.env.get(var_name)
                     .ok_or_else(|| RuntimeError::UndefinedVariable(var_name.clone()))
             }
             _ => self.eval_expr(expr).map_err(|diag| diag.error),
@@ -276,7 +276,7 @@ impl Interpreter {
                 self.assign_target(operand, value)
             }
             ExprKind::Ident(name) => {
-                let value = wrap_like(self.env.get(name), value);
+                let value = wrap_like(self.env.get(name).as_ref(), value);
                 if !self.env.assign(name, value) {
                     return Err(RuntimeError::UndefinedVariable(name.clone()));
                 }

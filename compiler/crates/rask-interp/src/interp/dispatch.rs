@@ -31,15 +31,15 @@ impl Interpreter {
     ) -> Result<(Value, Option<Value>), RuntimeError> {
         if let Value::Closure { params, body, captured_env } = func {
             self.env.push_scope();
-            for (name, val) in captured_env {
-                self.env.define(name, val);
+            for (name, cell) in captured_env {
+                self.env.define_slot(name, cell);
             }
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
             }
             let result = self.eval_expr(&body).map_err(|diag| diag.error);
-            let final_arg = first.and_then(|name| self.env.get(&name).cloned());
+            let final_arg = first.and_then(|name| self.env.get(&name));
             self.env.pop_scope();
             let value = match result {
                 Ok(v) => v,
@@ -110,8 +110,8 @@ impl Interpreter {
                 captured_env,
             } => {
                 self.env.push_scope();
-                for (name, val) in captured_env {
-                    self.env.define(name, val);
+                for (name, cell) in captured_env {
+                    self.env.define_slot(name, cell);
                 }
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     // Closure params are by-value bindings (VS1) — copy so the
@@ -776,8 +776,8 @@ impl Interpreter {
                         ));
                     }
                     self.env.push_scope();
-                    for (k, v) in &captured_env {
-                        self.env.define(k.clone(), v.clone());
+                    for (k, cell) in &captured_env {
+                        self.env.define_slot(k.clone(), cell.clone());
                     }
                     let result = self.eval_expr(&body);
                     self.env.pop_scope();
@@ -807,8 +807,8 @@ impl Interpreter {
                         ));
                     }
                     self.env.push_scope();
-                    for (k, v) in &captured_env {
-                        self.env.define(k.clone(), v.clone());
+                    for (k, cell) in &captured_env {
+                        self.env.define_slot(k.clone(), cell.clone());
                     }
                     let result = self.eval_expr(&body);
                     self.env.pop_scope();

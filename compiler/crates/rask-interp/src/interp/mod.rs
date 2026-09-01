@@ -393,7 +393,7 @@ impl Interpreter {
     }
 
     /// Clones function/enum/method tables and captured environment for spawned thread.
-    pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
+    pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, crate::env::Slot>) -> Self {
         let mut child = Interpreter::new();
         child.functions = self.functions.clone();
         child.enums = self.enums.clone();
@@ -407,8 +407,8 @@ impl Interpreter {
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
-        for (name, value) in captured_vars {
-            child.env.define(name, value);
+        for (name, cell) in captured_vars {
+            child.env.define_slot(name, cell);
         }
         child
     }
@@ -561,7 +561,7 @@ impl Interpreter {
                 }
 
                 // Check for thread pool context
-                let pool = self.env.get("__thread_pool").cloned();
+                let pool = self.env.get("__thread_pool");
                 let pool = match pool {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {
