@@ -20,6 +20,14 @@
 public struct Sequence<T> { }
 
 /// Yields a mutable borrow per item. Same protocol, `mutate` yield parameter.
+///
+/// No adapters, and that's deliberate (SEQ45). `filter` on a mutable sequence
+/// would work; `map` cannot — it produces new values, and there is nothing to
+/// hand back a mutable borrow *of*, so writing through one would write to a
+/// temporary that dies when the yield returns. That leaves a half-surface
+/// where the adapters that survive are the ones nobody reaches for first,
+/// which is worse than none. `for mutate x in seq` is the whole job; anything
+/// that needs more — reordering, removal, two positions — is index work.
 public struct SequenceMut<T> { }
 
 // ---------------------------------------------------------------------------
@@ -164,14 +172,3 @@ extend Sequence<T> {
     @unimplemented
     public func for_each(self, f: func(T)) {}
 }
-
-// ---------------------------------------------------------------------------
-// SequenceMut — no adapters.
-//
-// `filter` would work and `map` cannot: it produces new values, and there is
-// nothing to hand back a mutable borrow of. Rather than a half-surface where
-// some adapters exist and the useful one doesn't, SequenceMut does one job —
-// `for mutate x in seq` — and anything else goes through indices. A mutable
-// walk that needs filtering puts the test in the loop body, which is where it
-// reads better anyway (SEQ45).
-// ---------------------------------------------------------------------------
