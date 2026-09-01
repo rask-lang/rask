@@ -554,6 +554,98 @@ FIX: Use find() or capture via a local:
   }
 ```
 
+**Collection adapter that no longer exists [type.sequence/SEQ41]:**
+```
+ERROR [type.sequence/SEQ41]: no method `map` on Vec<User>
+   |
+7  |  let names = users.map(|u| u.name)
+   |                    ^^^ adapters live on Sequence, not on the collection
+
+WHY: `Vec.map` allocated a second Vec. `.iter().map(f)` fuses into one loop
+     and allocates once, at the terminal, where you asked for it.
+
+FIX: start a sequence, and let the terminal name what you build:
+
+  let names = users.iter().map(|u| u.name).to_vec()
+```
+
+**Asking a sequence for one item [type.sequence/SEQ38]:**
+```
+ERROR [type.sequence/SEQ38]: no method `next` on Sequence<Token>
+   |
+4  |  let t = tokens.next()
+   |                 ^^^^ a sequence cannot be half-consumed
+
+WHY: a push sequence keeps its position on the call stack, so there is no
+     position to hand back and resume from. Suspending one means heap-
+     allocating that stack — a coroutine, which Rask does not have.
+
+FIX: index an indexable source, and keep the position yourself:
+
+  mut i = 0
+  while i < tokens.len() {
+      use(tokens[i])
+      i += 1
+  }
+
+  // or materialize first, when the source isn't indexable
+  let all = tokens.to_vec()
+```
+
+**Lockstep over two sequences [type.sequence/SEQ39]:**
+```
+ERROR [type.sequence/SEQ39]: no method `zip` on Sequence<i32>
+   |
+5  |  for (a, b) in xs.iter().zip(ys.iter()) {
+   |                          ^^^ lockstep needs two positions at once
+
+WHY: the same reason there is no `next` — a push sequence cannot hold a
+     position, so two of them cannot be advanced together. Buffering one
+     side would hide an allocation.
+
+FIX: index both, up to the shorter:
+
+  for i in 0..min(xs.len(), ys.len()) {
+      use(xs[i], ys[i])
+  }
+```
+
+**Materializing something that cannot be cloned [type.sequence/SEQ43]:**
+```
+ERROR [type.sequence/SEQ43]: `to_vec` needs a cloneable element, and `File` isn't
+   |
+6  |  let open = files.iter().filter(|f| f.is_open).to_vec()
+   |                                                ^^^^^^ would clone each item
+
+WHY: a yield lends its item and a Vec owns what it holds, so materializing
+     copies. `File` is a resource — copying it would duplicate the handle.
+
+FIX: do the work in the loop instead of collecting:
+
+  for f in files.iter().filter(|f| f.is_open) { use(f) }
+
+  // or take ownership of all of them by draining the source:
+  for f in files.take_all() { try f.close() }
+```
+
+**Adapting a drained collection [type.sequence/SEQ35]:**
+```
+ERROR [type.sequence/SEQ35]: no method `filter` on Vec<File>
+   |
+3  |  for f in files.take_all().filter(|f| f.stale) {
+   |                            ^^^^^^ take_all hands back a Vec, not a sequence
+
+WHY: adapters lend what they were lent, and `take_all` exists to give the
+     items away — the two don't compose. Draining and adapting are separate
+     steps.
+
+FIX: test inside the loop, where the item is yours:
+
+  for f in files.take_all() {
+      if f.stale { try f.close() }
+  }
+```
+
 ## Edge Cases
 
 | Case | Rule | Behavior |

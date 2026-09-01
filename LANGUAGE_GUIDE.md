@@ -106,17 +106,23 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 `Vec<T>` and `Map<K,V>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
 
-There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`). **There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
+There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol where the source drives the loop and hands you each item (`type.sequence`). A chain is lazy: building it runs nothing, and the work happens at the terminal in a single pass.
+
+**There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
 
 ```rask
 let active = users.iter().filter(|u| u.active).map(|u| u.name).to_vec()
 
-for x in vec { }              // borrowed elements
-for mutate x in vec { }       // in-place mutation
-for h in pool.handles() { }   // pools yield handles; snapshot-safe for removal
+for x in vec { }               // borrowed elements
+for mutate x in vec { }        // in-place mutation
+for n in rack.nodes() { }      // racks yield links; write through them directly
 ```
 
-`Vec<Linear>` is illegal — lists of must-consume values go in `Pool<T>` or are consumed via `take_all()`.
+A chain can be split across statements inside one block — `let s = v.iter().filter(p)` is fine, and `s.to_vec()` later in the same block is fine. What it can't do is outlive what it borrows: a sequence over `v` can't be returned, stored in a struct, or sent to another task (`type.sequence/SEQ26`), exactly like any closure that captures a borrow.
+
+**Lazy, not resumable.** There is no `next()`, no `peek`, no `zip`. A push source keeps its position on the call stack, so it can't hand one back or hold two at once — anything needing that uses indices (`type.sequence/SEQ38`, `SEQ39`).
+
+`Vec<Linear>` is illegal — lists of must-consume values go in `Rack<T>` or are consumed via `take_all()`.
 
 ## Strings
 
@@ -145,10 +151,16 @@ say `contains`, a map does not. `m[k] = v` inserts or replaces; `m[k]` reads and
 panics when the key is absent, so test with `contains_key` or use `get`.
 
 **Sequence adapters** (off `.iter()`, or a `string` splitter) — `map` `filter`
-`flat_map` `fold` `reduce` `enumerate` `zip` `skip` `take` `limit` `flatten`
-`sort` `sort_by`.
-**Terminals** — `to_vec` `to_map` `join` `sum` `count` `min` `max` `any` `all`
-`find` `position`. A chain that doesn't end in one doesn't compile.
+`take` `skip` `take_while` `skip_while` `chain` `enumerate` `flatten`
+`flat_map`. No `zip` (needs two positions), no `sort` (sorting a lazy chain
+means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
+**Terminals** — `to_vec` `to_map` `join` `fold` `reduce` `sum` `product`
+`count` `min` `max` `min_by` `max_by` `min_by_key` `max_by_key` `any` `all`
+`find` `for_each`. A chain ends in one of these or in a `for` loop.
+
+Adapters live on `Sequence`, not on the collection: `v.map(f)` doesn't exist,
+`v.iter().map(f).to_vec()` does. The old `Vec.map` allocated a second Vec;
+the chain allocates once, at the terminal (`type.sequence/SEQ41`).
 
 `.len()` answers `u64` everywhere. `as` won't narrow it to `i64` — that's
 `.to<i64>()!`, or keep the count unsigned.
