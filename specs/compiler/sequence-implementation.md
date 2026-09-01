@@ -44,7 +44,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | `not` is not a lexer keyword (#1040) | `if not f(x)` doesn't parse; specs use it in eight places. Either add the keyword or the specs are wrong — the style guide says prefer readable keywords |
 | A write to an implicitly-captured local is silently dropped (#1038) | `mut a = 0; let f = \|x\| { a = a + 1 }; f(5)` leaves `a == 0`. Should be a compile error. Stage 0 cannot be tested against a backend that quietly discards the write it is supposed to make |
 | `\|mutate x\|` (the `CP3` capture form) is rejected by the parser (#1039) | It demands a type and turns the capture into a parameter, so mutable capture is currently unspellable and the bug above has no correct workaround |
-| Stale runtime static lib (#1041) | Native builds fail to link (`rask_grapheme_is_prepend`, `rask_ccc`, …); `cd compiler/runtime && make`. Silently pushes work onto `--interp` |
+| A stale `rask` binary fails to link (#1041) | The runtime source list is compiled into the binary, so a `.c` file added since it was built isn't linked — raw `ld` output about Unicode internals, on programs with no strings in them. `cargo build --release -p rask-cli`. Silently pushes work onto `--interp`, which isn't the backend that ships |
 
 ## Stages
 
