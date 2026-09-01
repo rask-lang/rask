@@ -17,6 +17,7 @@
 
 # --- spec-heavy pending features ---
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented (both check)
+p20_closure_mutable_capture.rk # mem.closures/MC1 — a closure's write to a captured local is dropped, #1038 (both run)
 p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented (both check)
 p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial) (both check)
 

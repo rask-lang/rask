@@ -1,0 +1,152 @@
+// PENDING mem.closures/MC1 — a closure that writes an enclosing local captures it mutably, by inference. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/memory/closures.md
+//   MC1  captures are inferred — read it and it's borrowed, write it and it's
+//        borrowed mutably. No capture list, no `mutate` annotation on a capture.
+//   MC4  the caller sees those mutations once the closure completes.
+//
+// Read captures already work (`t06_closures.rk`, `t_week_closures.rk`) and so do
+// mutable *parameters* (`modify`, covered in `t_week_closures.rk`). The write
+// capture is the hole: today it compiles and the write silently vanishes on both
+// backends (#1038). That is the worst shape of wrong — a program that looks like
+// it worked — so every assertion here is about the value actually landing.
+//
+// This gates the sequence protocol. `for x in seq { total = total + x }` lowers
+// to `seq(|x| { total = total + x; return true })`, so nothing in
+// `p08_sequence.rk` can pass until these do.
+
+func main() {}
+
+// --- MC1 + MC4: the simplest possible write ---
+
+test "mem.closures/MC1 — a closure's write to a captured local is visible after" {
+    mut a = 0
+    let bump = |x| { a = a + x }
+    bump(5)
+    assert a == 5
+}
+
+test "mem.closures/MC4 — repeated calls accumulate into the same variable" {
+    mut total = 0
+    let add = |x| { total = total + x }
+    add(5)
+    add(3)
+    assert total == 8
+}
+
+// --- the shape the sequence desugar produces ---
+// The closure is handed to a function that calls it. The write has to survive
+// the trip through a `func(…) -> bool` parameter — a sequence source is exactly
+// this, so if only the direct-call case works the protocol still can't ship.
+
+func call_once(f: func(i32) -> bool) -> bool {
+    return f(1)
+}
+
+test "mem.closures/MC4 — the write survives a call through a function parameter" {
+    mut hits = 0
+    let count_it = |x| {
+        hits = hits + 1
+        return true
+    }
+    let answered = call_once(count_it)
+    assert answered
+    assert hits == 1
+}
+
+func drive_three(f: func(i32) -> bool) {
+    if !f(1) { return }
+    if !f(2) { return }
+    if !f(3) { return }
+}
+
+test "mem.closures/MC4 — a driver calling the closure repeatedly accumulates" {
+    mut sum = 0
+    let collect = |x| {
+        sum = sum + x
+        return true
+    }
+    drive_three(collect)
+    assert sum == 6
+}
+
+test "mem.closures/MC1 — returning false from the closure stops the driver" {
+    mut seen = 0
+    let stop_at_two = |x| {
+        seen = seen + 1
+        return x < 2
+    }
+    drive_three(stop_at_two)
+    assert seen == 2
+}
+
+// --- reads and writes of the same capture, and of different ones ---
+
+test "mem.closures/MC1 — a capture can be read and written in one body" {
+    mut n = 10
+    let halve_and_note = |x| {
+        n = n / 2
+        return n + x
+    }
+    let r = halve_and_note(1)
+    assert n == 5
+    assert r == 6
+}
+
+test "mem.closures/MC1 — two captures, one read and one written" {
+    let step = 3
+    mut pos = 0
+    let advance = || { pos = pos + step }
+    advance()
+    advance()
+    assert pos == 6
+    assert step == 3
+}
+
+// --- writes that go through a place, rather than rebinding the variable ---
+// These separate the two halves of the bug. Rebinding a captured variable
+// (`a = …`) is lost on both backends. Writing *through* it reaches shared
+// contents and survives — except a struct field, which interp writes through
+// and native drops. That last one is a backend divergence, not just a gap.
+
+struct Counter { n: i32 }
+
+test "mem.closures/MC1 — a field write through a captured struct is visible" {
+    mut c = Counter { n: 0 }
+    let bump = || { c.n = c.n + 1 }
+    bump()
+    bump()
+    assert c.n == 2
+}
+
+test "mem.closures/MC1 — an element write through a captured Vec is visible" {
+    mut w: Vec<i32> = [0, 0]
+    let set_first = |x| { w[0] = x }
+    set_first(4)
+    assert w[0] == 4
+    assert w[1] == 0
+}
+
+// --- a captured container, mutated structurally ---
+
+test "mem.closures/MC1 — pushing into a captured Vec is visible outside" {
+    mut log: Vec<i32> = Vec.new()
+    let record = |x| { log.push(x) }
+    record(7)
+    record(9)
+    assert log.len() == 2
+    assert log[0] == 7
+    assert log[1] == 9
+}
+
+// --- the capture outlives the closure's last use ---
+
+test "mem.closures/MC3 — the variable is usable again after the closure is done" {
+    mut count = 0
+    let inc = || { count = count + 1 }
+    inc()
+    inc()
+    inc()
+    count = count * 10
+    assert count == 30
+}
