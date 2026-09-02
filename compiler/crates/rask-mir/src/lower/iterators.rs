@@ -398,6 +398,16 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
+            // `v.zip(other)` pairs elements at matching indices, stopping at
+            // the shorter side. Same "implicit .collect()" reasoning as
+            // `map`/`filter` above; without this it reached codegen as a call
+            // to `Vec_zip`, which nothing emits (#887).
+            "zip" if args.len() == 1 => {
+                if let Some(chain) = self.try_parse_iter_chain(object) {
+                    let result = self.lower_iter_zip(&chain, &args[0].expr)?;
+                    return Ok(Some(result));
+                }
+            }
             // `v.flat_map(f)` on its own is the same "implicit .collect()"
             // reasoning as `map`/`filter` above, except each pushed value is one
             // of `f(elem)`'s own elements, not `f(elem)` itself. Without this it
@@ -2072,6 +2082,157 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(setup.exit_block);
         self.collected_elem_types.insert(result_vec, sub_elem_ty);
         Ok((MirOperand::Local(result_vec), MirType::I64))
+    }
+
+    /// `v.zip(other)` — pairs elements at matching indices, stopping at the
+    /// shorter side.
+    ///
+    /// `other`'s element type (U) never surfaces on the MIR side of a Vec —
+    /// it's opaque there — so it's read off the checker's type for the
+    /// `other` argument, the same way `flat_map` reads its own U off the
+    /// closure's return expression. Before this, nothing tied the checker's
+    /// own `U` to anything either, so the mangled name carried an unresolved
+    /// type parameter and the pair's second slot got the wrong width (#887).
+    pub(super) fn lower_iter_zip(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        other: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let other_elem_ty = self.collection_elem_of_expr(other)
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:zip_elem"));
+
+        let (other_op, other_ty) = self.lower_expr(other)?;
+        let other_vec = self.builder.alloc_temp(other_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: other_vec,
+            rvalue: MirRValue::Use(other_op),
+        }));
+        let other_len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(other_len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![MirOperand::Local(other_vec)],
+        }));
+
+        let result_vec = self.builder.alloc_temp(MirType::I64);
+        // The pair's size isn't known until the self side's adapters (if any)
+        // have been lowered — same reasoning as `lower_iter_collect`'s
+        // deferred `Vec_new` size.
+        let vec_new_pos = self.builder.next_stmt_pos();
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(result_vec),
+            func: FunctionRef::internal("Vec_new".to_string()),
+            args: vec![],
+        }));
+
+        // Counts pairs actually produced so far, separately from `setup.idx`
+        // (which walks self's *underlying array*, before `skip`/`filter` have
+        // any say). Indexing `other` by `setup.idx` instead of this paired a
+        // self element with the wrong slot of `other` the moment either
+        // adapter was in the chain: `skip(2)` starts `setup.idx` at 2 while
+        // the first produced pair still wants `other[0]`, and `filter` moves
+        // `setup.idx` once per source slot even on the slots it drops.
+        let pair_idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
+            setup.inc_block, setup.idx,
+        )?;
+
+        // `zip` stops at the shorter Vec. Filter may have skipped straight to
+        // `inc_block` above without reaching here, so this only runs for a
+        // self element that survived adapters and is about to be paired.
+        let past_other = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: past_other,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Ge,
+                left: MirOperand::Local(pair_idx),
+                right: MirOperand::Local(other_len),
+            },
+        }));
+        let continue_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(past_other),
+            then_block: setup.exit_block,
+            else_block: continue_block,
+        }));
+        self.builder.switch_to_block(continue_block);
+
+        let other_elem = self.builder.alloc_temp(other_elem_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(other_elem),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
+        }));
+
+        let (pair_op, pair_ty) = self.build_pair_tuple(
+            (final_op, final_ty),
+            (MirOperand::Local(other_elem), other_elem_ty),
+        );
+        self.builder.set_call_args(
+            vec_new_pos.0,
+            vec_new_pos.1,
+            "Vec_new",
+            vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty)))],
+        );
+        self.collected_elem_types.insert(result_vec, pair_ty);
+
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Vec_push".to_string()),
+            args: vec![MirOperand::Local(result_vec), pair_op],
+        }));
+        let pair_idx_next = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx_next,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(pair_idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: pair_idx,
+            rvalue: MirRValue::Use(MirOperand::Local(pair_idx_next)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+        Ok((MirOperand::Local(result_vec), MirType::I64))
+    }
+
+    /// Packs two already-typed values into a tuple local at natural offsets —
+    /// the same layout rule `(a, b)` uses as a literal in `lower/expr.rs`,
+    /// without that path's coercion (both operands already carry their final,
+    /// resolved element type here, so there's nothing to widen).
+    fn build_pair_tuple(
+        &mut self,
+        first: (MirOperand, MirType),
+        second: (MirOperand, MirType),
+    ) -> (MirOperand, MirType) {
+        let tuple_ty = MirType::Tuple(vec![first.1.clone(), second.1.clone()]);
+        let result_local = self.builder.alloc_temp(tuple_ty.clone());
+        let mut offset = 0u32;
+        for (op, ty) in [first, second] {
+            let elem_size = ty.size();
+            let elem_align = ty.align().max(1);
+            offset = (offset + elem_align - 1) & !(elem_align - 1);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: result_local,
+                offset,
+                value: op,
+                store_size: Some(elem_size),
+            }));
+            offset += elem_size;
+        }
+        (MirOperand::Local(result_local), tuple_ty)
     }
 
     /// Every return-position expression reachable from a closure body — used

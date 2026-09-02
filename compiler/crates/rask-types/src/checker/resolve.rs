@@ -3052,9 +3052,17 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_ty, span)
             }
-            // vec.zip(other) -> Vec<(T, U)>
+            // vec.zip(other) -> Vec<(T, U)>. U never had anywhere to come
+            // from: `other` is `Vec<U>` and nothing tied the fresh var to its
+            // element, so U stayed unbound and the mangled name carried it as
+            // a bare, unresolved type parameter (#887).
             "zip" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
+                let other_vec = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh.clone()))],
+                };
+                let _ = self.unify(&args[0], &other_vec, span);
                 let pair_ty = Type::Tuple(vec![inner_type, fresh]);
                 let result_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),

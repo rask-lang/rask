@@ -14,11 +14,10 @@
 // primitives, one source for both backends.
 //
 // The other four each mention a type parameter of their *own* — `zip`'s `U`,
-// `sort_by_key`'s `K` — and nothing resolves those at the call site, so a Rask
-// body for them is made with the parameter unsubstituted and lays its result out
-// at the wrong width. #887 has the details; they stay native-only until it's
-// fixed. Writing `zip` in Rask and watching a `Vec<string>` come back truncated
-// is what found it.
+// `sort_by_key`'s `K` — and nothing resolved those at the call site, so a
+// checker-guessed layout came out the wrong width (#887). `flat_map` and
+// `sort_by_key` got a fused native lowering in #842; `zip` gets one below,
+// plus the checker fix that ties `U` to the second Vec's element type.
 //
 // `"ab".split("")` answered 2 pieces natively and 4 on the interpreter. An empty
 // separator matches at every boundary — before the first character, between each
@@ -46,6 +45,90 @@ test "vec enumerate — through iter() still works" {
         seen = "{seen}{p.0}:{p.1} "
     }
     assert_eq(seen, "0:10 1:20 ")
+}
+
+// #887: `U` (the second Vec's element type) never resolved anywhere, so the
+// pair's second slot got the wrong width — a `Vec<string>` truncated to one
+// byte's worth of pointer.
+test "vec zip — pairs elements, U resolved from the other Vec" {
+    let nums: Vec<i64> = [1, 2, 3]
+    let words: Vec<string> = ["one", "two", "three"]
+    let pairs: Vec<(i64, string)> = nums.zip(words)
+    assert_eq(pairs.len(), 3)
+    assert_eq(pairs[0].0, 1)
+    assert_eq(pairs[0].1, "one")
+    assert_eq(pairs[2].1, "three")
+}
+
+test "vec zip — stops at the shorter side" {
+    let a: Vec<i64> = [1, 2, 3, 4, 5]
+    let b: Vec<i64> = [10, 20]
+    let short: Vec<(i64, i64)> = a.zip(b)
+    assert_eq(short.len(), 2)
+
+    let c: Vec<i64> = [1, 2]
+    let d: Vec<i64> = [10, 20, 30, 40]
+    let long: Vec<(i64, i64)> = c.zip(d)
+    assert_eq(long.len(), 2)
+
+    let e: Vec<i64> = []
+    let f: Vec<i64> = [1, 2]
+    let empty: Vec<(i64, i64)> = e.zip(f)
+    assert_eq(empty.len(), 0)
+}
+
+// A review on #969 caught this: native indexed `other` by the loop's raw
+// walk position over self's own array, not by how many pairs had actually
+// been produced. `skip` starts that raw position past zero with nothing
+// produced yet, and `filter` advances it once per source slot even on the
+// slots it drops — both left `other` read at the wrong offset.
+test "vec zip — filter before it doesn't skew the other side" {
+    let a: Vec<i64> = [1, 2, 3, 4, 5]
+    let b: Vec<i64> = [10, 20, 30]
+    let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).zip(b)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 2)
+    assert_eq(pairs[0].1, 10)
+    assert_eq(pairs[1].0, 4)
+    assert_eq(pairs[1].1, 20)
+}
+
+test "vec zip — skip before it doesn't skew the other side" {
+    let a: Vec<i64> = [1, 2, 3, 4, 5]
+    let b: Vec<i64> = [10, 20, 30]
+    let pairs: Vec<(i64, i64)> = a.skip(2).zip(b)
+    assert_eq(pairs.len(), 3)
+    assert_eq(pairs[0].0, 3)
+    assert_eq(pairs[0].1, 10)
+    assert_eq(pairs[2].0, 5)
+    assert_eq(pairs[2].1, 30)
+}
+
+// #953 made a Vec reached through a field a fused-loop source too, so this
+// pairs the two changes: both sides of the zip come out of struct fields.
+struct Row {
+    xs: Vec<i64>
+    names: Vec<string>
+}
+
+test "vec zip — both sides reached through a struct field" {
+    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 1)
+    assert_eq(pairs[0].1, "a")
+    assert_eq(pairs[1].0, 2)
+    assert_eq(pairs[1].1, "b")
+}
+
+test "vec zip — a filter on a field receiver still doesn't skew the other side" {
+    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).zip(r.names)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 1)
+    assert_eq(pairs[0].1, "a")
+    assert_eq(pairs[1].0, 3)
+    assert_eq(pairs[1].1, "b")
 }
 
 test "map insert_if_missing — fills a gap and leaves a value alone" {
