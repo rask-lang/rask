@@ -1716,7 +1716,7 @@ impl<'a> MirLowerer<'a> {
     /// Bind a tuple pattern against `base`, following the pattern's shape.
     /// A nested pattern reads its own sub-tuple out first, so element indices
     /// always match the tuple they're read from.
-    fn destructure_tuple_pattern(
+    pub(super) fn destructure_tuple_pattern(
         &mut self,
         pats: &[TuplePat],
         base: &MirOperand,

@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A user type you can iterate — the feature the sequence protocol is for.
+//
+// Spec: specs/types/sequence-protocol.md
+//   SEQ1  Sequence<T> is a nominal type wrapping func(yield: |T| -> bool)
+//   SEQ3  yield answers true to continue, false to stop
+//   SEQ6  `for x in seq` hands the sequence a yield and waits
+//   SEQ7  break -> `return false`, continue -> `return true`
+//   SEQ8  `return` in a for-body exits the enclosing function
+//   SEQ36 a closure literal fills a Sequence-typed slot with no constructor
+//   SEQ44 a tuple binding names both halves of the yielded item
+//
+// This is the half that works on both backends today. `p08_sequence.rk` drives
+// the same protocol plus the adapter chain, and stays red until the adapters
+// land (#1046) — so without this file stages 3 and 4 have no live coverage.
+//
+// Every accumulating body here writes a local of the test, captured mutably by
+// the desugared yield closure. That is #1038, and it is why nothing in this
+// file could pass before it was fixed on both backends.
+
+import sequence.Sequence
+
+// SEQ36: the return type says what the closure is, so no constructor call.
+// SEQ3: each yield's answer is honoured.
+func count_to_three() -> Sequence<i32> {
+    return |yield| {
+        if !yield(1) { return }
+        if !yield(2) { return }
+        if !yield(3) { return }
+    }
+}
+
+test "type.sequence/SEQ6 — for over a user sequence sums what it yields" {
+    mut sum = 0
+    for x in count_to_three() {
+        sum = sum + x
+    }
+    assert sum == 6
+}
+
+test "type.sequence/SEQ7 — break stops the source, not just the loop" {
+    mut count = 0
+    for x in count_to_three() {
+        count = count + 1
+        if x == 2 { break }
+    }
+    assert count == 2
+}
+
+test "type.sequence/SEQ7 — continue skips an item without stopping" {
+    mut sum = 0
+    for x in count_to_three() {
+        if x == 2 { continue }
+        sum = sum + x
+    }
+    assert sum == 4
+}
+
+// SEQ8: `return` leaves the enclosing function, not the yield closure. The
+// closure writes the value and a flag through captures the frame owns, returns
+// false, and the frame tests the flag once the source has unwound.
+func first_over(limit: i32) -> i32 {
+    for x in count_to_three() {
+        if x > limit { return x }
+    }
+    return -1
+}
+
+test "type.sequence/SEQ8 — return in a for-body exits the enclosing function" {
+    assert first_over(1) == 2
+    assert first_over(9) == -1
+}
+
+// SEQ44: one parameter carries the item; the names are read off it. Using the
+// first of the names as the parameter shadows it, and `v` didn't exist at all.
+func labelled() -> Sequence<(i32, i32)> {
+    return |yield| {
+        if !yield((1, 10)) { return }
+        if !yield((2, 20)) { return }
+        if !yield((3, 30)) { return }
+    }
+}
+
+test "type.sequence/SEQ44 — a tuple binding names both halves of the item" {
+    mut keys = 0
+    mut vals = 0
+    for (k, v) in labelled() {
+        keys = keys + k
+        vals = vals + v
+    }
+    assert keys == 6
+    assert vals == 60
+}
+
+// Three fields of three different widths, read off one item. `_` is an ordinary
+// name here rather than a pattern wildcard, and repeating it is fine.
+func triples() -> Sequence<(i32, string, bool)> {
+    return |yield| {
+        if !yield((1, "one", true)) { return }
+        if !yield((2, "two", false)) { return }
+    }
+}
+
+test "type.sequence/SEQ44 — a tuple binding over mixed field widths" {
+    mut nums = 0
+    mut words = ""
+    mut flags = 0
+    for (n, w, f) in triples() {
+        nums = nums + n
+        words = "{words}{w}"
+        if f { flags = flags + 1 }
+    }
+    assert nums == 3
+    assert words == "onetwo"
+    assert flags == 1
+}
+
+test "type.sequence/SEQ44 — a tuple binding can ignore the halves it wants to" {
+    mut just_words = ""
+    for (_, w, _) in triples() {
+        just_words = "{just_words}{w}"
+    }
+    assert just_words == "onetwo"
+}
+
+// A sequence is callable, which is what every adapter is built on: drive the
+// one upstream with a yield of your own, and pass its answer straight back so
+// `break` still reaches the source (SEQ13a).
+func evens(src: Sequence<i32>) -> Sequence<i32> {
+    return |yield| {
+        src(|item| {
+            if item % 2 == 0 { return yield(item) }
+            return true
+        })
+    }
+}
+
+test "type.sequence/SEQ13a — a hand-written adapter composes and forwards" {
+    mut sum = 0
+    for x in evens(count_to_three()) {
+        sum = sum + x
+    }
+    assert sum == 2
+}
+
+test "type.sequence/SEQ13a — break through an adapter stops the source" {
+    mut seen = 0
+    for x in evens(count_to_three()) {
+        seen = seen + 1
+        break
+    }
+    assert seen == 1
+}
+
+// SEQ38: nothing is stored between items, so a sequence can be driven twice.
+test "type.sequence/SEQ38 — the same sequence drives twice" {
+    let seq = count_to_three()
+    mut first = 0
+    for x in seq {
+        first = first + x
+    }
+    mut second = 0
+    for x in seq {
+        second = second + x
+    }
+    assert first == 6
+    assert second == 6
+}
+
+// Nested loops over sequences: each `for` pushes its own yield, so the inner
+// one can't consume the outer one's.
+test "type.sequence/SEQ6 — nested for loops over two sequences" {
+    mut total = 0
+    for a in count_to_three() {
+        for b in count_to_three() {
+            total = total + a * b
+        }
+    }
+    assert total == 36
+}
+
+func main() {}

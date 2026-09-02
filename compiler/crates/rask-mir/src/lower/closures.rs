@@ -524,15 +524,23 @@ impl<'a> MirLowerer<'a> {
         let closure_name = format!("{}__yield_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
 
-        // The body's free variables, minus the binding the yield introduces.
-        let bound_name = match binding {
-            ForBinding::Single(name) => name.clone(),
-            ForBinding::Tuple(names) => names.first().cloned().unwrap_or_default(),
+        // The yield takes one parameter: the item. A tuple binding unpacks it
+        // inside the body, so the parameter needs a name of its own — using the
+        // first of the tuple's names would shadow it, and `for (k, v) in seq`
+        // then had no `v` at all.
+        let names: Vec<String> = match binding {
+            ForBinding::Single(name) => vec![name.clone()],
+            ForBinding::Tuple(names) => names.clone(),
         };
+        let param_name = match binding {
+            ForBinding::Single(name) => name.clone(),
+            ForBinding::Tuple(_) => format!("__seq_item_{}", self.closure_counter),
+        };
+        // The body's free variables, minus whatever the binding introduces.
         let mut free_vars: Vec<(String, LocalId, MirType)> = self
             .collect_free_vars_block(body)
             .into_iter()
-            .filter(|(name, _, _)| *name != bound_name)
+            .filter(|(name, _, _)| !names.contains(name))
             .collect();
         // The two the loop just made are captured like any other local, so a
         // `return` in the body writes the enclosing frame's storage.
@@ -561,10 +569,12 @@ impl<'a> MirLowerer<'a> {
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
         let env_param = yb.add_param("__env".to_string(), MirType::Ptr);
-        let item_param = yb.add_param(bound_name.clone(), elem_ty.clone());
+        let item_param = yb.add_param(param_name.clone(), elem_ty.clone());
 
         let mut yield_locals = std::collections::HashMap::new();
-        yield_locals.insert(bound_name.clone(), (item_param, elem_ty.clone()));
+        if matches!(binding, ForBinding::Single(_)) {
+            yield_locals.insert(param_name.clone(), (item_param, elem_ty.clone()));
+        }
 
         let mut inner_flag = None;
         let mut inner_value = None;
@@ -590,7 +600,7 @@ impl<'a> MirLowerer<'a> {
         let exit_block = yb.create_block();
         let nonlocal_block = yb.create_block();
 
-        let mut body_result = Ok(());
+        let mut body_result: Result<(), LoweringError> = Ok(());
         {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
@@ -612,6 +622,22 @@ impl<'a> MirLowerer<'a> {
             self.inline_return_target = inner_value
                 .or(inner_flag)
                 .map(|dst| (dst, nonlocal_block));
+
+            // `for (k, v) in seq` — read the names off the item, the same way
+            // the index loop reads them off a Map entry. Has to happen with the
+            // closure's builder and locals installed, so the reads land in the
+            // yield body and the names resolve there.
+            if let ForBinding::Tuple(tuple_names) = binding {
+                let pats: Vec<rask_ast::stmt::TuplePat> = tuple_names
+                    .iter()
+                    .map(|n| rask_ast::stmt::TuplePat::Name(n.clone()))
+                    .collect();
+                if let Err(e) = self.destructure_tuple_pattern(
+                    &pats, &MirOperand::Local(item_param), &elem_ty,
+                ) {
+                    body_result = Err(e);
+                }
+            }
 
             for stmt in body {
                 if let Err(e) = self.lower_stmt(stmt) {

@@ -24,7 +24,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 0 — Infer mutable captures (`mem.closures/MC1`, #1038) | ✓ done | `60f338b` interp, `6fe0847` native |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
-| 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d` |
+| 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
 | 5 — Adapters + terminals as `extend Sequence<T>` | written, blocked on stage 6 — #1046 | — |
 | 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | **next, and it gates stage 5** | — |
@@ -172,7 +172,7 @@ Each stage is independently shippable and testable.
 
 - **File**: `tests/suite/t16_iterators.rk` — update comment `Spec: type.iterator-protocol` → `type.sequence`; verify tests still pass
 - **File**: `tests/suite/t25_iterator_adapters.rk` — same; confirm chains use the new API path
-- **New**: `tests/suite/t26_custom_sequence.rk` — custom Sequence authoring, break/continue translation, non-local return, `SequenceMut` with `for mutate`, channel `.stream()`, dropped Sequence closes Receiver
+- `tests/suite/t26_custom_sequence.rk` exists and is green on both backends: authoring a Sequence, break/continue/non-local return, a tuple binding, a hand-written adapter that composes and forwards, driving one sequence twice, and nested loops. Still to add once their stages land: `SequenceMut` with `for mutate`, channel `.stream()`, and a dropped Sequence closing its Receiver
 
 ### Stage 10 — Zero-cost fusion test (`type.sequence/SEQ19` contract)
 
