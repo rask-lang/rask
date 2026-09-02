@@ -1,6 +1,9 @@
 // comp.hidden-params/SIG2: a named `using players: Pool<Player>` context lowers
 // on native (add hidden param, insert the named alias, pass the pool at the
 // call site) and reads the pool element — matching the interpreter.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func report(h: Handle<Player>) using players: Pool<Player> {

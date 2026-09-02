@@ -68,6 +68,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("sequence.rk", include_str!("../../../../stdlib/sequence.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
+    ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
 ];
 
 /// A method extracted from a stub file.
@@ -80,6 +81,14 @@ pub struct MethodStub {
     /// True if declared `take self` — method consumes the receiver.
     pub take_self: bool,
     pub params: Vec<(String, String)>, // (name, type)
+    /// Each parameter's declared mode, positionally matching `params`.
+    ///
+    /// `take` on a parameter is the declaration saying the callee keeps what it
+    /// is handed. That is the fact MIR needs to decide whether the caller still
+    /// owes a release on a string it passed — `v.push(s)` hands the reference
+    /// over, `m.get(k)` only reads it — and before this it had to guess from a
+    /// list of method names kept by hand in two passes.
+    pub param_modes: Vec<StubParamMode>,
     pub ret_ty: String,
     pub doc: Option<String>,
     pub source_file: String,
@@ -133,11 +142,27 @@ pub struct TypeStub {
     pub span: Span,
 }
 
+/// A stub parameter's declared mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StubParamMode {
+    pub is_take: bool,
+    pub is_mutate: bool,
+    pub is_deleting: bool,
+}
+
 /// Top-level function extracted from stubs (println, print, etc.).
 #[derive(Debug, Clone)]
 pub struct FunctionStub {
     pub name: String,
     pub params: Vec<(String, String)>,
+    /// Each parameter's declared mode, positionally matching `params`.
+    ///
+    /// Kept beside the name/type pairs rather than folded into them because the
+    /// LSP reads those as a pair to render a signature, and only the resolver
+    /// needs the modes — it registers a symbol per parameter, and a mode
+    /// defaulted to `false` there would quietly reject a correct `mutate` at a
+    /// call site.
+    pub param_modes: Vec<StubParamMode>,
     pub ret_ty: String,
     pub doc: Option<String>,
     pub source_file: String,
@@ -404,6 +429,14 @@ impl StubRegistry {
                         .filter(|p| p.name != "self")
                         .map(|p| (p.name.clone(), p.ty.clone()))
                         .collect(),
+                    param_modes: f.params.iter()
+                        .filter(|p| p.name != "self")
+                        .map(|p| StubParamMode {
+                            is_take: p.is_take,
+                            is_mutate: p.is_mutate,
+                            is_deleting: p.is_deleting,
+                        })
+                        .collect(),
                     ret_ty: f.ret_ty.clone().unwrap_or_default(),
                     doc: f.doc.clone(),
                     source_file: format!("stdlib/{}", filename),
@@ -472,6 +505,14 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         .filter(|p| p.name != "self")
         .map(|p| (p.name.clone(), p.ty.clone()))
         .collect();
+    let param_modes: Vec<StubParamMode> = f.params.iter()
+        .filter(|p| p.name != "self")
+        .map(|p| StubParamMode {
+            is_take: p.is_take,
+            is_mutate: p.is_mutate,
+            is_deleting: p.is_deleting,
+        })
+        .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = strip_type_params(&f.name);
@@ -483,6 +524,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         mutate_self,
         take_self,
         params,
+        param_modes,
         ret_ty: f.ret_ty.clone().unwrap_or_default(),
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),
@@ -879,6 +921,60 @@ mod tests {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+
+    /// Every `stdlib/*.rk` file is either compiled into STUB_SOURCES or listed
+    /// here as deliberately left out.
+    ///
+    /// STUB_SOURCES is what the type checker knows the stdlib to be, and it's a
+    /// hand-written list of `include_str!`s — a macro can't glob a directory, so
+    /// nothing keeps it honest on its own. `reflect.rk` had been sitting on disk
+    /// unlisted: `reflect.fields<T>()` had no return type, so `f.name` in a
+    /// `comptime for` had no type either, and native couldn't dispatch a string
+    /// method off it or infer what a `Vec` collecting it held (#931). Nothing
+    /// failed loudly — the feature just half-worked.
+    #[test]
+    fn every_stdlib_file_is_listed_or_deliberately_left_out() {
+        // Left out on purpose (#990). Both declare a trait the compiler already
+        // provides — `Displayable` in fmt.rk, `Encode`/`Decode` in encoding.rk —
+        // and a declared `to_string` then wins method lookup over the inherent
+        // one, so `examples/package_manager.rk` stops building. Closing that
+        // means deciding whether these files are documentation or the source of
+        // truth; the entry here is so the answer stays a decision.
+        const DELIBERATELY_ABSENT: &[&str] = &["encoding.rk", "fmt.rk"];
+
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../stdlib");
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("can't read {}: {}", dir, e))
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".rk"))
+            .collect();
+        on_disk.sort();
+
+        let listed: std::collections::HashSet<&str> =
+            STUB_SOURCES.iter().map(|(name, _)| *name).collect();
+
+        let missing: Vec<&String> = on_disk
+            .iter()
+            .filter(|n| !listed.contains(n.as_str()) && !DELIBERATELY_ABSENT.contains(&n.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "stdlib files the type checker never sees: {:?}\n\
+             add them to STUB_SOURCES, or to DELIBERATELY_ABSENT with a reason",
+            missing
+        );
+
+        let stale: Vec<&&str> = DELIBERATELY_ABSENT
+            .iter()
+            .filter(|n| !on_disk.iter().any(|d| d == *n) || listed.contains(**n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "DELIBERATELY_ABSENT names files that are gone or now listed: {:?}",
+            stale
+        );
+    }
 
     /// Every stdlib function says where its body lives.
     ///

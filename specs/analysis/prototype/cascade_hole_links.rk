@@ -20,6 +20,8 @@
 // The call site says `deleting scene`, not `mutate scene`: PM5 has the marker
 // follow the signature, and a `deleting` parameter is a different contract from a
 // `mutate` one — the caller's links into that rack are revoked here.
+import memory.Link
+import memory.Rack
 
 struct Node {
     name: string

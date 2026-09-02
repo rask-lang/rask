@@ -6,6 +6,7 @@
 // container instead of by the payload: a float got renumbered as an integer, or
 // stored at one width and read back at the other, so the payload came out as a
 // denormal or a flat 0 while the tag stayed correct.
+import sync.Shared
 
 func opt_f64(x: f64?) -> f64 {
     if x? as v {

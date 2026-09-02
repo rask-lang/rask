@@ -199,6 +199,28 @@ fn compile_only_succeeds(fixture_name: &str) -> (bool, String) {
     (compile_out.status.success(), combined)
 }
 
+/// `rask check` on a fixture file, returning (succeeded, combined output).
+///
+/// Distinct from `compile_error_output`, which expects failure, and from
+/// `check_output` further down, which takes inline source: a warning is reported
+/// *and* the check succeeds, and the full diagnostic — code, labels, fix — only
+/// comes out of `check`. `compile` prints the one-line form.
+fn check_fixture(fixture_name: &str) -> (bool, String) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture(fixture_name))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let combined = format!(
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    (out.status.success(), combined)
+}
+
 /// Run a .rk fixture via `rask run --interp`, returning stdout.
 fn run_interp(fixture_name: &str) -> (String, i32) {
     let rask = rask_binary();
@@ -931,7 +953,7 @@ fn error_module_used_without_import() {
     assert!(failed, "a module used without importing it must be rejected: {}", out);
     for module in ["math", "fs"] {
         assert!(
-            out.contains(&format!("`{module}` is used but never imported")),
+            out.contains(&format!("`{module}` is not in scope")),
             "should name `{module}`: {out}",
         );
         assert!(
@@ -939,6 +961,94 @@ fn error_module_used_without_import() {
             "should show the import as the fix for `{module}`: {out}",
         );
     }
+}
+
+// #977: the four namespace rules of `struct.modules`, all four of which were
+// specified and none enforced. IM1 leaked twice over — the stdlib's source is
+// resolved into the program's scope, so every module and type it declares was
+// visible unasked, and a type *annotation* wasn't looked at at all. BI3 leaked on
+// exactly the names the stdlib also declares, because the check asked what the
+// scope held and `collections.rk`'s own `struct Vec<T>` had replaced the builtin
+// binding. BF3 wasn't implemented.
+#[test]
+fn error_namespace_rules() {
+    let (failed, out) = compile_error_output("namespace_rules.rk");
+    assert!(failed, "the namespace rules must be enforced: {}", out);
+
+    // IM1, in expression position and in an annotation.
+    assert!(
+        out.contains("`Instant` is not in scope"),
+        "IM1: a stdlib type needs its import: {}", out,
+    );
+    assert!(
+        out.contains("`StringBuilder` is not in scope"),
+        "IM1: including in a type annotation: {}", out,
+    );
+    // A local's annotation. The check began as a pass over declarations, so it
+    // never looked inside a function body — the most ordinary way to write the
+    // thing the rule rejects was the one way it didn't catch.
+    assert!(
+        out.contains("`Metadata` is not in scope"),
+        "IM1: including on a `let`: {}", out,
+    );
+    // The module-import half (#999). `import http` binds `http`; it does not
+    // hand over the nine type names http exports. Registering them made
+    // `import http` and `import http.Request` mean the same thing, so naming the
+    // type bought nothing — and no language with both import forms has them
+    // agree.
+    assert!(
+        out.contains("`Request` is not in scope"),
+        "IM1: a module import does not bring its types in bare: {}", out,
+    );
+    // IM4 is what makes the fix applicable — the code is written against the
+    // bare name, so `import time.Instant` keeps it working where plain
+    // `import time` would mean rewriting the use.
+    assert!(
+        out.contains("import time.Instant"),
+        "the fix should name the module and the type: {}", out,
+    );
+
+    // IM8, naming the module the collision is with.
+    assert!(
+        out.contains("`Duration` is already in scope from `time`"),
+        "IM8: a declaration may not take an imported name: {}", out,
+    );
+
+    // BI3, on a name the stdlib also declares — the case that leaked.
+    assert!(
+        out.contains("`Vec` is a built-in type") && out.contains("`Option` is a built-in type"),
+        "BI3: builtin names are reserved even where the stdlib declares them too: {}", out,
+    );
+
+    // BF3.
+    assert!(
+        out.contains("`println` is a built-in function"),
+        "BF3: BF1's functions are reserved: {}", out,
+    );
+
+    // And what stays legal: a name of one's own, a builtin function outside
+    // BF1's set, a stdlib type this file hasn't imported, and — the one that
+    // regressed — a generic type parameter named after a real stdlib type.
+    // `Output`, `Response` and `Input` collide with `os.Output`, `http.Response`
+    // and nothing; the annotation check read type strings by name and reported
+    // all of them as missing imports, which is the collision #915 exists to
+    // make the parameter win.
+    // `Method` is the other side of the module-import rule: `import http` is in
+    // the file and http exports a `Method`, so binding only `http` is what
+    // leaves the name free for the program's own enum.
+    for legal in [
+        "Budget9", "`max`", "`Handle`", "`Output`", "`Response`", "`Input`",
+        "`Method`",
+    ] {
+        assert!(
+            !out.contains(legal),
+            "{} should not be reported: {}", legal, out,
+        );
+    }
+    assert_eq!(
+        out.matches("error[").count(), 8,
+        "eight errors, no more: {}", out,
+    );
 }
 
 // #500: a free function named with a keyword can be declared but never called,
@@ -1444,7 +1554,7 @@ fn error_module_used_without_its_import() {
     assert!(failed, "a module needs its own import: {}", out);
     for m in ["`json`", "`net`", "`fs`"] {
         assert!(
-            out.contains(&format!("{} is used but never imported", m)),
+            out.contains(&format!("{} is not in scope", m)),
             "{} should need an import like every other module: {}", m, out,
         );
     }
@@ -2369,6 +2479,41 @@ fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");
 }
 
+/// #966: the unknown-type check required a leading capital, so a lowercase
+/// name that named nothing was accepted at the signature and only failed at
+/// the use site, on a type that was never real. Asserts the error names each
+/// one — a bare non-zero exit would also pass if the file broke some other way.
+#[test]
+fn error_unknown_lowercase_type() {
+    let (failed, out) = compile_error_output("unknown_lowercase_type.rk");
+    assert!(failed, "should reject unknown lowercase type names (#966)");
+    for name in ["str", "uszie", "zqzq"] {
+        assert!(
+            out.contains(&format!("unknown type `{}`", name)),
+            "expected `{}` to be reported as unknown, got:\n{}",
+            name,
+            out
+        );
+    }
+    // The real primitives are lowercase too and must not be swept up.
+    for prim in ["i64", "f64", "bool", "string", "char", "usize"] {
+        assert!(
+            !out.contains(&format!("unknown type `{}`", prim)),
+            "primitive `{}` was reported unknown, got:\n{}",
+            prim,
+            out
+        );
+    }
+    // `str` is an abbreviation of the real name, so the suggestion has to be
+    // `string`. Pure edit distance answered `std` — one character away, and a
+    // module rather than a type, so useless where a type belongs.
+    assert!(
+        out.contains("did you mean `string`?"),
+        "expected `str` to suggest `string`, got:\n{}",
+        out
+    );
+}
+
 #[test]
 fn error_cast_rules() {
     assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
@@ -2380,6 +2525,21 @@ fn error_index_types() {
     // K for Map, Handle<T> for Pool; range slicing only on sequences.
     assert!(compile_error("index_types.rk"),
         "should reject wrong index types across container classes (E0819)");
+}
+
+#[test]
+fn error_comptime_field_name_that_is_not_a_field() {
+    // #930: `p.("nope")` is a field access with the name in quotes, so an
+    // unknown name is E0312 at check time, same as `p.nope`. It has to be
+    // caught here: field lowering answers "field 0" for a name it can't find,
+    // so while this went unchecked `p.("nope")` printed the first field.
+    let (failed, out) = compile_error_output("comptime_field_name.rk");
+    assert!(failed, "should reject a comptime field name that names no field");
+    assert!(
+        out.contains("E0312") && out.contains("nope"),
+        "should fail on the unknown field, not something else:\n{}",
+        out
+    );
 }
 
 #[test]
@@ -2486,7 +2646,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "func leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.TaskHandle\n\nfunc leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "a TaskHandle bound but never joined/detached should be E0805 (H1): {}", output);
@@ -3611,7 +3771,7 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         // at print time, not in a string user code prints itself. The path is
         // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:25: boom"),
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:26: boom"),
             "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
@@ -3669,6 +3829,334 @@ fn panic_ensure_runs_on_native_with_captured_receiver() {
         assert_eq!(code, 101, "{}: panic should exit 101", mode);
         assert_eq!(stdout, "42\n", "{}: ensure runs on panic and sees the live receiver", mode);
     }
+}
+
+// ctrl.panic/U1 — the three body shapes native used to skip entirely (#299).
+//
+// The panic hook is a reified thunk over the ensure body. Anything the thunk
+// couldn't be built for stayed inline-only, and inline cleanup is exactly what
+// a panic jumps past — so the ensure silently didn't run. All three build now.
+
+#[test]
+fn panic_ensure_multi_statement_body_runs() {
+    // A body of more than one statement, lowered into the thunk the same way the
+    // inline cleanup lowers it. The captured receiver still shows the pre-panic
+    // write (42, not 1).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_multi_stmt.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\n42\nclosed\n",
+            "{}: every statement of the ensure body runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_else_handler_runs() {
+    // ER2 × U1: the cleanup fails during unwind and its `else |e|` handler runs,
+    // naming the error. `e.message()` is the part that needed the binding to have
+    // a type at all — the handler param used to reach MIR as a free variable.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_else_handler.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "closing\ndevice gone\n",
+            "{}: the ensure and its error handler both run on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_ensure_scalar_snapshot_runs() {
+    // A scalar read by the cleanup. `let` binds once, so the value the hook
+    // captured when the ensure was scheduled is the value the cleanup would read
+    // during unwind — snapshotting it is exact, not approximate.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_scalar_snapshot.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body\n7\n",
+            "{}: an ensure reading a `let` scalar runs on unwind", mode,
+        );
+    }
+}
+
+#[test]
+fn try_inside_ensure_is_rejected() {
+    // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
+    // propagate. Both positions are rejected at check time (E0847) instead of
+    // type-checking clean and then failing native MIR lowering with an internal
+    // message about a type it couldn't work out.
+    let (failed, output) = compile_error_output("ensure_try_rejected.rk");
+    assert!(failed, "`try` in an ensure body must be a compile error:\n{}", output);
+    assert!(output.contains("E0847"), "expected E0847, got:\n{}", output);
+    assert!(
+        output.contains("inside an `ensure` body"),
+        "ER4 position should be named:\n{}", output,
+    );
+    assert!(
+        output.contains("in an `ensure` error handler"),
+        "ER3 position should be named:\n{}", output,
+    );
+    // Four `try`s, four diagnostics. Counting rather than just checking for the
+    // code: the scan reached the plain body and the handler but had no arm for
+    // `break` and never looked at a match guard, so two of these compiled clean
+    // and blew up in codegen. A `contains` still passes with that hole in it.
+    assert_eq!(
+        output.matches("E0847").count(), 4,
+        "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
+        output,
+    );
+}
+
+#[test]
+fn ensure_handler_binds_a_binding_bodys_error() {
+    // ctrl.ensure/ER2: the handler's parameter takes its type from what the
+    // body's last statement produced, and only bare expressions counted — so a
+    // body ending in `let n = close()` left `e` untyped and died in MIR
+    // lowering. The interpreter skipped the handler outright for the same shape.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_binding_handler.rk");
+        assert_eq!(code, 0, "{}: stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body done\nmut: device gone\nlet: device gone\n",
+            "{}: both binding forms should reach the handler, LIFO", mode,
+        );
+    }
+}
+
+#[test]
+fn panic_in_a_lock_closure_releases_the_lock() {
+    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
+    // lock, call the closure, then unlock — and a panic longjmps over that
+    // unlock. Nothing had registered the lock, so the unwind had nothing to
+    // release and the next acquirer blocked forever. Both of these hung.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout,
+            "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
+            "{}: both closure forms hand the lock back", mode,
+        );
+    }
+}
+
+// ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.
+//
+// Codegen emits the acquire and the release around a `with` block, but only the
+// release is inline — so a panic in the middle jumped past it and the lock stayed
+// held for the rest of the process. Each acquire registers its release with the
+// runtime now, and the panic path drains what's left before running any ensure.
+// Both of these hung with no output on native before that.
+
+#[test]
+fn panic_inside_with_releases_the_lock() {
+    // The ensure running during unwind reads the same box. It has to be able to
+    // take the lock (U3), and it sees the pre-panic write (U2).
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_releases_lock.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90\n0\n",
+            "{}: the ensure must acquire the released lock and see the write", mode,
+        );
+    }
+}
+
+#[test]
+fn panicked_task_hands_on_its_lock() {
+    // LK1/LK2/O3: the next acquirer gets the lock and the last-written state —
+    // no poisoning, no rollback. O1: the death arrives as JoinError.Panicked.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_task_releases_lock.rk");
+        assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "panicked\n99\n",
+            "{}: join reports the panic and the lock is free with the last write", mode,
+        );
+    }
+}
+
+#[test]
+fn exit_skips_every_ensure() {
+    // P5/EX3: exit is not a panic. No unwind, no cleanup, at any depth.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "exit_skips_ensures.rk");
+        assert_eq!(code, 5, "{}: os.exit(5) sets the status; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "start\n",
+            "{}: no ensure may run on the exit path", mode,
+        );
+    }
+}
+
+// ─── Panic messages agree across backends (ctrl.panic/F1, F3, PD3) ───
+//
+// F3: a panic message is a deterministic function of the failing operation's
+// operands. PD3 makes it part of the replay contract, and #748 made both
+// backends store the same string for `JoinError.Panicked(msg)` — so a program
+// that reads the message reads the same one either way.
+//
+// Nothing compared them until this test. Eight of sixteen sources disagreed:
+// native's checked-arithmetic messages named the operation and dropped the
+// operands ("addition exceeds i32 range" where the interpreter said
+// "2147483647 + 1 exceeds i32 range"), and two messages named `unwrap`, a
+// method Rask doesn't have.
+
+/// Every panic source worth pinning, with the message both backends must print.
+const PANIC_MESSAGES: &[(&str, &str)] = &[
+    ("add.rk", "integer overflow: 2147483647 + 1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("sub_unsigned.rk", "integer overflow: 0 - 1 exceeds u8 range [0, 255]"),
+    ("mul.rk", "integer overflow: 300 * 300 exceeds i16 range [-32768, 32767]"),
+    ("div_zero.rk", "division by zero"),
+    ("div_min_by_neg_one.rk",
+     "integer overflow: -2147483648 / -1 exceeds i32 range [-2147483648, 2147483647]"),
+    ("shift_past_width.rk", "shift amount 40 exceeds i32 bit width (32)"),
+    ("wide_add.rk",
+     "integer overflow: 170141183460469231731687303715884105727 + 1 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_mul.rk",
+     "integer overflow: 170141183460469231731687303715884105727 * 2 exceeds i128 range \
+[-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]"),
+    ("wide_unsigned_sub.rk",
+     "integer overflow: 0 - 1 exceeds u128 range [0, 340282366920938463463374607431768211455]"),
+    ("index_past_end.rk", "index out of bounds: index is 5 but length is 1"),
+    ("map_key_missing.rk", "key not found in map"),
+    ("map_key_missing_mutate.rk", "key not found in map"),
+    ("force_absent.rk", "! on a value that was absent"),
+    ("force_error.rk", "! on a value that was an error"),
+    ("explicit.rk", "hand written"),
+    ("not_implemented.rk", "not yet implemented"),
+    ("unreachable_reached.rk", "entered unreachable code"),
+];
+
+/// The message out of a panicking run, with each backend's framing stripped.
+///
+/// Native prints `panic at <file>:<line>: <message>`; the interpreter prints a
+/// full diagnostic whose header is `error[R00xx]: <message>` (with `panic: ` in
+/// front for an explicit `panic()`). What has to match is what's left.
+fn panic_message(mode: &str, fixture: &str) -> String {
+    let (stdout, stderr, code) = run_capture(mode, &format!("panic_msgs/{}", fixture));
+    assert_eq!(
+        code, 101,
+        "{} {}: a panic exits 101 (P4); stdout: {:?} stderr: {:?}",
+        mode, fixture, stdout, stderr
+    );
+    for line in stderr.lines() {
+        let line = line.trim_end();
+        if let Some(rest) = line.strip_prefix("panic at ") {
+            // `<file>:<line>: <message>` — the message is after the second colon.
+            if let Some(pos) = rest.find(": ") {
+                return rest[pos + 2..].to_string();
+            }
+        }
+        if let Some(rest) = line.strip_prefix("error[R") {
+            if let Some(pos) = rest.find("]: ") {
+                let msg = &rest[pos + 3..];
+                return msg.strip_prefix("panic: ").unwrap_or(msg).to_string();
+            }
+        }
+    }
+    panic!("{} {}: no panic line in stderr: {:?}", mode, fixture, stderr);
+}
+
+#[test]
+fn panic_messages_are_the_same_on_both_backends() {
+    let mut wrong: Vec<String> = Vec::new();
+    for (fixture, expected) in PANIC_MESSAGES {
+        for mode in ["--interp", "--native"] {
+            let got = panic_message(mode, fixture);
+            if got != *expected {
+                wrong.push(format!(
+                    "  {} {}\n    expected: {}\n    got:      {}",
+                    mode, fixture, expected, got
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} panic message(s) don't match what the spec pins (ctrl.panic/F3):\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+// ─── Staged access (conc.sync/ST1–ST4) ───────────────────────────
+//
+// `with box.staged() as v { … }` binds a working copy under the exclusive lock,
+// commits it as one move on any non-panic exit, and discards it on unwind. The
+// commit half is `tests/suite/t_month_staged.rk`, where the differential harness
+// gates it on both backends; the discard needs a program that panics, so it
+// lives here.
+
+#[test]
+fn staged_discards_its_copy_on_panic() {
+    // ST3: a panic between the two writes commits nothing. The ensure runs
+    // during unwind, takes the same lock, and must see the last committed state.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "staged_discards_on_panic.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "100 0\n",
+            "{}: nothing may commit out of a staged block that panicked", mode,
+        );
+    }
+}
+
+#[test]
+fn plain_write_keeps_the_partial_update_on_panic() {
+    // The contrast conc.sync draws, and the reason staged exists: without it the
+    // survivor sees the torn state (LK3, U2). One word apart from the fixture
+    // above — if these two ever agree, one of them is broken.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "unstaged_keeps_partial_write.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "90 0\n",
+            "{}: a plain `write` keeps whatever landed before the panic", mode,
+        );
+    }
+}
+
+#[test]
+fn torn_lock_update_warns_once_and_only_where_it_should() {
+    // W9 (tool.warnings, W0907): two fields of a locked value written in one
+    // `with` block without staging. A warning, not an error — the program still
+    // builds and runs. The fixture has four blocks of the same shape and exactly
+    // one may warn: `@allow` says the tear is harmless, `Local` has nobody to
+    // observe one (and `staged()` is refused there, ST3a), and staging is the fix.
+    let (built, build_output) = compile_only_succeeds("torn_lock_update.rk");
+    assert!(built, "W9 is a warning — the program must still build:\n{}", build_output);
+
+    let (checked, output) = check_fixture("torn_lock_update.rk");
+    assert!(checked, "a warning must not fail the check:\n{}", output);
+    let hits = output.matches("W0907").count();
+    assert_eq!(
+        hits, 1,
+        "expected exactly one W0907, got {}:\n{}", hits, output,
+    );
+    assert!(
+        output.contains("`checking` written first"),
+        "the warning should name the fields and point at the first:\n{}", output,
+    );
+    assert!(
+        output.contains("staged()"),
+        "the fix is `staged()` and the warning has to say so:\n{}", output,
+    );
+}
+
+#[test]
+fn staged_misuse_is_rejected_at_check_time() {
+    // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).
+    // Both are decidable from the source, which ctrl.panic/S7 makes a diagnostic
+    // rather than a later failure.
+    let (failed, output) = compile_error_output("staged_misuse.rk");
+    assert!(failed, "both staged misuses must be compile errors:\n{}", output);
+    assert!(output.contains("E0846"), "expected ST1 as E0846, got:\n{}", output);
+    assert!(output.contains("E0845"), "expected ST3a as E0845, got:\n{}", output);
 }
 
 #[test]
@@ -4001,6 +4489,8 @@ func main() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 @message
 enum StoreError { Boom }
 
@@ -4075,6 +4565,8 @@ func ok_side() {
 }
 "#),
         ("store.rk", r#"
+import sync.Shared
+
 struct Store { n: u64 }
 
 extend Store {
@@ -4161,8 +4653,14 @@ func main() {
 #[test]
 fn interp_qualified_and_bare_module_types_agree() {
     // The two spellings name the same type, so they must behave the same.
+    //
+    // The bare one needs its own import to exist at all: `import http` binds
+    // `http` and nothing inside it (structure.modules/IM1, #999). This test used
+    // to write only `import http` and reach for a bare `Response`, which is the
+    // reading that made naming the type in an import buy nothing.
     let out = interp_output(r#"
 import http
+import http.Response
 
 func main() {
     let viaModule = http.Response.ok("x")
@@ -4171,6 +4669,31 @@ func main() {
 }
 "#);
     assert!(out.contains("same=true"), "both spellings must agree: {}", out);
+}
+
+#[test]
+fn interp_a_module_import_does_not_bring_its_types_in_bare() {
+    // The other half of the same rule. Registering a module's types unqualified
+    // also reserved them: `import http` took all nine of http's names, so a
+    // program with its own `Response` was told "already in scope from `http`"
+    // for a name it never asked for — and adding a type to a stdlib module broke
+    // every program that had one by that name.
+    let out = interp_output(r#"
+import http
+
+func main() {
+    let r = Response.ok("x")
+    println("status={r.status}")
+}
+"#);
+    assert!(
+        out.contains("`Response` is not in scope"),
+        "a module import must not hand over its type names: {}", out,
+    );
+    assert!(
+        out.contains("import http.Response"),
+        "and the fix should name the import that would: {}", out,
+    );
 }
 
 #[test]
@@ -4977,7 +5500,7 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
         assert_eq!(stdout, "main still running\n", "{}", mode);
         let report = stderr.trim_end();
         assert!(report.starts_with("task 1 panic at ")
-                && report.ends_with("detached_panic_report.rk:12: detached boom"),
+                && report.ends_with("detached_panic_report.rk:13: detached boom"),
             "{}: stderr should name the task, the line, and the message: {:?}", mode, stderr);
     }
 }
@@ -5738,5 +6261,362 @@ fn error_field_annotation_forms() {
         out.contains("E0377") && out.contains("`Config` cannot be decoded")
             && out.contains("`token`"),
         "an excluded field with no default should block Decode by name: {}", out,
+    );
+}
+
+// ─── Regression: issues #897, #898 ──────────────────────────
+//
+// Assertion failure *messages*, which nothing gated before. Both issues
+// observed that a Rask test can't assert on its own failure message — true
+// from inside the language, but a test that runs the compiler can read what
+// the message said. Both bugs printed a confidently wrong number:
+//
+//   #897  `assert a == b` on two string variables reported the addresses of the
+//         two RaskStr slots, because the string/i64 choice was made from the
+//         source shape (was either side written as a literal?) rather than from
+//         the operand types.
+//   #898  a failed float assertion formatted with `%g`, so anything past the
+//         6th significant digit was dropped and 1.000000001 vs 1.000000002
+//         printed as "1 == 1".
+
+/// Run `rask test` on `src` and return stdout. Failing tests are the point
+/// here, so a non-zero exit is expected rather than asserted against.
+fn run_rask_test_source(src: &str, interp: bool) -> String {
+    let rask = rask_binary();
+    let path = std::env::temp_dir().join(format!(
+        "rask_assertmsg_{}_{}.rk",
+        std::process::id(),
+        next_tmp_id(),
+    ));
+    std::fs::write(&path, src).expect("write fixture");
+
+    let mut cmd = Command::new(&rask);
+    cmd.arg("test");
+    if interp {
+        cmd.arg("--interp");
+    }
+    let out = cmd
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test");
+
+    let _ = std::fs::remove_file(&path);
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+const STRING_ASSERT_SRC: &str = r#"
+test "two string variables" {
+    let a = "abc"
+    let b = "abd"
+    assert a == b
+}
+
+test "a string past the inline capacity" {
+    let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+    let b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"
+    assert a == b
+}
+
+test "a string field against a string variable" {
+    let h = Holder9 { name: "left" }
+    let other = "right"
+    assert h.name == other
+}
+
+test "strings that came back from a call" {
+    assert pick9(1) == pick9(2)
+}
+
+struct Holder9 { public name: string }
+
+func pick9(n: i64) -> string {
+    if n == 1 {
+        return "one"
+    }
+    return "two"
+}
+
+func main() {}
+"#;
+
+#[test]
+fn string_assertion_message_shows_the_strings_not_addresses() {
+    // Every shape here has variables on BOTH sides — the one case the old
+    // literal-spotting check got wrong. A literal on either side always worked,
+    // which is why the suite never caught this.
+    for interp in [false, true] {
+        let out = run_rask_test_source(STRING_ASSERT_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+        for want in ["abc", "abd", "left", "right", "one", "two"] {
+            assert!(
+                out.contains(want),
+                "{backend}: assertion message should contain the string `{want}`:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"),
+            "{backend}: a heap string should report in full:\n{out}"
+        );
+        // The addresses this used to print were 12+ digit decimals. Nothing in
+        // these messages is a number, so any long run of digits is a slot
+        // address leaking through again.
+        for line in out.lines().filter(|l| l.contains("assertion failed")) {
+            let longest = line
+                .split(|c: char| !c.is_ascii_digit())
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                longest < 8,
+                "{backend}: this looks like a pointer, not a string:\n{line}"
+            );
+        }
+    }
+}
+
+const FLOAT_ASSERT_SRC: &str = r#"
+test "floats differing in the 9th digit" {
+    let a: f64 = 1.000000001
+    let b: f64 = 1.000000002
+    assert a == b
+}
+
+test "a repeating quotient" {
+    let a: f64 = 4.0 / 1.5
+    let b: f64 = 2.0
+    assert a == b
+}
+
+test "f32 operands" {
+    let a: f32 = 1.1
+    let b: f32 = 2.2
+    assert a == b
+}
+
+func main() {}
+"#;
+
+#[test]
+fn float_assertion_message_keeps_every_digit() {
+    for interp in [false, true] {
+        let out = run_rask_test_source(FLOAT_ASSERT_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+        // %g rounded both of these to "1", so the message read "1 == 1".
+        assert!(
+            out.contains("1.000000001") && out.contains("1.000000002"),
+            "{backend}: digits past the 6th must survive:\n{out}"
+        );
+        assert!(
+            out.contains("2.6666666666666665"),
+            "{backend}: a repeating quotient reports every digit that round-trips:\n{out}"
+        );
+        // An f32 has to be formatted at f32 width. Checking the round-trip
+        // against a double instead spells out the f32's exact binary value, so
+        // 1.1 reports as 1.100000023841858 — a number no `println` of the same
+        // value ever shows.
+        assert!(
+            out.contains("1.1") && out.contains("2.2"),
+            "{backend}: f32 operands report at f32 width:\n{out}"
+        );
+        assert!(
+            !out.contains("1.100000023841858"),
+            "{backend}: f32 was widened to double before formatting:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn float_assertion_message_agrees_across_backends() {
+    // The interpreter is the reference for what these should say. Native adds a
+    // `file:line:` prefix the interpreter doesn't; past that the two must match
+    // character for character, or the same failing test reads differently
+    // depending on how it was run.
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed"))
+            .map(|l| match l.find("assertion failed") {
+                Some(i) => l[i..].to_string(),
+                None => l.to_string(),
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(FLOAT_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(FLOAT_ASSERT_SRC, true));
+    assert!(!interp.is_empty(), "expected failing assertions to report");
+    assert_eq!(
+        native, interp,
+        "native and interpreter must render the same float assertion message"
+    );
+}
+
+/// Every node this program types must come out with a real type — no inference
+/// variable left over.
+///
+/// The census (`RASK_TRACE_OPEN_NODES`) is the only way to see this. A leftover
+/// variable is invisible in a compiled program: MIR falls back to a machine word
+/// and an `i64` payload comes out right by coincidence, so the ordinary tests
+/// pass either way. They also passed before the two pattern fixes this guards.
+///
+/// What it guards. A generic enum reaches the constructor pattern as
+/// `Holder<f64>`, not as a plain named type, and only the plain shape used to be
+/// handled — every binding in the arm fell through to a fresh variable. A tuple
+/// pattern made a variable per element and left the "this is a (Value, Value)"
+/// constraint for the solver, which runs after the sub-patterns are checked, so
+/// they saw nothing either. And `none` has no payload type of its own: neither
+/// `x == none` nor `catch _ => none` tied it to the type it was standing in
+/// for.
+#[test]
+fn open_nodes_pattern_bindings() {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(fixture("pattern_bindings_typed.rk"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .env("RASK_TRACE_OPEN_NODES", "1")
+        .output()
+        .expect("failed to run rask check");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "check failed:\n{stderr}");
+
+    let census = stderr
+        .lines()
+        .find(|l| l.contains("recorded types still hold an inference variable"))
+        .unwrap_or_else(|| panic!("no open-node census in:\n{stderr}"));
+    let count: u32 = census
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("could not read the count from: {census}"));
+    assert_eq!(
+        count, 0,
+        "{count} node(s) left holding an inference variable:\n{stderr}"
+    );
+}
+
+/// A loop that builds and drops heap strings must not grow.
+///
+/// This is a memory test, so it reads peak RSS out of `/proc/<pid>/status`
+/// rather than believing the program. Two hundred thousand turns, five heap
+/// strings each: leaking any one of them is several MB of growth, and the
+/// threshold below is far enough above the flat case (~2.2 MB) that it doesn't
+/// care about allocator behaviour.
+///
+/// What it guards, all of it #1024:
+///
+/// - `comp.string-refcount-elision/RE2` says a string that never escapes
+///   should "skip all *atomic* ops — refcount stays at 1, free on drop". The
+///   pass dropped the free along with the atomics.
+/// - A literal too long for SSO was materialized by a call that allocates, so
+///   every evaluation of one leaked it — while RE3 skipped its RC ops on the
+///   grounds that literals carry a sentinel refcount and are never freed.
+/// - An aggregate owns the strings it holds, and nothing released them when
+///   the aggregate died: a struct field, a `T?` payload, a `T or E` payload.
+///
+/// Nothing else in the suite can see any of it. The values are all correct;
+/// there's just no memory coming back.
+#[test]
+#[cfg(target_os = "linux")]
+fn string_release_loop_does_not_grow() {
+    use std::io::Read;
+
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_rss_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("string_release_loop.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let mut child = Command::new(&bin)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to start the compiled binary");
+
+    // Poll while it runs; VmHWM is gone once the process is reaped.
+    let mut peak_kb: u64 = 0;
+    loop {
+        match child.try_wait().expect("wait failed") {
+            Some(status) => {
+                assert!(status.success(), "the compiled binary exited {status}");
+                break;
+            }
+            None => {
+                if let Ok(mut f) = std::fs::File::open(format!("/proc/{}/status", child.id())) {
+                    let mut s = String::new();
+                    if f.read_to_string(&mut s).is_ok() {
+                        for line in s.lines() {
+                            if let Some(rest) = line.strip_prefix("VmHWM:") {
+                                if let Some(n) = rest.split_whitespace().next() {
+                                    if let Ok(kb) = n.parse::<u64>() {
+                                        peak_kb = peak_kb.max(kb);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+    assert!(peak_kb > 0, "never managed to read VmHWM — the poll lost the race");
+    assert!(
+        peak_kb < 6_000,
+        "peak RSS {peak_kb} kB over 200k turns — flat is ~2200 kB and leaking one \
+         string per turn is ~17500 kB, so this is a leak"
+    );
+}
+
+/// A program that builds every shape which owns memory must end owning none.
+///
+/// `RASK_LEAK_CHECK=1` makes the runtime report anything it allocated and never
+/// gave back and exit 97. A clean program ends at exactly zero — the runtime
+/// itself holds nothing at exit — so this is a gate rather than a threshold.
+///
+/// What it guards, #1024 and #1027: a heap string built and dropped in one
+/// frame, one handed over by a callee, one held by a struct field, a `T?`
+/// payload, a `T or E` payload, a tuple element, and a `Vec` and a `Map` —
+/// their handles, their data arrays, and their elements. Every one of those
+/// leaked, and none of them had a symptom: the answers were all correct.
+#[test]
+fn nothing_leaks_at_exit() {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin = tmp.join(format!("rask_leak_{}_{}", std::process::id(), next_tmp_id()));
+
+    let compile = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("leak_free_shapes.rk"))
+        .arg("-o")
+        .arg(&bin)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let run = Command::new(&bin)
+        .env("RASK_LEAK_CHECK", "1")
+        .output()
+        .expect("failed to run the compiled binary");
+    assert!(
+        run.status.success(),
+        "the program leaked:\n{}",
+        String::from_utf8_lossy(&run.stderr)
     );
 }

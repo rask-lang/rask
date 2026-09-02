@@ -17,6 +17,16 @@ pub struct StructLayout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<FieldLayout>,
+    /// Declared in the stdlib rather than in the program.
+    ///
+    /// Layouts live in one flat `Vec` looked up by bare name, so a program's
+    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer` and the
+    /// first one wins. The stdlib's is `public struct Timer { }` — no fields —
+    /// so every field of the user's landed at offset 0 and the literal
+    /// segfaulted (#975). `find_struct` prefers the program's when both exist,
+    /// which is the same rule the checker's `type_names` /
+    /// `stdlib_type_names` split already applies to types (#515).
+    pub is_stdlib: bool,
 }
 
 /// Field layout within struct
@@ -206,6 +216,13 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
                 | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
+                // A word, but not for the reason the line above is: these two
+                // are an `int64_t` of nanoseconds in the runtime, not a pointer
+                // to anything. Their Rask declarations are empty structs, so
+                // without an entry here the layout cache answered with the
+                // declaration's size — zero — and a struct holding one gave the
+                // field no room at all (#924).
+                "Duration" | "Instant" => (8, 8),
                 _ => {
                     // Look up user-defined types from the layout cache first — a user
                     // struct can be named the same as a builtin container (e.g. `Wide`),
@@ -285,7 +302,22 @@ fn is_typevar_name(name: &str) -> bool {
 
 /// Parse a field type string (from AST) to a Type for layout computation.
 pub(crate) fn parse_field_type(s: &str) -> Type {
-    let s = s.trim();
+    // `d: time.Duration` on a field. Left dotted it fell through to the unknown
+    // name at the bottom of `type_size_align`, and the field got pointer-sized
+    // room by default — right for `Duration` by luck, and for anything wider a
+    // hard "field holds 32 bytes but its slot is 8" telling the user to report a
+    // compiler bug.
+    //
+    // Whatever a field's type is reached *through* says nothing about its size,
+    // so the last segment is the whole question here. The checker's
+    // `strip_module_qualifier` is narrower on purpose — it drops the head only
+    // when it names a real module, because there a wrong strip changes which type
+    // resolves (`c.Rect` is the C namespace's, and bare `Rect` is nobody's, #948).
+    // Layout has no such worry: the fallback it replaces was an outright guess.
+    // Being broader is also what makes an *aliased* import work — `import http as h`
+    // binds the module under a name no module list knows, and `h.Response` on a
+    // field hit exactly that hard error.
+    let s = rask_ast::type_str::bare_name(s);
 
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {
@@ -301,6 +333,32 @@ pub(crate) fn parse_field_type(s: &str) -> Type {
             ok: Box::new(ok),
             err: Box::new(err),
         };
+    }
+
+    // Slice: []T
+    if let Some(elem) = s.strip_prefix("[]") {
+        return Type::Slice(Box::new(parse_field_type(elem)));
+    }
+
+    // Fixed array `[T; N]`, and `[T]` for a slice written the other way. Without
+    // this the whole bracket form fell through to the unknown-name branch below
+    // and every fixed array field was sized as a pointer (#895).
+    if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        match inner.split_once(';') {
+            Some((elem, len)) => {
+                // A symbolic length (`[T; SIZE]`) has no value here — there is no
+                // const table in this pass. Falling through to the unknown-name
+                // branch keeps its warning rather than sizing the field at zero,
+                // which is what pretending the length is 0 would do (#906).
+                if let Ok(len) = len.trim().parse::<usize>() {
+                    return Type::Array {
+                        elem: Box::new(parse_field_type(elem)),
+                        len,
+                    };
+                }
+            }
+            None => return Type::Slice(Box::new(parse_field_type(inner))),
+        }
     }
 
     // Generic types: Name<Args>
@@ -387,13 +445,19 @@ fn split_type_args(s: &str) -> Vec<&str> {
 }
 
 /// Build a substitution map from type param names to concrete types.
+///
+/// Names come from PC1, not from the explicit `<T>` list: a single letter in a
+/// field or payload type is a parameter whether or not it was declared, and the
+/// type arguments are ordered by that same list. Reading only the explicit list
+/// left an implicit-param struct with an empty map, so its fields kept their
+/// placeholder types and the layout came out wrong (#913).
 fn build_subst<'a>(
-    type_params: &'a [rask_ast::decl::TypeParam],
+    param_names: &'a [String],
     type_args: &'a [Type],
 ) -> std::collections::HashMap<&'a str, &'a Type> {
     let mut subst = std::collections::HashMap::new();
-    for (param, arg) in type_params.iter().zip(type_args.iter()) {
-        subst.insert(param.name.as_str(), arg);
+    for (name, arg) in param_names.iter().zip(type_args.iter()) {
+        subst.insert(name.as_str(), arg);
     }
     subst
 }
@@ -450,6 +514,15 @@ fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
+/// Was this declaration parsed out of a stdlib stub?
+///
+/// The stdlib's sources occupy the top of the `file_id` range by construction
+/// (`STDLIB_FILE_ID_BASE`), so the span answers it — no flag has to be threaded
+/// down from whoever collected the declarations.
+pub fn is_stdlib_span(span: rask_ast::Span) -> bool {
+    span.file_id >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE
+}
+
 pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
     use rask_ast::decl::DeclKind;
 
@@ -458,7 +531,8 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         _ => panic!("Expected struct declaration"),
     };
 
-    let subst = build_subst(&struct_decl.type_params, type_args);
+    let param_names = rask_types::struct_type_param_names(struct_decl);
+    let subst = build_subst(&param_names, type_args);
     let c_layout = has_c_layout(&struct_decl.attrs);
 
     // Resolve types and compute sizes for all fields first
@@ -520,6 +594,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(struct_def.span),
     }
 }
 
@@ -565,6 +640,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(union_def.span),
     }
 }
 
@@ -619,7 +695,8 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
         _ => panic!("Expected enum declaration"),
     };
 
-    let subst = build_subst(&enum_decl.type_params, type_args);
+    let param_names = rask_types::enum_type_param_names(enum_decl);
+    let subst = build_subst(&param_names, type_args);
 
     let variant_count = enum_decl.variants.len();
 

@@ -54,14 +54,17 @@ test "type.optionals — a chain onto an optional string field keeps the value" 
 
 test "type.optionals — the same chain read through ??" {
     let a = HasOpt { inner: OptField { v: "abc" } }
-    assert (a.inner?.v! ?? "X") == "abc"
+    // The chain is a `string?`, not a `string??` (OPT10), so `??` reads it in
+    // one step. Written `a.inner?.v! ?? "X"` this asserted the old, wrong
+    // shape: `!` peeled one of two layers and left something `??` could still
+    // take. E0831 rejects that now, correctly — the value is always there.
+    assert (a.inner?.v ?? "X") == "abc"
 }
 
 test "type.optionals — a chain onto an optional integer field keeps the value" {
     let a = HasOptInt { inner: OptInt { v: 7 } }
-    let outer = a.inner?.v
-    let inner: i64? = outer!
-    assert (inner ?? -1) == 7
+    let outer: i64? = a.inner?.v
+    assert (outer ?? -1) == 7
 }
 
 test "type.optionals — an absent outer value short-circuits" {

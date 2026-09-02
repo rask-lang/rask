@@ -83,8 +83,10 @@ impl TypeChecker {
                 TypeConstraint::Coalesce { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
+                    | TypeConstraint::OptionalChain { .. }
                     | TypeConstraint::TakePlace { .. }
                     | TypeConstraint::ElementOf { .. }
+                    | TypeConstraint::ErrorBranch { .. }
             ) {
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
@@ -358,8 +360,16 @@ impl TypeChecker {
                 self.resolve_unwrap(value, result, span)
             }
 
+            TypeConstraint::ErrorBranch { value, result, span } => {
+                self.resolve_error_branch(value, result, span)
+            }
+
             TypeConstraint::Index { object, index, result, is_range, span } => {
                 self.resolve_index(object, index, result, is_range, span)
+            }
+
+            TypeConstraint::OptionalChain { field, result, span } => {
+                self.resolve_optional_chain(field, result, span)
             }
 
             TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span } => {
@@ -496,6 +506,31 @@ impl TypeChecker {
     /// `x!` yields the success payload of `x`. Both shapes read the same way —
     /// `T?` is a `Result` whose error side is `none` — so the ok side is the
     /// answer for either. Defers while the operand is still a variable.
+    /// ER2: settle an `ensure … else |e|` binding once the body's type is known.
+    ///
+    /// An infallible body has no error branch and the handler can never run, so
+    /// the binding is left as its own free variable rather than reported — ER1
+    /// already says a cleanup result is ignored by default, and a `T` body with a
+    /// handler is a redundant handler, not a type error.
+    fn resolve_error_branch(
+        &mut self,
+        value: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match self.ctx.apply(&value) {
+            Type::Result { err, .. } => {
+                self.unify(&result, &err, span)?;
+                Ok(true)
+            }
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::ErrorBranch { value, result, span });
+                Ok(false)
+            }
+            _ => Ok(true),
+        }
+    }
+
     fn resolve_unwrap(
         &mut self,
         value: Type,
@@ -562,6 +597,34 @@ impl TypeChecker {
     /// Settle `object[index]` once the container's shape is known. Defers while
     /// the container is still a variable — a Pool behind a struct field only
     /// gets its type when that field's own constraint resolves.
+    /// `a?.b` — the chain's result once `b`'s type is known.
+    ///
+    /// A field that is already optional stays one layer deep; anything else
+    /// gains the layer the chain adds. Deferred rather than decided at the
+    /// access, because at that point the field's type is a bare variable and
+    /// the answer would always be "not an option" (#938).
+    fn resolve_optional_chain(
+        &mut self,
+        field: Type,
+        result: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let field = self.ctx.apply(&field);
+        // Still open — nothing to decide from. Re-defer; the bounded retry
+        // gives it one more chance, and a variable that never settles is
+        // reported by the leftover-constraint pass like any other.
+        if matches!(field, Type::Var(_)) {
+            self.ctx.add_constraint(TypeConstraint::OptionalChain {
+                field,
+                result,
+                span,
+            });
+            return Ok(false);
+        }
+        let chained = if field.is_option() { field } else { Type::option(field) };
+        self.unify(&result, &chained, span)
+    }
+
     fn resolve_index(
         &mut self,
         object: Type,

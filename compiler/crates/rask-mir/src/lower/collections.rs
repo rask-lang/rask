@@ -88,6 +88,11 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
                 MirOperand::Constant(MirConst::Int(elem_size as i64)),
+                // What the elements are, so the vector can give them back —
+                // and so anything pushed onto it later is given back too.
+                MirOperand::Constant(MirConst::Int(
+                    crate::elem_strs::tag_of(Some(&elem_ty)),
+                )),
             ],
         }));
         Ok((MirOperand::Local(vec_local), MirType::I64))

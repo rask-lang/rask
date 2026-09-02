@@ -6,6 +6,8 @@
 // is outstanding, so this panics with a message instead of corrupting the heap
 // — mem.ownership again: a stale reference is caught at the access, never
 // silent.
+import sync.Shared
+
 struct Ctr { n: usize }
 
 const shared = Shared.mutex(Vec.new())

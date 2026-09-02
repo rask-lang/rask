@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A spawned task returning something that isn't a machine-word integer.
+//
+// #963 said no native program could reach this: `TaskHandle<T>`'s `T` never
+// arrived at `join()`, so the destination was always typed i64 and the codegen
+// path for a wider payload could not be exercised from real source. The type
+// flows now — `t_spawn_payload_type.rk` pins that — and this is what it reaches:
+// the value the task hands back is still read at the wrong width.
+//
+//   a string came back as "\xef\xbf\xbd\xef\xbf\xbdd"
+//   2.5f64 came back as ~5.17e-310 — the integer return register held a stale
+//   pointer, because the float was in a float register the runtime never read
+//
+// Fixed on the task side: a spawned closure whose result doesn't fit the
+// runtime's one-word result slot now gets a thunk in front of it that boxes the
+// answer and hands back its address. `spawn_payload_is_boxed` is the single
+// predicate both sides ask — the thunk when it decides to box, the join when it
+// decides to copy through an address. #963.
+
+import async.JoinError
+import thread.ThreadPool
+
+func a_string_task() -> string or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return "from the task" })
+        return try h.join()
+    }
+}
+
+func a_float_task() -> f64 or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return 2.5f64 })
+        return try h.join()
+    }
+}
+
+func a_struct_task() -> Reading or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return Reading { id: 3i64, label: "sensor", scale: 0.5f64 } })
+        return try h.join()
+    }
+}
+
+func a_counted_task() -> i64 or JoinError {
+    using Multitasking {
+        let h = spawn(|| { return 1i64 })
+        return try h.join()
+    }
+}
+
+func a_pooled_string() -> string or JoinError {
+    using ThreadPool(workers: 2) {
+        let h = ThreadPool.spawn(own || { return "from the pool" })
+        return try h.join()
+    }
+}
+
+func a_pooled_float() -> f64 or JoinError {
+    using ThreadPool(workers: 2) {
+        let h = ThreadPool.spawn(own || { return 0.25f64 })
+        return try h.join()
+    }
+}
+
+test "a task returning a string comes back whole" {
+    assert a_string_task()! == "from the task"
+}
+
+test "a task returning a float comes back as a float" {
+    assert a_float_task()! == 2.5f64
+}
+
+struct Reading { id: i64, label: string, scale: f64 }
+
+test "a task returning a struct comes back whole" {
+    let r = a_struct_task()!
+    assert r.id == 3i64
+    assert r.label == "sensor"
+    assert r.scale == 0.5f64
+}
+
+test "many tasks each box their own answer" {
+    mut total = 0i64
+    mut i = 0i64
+    while i < 20i64 {
+        total += a_counted_task()!
+        i += 1i64
+    }
+    assert total == 20i64
+}
+
+// The third way to start one. `spawn` and `Thread.spawn` are covered above and
+// in t_spawn_payload_type.rk; this is the pool.
+test "a pooled task boxes its answer too" {
+    assert a_pooled_string()! == "from the pool"
+    assert a_pooled_float()! == 0.25f64
+}

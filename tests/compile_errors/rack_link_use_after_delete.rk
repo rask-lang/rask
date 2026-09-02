@@ -8,6 +8,8 @@
 // Not lifetime inference either: the invalidation point is the `delete` statement
 // you wrote, not a last use the compiler worked out, so the analysis never leaves
 // this function body.
+import memory.Link
+import memory.Rack
 
 struct Node {
     name: string

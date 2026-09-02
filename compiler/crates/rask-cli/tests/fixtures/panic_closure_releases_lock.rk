@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U3–U4 + LK1: the closure forms of lock access — `write(|v| …)`,
+// `try_write(|v| …)` — release on a panic, the same as `with box.write()`.
+//
+// The `with` form registers its lock so the unwind can release it; the closure
+// forms took the lock, called the closure directly, and unlocked afterwards.
+// A panic longjmps straight over that unlock, and since nothing had registered
+// the lock the unwind had nothing to release either — so the next acquirer
+// blocked forever. Both boxes here are acquired again after the panicking task
+// dies; before the fix each hung the process.
+
+import sync.Shared
+import sync.Mutex
+import thread.Thread
+
+struct Widget9 { n: i64 }
+const BLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
+const NONBLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
+
+func main() {
+    using Multitasking {
+        let a = Thread.spawn(|| {
+            BLOCKING.write(|w| {
+                panic("died in a write closure")
+                return 0
+            })
+            return 0
+        })
+        match a.join() {
+            i64 as v => println("joined"),
+            JoinError.Panicked(msg) => println("write panicked"),
+            JoinError.Cancelled => println("cancelled"),
+        }
+
+        let b = Thread.spawn(|| {
+            NONBLOCKING.try_write(|w| {
+                panic("died in a try_write closure")
+                return 0
+            })
+            return 0
+        })
+        match b.join() {
+            i64 as v => println("joined"),
+            JoinError.Panicked(msg) => println("try_write panicked"),
+            JoinError.Cancelled => println("cancelled"),
+        }
+    }
+    with BLOCKING.write() as w {
+        w.n = 2
+    }
+    println("blocking lock free")
+    with NONBLOCKING.write() as w {
+        w.n = 3
+    }
+    println("non-blocking lock free")
+}

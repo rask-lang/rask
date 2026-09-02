@@ -20,8 +20,33 @@ use crate::value::Value;
 /// Methods the interpreter derives for every struct and enum. An `extend`
 /// block that defines one of these replaces the derived version.
 const DERIVABLE_METHODS: &[&str] = &[
-    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug_string",
+    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug",
 ];
+
+/// Values whose `.clone()` is just the value again.
+///
+/// A scalar, an optional, a result, a range, a handle: nothing here owns a heap
+/// buffer or a reference count, so a copy is a copy. Their own method handlers
+/// have no `clone` arm and answer `NoSuchMethod`, which is fine for hand-written
+/// code and wrong for generic code — `T` is whatever the caller instantiated.
+fn receiver_takes_generic_clone(receiver: &Value) -> bool {
+    match receiver {
+        Value::Unit
+        | Value::Bool(_)
+        | Value::Int(..)
+        | Value::Int128(_)
+        | Value::Uint128(_)
+        | Value::Float(..)
+        | Value::Char(_)
+        | Value::Range { .. }
+        | Value::Duration(_)
+        | Value::Instant(_)
+        | Value::Handle { .. }
+        | Value::WeakHandle { .. } => true,
+        Value::Enum { name, .. } => name == "Option" || name == "Result",
+        _ => false,
+    }
+}
 
 impl Interpreter {
     /// Look up a user-written method on a struct or enum value. Enum struct
@@ -147,6 +172,23 @@ impl Interpreter {
                     (_, v) => v,
                 });
             }
+        }
+
+        // `.clone()` on a value whose own method table has no clone arm.
+        //
+        // Generic code writes the call once and runs it at every instantiation:
+        // `self.items[i].clone()` inside a `Bin<T>` is fine at `T = string` and
+        // used to be a runtime error at `T = i64`, because the string handler
+        // answers `clone` and the scalar ones don't. Native accepts all of them,
+        // so the same source was an error on one backend and correct on the
+        // other (#1020). Copying a value that is already a copy costs nothing.
+        //
+        // Listed the safe way round: a type left off this list keeps whatever
+        // its own handler does, which is what happens today. Adding one here
+        // that has real clone semantics — a `Shared` handing back another
+        // reference, a `Vec` copying its elements — would take them away.
+        if method == "clone" && args.is_empty() && receiver_takes_generic_clone(&receiver) {
+            return Ok(receiver.deep_clone());
         }
 
         match &receiver {
@@ -342,8 +384,8 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(false));
             }
-            // G2: debug_string for structs/enums — uses Display impl
-            Value::Struct(..) | Value::Enum { .. } if method == "debug_string" => {
+            // G2: debug for structs/enums — uses Display impl
+            Value::Struct(..) | Value::Enum { .. } if method == "debug" => {
                 return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),

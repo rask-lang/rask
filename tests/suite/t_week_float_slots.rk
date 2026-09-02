@@ -1,0 +1,157 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A float in a word-wide slot — #973, and the sweep that found it.
+//
+// `mem.abi` keeps one convention for this: a float stored in an 8-byte slot is
+// promoted to f64 going in and demoted coming out. Three separate places
+// disagreed with it, each in its own way, and the failures were all quiet:
+//
+//   - a `match` used as an expression allocated its result local as a word
+//     before its arms had reported a type, so assigning a float arm into it
+//     *converted* instead of reinterpreting. `match n { 1 => 2.5, _ => 0.0 }`
+//     was 2 — a rounding bug to look at, a miscompile in fact. `if/else` was
+//     right, which is what made it look like an enum problem.
+//   - an enum payload was read at the width the caller asked for, so an f32
+//     payload took the double's zero low half.
+//   - a struct field whose type came from a type parameter did the same (#972).
+//
+// The nine positions below are the sweep: every place a float can sit in a
+// word-wide slot. Eight agreed before the fixes; the enum payload didn't.
+// `t_week_enums.rk` stayed green through all of it because none of its variants
+// carry a float, which is exactly why this file exists.
+
+struct Holder<T> {
+    value: T
+}
+
+enum Slot<T> {
+    Nothing
+    Has(T)
+}
+
+enum Concrete {
+    Nothing
+    HasSmall(f32)
+    HasWide(f64)
+}
+
+struct Oops {
+    v: i64
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "oops"
+    }
+}
+
+func wrapped(x: f32) -> f32 or Oops {
+    return x
+}
+
+func same<T>(x: T) -> T {
+    return x
+}
+
+test "mem.abi — a match expression keeps its float arms" {
+    let n = 1
+    let a = match n {
+        1 => 2.5,
+        _ => 0.0,
+    }
+    assert a == 2.5
+
+    let b = match true {
+        true => 3.5,
+        false => 0.0,
+    }
+    assert b == 3.5
+}
+
+test "mem.abi — an f32 match expression keeps its fraction" {
+    let n = 1
+    let d: f32 = match n {
+        1 => 5.5,
+        _ => 0.0,
+    }
+    assert d == 5.5
+}
+
+test "mem.abi — a concrete enum's float payloads" {
+    let small = Concrete.HasSmall(1.5)
+    let sv: f32 = match small {
+        HasSmall(v) => v,
+        HasWide(_) => 0.0,
+        Nothing => 0.0,
+    }
+    assert sv == 1.5
+
+    let wide = Concrete.HasWide(2.5)
+    let wv = match wide {
+        HasWide(v) => v,
+        HasSmall(_) => 0.0,
+        Nothing => 0.0,
+    }
+    assert wv == 2.5
+}
+
+test "mem.abi — a generic enum's float payloads" {
+    let g: Slot<f32> = Slot.Has(3.5)
+    let gv: f32 = match g {
+        Has(v) => v,
+        Nothing => 0.0,
+    }
+    assert gv == 3.5
+
+    let gd: Slot<f64> = Slot.Has(4.5)
+    let gdv = match gd {
+        Has(v) => v,
+        Nothing => 0.0,
+    }
+    assert gdv == 4.5
+}
+
+test "mem.abi — a float in a generic struct field" {
+    let h: Holder<f32> = Holder { value: 0.5 }
+    assert h.value == 0.5
+
+    let hd: Holder<f64> = Holder { value: 1.25 }
+    assert hd.value == 1.25
+}
+
+test "mem.abi — a float through an optional and a result" {
+    let o: f32? = 2.5
+    assert o! == 2.5
+
+    let r = wrapped(3.5) catch _ => 0.0
+    assert r == 3.5
+}
+
+test "mem.abi — a float in the collections" {
+    mut v: Vec<f32> = Vec.new()
+    v.push(4.5)
+    assert v[0] == 4.5
+
+    mut m: Map<string, f32> = Map.new()
+    m.insert("k", 5.5)
+    if m.get("k")? as got {
+        assert got == 5.5
+    }
+}
+
+test "mem.abi — a float in an array and a tuple" {
+    let a: [f32; 2] = [6.5, 7.5]
+    assert a[0] == 6.5
+    assert a[1] == 7.5
+
+    let t: (f32, f32) = (8.5, 9.5)
+    assert t.0 == 8.5
+    assert t.1 == 9.5
+}
+
+test "mem.abi — a float through a generic function" {
+    assert same(10.5) == 10.5
+    let f: f32 = 11.5
+    assert same(f) == 11.5
+}
+
+func main() {}

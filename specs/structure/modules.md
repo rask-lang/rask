@@ -52,7 +52,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 
 | Rule | Description |
 |------|-------------|
-| **IM1: Qualified** | `import pkg` → access as `pkg.Name`. Every stdlib module works this way — there is no set that comes pre-imported, so a module name is an ordinary identifier until a program imports it, and a program that hasn't may bind a local called `net` or `json` |
+| **IM1: Qualified** | `import pkg` → access as `pkg.Name`, and *only* as `pkg.Name`: a module import binds the module, not the names inside it. Every stdlib module works this way — there is no set that comes pre-imported, so a module name is an ordinary identifier until a program imports it, and a program that hasn't may bind a local called `net` or `json` |
 | **IM2: Last-segment qualifier** | `import myapp.net.http` → access as `http.get()` |
 | **IM3: Alias** | `import pkg as p` → access as `p.Name` |
 | **IM4: Unqualified** | `import pkg.Name` → `Name` directly |
@@ -151,10 +151,50 @@ export internal.lexer.Lexer
 ## Error Messages
 
 ```
-ERROR [struct.modules/BI3]: built-in type shadowing
-   |
-3  |  struct Vec { }
-   |  ^^^^^^^^^^ cannot define type with built-in name `Vec`
+error[E0210]: `Duration` is not in scope
+  --> app.rk:2:13
+    |
+  2 |     let d = Duration.seconds(1)
+    |             ^^^^^^^^ needs an import
+    = fix: import time.Duration
+    = why: nothing comes pre-imported. A stdlib name is in scope where the program asked for it and nowhere else, which is also what leaves the name free for a program that wants it for something of its own [structure.modules/IM1]
+```
+
+`import time.Duration` rather than `import time`, because the code is already
+written against the bare name — IM4 keeps it working where the whole-module form
+would mean rewriting the use.
+
+```
+error[E0208]: `Duration` is already in scope from `time`
+  --> app.rk:3:1
+    |
+  3 | struct Duration { a: i64 }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ a second `Duration` in the same scope
+    = fix: import time.Duration as StdDuration
+    = why: one name, one meaning: with both in scope nothing in the source says which `Duration` a use means, and the compiler would be picking for you [struct.modules/IM8]
+```
+
+```
+error[E0209]: `Vec` is a built-in type
+  --> app.rk:1:1
+    |
+  1 | struct Vec { a: i64 }
+    | ^^^^^^^^^^^^^^^^^^^^^ this name is already taken
+    = fix: give it a name of its own, not `Vec`
+    = why: the built-in set is fixed — a program can't add to it or replace a member — so a second type under this name would have no way to be referred to [struct.modules/BI2, BI3]
+```
+
+A built-in *function* gets a different reason, because it's worse: the compiler
+generates code for `println` at each call site (BF2), so a program's own would be
+compiled and then never called.
+
+```
+error[E0209]: `println` is a built-in function
+  --> app.rk:1:1
+    |
+  1 | func println(x: i64) { return }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this name is already taken
+    = fix: give it a name of its own, not `println`
 ```
 
 ```
@@ -262,14 +302,34 @@ Tradeoff acknowledged: directory = package makes intra-package dependencies invi
 | Import syntax parsing | Implemented |
 | Export syntax parsing | Implemented |
 | Package discovery | Implemented |
-| Built-in type tracking | Implemented |
-| Built-in shadowing detection | Implemented |
+| IM1 — nothing pre-imported (modules and types) | Implemented |
+| IM3 — aliased import carries the type | Implemented |
+| IM8 — no shadowing an import | Implemented |
+| BI1/BI3 — built-in set, no shadowing | Implemented |
+| BF1/BF3 — built-in functions, no shadowing | Implemented |
 | Cross-package symbol lookup | Implemented |
 | Visibility checking (public/package/private) | Implemented |
 | Circular dependency detection | Implemented |
 | Semver constraint parsing | Implemented |
 | Feature resolution (additive + exclusive) | Implemented |
 | Lock file with capability tracking | Implemented |
+
+**Settled (#999):** `import time` gives `time.Duration` and no bare `Duration`.
+The two forms had meant the same thing — importing a module registered every type
+it exports directly into scope, so naming the type in `import time.Duration`
+bought nothing. Two things decided it. Nothing else offers both forms and has them
+agree: Go and Zig have no unqualified form at all, and Python, Rust and TypeScript
+draw exactly this line (`import http` vs `from http import Response`). The
+languages that do hand you the names on a module import — Swift, Java, C# — have
+only the one form. And the loose reading fought IM8: `import http` reserved all
+nine of `Method`…`HttpClient`, so a program with its own `Response` was told
+"already in scope from `http`" for a name it never asked for, and adding a type to
+a stdlib module broke every program that had one by that name. Swift lives with
+that because its shadowing rule is "the local one wins, silently"; IM8 makes it an
+error, and the two don't combine.
+
+Cost was 41 corpus files gaining a selective import, `http.Response`,
+`http.Request` and `http.Method` being most of them.
 
 ### See Also
 

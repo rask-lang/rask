@@ -1,0 +1,43 @@
+title = "Evaluate reverse Polish notation"
+horizon = "week"
+concepts = ["enums", "match", "errors", "Vec"]
+issues = ["1001"]
+
+contract = """
+enum Token {
+    Number(value: i64)
+    Plus
+    Minus
+    Times
+}
+
+enum RpnError {
+    NotEnoughOperands
+    LeftoverOperands
+    Empty
+}
+
+extend RpnError with Error {
+    func message(self) -> string
+}
+
+func eval_rpn(tokens: Vec<Token>) -> i64 or RpnError
+"""
+
+prompt = """
+Evaluate a reverse-Polish expression: operands accumulate on a stack, and an
+operator pops two and pushes the result. `[3, 4, +]` is 7; `[5, 1, 2, +, *]` is
+15.
+
+The operator takes the two most recent operands in the order they were pushed,
+so `[5, 3, -]` is 2, not -2.
+
+Three ways it can fail, each with a fixed message:
+
+- an empty token list — "empty expression"
+- an operator with fewer than two operands waiting — "not enough operands"
+- more than one value left at the end — "leftover operands"
+
+Return the result or the error. Rask writes that as `i64 or RpnError`, with no
+wrapper types around either side.
+"""

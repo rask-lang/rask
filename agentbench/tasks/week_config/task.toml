@@ -1,0 +1,42 @@
+title = "Read a key=value config"
+horizon = "week"
+concepts = ["errors", "try", "catch", "Map", "strings"]
+issues = ["1001"]
+
+contract = """
+enum ConfigError {
+    MissingKey(key: string)
+    NotANumber(key: string, text: string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string
+}
+
+func parse(text: string) -> Map<string, string>
+func get_text(config: Map<string, string>, key: string) -> string or ConfigError
+func get_number(config: Map<string, string>, key: string) -> i64 or ConfigError
+func port_or_default(text: string) -> i64
+"""
+
+prompt = """
+Read a small `key=value` config file.
+
+`parse` takes the whole text and returns the pairs. One pair per line. Blank
+lines and lines whose first non-blank character is `#` are skipped. Whitespace
+around the key and around the value is trimmed. A line with no `=` is skipped.
+A repeated key takes its last value.
+
+`get_text` returns the value, or `MissingKey` when the key isn't there.
+`get_number` also parses it as an integer and returns `NotANumber`, carrying the
+key and the offending text, when that fails.
+
+The two error messages read exactly:
+
+- `missing key: port`
+- `not a number for name: web`
+
+`port_or_default` parses the text, looks up "port", and returns 8080 if anything
+at all went wrong. Write that one with `catch` so the swallowed failure is
+visible at the line where it happens.
+"""

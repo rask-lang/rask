@@ -310,12 +310,15 @@ pub fn cmd_explain(code: &str) {
     let registry = ErrorCodeRegistry::default();
 
     if let Some(info) = registry.get(code) {
-        println!(
-            "{}[{}]: {}",
-            "error".red().bold(),
-            info.code.red().bold(),
-            info.title.bold()
-        );
+        // W-codes are warnings; labelling them "error" contradicts what the
+        // compiler prints when it actually raises one.
+        let (label, paint): (&str, fn(&str) -> colored::ColoredString) =
+            if code.starts_with('W') {
+                ("warning", |s: &str| s.yellow().bold())
+            } else {
+                ("error", |s: &str| s.red().bold())
+            };
+        println!("{}[{}]: {}", paint(label), paint(info.code), info.title.bold());
         println!();
         println!("  Category: {}", info.category);
         println!();

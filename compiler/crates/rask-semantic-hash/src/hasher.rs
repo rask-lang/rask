@@ -229,6 +229,12 @@ impl Hasher {
                     self.feed_str(s);
                 }
             }
+            DeclKind::Annotation(a) => {
+                self.feed_tag(16);
+                self.feed_str(&a.name);
+                self.feed_bool(a.is_pub);
+                self.hash_fields(&a.fields);
+            }
         }
     }
 

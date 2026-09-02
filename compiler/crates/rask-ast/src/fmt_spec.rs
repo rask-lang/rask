@@ -36,7 +36,7 @@ impl Align {
 pub enum SpecType {
     /// No token: `to_string()`.
     Display,
-    /// `debug` — `to_debug_string()` (G4).
+    /// `debug` — `debug()` (G4).
     Debug,
     /// `x` / `X` — hex, lower or upper.
     Hex { upper: bool },

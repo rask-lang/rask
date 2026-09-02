@@ -13,3 +13,9 @@ rask-types = { path = "../rask-types" }
 rask-stdlib = { path = "../rask-stdlib" }
 indexmap = "2"
 thiserror.workspace = true
+# Text units (std.strings/U1-U5). The interpreter is the reference, so it uses
+# these directly; the native runtime's tables are generated from the same crates
+# by scripts/gen_unicode_text, which is what keeps the two backends in step.
+unicode-normalization = "0.1"
+unicode-segmentation = "1"
+unicode-width = "0.2"

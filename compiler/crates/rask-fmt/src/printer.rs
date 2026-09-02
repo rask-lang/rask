@@ -547,6 +547,7 @@ impl<'a> Printer<'a> {
             DeclKind::Extern(e) => self.format_extern_decl(e),
             DeclKind::Package(p) => self.format_package_decl(p),
             DeclKind::Union(u) => self.format_union_decl(u, decl.span),
+            DeclKind::Annotation(a) => self.format_annotation_decl(a),
             DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
             DeclKind::CImport(ci) => {
                 self.emit("import c ");
@@ -917,6 +918,33 @@ impl<'a> Printer<'a> {
             self.emit_indent();
             self.emit("}");
         }
+    }
+
+    fn format_annotation_decl(&mut self, a: &rask_ast::decl::AnnotationDecl) {
+        self.emit_indent();
+        if a.is_pub {
+            self.emit("public ");
+        }
+        self.emit("annotation @");
+        self.emit(&a.name);
+        self.emit(" {");
+        self.emit_newline();
+        self.indent += 1;
+        for field in &a.fields {
+            self.emit_indent();
+            self.emit(&field.name);
+            self.emit(": ");
+            let ty = self.format_type(&field.ty);
+            self.emit(&ty);
+            if let Some(default) = &field.default {
+                self.emit(" = ");
+                self.format_expr(default);
+            }
+            self.emit_newline();
+        }
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
     }
 
     fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {
@@ -1729,7 +1757,15 @@ impl<'a> Printer<'a> {
             }
             StmtKind::Ensure { body, else_handler } => {
                 self.emit("ensure ");
-                if body.len() == 1 && else_handler.is_none() {
+                // `ensure` takes a bare expression or a block, so the braces
+                // come off a one-statement body only when that statement IS an
+                // expression. Unwrapping anything else printed `ensure let n =
+                // …`, which the parser rejects — and a formatter that emits
+                // something it can't read back is worse than a verbose one.
+                let inlinable = body.len() == 1
+                    && else_handler.is_none()
+                    && matches!(body[0].kind, StmtKind::Expr(_));
+                if inlinable {
                     self.format_stmt_inline(&body[0]);
                 } else {
                     self.emit("{");

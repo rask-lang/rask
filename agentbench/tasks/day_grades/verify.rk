@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: boundaries" {
+    assert grade(100) == "A"
+    assert grade(90) == "A"
+    assert grade(89) == "B"
+    assert grade(80) == "B"
+    assert grade(70) == "C"
+    assert grade(60) == "D"
+    assert grade(59) == "F"
+    assert grade(0) == "F"
+}
+
+test "verify: out of range" {
+    assert grade(101) == "invalid"
+    assert grade(-1) == "invalid"
+}
+
+test "verify: histogram" {
+    let h = histogram([95, 91, 85, 72, 30])
+    assert h.len() == 4
+    assert h.get("A")! == 2
+    assert h.get("B")! == 1
+    assert h.get("C")! == 1
+    assert h.get("F")! == 1
+    assert h.get("D") is none
+}
+
+test "verify: empty and invalid" {
+    mut empty: Vec<i32> = Vec.new()
+    assert histogram(empty).len() == 0
+    let h = histogram([200, 50])
+    assert h.get("invalid")! == 1
+    assert h.get("F")! == 1
+}

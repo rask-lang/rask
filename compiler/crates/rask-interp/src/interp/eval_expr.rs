@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -626,6 +626,11 @@ impl Interpreter {
                 origin: None,
             }),
 
+            // The null pointer. This used to fall through to the catch-all
+            // and evaluate to unit, so `null.is_null()` was "method not found
+            // on `void`" (#935).
+            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
+
             ExprKind::Ident(name) => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
@@ -810,8 +815,22 @@ impl Interpreter {
                 // Clear any writebacks left by sub-calls during arg evaluation, so
                 // only this call's `mutate` finals are applied below.
                 self.mutate_writebacks.clear();
+                // #968: `count<Plain>()` — the written type arguments are folded
+                // into the callee's name by the parser, and nothing had read them
+                // back, so a call with no arguments to infer from left `T`
+                // unbound. Set after the arguments are evaluated so a nested call
+                // can't consume it, and cleared after so a callee that never
+                // reaches `call_function` — a builtin, a closure — doesn't leave
+                // them for whatever calls next.
+                let outer_type_args = self.pending_type_args.take();
+                self.pending_type_args = match &func.kind {
+                    ExprKind::Ident(written) => written_type_args(written),
+                    _ => None,
+                };
                 let result = self.call_value(func_val, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                self.pending_type_args = outer_type_args;
+                let result = result?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
                 // to its argument place. For a plain call, param index i is args[i].
                 self.apply_mutate_writebacks(args)
@@ -1042,6 +1061,40 @@ impl Interpreter {
                     }
                 }
 
+                // AN6: `field.has<A>()` on a reflect FieldInfo answers from
+                // the field's raw attachments (hidden `__attrs`), matched by
+                // annotation name. Mirrors the native lowering's constant.
+                if let Value::Struct(s) = &receiver {
+                    let is_field_info = s.lock().unwrap().name == "FieldInfo";
+                    if is_field_info && matches!(method.as_str(), "has" | "get") {
+                        if let Some(annotation) =
+                            type_args.as_ref().and_then(|ta| ta.first()).map(|t| self.resolve_type_param(t))
+                        {
+                            let attrs = field_info_attrs(s);
+                            let found = attrs.iter().find(|a| {
+                                rask_ast::decl::field_attrs::attachment_name(a) == annotation
+                            });
+                            if method == "has" {
+                                return Ok(Value::Bool(found.is_some()));
+                            }
+                            // AN6/AN8: `get<A>()` exists only to be
+                            // field-projected. The record is built here so the
+                            // projection reads it; nothing may bind it, and
+                            // that part is the checker's to enforce.
+                            let Some(attr) = found else {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::Generic(format!(
+                                        "`{}` has no `@{}` to read — guard the read with `comptime if field.has<{}>()`",
+                                        field_info_name(s), annotation, annotation
+                                    )),
+                                    expr.span,
+                                ));
+                            };
+                            return Ok(self.annotation_record(&annotation, attr));
+                        }
+                    }
+                }
+
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
@@ -1135,12 +1188,18 @@ impl Interpreter {
                             expr.span
                         )),
                     },
-                    // mem.owned/OW3: `*owned` is a borrow, not a raw-pointer
-                    // read. `Owned<T>` is transparent — the value already is
-                    // the T — so the deref hands it straight back. A raw
-                    // pointer never reaches the interpreter to begin with;
-                    // `unsafe` code is native-only.
-                    UnaryOp::Deref => Ok(val),
+                    // Two different derefs share the `*` spelling. On a raw
+                    // pointer it's a read through the pointer, the same thing
+                    // `p.read()` does. On anything else it's `*owned`, a
+                    // borrow: `Owned<T>` is transparent — the value already is
+                    // the T — so the deref hands it straight back
+                    // (mem.owned/OW3).
+                    UnaryOp::Deref => match &val {
+                        Value::RawPtr(p) => p
+                            .read()
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span)),
+                        _ => Ok(val),
+                    },
                     // `own` heap-allocates on native (#739); the interpreter's
                     // values are already independent of any stack frame, so
                     // there's nothing further to do here — same OW5 transparency
@@ -1389,6 +1448,45 @@ impl Interpreter {
                 } else {
                     name.clone()
                 };
+
+                // `A4.N { v: 5 }` is an enum variant with a named payload, not a
+                // struct — it just shares the literal's syntax. Built as a
+                // struct named "A4.N" it was the wrong kind of value everywhere
+                // downstream: a `N { v }` arm compares against the variant name
+                // and never matched, so every such arm fell through (#910).
+                if let Some((enum_name, variant_name)) = concrete_name.split_once('.') {
+                    if let Some(decl) = self.enums.get(enum_name) {
+                        if let Some((idx, variant)) = decl
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .find(|(_, v)| v.name == variant_name)
+                        {
+                            // Payload order is the declaration's, whatever order
+                            // the literal wrote the fields in.
+                            let decl_fields: Vec<String> =
+                                variant.fields.iter().map(|f| f.name.clone()).collect();
+                            let mut payload = Vec::with_capacity(decl_fields.len());
+                            for field_name in &decl_fields {
+                                let Some(f) = fields.iter().find(|f| f.name == *field_name) else {
+                                    return Err(RuntimeDiagnostic::new(
+                                        RuntimeError::Generic(format!(
+                                            "`{enum_name}.{variant_name}` needs a value for `{field_name}`"
+                                        )),
+                                        expr.span,
+                                    ));
+                                };
+                                payload.push(self.eval_owned(&f.value)?);
+                            }
+                            return Ok(Value::enum_with_index(
+                                enum_name.to_string(),
+                                variant_name.to_string(),
+                                payload,
+                                idx as u32,
+                            ));
+                        }
+                    }
+                }
 
                 let mut field_values = IndexMap::new();
 
@@ -1756,19 +1854,32 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::vec(slice))
                     }
+                    // `[]` on a string means bytes in both forms
+                    // (std.strings/U1b): a range slices, a scalar index reads
+                    // one byte. It used to yield the character at index `i`,
+                    // scanning from byte zero, so the same bracket counted two
+                    // different units. Indexing panics out of range; `byte_at`
+                    // is the probe.
                     (Value::String(s), Value::Int(i, _)) => {
                         let str_val = s.lock().unwrap();
-                        match str_val.chars().nth(*i as usize) {
-                            Some(c) => Ok(Value::Char(c)),
+                        match usize::try_from(*i).ok().and_then(|n| str_val.as_bytes().get(n)) {
+                            Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
                             None => Err(RuntimeDiagnostic::new(
                                 RuntimeError::Panic(format!(
-                                    "string index out of bounds: index is {} but length is {}",
-                                    i, str_val.chars().count()
+                                    "string index out of bounds: index is {} but length is {} bytes",
+                                    i,
+                                    str_val.len()
                                 )),
                                 expr.span,
                             )),
                         }
                     }
+                    // Byte offsets (std.strings/U1, S5). Out of range clamps;
+                    // an offset inside a character panics, because the result
+                    // would be a `string` that isn't valid UTF-8. Both have to
+                    // match `rask_string_substr` — an empty range used to reach
+                    // Rust's slicing and abort the process with a Rust panic
+                    // instead of a Rask one.
                     (Value::String(s), Value::Range { start, end, inclusive, .. }) => {
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
@@ -1779,7 +1890,20 @@ impl Interpreter {
                             let e = if *inclusive { *end + 1 } else { *end };
                             e.max(0).min(len) as usize
                         };
-                        let slice = &str_val[start_idx..end_idx];
+                        if start_idx >= end_idx {
+                            return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                        }
+                        let Some(slice) = str_val.get(start_idx..end_idx) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "s[{start_idx}..{end_idx}] cuts a character in half - \
+                                     these are byte offsets, and one of them lands inside \
+                                     a multi-byte character. `char_indices()` gives offsets \
+                                     that don't."
+                                )),
+                                expr.span,
+                            ));
+                        };
                         Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
                     }
                     (
@@ -2081,7 +2205,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, expr.span))
                             }
                         }
                         "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
@@ -2092,7 +2216,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
@@ -2153,9 +2277,21 @@ impl Interpreter {
                     (Value::Int(n, _), "char") => {
                         Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
                     }
-                    // i128 conversions
-                    (Value::Int(n, _), "i128") => Ok(Value::Int128(n as i128)),
-                    (Value::Int(n, _), "u128") => Ok(Value::Uint128(n as u128)),
+                    // i128 conversions. Widening reads the source's signedness,
+                    // not just its bits: an unsigned value is carried as its bit
+                    // pattern in an i64, so `u64::MAX` sits there as -1 and a
+                    // plain `as u128` sign-extends it to `u128::MAX` (#934).
+                    // Same two-step `auto_wrap_for_annotation` uses on a literal.
+                    (Value::Int(n, kind), "i128") => Ok(Value::Int128(if kind.signed() {
+                        n as i128
+                    } else {
+                        n as u64 as i128
+                    })),
+                    (Value::Int(n, kind), "u128") => Ok(Value::Uint128(if kind.signed() {
+                        n as u128
+                    } else {
+                        n as u64 as u128
+                    })),
                     (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
@@ -2597,6 +2733,12 @@ impl Interpreter {
             struct WithInfo {
                 source: WithSource,
                 name: String,
+                /// ST1: bound to a working copy that commits as one move on a
+                /// non-panic exit and is discarded on unwind. Every `with` over
+                /// a sync box already works on a copy here and writes it back at
+                /// block exit — staged is that, minus the writeback when the
+                /// body panicked (ST3).
+                staged: bool,
             }
 
             let mut infos: Vec<WithInfo> = Vec::new();
@@ -2616,8 +2758,8 @@ impl Interpreter {
                     // older spelling.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
-                        (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock" | "read" | "write") => {
+                        (Value::Shared(s), "write" | "staged") => WithSource::SharedWrite(Arc::clone(s)),
+                        (Value::RaskMutex(m), "lock" | "read" | "write" | "staged") => {
                             WithSource::Mutex(Arc::clone(m))
                         }
                         (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),
@@ -2649,9 +2791,14 @@ impl Interpreter {
                     }
                 };
 
+                let staged = matches!(
+                    &binding.source.kind,
+                    ExprKind::MethodCall { method, .. } if method == "staged"
+                );
                 infos.push(WithInfo {
                     source,
                     name: binding.name.clone(),
+                    staged,
                 });
             }
 
@@ -2694,7 +2841,13 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        // ST1: staged works on a copy. A plain `Value::clone`
+                        // shares the `Arc` behind a struct or a Vec, so writes
+                        // through the binding land in the box whatever the
+                        // writeback below decides — deep_clone is what makes the
+                        // discard on unwind mean anything.
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         mutex_guards.push((info.name.clone(), guard));
                     }
                     WithSource::Cell(c) => {
@@ -2720,7 +2873,8 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         rw_write_guards.push((info.name.clone(), guard));
                     }
                 }
@@ -2737,12 +2891,24 @@ impl Interpreter {
                 }
             }
 
+            // ST3: a staged binding's copy is discarded on unwind, so survivors
+            // see the last committed state and never a torn one. Every other
+            // binding flushes (U2: unwind releases access but keeps writes).
+            let unwinding = matches!(&body_result, Err(d) if d.error.is_panic());
+            let discard: std::collections::HashSet<&str> = infos
+                .iter()
+                .filter(|i| i.staged && unwinding)
+                .map(|i| i.name.as_str())
+                .collect();
+
             // Writeback (U2: mutations made before the panic are flushed,
             // not rolled back). Read locks never write back — the checker
             // rejects mutation through them (conc.sync/R1).
             let mut writeback_err: Option<RuntimeDiagnostic> = None;
             for info in &infos {
-                if !matches!(info.source, WithSource::SharedRead(_)) {
+                if !matches!(info.source, WithSource::SharedRead(_))
+                    && !discard.contains(info.name.as_str())
+                {
                     if let Some(updated) = self.env.get(&info.name).cloned() {
                         match &info.source {
                             WithSource::Index { collection, key } => {
@@ -2765,6 +2931,9 @@ impl Interpreter {
 
             // Write back to Mutex/Cell guards
             for (name, mut guard) in mutex_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }
@@ -2772,6 +2941,9 @@ impl Interpreter {
 
             // Write back to Shared write guards
             for (name, mut guard) in rw_write_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }
@@ -2981,3 +3153,111 @@ impl Interpreter {
 
 }
 
+
+/// The raw attachment strings a reflect FieldInfo carries in its hidden
+/// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
+/// `ReflectFieldConst.attrs`.
+fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
+    let guard = s.lock().unwrap();
+    match guard.fields.get("__attrs") {
+        Some(Value::Vec(v)) => v
+            .lock()
+            .unwrap()
+            .items
+            .iter()
+            .filter_map(|a| match a {
+                Value::String(text) => Some(text.lock().unwrap().clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The field's own name, for a diagnostic that says which field went wrong.
+fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
+    let guard = s.lock().unwrap();
+    match guard.fields.get("name") {
+        Some(Value::String(text)) => text.lock().unwrap().clone(),
+        _ => "field".to_string(),
+    }
+}
+
+impl Interpreter {
+    /// The attachment `indexed(weight: 3, label: "t")` as a struct value, so a
+    /// projection off `get<A>()` reads it like any other field access
+    /// (type.annotations/AN6).
+    ///
+    /// Desugar already filled the declared defaults into the attachment text,
+    /// so what's written here is the whole record — the same text native
+    /// lowering splices from, which is what keeps the two backends agreeing on
+    /// what a default was. The declaration is consulted only for field types:
+    /// `3` is an integer for `weight: i64` and a float for `scale: f64`, and
+    /// the text alone can't say which.
+    fn annotation_record(&self, annotation: &str, attr: &str) -> Value {
+        use rask_ast::decl::field_attrs;
+
+        let declared: Vec<(String, String)> = self
+            .struct_decls
+            .get(annotation)
+            .map(|d| d.fields.iter().map(|f| (f.name.clone(), f.ty.trim().to_string())).collect())
+            .unwrap_or_default();
+
+        let mut fields = IndexMap::new();
+        for (name, value) in field_attrs::attachment_args(attr) {
+            let ty = declared
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| t.as_str())
+                .unwrap_or("");
+            fields.insert(name.to_string(), annotation_value(value, ty));
+        }
+        Value::Struct(Arc::new(Mutex::new(StructData {
+            name: annotation.to_string(),
+            fields,
+            resource_id: None,
+        })))
+    }
+}
+
+/// One attachment argument's text as a value, read against its declared type.
+/// The native side does the same in `rask-mir`'s `annotation_const`; both are
+/// driven off the declared type so `weight: f64 = 1` isn't an integer on one
+/// backend and a float on the other.
+fn annotation_value(text: &str, ty: &str) -> Value {
+    use rask_ast::decl::field_attrs;
+    let text = text.trim();
+    match ty {
+        "bool" => Value::Bool(text == "true"),
+        "f32" | "f64" => text
+            .parse::<f64>()
+            .map(|f| Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 }))
+            .unwrap_or(Value::Unit),
+        "str" | "string" => Value::String(Arc::new(Mutex::new(
+            field_attrs::string_literal(text).unwrap_or_else(|| text.to_string()),
+        ))),
+        _ => match text.parse::<i64>() {
+            Ok(n) => Value::int(n),
+            // An enum variant (`Color.Red`) or an array — kept as text until
+            // annotation fields of those types are read back.
+            Err(_) => Value::String(Arc::new(Mutex::new(text.to_string()))),
+        },
+    }
+}
+
+/// The type arguments written at a call, read off the callee's name.
+///
+/// The parser folds them in — `count<Plain>()` arrives as the identifier
+/// `count<Plain>` — so this is where they still exist by the time the
+/// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
+/// `None` when the name carries none.
+fn written_type_args(name: &str) -> Option<Vec<String>> {
+    let open = name.find('<')?;
+    let inner = name[open + 1..].strip_suffix('>')?;
+    let args = rask_ast::decl::field_attrs::split_top_level(inner, ',')
+        .into_iter()
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect::<Vec<_>>();
+    (!args.is_empty()).then_some(args)
+}

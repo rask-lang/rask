@@ -4,6 +4,8 @@
 
 import fs
 import io
+import memory.Pool
+import memory.Handle
 
 // A line in the document
 struct Line {

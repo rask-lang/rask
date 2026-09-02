@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every method named in LANGUAGE_GUIDE.md's "Method surface" section, exercised
+// so the card can't drift from the compiler without this going red. The card is
+// agentbench's system prompt: a name it promises that doesn't exist costs a
+// model its first attempt, which is exactly what `.collect()` was doing.
+
+test "card: string methods" {
+    let s = "  Hello World  "
+    let t = s.trim().to_string()
+    assert t == "Hello World"
+    assert t.len() == 11u64
+    assert !t.is_empty()
+    assert t.contains("World")
+    assert t.starts_with("Hello")
+    assert t.ends_with("World")
+    assert t.to_lowercase() == "hello world"
+    assert t.to_uppercase() == "HELLO WORLD"
+    assert t.replace("World", "there") == "Hello there"
+    assert "ab".repeat(2) == "abab"
+    assert "abc".reverse() == "cba"
+    assert t.width() == 11u64
+    assert t.is_ascii()
+    assert t[0..5].to_string() == "Hello"
+    assert "  x".trim_start() == "x"
+    assert "x  ".trim_end() == "x"
+}
+
+test "card: string index_of gives an optional, not a plain index" {
+    let s = "hello"
+    assert s.index_of("l")! == 2u64
+    assert s.last_index_of("l")! == 3u64
+    assert s.index_of("z") is none
+    assert s.char_at(0)! == 'h'
+    assert s.char_at(99) is none
+}
+
+test "card: string splitters are sequences, terminated by to_vec" {
+    let words: Vec<string> = "a b c".split_whitespace().to_vec()
+    assert words.len() == 3u64
+    assert words[0] == "a"
+
+    let parts: Vec<string> = "a,b".split(",").to_vec()
+    assert parts.len() == 2u64
+
+    let rows: Vec<string> = "x\ny".lines().to_vec()
+    assert rows.len() == 2u64
+}
+
+test "card: Vec methods" {
+    mut v: Vec<i64> = Vec.new()
+    assert v.is_empty()
+    v.push(2i64)
+    v.push(1i64)
+    assert v.len() == 2u64
+    assert v.contains(1i64)
+    v.insert(0, 3i64)
+    assert v[0] == 3i64
+    v.sort()
+    assert v[0] == 1i64
+    v.reverse()
+    assert v[0] == 3i64
+    assert v.remove(0) == 3i64
+    v.clear()
+    assert v.is_empty()
+}
+
+test "card: sequence terminals" {
+    let v = [1i64, 2i64, 3i64]
+    let doubled: Vec<i64> = v.iter().map(|x| x * 2i64).to_vec()
+    assert doubled[2] == 6i64
+
+    let evens: Vec<i64> = v.iter().filter(|x| x % 2i64 == 0i64).to_vec()
+    assert evens.len() == 1u64
+
+    assert v.iter().sum() == 6i64
+    assert v.iter().count() == 3u64
+    // join on a *fixed array* of strings is broken natively (#1021), so the card's
+    // `join` claim is pinned here on a Vec; the array case has its own probe.
+    let names: Vec<string> = ["a", "b"].iter().to_vec()
+    assert names.join("-") == "a-b"
+}
+
+test "card: Map says contains_key, not contains" {
+    mut m: Map<string, i64> = Map.new()
+    assert m.is_empty()
+    m.insert("a", 1i64)
+    m["b"] = 2i64
+    assert m.len() == 2u64
+    assert m["a"] == 1i64
+    assert m.contains_key("a")
+    assert !m.contains_key("zz")
+
+    let ks: Vec<string> = m.keys().to_vec()
+    assert ks.len() == 2u64
+    assert m.remove("a")! == 1i64
+    m.clear()
+    assert m.is_empty()
+}
+
+test "card: len is u64 and `as` won't narrow it" {
+    let v = [1i64, 2i64]
+    let n: i64 = v.len().to<i64>()!
+    assert n == 2i64
+}

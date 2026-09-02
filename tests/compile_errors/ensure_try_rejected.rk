@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/ER4 + ER3: `try` has no caller to propagate to from cleanup, so
+// both the ensure body and its `else` handler reject it (E0847). Before this was
+// checked, the program type-checked, printed nothing on the interpreter, and
+// failed native codegen with an internal "couldn't work out a type" message.
+struct CloseErr9 { why: string }
+extend CloseErr9 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+struct Sink9 { id: i32 }
+extend Sink9 {
+    func close(self) -> i32 or CloseErr9 {
+        return CloseErr9 { why: "device gone" }
+    }
+    func retry(self) -> i32 or CloseErr9 {
+        return 0
+    }
+    func ready(self) -> bool or CloseErr9 {
+        return true
+    }
+}
+func main() -> i32 or CloseErr9 {
+    let s = Sink9 { id: 3 }
+    // ER4: in the body.
+    ensure {
+        let n = try s.close()
+    }
+    // ER3: in the handler, which is the last thing that runs.
+    ensure s.close() else |e| {
+        let n = try s.retry()
+    }
+    // ER4 via `break`: the scan walked statements but had no arm for `break`,
+    // so this got through the checker and failed the Cranelift verifier.
+    ensure {
+        loop {
+            break try s.close()
+        }
+    }
+    // ER4 via a match guard: the scan visited each arm's body but never its
+    // guard, which runs in the same frame.
+    ensure {
+        match s.id {
+            3 if try s.ready() => println("three"),
+            _ => println("other"),
+        }
+    }
+    return 0
+}

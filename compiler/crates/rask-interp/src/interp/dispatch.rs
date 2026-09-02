@@ -418,6 +418,7 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "Stderr" => {
                 self.call_stderr_method(method, args)
             }
+            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args),
             Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }

@@ -7,6 +7,8 @@
 // shift under insertion and rehashing. So every way of removing an edge without
 // telling the rack is a chance for the fixup to null too much or too little.
 // Each test below churns a list or index and then deletes.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

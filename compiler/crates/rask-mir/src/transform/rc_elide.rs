@@ -12,7 +12,7 @@
 
 use crate::analysis::escape;
 use crate::{LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmtKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Elide unnecessary RC operations on string locals.
 pub fn elide_rc_ops(func: &mut MirFunction) {
@@ -21,18 +21,180 @@ pub fn elide_rc_ops(func: &mut MirFunction) {
     cancel_inc_dec_pairs(func);
 }
 
+/// String locals holding a reference this function didn't take itself.
+///
+/// RE2's premise is that a string that never escapes has balanced RC ops: the
+/// copy that incremented it is what the drop releases, so removing both changes
+/// nothing. That holds for a string this function *created and copied*. It does
+/// not hold for one handed over with its reference already taken — a call's
+/// return value, a payload read out of an aggregate, a parameter. There the
+/// `RcDec` is the only release there will ever be.
+///
+/// The spec says as much: RE2 is "skip all *atomic* ops — refcount stays at 1,
+/// free on drop". The implementation dropped the free along with the atomics,
+/// so `let s = make_it(i)` in a loop leaked about 96 bytes a turn in ordinary
+/// single-threaded code (#1024). It hid because the obvious probe uses a string
+/// *literal*, and RE3 exempts those for an unrelated reason — they carry a
+/// sentinel refcount — so the shape that leaks is the shape a quick test
+/// doesn't reach for.
+///
+/// Owned-from-elsewhere: anything but a copy of another string local or a
+/// string constant. Being wrong in that direction costs an RC pair; being wrong
+/// the other way costs the buffer.
+fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
+    // Not parameters: those are borrowed from the caller, which keeps its own
+    // reference. `rc_insert` gives them no release for the same reason, and the
+    // one increment they do get — a parameter handed straight back out — is
+    // covered because escape analysis counts a returned local as escaping.
+    let mut owned: HashSet<LocalId> = HashSet::new();
+
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue } if string_locals.contains(dst) => {
+                    let self_made = matches!(
+                        rvalue,
+                        MirRValue::Use(MirOperand::Local(_))
+                            | MirRValue::Use(MirOperand::Constant(MirConst::String(_)))
+                    );
+                    if !self_made {
+                        owned.insert(*dst);
+                    }
+                }
+                // A call writing into a string local hands over its reference.
+                MirStmtKind::Call { dst: Some(dst), .. } if string_locals.contains(dst) => {
+                    owned.insert(*dst);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    owned
+}
+
+/// String locals that cross a stdlib boundary that takes the reference with it.
+fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
+    let mut touched: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
+            // A string the call points at rather than hands over: `v.get(i)`
+            // returns the buffer's own sixteen bytes, and the vector releases
+            // them when it dies. Releasing here as well would free it twice.
+            //
+            // `pop` and `remove` do transfer out, and read the same way from a
+            // signature — so they stay elided too, and leak rather than risk
+            // the double free (#1035).
+            if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+                if let Some(dst) = dst {
+                    if string_locals.contains(dst) {
+                        touched.insert(*dst);
+                    }
+                }
+            }
+            // An argument the callee keeps. The reference moves in with it, so
+            // this function no longer owes a release on it.
+            for (i, arg) in args.iter().enumerate() {
+                if !rask_stdlib::mir_metadata::keeps_argument(&fref.name, i) {
+                    continue;
+                }
+                if let Some(id) = crate::analysis::uses::operand_local(arg) {
+                    if string_locals.contains(&id) {
+                        touched.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    touched
+}
+
+/// Group string locals that name the same buffer: `dst = src` and phis.
+///
+/// RC ops have to be kept or dropped for a whole group at once. Keeping one
+/// local's `RcDec` while dropping the `RcInc` on the copy that outlives it
+/// frees the buffer out from under the copy — `let taken = v.remove(0)` read
+/// back as whatever the next allocation wrote there.
+fn copy_groups(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Vec<HashSet<LocalId>> {
+    let mut parent: HashMap<LocalId, LocalId> = HashMap::new();
+
+    fn find(parent: &mut HashMap<LocalId, LocalId>, x: LocalId) -> LocalId {
+        let p = *parent.get(&x).unwrap_or(&x);
+        if p == x {
+            return x;
+        }
+        let root = find(parent, p);
+        parent.insert(x, root);
+        root
+    }
+
+    fn union(parent: &mut HashMap<LocalId, LocalId>, a: LocalId, b: LocalId) {
+        let (ra, rb) = (find(parent, a), find(parent, b));
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                    if string_locals.contains(dst) && string_locals.contains(src) =>
+                {
+                    union(&mut parent, *dst, *src);
+                }
+                MirStmtKind::Phi { dst, args } if string_locals.contains(dst) => {
+                    for (_, arg) in args {
+                        if let MirOperand::Local(src) = arg {
+                            if string_locals.contains(src) {
+                                union(&mut parent, *dst, *src);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut groups: HashMap<LocalId, HashSet<LocalId>> = HashMap::new();
+    for local in string_locals {
+        let root = find(&mut parent, *local);
+        groups.entry(root).or_default().insert(*local);
+    }
+    groups.into_values().collect()
+}
+
 /// RE2: Remove all RcInc/RcDec for string locals that never escape the function.
 fn elide_local_only(func: &mut MirFunction) -> usize {
     let escaped = escape::escaping_strings(func);
-    let mut removed = 0;
+    let string_locals: HashSet<LocalId> =
+        func.locals_of_type(&crate::MirType::String).into_iter().collect();
+    let owned = owned_from_elsewhere(func, &string_locals);
+    let containers = container_touched(func, &string_locals);
 
+    // Decide per group, not per local: keeping one local's release while
+    // dropping the increment on the copy that outlives it frees the buffer out
+    // from under the copy.
+    let mut keep: HashSet<LocalId> = HashSet::new();
+    for group in copy_groups(func, &string_locals) {
+        let crosses_container = group.iter().any(|l| containers.contains(l));
+        let borrowed_in = group.iter().any(|l| owned.contains(l));
+        if borrowed_in && !crosses_container {
+            keep.extend(group);
+        }
+    }
+
+    let mut removed = 0;
     for block in &mut func.blocks {
         let before = block.statements.len();
         block.statements.retain(|stmt| {
             match &stmt.kind {
                 MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => {
-                    // Keep only if the local escapes
-                    escaped.contains(local)
+                    // Keep if the local escapes, or if its reference came from
+                    // somewhere this function has to release.
+                    escaped.contains(local) || keep.contains(local)
                 }
                 _ => true,
             }
@@ -45,49 +207,92 @@ fn elide_local_only(func: &mut MirFunction) -> usize {
 
 /// RE3 + RE6: Remove RC ops on locals that provably hold string literals or SSO strings.
 ///
-/// Tracks which locals are "provably literal" — assigned from a string constant
-/// or copied from another provably-literal local. Literals use sentinel refcount
-/// and SSO strings (≤15 bytes) have no refcount at all.
+/// A literal's buffer is static with a sentinel refcount, so retaining and
+/// releasing it are both no-ops and the pair can go.
+///
+/// "Provably" has to mean *on every path*. The old version walked the blocks in
+/// order and kept a running set, so the last write to a local won:
+///
+/// ```text
+/// bb3:  _5 = concat("not found: ", p)   // removes _5 from the set
+/// bb4:  _5 = "timed out"                // puts it back
+/// ```
+///
+/// `_5` came out marked literal, its RC ops were dropped, and the concat
+/// result on the other arm was released by nobody — or, once releases started
+/// surviving, released without the matching retain, so `println` read a freed
+/// buffer. Now a local is literal only when *every* definition of it is, which
+/// takes a fixed point because a copy's answer depends on its source.
 fn elide_literals(func: &mut MirFunction) -> usize {
-    let mut literal_locals: HashSet<LocalId> = HashSet::new();
+    let string_locals: HashSet<LocalId> =
+        func.locals_of_type(&crate::MirType::String).into_iter().collect();
 
-    // Forward pass: identify locals assigned from string constants
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            if let MirStmtKind::Assign { dst, rvalue } = &stmt.kind {
-                match rvalue {
-                    // Direct string literal assignment
-                    MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => {
-                        literal_locals.insert(*dst);
-                    }
-                    // Copy from another literal
-                    MirRValue::Use(MirOperand::Local(src)) if literal_locals.contains(src) => {
-                        literal_locals.insert(*dst);
-                    }
-                    // Any other assignment breaks the literal chain
-                    _ => {
-                        literal_locals.remove(dst);
-                    }
+    // Start optimistic and only ever remove: a local drops out the moment one
+    // of its definitions can't be shown to be a literal.
+    let mut literal: HashSet<LocalId> = string_locals.clone();
+
+    // A parameter's value comes from the caller — nothing here can vouch for it.
+    for param in &func.params {
+        literal.remove(&param.id);
+    }
+
+    loop {
+        let mut changed = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let Some(dst) = crate::analysis::uses::stmt_def(stmt) else { continue };
+                if !literal.contains(&dst) {
+                    continue;
                 }
-            } else if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
-                // Non-assignment defs (calls, etc.) break literal status
-                literal_locals.remove(&dst);
+                let is_literal_def = match &stmt.kind {
+                    MirStmtKind::Assign { rvalue, .. } => match rvalue {
+                        MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+                        MirRValue::Use(MirOperand::Local(src)) => literal.contains(src),
+                        _ => false,
+                    },
+                    MirStmtKind::Phi { args, .. } => args.iter().all(|(_, arg)| match arg {
+                        MirOperand::Constant(MirConst::String(_)) => true,
+                        MirOperand::Local(src) => literal.contains(src),
+                        _ => false,
+                    }),
+                    // RC ops don't define; anything else that does (a call, a
+                    // field read) produces something this pass can't vouch for.
+                    MirStmtKind::RcInc { .. } | MirStmtKind::RcDec { .. } => continue,
+                    _ => false,
+                };
+                if !is_literal_def {
+                    literal.remove(&dst);
+                    changed = true;
+                }
             }
+        }
+        if !changed {
+            break;
         }
     }
 
-    if literal_locals.is_empty() {
+    // A local nothing ever defines holds nothing to elide.
+    let mut defined: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
+                defined.insert(dst);
+            }
+        }
+    }
+    literal.retain(|l| defined.contains(l));
+
+    if literal.is_empty() {
         return 0;
     }
 
-    // Remove RC ops on literal locals
     let mut removed = 0;
     for block in &mut func.blocks {
         let before = block.statements.len();
         block.statements.retain(|stmt| {
             match &stmt.kind {
                 MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => {
-                    !literal_locals.contains(local)
+                    !literal.contains(local)
                 }
                 _ => true,
             }

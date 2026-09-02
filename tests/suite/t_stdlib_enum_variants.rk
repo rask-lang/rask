@@ -8,6 +8,11 @@ import http
 import os
 import json
 import io
+import http.Method
+import io.IoError
+import json.JsonValue
+import os.Stdio
+import os.Signal
 
 func describe_method(m: Method) -> string {
     match m {

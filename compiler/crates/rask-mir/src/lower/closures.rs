@@ -176,7 +176,7 @@ impl<'a> MirLowerer<'a> {
         is_own: bool,
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, is_own, &[], closure_id)
+        self.lower_closure_expecting(params, ret_ty, body, is_own, &[], closure_id, false)
     }
 
     /// As `lower_closure`, with the parameter types the callee declares for this
@@ -192,6 +192,7 @@ impl<'a> MirLowerer<'a> {
         is_own: bool,
         expected_param_tys: &[String],
         closure_id: Option<NodeId>,
+        for_spawn: bool,
     ) -> Result<TypedOperand, LoweringError> {
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
@@ -370,7 +371,7 @@ impl<'a> MirLowerer<'a> {
         let closure_fn = closure_builder.finish();
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            ret_ty: closure_ret,
+            ret_ty: closure_ret.clone(),
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
@@ -379,18 +380,86 @@ impl<'a> MirLowerer<'a> {
 
         self.synthesized_functions.push(closure_fn);
 
+        // A spawned closure whose result doesn't fit the runtime's one-word
+        // result slot gets a thunk in front of it: same environment, calls the
+        // real closure, puts the answer on the heap and hands back its address.
+        // The join side copies through that address.
+        //
+        // Without this the runtime called the closure through
+        // `int64_t (*)(void *)` and kept whatever was in the integer return
+        // register — a stale pointer for a task returning `2.5f64`, which read
+        // back as 3.3e-310, and nothing at all for a string.
+        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret);
+        let entry_name = if boxes_result {
+            self.synthesize_spawn_box_thunk(&closure_name, &closure_ret)
+        } else {
+            closure_name
+        };
+        // Handed straight to the spawn call being lowered, which is the next
+        // thing that happens. The runtime has to know whether the word the task
+        // hands back is a box it must free — see `GreenTask::result_owned` — and
+        // this is the only place that knows, because it's the place that decided.
+        if for_spawn {
+            self.spawn_result_boxed = boxes_result;
+        }
+
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can
         // decide whether to downgrade. Scope-limited closures never escape; stack only.
         let result_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
-            func_name: closure_name,
+            func_name: entry_name,
             captures,
             heap: is_own,
         }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
+    /// Build the one-word entry point for a spawned closure whose result is
+    /// wider than a word, and return its name.
+    ///
+    /// Same environment pointer, forwarded untouched — the captures the caller
+    /// already built are still the ones the real closure reads.
+    fn synthesize_spawn_box_thunk(&mut self, closure_name: &str, ret: &MirType) -> String {
+        let thunk_name = format!("{closure_name}__spawn_box");
+        let mut b = BlockBuilder::new(thunk_name.clone(), MirType::I64);
+        let env = b.add_param("__env".to_string(), MirType::Ptr);
+
+        let value = b.alloc_local("__value".to_string(), ret.clone());
+        b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal(closure_name.to_string()),
+            args: vec![MirOperand::Local(env)],
+        }));
+
+        let size = ret.size().max(8) as i64;
+        let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
+        b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(boxed),
+            func: FunctionRef::internal("rask_alloc".to_string()),
+            args: vec![MirOperand::Constant(crate::operand::MirConst::Int(size))],
+        }));
+        b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: boxed,
+            offset: 0,
+            value: MirOperand::Local(value),
+            store_size: Some(ret.size()),
+        }));
+        b.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Local(boxed)),
+        }));
+
+        self.func_sigs.insert(thunk_name.clone(), super::FuncSig {
+            ret_ty: MirType::I64,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
+        });
+        self.synthesized_functions.push(b.finish());
+        thunk_name
     }
 
     /// Spawn lowering: synthesize a closure function from the body block,

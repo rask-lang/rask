@@ -32,6 +32,17 @@ pub enum ArgAdapt {
     InjectOneSize,
     /// Inject key_size=8, val_size=8 when args empty (Map_new)
     InjectTwoSizes,
+    /// A container constructor: `leading` size arguments, then one element tag
+    /// per `tags`, each expanded into (offsets pointer, count).
+    ///
+    /// Lowering says *what* the elements are — nothing, a string, or the struct
+    /// with a given layout (`rask_mir::elem_strs`) — and this turns that into
+    /// where the strings actually sit inside one element, which is a question
+    /// only codegen has the layouts to answer. The runtime keeps the answer on
+    /// the container, so `free` needs no argument and nothing downstream works
+    /// it out again. A missing or unreadable tag means "owns nothing", which is
+    /// what a container built by a path that doesn't know its element type gets.
+    ContainerCtor { leading: u8, tags: u8 },
     /// Wrap args[1] as pointer (skip if string)
     WrapArg1,
     /// Wrap args[2] as pointer (skip if string)
@@ -41,7 +52,7 @@ pub enum ArgAdapt {
     /// Inject 16-byte string out-param as first arg
     StringOutParam,
     /// Two i64s written into the destination's own 16-byte slot — a
-    /// `(usize, usize)` tuple, start at +0 and end at +8 (string_trim_indices).
+    /// `(usize, usize)` tuple, start at +0 and end at +8.
     PairOutParam,
     /// Same, but the call also returns a 0/1 status that becomes the
     /// `string or E` tag. The string goes to a scratch slot rather than to
@@ -95,6 +106,18 @@ pub enum RetAdapt {
     /// otherwise `some(value)`. Distinct from NegErr because Option and Result
     /// put their payloads at different offsets.
     NegNone,
+    /// The return is a pointer to a sync box's payload (or, for staged access,
+    /// to the working copy standing in for it). A payload that lives in its own
+    /// storage binds the destination straight to that pointer, so the block's
+    /// field writes land in the box rather than in a copied stack slot; anything
+    /// word-sized takes one load. Which of the two is the destination type's
+    /// business, so the entry only has to say "this is a payload pointer".
+    ///
+    /// Was a hardcoded list of four acquire names in `builder.rs`. Adding the
+    /// staged pair to it was the obvious move and the wrong one — the fact
+    /// belongs to the entry, and a name missing from a list four deep is how
+    /// this went wrong the first time.
+    BoxPayloadPtr,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -177,12 +200,22 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Vec operations ─────────────────────────────────────
         StdlibEntry {
             mir_name: "Vec_new", c_name: "rask_vec_new",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectOneSize, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 1, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         // Vec.with_capacity(n): (elem_size, cap) — elem_size injected at lowering.
-        StdlibEntry::simple("Vec_with_capacity", "rask_vec_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_vec_from_static", "rask_vec_from_static", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Vec_with_capacity", c_name: "rask_vec_with_capacity",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {
@@ -242,7 +275,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
         // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
         // with_capacity. The difference is the bound it sets.
-        StdlibEntry::simple("Vec_fixed", "rask_vec_fixed", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Vec_fixed", c_name: "rask_vec_fixed",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry {
             mir_name: "Vec_insert", c_name: "rask_vec_insert_at",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
@@ -432,19 +470,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // fired and a slice taken at that index was empty (#463).
         StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_index_of", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
+        // Byte offset in, scalar out; -1 for out of range or mid-character,
+        // which is never a valid scalar.
+        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
+        // `s[i]` — one byte. Indexing panics out of range, so it needs its own
+        // entry point rather than `byte_at`'s none-on-miss.
+        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("string_last_index_of", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
         // `char_at` answers `char?`; the runtime signals out-of-range with -1,
-        // which is never a valid scalar.
-        StdlibEntry::neg_none("string_char_at", "rask_string_char_at", &[types::I64, types::I64], Some(types::I64), false),
-        // `s[i]` — indexing panics on an out-of-range index, so it needs its own
-        // entry point rather than `char_at`'s none-on-miss (#353).
-        StdlibEntry::simple("string_index", "rask_string_index", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry {
-            mir_name: "string_trim_indices", c_name: "rask_string_trim_indices",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::PairOutParam, ret_adapt: RetAdapt::None,
-        },
         StdlibEntry {
             mir_name: "json_pretty", c_name: "rask_json_pretty",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -468,16 +502,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // native truncating to 112, the interpreter keeping 70000 (#837).
         StdlibEntry {
             mir_name: "string_parse", c_name: "rask_string_parse_int_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "string_parse_int", c_name: "rask_string_parse_int_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "string_parse_float", c_name: "rask_string_parse_float_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ParseOutParam, ret_adapt: RetAdapt::None,
         },
@@ -561,14 +585,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // stdlib exposes `substring` as the user-facing method name; the C
-        // runtime function is `rask_string_substr`. Alias so method dispatch
-        // from `.substring(...)` finds the right symbol.
-        StdlibEntry {
-            mir_name: "string_substring", c_name: "rask_string_substr",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
         StdlibEntry {
             mir_name: "string_to_lowercase", c_name: "rask_string_to_lowercase",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -610,16 +626,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "string_replacen", c_name: "rask_string_replacen",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
             mir_name: "string_from_char", c_name: "rask_string_from_char",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("string_char_count", "rask_string_char_count", &[types::I64], Some(types::I64), false),
+        // Display columns, not scalars (std.strings/U2) — this is what fmt
+        // padding counts.
+        StdlibEntry::simple("string_width", "rask_string_width", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_graphemes", "rask_string_graphemes", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "string_truncate", c_name: "rask_string_truncate",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "string_normalized", c_name: "rask_string_normalized",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("string_is_ascii", "rask_string_str_is_ascii", &[types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "string_append", c_name: "rask_string_append",
@@ -768,19 +792,26 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new", c_name: "rask_map_new",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::InjectTwoSizes, ret_adapt: RetAdapt::None,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
+        // `insert` answers `V?` — the value it displaced. The C side hands
+        // back a pointer to it (NULL for a fresh key), so DerefOption builds
+        // the option the same way `Map_get` and `Map_remove` do. Passing the
+        // plain `rask_map_insert` flag through untranslated made every
+        // overwrite answer `1` and every fresh key answer `Some(0)` (#903).
         StdlibEntry {
-            mir_name: "Map_insert", c_name: "rask_map_insert",
+            mir_name: "Map_insert", c_name: "rask_map_insert_displaced",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::DerefOption,
         },
         // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
         StdlibEntry {
@@ -899,6 +930,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Rack_corresponding", "rask_rack_corresponding", &[types::I64, types::I64], Some(types::I64), false),
         // Edge maintenance, emitted by lowering rather than written by anyone.
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Link_set_node", "rask_link_set_node",
+                            &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),
@@ -1088,6 +1121,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
+        // ensures. Declared `@native` in stdlib/os.rk with no entry here, so
+        // `os.exit(1)` reached codegen as "Function not found: os_exit" while
+        // the interpreter ran it — same shape as os_set_env before #855.
+        StdlibEntry::simple("os_exit", "rask_os_exit", &[types::I64], None, false),
         StdlibEntry::simple("os_env_vars", "rask_os_env_vars", &[], Some(types::I64), false),
         StdlibEntry {
             mir_name: "os_env_or", c_name: "rask_os_env_or",
@@ -1207,8 +1245,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
         StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
@@ -1219,7 +1257,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // join/cancel report how the task ended alongside its value, same as
         // the OS-thread path — a panicked task no longer re-panics in the
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64], Some(types::I64), false),
+        // Two args: the closure, then whether its result is a heap box the task
+        // owns and must free if no join ever comes for it (#963).
+        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("join", "rask_green_join_outcome"),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("cancel", "rask_green_cancel_outcome"),
@@ -1391,12 +1431,35 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // block decides for itself whether to load through it or alias it, so no
         // ret_adapt here. Separate MIR names keep the two uses from drifting; a
         // Cell has no lock, so there's no release counterpart.
-        StdlibEntry::simple("Cell_acquire", "rask_cell_get", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Cell_acquire", c_name: "rask_cell_get",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Cell_data", "rask_cell_get", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_read_acquire", "rask_shared_read_acquire", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_write_acquire", "rask_shared_write_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Shared_read_acquire", c_name: "rask_shared_read_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry {
+            mir_name: "Shared_write_acquire", c_name: "rask_shared_write_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Shared_data", "rask_shared_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_release", "rask_shared_release", &[types::I64], None, false),
+        // Staged access (conc.sync/ST1-ST3). The "release" of the triple is the
+        // commit; the discard is registered by the acquire and reached only from
+        // the runtime's unwind drain, so codegen never names it.
+        StdlibEntry {
+            mir_name: "Shared_staged_acquire", c_name: "rask_shared_staged_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry::simple("Shared_staged_data", "rask_shared_staged_data", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Shared_staged_commit", "rask_shared_staged_commit", &[types::I64], None, false),
+        StdlibEntry::simple("Shared_staged_ptr", "rask_shared_staged_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_clone", "rask_shared_clone_i64", &[types::I64], Some(types::I64), false),
@@ -1409,8 +1472,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Mutex_acquire", "rask_mutex_acquire", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Mutex_acquire", c_name: "rask_mutex_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
         StdlibEntry::simple("Mutex_release", "rask_mutex_release", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "Mutex_staged_acquire", c_name: "rask_mutex_staged_acquire",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::BoxPayloadPtr,
+        },
+        StdlibEntry::simple("Mutex_staged_data", "rask_mutex_staged_data", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Mutex_staged_commit", "rask_mutex_staged_commit", &[types::I64], None, false),
         StdlibEntry::simple("Mutex_data", "rask_mutex_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),

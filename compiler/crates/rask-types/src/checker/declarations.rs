@@ -17,6 +17,35 @@ impl TypeChecker {
     // Pass 1: Declaration Collection
     // ------------------------------------------------------------------------
 
+    /// IM3: register the aliases the resolver made out of `import m.T as A`.
+    ///
+    /// `SymbolKind::TypeAlias` existed and was only ever produced, never read —
+    /// the checker learned aliases from `type alias` declarations and nothing
+    /// else, so an aliased import bound a name with nothing behind it. Same
+    /// registration as a written `type alias A = T`, so `A` resolves to the same
+    /// TypeId as `T` and carries its `extend` blocks (#923).
+    ///
+    /// Runs before the declarations, so a program's own `type alias` of the same
+    /// name overwrites this one rather than the other way round.
+    pub(super) fn collect_import_aliases(&mut self) {
+        let aliases: Vec<(String, String)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                rask_resolve::SymbolKind::TypeAlias { target, from_import: true } => {
+                    Some((sym.name.clone(), target.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (name, target) in aliases {
+            if self.types.check_alias_cycle(&name, &target).is_none() {
+                self.types.register_alias(name, target);
+            }
+        }
+    }
+
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {
@@ -45,9 +74,37 @@ impl TypeChecker {
                     self.check_declared_type_name(&u.name, "union", decl.span);
                     self.register_union(u);
                 }
+                // AN6: annotations register as nominal struct types so
+                // `field.has<validate>()` can name them as type arguments.
+                // The restricted shape (AN1) is enforced in annotations.rs.
+                DeclKind::Annotation(a) => {
+                    self.check_declared_type_name(&a.name, "annotation", decl.span);
+                    self.annotation_types.insert(a.name.clone());
+                    let s = rask_ast::decl::StructDecl {
+                        name: a.name.clone(),
+                        type_params: vec![],
+                        fields: a.fields.clone(),
+                        methods: vec![],
+                        is_pub: a.is_pub,
+                        attrs: vec![],
+                        doc: a.doc.clone(),
+                    };
+                    let id = self.register_struct(&s);
+                    self.types.record_method_decl(id, decl.id);
+                }
                 DeclKind::TypeAlias(a) => {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);
+                }
+                // `const W = 4` then `[i32; W]`. The length has to be known
+                // before any declared type is parsed, so it's recorded in this
+                // pass rather than where the const is checked (#906).
+                DeclKind::Const(c) => {
+                    if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
+                        if let Ok(len) = usize::try_from(*n) {
+                            self.types.register_const_length(c.name.clone(), len);
+                        }
+                    }
                 }
                 DeclKind::Fn(f) => {
                     // Find this function's SymbolId by matching name + Function kind.
@@ -241,7 +298,24 @@ impl TypeChecker {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
             }
         }
-        let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
+        // The receiver's parameters as its *declaration* spells them, not as the
+        // extend block does. `extend Wrapper { func get(self) -> T }` on a
+        // `struct Wrapper<T>` leaves them out of the block header entirely, and
+        // reading only `Wrapper` would make `T` look like the method's own —
+        // a second variable per call, shadowing the one the receiver bound.
+        let impl_params = self
+            .types
+            .get(type_id)
+            .and_then(|d| match d {
+                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                    Some(type_params.clone())
+                }
+                _ => None,
+            })
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
+        let new_methods: Vec<_> =
+            i.methods.iter().map(|m| self.method_signature(m, &impl_params)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }
@@ -255,6 +329,10 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
+        // The declaration's own parameters win over types of the same name for
+        // as long as its field types are being parsed (#915).
+        let type_params = struct_type_param_names(s);
+        let outer_params = self.types.push_type_params(type_params.clone());
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -263,6 +341,7 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
+        self.types.pop_type_params(outer_params);
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
@@ -314,9 +393,9 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
-        let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
+        let struct_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = s.methods.iter().map(|m| self.method_signature(m, &struct_params)).collect();
 
-        let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");
@@ -463,7 +542,8 @@ impl TypeChecker {
             .map(|(vname, fts)| (vname, fts.into_iter().map(|(_, t)| t).collect::<Vec<_>>()))
             .collect();
 
-        let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
+        let enum_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = e.methods.iter().map(|m| self.method_signature(m, &enum_params)).collect();
 
         // Field names for the struct-shaped variants, so a pattern that names
         // them can be matched against the positional payload types (#809).
@@ -478,7 +558,8 @@ impl TypeChecker {
             })
             .collect();
 
-        let type_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        // PC1: explicit `<T>` plus single letters appearing in payload types.
+        let type_params = enum_type_param_names(e);
         let enum_id = self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
             type_params,
@@ -497,7 +578,7 @@ impl TypeChecker {
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
-        let methods = t.methods.iter().map(|m| self.method_signature(m)).collect();
+        let methods = t.methods.iter().map(|m| self.method_signature(m, &[])).collect();
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -565,7 +646,26 @@ impl TypeChecker {
         });
     }
 
-    pub(super) fn method_signature(&self, m: &FnDecl) -> MethodSig {
+    /// The type parameter names in a target type spelling: `Ring<T>` → `["T"]`.
+    ///
+    /// An `extend` block names its receiver as a string, so this is the only
+    /// place the owner's parameters can be read back out.
+    pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
+        let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
+        rest.trim_end()
+            .trim_end_matches('>')
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_type_param_name(s))
+            .collect()
+    }
+
+    /// `owner_params` are the receiver type's own parameters — `T` in
+    /// `extend Ring<T>`. They're excluded from the method's list: the receiver
+    /// binds them once, and a method claiming them again takes a *second* fresh
+    /// variable per call that shadows the first, so `self.value.width()` loses
+    /// the type it was already given (#872).
+    pub(super) fn method_signature(&self, m: &FnDecl, owner_params: &[String]) -> MethodSig {
         let self_param_decl = m.params.iter().find(|p| p.name == "self");
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
@@ -613,9 +713,32 @@ impl TypeChecker {
             self_param,
             params,
             ret,
-            type_params: m.type_params.iter()
-                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                .collect(),
+            // PC1, the same rule a free function gets: the explicit `<T>` list
+            // plus every single uppercase letter appearing in the signature.
+            //
+            // This used to read the explicit list only. A stdlib method almost
+            // never has one — `Thread.spawn(f: func() -> T) -> ThreadHandle<T>`
+            // declares `T` by using it — so nothing gave `T` a variable, the
+            // argument had nothing to bind to, and the handle's payload stayed
+            // unresolved all the way to MIR (#963).
+            type_params: {
+                let declared: std::collections::HashMap<&str, &Vec<String>> = m
+                    .type_params
+                    .iter()
+                    .map(|tp| (tp.name.as_str(), &tp.bounds))
+                    .collect();
+                signature_type_param_names(m)
+                    .into_iter()
+                    .filter(|name| !owner_params.iter().any(|o| o == name))
+                    .map(|name| {
+                        let bounds = declared
+                            .get(name.as_str())
+                            .map(|b| (*b).clone())
+                            .unwrap_or_default();
+                        (name, bounds)
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -822,11 +945,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -928,11 +1051,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -968,20 +1091,20 @@ impl TypeChecker {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // CO4: f32/f64 NOT Comparable (NaN breaks totality)
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "clone" | "default" | "debug")
             }
             Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // Named types: check registered methods
             Type::Named(id) => {
@@ -1472,6 +1595,53 @@ pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
         }
     }
     names
+}
+
+/// PC1 for a type declaration: explicit `<T>` declarations plus every single
+/// uppercase letter appearing in its field or payload types, in declaration
+/// order.
+///
+/// `gradual-constraints` lists struct fields and enum payloads as signature
+/// positions alongside function parameters, but only the function side was
+/// wired up — so `struct Pair { first: T  second: U }` registered with no type
+/// parameters at all, and `Pair<i64, string>` had nothing to match against.
+/// SYNTAX.md's own `Pair` example didn't compile (#913).
+pub fn declared_type_param_names<'a>(
+    explicit: &[rask_ast::decl::TypeParam],
+    member_types: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    use std::sync::OnceLock;
+    static EMPTY_TABLE: OnceLock<super::type_table::TypeTable> = OnceLock::new();
+    let table = EMPTY_TABLE.get_or_init(super::type_table::TypeTable::new);
+
+    let mut names: Vec<String> = explicit.iter().map(|p| p.name.clone()).collect();
+    let mut add = |n: &str| {
+        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
+            names.push(n.to_string());
+        }
+    };
+    for ty_str in member_types {
+        if ty_str.is_empty() {
+            continue;
+        }
+        if let Ok(ty) = parse_type_string(ty_str, table) {
+            for_each_unresolved_name(&ty, &mut add);
+        }
+    }
+    names
+}
+
+/// PC1 for a struct: explicit `<T>` plus single letters in its field types.
+pub fn struct_type_param_names(s: &StructDecl) -> Vec<String> {
+    declared_type_param_names(&s.type_params, s.fields.iter().map(|f| f.ty.as_str()))
+}
+
+/// PC1 for an enum: explicit `<T>` plus single letters in its payload types.
+pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
+    declared_type_param_names(
+        &e.type_params,
+        e.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.as_str())),
+    )
 }
 
 /// Walk a parsed type tree, calling `f` on every unresolved base name.

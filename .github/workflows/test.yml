@@ -95,6 +95,47 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # Memory leak gate. Every heap string in the language leaked for as long
+    # as the compiler had strings (#1024) and nothing went red — a leak has no
+    # symptom, the answers are all correct and there's just no memory coming
+    # back. This runs the suite with the runtime counting what it allocated and
+    # never gave back; a clean program ends at exactly zero.
+    - name: Memory leak gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/leak_gate.sh
+
+    # Internal-spelling gate. MIR mints names for operations the stdlib
+    # declares under another spelling, and `INTERNAL_SPELLINGS` says what each
+    # stands for — that is what decides who owns what crosses the call. A name
+    # with no line there is treated as owning everything it touches, which
+    # leaks rather than double-frees; this is what stops it staying that way.
+    # Runs the suite through `rask test` as well as `compile`, because the two
+    # lowering paths reach different names.
+    - name: Internal spelling gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/spellings_gate.sh
+
+    # The design prototypes, on both backends. differential.sh only scans
+    # tests/suite/, and these are main-only so `rask test` runs nothing on them
+    # and exits 0 — so the programs written to show Rack/Link working end to end
+    # had no parity coverage at all. That is how #984 left the linked list
+    # printing nothing on native, and how #866 hid in the scene tree.
+    - name: Prototype backend parity
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/prototypes_gate.sh
+
+    # The agent benchmark's reference solutions, as a differential test over
+    # nineteen more ordinary programs. Calls no model and spends nothing — the
+    # paid adapters aren't reachable from the gate. A reference that goes red
+    # means the task is measuring the compiler instead of the model, so the
+    # scores stop meaning anything until it is fixed or quarantined against an
+    # issue; #1000 and #1002 were both caught that way. The harness's own
+    # end-to-end check is deliberately not here: CI shouldn't depend on
+    # benchmark plumbing, so that one is run by hand.
+    - name: Agent benchmark reference gate
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/agentbench_gate.sh
+
     # projects/*/ type-checks. Nothing checked them, which is how raido reached
     # 48 errors and tiwaz 11 (#774) — every rule change since they were written
     # landed without anything noticing. `check` only: neither runs natively yet.

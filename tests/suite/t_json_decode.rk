@@ -9,6 +9,7 @@
 // declarations itself. The two have to agree, which is what this file checks.
 
 import json
+import json.JsonValue
 
 struct Address {
     public street: string

@@ -46,3 +46,42 @@ test "two type parameters" {
     assert p.first() == "name"
     assert p.second() == 7
 }
+
+// A generic method that hands back an element from its own `Vec<T>`. Inside the
+// generic body the checker's type for `self.items.remove(i)` is `T`, which read
+// back as a bare i64 — so at `T = string` the destination was an 8-byte slot
+// with no refcount bump on the payload. Printing the value worked (the memory
+// was still live); comparing it segfaulted in `rask_string_from` one statement
+// later. Found by agentbench: a model wrote exactly this `Stack<T>`.
+struct Bin<T> { items: Vec<T> }
+
+extend Bin<T> {
+    func new() -> Bin<T> {
+        return Bin<T> { items: Vec.new() }
+    }
+    func put(mutate self, take value: T) {
+        self.items.push(value)
+    }
+    func take(mutate self) -> T? {
+        if self.items.is_empty() { return none }
+        let last = self.items.len() - 1
+        return self.items.remove(last)
+    }
+}
+
+test "generic remove hands back a whole string" {
+    mut b: Bin<string> = Bin.new()
+    b.put("first")
+    b.put("second")
+    let got = b.take()!
+    assert got == "second"
+    assert b.take()! == "first"
+    assert b.take() is none
+}
+
+test "generic remove hands back a whole integer" {
+    mut b: Bin<i64> = Bin.new()
+    b.put(7i64)
+    assert b.take()! == 7i64
+    assert b.take() is none
+}

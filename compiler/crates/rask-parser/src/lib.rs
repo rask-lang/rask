@@ -1555,4 +1555,71 @@ mod tests {
             _ => panic!("expected impl"),
         }
     }
+
+    // AN1: annotation declarations parse — fields, defaults, visibility.
+    #[test]
+    fn annotation_decl_basic() {
+        let result = parse("public annotation @validate {\n    min: i64 = 0\n    max: i64\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Annotation(ref a) => {
+                assert_eq!(a.name, "validate");
+                assert!(a.is_pub);
+                assert_eq!(a.fields.len(), 2);
+                assert_eq!(a.fields[0].name, "min");
+                assert!(a.fields[0].default.is_some());
+                assert_eq!(a.fields[1].name, "max");
+                assert!(a.fields[1].default.is_none());
+            }
+            _ => panic!("expected annotation declaration"),
+        }
+    }
+
+    // AN1: a declaration is a keyword, a sigiled name, and a field body —
+    // nothing else. `on` was a targets clause once; it is gone (AN2 deleted).
+    #[test]
+    fn annotation_decl_has_no_targets_clause() {
+        let result = parse("annotation @route on func {\n    path: str\n}");
+        assert!(!result.is_ok(), "`on` should no longer parse as a targets clause");
+    }
+
+    // AN1: methods are rejected — annotations are pure data.
+    #[test]
+    fn annotation_decl_rejects_methods() {
+        let result = parse("annotation @bad {\n    func evil(self) { }\n}");
+        assert!(!result.is_ok());
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("annotations cannot have methods")),
+            "got: {:?}", result.errors
+        );
+    }
+
+    // AN1: the name keeps its `@` — the bare form points at the sigiled one.
+    #[test]
+    fn annotation_decl_without_sigil_errors() {
+        let result = parse("annotation validate {\n    max: i64\n}");
+        assert!(!result.is_ok());
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("keep their `@` sigil")),
+            "got: {:?}", result.errors
+        );
+    }
+
+    // `annotation` stays usable as an ordinary identifier.
+    #[test]
+    fn annotation_still_identifier() {
+        let stmts = parse_body("let annotation = 3\nlet x = annotation + 1");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // Comma-separated single-line form parses too.
+    #[test]
+    fn annotation_decl_single_line() {
+        let result = parse("annotation @alias { names: [str; 4], weight: i64 = 1 }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Annotation(ref a) => assert_eq!(a.fields.len(), 2),
+            _ => panic!("expected annotation declaration"),
+        }
+    }
 }

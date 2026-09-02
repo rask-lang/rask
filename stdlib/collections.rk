@@ -47,14 +47,14 @@ extend Vec<T> {
 
     /// Push a value onto the end. Panics if bounded and full, or on OOM.
     @native("rask_vec_push")
-    public func push(mutate self, value: T) {}
+    public func push(mutate self, take value: T) {}
 
     /// Push a value onto the end. Hands the value back instead of panicking
     /// when the vector is at its bound or the allocator refuses.
     ///
     /// Written in Rask so the two backends share one rule. `NoMemory` has no
     /// path yet — the allocator panics on OOM rather than reporting it.
-    public func try_push(mutate self, value: T) -> void or GrowError<T> {
+    public func try_push(mutate self, take value: T) -> void or GrowError<T> {
         if self.is_full() {
             return GrowError.Full(value)
         }
@@ -76,7 +76,7 @@ extend Vec<T> {
 
     /// Insert a value at the given index, shifting later elements right.
     @native("rask_vec_insert_at")
-    public func insert(mutate self, index: i64, value: T) {}
+    public func insert(mutate self, index: i64, take value: T) {}
 
     /// Remove and return the element at the given index.
     @native("rask_vec_remove_at")
@@ -258,7 +258,7 @@ extend Vec<T> {
 
     /// Set element at index. Panics if out of bounds.
     @native("rask_vec_set")
-    public func set(mutate self, index: i64, value: T) {}
+    public func set(mutate self, index: i64, take value: T) {}
 
     /// Shrink allocation to fit current length.
     @unimplemented
@@ -358,7 +358,7 @@ extend Map<K, V> {
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert")
-    public func insert(mutate self, key: K, value: V) -> Option<V> {}
+    public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 
     /// Insert a key-value pair, handing the value back instead of panicking
     /// when the map is at its bound or the allocator refuses. The success side

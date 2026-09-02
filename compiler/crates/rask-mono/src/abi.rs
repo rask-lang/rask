@@ -84,3 +84,79 @@ pub fn payload_repr(is_float: bool, passed_by_address: bool) -> PayloadRepr {
         PayloadRepr::IntFullWidth
     }
 }
+
+/// How wide a scalar sits in a slot of `slot_bytes`, in bytes.
+///
+/// `PayloadRepr` above answers this for a wrapper's payload slot, which is
+/// always a word. Every other slot a scalar can live in — a struct field, an
+/// array element, an enum payload, the local a `match` writes its arms into —
+/// asks the same question and may have a narrower answer, and each one used to
+/// answer it locally:
+///
+/// | Site | How it disagreed |
+/// |---|---|
+/// | array element store | stored at the value's width, not the slot's (#902) |
+/// | generic struct field read | honoured the caller's `F32` request (#972) |
+/// | `match` result local | typed `i64` before the arms reported (#973) |
+/// | enum payload read | never set a width at all (#973) |
+///
+/// All four were quiet: a wrong width reads back as a plausible number, not a
+/// crash. `2.5` printing as `2` looks like rounding. So the rule lives here,
+/// beside the offsets, for the same reason `PayloadRepr` does — the write and
+/// the read have to agree by construction, and neither gets its own opinion.
+///
+/// The rule: **a float occupies its slot whole.** In a word it is an `f64`; in
+/// a four-byte slot it is an `f32`. An integer is written full-width into a
+/// word and at its own width into anything narrower — little-endian puts the
+/// meaningful bytes first, so a narrower read of a full-width write agrees.
+///
+/// A word is the widest a scalar gets, with one exception: a 128-bit integer
+/// is sixteen bytes and still a scalar, held in a register pair rather than
+/// behind a pointer. Answering "a word" for one is what had a `balance: i128`
+/// field read back eight bytes wide (#933).
+pub fn slot_scalar_bytes(is_float: bool, value_bytes: u32, slot_bytes: u32) -> u32 {
+    if slot_bytes >= PAYLOAD_SLOT_BYTES {
+        // A word-or-wider slot: a float fills a word as an f64, an integer is
+        // written full-width. A scalar wider than a word takes as much of the
+        // slot as it actually is.
+        PAYLOAD_SLOT_BYTES.max(value_bytes.min(slot_bytes))
+    } else if is_float {
+        // Only f32 is narrower than a word, and a narrow slot holds it at its
+        // own width rather than promoted.
+        slot_bytes.min(value_bytes.max(4))
+    } else {
+        slot_bytes
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn a_float_fills_a_word_as_an_f64() {
+        assert_eq!(slot_scalar_bytes(true, 4, 8), 8, "f32 in a word is promoted");
+        assert_eq!(slot_scalar_bytes(true, 8, 8), 8);
+    }
+
+    #[test]
+    fn a_narrow_slot_holds_a_float_at_its_own_width() {
+        assert_eq!(slot_scalar_bytes(true, 4, 4), 4, "f32 in a 4-byte slot stays f32");
+    }
+
+    #[test]
+    fn an_integer_takes_the_slot_it_is_given() {
+        assert_eq!(slot_scalar_bytes(false, 8, 8), 8);
+        assert_eq!(slot_scalar_bytes(false, 4, 4), 4);
+        assert_eq!(slot_scalar_bytes(false, 8, 2), 2, "narrowed to the slot");
+        assert_eq!(slot_scalar_bytes(false, 1, 1), 1);
+        assert_eq!(slot_scalar_bytes(false, 4, 8), 8, "narrow int fills a word");
+    }
+
+    #[test]
+    fn a_scalar_wider_than_a_word_keeps_its_width() {
+        assert_eq!(slot_scalar_bytes(false, 16, 16), 16, "an i128 is sixteen bytes");
+        // A word-wide slot can't hold more than a word, whatever the value is.
+        assert_eq!(slot_scalar_bytes(false, 16, 8), 8);
+    }
+}

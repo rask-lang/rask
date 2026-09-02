@@ -1,0 +1,16 @@
+# Tasks whose REFERENCE solution doesn't build and pass on both backends today.
+#
+# A task in here is measuring the compiler, not the model — no wording of the
+# prompt could produce a green run — so `bench.py run` leaves it out and the
+# scores stay about the model. `bench.py selftest` reports these as QUARANTINED
+# (non-fatal) and FAILS if one silently starts passing, so a fix shows up as an
+# UNEXPECTED PASS rather than going unnoticed. Same contract as
+# tests/known_divergences.txt.
+#
+# Format: `<task-id>  #<issue> — <what breaks>`. When the bug is fixed, delete
+# the line and the task rejoins the scored set.
+#
+# `--include-quarantined` runs them anyway, which is how you check whether a
+# model can find its way around a known compiler bug.
+
+month_error_union  #1002 — a method on a union-narrowed error dispatches against the whole union (native)

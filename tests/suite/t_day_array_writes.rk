@@ -8,10 +8,9 @@
 // takes out: `[i16; 4]` loses two, `[f32; 3]` comes back scrambled.
 //
 // #901: a fixed array has a fixed length, so `push` and `pop` are not
-// operations it has — this should be a compile error naming the fix (annotate
-// the slot `Vec<T>`, or go through `Vec.from`). Instead it type-checks, interp
-// quietly grows the array, and native reads the raw element bytes as a Vec
-// header and segfaults.
+// operations it has. They are a compile error now (E0843), which a test can't
+// assert on — the rejections live in `tests/compile_errors/
+// fixed_array_growth.rk`.
 //
 // The fixed-array surface that does work on both backends is in
 // `t_day_arrays.rk`.
@@ -62,17 +61,9 @@ test "std.collections — writing every element of an i32 array" {
     assert a[3] == 40
 }
 
-test "std.collections — pop is not an operation on a fixed array" {
+test "std.collections — a fixed array's length is its type's" {
     mut a: [i32; 3] = [1, 2, 3]
-    assert a.len() == 3
-    // Reaching this line at all is the bug: a fixed array has no `pop`.
-    assert a.pop() == none
-}
-
-test "std.collections — push is not an operation on a fixed array" {
-    mut a: [i32; 3] = [1, 2, 3]
-    a.push(4)
-    // However this resolves, the array cannot be longer than its type says.
+    a[0] = 9
     assert a.len() == 3
 }
 

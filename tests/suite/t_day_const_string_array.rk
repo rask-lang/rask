@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Day one — probe: a module-level `const` array whose elements are strings.
+//
+// Native reads those elements back as garbage (#1000). A `const` array of
+// numbers is fine and the same array written as a local is fine, so the two
+// green tests here are the control: they pin what still works, and the red one
+// pins the combination that doesn't.
+//
+// `t_day_const_array.rk` next door covers const arrays of numbers and arrays
+// sized by a named const; it stays green and deliberately holds no string
+// element type.
+import string.StringBuilder
+
+
+const SYMS: [string; 3] = ["M", "CM", "D"]
+
+const NUMS: [f64; 3] = [1.5, 2.5, 3.5]
+
+test "a local array of strings reads back" {
+    let local: [string; 3] = ["M", "CM", "D"]
+    assert local[0] == "M"
+    assert local[1] == "CM"
+    assert local[2] == "D"
+}
+
+test "a const array of numbers reads back" {
+    assert NUMS[0] == 1.5
+    assert NUMS[1] == 2.5
+    assert NUMS[2] == 3.5
+}
+
+// #1000 — native: the element comes back with a plausible pointer and a wrong
+// length, so `SYMS[0]` prints as "M" and still compares unequal to "M".
+test "a const array of strings reads back" {
+    assert SYMS[0] == "M"
+    assert SYMS[1] == "CM"
+    assert SYMS[2] == "D"
+}
+
+// The same read through a binding, which is how it shows up in real code —
+// a table of symbols indexed in a loop.
+test "a const string element survives a binding" {
+    mut joined = StringBuilder.new()
+    for i in 0..3 {
+        joined.push(SYMS[i])
+    }
+    assert joined.build() == "MCMD"
+}
+
+func main() {}

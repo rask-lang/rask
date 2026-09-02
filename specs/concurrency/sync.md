@@ -229,6 +229,7 @@ Panic-atomic updates, opt-in per site. A panic mid-`with` releases the lock clea
 | **ST3: Panic discards** | Unwind drops the copy uncommitted — survivors see the last committed state. Torn state impossible at staged sites |
 | **ST3a: Not on `Local`** | `staged()` under `Local` is a compile error — there is no other task to observe a torn update and no unwind boundary to protect against |
 | **ST4: Panic-only scope** | Staged is not error rollback — `try` exits commit (ST2). Rollback-on-error already has a mechanism: `ensure tx.rollback()` + explicit commit (`ctrl.ensure/C1`) |
+| **ST5: `with`-source only** | `staged()` is the source of a `with` binding and nothing else. `read`/`write` also have an expression-scoped form (`mem.borrowing/E5`); staged has none, because the commit needs a block exit to happen at |
 
 <!-- test: parse -->
 ```rask
@@ -286,6 +287,8 @@ let got_it = m.try_write(|v| v.push(item))
 | Task pauses on I/O inside `with` on a sync primitive | — | Lock stays held while parked; waiters block, never see intermediate state (`ctrl.panic/LK4`) |
 | Task cancelled inside `with` on a sync primitive | — | Cancellation is an error return (`conc.async/CN4`); the block exits through normal control flow, writes kept — same as any early `try` exit |
 | Multi-field write without `staged()` | — | `torn_lock_update` warning, on by default (`tool.warnings/W9`) |
+| `staged()` outside a `with` source | ST5 | `E0846` at the call |
+| `staged()` on a `Shared<T, Local>` | ST3a | `E0845` at the call |
 | Writers starve under read load | SY1 | By design — read performance prioritized |
 
 ---

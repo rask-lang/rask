@@ -9,6 +9,8 @@
 // A module-let case is deliberately absent: a test block that references a
 // module-level let registers 0 tests on native (the #390 family), which would
 // make this file diverge for an unrelated reason.
+import sync.Shared
+import sync.Mutex
 
 struct Counter { public n: i64 }
 extend Counter {

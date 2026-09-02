@@ -10,6 +10,7 @@
 //
 // A `string` element is genuinely a pointer (#414), so it keeps the word store —
 // that's why the fix is keyed to struct/enum/tuple rather than "is an aggregate".
+import string.StringBuilder
 
 struct Pt {
     public x: i64

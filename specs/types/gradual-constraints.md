@@ -128,7 +128,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | Rule | Description |
 |------|-------------|
 | **PC1: Single letters are type params** | A single uppercase letter in a signature type position (`T`, `U`, `K`, `V`, …) is always a type parameter — resolved without scope lookup, so imports can never change a signature's meaning. Explicit `<T>` stays optional |
-| **PC2: Other names must resolve** | Any longer PascalCase name in a signature must name a declared type. Unknown name is an immediate error with a "did you mean" suggestion — a typo never silently becomes a generic |
+| **PC2: Other names must resolve** | Any name longer than one letter in a signature must name a declared type. Unknown name is an immediate error with a "did you mean" suggestion — a typo never silently becomes a generic, and never silently becomes nothing |
 | **PC3: Single letters reserved** | Declaring a struct, enum, trait, union, or type alias with a single-letter name is a compile error |
 
 Signature positions: function parameters, return types, struct fields, enum payloads.
@@ -141,6 +141,10 @@ func swap(a: T, b: T) -> (T, T) { return (b, a) }
 // Longer unknown names error where the typo is...
 func load(c: Confg) -> i32 { }
 // ERROR [type.gradual/PC2]: unknown type `Confg` — did you mean `Config`?
+
+// ...whatever their case. `str` isn't a Rask type; the string type is `string`.
+func label(s: str) -> i32 { }
+// ERROR [type.gradual/PC2]: unknown type `str` — did you mean `string`?
 
 // ...descriptive type parameters use an explicit list
 func map<Item, Output>(items: Vec<Item>, f: |Item| -> Output) -> Vec<Output> { }
@@ -320,6 +324,16 @@ The trigger is publish metadata (`description` + `license`, which `struct.build/
 **GC12 (bounded invalidation):** Named as its own rule because "inference is local" (GC6) and "invalidation is local" are different claims, and only the first is unconditionally true. Inference reads one body; invalidation follows shifted signatures to direct callers and stops as soon as a hop's signature holds still. The package boundary is a hard ceiling on it. Stating the bound explicitly beats implying a stronger claim and being caught out by a chain of three inferred helpers.
 
 **PC1–PC3 (single letters only):** The original rule made *any* unknown PascalCase name a type parameter. Two failure modes: a typo'd type name (`Confg`) silently became a generic and surfaced later as a confusing constraint failure at some call site, and adding or importing a type could silently flip an existing signature from generic to concrete — action at a distance from an import. Single letters close both. Typos are multi-letter, so they error early with a suggestion; single letters never consult scope, so a signature means the same thing no matter what's imported. The `swap(a: T, b: T)` idiom — linking two parameters without ceremony — survives, and descriptive names are one `<Item, Output>` away. Gradual constraints already cover the "just let me sketch" case by omitting types entirely.
+
+**PC2 covers lowercase names too.** It used to say "PascalCase", because the rule
+was written against the generics confusion, where case is exactly what separates a
+type parameter from a type. But a lowercase name that names nothing isn't a
+generics question at all — it was simply unchecked, so `func f(x: uszie)`
+type-checked and failed later at the use site, on a type that was never real.
+`str` got into two proposed specs that way (#966). The rule's own reason — a typo
+never silently becoming something else — applies whatever the case, so the case
+requirement is gone. Length is still the test: a single uppercase letter is a
+type parameter (PC1), anything longer must resolve.
 
 **Ergonomic Delta:** Without gradual constraints, Rask private code needs more annotation than Go or Kotlin. With them, private code matches or beats ceremony of dynamically-typed languages while keeping full static checking.
 

@@ -26,6 +26,7 @@
 // the original ends the connection on one backend and not the other.
 
 import net
+import io.IoError
 
 // Everything the happy path does, in one function so the handles stay in scope.
 func echo_once(payload: string) -> string or IoError {

@@ -6,6 +6,7 @@
 // on reading it. That makes taking the value out and writing a replacement back
 // legitimate — it's what the mode is for. Consuming it and putting nothing back is
 // not, and nothing checked for it, so `drain(mutate b)` handed the caller a hole.
+import string.StringBuilder
 
 func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
     if !b.is_empty() {

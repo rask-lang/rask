@@ -1,16 +1,27 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! MIR-level metadata derived from stdlib stub files.
 //!
-//! Parses return type strings from MethodStub/FunctionStub into a
-//! lightweight enum that rask-mir can convert to MirType. Keeps the
-//! stub files as the single source of truth for stdlib API shapes.
+//! Carries each stdlib function's return type verbatim, plus a coarse reading
+//! of it for the two questions that aren't about layout. Keeps the stub files
+//! as the single source of truth for stdlib API shapes.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::stubs::StubRegistry;
 
-/// Return type category — does not depend on rask-mir types.
+/// A coarse reading of a stub's return type.
+///
+/// No longer a type: MIR resolves `ret_ty` with `resolve_type_str`, the one
+/// parser that knows `f32` from `f64`, transparent aliases, arrays, unions,
+/// generic instantiations, and which named stdlib types are word-sized runtime
+/// handles. This answers the two questions that aren't about layout —
+/// `names_a_type_param` and `ret_type_prefix` — and nothing else reads it.
+///
+/// It used to answer the layout question too, and got two things wrong that no
+/// caller could see: `f32` and `f64` shared a variant, and every named stdlib
+/// type came back `i64`, which is right for a handle and wrong for anything
+/// else (`StringView` needed a hard-coded exception). See #1025.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RetCategory {
     Void,
@@ -38,8 +49,36 @@ pub enum RetCategory {
     },
     /// A named stdlib type (e.g., "File", "Vec", "Shared").
     Named(std::string::String),
+    /// The stub's own type parameter — `Vec.remove` is declared `-> T`.
+    ///
+    /// This used to be recorded as `I64`, which is where "`T` reaches MIR as a
+    /// bare i64" came from: a `Vec<string>.remove(i)` destination got an 8-byte
+    /// slot, half the string was copied, and no refcount was taken on the
+    /// payload. The stub genuinely doesn't know — only the call site does — so
+    /// the honest answer is to say which parameter it is and let the caller ask
+    /// something that knows (#1020).
+    TypeParam(std::string::String),
     /// Tuple of types (e.g., `(Request, Responder)`).
     Tuple(Vec<RetCategory>),
+}
+
+impl RetCategory {
+    /// Does this return type still mention one of the stub's type parameters?
+    ///
+    /// `Vec.remove` is `-> T` and `Vec.get` is `-> T?`; both are holes the call
+    /// site has to fill. A caller that can't fill one is better off knowing that
+    /// than being handed a width the stub invented.
+    pub fn names_a_type_param(&self) -> bool {
+        match self {
+            RetCategory::TypeParam(_) => true,
+            RetCategory::Option(inner) => inner.names_a_type_param(),
+            RetCategory::Result { ok, err } => {
+                ok.names_a_type_param() || err.names_a_type_param()
+            }
+            RetCategory::Tuple(elems) => elems.iter().any(|e| e.names_a_type_param()),
+            _ => false,
+        }
+    }
 }
 
 /// An integer width other than the `I64` default, by its Rask name.
@@ -56,11 +95,28 @@ pub enum IntWidth {
 pub struct StdlibMethodMeta {
     /// Qualified name as MIR sees it: "Vec_push", "fs_open".
     pub qualified_name: std::string::String,
-    /// Return type category.
+    /// Return type category. Down to one live question — does the stub's
+    /// return type name one of the type's parameters? — now that MIR resolves
+    /// the type string itself. See `ret_ty`.
     pub ret_category: RetCategory,
+    /// The stub's return type, verbatim.
+    ///
+    /// MIR's `resolve_type_str` already parses these, and does it properly: it
+    /// knows `f32` from `f64`, transparent aliases, arrays, unions, generic
+    /// instantiations, and which named stdlib types are word-sized runtime
+    /// handles. `RetCategory` was a second, coarser parser standing beside it
+    /// (#1025).
+    pub ret_ty: std::string::String,
     /// Type prefix of the return value (for local_type_prefix tracking).
     /// E.g., "fs_open" returns File → prefix "File".
     pub ret_type_prefix: Option<std::string::String>,
+    /// Declared `self`, in any mode — so MIR's argument zero is the receiver.
+    pub takes_self: bool,
+    /// Declared `take self` — the call consumes its receiver.
+    pub take_self: bool,
+    /// Which declared parameters are `take`, positionally. The receiver is not
+    /// among them; see `keeps_argument` for the index shift.
+    pub takes: Vec<bool>,
 }
 
 /// Cached metadata derived from StubRegistry.
@@ -99,7 +155,11 @@ fn build_cache() -> MetadataCache {
             method_metas.push(StdlibMethodMeta {
                 qualified_name: qualified,
                 ret_category: ret_cat,
+                ret_ty: method.ret_ty.clone(),
                 ret_type_prefix: ret_prefix,
+                takes_self: method.takes_self,
+                take_self: method.take_self,
+                takes: method.param_modes.iter().map(|m| m.is_take).collect(),
             });
         }
     }
@@ -111,7 +171,11 @@ fn build_cache() -> MetadataCache {
         method_metas.push(StdlibMethodMeta {
             qualified_name: func.name.clone(),
             ret_category: ret_cat,
+            ret_ty: func.ret_ty.clone(),
             ret_type_prefix: ret_prefix,
+            takes_self: false,
+            take_self: false,
+            takes: func.param_modes.iter().map(|m| m.is_take).collect(),
         });
     }
 
@@ -172,6 +236,395 @@ pub fn is_unimplemented(prefix: &str, method: &str) -> bool {
 
 pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
+}
+
+// ── What a call does with what it is handed ─────────────────────
+//
+// These three used to be lists of method-name prefixes kept by hand in
+// `rc_elide`, `rc_insert` and `container_drop`, which had drifted apart from
+// each other. The declaration in `stdlib/*.rk` already says all three, in the
+// language's own words, so that is what they read now.
+
+/// What an internal MIR spelling stands for.
+///
+/// Every variant answers all three ownership questions, because the danger is
+/// answering one of them by accident. "No declaration" used to mean no to all
+/// three at once, and the one that mattered — does this point into the
+/// receiver's storage — was the one being guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Internal {
+    /// The same operation as this declared method, under another name. Every
+    /// answer comes from that declaration.
+    SameAs(&'static str),
+    /// A method on the type, but not a declared one: it borrows its receiver,
+    /// keeps none of its arguments, and whatever it hands back was made fresh
+    /// rather than pointed at inside the receiver.
+    FreshFromReceiver,
+    /// A method that consumes its receiver rather than borrowing it — a free.
+    /// Nothing kept beyond the receiver, nothing pointed into.
+    ConsumesReceiver,
+    /// Not a method at all — a static constructor, a raw pointer. No receiver
+    /// to borrow, nothing kept, nothing pointed into.
+    NoReceiver,
+}
+
+/// Every name MIR mints that looks like a stdlib method but isn't one.
+///
+/// `v[i]` reaches MIR as `Vec_index`, and the bounds-checked and unchecked
+/// forms of the same read get their own names, but there is one declaration
+/// behind all of them — `Vec.get`, whose signature says the read points into
+/// the vector's own buffer. A `with` block on a `Shared` is the same story:
+/// three strategies, one accessor.
+///
+/// This is a mapping, not a derivation, and the point is that it is *complete*.
+/// A name that reaches `declared` looking like `Vec_something`, with no
+/// declaration and no line here, is a compiler bug rather than a shrug —
+/// answering "no declaration, so the caller owns what came back" freed a
+/// string a vector still held, and the markdown renderer printed the freed
+/// bytes where a code fence's language should be. So an unlisted one fails
+/// loudly, at the first program that compiles it, instead of miscompiling.
+const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
+    // ── Reads that point into the receiver's storage ────────────
+    // The caller may read what comes back and must never release it: the
+    // container will. Guessing the other way here is what printed freed bytes
+    // where a code fence's language should be.
+    ("Vec_index", Internal::SameAs("Vec_get")),
+    ("Vec_borrow_elem", Internal::SameAs("Vec_get")),
+    ("Map_borrow_elem", Internal::SameAs("Map_get")),
+
+    // A `with` block on a `Shared`: three strategies, one declared accessor.
+    ("Cell_acquire", Internal::SameAs("Shared_read")),
+    ("Cell_data", Internal::SameAs("Shared_read")),
+    ("Mutex_acquire", Internal::SameAs("Shared_read")),
+    ("Mutex_data", Internal::SameAs("Shared_read")),
+    ("Mutex_lock", Internal::SameAs("Shared_read")),
+    ("Mutex_try_lock", Internal::SameAs("Shared_read")),
+    ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
+    ("Cell_get", Internal::SameAs("Shared_get")),
+    ("Shared_data", Internal::SameAs("Shared_read")),
+    ("Mutex_get", Internal::SameAs("Shared_get")),
+
+    // ── Keep what they are handed ───────────────────────────────
+    ("Cell_new", Internal::SameAs("Shared_local")),
+    ("Mutex_new", Internal::SameAs("Shared_mutex")),
+    ("Cell_set", Internal::SameAs("Shared_set")),
+    ("Cell_into_inner", Internal::SameAs("Shared_into_inner")),
+    ("Mutex_set", Internal::SameAs("Shared_set")),
+    ("Cell_replace", Internal::SameAs("Shared_replace")),
+    ("Mutex_replace", Internal::SameAs("Shared_replace")),
+    ("Map_set", Internal::SameAs("Map_insert")),
+    ("Pool_set", Internal::SameAs("Vec_set")),
+
+    // ── Borrow the receiver, keep nothing, return something fresh ─
+    ("Vec_slice", Internal::FreshFromReceiver),
+    ("Map_entries", Internal::FreshFromReceiver),
+    ("Sender_clone", Internal::FreshFromReceiver),
+    ("Mutex_clone", Internal::FreshFromReceiver),
+    ("Handle_clone", Internal::FreshFromReceiver),
+    ("string_eq", Internal::FreshFromReceiver),
+    ("string_gt", Internal::FreshFromReceiver),
+    ("string_compare", Internal::FreshFromReceiver),
+    ("string_substr", Internal::FreshFromReceiver),
+    ("string_clone", Internal::FreshFromReceiver),
+    ("string_lt", Internal::FreshFromReceiver),
+    ("string_le", Internal::FreshFromReceiver),
+    ("string_index", Internal::FreshFromReceiver),
+    ("string_debug", Internal::FreshFromReceiver),
+    ("string_pad", Internal::FreshFromReceiver),
+    ("string_concat", Internal::FreshFromReceiver),
+    ("string_new", Internal::NoReceiver),
+
+    // Hand a lent element or a `with` borrow back. The container and the box
+    // keep what they held either way, so nothing changes owner here.
+    ("Vec_release_elem", Internal::FreshFromReceiver),
+    ("Map_release_elem", Internal::FreshFromReceiver),
+    ("Shared_release", Internal::FreshFromReceiver),
+    ("Shared_staged_commit", Internal::FreshFromReceiver),
+    ("Mutex_release", Internal::FreshFromReceiver),
+    ("Mutex_staged_commit", Internal::FreshFromReceiver),
+
+    // Rack bookkeeping: write through a link, or tell the rack about a field.
+    ("Link_set", Internal::FreshFromReceiver),
+    ("Link_set_node", Internal::FreshFromReceiver),
+    ("Link_register_struct", Internal::FreshFromReceiver),
+    ("Link_register_element", Internal::FreshFromReceiver),
+    ("Link_register_vec", Internal::FreshFromReceiver),
+    ("Link_register_entry", Internal::FreshFromReceiver),
+
+    // ── Consume the receiver ────────────────────────────────────
+    // The frees this pipeline emits for itself. They take the container and it
+    // is gone afterwards, which is neither borrowing it nor leaving it alone.
+    ("Vec_free", Internal::ConsumesReceiver),
+    ("Map_free", Internal::ConsumesReceiver),
+
+    // ── No receiver at all ──────────────────────────────────────
+];
+
+/// The family a `<Head>_<method>` name belongs to, when that family is one
+/// whose names have to be accounted for.
+///
+/// A stdlib type is one. So is any head already listed in the table — once a
+/// family is known to mint internal spellings, the rest of its names have to
+/// be listed too, or the next one added silently answers "no". That is what
+/// makes the table self-extending rather than a list someone has to remember
+/// to grow: `Cell` is a `Shared` strategy rather than a type of its own, so
+/// nothing else would have demanded a line for `Cell_acquire` — and once
+/// there is one, a later `Cell_something` fails loudly.
+fn accountable_family_of(name: &str) -> Option<&str> {
+    let (head, _) = name.split_once('_')?;
+    if cache().type_names.contains(head) {
+        return Some(head);
+    }
+    INTERNAL_SPELLINGS
+        .iter()
+        .any(|(n, _)| n.split_once('_').is_some_and(|(h, _)| h == head))
+        .then_some(head)
+}
+
+/// The declaration MIR is calling, by the name it uses — a monomorphized `$`
+/// suffix and any module path stripped, and an internal spelling resolved.
+fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    if let Some(meta) = lookup(base) {
+        return Some(meta);
+    }
+    // An explicit line comes next, so it can override the rule below for a
+    // name that only *looks* like a specialisation. `Shared_staged_commit`
+    // shares a prefix with `Shared.staged` and is a different operation.
+    match internal_spelling(base) {
+        Some(Internal::SameAs(decl)) => return lookup(decl),
+        Some(Internal::FreshFromReceiver)
+        | Some(Internal::ConsumesReceiver)
+        | Some(Internal::NoReceiver) => return None,
+        None => {}
+    }
+    // A generic method reaches MIR with its type argument welded on —
+    // `string.parse<i32>` as `string_parse_i32` — and a specialised form of a
+    // declared one gets a suffix the same way: `Vec_get_unchecked`,
+    // `Vec_sort_str`. Both are the declared operation, so trimming back to the
+    // longest declared prefix answers for every width and every specialisation
+    // at once, instead of a line each.
+    if let Some(meta) = declared_prefix_of(base) {
+        return Some(meta);
+    }
+    // A name that doesn't belong to an accountable family is an ordinary user
+    // function, which owns what it returns like any other. That's the honest
+    // answer, not a gap.
+    let family = accountable_family_of(base)?;
+    // Otherwise: not declared, not listed, not a specialisation of anything.
+    // Rather than guess — or crash a build over it — answer every question the
+    // way that leaks.
+    //
+    // The two directions are not symmetrical. Guess that a read into a
+    // container's storage is the caller's and the caller frees what the
+    // container still holds; guess that it is the container's and nothing
+    // frees it. One is a use-after-free, the other is a leak the leak gate
+    // already catches by name. So an unaccounted-for name leaks, loudly, and
+    // `tests/spellings_gate.sh` fails on the report so it gets a line here
+    // instead of staying that way.
+    report_unmapped(base, family);
+    None
+}
+
+/// Note an internal spelling nothing accounts for. Once per name per process:
+/// a `Vec_get_unchecked` in a loop would otherwise bury the report.
+fn report_unmapped(base: &str, family: &str) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<std::string::String>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap();
+    let seen = seen.get_or_insert_with(HashSet::new);
+    if seen.insert(base.to_string()) {
+        eprintln!(
+            "[unmapped-spelling] {base} (family {family}): no stdlib file declares it and \
+             INTERNAL_SPELLINGS in rask-stdlib/src/mir_metadata.rs doesn't say what it \
+             stands for, so it is being treated as owning everything it touches — which \
+             leaks. Add a line for it."
+        );
+    }
+}
+
+/// The answers for a name nothing accounts for: whichever way leaks.
+fn unmapped_leans_to_leaking(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    lookup(base).is_none()
+        && internal_spelling(base).is_none()
+        && accountable_family_of(base).is_some()
+}
+
+#[cfg(test)]
+mod internal_spelling_tests {
+    use super::*;
+
+    /// Every internal spelling has to name a declaration that exists. A
+    /// renamed stdlib method would otherwise turn one of these into a silent
+    /// "no declaration", which reads as "the caller owns what came back" and
+    /// frees a string the container still holds.
+    #[test]
+    fn every_internal_spelling_resolves() {
+        for (internal, stands_for) in INTERNAL_SPELLINGS {
+            let Internal::SameAs(declared_as) = stands_for else { continue };
+            assert!(
+                lookup(declared_as).is_some(),
+                "{internal} stands for {declared_as}, which no stdlib file declares"
+            );
+        }
+    }
+
+    /// Nothing in the table is a name the stdlib already declares.
+    ///
+    /// A line that shadows a real declaration is dead at best and wrong at
+    /// worst — `declared` looks the name up first, so the line would never
+    /// fire, and whoever added it would think they had answered something.
+    #[test]
+    fn no_internal_spelling_shadows_a_declaration() {
+        for (internal, _) in INTERNAL_SPELLINGS {
+            assert!(
+                lookup(internal).is_none(),
+                "{internal} is declared in a stdlib file, so its line here never fires — delete it"
+            );
+        }
+    }
+
+    /// No line merely repeats what the prefix rule would have said.
+    ///
+    /// `string_parse_i32` needs no entry: trimming the welded-on type argument
+    /// finds `string.parse`, the same operation, with the same answers. A line
+    /// for it would suggest the table has to grow a row per integer width,
+    /// which is the hand-maintained-list shape this replaced.
+    ///
+    /// A line that *disagrees* with the rule stays, and is the point of the
+    /// override — `Shared_staged_commit` shares a prefix with `Shared.staged`
+    /// without being a specialisation of it.
+    #[test]
+    fn no_internal_spelling_merely_repeats_the_prefix_rule() {
+        for (internal, _) in INTERNAL_SPELLINGS {
+            let Some(by_rule) = declared_prefix_of(internal) else { continue };
+            let rule = (
+                by_rule.takes_self && !by_rule.take_self,
+                by_rule.takes_self && by_rule.ret_category.names_a_type_param(),
+                by_rule.takes.clone(),
+            );
+            let listed = (
+                borrows_receiver(internal),
+                returns_a_view(internal),
+                declared(internal).map(|m| m.takes.clone()).unwrap_or_default(),
+            );
+            assert_ne!(
+                rule, listed,
+                "{internal} says exactly what trimming back to `{}` already says — \
+                 delete its line",
+                by_rule.qualified_name
+            );
+        }
+    }
+
+    /// Every line's head is a family the enforcement covers, and no line is
+    /// listed twice.
+    ///
+    /// The head is what makes an unmapped name detectable at all — `declared`
+    /// only demands a line for a name whose family is accountable. A line
+    /// whose head is a typo would never be reached, and would leave the real
+    /// name unaccounted for.
+    #[test]
+    fn every_internal_spelling_names_a_stdlib_type() {
+        let mut seen = HashSet::new();
+        for (internal, _) in INTERNAL_SPELLINGS {
+            assert!(
+                accountable_family_of(internal).is_some(),
+                "{internal}'s head names no accountable family, so nothing would ever \
+                 ask about it — check the spelling"
+            );
+            assert!(seen.insert(*internal), "{internal} is listed twice");
+        }
+    }
+}
+
+/// Does this call keep the argument at `arg_index`, rather than just read it?
+///
+/// `take` in the declaration is the whole answer: `Vec.push(mutate self, take
+/// value: T)` keeps what it is handed and the caller owes no release on it,
+/// while `Map.get(self, key: K)` only compares the key and hands it back. MIR
+/// counts the receiver as argument zero, so a declared parameter sits one
+/// further along on a method.
+pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
+    let Some(m) = declared(qualified_name) else {
+        // Unaccounted for: say it keeps everything. The caller then releases
+        // nothing it passed, which leaks rather than double-frees.
+        return unmapped_leans_to_leaking(qualified_name);
+    };
+    let param_index = if m.takes_self {
+        match arg_index.checked_sub(1) {
+            Some(i) => i,
+            None => return m.take_self,
+        }
+    } else {
+        arg_index
+    };
+    m.takes.get(param_index).copied().unwrap_or(false)
+}
+
+/// Does this call hand back a view into storage its receiver keeps owning?
+///
+/// `Vec.get(self, index: i64) -> Option<T>` points into the vector's buffer:
+/// the caller may read it but never release it, because the vector will. The
+/// rule is that the return type names one of the receiver type's own
+/// parameters — the value came out of the receiver's storage rather than
+/// being made here. `Vec.len() -> usize` doesn't, and neither does
+/// `string.trim() -> string`, which builds a new one.
+pub fn returns_a_view(qualified_name: &str) -> bool {
+    match declared(qualified_name) {
+        Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
+        // Unaccounted for: say it points into its receiver. The caller then
+        // releases nothing it got back — a leak, where the other guess is a
+        // free of memory the container still holds.
+        None => unmapped_leans_to_leaking(qualified_name),
+    }
+}
+
+/// The declared method a suffixed name specialises, if any: trim trailing
+/// `_<segment>`s until something is declared, keeping the longest match.
+///
+/// Stops before the bare type name, so `Vec_get` never degrades to `Vec`.
+fn declared_prefix_of(base: &str) -> Option<&'static StdlibMethodMeta> {
+    let mut candidate = base;
+    while let Some((shorter, _)) = candidate.rsplit_once('_') {
+        if !shorter.contains('_') {
+            // `<Type>` alone is not a method.
+            return None;
+        }
+        if let Some(meta) = lookup(shorter) {
+            return Some(meta);
+        }
+        candidate = shorter;
+    }
+    None
+}
+
+/// What an internal spelling stands for, by the name MIR uses.
+fn internal_spelling(base: &str) -> Option<Internal> {
+    INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
+}
+
+/// Does this call borrow its receiver rather than consume it? True for
+/// anything declared `self` or `mutate self`, false for `take self` and for a
+/// static method, which has no receiver at all.
+pub fn borrows_receiver(qualified_name: &str) -> bool {
+    if let Some(m) = declared(qualified_name) {
+        return m.takes_self && !m.take_self;
+    }
+    // An undeclared spelling that is still a method borrows its receiver.
+    // Getting this wrong is a leak: the drop pass reads argument zero as
+    // escaping and never frees the container the call was made on.
+    //
+    // Unaccounted for gets `false` for the same reason the other two lean the
+    // way they do — this is the one where "borrows it" is the *unsafe* guess,
+    // since a call that actually consumes its receiver would then be freed
+    // twice.
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::FreshFromReceiver))
 }
 
 // ── Return type string parsing ──────────────────────────────────
@@ -272,9 +725,9 @@ fn parse_simple_type(s: &str) -> RetCategory {
             } else {
                 s
             };
-            // Generic type variables like "T" → treat as I64
+            // A generic type variable like "T" is not a type — it's a hole.
             if base.len() == 1 && base.chars().next().unwrap().is_uppercase() {
-                RetCategory::I64
+                RetCategory::TypeParam(base.to_string())
             } else {
                 RetCategory::Named(base.to_string())
             }
@@ -287,6 +740,9 @@ fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
     match cat {
         RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::Int(_)
         | RetCategory::F64 => None,
+        // The stub doesn't know what `T` is, so it can't name a prefix for it.
+        // Same answer it gave when `T` was recorded as I64.
+        RetCategory::TypeParam(_) => None,
         RetCategory::String => Some("string".to_string()),
         // Keep the "char" prefix it had as a Named type, so `char` methods
         // still resolve on the result of a char-returning stdlib call.
@@ -446,8 +902,15 @@ mod tests {
 
     #[test]
     fn parse_generic_t() {
-        // Single-letter type variables are opaque → I64
-        assert_eq!(parse_ret_ty("T"), RetCategory::I64);
+        // A single-letter type variable is a hole, not a type. It used to be
+        // recorded as I64, which is how a `Vec<string>.remove(i)` destination
+        // got an 8-byte slot (#1020).
+        assert_eq!(parse_ret_ty("T"), RetCategory::TypeParam("T".into()));
+        assert!(parse_ret_ty("T").names_a_type_param());
+        assert!(parse_ret_ty("T?").names_a_type_param());
+        assert!(parse_ret_ty("T or IoError").names_a_type_param());
+        assert!(!parse_ret_ty("string").names_a_type_param());
+        assert!(!parse_ret_ty("File").names_a_type_param());
     }
 
     #[test]
@@ -581,6 +1044,54 @@ mod tests {
             missing.join("\n  ")
         );
     }
+
+    /// The three ownership questions, answered from the declarations.
+    ///
+    /// These replaced prefix lists kept by hand in `rc_elide`, `rc_insert` and
+    /// `container_drop` — lists that had drifted apart from each other and from
+    /// the stdlib. Pinning the answers here means a stdlib signature can't
+    /// quietly change what MIR believes about a call: getting one wrong is a
+    /// leak in one direction and a double free in the other.
+    #[test]
+    fn ownership_questions_follow_the_declarations() {
+        // Stored: the reference moves in with the value.
+        assert!(keeps_argument("Vec_push", 1), "Vec.push keeps its value");
+        assert!(keeps_argument("Map_insert", 1), "Map.insert keeps its key");
+        assert!(keeps_argument("Map_insert", 2), "Map.insert keeps its value");
+        assert!(keeps_argument("Vec_insert", 2), "Vec.insert keeps its value");
+        assert!(keeps_argument("Shared_new", 0), "Shared.new keeps its payload");
+        assert!(keeps_argument("Cell_new", 0), "Cell.new is Shared.local");
+
+        // Read and forgotten: the caller still owns what it passed.
+        assert!(!keeps_argument("Map_get", 1), "Map.get only reads the key");
+        assert!(!keeps_argument("Map_contains_key", 1));
+        assert!(!keeps_argument("Vec_insert", 1), "the index is a number");
+        // The receiver is never "kept" by a borrowing method.
+        assert!(!keeps_argument("Vec_push", 0));
+
+        // A view into the receiver's own storage: releasing it here would free
+        // what the container still holds.
+        assert!(returns_a_view("Vec_get"));
+        assert!(returns_a_view("Vec_index"), "`v[i]` is Vec.get by another name");
+        assert!(returns_a_view("Vec_get_unchecked"));
+        assert!(returns_a_view("Map_get"));
+        assert!(!returns_a_view("Vec_len"), "a length is not a view");
+        assert!(!returns_a_view("Vec_new"), "a constructor has no receiver");
+
+        // Borrowed receivers, so the drop pass may still free the container.
+        assert!(borrows_receiver("Vec_push"));
+        assert!(borrows_receiver("Vec_get"));
+        assert!(!borrows_receiver("Vec_new"), "static: no receiver at all");
+        assert!(!borrows_receiver("TaskHandle_join"), "declared `take self`");
+    }
+
+    /// A monomorphized name carries a `$` suffix, and a path-qualified one a
+    /// `::` prefix. Both have to reach the same declaration, or the answer
+    /// changes the moment a generic gets instantiated.
+    #[test]
+    fn mangled_names_reach_the_same_declaration() {
+        assert!(keeps_argument("Vec_push$string", 1));
+        assert!(returns_a_view("std::collections::Vec_get$string"));
+        assert!(borrows_receiver("Vec_push$Holder"));
+    }
 }
-
-

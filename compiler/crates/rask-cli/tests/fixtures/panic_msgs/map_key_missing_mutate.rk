@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The same missing key, reached through a `mutate` borrow rather than a read.
+// Native had a second spelling for it ("key not found") on this path only.
+func bump(mutate n: i64) {
+    n = n + 1
+}
+func main() {
+    mut m = Map.new()
+    m.insert("a", 1)
+    bump(mutate m["zz"])
+}

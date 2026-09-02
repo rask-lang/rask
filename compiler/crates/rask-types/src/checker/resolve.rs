@@ -1877,14 +1877,40 @@ impl TypeChecker {
         }
     }
 
+    /// Methods that change how many elements a sequence holds.
+    ///
+    /// A `Vec` has them all; a fixed array has none of them, because its length
+    /// is written in its type. Sharing the `Vec` method table below is what let
+    /// `[i32; 3].push(4)` type-check (#901), so the array receiver is filtered
+    /// against this list before the shared lookup runs.
+    fn changes_length(method: &str) -> bool {
+        matches!(
+            method,
+            "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
+            | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
+            | "reserve" | "shrink_to_fit" | "with_capacity" | "try_insert" | "try_push"
+        )
+    }
+
     pub(super) fn resolve_array_method(
         &mut self,
-        _array_ty: &Type,
+        array_ty: &Type,
         method: &str,
         args: &[Type],
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
+        // A slice is a view and has no growth surface either, but it reaches
+        // this function as `Type::Slice` and never had the `Vec` fallback wired
+        // up, so only the fixed array needs rejecting here.
+        if matches!(array_ty, Type::Array { .. }) && Self::changes_length(method) {
+            return Err(TypeError::FixedArrayGrowth {
+                method: method.to_string(),
+                array: array_ty.clone(),
+                span,
+            });
+        }
+
         if let Some(method_def) = rask_stdlib::lookup_method("Vec", method) {
             let expected_params = method_def.params.len();
             if args.len() != expected_params {
@@ -2327,6 +2353,11 @@ impl TypeChecker {
             ("Shared", "write") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
+            }
+            // Shared<T>.staged() -> T  (ST1: a working copy under the
+            // exclusive lock, committed as one move on any non-panic exit)
+            ("Shared", "staged") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
             }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
@@ -3583,6 +3614,15 @@ impl TypeChecker {
                     if self.ctx.literal_vars.contains_key(&id) {
                         let _ = self.unify(&args[0], inner, span);
                     }
+                }
+                // The other side is an optional too — `x == none` most of the
+                // time. `none` has no payload type of its own, so unless it's
+                // tied to the receiver here it stays `?` forever: the node came
+                // out of the checker still holding a variable, and MIR had to
+                // guess a width for it. Comparing two optionals means comparing
+                // the same optional, so say so.
+                if self.ctx.apply(&args[0]).is_option() {
+                    let _ = self.unify(&args[0], &self_ty, span);
                 }
                 self.unify(ret, &Type::Bool, span)
             }
