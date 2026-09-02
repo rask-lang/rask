@@ -104,6 +104,33 @@ test "vec zip — skip before it doesn't skew the other side" {
     assert_eq(pairs[2].1, 30)
 }
 
+// #953 made a Vec reached through a field a fused-loop source too, so this
+// pairs the two changes: both sides of the zip come out of struct fields.
+struct Row {
+    xs: Vec<i64>
+    names: Vec<string>
+}
+
+test "vec zip — both sides reached through a struct field" {
+    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 1)
+    assert_eq(pairs[0].1, "a")
+    assert_eq(pairs[1].0, 2)
+    assert_eq(pairs[1].1, "b")
+}
+
+test "vec zip — a filter on a field receiver still doesn't skew the other side" {
+    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).zip(r.names)
+    assert_eq(pairs.len(), 2)
+    assert_eq(pairs[0].0, 1)
+    assert_eq(pairs[0].1, "a")
+    assert_eq(pairs[1].0, 3)
+    assert_eq(pairs[1].1, "b")
+}
+
 test "map insert_if_missing — fills a gap and leaves a value alone" {
     mut m: Map<string, i64> = Map.new()
     m.insert_if_missing("a", || {
