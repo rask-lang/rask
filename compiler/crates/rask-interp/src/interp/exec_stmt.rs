@@ -521,6 +521,33 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
+                    // type.sequence/SEQ6: a Sequence is a function taking a
+                    // yield. Iterating one is calling it — the loop hands over a
+                    // yield that runs the body and answers whether to continue,
+                    // so the sequence keeps its own traversal state in its own
+                    // frame and nothing has to be stored between items (SEQ38).
+                    seq @ (Value::Closure { .. } | Value::Function { .. }) => {
+                        self.yield_stack.push(super::YieldFrame {
+                            binding: binding.clone(),
+                            body: body.clone(),
+                            label: label.clone(),
+                            escaped: None,
+                        });
+                        let driven = self.call_value(seq, vec![Value::Builtin(
+                            crate::value::BuiltinKind::SequenceYield,
+                        )]);
+                        let frame = self.yield_stack.pop();
+                        // The body's own escape wins over anything the sequence
+                        // says on the way out: a `return` in the loop body is
+                        // what the program asked for, and a source unwinding
+                        // afterwards is a consequence of it (SEQ8).
+                        if let Some(diag) = frame.and_then(|f| f.escaped) {
+                            return Err(diag);
+                        }
+                        driven
+                            .map(|_| Value::Unit)
+                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))
+                    }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "cannot iterate over {}",
@@ -586,6 +613,51 @@ impl Interpreter {
             }
 
         }
+    }
+
+    /// One yield from a `Sequence<T>` being driven by a `for` loop: run the
+    /// loop body with the item bound, and answer whether to keep going
+    /// (type.sequence/SEQ3).
+    ///
+    /// The frame comes off the stack for the length of the body so a nested
+    /// `for` over another sequence pushes its own on top, and goes back on
+    /// afterwards.
+    pub(crate) fn run_yield_body(&mut self, args: Vec<Value>) -> Value {
+        let Some(mut frame) = self.yield_stack.pop() else {
+            // Nothing is driving a loop, so nobody is owed another item. Only
+            // reachable if a sequence stored the yield and called it later,
+            // which SL2 says it may not.
+            return Value::Bool(false);
+        };
+        // A source that ignored an earlier `false` is calling again after the
+        // body already returned or broke out (SEQ13a). Answer `false` again
+        // rather than run the body a second time — the loop is over.
+        if frame.escaped.is_some() {
+            self.yield_stack.push(frame);
+            return Value::Bool(false);
+        }
+
+        let item = args.into_iter().next().unwrap_or(Value::Unit);
+        self.env.push_scope();
+        self.define_for_binding(&frame.binding, item);
+        let outcome = self.exec_stmts(&frame.body);
+        self.env.pop_scope();
+
+        let label = frame.label.as_deref();
+        let keep_going = match outcome {
+            Ok(_) => true,
+            // SEQ7: `break` is `return false`, `continue` is `return true`.
+            Err(diag) if breaks_here(&diag.error, label) => false,
+            Err(diag) if continues_here(&diag.error, label) => true,
+            // A `return`, a `try` propagation, or a `break` aimed further out.
+            // Park it for the loop to re-raise and stop the source (SEQ8).
+            Err(diag) => {
+                frame.escaped = Some(diag);
+                false
+            }
+        };
+        self.yield_stack.push(frame);
+        Value::Bool(keep_going)
     }
 
     fn define_for_binding(&mut self, binding: &ForBinding, value: Value) {

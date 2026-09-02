@@ -21,9 +21,9 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 
 | Stage | Status | Commit |
 |-------|--------|--------|
-| 0 — Infer mutable captures (`mem.closures/MC1`, #1038) | pending | — |
+| 0 — Infer mutable captures (`mem.closures/MC1`, #1038) | ✓ done | `60f338b` interp, `6fe0847` native |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
-| 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | redo — landed as an alias, `SEQ1` now says nominal | `4d1eaa0` |
+| 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
 | 3 — MIR for-loop lowering for Sequence | pending | — |
 | 4 — Interpreter for-loop over a Sequence | pending | — |
 | 5 — Adapters + terminals as `extend Sequence<T>` | pending | — |
@@ -35,18 +35,27 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 11 — Closure devirtualization pass (`SEQ17`–`SEQ19`) | pending | — |
 | 12 — Zero-cost fusion test | pending | — |
 
-**Stage 0 is the gate, and it shrank.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that captures it. Two drafts tried to make that spellable: first an exemption from `MC1` for generated closures, then an emitted capture list. Both are gone. `MC1` now infers a closure's captures from its body, the way read captures already worked, so the desugar emits a plain `|v|` and does nothing special.
+**Stage 0 was the gate, and it shrank.** Every `for` body that writes an enclosing local — the common case — desugars into a closure that captures it. Two drafts tried to make that spellable: first an exemption from `MC1` for generated closures, then an emitted capture list. Both are gone. `MC1` infers a closure's captures from its body, the way read captures already worked, so the desugar emits a plain `|v|` and does nothing special.
 
-What's left is a bug rather than a design task: writing an inferred mutable capture currently compiles and silently drops the write (#1038, both backends). Under the old rule the fix was "reject it"; under inference the fix is "make it work". That's stage 0, and stages 3 and 4 have nothing to prove until it does.
+What was left was a bug rather than a design task: writing an inferred mutable capture compiled and silently dropped the write (#1038, both backends). Under the old rule the fix was "reject it"; under inference the fix was "make it work". Both backends now do:
 
-### Prerequisites — bugs that block this work
+- The interpreter binds a name to a *slot* (`Arc<Mutex<Value>>`) shared by everything bound to it, so a scope-limited closure's capture reaches the definer's storage.
+- Native holds each capture's *address* in the closure environment. Scalars needed a local category Cranelift doesn't have — an SSA value has no address — so `transform::addr_taken` rewrites an address-taken scalar's reads into loads and its writes into stores before SSA runs.
 
-| What | Effect |
+`tests/suite/p20_closure_mutable_capture.rk` gates it, 11/11 on both.
+
+The same lie — `Ref` on a scalar spilling a copy — was also #899, so `mutate` on a primitive parameter reaches the caller now.
+
+### Prerequisites — all cleared
+
+| What | Outcome |
 |---|---|
-| `not` is not a lexer keyword (#1040) | `if not f(x)` doesn't parse; specs use it in eight places. Either add the keyword or the specs are wrong — the style guide says prefer readable keywords |
-| A write to an implicitly-captured local is silently dropped (#1038) | `mut a = 0; let f = \|x\| { a = a + 1 }; f(5)` leaves `a == 0`. Should be a compile error. Stage 0 cannot be tested against a backend that quietly discards the write it is supposed to make |
-| ~~`\|mutate x\|` is rejected by the parser (#1039)~~ | No longer a bug. Captures are inferred, so there is no capture syntax to parse — everything in the pipes is a parameter (`CP3`). Closed as by-design |
-| A stale `rask` binary fails to link (#1041) | The runtime source list is compiled into the binary, so a `.c` file added since it was built isn't linked — raw `ld` output about Unicode internals, on programs with no strings in them. `cargo build --release -p rask-cli`. Silently pushes work onto `--interp`, which isn't the backend that ships |
+| `not` is not a lexer keyword (#1040) | Not a bug. `!` stays; the eight spec examples were wrong and are fixed |
+| A write to an implicitly-captured local is silently dropped (#1038) | Fixed on both backends, stage 0 above |
+| `\|mutate x\|` is rejected by the parser (#1039) | Not a bug. Captures are inferred, so there is no capture syntax to parse — everything in the pipes is a parameter (`CP3`) |
+| A stale `rask` binary fails to link (#1041) | Not a compiler bug. The runtime source list is a compile-time constant, so a `.c` file added since the binary was built isn't linked. `cargo build --release -p rask-cli` |
+
+One thing stages 3–7 have to work around rather than rely on: a closure that *escapes* its frame still copies its captures, and a returned one is stack-allocated in a frame that has already been popped (#1045). Adapters must not depend on writing through a capture of a returned closure.
 
 ## Stages
 

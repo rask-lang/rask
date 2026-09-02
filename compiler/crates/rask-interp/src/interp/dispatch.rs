@@ -70,6 +70,9 @@ impl Interpreter {
             }
             Value::Builtin(kind) => {
                 // Handle async builtins separately as they need mutable access
+                if kind == BuiltinKind::SequenceYield {
+                    return Ok(self.run_yield_body(args));
+                }
                 if kind == BuiltinKind::AsyncSpawn {
                     return self.spawn_async_task(args);
                 }
@@ -192,6 +195,9 @@ impl Interpreter {
             | BuiltinKind::SelectFirst | BuiltinKind::Cancelled => {
                 // These should have been handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
+            }
+            BuiltinKind::SequenceYield => {
+                unreachable!("SequenceYield is handled in call_value — it runs a loop body")
             }
             BuiltinKind::Todo => {
                 let msg = if let Some(Value::String(s)) = args.first() {

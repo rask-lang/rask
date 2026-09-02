@@ -629,6 +629,13 @@ pub enum BuiltinKind {
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
+    /// The yield handed to a `Sequence<T>` by a `for` loop (type.sequence/SEQ6).
+    ///
+    /// Not a name any program can write — `register.rs` never binds it — so the
+    /// only way to hold one is to be the sequence a `for` loop is driving. The
+    /// loop body it runs, and where the body's `break`/`return` go, live on the
+    /// interpreter's `yield_stack`.
+    SequenceYield,
     Min,   // generic min(a, b) — prelude
     Max,   // generic max(a, b) — prelude
     Clamp, // generic clamp(value, lo, hi) — prelude
