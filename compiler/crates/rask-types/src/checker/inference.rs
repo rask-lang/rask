@@ -65,6 +65,18 @@ pub enum TypeConstraint {
     /// ER14a: `value ?? default`. Which of the three cases applies depends on
     /// the right side's shape, which often isn't known until a method-call
     /// return type resolves — so the whole decision waits here.
+    /// ctrl.ensure/ER2: `ensure expr else |e| { … }` — `e` is the error branch of
+    /// whatever the body's last expression turns out to produce. That is almost
+    /// never known at the `ensure`: the body is a method call, and its return
+    /// type is still a variable when the handler is checked. Same shape as
+    /// `Unwrap` below, and the same reason — carry the question until the
+    /// operand settles, or the binding stays a free variable forever and
+    /// `e.message()` has no receiver type to dispatch on.
+    ErrorBranch {
+        value: Type,
+        result: Type,
+        span: Span,
+    },
     /// `x!` — the payload of whatever `value` turns out to wrap.
     ///
     /// The shape usually isn't known at the `!`: `v.get(0)!` has to wait for the
@@ -89,6 +101,23 @@ pub enum TypeConstraint {
         index: Type,
         result: Type,
         is_range: bool,
+        span: Span,
+    },
+    /// `a?.b` — the chain's result, once `b`'s own type is known.
+    ///
+    /// A chain unwraps: `a.inner?.v` where `v: string?` is a `string?`, not a
+    /// `string??`. Both absences mean the same thing to the caller, so there is
+    /// nothing to keep apart (`type.optionals/OPT10`). Deciding that at the
+    /// access doesn't work — the field's type comes from a `HasField` that
+    /// hasn't been solved yet, so "is it already an option?" was asked of a
+    /// bare variable and always answered no. The result then said `T??` while
+    /// both runtimes handed back a `T?`, and every position that names the
+    /// type — `chain ?? "default"` — refused to compile (#938). Same shape as
+    /// `Index` above, and the same fix: carry the question until the input
+    /// settles.
+    OptionalChain {
+        field: Type,
+        result: Type,
         span: Span,
     },
     Coalesce {
@@ -154,6 +183,9 @@ pub struct InferenceContext {
     /// What each unsuffixed integer literal said, so the default can widen when
     /// i32 is too narrow to hold it.
     pub(super) literal_int_values: HashMap<TypeVarId, i128>,
+    /// Variables with an answer of last resort: used only if nothing else
+    /// constrains them. See `default_var_to`.
+    pub(super) var_defaults: HashMap<TypeVarId, Type>,
 }
 
 impl InferenceContext {
@@ -254,6 +286,39 @@ impl InferenceContext {
             }
         }
         self.substitutions.extend(defaults);
+    }
+
+    /// Give a variable an answer of last resort.
+    ///
+    /// A closure whose body diverges is the case this exists for.
+    /// `spawn(|| { panic("boom") })` never returns, so no constraint ever
+    /// reaches the closure's return variable and inference finishes with it
+    /// open — which used to leave every consumer inventing a width for a value
+    /// that doesn't exist. `Never` is the honest answer and it already lowers
+    /// to void.
+    ///
+    /// A default, not a binding, because a `return` in the same body is a real
+    /// constraint and has to win. Return coercions are deferred, so at the
+    /// point the closure is checked there is no way to know yet whether one
+    /// exists.
+    pub fn default_var_to(&mut self, id: TypeVarId, ty: Type) {
+        self.var_defaults.insert(id, ty);
+    }
+
+    /// Apply the answers of last resort, for variables nothing else solved.
+    pub fn apply_var_defaults(&mut self) {
+        let pending: Vec<(TypeVarId, Type)> = self
+            .var_defaults
+            .iter()
+            .map(|(&id, ty)| (id, ty.clone()))
+            .collect();
+        for (id, ty) in pending {
+            // Follow the chain, the same way literal defaults do: the variable
+            // may have been unified with another that is itself still open.
+            if let Type::Var(tail) = self.apply(&Type::Var(id)) {
+                self.substitutions.insert(tail, ty);
+            }
+        }
     }
 
     /// Add a constraint.

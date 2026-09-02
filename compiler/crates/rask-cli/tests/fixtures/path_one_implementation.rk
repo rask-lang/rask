@@ -6,6 +6,7 @@
 // The edge cases are the ones the three versions differed on: a root path, a
 // trailing slash, a leading-dot name, a trailing dot, an empty path.
 import path
+import path.Path
 
 func opt(v: string?) -> string {
   if v? as x { return x }

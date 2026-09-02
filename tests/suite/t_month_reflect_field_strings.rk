@@ -85,4 +85,71 @@ test "std.reflect — using f.name in place is the third control" {
     assert hits == 1
 }
 
+// The cause was that `reflect.fields<T>()` had no declared return type, so the
+// loop binding had no type and neither did anything read off it. `.name` was
+// the member anyone had tried. The rest of FieldInfo goes through the same
+// path, and so does the return of every other `reflect` call — none of which
+// was written down anywhere.
+
+struct Tagged9 {
+    public label: string
+    public count: i64
+}
+
+test "std.reflect — every string member of FieldInfo survives the loop" {
+    mut names = Vec.new()
+    mut types = Vec.new()
+    mut serials = Vec.new()
+    comptime for f in reflect.fields<Tagged9>() {
+        names.push(f.name)
+        types.push(f.type_name)
+        serials.push(f.serial_name)
+    }
+    assert names.join(",") == "label,count"
+    assert serials.join(",") == "label,count"
+    assert types.len() == 2
+    assert types[0].len() > 0
+}
+
+test "std.reflect — the non-string members carry their types too" {
+    mut sizes = Vec.new()
+    mut publics = Vec.new()
+    comptime for f in reflect.fields<Tagged9>() {
+        sizes.push(f.size)
+        publics.push(f.is_public)
+    }
+    assert sizes.len() == 2
+    assert publics[0]
+    assert publics[1]
+}
+
+test "std.reflect — a name collected in one loop, read in a later one" {
+    mut names = Vec.new()
+    comptime for f in reflect.fields<Point>() {
+        names.push(f.name)
+    }
+    mut joined = ""
+    for n in names {
+        joined = "{joined}{n}."
+    }
+    assert joined == "x.y."
+}
+
+test "std.reflect — a field name reaching a Map" {
+    mut widths = Map.new()
+    comptime for f in reflect.fields<Tagged9>() {
+        widths.insert(f.name, f.name.len())
+    }
+    assert widths.len() == 2
+    assert widths["label"] == 5
+    assert widths["count"] == 5
+}
+
+test "std.reflect — name_of and the is_ predicates have types" {
+    let n = reflect.name_of<Point>()
+    assert n.len() > 0
+    assert reflect.is_struct<Point>()
+    assert !reflect.is_enum<Point>()
+}
+
 func main() {}

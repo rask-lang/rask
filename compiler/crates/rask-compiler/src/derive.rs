@@ -41,6 +41,17 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
     for type_def in typed.types.iter() {
         match type_def {
             rask_types::TypeDef::Struct { name, fields, methods, .. } => {
+                // Annotation declarations register as struct types for
+                // `has<A>()` name resolution (type.annotations/AN6) but are
+                // comptime-only — no layout exists, so a generated compare
+                // would read fields off a type mono never laid out.
+                let is_annotation = decls.iter().any(|d| matches!(
+                    &d.kind, DeclKind::Annotation(a) if a.name == *name
+                ));
+                if is_annotation {
+                    continue;
+                }
+
                 // Check for user-provided compare
                 let has_user_compare = decls.iter().any(|d| match &d.kind {
                     DeclKind::Impl(imp) if imp.target_ty == *name => {

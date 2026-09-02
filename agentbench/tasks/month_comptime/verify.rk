@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: the constants" {
+    assert FACT_10 == 3628800
+    assert PRIME_COUNT_100 == 25
+    assert BANNER == "== rask =="
+}
+
+test "verify: the same functions at run time" {
+    assert factorial(0) == 1
+    assert factorial(1) == 1
+    assert factorial(5) == 120
+    assert factorial(10) == 3628800
+}
+
+test "verify: primality" {
+    assert !is_prime(0)
+    assert !is_prime(1)
+    assert is_prime(2)
+    assert is_prime(3)
+    assert !is_prime(4)
+    assert is_prime(97)
+    assert !is_prime(99)
+}
+
+test "verify: counting and banners" {
+    assert count_primes_below(2) == 0
+    assert count_primes_below(3) == 1
+    assert count_primes_below(10) == 4
+    assert count_primes_below(100) == 25
+    assert banner("x") == "== x =="
+}
+
+test "verify: a comptime block in an expression" {
+    let n = comptime {
+        factorial(6)
+    }
+    assert n == 720
+    assert (comptime {
+        count_primes_below(10)
+    }) == 4
+}

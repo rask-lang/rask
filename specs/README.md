@@ -74,7 +74,7 @@ Quick navigation by task or concept:
 | Term | Definition Location |
 |------|---------------------|
 | Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
-| Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (Cell, Pool, Shared, Mutex, Owned) |
+| Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (`Shared<T, S>`, Rack+Link, Heap) |
 | Link | [memory/racks.md](memory/racks.md) — A stored reference to a node in a Rack |
 | Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool (deprecated) |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
@@ -113,16 +113,16 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
-| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` |
-| [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across Cell, Pool, Shared, Mutex, Owned |
+| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L6) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` |
+| [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across `Shared<T, S>`, Rack+Link, Heap |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |
 | [resource-types.md](memory/resource-types.md) | `@resource` annotation — linear struct types |
-| [owned.md](memory/owned.md) | `Owned<T>` — linear heap pointer for recursive types |
-| [closures.md](memory/closures.md) | Capture rules, scope constraints, Cell/Pool patterns |
+| [heap.md](memory/heap.md) | `Heap<T>` — linear heap pointer for recursive types |
+| [closures.md](memory/closures.md) | Capture rules, scope constraints, `Shared` capture patterns |
 | [racks.md](memory/racks.md) | Racks and links, delete-time edge fixup, link lifetime |
 | [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing (deprecated) |
-| [cell.md](memory/cell.md) | Single-value mutable box |
+| [cell.md](memory/cell.md) | Retired — folded into `Shared<T, Local>` |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
 | [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |
 
@@ -159,12 +159,19 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 | Spec | Description |
 |------|-------------|
-| [README.md](stdlib/README.md) | **Overview**: 24 modules, batteries-included philosophy |
+| [README.md](stdlib/README.md) | **Overview**: module inventory, batteries-included philosophy |
 | [api-design.md](stdlib/api-design.md) | **API rules**: one screen per module, guess test, no Rust legacy (SD1–SD5) |
 | [collections.md](stdlib/collections.md) | Vec, Map (indexed and keyed collections) |
-| [strings.md](stdlib/strings.md) | String types, encoding |
+| [strings.md](stdlib/strings.md) | String types; bytes to index, graphemes to display (U1–U5) |
 | [iteration.md](stdlib/iteration.md) | Collection iteration patterns |
 | [bits.md](stdlib/bits.md) | Bit manipulation, binary parsing |
+| [url.md](stdlib/url.md) | URL parsing, percent-encoding |
+| [base64.md](stdlib/base64.md) | Base64 encoding |
+| [hex.md](stdlib/hex.md) | Hex encoding |
+| [csv.md](stdlib/csv.md) | CSV — typed decode into structs, raw rows, streaming |
+| [digest.md](stdlib/digest.md) | SHA-256, SHA-1, MD5, CRC32 |
+| [terminal.md](stdlib/terminal.md) | ANSI styling as a value, terminal detection |
+| [tls.md](stdlib/tls.md) | TLS client and server, dial or upgrade |
 | [testing.md](stdlib/testing.md) | Test conventions |
 
 ## Tooling — Developer tools

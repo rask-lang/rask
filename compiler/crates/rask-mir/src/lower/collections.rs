@@ -88,6 +88,11 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
                 MirOperand::Constant(MirConst::Int(elem_size as i64)),
+                // What the elements are, so the vector can give them back —
+                // and so anything pushed onto it later is given back too.
+                MirOperand::Constant(MirConst::Int(
+                    crate::elem_strs::tag_of(Some(&elem_ty)),
+                )),
             ],
         }));
         Ok((MirOperand::Local(vec_local), MirType::I64))
@@ -808,7 +813,7 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::FuncPtr(_) | MirType::Handle => 8,
+            | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size as i64,
@@ -836,7 +841,16 @@ impl<'a> MirLowerer<'a> {
             Type::Var(_) => None,
             // `T?` (`T or none`) lays out as [tag:8][payload]; floor the payload
             // to a full word so scalar inners aren't truncated.
+            //
+            // Except a niche: `Handle<T>?` and `Link<T>?` are one word with no
+            // tag beside them, the value itself standing in for the option. Two
+            // computations of the element's shape disagreed here — the push
+            // wrote the 8-byte niche while `Vec.new` had reserved 16-byte slots
+            // for it, so every read came back from the wrong offset (#959).
             Type::Result { ok, err } if **err == Type::None => {
+                if self.ctx.niche_option_sentinel(ty).is_some() {
+                    return Some(rask_mono::abi::PAYLOAD_SLOT_BYTES as i64);
+                }
                 Some(8 + self.slot_size_for_type(ok)?.max(8))
             }
             _ => Some(Self::mir_slot_size(&self.ctx.type_to_mir(ty))),

@@ -73,8 +73,8 @@ cover the ones that matter?
 | `.filter(` | 15 | 0.6 | 2 | near-absent in experts |
 | `Box<` | 44 | 26 | 9 | deleted (values own heap) |
 | `Arc<` | 35 | 36 | 14 | → `Shared` |
-| `Mutex<` | 30 | 14 | 0.4 | → `Mutex` (domain-driven) |
-| `RefCell` | 2.7 | 2.1 | 3.4 | → `Cell` — niche confirmed |
+| `Mutex<` | 30 | 14 | 0.4 | → `Shared<T, Mutex>` (domain-driven) |
+| `RefCell` | 2.7 | 2.1 | 3.4 | → `Shared<T, Local>` — niche confirmed |
 | `Rc<` | 0 | 2.4 | 0 | Arc won; no Rc analog needed |
 | `where` clauses | 11 | 61 | 29 | generics ceremony |
 | turbofish `::<` | 7.6 | 26 | 29 | inference gaps |
@@ -94,8 +94,10 @@ cover the ones that matter?
    one mark per 35 lines. PM4's cost is real but bounded.
 3. **Expert systems code barely uses iterator adapters** (tokio: 8 iter/10k, 0.6 filter) —
    plain loops dominate. Rask's loop-first design matches expert practice.
-4. **The box family maps 1:1 onto observed usage.** `Arc` common → `Shared`; `RefCell` flat at
-   2–3/10k in every corpus → `Cell` deliberately niche; `Rc` ≈ 0 → correctly omitted.
+4. **The box family maps 1:1 onto observed usage.** `Arc` common → `Shared`; `Rc` ≈ 0 →
+   correctly omitted. `RefCell` sits flat at 2–3/10k in every corpus against `Arc`+`Mutex` at
+   14–36 — an order of magnitude apart. That gap is why the unlocked strategy is `Shared.local`,
+   opted into, and the locking one is what bare `Shared` means.
 5. **tokio's async coloring** (`await` + `async fn` + `Pin` + `'static` ≈ 320 sites/10k) is the
    ceremony Rask's uncolored concurrency deletes — caveat: tokio is the runtime, not an app.
 6. **~20% of expert bindings are `mut`** — `const`-by-default matches practice, not just taste.

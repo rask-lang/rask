@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Regression test: calling .lock() on a Mutex field via a `with` block
+// Regression test: calling .write() on a Mutex field via a `with` block
 // must lower to the 2-arg Mutex_lock call (mutex ptr + closure).
-// Previously `with self.index.lock() as idx { ... }` was lowered as a
+// Previously `with self.index.write() as idx { ... }` was lowered as a
 // plain method call, emitting Mutex_lock with only 1 arg and failing
 // Cranelift verification.
+import sync.Shared
+import sync.Mutex
 
 struct Counter {
-    value: Mutex<i64>
+    value: Shared<i64, Mutex>
 }
 
 extend Counter {
     func snapshot(self) -> i64 {
-        with self.value.lock() as v {
+        with self.value.write() as v {
             return v
         }
     }
 }
 
 func main() {
-    let c = Counter { value: Mutex.new(42) }
+    let c = Counter { value: Shared.mutex(42) }
     println(c.snapshot().to_string())
 }

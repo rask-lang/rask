@@ -8,6 +8,7 @@
 //
 // The values here are chosen to catch a sign-extend: 3000000000 needs bit 31, so
 // widening it wrong gives a negative rather than a slightly-off number.
+import sync.Shared
 
 struct Holder {
     wide: i64
@@ -130,7 +131,7 @@ test "type.optionals — a widened value survives an optional and a result" {
     assert res == 3000000000
 }
 
-test "mem.boxes — a widened value survives a closure and a Cell" {
+test "mem.boxes — a widened value survives a closure and a Local box" {
     let big: u32 = 3000000000
     let f = || {
         return big
@@ -138,9 +139,9 @@ test "mem.boxes — a widened value survives a closure and a Cell" {
     let captured: i64 = f()
     assert captured == 3000000000
 
-    let cell = Cell.new(0)
+    let cell = Shared.local(0)
     cell.set(big)
-    with cell as c {
+    with cell.write() as c {
         assert c == 3000000000
     }
 }

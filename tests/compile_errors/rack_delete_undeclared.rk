@@ -5,6 +5,8 @@
 // consumed at the call site, so they watch the name die. A delete that chooses
 // which node goes can't be seen from outside, so the parameter carries `deleting`
 // and the call revokes the caller's links.
+import memory.Link
+import memory.Rack
 
 struct Node {
     id: i32

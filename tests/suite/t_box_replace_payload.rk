@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `replace` on a box hands back the old payload, whatever the payload is.
+//
+// MIR used to guess a return type from the *end* of the mangled call name, so
+// anything ending in `_replace` came back as a `string` — and a `Local` box's
+// `replace` is lowered as `Cell_replace`. A `Shared<i32>` handed back sixteen
+// bytes of string where an i32 belonged, and the value read as empty.
+//
+// The name-suffix guessing is gone; these pin the shapes it used to catch.
+
+import sync.Shared
+
+test "replace on a Local box gives back the old number" {
+    let counter = Shared.local(0i32)
+    counter.set(42i32)
+    let old = counter.replace(7i32)
+    assert old == 42i32
+    assert counter.get() == 7i32
+}
+
+test "replace on a Mutex box agrees" {
+    let m = Shared.mutex(100i64)
+    let old = m.replace(5i64)
+    assert old == 100i64
+    assert m.get() == 5i64
+}
+
+test "a box that really does hold a string" {
+    let s = Shared.local("first")
+    let old = s.replace("second")
+    assert old == "first"
+    assert s.get() == "second"
+}
+
+test "string replace still returns a string" {
+    let text = "Hello World"
+    assert text.replace("World", "there") == "Hello there"
+}

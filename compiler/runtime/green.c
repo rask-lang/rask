@@ -51,6 +51,16 @@ typedef struct GreenTask {
     atomic_int      task_state;
     atomic_int      cancel_flag;
     int64_t         result;
+    // Non-zero when `result` is a heap box this task owns rather than a plain
+    // value. A task's result travels as one machine word, so anything wider —
+    // and anything that comes back in a float register — is allocated by the
+    // spawn thunk and the word is its address. Somebody has to free it, and the
+    // task is the only party present at every ending: joined, cancelled, or
+    // detached and never looked at.
+    //
+    // `rask_green_join` hands ownership to the joiner by clearing `result`, so
+    // exactly one of the two frees it (#963).
+    int64_t         result_owned;
     char           *panic_msg;
 
     // Completion signaling
@@ -73,6 +83,7 @@ typedef struct GreenTask {
 
     // Per-task ensure hook stack (LIFO cleanup on cancel/panic)
     void           *ensure_stack;
+    void           *access_stack;   // locks this task holds (ctrl.panic/U3)
 } GreenTask;
 
 // ─── Task handle (returned to user code) ────────────────────
@@ -282,6 +293,9 @@ static void task_release(GreenTask *t) {
         pthread_cond_destroy(&t->done_cond);
         if (t->panic_msg) free(t->panic_msg);
         if (t->state) free(t->state);
+        // Still set means nobody took it — a detached task whose value no join
+        // ever came for.
+        if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
         free(t);
     }
 }
@@ -348,6 +362,11 @@ extern void  *rask_ensure_stack_take(void);
 extern void   rask_ensure_stack_set(void *head);
 extern void   rask_ensure_run_all(void);
 
+// Same deal for the locks a task holds (ctrl.panic/U3): parked with the task so
+// a worker multiplexing fibers doesn't hand one task's held locks to another.
+extern void  *rask_access_stack_take(void);
+extern void   rask_access_stack_set(void *head);
+
 // ─── Execute a single task ──────────────────────────────────
 
 static void execute_task(GreenScheduler *s, GreenTask *t) {
@@ -357,6 +376,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
 
     // Restore per-task ensure hook stack (may have hooks from previous polls)
     rask_ensure_stack_set(t->ensure_stack);
+    rask_access_stack_set(t->access_stack);
 
     // Install panic handler for this task invocation
     rask_panic_install();
@@ -380,6 +400,7 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
 
     // Save ensure hook stack back to task before switching away
     t->ensure_stack = rask_ensure_stack_take();
+    t->access_stack = rask_access_stack_take();
     tl_current_task = NULL;
 
     if (poll_result == RASK_POLL_READY) {
@@ -620,6 +641,9 @@ int64_t rask_green_join(void *handle, char **msg_out) {
     pthread_mutex_unlock(&t->done_lock);
 
     int64_t result = t->result;
+    // Ownership of a boxed result moves to the caller here: clearing it stops
+    // `task_release` below from freeing what the caller is about to read.
+    t->result = 0;
 
     // If task panicked, hand the message back instead of re-panicking here —
     // the joiner decides what to do with it (matches thread.c's convention).
@@ -812,7 +836,10 @@ static int closure_poll_fn(void *state, void *task_ctx) {
     return RASK_POLL_READY;
 }
 
-void *rask_green_closure_spawn(void *closure_ptr) {
+// `result_owned` says the closure hands back a heap box rather than a plain
+// value — see `GreenTask::result_owned`. The compiler knows the payload type and
+// passes it; the runtime only needs to know whether to free.
+void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     int64_t (*func)(void *) = *(int64_t (**)(void *))(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
@@ -825,7 +852,10 @@ void *rask_green_closure_spawn(void *closure_ptr) {
     ps->env  = env;
     ps->alloc_base = closure_ptr;
 
-    return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
+    void *handle = rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
+    GreenHandle *h = (GreenHandle *)handle;
+    if (h && h->task) h->task->result_owned = result_owned;
+    return handle;
 }
 
 // ─── I/O wrappers ───────────────────────────────────────────

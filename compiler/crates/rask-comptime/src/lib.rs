@@ -1980,7 +1980,7 @@ impl ComptimeInterpreter {
             }
             // No heap at comptime — `own` is transparent, same as OW5 at runtime,
             // so the operand's value *is* the answer.
-            UnaryOp::Own => Ok(val),
+            UnaryOp::Heap => Ok(val),
         }
     }
 

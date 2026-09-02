@@ -25,6 +25,22 @@ pub struct CodeGenerator {
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
     string_data: HashMap<String, cranelift_module::DataId>,
+    /// Element string-offset lists, one data object per distinct list.
+    ///
+    /// A container's `free` is handed the map of where the strings sit inside
+    /// one of its elements. The lists are tiny and repeat heavily — `[0]` for
+    /// every `Vec<string>` in the program — so they're keyed by content.
+    element_offset_data: HashMap<Vec<i32>, cranelift_module::DataId>,
+    /// The same literals again, laid out as a `RaskStr` heap header:
+    /// `[refcount: u32 = sentinel][capacity: u32][bytes][NUL]`.
+    ///
+    /// A literal used to be materialized by calling `rask_string_from` at every
+    /// use, which allocates and sets the refcount to 1 — so every use of a
+    /// literal longer than fifteen bytes was a fresh allocation that nothing
+    /// ever freed, because `RE3` exempts literals from RC ops on the grounds
+    /// that they carry a sentinel refcount. They didn't. Now they do, and the
+    /// call goes away with the allocation.
+    string_header_data: HashMap<String, cranelift_module::DataId>,
     /// Comptime global data (const name → DataId in the object module)
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
     /// MIR names of stdlib functions that can panic at runtime
@@ -80,6 +96,8 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            string_header_data: HashMap::new(),
+            element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -130,6 +148,8 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            string_header_data: HashMap::new(),
+            element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
@@ -319,9 +339,10 @@ impl CodeGenerator {
             self.func_ids.insert("rask_exit".to_string(), id);
         }
 
-        // panic_unwrap() -> void (diverges, but declared as void return)
+        // panic_unwrap(was_error: i32) -> void (diverges, but declared as void return)
         {
-            let sig = self.module.make_signature();
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I32)); // was_error
             let id = self.module
                 .declare_function("rask_panic_unwrap", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
@@ -337,12 +358,13 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail".to_string(), id);
         }
 
-        // panic_unwrap_at(file: ptr, line: i32, col: i32) -> void (diverges)
+        // panic_unwrap_at(file: ptr, line: i32, col: i32, was_error: i32) -> void
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // file ptr
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I32)); // was_error
             let id = self.module
                 .declare_function("rask_panic_unwrap_at", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
@@ -450,19 +472,25 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
         }
 
-        // assert_fail_cmp_f64(left: f64, right: f64, op: ptr, file: ptr, line: i32, col: i32)
-        {
+        // assert_fail_cmp_f64/_f32(left, right, op: ptr, file: ptr, line: i32, col: i32)
+        // Two widths, not one: the shortest round-tripping decimal depends on
+        // the width it's checked against, so an f32 widened to double reports
+        // its exact binary expansion instead of what `println` shows.
+        for (internal, symbol, value_ty) in [
+            ("assert_fail_cmp_f64", "rask_assert_fail_cmp_f64", types::F64),
+            ("assert_fail_cmp_f32", "rask_assert_fail_cmp_f32", types::F32),
+        ] {
             let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::F64)); // left
-            sig.params.push(AbiParam::new(types::F64)); // right
+            sig.params.push(AbiParam::new(value_ty)); // left
+            sig.params.push(AbiParam::new(value_ty)); // right
             sig.params.push(AbiParam::new(types::I64)); // op str ptr
             sig.params.push(AbiParam::new(types::I64)); // file ptr
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_fail_cmp_f64", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("assert_fail_cmp_f64".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
@@ -492,6 +520,78 @@ impl CodeGenerator {
                 .declare_function("rask_panic_at", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("panic_at".to_string(), id);
+        }
+
+        // The checked-arithmetic panics that name their operands (ctrl.panic/F3).
+        // `tail` is the static "<type> range [min, max]" half codegen already
+        // registered as a string global; the operands come from the live values
+        // at the check.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // op symbol ptr
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // lhs
+            sig.params.push(AbiParam::new(types::I64)); // rhs
+            sig.params.push(AbiParam::new(types::I32)); // is_unsigned
+            let id = self.module
+                .declare_function("rask_panic_overflow_binary", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_binary".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // operand
+            let id = self.module
+                .declare_function("rask_panic_overflow_neg", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_neg".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // tail ptr
+            sig.params.push(AbiParam::new(types::I64)); // amount
+            let id = self.module
+                .declare_function("rask_panic_shift_amount", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_shift_amount".to_string(), id);
+        }
+        // The 128-bit forms: same messages, operands passed at their own width.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));  // file ptr
+            sig.params.push(AbiParam::new(types::I32));  // line
+            sig.params.push(AbiParam::new(types::I32));  // col
+            sig.params.push(AbiParam::new(types::I64));  // op symbol ptr
+            sig.params.push(AbiParam::new(types::I64));  // tail ptr
+            sig.params.push(AbiParam::new(types::I128)); // lhs
+            sig.params.push(AbiParam::new(types::I128)); // rhs
+            sig.params.push(AbiParam::new(types::I32));  // is_unsigned
+            let id = self.module
+                .declare_function("rask_panic_overflow_binary_i128", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_binary_i128".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));  // file ptr
+            sig.params.push(AbiParam::new(types::I32));  // line
+            sig.params.push(AbiParam::new(types::I32));  // col
+            sig.params.push(AbiParam::new(types::I64));  // tail ptr
+            sig.params.push(AbiParam::new(types::I128)); // operand
+            let id = self.module
+                .declare_function("rask_panic_overflow_neg_i128", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_overflow_neg_i128".to_string(), id);
         }
 
         // set_panic_location(file: ptr, line: i32, col: i32) -> void
@@ -623,6 +723,7 @@ impl CodeGenerator {
             ("assert_eq_fail_bool", "rask_assert_eq_fail_bool", Some(types::I64)),
             ("assert_eq_fail_char", "rask_assert_eq_fail_char", Some(types::I64)),
             ("assert_eq_fail_f64", "rask_assert_eq_fail_f64", Some(types::F64)),
+            ("assert_eq_fail_f32", "rask_assert_eq_fail_f32", Some(types::F32)),
             ("assert_eq_fail_str", "rask_assert_eq_fail_str", Some(types::I64)),
             ("assert_eq_fail", "rask_assert_eq_fail", None),
         ] {
@@ -902,6 +1003,9 @@ impl CodeGenerator {
         for &msg in crate::builder::OVERFLOW_FALLBACKS {
             self.register_string(msg)?;
         }
+        for &sym in crate::builder::OVERFLOW_OP_SYMBOLS {
+            self.register_string(sym)?;
+        }
 
         // Pre-register panic message for inline pool access (release mode)
         if self.build_mode == BuildMode::Release {
@@ -1002,8 +1106,74 @@ impl CodeGenerator {
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
                 self.string_data.insert(s.clone(), data_id);
+                self.register_string_header(s)?;
             }
         }
+        Ok(())
+    }
+
+    /// Emit a literal in `RaskStr` heap-header form, with a sentinel refcount.
+    ///
+    /// Only for literals that don't fit SSO — a short one is built from two
+    /// immediates at the use site and has no refcount at all.
+    fn register_string_header(&mut self, s: &str) -> CodegenResult<()> {
+        const SSO_MAX: usize = 15;
+        if s.len() <= SSO_MAX || self.string_header_data.contains_key(s) {
+            return Ok(());
+        }
+        // Numbered from this map's own length — sharing the `.str.N` counter
+        // let the two sequences collide once anything registered a string
+        // outside the MIR walk.
+        let name = format!(".strhdr.{}", self.string_header_data.len());
+
+        let data_id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let mut bytes = Vec::with_capacity(8 + s.len() + 1);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // refcount: never freed
+        bytes.extend_from_slice(&(s.len() as u32).to_le_bytes()); // capacity
+        bytes.extend_from_slice(s.as_bytes());
+        bytes.push(0);
+
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        // The runtime reads the two u32s straight out of the header.
+        desc.set_align(8);
+
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.string_header_data.insert(s.to_string(), data_id);
+        Ok(())
+    }
+
+    /// Emit one offset list as read-only data.
+    fn register_element_offsets(&mut self, offsets: &[i32]) -> CodegenResult<()> {
+        if offsets.is_empty() || self.element_offset_data.contains_key(offsets) {
+            return Ok(());
+        }
+        let name = format!(".elemoffs.{}", self.element_offset_data.len());
+        let data_id = self
+            .module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let mut bytes = Vec::with_capacity(offsets.len() * 4);
+        for off in offsets {
+            bytes.extend_from_slice(&off.to_le_bytes());
+        }
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        desc.set_align(4);
+
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.element_offset_data.insert(offsets.to_vec(), data_id);
         Ok(())
     }
 
@@ -1027,6 +1197,7 @@ impl CodeGenerator {
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         self.string_data.insert(s.to_string(), data_id);
+        self.register_string_header(s)?;
         Ok(())
     }
 
@@ -1217,6 +1388,12 @@ impl CodeGenerator {
             self.register_string(src_file)?;
         }
 
+        // Every offset list this function's container frees will ask for. Has
+        // to happen before the borrow below, and before any body references one.
+        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts) {
+            self.register_element_offsets(&offsets)?;
+        }
+
         let func_id = self.func_ids.get(&mir_fn.name)
             .ok_or_else(|| CodegenError::FunctionNotFound(mir_fn.name.clone()))?;
 
@@ -1247,17 +1424,31 @@ impl CodeGenerator {
 
         // Import only the string data globals that this function actually uses
         let needed_strings = collect_used_strings(mir_fn);
+        let mut element_offset_globals: HashMap<Vec<i32>, GlobalValue> = HashMap::new();
+        for (offsets, data_id) in &self.element_offset_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            element_offset_globals.insert(offsets.clone(), gv);
+        }
+
         let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        let mut string_header_globals: HashMap<String, GlobalValue> = HashMap::new();
         for s in &needed_strings {
             if let Some(data_id) = self.string_data.get(s) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                 string_globals.insert(s.clone(), gv);
             }
+            if let Some(data_id) = self.string_header_data.get(s) {
+                let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                string_header_globals.insert(s.clone(), gv);
+            }
         }
         // The checked-arithmetic panic messages are emitted by codegen, not
         // referenced in MIR, so import them into every function that might
         // overflow (type.overflow). Unused imports are harmless.
-        for &msg in crate::builder::OVERFLOW_MESSAGES {
+        for &msg in crate::builder::OVERFLOW_MESSAGES
+            .iter()
+            .chain(crate::builder::OVERFLOW_OP_SYMBOLS)
+        {
             if !string_globals.contains_key(msg) {
                 if let Some(data_id) = self.string_data.get(msg) {
                     let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
@@ -1303,6 +1494,8 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &string_globals,
+            &string_header_globals,
+            &element_offset_globals,
             &comptime_globals,
             &vtable_globals,
             &self.panicking_fns,
@@ -1732,4 +1925,37 @@ impl crate::Backend for CodeGenerator {
         // Unbox to call the owned-self method
         (*self).emit_object(path)
     }
+}
+
+/// The offset lists this function's container frees will ask for.
+///
+/// Mirrors the tag encoding `container_drop.rs` writes and the flattening
+/// `FunctionBuilder::element_string_offsets` does — kept here because the data
+/// objects have to exist before any function body references one.
+fn collect_element_offsets(
+    mir_fn: &MirFunction,
+    struct_layouts: &[rask_mono::StructLayout],
+) -> Vec<Vec<i32>> {
+    let mut lists = Vec::new();
+    for block in &mir_fn.blocks {
+        for stmt in &block.statements {
+            let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
+            let Some((leading, tags)) = rask_mir::elem_strs::ctor_shape(&func.name) else {
+                continue;
+            };
+            for i in 0..tags {
+                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Int(tag))) =
+                    args.get(leading + i)
+                else {
+                    continue;
+                };
+                if let Some(offs) =
+                    crate::elem_offsets::string_offsets_for_tag(*tag, struct_layouts)
+                {
+                    lists.push(offs);
+                }
+            }
+        }
+    }
+    lists
 }

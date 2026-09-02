@@ -1,6 +1,8 @@
+import sync.Mutex
+
 struct BackendPool {
     backends: Vec<Backend>
-    index: Mutex<usize>
+    index: Shared<usize, Mutex>
 }
 
 struct Backend {
@@ -9,7 +11,7 @@ struct Backend {
 
 extend BackendPool {
     func next_healthy(self) -> Backend or ProxyError {
-        with self.index.lock() as idx {
+        with self.index.write() as idx {
             let count = self.backends.len()
             mut checked = 0
             loop {

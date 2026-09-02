@@ -7,54 +7,56 @@
 // any assert over a call that did work did that work twice. Native only; the
 // interpreter evaluated the condition once and only re-read the sides when the
 // assert actually failed.
+import sync.Shared
+import sync.Mutex
 
-func bump(m: Mutex<i64>) -> i64 {
-    with m.lock() as n {
+func bump(m: Shared<i64, Mutex>) -> i64 {
+    with m.write() as n {
         n = n + 1
     }
     return 7
 }
 
 test "a call on the left runs once" {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     assert bump(m) == 7
-    with m.lock() as n {
+    with m.write() as n {
         assert n == 1
     }
 }
 
 test "a call on the right runs once" {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     assert 7 == bump(m)
-    with m.lock() as n {
+    with m.write() as n {
         assert n == 1
     }
 }
 
 test "an inequality runs its sides once" {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     assert bump(m) != 0
-    with m.lock() as n {
+    with m.write() as n {
         assert n == 1
     }
 }
 
 test "an ordering comparison runs its sides once" {
-    let m = Mutex.new(0)
+    let m = Shared.mutex(0)
     assert bump(m) > 3
-    with m.lock() as n {
+    with m.write() as n {
         assert n == 1
     }
 }
 
 test "calls on both sides run once each" {
-    let a = Mutex.new(0)
-    let b = Mutex.new(0)
+    let a = Shared.mutex(0)
+    let b = Shared.mutex(0)
     assert bump(a) == bump(b)
-    with a.lock() as n {
+    with a.write() as n {
         assert n == 1
     }
-    with b.lock() as n {
+    with b.write() as n {
         assert n == 1
     }
 }

@@ -150,15 +150,16 @@ void rask_threadpool_shutdown(void) {
 // ThreadPool.spawn. Outside a `using ThreadPool` block there is no pool, so
 // this falls back to a dedicated thread rather than enqueueing into a queue
 // nothing drains.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr) {
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     if (!g_pool.started) {
-        return rask_closure_spawn(closure_ptr);
+        return rask_closure_spawn(closure_ptr, result_owned);
     }
 
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskTaskState *state = rask_task_state_new_pooled();
+    rask_task_state_set_result_owned(state, result_owned);
 
     PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
     job->func = func;

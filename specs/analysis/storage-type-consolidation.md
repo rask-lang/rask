@@ -1,9 +1,22 @@
 <!-- id: analysis.storage-consolidation -->
-<!-- status: exploration -->
+<!-- status: accepted -->
 <!-- summary: Can the storage types merge? One real merge, two false ones, and a decision procedure for what's left -->
 <!-- depends: memory/boxes.md, analysis/fourth-option.md -->
 
 # Can the Storage Types Consolidate?
+
+> **Accepted, with one reversal.** The recommendation at the bottom of this page
+> is the design: `Cell` and `Mutex` are strategies on `Shared<T, S>`
+> (`conc.sync`), `Owned<T>` is `Heap<T>` (`mem.heap`), `Atomic<T>` keeps its own
+> type and leaves the storage decision.
+>
+> The reversal is which strategy defaults. This page argues for `Local`, on the
+> grounds that you should never accidentally pay for synchronization you didn't
+> need. `conc.sync/SH8` decided the other way: the single-task box is the rare
+> one, the costs aren't symmetric — a lock you didn't need is measurable and
+> recoverable, a lock you skipped is a race — so `Readers` defaults and `Local`
+> is `Shared.local(…)`. Read the sections below with that swap in mind; the rest
+> of the argument stands.
 
 Prompted by the sharpest usability signal available: the language's own
 designer can't reliably pick between them. If choosing is hard for the person
@@ -172,7 +185,7 @@ got the same treatment.
 <!-- test: skip -->
 ```rask
 let counter = Shared.new(0)           // default: task-local, no lock at all
-let config  = Shared.readers(cfg)     // opt-in: many tasks, concurrent reads
+let config  = Shared.new(cfg)         // the default: many tasks, concurrent reads
 let queue   = Shared.mutex(q)         // opt-in: many tasks, one at a time
 ```
 
@@ -247,7 +260,7 @@ trace would be magic, which is the thing to avoid.
 <!-- test: skip -->
 ```rask
 let counter: Shared<i64> = Shared.new(0)                    // default: task-local
-let config:  Shared<Config, Readers> = Shared.readers(cfg)  // many tasks, concurrent reads
+let config:  Shared<Config, Readers> = Shared.new(cfg)      // many tasks, concurrent reads
 let queue:   Shared<Queue, Mutex> = Shared.mutex(q)         // many tasks, one at a time
 ```
 
@@ -332,7 +345,7 @@ let hits: Atomic<i64> = Atomic.new(0)
 
 hits.add(1)                          // one instruction, no lock, no block
 let n = hits.load()
-hits.rack(0)
+hits.store(0)
 let won = hits.compare_swap(old, new)
 ```
 
@@ -451,7 +464,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.
 - **Keep `Atomic<T>` as its own type**, with a lock-free-looking API
-  (`add`, `load`, `rack`, `compare_swap`) and no `with` blocks. Folding it
+  (`add`, `load`, `store`, `compare_swap`) and no `with` blocks. Folding it
   into `Shared` would have dressed a one-instruction operation in lock
   ceremony. It still leaves the *storage* decision — it's a measured
   optimization, documented under concurrency.

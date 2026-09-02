@@ -15,23 +15,25 @@
 //
 // `projects/tiwaz` couldn't build because of it — its load balancer walks
 // backends under the index lock and reads health under a second one.
+import sync.Shared
+import sync.Mutex
 
 struct Pool2 {
-    public index: Mutex<usize>
-    public flag: Mutex<usize>
+    public index: Shared<usize, Mutex>
+    public flag: Shared<usize, Mutex>
 }
 
 extend Pool2 {
     // The `return 0` exits under one release; the `return 2` under two.
     public func pick(self, limit: usize) -> i64 {
-        with self.index.lock() as idx {
+        with self.index.write() as idx {
             mut checked = 0
             loop {
                 if checked >= limit {
                     return 0
                 }
                 checked = checked + 1
-                with self.flag.lock() as f {
+                with self.flag.write() as f {
                     if f == 1 {
                         return 2
                     }
@@ -42,15 +44,15 @@ extend Pool2 {
 
     // Three deep, with an exit at every level.
     public func deep(self, level: usize) -> i64 {
-        with self.index.lock() as idx {
+        with self.index.write() as idx {
             if level == 0 {
                 return 10
             }
-            with self.flag.lock() as f {
+            with self.flag.write() as f {
                 if level == 1 {
                     return 11
                 }
-                with self.index.lock() as idx2 {
+                with self.index.write() as idx2 {
                     return 12
                 }
             }
@@ -59,7 +61,7 @@ extend Pool2 {
 }
 
 func fresh() -> Pool2 {
-    return Pool2 { index: Mutex<usize>.new(0), flag: Mutex<usize>.new(0) }
+    return Pool2 { index: Shared.mutex(0), flag: Shared.mutex(0) }
 }
 
 test "mem.boxes — a return past an inner `with` releases only the scopes it left" {
@@ -71,7 +73,7 @@ test "mem.boxes — a return past an inner `with` releases only the scopes it le
 
 test "mem.boxes — the inner scope's return releases both" {
     mut p = fresh()
-    with p.flag.lock() as f {
+    with p.flag.write() as f {
         f = 1
     }
     assert p.pick(3) == 2

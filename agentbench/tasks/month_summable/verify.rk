@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: the operator falls out of the method" {
+    let a = Money { cents: 150 }
+    let b = Money { cents: 275 }
+    assert a.add(b).cents == 425
+    assert (a + b).cents == 425
+    let m = Meters { value: 1.5 }
+    assert (m + m).value == 3.0
+}
+
+test "verify: total over Money" {
+    let purse: Vec<Money> = [Money { cents: 100 }, Money { cents: 25 }, Money { cents: 5 }]
+    assert total(purse, Money { cents: 0 }).cents == 130
+    mut empty: Vec<Money> = Vec.new()
+    assert total(empty, Money { cents: 0 }).cents == 0
+}
+
+test "verify: total over Meters" {
+    let legs: Vec<Meters> = [Meters { value: 1.5 }, Meters { value: 2.25 }]
+    assert total(legs, Meters { value: 0.0 }).value == 3.75
+}
+
+test "verify: doubled works on both" {
+    assert doubled(Money { cents: 7 }).cents == 14
+    assert doubled(Meters { value: 0.5 }).value == 1.0
+}

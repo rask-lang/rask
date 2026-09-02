@@ -6,6 +6,10 @@
 
 import http
 import os
+import sync.Mutex
+import http.Response
+import http.Request
+import http.Method
 
 // A middleware either lets the request continue or short-circuits with a
 // response. before() returns a concrete MwOutcome, so it's callable through
@@ -78,12 +82,12 @@ func bearer(header: string) -> string? {
 // request task mutates it.
 
 struct RateLimiter {
-    counters: Mutex<Map<string, u64>>
+    counters: Shared<Map<string, u64>, Mutex>
 }
 
 extend RateLimiter {
     func new() -> RateLimiter {
-        return RateLimiter { counters: Mutex.new(Map.new()) }
+        return RateLimiter { counters: Shared.mutex(Map.new()) }
     }
 }
 
@@ -96,13 +100,13 @@ extend RateLimiter with Middleware {
         let key = client_key(req)
         let limit = config.read().rate_limit_per_min
 
-        // Inline .lock() per access: `with self.counters as c` on a field
+        // Inline .write() per access: `with self.counters as c` on a field
         // Mutex doesn't unwrap in the current checker (FINDINGS).
-        let used: u64 = self.counters.lock().get(key) ?? 0
+        let used: u64 = self.counters.write().get(key) ?? 0
         if used >= limit {
             return MwOutcome.Short(error_response(ApiError.RateLimited(60)))
         }
-        self.counters.lock().insert(key, used + 1)
+        self.counters.write().insert(key, used + 1)
         return MwOutcome.Continue
     }
 }

@@ -6,6 +6,7 @@
 // container instead of by the payload: a float got renumbered as an integer, or
 // stored at one width and read back at the other, so the payload came out as a
 // denormal or a flat 0 while the tag stayed correct.
+import sync.Shared
 
 func opt_f64(x: f64?) -> f64 {
     if x? as v {
@@ -167,13 +168,13 @@ test "stdlib.collections — an f32 field into a Vec and back" {
     assert v[1] == 2.5
 }
 
-test "mem.boxes — a float through a Cell keeps its value" {
-    let cell = Cell.new(3.5)
-    with cell as v {
+test "mem.boxes — a float through a Local box keeps its value" {
+    let cell = Shared.local(3.5)
+    with cell.write() as v {
         assert v == 3.5
     }
-    let small = Cell.new(0.5)
-    with small as v {
+    let small = Shared.local(0.5)
+    with small.write() as v {
         assert v == 0.5
     }
 }

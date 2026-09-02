@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` written once in a generic body, run at every instantiation.
+//
+// The same call was an error on one backend and correct on the other: the
+// interpreter's scalar handlers had no `clone` arm and refused `T = i64`, while
+// native accepted it. Native's own answer was wrong in the other direction —
+// no stub declares `string_clone`, so the destination came out `i64` and a
+// 16-byte string was copied 8 bytes wide (#1020).
+
+struct Bin<T> { items: Vec<T> }
+
+extend Bin<T> {
+    func new() -> Bin<T> {
+        return Bin<T> { items: Vec.new() }
+    }
+
+    func put(mutate self, take value: T) {
+        self.items.push(value)
+    }
+
+    func top(self) -> T? {
+        if self.items.is_empty() { return none }
+        let idx = self.items.len() - 1
+        return self.items[idx].clone()
+    }
+}
+
+test "generic clone at string" {
+    mut b: Bin<string> = Bin.new()
+    b.put("a")
+    b.put("bb")
+    assert b.top()! == "bb"
+}
+
+test "generic clone at i64" {
+    mut b: Bin<i64> = Bin.new()
+    b.put(42i64)
+    assert b.top()! == 42i64
+}
+
+test "generic clone at f64" {
+    mut b: Bin<f64> = Bin.new()
+    b.put(2.5f64)
+    assert b.top()! == 2.5f64
+}
+
+test "generic clone at bool" {
+    mut b: Bin<bool> = Bin.new()
+    b.put(true)
+    assert b.top()! == true
+}
+
+test "cloning an optional" {
+    let present: string? = "here"
+    let copy = present.clone()
+    assert copy! == "here"
+
+    let absent: i64? = none
+    assert absent.clone() is none
+}

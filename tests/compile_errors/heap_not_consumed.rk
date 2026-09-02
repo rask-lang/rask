@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `own` value is linear (mem.linear/L1, L3 — same rules as `@resource`, #819).
+//
+// `own` allocates and there is exactly one owner, who consumes it exactly once.
+// Nothing checked that for a local, which mattered as soon as `drop` started
+// freeing for real (#739): leaking a box compiled, and dropping it twice compiled
+// and then aborted the process with a double free.
+//
+// `Heap<T>` erases to `T` in the checker so HP5's transparency works, so there's
+// no type here to look at — the `own` in the source is the signal.
+
+struct Node {
+    public v: i64
+}
+
+func consume(take n: Node) -> i64 {
+    return n.v
+}
+
+// ERROR: `p` is never consumed [E0837]
+func leaks() -> i64 {
+    let p = Heap(Node { v: 7 })
+    return p.v
+}
+
+// ERROR: `q` is consumed twice — the second `drop` is a second free [E0800]
+func double_frees() {
+    let q = Heap(Node { v: 1 })
+    drop(q)
+    drop(q)
+}
+
+// ERROR: handing it to a `take` parameter consumes it, so the `drop` after is
+// a second free [E0800]
+func gives_then_drops() -> i64 {
+    let r = Heap(Node { v: 2 })
+    let n = consume(r)
+    drop(r)
+    return n
+}
+
+// ERROR: consumed on one branch only, and the branches join [E0837]
+func maybe_consumes(flag: bool) {
+    let s = Heap(Node { v: 3 })
+    if flag {
+        drop(s)
+    }
+}
+
+func main() {
+    println("{leaks()}")
+    double_frees()
+    println("{gives_then_drops()}")
+    maybe_consumes(true)
+}

@@ -34,12 +34,63 @@ type TypedOperand = (MirOperand, MirType);
 /// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
 pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
-/// Check if a raw Type is Option<Handle<T>> (eligible for niche optimization).
+/// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+
+/// The `none` word for a lowered type that is a niche *option*.
+///
+/// Not the same question as `MirType::niche_none`: a bare `MirType::Handle` is
+/// a handle, not a `Handle?`, and reading it as an option would test it against
+/// the sentinel. `Link` is the exception — `Link<T>?` collapses to `Link`, so
+/// there the value and the option really are one type.
+pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
+    match ty {
+        MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
+        MirType::Link(_) => ty.niche_none(),
+        _ => None,
+    }
+}
+
+/// `T?`, collapsing the link niche. `Link<T>?` *is* one word — the address,
+/// with null for `none` — so wrapping it in an `Option` would give the local a
+/// tagged-union shape codegen then reads a tag byte out of. That read goes
+/// through the sentinel itself, which is not an address you may load from.
+///
+/// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
+/// collapses it and `resolve_type_str` doesn't, and the checks downstream accept
+/// either. Not worth churning while fixing something else.
+pub(crate) fn option_of(inner: MirType) -> MirType {
+    MirType::Option(Box::new(inner))
+}
+
+
+/// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
+///
+/// Both are one word where the value *is* the option, so neither carries a tag.
+/// They do *not* share a `none`: ask for the sentinel, not just the fact.
+///
+/// By-name only. A generic the checker resolved names its base by `TypeId`, and
+/// a free function can't see the table — prefer
+/// `MirContext::niche_option_sentinel` wherever a context is in reach.
 pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
-    if let Some(inner) = ty.as_option() {
-        matches!(inner, Type::UnresolvedGeneric { name, .. } if name == "Handle")
-    } else {
-        false
+    niche_option_sentinel_named(ty).is_some()
+}
+
+/// The word that means `none` for a niche option spelled by name.
+pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
+    let inner = ty.as_option()?;
+    let Type::UnresolvedGeneric { name, .. } = inner else { return None };
+    niche_sentinel_for_head(name)
+}
+
+/// The `none` word for a niche whose head name is `head`, with or without its
+/// type argument attached — a resolved generic names its base by the
+/// declaration's own spelling, `"Handle<T>"` and all.
+pub(crate) fn niche_sentinel_for_head(head: &str) -> Option<i64> {
+    match head.split('<').next().unwrap_or(head).trim() {
+        "Handle" => Some(HANDLE_NONE_SENTINEL),
+        "Link" => Some(LINK_NONE_SENTINEL),
+        _ => None,
     }
 }
 
@@ -558,12 +609,57 @@ impl<'a> MirContext<'a> {
         MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
     }
 
+    /// The layout for `name`, preferring the program's own over the stdlib's.
+    ///
+    /// Layouts are one flat `Vec` keyed by bare name, so a program's
+    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer`. This used to
+    /// take whichever came first, which is the stdlib's — `public struct Timer
+    /// { }`, no fields. Every field of the user's type then landed at offset 0
+    /// (MIR showed three writes to `*(_0+0)` and three reads of `.0`), the struct
+    /// got a zero-byte slot, and the literal segfaulted while the interpreter
+    /// printed the right answer. Renaming the type to anything the stdlib doesn't
+    /// use was the whole difference (#975).
+    ///
+    /// The program winning in its own package is the rule the checker already
+    /// applies to type names (#515). Once IM1 and IM8 are enforced this is a
+    /// narrower case than it was — an unimported stdlib name isn't in scope, and
+    /// an imported one that's shadowed is a named error — but it stays reachable
+    /// through a name that resolves to a stdlib type without being one of its
+    /// declared exports.
     pub fn find_struct(&self, name: &str) -> Option<(u32, &StructLayout)> {
-        self.struct_layouts
+        let mut stdlib_match = None;
+        for (i, s) in self.struct_layouts.iter().enumerate() {
+            if s.name != name {
+                continue;
+            }
+            if !s.is_stdlib {
+                return Some((i as u32, s));
+            }
+            if stdlib_match.is_none() {
+                stdlib_match = Some((i as u32, s));
+            }
+        }
+        stdlib_match
+    }
+
+    /// AN1: the declared type of one field of a user annotation.
+    ///
+    /// Annotations register as nominal structs in the checker's table but never
+    /// get a layout — nothing constructs one (AN3), so mono has no reason to
+    /// lay it out. The table is where the declaration still is.
+    pub fn annotation_field_type(&self, annotation: &str, field: &str) -> Option<MirType> {
+        use rask_types::TypeDef;
+        let id = match self.type_defs.lookup(annotation)? {
+            rask_types::Type::Named(id) => id,
+            _ => return None,
+        };
+        let TypeDef::Struct { fields, .. } = self.type_defs.get(id)? else {
+            return None;
+        };
+        fields
             .iter()
-            .enumerate()
-            .find(|(_, s)| s.name == name)
-            .map(|(i, s)| (i as u32, s))
+            .find(|(name, _)| name == field)
+            .map(|(_, ty)| self.type_to_mir(ty))
     }
 
     /// The type of one payload field of an enum variant, read off the checker's
@@ -771,7 +867,19 @@ impl<'a> MirContext<'a> {
 
     /// Resolve a type string to MirType, looking up struct/enum names in layouts.
     pub fn resolve_type_str(&self, s: &str) -> MirType {
-        match s.trim() {
+        // IM3: a transparent alias is its target, so the layout to find is the
+        // target's. Every type string reaches MIR through here, which makes this
+        // the one place it has to happen — `let d: Span = …` under
+        // `import time.Duration as Span` was matching `stdlib/builtins.rk`'s own
+        // `Span` layout by name, so the binding got that struct's slot and a
+        // `Duration` was copied into it (#923 crossed with #975).
+        let trimmed = s.trim();
+        if let Some(target) = self.type_defs.alias_target(trimmed) {
+            if target != trimmed {
+                return self.resolve_type_str(target);
+            }
+        }
+        match trimmed {
             "i8" => MirType::I8,
             "i16" => MirType::I16,
             "i32" => MirType::I32,
@@ -809,10 +917,22 @@ impl<'a> MirContext<'a> {
                     let inner = &name[1..name.len() - 1];
                     if let Some(semi) = inner.rfind(';') {
                         let elem = self.resolve_type_str(inner[..semi].trim());
-                        // A symbolic length (a comptime parameter) has no value
-                        // here; 0 keeps the element type intact, which is what
-                        // the checker does with the same shape.
-                        let len = inner[semi + 1..].trim().parse::<u32>().unwrap_or(0);
+                        // A literal length, then a module-level `const` naming
+                        // one — read from the checker's table rather than
+                        // re-derived here, so the two can't disagree about how
+                        // long the array is (#906). Anything still symbolic (a
+                        // comptime parameter) keeps 0, which preserves the
+                        // element type and matches what the checker does.
+                        let len_str = inner[semi + 1..].trim();
+                        let len = len_str
+                            .parse::<u32>()
+                            .ok()
+                            .or_else(|| {
+                                self.type_defs
+                                    .const_length(len_str)
+                                    .and_then(|n| u32::try_from(n).ok())
+                            })
+                            .unwrap_or(0);
                         return MirType::Array { elem: Box::new(elem), len };
                     }
                     return MirType::Slice(Box::new(self.resolve_type_str(inner)));
@@ -868,11 +988,11 @@ impl<'a> MirContext<'a> {
                 }
                 // "Option<T>" → MirType::Option
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                    return option_of(self.resolve_type_str(inner));
                 }
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
-                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                    return option_of(self.resolve_type_str(inner));
                 }
                 // "any TraitName" → TraitObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
@@ -898,6 +1018,15 @@ impl<'a> MirContext<'a> {
                 }
                 if name.starts_with("Handle<") {
                     return MirType::Handle;
+                }
+                if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
+                    return match self.resolve_type_str(node.trim()) {
+                        MirType::Struct(sid) => MirType::Link(sid),
+                        _ => MirType::Ptr,
+                    };
+                }
+                if name.starts_with("Rack<") || name == "Rack" {
+                    return MirType::Ptr;
                 }
                 if name.starts_with("Channel<") || name.starts_with("Sender<")
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
@@ -937,6 +1066,133 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// The registration a whole container of links needs, or `None`.
+    ///
+    /// A container filled entry by entry has each `push` record its edge. One
+    /// that arrives whole doesn't: `h.list = h.list.filter(…)` builds a fresh
+    /// vector, and no push ever ran over it. Registering the container's
+    /// contents is idempotent — a record is one per (container, target) — so
+    /// doing it at every such assignment costs nothing where the pushes already
+    /// did the work.
+    pub(crate) fn container_link_registration(&self, ty: &Type) -> Option<&'static str> {
+        let head = self.generic_head(ty)?;
+        let args = match ty {
+            Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+            _ => return None,
+        };
+        let value = args.iter().rev().find_map(|a| match a {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        })?;
+        if !self.is_link_type(value) {
+            return None;
+        }
+        match head.as_str() {
+            "Vec" => Some("Link_register_vec"),
+            "Map" => Some("Link_register_map"),
+            _ => None,
+        }
+    }
+
+    /// Does this struct have a field that can hold an edge — a `Link<T>`, or a
+    /// `Vec`/`Map` of them? Same question codegen asks to build the descriptor;
+    /// asked here to decide whether the call is worth emitting at all.
+    pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
+        let MirType::Struct(sid) = ty else { return false };
+        let Some(layout) = self.struct_layouts.get(sid.id as usize) else { return false };
+        layout.fields.iter().any(|f| Self::field_holds_links(&f.ty))
+    }
+
+    /// `Link<T>` / `Link<T>?`, or a `Vec`/`Map` whose values are links.
+    pub(crate) fn field_holds_links(ty: &Type) -> bool {
+        let bare = ty.as_option().unwrap_or(ty);
+        let Type::UnresolvedGeneric { name, args } = bare else { return false };
+        if name == "Link" {
+            return true;
+        }
+        if name != "Vec" && name != "Map" {
+            return false;
+        }
+        args.iter().rev().find_map(|a| match a {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        })
+        .is_some_and(|v| matches!(v.as_option().unwrap_or(v),
+            Type::UnresolvedGeneric { name, .. } if name == "Link"))
+    }
+
+    /// Is this the `Link<T>` type, however the checker happens to spell it?
+    ///
+    /// A resolved `Generic` names its base by the declaration's own spelling —
+    /// `"Link<T>"`, parameter and all — so the comparison is on the head, not
+    /// the whole string.
+    fn is_link_type(&self, ty: &Type) -> bool {
+        self.generic_head(ty).as_deref() == Some("Link")
+    }
+
+    /// The head of a generic type's name: `Link<T>` and `Link` both give `Link`.
+    fn generic_head(&self, ty: &Type) -> Option<String> {
+        let name = match ty {
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
+            _ => return None,
+        };
+        Some(name.split('<').next().unwrap_or(&name).to_string())
+    }
+
+    /// `Link<T>` — the node's address, carrying `T`'s layout so a field access
+    /// through it is the same base+offset projection an aggregate local gets.
+    /// Falls back to a bare pointer when `T` has no layout to attach (a generic
+    /// body, or a node type nothing instantiated).
+    fn link_mir_type(&self, arg: Option<&rask_types::GenericArg>) -> MirType {
+        let node = match arg {
+            Some(rask_types::GenericArg::Type(t)) => self.type_to_mir(t),
+            _ => return MirType::Ptr,
+        };
+        match node {
+            MirType::Struct(sid) => MirType::Link(sid),
+            _ => MirType::Ptr,
+        }
+    }
+
+    /// The word that means `none` for a niche option, whichever way the type
+    /// is spelled.
+    ///
+    /// `Handle<T>?` reaches lowering two ways: still by name, and as a resolved
+    /// `Generic` naming its base by `TypeId`. Only the by-name form used to
+    /// count, so a `Vec<Handle<T>?>` was sized as a tagged option — 16 bytes
+    /// for an 8-byte element — while the push wrote the niche (#959).
+    pub(crate) fn niche_option_sentinel(&self, ty: &Type) -> Option<i64> {
+        let inner = ty.as_option()?;
+        let head = match inner {
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
+            _ => return None,
+        };
+        niche_sentinel_for_head(&head)
+    }
+
+    /// The MIR type of a niche option, keeping *which* niche it is.
+    ///
+    /// `Handle<T>?` and `Link<T>?` are the same shape with different `none`
+    /// words. Collapsing both to `Option(Handle)` — which is what a struct
+    /// field's type used to do — put the handle's all-ones `none` into a link
+    /// field, and the rack then tried to register an edge from address -1.
+    pub(crate) fn niche_option_mir_type(&self, ty: &Type) -> Option<MirType> {
+        let inner = ty.as_option()?;
+        let (name, args) = match inner {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
+            _ => return None,
+        };
+        let payload = match name.split('<').next().unwrap_or(&name).trim() {
+            "Handle" => MirType::Handle,
+            "Link" => self.link_mir_type(args.first()),
+            _ => return None,
+        };
+        Some(MirType::Option(Box::new(payload)))
+    }
+
     /// Convert a Type from the type checker to MirType.
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
         match ty {
@@ -962,6 +1218,19 @@ impl<'a> MirContext<'a> {
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
             Type::UnresolvedGeneric { name, .. } if name == "Handle" => MirType::Handle,
+            // Link<T> → the node's address; Rack<T> → the rack's. The checker
+            // hands these over as `Generic` once the name resolves and as
+            // `UnresolvedGeneric` before that, so both spellings land here.
+            Type::UnresolvedGeneric { name, args } if name == "Link" => {
+                self.link_mir_type(args.first())
+            }
+            Type::UnresolvedGeneric { name, .. } if name == "Rack" => MirType::Ptr,
+            Type::Generic { args, .. } if self.is_link_type(ty) => {
+                self.link_mir_type(args.first())
+            }
+            Type::Generic { .. } if self.generic_head(ty).as_deref() == Some("Rack") => {
+                MirType::Ptr
+            }
             // Resolved named types — look up via type_names, then struct/enum layouts
             Type::Named(id) => {
                 if let Some(name) = self.type_names.get(id) {
@@ -997,7 +1266,15 @@ impl<'a> MirContext<'a> {
             },
             // Slice → fat pointer (ptr + len)
             Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
-            // Option (T or none): niche-optimized Handle or tagged union
+            // Option (T or none): niche-optimized handle, or a tagged union.
+            //
+            // A handle keeps the collapsed spelling — `type_to_mir` gives bare
+            // `Handle` where `resolve_type_str` gives `Option(Handle)`, and
+            // everything downstream accepts either. A *link* does not: it used
+            // to collapse the same way, and then `Vec<Link<T>?>.get()` collapsed
+            // twice and lost the outer option's tag (#959). `Option(Link)` is a
+            // niche by `MirType::is_niche_payload`, which is what the checks
+            // ask, so the spelling costs nothing.
             Type::Result { ok: inner, err } if **err == Type::None => {
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                     MirType::Handle
@@ -1024,11 +1301,36 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// Look up the MIR type for an expression node.
+    /// The MIR type for an expression node — `None` when the checker's answer
+    /// can't be one.
+    ///
+    /// This is the only place a checker type becomes a layout, which makes it
+    /// the only place that can invent a width. Two answers can't be layouts: a
+    /// type still holding an inference variable nobody solved, and one still
+    /// naming a type parameter the substitution missed. Both convert to a
+    /// plausible 8-byte scalar — `Ptr` for a bare variable, `i64` through a
+    /// stub's spelling of one — and nothing downstream can tell either from a
+    /// real answer.
+    ///
+    /// That's why call sites around this crate grew
+    /// `.filter(|t| !matches!(t, MirType::Ptr))`: each was reaching for this
+    /// check and catching one half of it. The guard belongs here, where no call
+    /// site can miss it, and `None` then means one thing — the checker has no
+    /// answer. Absence every consumer already handles; a wrong width none of
+    /// them can (#1020).
+    ///
+    /// `lookup_raw_type` deliberately hands both over: reading the *head* of a
+    /// type is fine with an open argument. `TaskHandle<?>` is still a
+    /// `TaskHandle`, which is how the ownership checker knows a handle was
+    /// dropped.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         let found = self.node_types.get(&node_id);
         crate::fallback::record_lookup(found);
-        found.map(|ty| self.type_to_mir(ty))
+        let ty = found?;
+        if crate::fallback::type_is_open(ty) || type_names_a_parameter(ty).is_some() {
+            return None;
+        }
+        Some(self.type_to_mir(ty))
     }
 
     /// Look up the raw Type for an expression node (preserves generic info).
@@ -1223,6 +1525,13 @@ pub struct MirLowerer<'a> {
     synthesized_functions: Vec<MirFunction>,
     /// Counter for generating unique closure function names
     closure_counter: u32,
+    /// Whether the closure just lowered for a `spawn` boxes its result.
+    ///
+    /// Written by `lower_closure_expecting` and read by the spawn call it was
+    /// lowered for, which is the very next thing lowered. A one-shot handoff
+    /// rather than a return value because the decision is made three call
+    /// frames below the argument list it has to reach.
+    spawn_result_boxed: bool,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable names known to hold closure values
@@ -1230,6 +1539,14 @@ pub struct MirLowerer<'a> {
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
+    /// Names this function reassigns, anywhere in its body — an `=` target, or
+    /// an argument passed `mutate`/`own`/`deleting`, or a `take <place>`.
+    ///
+    /// Only the ensure-hook capture decision reads this (see
+    /// `scalars_frozen_after_here`). A name that is never reassigned holds the
+    /// same value at panic time as when the ensure was scheduled, which is what
+    /// makes snapshotting a scalar into the hook's env exact instead of stale.
+    reassigned_names: std::collections::HashSet<String>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
@@ -1314,6 +1631,10 @@ pub struct MirLowerer<'a> {
     /// value — `field.name`/`value.(field.name)` splice this directly instead
     /// of going through the normal local/struct-layout lookup (CT48/CT49).
     comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
+    /// Bindings in this body whose initializer folded to a compile-time string.
+    /// `value.(name)` reads them so a field name can be given a name of its own
+    /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
+    comptime_strings: HashMap<String, String>,
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for
@@ -1330,6 +1651,9 @@ pub(crate) struct ReflectFieldConst {
     pub(crate) serial_name: String,
     pub(crate) is_skipped: bool,
     pub(crate) has_default: bool,
+    /// Raw attribute strings (`indexed(weight:3)`) — what `field.has<A>()`
+    /// answers from (type.annotations/AN6).
+    pub(crate) attrs: Vec<String>,
 }
 
 /// Where a `try` inside a `try { … } catch e => …` block sends its error.
@@ -1559,7 +1883,7 @@ impl<'a> MirLowerer<'a> {
         // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
         // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
         // exactly that.
-        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Owned") {
+        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Heap") {
             let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
             return self.collection_elem_of_checker_type(inner);
         }
@@ -1784,7 +2108,7 @@ impl<'a> MirLowerer<'a> {
     /// read has to cross the boundary.
     pub(crate) fn owned_payload(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
         let (name, args) = self.generic_head(ty)?;
-        if name != "Owned" {
+        if name != "Heap" {
             return None;
         }
         match args.first()? {
@@ -1820,7 +2144,7 @@ impl<'a> MirLowerer<'a> {
     /// how `Holder { inner: p }` ended up with a box holding a box (#739).
     pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Own, .. } => true,
+            ExprKind::Unary { op: UnaryOp::Heap, .. } => true,
             ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
             ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
             _ => false,
@@ -2203,9 +2527,10 @@ impl<'a> MirLowerer<'a> {
             return val;
         }
 
-        // A `Handle<T>?` is a niche: the handle is the value and `none` is the
-        // all-ones sentinel, so there's no tag to write.
-        if matches!(dst_ty, MirType::Option(inner) if matches!(**inner, MirType::Handle)) {
+        // A niche option — `Handle<T>?` or `Link<T>?` — is one word: the value
+        // itself, with a reserved word for `none`. There's no tag to write, and
+        // wrapping anyway built a 16-byte `Some(v)` for an 8-byte slot.
+        if matches!(dst_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return val;
         }
 
@@ -2424,6 +2749,206 @@ impl<'a> MirLowerer<'a> {
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
     /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
     /// 8-byte env slot).
+    /// Collect every name this body reassigns. Walks closure and spawn bodies
+    /// too: a closure writing an outer name reassigns it just the same.
+    pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, &mut out);
+        }
+        out
+    }
+
+    fn note_place(place: &Expr, out: &mut std::collections::HashSet<String>) {
+        // The root of the place is what gets rebound. `s.f = 1` mutates through
+        // `s` without changing what `s` points at, but counting it costs only
+        // precision, and precision here only ever means "hook not reified".
+        let mut cur = place;
+        loop {
+            match &cur.kind {
+                ExprKind::Ident(name) => {
+                    out.insert(name.clone());
+                    return;
+                }
+                ExprKind::Field { object, .. }
+                | ExprKind::OptionalField { object, .. }
+                | ExprKind::Index { object, .. }
+                | ExprKind::DynamicField { object, .. } => cur = object,
+                _ => return,
+            }
+        }
+    }
+
+    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+        use rask_ast::stmt::StmtKind as SK;
+        match &stmt.kind {
+            SK::Assign { target, value, .. } => {
+                Self::note_place(target, out);
+                Self::scan_reassigned_expr(value, out);
+            }
+            SK::Let { init, .. } | SK::Mut { init, .. } => Self::scan_reassigned_expr(init, out),
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } | SK::LetStruct { init, .. } => {
+                Self::scan_reassigned_expr(init, out)
+            }
+            SK::Expr(e) | SK::Return(Some(e)) => Self::scan_reassigned_expr(e, out),
+            SK::Break { value: Some(e), .. } => Self::scan_reassigned_expr(e, out),
+            SK::While { cond, body, .. } => {
+                Self::scan_reassigned_expr(cond, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::WhileLet { expr, body, .. } => {
+                Self::scan_reassigned_expr(expr, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::For { iter, body, .. } | SK::ComptimeFor { iter, body, .. } => {
+                Self::scan_reassigned_expr(iter, out);
+                Self::scan_reassigned_body(body, out);
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => Self::scan_reassigned_body(body, out),
+            SK::Ensure { body, else_handler } => {
+                Self::scan_reassigned_body(body, out);
+                if let Some((_, handler)) = else_handler {
+                    Self::scan_reassigned_body(handler, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_reassigned_body(body: &[rask_ast::stmt::Stmt], out: &mut std::collections::HashSet<String>) {
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, out);
+        }
+    }
+
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<rask_ast::stmt::Stmt>> = Vec::new();
+        match &expr.kind {
+            // A callee that can write its argument rebinds the caller's local.
+            ExprKind::Call { func, args } => {
+                kids.push(func);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                kids.push(object);
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                    kids.push(&a.expr);
+                }
+            }
+            // OPT32: `take <place>` leaves `none` behind — a write to the place.
+            ExprKind::Take { place } => {
+                Self::note_place(place, out);
+                kids.push(place);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                kids.push(left);
+                kids.push(right);
+            }
+            ExprKind::Unary { operand, .. } => kids.push(operand),
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => kids.push(object),
+            ExprKind::IsPresent { expr: inner, .. }
+            | ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. }
+            | ExprKind::Convert { expr: inner, .. }
+            | ExprKind::IsPattern { expr: inner, .. }
+            | ExprKind::Try { expr: inner } => kids.push(inner),
+            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
+                kids.push(inner);
+                kids.push(else_branch);
+            }
+            ExprKind::DynamicField { object, field_expr } => {
+                kids.push(object);
+                kids.push(field_expr);
+            }
+            ExprKind::Index { object, index } => {
+                kids.push(object);
+                kids.push(index);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                kids.push(value);
+                kids.push(default);
+            }
+            ExprKind::Catch { value, clause } => {
+                kids.push(value);
+                kids.push(&clause.body);
+            }
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
+                kids.push(cond);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                kids.push(scrut);
+                kids.push(then_branch);
+                kids.extend(else_branch.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                kids.push(scrutinee);
+                kids.extend(arms.iter().map(|a| a.body.as_ref()));
+            }
+            ExprKind::Range { start, end, .. } => {
+                kids.extend(start.iter().map(|b| b.as_ref()));
+                kids.extend(end.iter().map(|b| b.as_ref()));
+            }
+            ExprKind::StructLit { fields, .. } => kids.extend(fields.iter().map(|f| &f.value)),
+            ExprKind::Array(items) | ExprKind::Tuple(items) => kids.extend(items.iter()),
+            ExprKind::ArrayRepeat { value, count } => {
+                kids.push(value);
+                kids.push(count);
+            }
+            ExprKind::WithAs { bindings, body } => {
+                kids.extend(bindings.iter().map(|b| &b.source));
+                bodies.push(body);
+            }
+            ExprKind::Block(body)
+            | ExprKind::Loop { body, .. }
+            | ExprKind::UsingBlock { body, .. }
+            | ExprKind::Unsafe { body }
+            | ExprKind::Comptime { body }
+            | ExprKind::Spawn { body } => bodies.push(body),
+            ExprKind::Closure { body, .. } => kids.push(body),
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                kids.push(condition);
+                kids.extend(message.iter().map(|m| m.as_ref()));
+            }
+            ExprKind::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                for seg in segments {
+                    if let StringSegment::Expr(e, _) = seg {
+                        kids.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for k in kids {
+            Self::scan_reassigned_expr(k, out);
+        }
+        for b in bodies {
+            Self::scan_reassigned_body(b, out);
+        }
+    }
+
+    /// Nothing in this function reassigns any of these names, so the value an
+    /// ensure hook snapshots when the ensure is scheduled is the value the
+    /// cleanup would read during unwind.
+    ///
+    /// Coarser than it could be — a write *before* the ensure is harmless, and
+    /// this counts it — but the direction is safe: an unclear case keeps the
+    /// ensure inline-only, which is what it was before hooks existed.
+    fn scalars_frozen_after_here(&self, names: &[&String]) -> bool {
+        names.iter().all(|n| !self.reassigned_names.contains(n.as_str()))
+    }
+
     fn is_ref_capturable(ty: &MirType) -> bool {
         matches!(
             ty,
@@ -2441,39 +2966,57 @@ impl<'a> MirLowerer<'a> {
     /// scope unwinds on a native panic (ctrl.panic/U1). Returns
     /// `(thunk_name, captures)` on success; `None` keeps inline-only behavior.
     ///
-    /// Scoped first cut: only a single-expression body whose free variables are
-    /// all aggregate locals (captured by reference — their MIR value is the
-    /// address). The optional `resource` id is captured by value so the thunk
-    /// can skip a cleanup whose receiver was already consumed (C1). Everything
-    /// else (else-handlers, scalar captures, multi-statement bodies) returns
-    /// `None` — the ensure simply won't run on a native panic, never miscompiles.
+    /// The body may be any statement list, with or without an `else |e|`
+    /// handler — both are lowered into the thunk the same way the inline cleanup
+    /// block lowers them, through `lower_ensure_else_handler`.
+    ///
+    /// Free variables are captured by reference where the MIR value already *is*
+    /// an address (structs, enums, arrays, tuples, strings, pointers, handles),
+    /// so cleanup sees mutations made before the panic. A scalar has no such
+    /// address: its value lives in an SSA variable, so all the thunk could
+    /// capture is a snapshot taken when the ensure was scheduled. Printing a
+    /// stale number during unwind is worse than not printing, so a body that
+    /// reads a scalar the function writes again returns `None` and stays
+    /// inline-only. A scalar nothing writes after the ensure is scheduled is
+    /// captured by value — the snapshot is the live value by definition.
+    ///
+    /// The optional `resource` id is captured by value so the thunk can skip a
+    /// cleanup whose receiver was already consumed (C1).
     fn try_reify_ensure_hook(
         &mut self,
         body: &[rask_ast::stmt::Stmt],
         else_handler: &Option<(String, Vec<rask_ast::stmt::Stmt>)>,
         resource: Option<LocalId>,
     ) -> Option<(String, Vec<crate::stmt::ClosureCapture>)> {
-        use rask_ast::stmt::StmtKind;
-
-        if else_handler.is_some() {
-            return None;
-        }
-        let expr = match body {
-            [only] => match &only.kind {
-                StmtKind::Expr(e) => e,
-                _ => return None,
-            },
-            _ => return None,
-        };
-
-        // Free variables must all be aggregates (captured by reference).
-        let free = self.collect_free_vars(expr, &[]);
-        if free.iter().any(|(_, _, ty)| !Self::is_ref_capturable(ty)) {
+        if body.is_empty() {
             return None;
         }
 
-        // Ordered captures: aggregate free vars (by ref), then the resource id
-        // (by value) when present.
+        // Free variables of the body plus, if there is one, the handler body
+        // with its error parameter bound.
+        let mut free = self.collect_free_vars_block(body);
+        if let Some((param_name, handler_body)) = else_handler {
+            let mut bound = std::collections::HashSet::new();
+            bound.insert(param_name.clone());
+            let mut seen: std::collections::HashSet<String> =
+                free.iter().map(|(n, _, _)| n.clone()).collect();
+            self.walk_free_vars_block(handler_body, &bound, &mut seen, &mut free);
+        }
+
+        // A scalar the body reads can only be snapshotted (see the doc comment).
+        // Sound only while nothing writes it after the ensure is scheduled.
+        let scalar_reads: Vec<&String> = free
+            .iter()
+            .filter(|(_, _, ty)| !Self::is_ref_capturable(ty))
+            .map(|(name, _, _)| name)
+            .collect();
+        if !scalar_reads.is_empty() && !self.scalars_frozen_after_here(&scalar_reads) {
+            return None;
+        }
+
+        // Ordered captures: free vars first, then the resource id when present.
+        // Aggregates go by reference (their MIR value is the address); scalars
+        // by value.
         struct Cap {
             outer: LocalId,
             name: String,
@@ -2486,7 +3029,7 @@ impl<'a> MirLowerer<'a> {
                 outer: *id,
                 name: name.clone(),
                 ty: ty.clone(),
-                by_ref: true,
+                by_ref: Self::is_ref_capturable(ty),
             })
             .collect();
         let res_index = resource.map(|res| {
@@ -2542,21 +3085,36 @@ impl<'a> MirLowerer<'a> {
             thunk_builder.switch_to_block(body_block);
         }
 
-        // Lower the body expression into the thunk (reuses method resolution).
-        // The pending module consts are saved along with the locals: the thunk
-        // is its own MIR function and materialises its own copy of any const it
-        // touches, but that must not consume the outer function's entry — the
-        // cleanup path lowers this same expression again, and with the entry
-        // gone the reference compiled to a call named after the const (#403).
+        // Lower the body into the thunk (reuses method resolution). The pending
+        // module consts are saved along with the locals: the thunk is its own MIR
+        // function and materialises its own copy of any const it touches, but that
+        // must not consume the outer function's entry — the cleanup path lowers
+        // this same body again, and with the entry gone the reference compiled to
+        // a call named after the const (#403).
         let saved_builder = std::mem::replace(&mut self.builder, thunk_builder);
         let saved_locals = std::mem::replace(&mut self.locals, thunk_locals);
         let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
-        let body_result = self.lower_expr(expr);
+        let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+        // The thunk's own bindings must not leave their metadata behind: a `let`
+        // inside the body would otherwise mark an outer `mut` of the same name
+        // immutable, and a later ensure would snapshot it.
+        let saved_meta = self.local_meta.clone();
+        let body_result = (|| -> Result<(), LoweringError> {
+            for s in body {
+                self.lower_stmt(s)?;
+            }
+            if let Some((param_name, handler_body)) = else_handler {
+                self.lower_ensure_else_handler(param_name, handler_body)?;
+            }
+            Ok(())
+        })();
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
+        self.ensure_stack = saved_ensure_stack;
+        self.local_meta = saved_meta;
 
         if body_result.is_err() {
             return None;
@@ -2881,7 +3439,7 @@ impl<'a> MirLowerer<'a> {
         // Derived from stub files via rask_stdlib::mir_metadata.
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ret_category_to_mir_type_in(&meta.ret_category, Some(ctx)),
+                ret_ty: ctx.resolve_type_str(&meta.ret_ty),
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
@@ -2943,9 +3501,11 @@ impl<'a> MirLowerer<'a> {
             ctx,
             synthesized_functions: Vec::new(),
             closure_counter: 0,
+            spawn_result_boxed: false,
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
+            reassigned_names: std::collections::HashSet::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -2963,7 +3523,13 @@ impl<'a> MirLowerer<'a> {
             catch_frames: Vec::new(),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
+            comptime_strings: HashMap::new(),
         };
+
+        // Which names this body reassigns (see `reassigned_names`). Scanned once
+        // here rather than tracked as lowering goes, because the question is
+        // about statements the ensure hasn't reached yet.
+        lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
         let self_type_name: Option<String> = fn_decl.params.iter()
@@ -3313,7 +3879,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             // String methods that produce iterators
             match method.as_str() {
-                "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::String),
                 "chars" => return Some(MirType::Char),
                 "bytes" => return Some(MirType::U8),
                 _ => {}
@@ -3711,9 +4277,12 @@ impl<'a> MirLowerer<'a> {
 
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.
     fn is_niche_option_expr(&self, expr: &Expr) -> bool {
-        self.ctx.lookup_raw_type(expr.id)
-            .map(|ty| is_niche_option_handle(ty))
-            .unwrap_or(false)
+        self.niche_sentinel_of_expr(expr).is_some()
+    }
+
+    /// The `none` word for an expression whose checker type is a niche option.
+    fn niche_sentinel_of_expr(&self, expr: &Expr) -> Option<i64> {
+        self.ctx.niche_option_sentinel(self.ctx.lookup_raw_type(expr.id)?)
     }
 
     /// Same question, with the lowered type as a second opinion. A `Handle?`
@@ -3726,23 +4295,42 @@ impl<'a> MirLowerer<'a> {
     /// spell this out inline instead, which is how the checker-only version
     /// kept getting used where a MIR type was sitting right there.
     pub(crate) fn option_is_niche(&self, expr: &Expr, ty: &MirType) -> bool {
-        self.is_niche_option_expr(expr)
-            || matches!(ty, MirType::Option(inner) if **inner == MirType::Handle)
+        self.option_niche(expr, ty).is_some()
+    }
+
+    /// `option_is_niche`, and which word means `none` when it is one.
+    ///
+    /// The lowered type answers first. It knows whether this is a handle or a
+    /// link, and those have different sentinels; the checker type is the
+    /// fallback for the case `option_is_niche` exists for, where there is no
+    /// useful MIR type at the use site.
+    pub(crate) fn option_niche(&self, expr: &Expr, ty: &MirType) -> Option<i64> {
+        if let Some(sentinel) = mir_niche_none(ty) {
+            return Some(sentinel);
+        }
+        // A lowered `Option` whose payload is a settled non-niche type has
+        // already answered: it carries a tag, and the checker must not talk us
+        // out of reading it. The two can disagree — a stub whose MIR return
+        // type is a tagged `i64?` where the checker says `Handle<T>?` — and
+        // taking the checker's word there emitted a sentinel compare against a
+        // slot address.
+        if matches!(ty, MirType::Option(inner)
+            if !inner.is_niche_payload() && !matches!(**inner, MirType::Ptr))
+        {
+            return None;
+        }
+        self.niche_sentinel_of_expr(expr)
     }
 
     /// `option_is_niche` for a value that's already lowered — reads the MIR
     /// type off the operand's local.
-    pub(crate) fn option_operand_is_niche(&self, expr: &Expr, op: &MirOperand) -> bool {
-        if self.is_niche_option_expr(expr) {
-            return true;
+    pub(crate) fn option_operand_niche(&self, expr: &Expr, op: &MirOperand) -> Option<i64> {
+        if let MirOperand::Local(id) = op {
+            if let Some(s) = self.builder.local_type(*id).as_ref().and_then(mir_niche_none) {
+                return Some(s);
+            }
         }
-        match op {
-            MirOperand::Local(id) => self
-                .builder
-                .local_type(*id)
-                .is_some_and(|t| matches!(t, MirType::Option(inner) if *inner == MirType::Handle)),
-            _ => false,
-        }
+        self.niche_sentinel_of_expr(expr)
     }
 
     /// Emit a tag-equivalent check for an option value.
@@ -3750,15 +4338,15 @@ impl<'a> MirLowerer<'a> {
     /// Returns a local that is 0 for Some, non-zero for None — matching
     /// the tag convention used by branches. Works for both niche-optimized
     /// (compare-to-sentinel) and tagged union (EnumTag load) options.
-    fn emit_option_tag(&mut self, value: &MirOperand, is_niche: bool) -> LocalId {
-        if is_niche {
+    fn emit_option_tag(&mut self, value: &MirOperand, niche: Option<i64>) -> LocalId {
+        if let Some(sentinel) = niche {
             let result = self.builder.alloc_temp(MirType::U8);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::BinaryOp {
                     op: crate::operand::BinOp::Eq,
                     left: value.clone(),
-                    right: MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
+                    right: MirOperand::Constant(MirConst::Int(sentinel)),
                 },
             }));
             result
@@ -4528,7 +5116,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::Neg => MirUnaryOp::Neg,
         UnaryOp::Not => MirUnaryOp::Not,
         UnaryOp::BitNot => MirUnaryOp::BitNot,
-        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Own => unreachable!(),
+        UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => unreachable!(),
     }
 }
 
@@ -4588,6 +5176,54 @@ fn is_scalar_return(func_name: &str) -> bool {
         || func_name.ends_with("_set")
 }
 
+/// The type parameter this type still names, if any.
+///
+/// A monomorphized body must not contain one. Mono substitutes every record it
+/// copies into an instance and drops the record when it can't, so a parameter
+/// that survives to here means a substitution went missing — and it has to stay
+/// tellable apart from a real type, because `T` maps to `Ptr` or to `i64`
+/// depending on how it is spelled and both read back as a plausible 8-byte
+/// scalar. That is how a `string` element ended up in an 8-byte slot with no
+/// refcount on it (#1020).
+///
+/// Same rule mono binds parameters by — one uppercase letter — so the two
+/// agree on what counts as one.
+pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
+    fn is_param(name: &str) -> bool {
+        let mut chars = name.chars();
+        matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
+    }
+    fn arg_ty(arg: &rask_types::GenericArg) -> Option<&Type> {
+        match arg {
+            rask_types::GenericArg::Type(t) => Some(t),
+            _ => None,
+        }
+    }
+    match ty {
+        Type::UnresolvedNamed(name) if is_param(name) => Some(name.clone()),
+        Type::UnresolvedGeneric { name, args } => {
+            if is_param(name) {
+                return Some(name.clone());
+            }
+            args.iter().filter_map(arg_ty).find_map(type_names_a_parameter)
+        }
+        Type::Generic { args, .. } => {
+            args.iter().filter_map(arg_ty).find_map(type_names_a_parameter)
+        }
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().find_map(type_names_a_parameter),
+        Type::Array { elem, .. } => type_names_a_parameter(elem),
+        Type::Slice(inner) | Type::RawPtr(inner) => type_names_a_parameter(inner),
+        Type::Result { ok, err } => {
+            type_names_a_parameter(ok).or_else(|| type_names_a_parameter(err))
+        }
+        Type::Fn { params, ret } => params
+            .iter()
+            .find_map(type_names_a_parameter)
+            .or_else(|| type_names_a_parameter(ret)),
+        _ => None,
+    }
+}
+
 /// Return type for known stdlib functions that don't return I64.
 /// Supplements func_sigs (which only has user-defined functions).
 ///
@@ -4606,9 +5242,34 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
 /// address (#677). With a context in hand the declared name resolves to its
 /// real layout.
 fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirType {
+    stdlib_return_mir_type_known(func_name, ctx).unwrap_or(MirType::I64)
+}
+
+/// The same answer, but `None` where the old code shrugged and said i64.
+///
+/// Telling "the stubs declare this" apart from "nobody here knows" is what lets
+/// a caller ask the checker before it guesses. `s.clone()` is the case that
+/// forced it: no stub declares `string_clone`, so the chain ran off the end and
+/// typed the destination i64 — half a string, no refcount, and a pointer
+/// printed as a number.
+fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Option<MirType> {
     // Try stub-derived metadata first
     if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
-        return ret_category_to_mir_type_in(&meta.ret_category, ctx);
+        // Unless what it says is `T`. `Vec.remove` is declared `-> T` and the
+        // stub has no idea what the caller instantiated — recording that as i64
+        // is where every "eight bytes of a sixteen-byte string" in this area
+        // came from. Let the caller ask the checker instead (#1020).
+        if meta.ret_category.names_a_type_param() {
+            return None;
+        }
+        // The stub's own words, parsed by the one parser that knows all the
+        // shapes. `RetCategory`'s coarser reading of the same string used to
+        // answer here, and it collapsed `f32` into `f64` and every named stdlib
+        // type into `i64` — including the ones that aren't word-sized runtime
+        // handles, which is what `StringView` needed a hard-coded exception for
+        // (#1025).
+        let Some(ctx) = ctx else { return None };
+        return Some(ctx.resolve_type_str(&meta.ret_ty));
     }
 
     // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
@@ -4618,7 +5279,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     if let Some(name) = func_name.strip_prefix("f64_") {
         if let Some(m) = rask_stdlib::float_methods::lookup(name) {
             use rask_stdlib::FloatSig;
-            return match m.sig {
+            return Some(match m.sig {
                 FloatSig::Unary | FloatSig::BinaryFloat | FloatSig::BinaryInt => MirType::F64,
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
@@ -4626,7 +5287,7 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
                 FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
-            };
+            });
         }
     }
 
@@ -4634,99 +5295,37 @@ fn stdlib_return_mir_type_in(func_name: &str, ctx: Option<&MirContext>) -> MirTy
     // this it took the i64 default below and the result was truncated on the way
     // out of the call — `(-18446744073709551614).abs()` printed -2 (#762).
     if func_name == "i128_abs" {
-        return MirType::I128;
+        return Some(MirType::I128);
     }
 
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
-            return MirType::F64;
+            return Some(MirType::F64);
         }
     }
 
-    // Suffix-based fallbacks for methods not in stubs (user types, etc.)
-    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
-        || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
-        || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
-        || func_name.ends_with("_replace") || func_name.ends_with("_substring")
-        || func_name.ends_with("_substr")
-        || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
-    {
-        return MirType::String;
-    }
-    if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
-        || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
-    {
-        return MirType::Bool;
-    }
-    if func_name.starts_with("char_is_") || func_name == "char_eq" {
-        return MirType::Bool;
-    }
+    // No suffix guessing. There used to be a block here that answered from the
+    // *end* of the mangled name — `_to_string`, `_trim`, `_replace`,
+    // `_is_empty`, `_contains` and friends — for "user type methods and methods
+    // not yet in stubs". It was blind to the receiver, so it answered for any
+    // type whose method happened to share a name with a string's.
+    //
+    // That is how `Shared<i32>.replace(7)` came back as a `string`: the strategy
+    // rewrite turns it into `Cell_replace`, which ends in `_replace`. The box
+    // arm in lower/expr.rs existed to shadow this, which is why it looked
+    // redundant and wasn't.
+    //
+    // Instrumented across the 362 suite files and every example, the block fired
+    // zero times — a user type's methods are in `func_sigs` from their own
+    // declarations, which is consulted first, and the stdlib's are in the stub
+    // metadata above. Its only live effect was the wrong answer.
+    //
+    // main later added `char_is_*` and `char_eq` to that block for the Unicode
+    // work. Those come from `stdlib/char.rk` like any other declared method, so
+    // deleting the block doesn't take them with it — the char suite covers it.
 
-    MirType::I64
-}
-
-/// Convert a stub-derived RetCategory to a MirType.
-fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> MirType {
-    ret_category_to_mir_type_in(cat, None)
-}
-
-fn ret_category_to_mir_type_in(
-    cat: &rask_stdlib::mir_metadata::RetCategory,
-    ctx: Option<&MirContext>,
-) -> MirType {
-    use rask_stdlib::mir_metadata::RetCategory;
-    match cat {
-        RetCategory::Void => MirType::Void,
-        RetCategory::Bool => MirType::Bool,
-        RetCategory::I64 => MirType::I64,
-        RetCategory::Int(w) => {
-            use rask_stdlib::mir_metadata::IntWidth;
-            match w {
-                IntWidth::I8 => MirType::I8,
-                IntWidth::I16 => MirType::I16,
-                IntWidth::I32 => MirType::I32,
-                IntWidth::I128 => MirType::I128,
-                IntWidth::U8 => MirType::U8,
-                IntWidth::U16 => MirType::U16,
-                IntWidth::U32 => MirType::U32,
-                IntWidth::U64 => MirType::U64,
-                IntWidth::U128 => MirType::U128,
-                IntWidth::Usize => MirType::usize_ty(),
-                IntWidth::Isize => MirType::isize_ty(),
-            }
-        }
-        RetCategory::F64 => MirType::F64,
-        RetCategory::String => MirType::String,
-        RetCategory::Char => MirType::Char,
-        RetCategory::Ptr => MirType::Ptr,
-        RetCategory::Option(inner) => {
-            MirType::Option(Box::new(ret_category_to_mir_type_in(inner, ctx)))
-        }
-        RetCategory::Result { ok, err } => MirType::Result {
-            ok: Box::new(ret_category_to_mir_type_in(ok, ctx)),
-            // Only the error side resolves a name. Everywhere else a named
-            // stdlib type is an opaque runtime handle (File, TcpListener,
-            // Instant) that really is a word — but an error type is an enum, and
-            // its identity is what the match needs.
-            err: Box::new(match (err.as_ref(), ctx) {
-                (RetCategory::Named(name), Some(ctx)) => ctx.resolve_type_str(name),
-                _ => ret_category_to_mir_type_in(err, ctx),
-            }),
-        },
-        // A `StringView` is a `RaskStr` sharing the source's buffer
-        // (std.strings/V1), so it has to travel as a string — the default
-        // pointer-sized `i64` handed `StringView.len()` an integer where it
-        // wanted the 16-byte value, which segfaults. The prefix stays
-        // "StringView" so the view's own methods still dispatch: `to_string`
-        // has to copy out and release the pin (V2), which the string one
-        // doesn't do.
-        RetCategory::Named(name) if name == "StringView" => MirType::String,
-        RetCategory::Named(_) => MirType::I64,
-        RetCategory::Tuple(elems) => MirType::Tuple(
-            elems.iter().map(|e| ret_category_to_mir_type_in(e, ctx)).collect()
-        ),
-    }
+    None
 }
 
 /// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).
@@ -5323,6 +5922,56 @@ mod tests {
         f.blocks.iter().any(|b| {
             b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
         })
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Type parameters that shouldn't have got this far
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn spots_a_type_parameter_the_substitution_missed() {
+        use rask_types::{GenericArg, Type};
+        let t = || Type::UnresolvedNamed("T".to_string());
+
+        assert_eq!(type_names_a_parameter(&t()), Some("T".to_string()));
+        assert_eq!(
+            type_names_a_parameter(&Type::Result {
+                ok: Box::new(t()),
+                err: Box::new(Type::None),
+            }),
+            Some("T".to_string())
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![GenericArg::Type(Box::new(t()))],
+            }),
+            Some("T".to_string())
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::Tuple(vec![Type::I64, t()])),
+            Some("T".to_string())
+        );
+    }
+
+    #[test]
+    fn a_real_type_is_not_a_parameter() {
+        use rask_types::{GenericArg, Type};
+
+        assert_eq!(type_names_a_parameter(&Type::String), None);
+        assert_eq!(type_names_a_parameter(&Type::I64), None);
+        // Two letters, so it names something — `Ok` is a type, `T` is a hole.
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedNamed("Ok".to_string())),
+            None
+        );
+        assert_eq!(
+            type_names_a_parameter(&Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![GenericArg::Type(Box::new(Type::String))],
+            }),
+            None
+        );
     }
 
     // ═══════════════════════════════════════════════════════════

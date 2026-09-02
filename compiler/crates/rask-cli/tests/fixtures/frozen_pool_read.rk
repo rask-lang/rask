@@ -1,5 +1,8 @@
 // mem.pools/PF5: reads through a handle in a `using frozen Pool<T>` context are
 // allowed (and generation-checked) — native and interp agree.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {

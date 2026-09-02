@@ -32,6 +32,7 @@ impl fmt::Display for MirType {
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
             MirType::Handle => write!(f, "handle"),
+            MirType::Link(sid) => write!(f, "link<#{}>", sid.id),
             MirType::Tuple(fields) => {
                 write!(f, "(")?;
                 for (i, field) in fields.iter().enumerate() {
@@ -267,6 +268,9 @@ impl fmt::Display for MirStmt {
             }
             MirStmtKind::RcDec { local } => {
                 write!(f, "rc_dec(_{})", local.0)
+            }
+            MirStmtKind::RcDecContents { local } => {
+                write!(f, "rc_dec_contents(_{})", local.0)
             }
         }
     }

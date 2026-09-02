@@ -99,11 +99,11 @@ impl<'a> MirLowerer<'a> {
         // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
         // raw `i64` an insert returns), which would spuriously skip the wrap.
         if let MirType::Option(inner) = place_ty {
-            // `Option<Handle>` (and `WeakHandle`) is niche-optimized in the layout
-            // (mem.pools): a live handle *is* `Some`, the sentinel is `None`. So a
-            // bare handle stored straight in is already the `Some` repr — a tag +
-            // payload wrap would be both wrong and 8 bytes too big for the slot.
-            let niche = matches!(**inner, MirType::Handle);
+            // A niche option is niche-optimized in the layout: the value *is*
+            // `Some`, the reserved word is `None`. So a bare handle or link
+            // stored straight in is already the `Some` repr — a tag + payload
+            // wrap would be both wrong and 8 bytes too big for the slot.
+            let niche = inner.is_niche_payload();
             if !niche && !matches!(val_ty, MirType::Option(_)) {
                 let wrap_local = self.builder.alloc_temp(place_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -140,7 +140,11 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
                 match ty {
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty, None)),
+                    // A link local holds the node's address, which is the same
+                    // thing an aggregate local holds — so it roots a place chain
+                    // the same way, and `n.field = v` is one store rather than a
+                    // write into a copy.
+                    MirType::Struct(_) | MirType::Tuple(_) | MirType::Link(_) => Some((id, 0, ty, None)),
                     _ => None,
                 }
             }
@@ -266,6 +270,12 @@ impl<'a> MirLowerer<'a> {
         oty: &MirType,
         field: &str,
     ) -> Option<(u32, MirType, Option<u32>)> {
+        // A link is the node's address, so a field through it projects exactly
+        // as it would through an aggregate local — same base, same offsets.
+        let oty = match oty {
+            MirType::Link(sid) => &MirType::Struct(sid.clone()),
+            other => other,
+        };
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
@@ -276,6 +286,66 @@ impl<'a> MirLowerer<'a> {
             return Some((off, ety, fsize));
         }
         None
+    }
+
+    /// Record the edges a struct's own fields carry, against the storage it
+    /// just landed in.
+    ///
+    /// An assignment writes one edge and can register it as it goes. A *literal*
+    /// can't: `Cursor { at: victim }` fills the field before the value has an
+    /// address, so nothing knew which slot to record. This runs once the
+    /// destination is settled, which is the first moment there is a slot.
+    ///
+    /// Not emitted for the temporary that feeds `rack.insert(...)` — that one is
+    /// stack scratch about to be copied into a node, and registering it would
+    /// leave the rack holding the address of a dead frame. `insert` records the
+    /// node's own copy from the same descriptor.
+    pub(crate) fn emit_struct_link_registration(&mut self, dst: crate::LocalId, ty: &MirType) {
+        if !self.ctx.struct_carries_links(ty) {
+            return;
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_register_struct".to_string()),
+            args: vec![MirOperand::Local(dst)],
+        }));
+    }
+
+    /// Write a link into a slot through the rack, so the target learns who
+    /// points at it. `base + offset` is the slot's address; the runtime writes
+    /// it, unregisters whatever edge it held, and registers the new one.
+    fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
+        // A node's own link field keeps its edge record inline in the node
+        // header, so the runtime reaches it by arithmetic instead of scanning
+        // the old target's incoming list. Only the base tells them apart: a
+        // link base means the holder is a node, anything else is foreign
+        // storage that still needs the scanned record.
+        if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Link_set_node".to_string()),
+                args: vec![
+                    MirOperand::Local(base),
+                    MirOperand::Constant(MirConst::Int(offset as i64)),
+                    value,
+                ],
+            }));
+            return;
+        }
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Link_set".to_string()),
+            args: vec![MirOperand::Local(slot), value],
+        }));
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
@@ -290,10 +360,25 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Mut { name, ty, init, .. } => {
+                // A `mut` can be reassigned, so whatever this name meant to
+                // `value.(name)` before, it doesn't now.
+                self.comptime_strings.remove(name);
                 self.lower_binding(name, ty.as_deref(), init)
             }
 
             StmtKind::Let { name, ty, init, .. } => {
+                // A `let` bound to a compile-time string can name a field:
+                // `let which = comptime { "y" }` then `p.(which)` (#930).
+                // Recorded here because lowering the initializer turns it into
+                // an ordinary runtime value and the fact is gone.
+                // Errors are not this statement's to report: a `comptime`
+                // block that fails here is still lowered as an ordinary
+                // initializer below, and gets to fail on its own terms. Only a
+                // name that folded to a string is worth remembering.
+                match self.comptime_field_name(init) {
+                    Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
+                    _ => { self.comptime_strings.remove(name); }
+                }
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
@@ -404,6 +489,27 @@ impl<'a> MirLowerer<'a> {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
                     None => (val_op, val_ty),
                 };
+                // A container of links that arrived whole — a `filter` result,
+                // say — carries edges nothing recorded. Register them here; the
+                // records dedupe per (container, target), so this is free where
+                // the pushes already did it.
+                if let Some(func) = self
+                    .ctx
+                    .lookup_raw_type(value.id)
+                    .cloned()
+                    .and_then(|t| self.ctx.container_link_registration(&t))
+                {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(func.to_string()),
+                        args: vec![val_op.clone()],
+                    }));
+                }
+                // A whole struct written over a name carries whatever edges its
+                // fields hold, and a literal's fields were filled before there
+                // was a slot to record — same gap the binding path closes.
+                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
+                    && matches!(&value.kind, ExprKind::StructLit { .. });
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self
@@ -449,6 +555,12 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Use(val_op),
                             }));
                         }
+                        // After the write, not before: the slots have to hold the
+                        // links before there is anything to record.
+                        if struct_assigned {
+                            let dst_ty = dst_ty.clone();
+                            self.emit_struct_link_registration(local_id, &dst_ty);
+                        }
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
@@ -456,7 +568,26 @@ impl<'a> MirLowerer<'a> {
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, _, fsize)) = self.lower_place_chain(target) {
+                        if let Some((base, offset, fty, fsize)) = self.lower_place_chain(target) {
+                            // An edge write is not a plain store: the rack
+                            // records who points at whom, so `delete` can find
+                            // this slot later and null it (mem.racks/RK3). The
+                            // runtime does the recording and the store together,
+                            // which is also what makes re-pointing an edge forget
+                            // its old target.
+                            if fty.is_link_slot() {
+                                // A bare `none` on the right lowers as a tagged
+                                // option whenever the checker hasn't settled its
+                                // type, and the field is a niche — it wants the
+                                // sentinel word. Without this, `n.peer = none`
+                                // stored the *address* of the tagged local and
+                                // the rack recorded an edge to the stack.
+                                let val_op = self.wrap_sum_field_value(
+                                    Some(&fty), fty.niche_none(), &val_ty, val_op,
+                                );
+                                self.emit_link_store(base, offset, val_op);
+                                return Ok(());
+                            }
                             // The field's own width, not None. Codegen only
                             // copies the bytes when the size says the value is
                             // wider than a pointer; with no size it stored the
@@ -644,10 +775,18 @@ impl<'a> MirLowerer<'a> {
                                 }));
                             }
                         } else {
-                            // Vec/Map: dispatch through runtime
+                            // A map key is not a position. `Vec_set` on a map
+                            // reached the native runtime as `rask_vec_set`,
+                            // which takes arg 1 as an integer index — so
+                            // `m["a"] = 1` used the key's address as the index
+                            // and panicked with `index is 140728023345216 but
+                            // length is 8`. The interpreter accepts a map
+                            // receiver for `Vec_set`, which is why only native
+                            // failed.
+                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::internal("Vec_set".to_string()),
+                                func: FunctionRef::internal(setter.to_string()),
                                 args: vec![obj_op, idx_op, val_op],
                             }));
                         }
@@ -673,10 +812,23 @@ impl<'a> MirLowerer<'a> {
                             store_size: None,
                         }));
                     }
-                    _ => {
+                    // CT49 is a read — `value.("x")` resolves to a field access
+                    // in expression position, and nothing says what writing
+                    // through one means. Both backends reject it; say so in words
+                    // rather than printing the AST at the user.
+                    ExprKind::DynamicField { .. } => {
                         return Err(LoweringError::InvalidConstruct(
-                            format!("unsupported assignment target: {:?}", target.kind),
+                            "can't assign through `value.(name)` — comptime field access reads a \
+                             field, it doesn't name one to write to. Write the field directly."
+                                .into(),
                         ));
+                    }
+                    _ => {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "can't assign to a {} — an assignment target has to be a variable, \
+                             a field, or an index",
+                            rask_ast::expr::expr_kind_name(&target.kind)
+                        )));
                     }
                 }
                 Ok(())
@@ -873,63 +1025,12 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 if let Some((param_name, handler_body)) = else_handler {
-                    // ER2: route errors from body to else handler.
-                    // The body's last call may return a Result — check its tag.
-                    let handler_block = self.builder.create_block();
-                    let done_block = self.builder.create_block();
-
-                    if let Some(call_dst) = self.builder.last_call_dst() {
-                        // Check Result tag: 0=Ok, 1=Err
-                        let tag = self.builder.alloc_temp(MirType::U8);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: tag,
-                            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
-                        }));
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                            cond: MirOperand::Local(tag),
-                            then_block: handler_block,
-                            else_block: done_block,
-                        }));
-
-                        // Handler block: bind error, run handler body.
-                        // Infer error type from the call's return type.
-                        let err_ty = self.builder.local_type(call_dst)
-                            .and_then(|t| match t {
-                                MirType::Result { err, .. } => Some(*err),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:755"));
-                        self.builder.switch_to_block(handler_block);
-                        let err_local = self.builder.alloc_local(param_name.clone(), err_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: err_local,
-                            rvalue: MirRValue::Field {
-                                base: MirOperand::Local(call_dst),
-                                field_index: 0,
-                                byte_offset: None,
-                                access: FieldAccess::Word,
-                            },
-                        }));
-                        self.locals.insert(param_name.clone(), (err_local, err_ty));
-                        for s in handler_body {
-                            self.lower_stmt(s)?;
-                        }
-                        if self.builder.current_block_unterminated() {
-                            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-                        }
-                    } else {
-                        // No call in body — handler never fires
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-                    }
-
-                    // Done block: sentinel for end of cleanup sub-CFG
-                    self.builder.switch_to_block(done_block);
+                    self.lower_ensure_else_handler(param_name, handler_body)?;
+                }
+                // Sentinel for the end of the cleanup sub-CFG: control never
+                // falls out of a cleanup block, it is spliced in at each exit.
+                if self.builder.current_block_unterminated() {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-                } else {
-                    // No handler — terminate with sentinel
-                    if self.builder.current_block_unterminated() {
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-                    }
                 }
 
                 self.builder.switch_to_block(continue_block);
@@ -948,6 +1049,16 @@ impl<'a> MirLowerer<'a> {
 
             // Comptime (compile-time evaluated)
             StmtKind::Comptime(stmts) => {
+                // A condition the comptime interpreter can't see, because the
+                // fact lives in lowering: `field.has<A>()` inside an unrolled
+                // `comptime for` (type.annotations/AN6). Asked first — the
+                // interpreter would only fail on it.
+                if let Some(taken) = self.try_eval_comptime_if_locally(stmts) {
+                    for s in taken {
+                        self.lower_stmt(s)?;
+                    }
+                    return Ok(());
+                }
                 // Try to evaluate comptime if at compile time (CC1)
                 if let Some(ref interp_cell) = self.ctx.comptime_interp {
                     if let Some(taken) = self.try_eval_comptime_if(stmts, interp_cell)? {
@@ -973,6 +1084,32 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Lower a nested body's statements with the bindings it introduces scoped
+    /// to it.
+    ///
+    /// `lower_block` snapshots `locals` for a braced block, but a loop body is
+    /// lowered statement-by-statement and never goes through it. That's
+    /// invisible for `locals` — the checker settled every name long before —
+    /// and not for comptime-known strings, where a `let w = "limit"` shadowing
+    /// an outer `let w = "spent"` outlived its loop and changed which field a
+    /// later `value.(w)` read. Restores on the error path too, so a body that
+    /// fails to lower doesn't leave its names behind.
+    ///
+    /// Every loop body goes through here rather than each writing the restore
+    /// out, so the next one added gets it without anyone remembering to.
+    fn lower_body_scoped(&mut self, body: &[Stmt]) -> Result<(), LoweringError> {
+        let saved = self.comptime_strings.clone();
+        let mut result = Ok(());
+        for stmt in body {
+            result = self.lower_stmt(stmt);
+            if result.is_err() {
+                break;
+            }
+        }
+        self.comptime_strings = saved;
+        result
+    }
+
     /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
     /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
     /// and `value.(field.xxx)` inside the body splice as compile-time
@@ -996,9 +1133,7 @@ impl<'a> MirLowerer<'a> {
 
         for field in fields {
             self.comptime_for_bindings.push((name.clone(), field));
-            for stmt in body {
-                self.lower_stmt(stmt)?;
-            }
+            self.lower_body_scoped(body)?;
             self.comptime_for_bindings.pop();
         }
         Ok(())
@@ -1072,9 +1207,93 @@ impl<'a> MirLowerer<'a> {
                     is_skipped: field_attrs::is_skipped(&fl.attrs),
                     has_default: fl.has_declared_default
                         || field_attrs::default_literal(&fl.attrs).is_some(),
+                    attrs: fl.attrs.clone(),
                 }
             })
             .collect())
+    }
+
+    /// A `comptime if` whose condition only lowering can answer.
+    ///
+    /// `field.has<A>()` is a fact about the loop iteration being unrolled, and
+    /// that state lives here, not in the comptime interpreter — so the
+    /// interpreter reports "unknown method" and the branch used to survive as a
+    /// runtime `if` on a constant. Cranelift folded the test, but both branches
+    /// were still lowered, and lowering the untaken one is not harmless:
+    /// `field.get<A>().weight` in the body has no annotation to read on a field
+    /// that doesn't carry it (type.annotations/AN6). Folding here is what makes
+    /// `comptime if` actually remove the branch.
+    ///
+    /// Returns the taken branch's statements, or `None` when the condition
+    /// isn't one of these — the caller then tries the comptime interpreter.
+    fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
+        let (cond, then_branch, else_branch) = Self::as_comptime_if(stmts)?;
+        let taken = self.eval_local_comptime_cond(cond)?;
+        Self::comptime_branch(taken, then_branch, else_branch)
+    }
+
+    /// `comptime { if cond { … } else { … } }` — the only shape either
+    /// evaluator handles.
+    fn as_comptime_if(stmts: &[Stmt]) -> Option<(&Expr, &Expr, &Option<Box<Expr>>)> {
+        if stmts.len() != 1 {
+            return None;
+        }
+        let StmtKind::Expr(inner) = &stmts[0].kind else { return None };
+        let ExprKind::If { cond, then_branch, else_branch, .. } = &inner.kind else {
+            return None;
+        };
+        Some((cond, then_branch, else_branch))
+    }
+
+    /// The statements of whichever branch a decided condition selects. An
+    /// undecidable branch shape gives `None`, and a false condition with no
+    /// `else` gives an empty slice — the branch is gone, not un-lowered.
+    fn comptime_branch<'b>(
+        taken: bool,
+        then_branch: &'b Expr,
+        else_branch: &'b Option<Box<Expr>>,
+    ) -> Option<&'b [Stmt]> {
+        let chosen = if taken {
+            then_branch
+        } else {
+            match else_branch {
+                Some(e) => e,
+                None => return Some(&[]),
+            }
+        };
+        match &chosen.kind {
+            ExprKind::Block(block_stmts) => Some(block_stmts),
+            _ => None,
+        }
+    }
+
+    /// A condition lowering can decide on its own: `binding.has<A>()`, and `!`
+    /// / `&&` / `||` over those. Anything else is `None`.
+    fn eval_local_comptime_cond(&mut self, cond: &Expr) -> Option<bool> {
+        match &cond.kind {
+            ExprKind::MethodCall { object, method, type_args, .. } => {
+                let (op, _) = self.comptime_field_method_const(object, method, type_args)?;
+                match op {
+                    MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                    _ => None,
+                }
+            }
+            ExprKind::Unary { op: rask_ast::expr::UnaryOp::Not, operand } => {
+                Some(!self.eval_local_comptime_cond(operand)?)
+            }
+            ExprKind::Binary { op, left, right } => {
+                let (l, r) = (
+                    self.eval_local_comptime_cond(left)?,
+                    self.eval_local_comptime_cond(right)?,
+                );
+                match op {
+                    rask_ast::expr::BinOp::And => Some(l && r),
+                    rask_ast::expr::BinOp::Or => Some(l || r),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Try to evaluate a `comptime if` block at compile time.
@@ -1176,6 +1395,10 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
+        // The struct may carry edges nothing has recorded — a literal writes its
+        // fields before the value has anywhere to live, so there was no slot to
+        // register (mem.racks/RK3). Now there is.
+        self.emit_struct_link_registration(local_id, &var_ty);
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.
@@ -1201,7 +1424,7 @@ impl<'a> MirLowerer<'a> {
             }
             // String methods that always return Vec<string>
             match method.as_str() {
-                "lines" | "split" | "split_whitespace" => {
+                "lines" | "split" | "split_whitespace" | "graphemes" => {
                     self.meta_mut(name).elem_type = Some(MirType::String);
                 }
                 _ => {}
@@ -1718,8 +1941,9 @@ impl<'a> MirLowerer<'a> {
         let bind_in_body = match presence {
             Some((inner, name)) => {
                 let (val, scrutinee_ty) = self.lower_expr(inner)?;
-                let is_niche = self.option_is_niche(inner, &scrutinee_ty);
-                let tag = self.emit_option_tag(&val, is_niche);
+                let niche = self.option_niche(inner, &scrutinee_ty);
+                let is_niche = niche.is_some();
+                let tag = self.emit_option_tag(&val, niche);
                 // Tag 0 is present (Some/Ok); anything else ends the loop.
                 let is_present = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1762,9 +1986,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, check_block);
 
         self.loop_stack.pop();
@@ -2097,9 +2319,7 @@ impl<'a> MirLowerer<'a> {
         if wb_block.is_some() {
             self.mutate_writebacks.push(writeback);
         }
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         if wb_block.is_some() {
             self.mutate_writebacks.pop();
         }
@@ -2372,9 +2592,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, continue_target);
 
         // LP13: Pool_set writeback blocks for `for mutate`
@@ -2499,9 +2717,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
 
         // counter = counter + 1
@@ -2705,9 +2921,7 @@ impl<'a> MirLowerer<'a> {
             result_local: None,
             ensure_depth,
         });
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
 
         self.builder.switch_to_block(inc_block);
@@ -2754,9 +2968,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, loop_block);
 
         self.loop_stack.pop();
@@ -2885,9 +3097,7 @@ impl<'a> MirLowerer<'a> {
             ensure_depth,
         });
 
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
+        self.lower_body_scoped(body)?;
 
         self.close_loop_body(ensure_depth, setup.inc_block);
         self.loop_stack.pop();
@@ -2895,6 +3105,74 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
+        Ok(())
+    }
+
+    /// ER2: route an error out of an `ensure` body into its `else |e|` handler.
+    ///
+    /// Assumes the body has just been lowered into the current block, so the
+    /// last `Call` in it is the operation whose `T or E` decides the branch.
+    /// Leaves the builder on the merge block, unterminated — the caller decides
+    /// how a cleanup that ran to completion continues (the inline path splices
+    /// a sentinel, the panic thunk returns).
+    ///
+    /// Shared by both so the handler's shape can't drift between the exit a
+    /// normal return takes and the one a panic takes.
+    pub(super) fn lower_ensure_else_handler(
+        &mut self,
+        param_name: &str,
+        handler_body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let handler_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+
+        let Some(call_dst) = self.builder.last_call_dst() else {
+            // No call in the body — nothing can fail, so the handler never fires.
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+            self.builder.switch_to_block(done_block);
+            return Ok(());
+        };
+
+        // Result tag: 0 = ok, 1 = err.
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(call_dst) },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag),
+            then_block: handler_block,
+            else_block: done_block,
+        }));
+
+        // Handler binds the error payload; its type comes from the call's own
+        // return type.
+        let err_ty = self.builder.local_type(call_dst)
+            .and_then(|t| match t {
+                MirType::Result { err, .. } => Some(*err),
+                _ => None,
+            })
+            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:ensure_else"));
+        self.builder.switch_to_block(handler_block);
+        let err_local = self.builder.alloc_local(param_name.to_string(), err_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: err_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(call_dst),
+                field_index: 0,
+                byte_offset: None,
+                access: FieldAccess::Word,
+            },
+        }));
+        self.locals.insert(param_name.to_string(), (err_local, err_ty));
+        for s in handler_body {
+            self.lower_stmt(s)?;
+        }
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        }
+
+        self.builder.switch_to_block(done_block);
         Ok(())
     }
 

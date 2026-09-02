@@ -418,6 +418,7 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "Stderr" => {
                 self.call_stderr_method(method, args)
             }
+            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args),
             Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
@@ -469,8 +470,14 @@ impl Interpreter {
                 }
                 self.call_builtin_method(receiver, method, args)
             }
-            // CE6: Cell<T> instance methods
+            // `Shared<T, Local>` — the strategy that takes no lock. `read` and
+            // `write` are the same operation here; the verb is intent the
+            // reader can see, not a different call (conc.sync/SH5).
             Value::Cell(ref c) => match method {
+                "read" | "write" => {
+                    let guard = c.lock().unwrap();
+                    Ok(guard.clone())
+                }
                 "get" => {
                     let guard = c.lock().unwrap();
                     Ok(guard.clone())
@@ -497,7 +504,7 @@ impl Interpreter {
                     Ok(guard.clone())
                 }
                 _ => Err(RuntimeError::NoSuchMethod {
-                    ty: "Cell".to_string(),
+                    ty: "Shared".to_string(),
                     method: method.to_string(),
                 }),
             },

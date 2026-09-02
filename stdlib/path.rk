@@ -43,7 +43,7 @@ extend Path {
                 }
                 return Path { value: "/" }
             }
-            return Path { value: self.value.substring(0, cut) }
+            return Path { value: self.value[0..cut].to_string() }
         }
         return none
     }
@@ -62,9 +62,9 @@ extend Path {
                 return none
             }
         }
-        let head = self.value.substring(0, end)
+        let head = self.value[0..end].to_string()
         if head.last_index_of("/")? as cut {
-            let name = head.substring(cut + 1, end)
+            let name = head[cut + 1..end].to_string()
             if name.is_empty() {
                 return none
             }
@@ -81,7 +81,7 @@ extend Path {
                 if dot == 0 {
                     return none
                 }
-                let ext = name.substring(dot + 1, name.len())
+                let ext = name[dot + 1..name.len()].to_string()
                 if ext.is_empty() {
                     return none
                 }
@@ -98,7 +98,7 @@ extend Path {
                 if dot == 0 {
                     return name
                 }
-                return name.substring(0, dot)
+                return name[0..dot].to_string()
             }
             return name
         }

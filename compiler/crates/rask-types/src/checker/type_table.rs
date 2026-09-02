@@ -37,6 +37,24 @@ pub struct TypeTable {
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target type string.
     pub(super) type_aliases: HashMap<String, String>,
+    /// Type parameter names in scope right now — the declaration or signature
+    /// being checked.
+    ///
+    /// A declared parameter has to win over a type of the same name, or
+    /// `struct Holder<Output>` silently means the stdlib's `os.Output` and
+    /// every use of the field is a mismatch against a type nobody wrote (#915).
+    /// Scoped rather than global: `Output` is a parameter inside that
+    /// declaration and the stdlib type everywhere else.
+    pub(super) type_param_scope: Vec<String>,
+    /// Module-level `const` names whose initializer is an integer literal,
+    /// mapped to that value.
+    ///
+    /// Only array lengths read this. `[i32; W]` names a length that has to be
+    /// known to give the type a size, and without the value the length came out
+    /// 0 — `len()` folded to zero and `for x in a` ran no iterations (#906).
+    /// A computed initializer (`const W = 2 * 2`) isn't here; that wants
+    /// comptime evaluation, and a symbolic length still falls back to 0.
+    pub(super) const_lengths: HashMap<String, usize>,
     /// TypeId for the builtin Option<T> enum.
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
@@ -80,6 +98,8 @@ impl TypeTable {
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
+            type_param_scope: Vec::new(),
+            const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
@@ -253,6 +273,16 @@ impl TypeTable {
     /// Register a transparent type alias.
     pub fn register_alias(&mut self, name: String, target: String) {
         self.type_aliases.insert(name, target);
+    }
+
+    /// The type `name` is an alias for, following a chain. `None` if it isn't an
+    /// alias.
+    ///
+    /// Public because a name used as a *namespace* — `Span.from_millis(1)` — is
+    /// matched against the stub registry by its spelling, and an alias isn't in
+    /// there under its own name.
+    pub fn alias_target<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        self.resolve_alias(name)
     }
 
     /// Resolve a type alias chain, returning the final target string.
@@ -923,5 +953,33 @@ impl TypeTable {
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
         error.map_types(&|ty| self.resolve_type_names(ty));
         error
+    }
+}
+
+impl TypeTable {
+    /// Bring a declaration's type parameters into scope for name resolution.
+    /// Returns the previous scope, to be handed back to `pop_type_params`.
+    pub fn push_type_params(&mut self, names: Vec<String>) -> Vec<String> {
+        std::mem::replace(&mut self.type_param_scope, names)
+    }
+
+    /// Restore the scope `push_type_params` replaced.
+    pub fn pop_type_params(&mut self, previous: Vec<String>) {
+        self.type_param_scope = previous;
+    }
+
+    /// Is this name a type parameter of whatever is being checked?
+    pub fn is_type_param_in_scope(&self, name: &str) -> bool {
+        self.type_param_scope.iter().any(|p| p == name)
+    }
+
+    /// Record a module-level const's integer value, for array lengths.
+    pub fn register_const_length(&mut self, name: String, value: usize) {
+        self.const_lengths.insert(name, value);
+    }
+
+    /// The value of a const usable as an array length, if there is one.
+    pub fn const_length(&self, name: &str) -> Option<usize> {
+        self.const_lengths.get(name).copied()
     }
 }

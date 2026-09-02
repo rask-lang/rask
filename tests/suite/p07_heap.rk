@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/memory/heap.md — `Heap(expr)` heap-allocates a `Heap<T>`; `*ptr`
+// borrows the inner value without consuming; drop(ptr) consumes exactly once
+// (mem.linear/L1-L3). Canonical syntax from owned.md "Allocation and Usage".
+import memory.Heap
+
+// --- allocate / deref / drop on a scalar ---
+
+test "mem.heap/HP3 — Heap() allocates, *ptr reads back the value, drop consumes" {
+    let ptr: Heap<i32> = Heap(42)    // heap-allocate, Heap<i32>
+    let value = *ptr                // dereference (borrow, does not consume)
+    drop(ptr)                         // consume + deallocate
+    assert value == 42
+}
+
+// --- deref borrows a struct field, still valid until drop (owned.md 62-75) ---
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "mem.heap/HP3 — deref borrows a field, the box survives until drop" {
+    let ptr = Heap(Point { x: 1, y: 2 })
+    let x = (*ptr).x                // borrow for read
+    drop(ptr)                         // now consumed
+    assert x == 1
+}
+
+// --- allocated in a local, then into a declared slot (#739) ---
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Holder {
+    public inner: Heap<Big>
+}
+
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+test "mem.heap/HP3 — a local bound to `Heap(…)` holds the box, not a copy of it" {
+    let p = Heap(Big { a: 4, b: 5, c: 6 })
+    assert p.b == 5
+    drop(p)
+}
+
+test "mem.heap/HP3 — a declared Heap field allocates once, whichever way it's filled" {
+    // Straight from the `own`.
+    let direct = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    assert direct.inner.b == 2
+    drop(direct.inner)
+
+    // Through a local — the box moves, it isn't boxed again.
+    let p = Heap(Big { a: 4, b: 5, c: 6 })
+    let moved = Holder { inner: p }
+    assert moved.inner.b == 5
+    drop(moved.inner)
+
+    // A plain value: HP5 lets a `T` stand where `Heap<T>` is asked for, and the
+    // slot is what allocates.
+    let plain = Big { a: 7, b: 8, c: 9 }
+    let boxed = Holder { inner: plain }
+    assert boxed.inner.b == 8
+    drop(boxed.inner)
+}
+
+test "mem.heap/HP6 — a recursive enum holds its tail behind a Heap" {
+    let l = List.Cons(1, Heap(List.Cons(2, Heap(List.Nil))))
+    match l {
+        List.Cons(head, rest) => {
+            assert head == 1
+            match rest {
+                List.Cons(second, _) => assert second == 2
+                List.Nil => assert false
+            }
+        }
+        List.Nil => assert false
+    }
+}
+
+func main() {}

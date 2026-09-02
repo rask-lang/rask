@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Request metrics behind a Mutex — write-heavy (every request records),
 // so Mutex over Shared (conc.sync "When to Use What").
+import sync.Shared
 
 struct Metrics {
     public total_requests: u64
@@ -78,11 +79,11 @@ func percentile(sorted: Vec<f64>, pct: usize) -> f64 {
 }
 
 // Module-level, write-heavy shared state.
-const metrics = Mutex.new(Metrics.new())
+const metrics = Shared.mutex(Metrics.new())
 
-// Free function so the router doesn't repeat the lock. Inline `.lock()`
+// Free function so the router doesn't repeat the lock. Inline `.write()`
 // because `with metrics as m` on a module-level const doesn't unwrap in the
 // current checker (FINDINGS).
 func record_request(status: u16, latency_ms: f64) {
-    metrics.lock().record(status, latency_ms)
+    metrics.write().record(status, latency_ms)
 }

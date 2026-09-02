@@ -92,10 +92,20 @@ pub enum SymbolKind {
         /// The PackageId this namespace refers to.
         package_id: PackageId,
     },
-    /// A type alias (transparent).
+    /// A type alias.
     TypeAlias {
         /// The target type name.
         target: String,
+        /// Bound by `import m.T as A` rather than by a `type alias` declaration.
+        ///
+        /// The two have to be told apart. An aliased import is transparent — `A`
+        /// *is* `T`, which is what IM3 means — but a `type X = Y` declaration is
+        /// nominal, with an identity of its own, and registering one as
+        /// transparent collapses the newtype into what it wraps: `r.label.value`
+        /// on a `type Label = string` became "no field `value` on type `string`".
+        /// `type alias X = Y` is the transparent spelling and the checker learns
+        /// it from the declaration, not from here.
+        from_import: bool,
     },
     /// A C import namespace (`import c "header.h"` → `c.symbol`).
     CNamespace {
@@ -135,8 +145,8 @@ pub enum BuiltinTypeKind {
     Shared,
     /// Mutex<T> - mutual exclusion lock
     Mutex,
-    /// Owned<T> - heap-allocated owned value
-    Owned,
+    /// Heap<T> - the one-pointer indirection (mem.heap)
+    Heap,
     /// SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
     Simd,
     /// Rng - random number generator
@@ -178,102 +188,231 @@ pub enum BuiltinFunctionKind {
     Skip,
     /// expect_fail - invert pass/fail for test
     ExpectFail,
-    /// drop - consume an `Owned<T>`, freeing it if `own` heap-allocated one
+    /// drop - consume a `Heap<T>`, freeing what it points at
     /// (mem.owned/OW3)
     Drop,
 }
 
-/// Built-in module kinds (stdlib modules).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinModuleKind {
-    /// io - standard input/output
-    Io,
-    /// fs - filesystem operations
-    Fs,
-    /// env - environment variables
-    Env,
-    /// cli - command line arguments
-    Cli,
-    /// std - standard library utilities
-    Std,
-    /// json - JSON parsing and encoding
-    Json,
-    /// random - random number generation
-    Random,
-    /// time - time and duration utilities
-    Time,
-    /// math - mathematical functions
-    Math,
-    /// path - path manipulation
-    Path,
-    /// os - operating system utilities
-    Os,
-    /// net - networking
-    Net,
-    /// core - core utilities and constants
-    Core,
-    /// async - async runtime (spawn, etc.)
-    Async,
-    /// cfg - compile-time build configuration (CT11-CT16)
-    Cfg,
-    /// http - HTTP client and server
-    Http,
-    /// thread - OS threads and thread pools
-    Thread,
+/// A builtin type and the name it's in scope under.
+///
+/// `register_builtins` walks this to put them in scope, and `is_builtin_type`
+/// reads the same table to answer BI3. Asking the table by name rather than
+/// asking the scope what it holds is the point: the stdlib declares
+/// `public struct Vec<T> { }` of its own, and that binding replaced the builtin
+/// one in scope, so `struct Vec { … }` in a program was accepted while
+/// `struct Set { … }` was refused — the difference being only whether the stdlib
+/// happened to declare the name too (#977).
+pub struct BuiltinTypeEntry {
+    pub name: &'static str,
+    pub kind: BuiltinTypeKind,
+    /// The module that brings this name into scope, or `None` for BI1's
+    /// always-available set.
+    pub module: Option<&'static str>,
 }
 
+const fn always(name: &'static str, kind: BuiltinTypeKind) -> BuiltinTypeEntry {
+    BuiltinTypeEntry { name, kind, module: None }
+}
+
+const fn from(module: &'static str, name: &'static str, kind: BuiltinTypeKind) -> BuiltinTypeEntry {
+    BuiltinTypeEntry { name, kind, module: Some(module) }
+}
+
+/// Every type the compiler provides, and where it comes from.
+///
+/// BI1's set is the `always` half: primitives (handled separately, by
+/// `rask_ast::primitives`), `string`, `Vec`, `Map`, `Set`, `Error`, `Channel`,
+/// `none`. Those are in scope with no import and BI3 reserves their names.
+///
+/// Everything else needs its module. The box family is compiler-provided and
+/// closed (mem.boxes/BX1–BX4), but that's about who may *define* one, not about
+/// who can see the name without asking: `Pool`, `Handle`, `Rack`, `Link` and
+/// `Heap` live in `memory`, `Shared`, `Mutex` and the atomics in `sync`, and
+/// they're imported like anything else. All of them used to be in the always
+/// half, so a program couldn't declare a `struct Handle` of its own and
+/// `Pool.new()` worked with no import at all (#977).
+pub const BUILTIN_TYPES: &[BuiltinTypeEntry] = &[
+    always("Vec", BuiltinTypeKind::Vec),
+    always("Map", BuiltinTypeKind::Map),
+    always("Set", BuiltinTypeKind::Set),
+    always("string", BuiltinTypeKind::String),
+    always("Error", BuiltinTypeKind::Error),
+    always("Channel", BuiltinTypeKind::Channel),
+
+    from("memory", "Pool", BuiltinTypeKind::Pool),
+    from("memory", "Handle", BuiltinTypeKind::Handle),
+    from("memory", "Rack", BuiltinTypeKind::Rack),
+    from("memory", "Link", BuiltinTypeKind::Link),
+    from("memory", "Heap", BuiltinTypeKind::Heap),
+
+    from("sync", "Shared", BuiltinTypeKind::Shared),
+    from("sync", "Mutex", BuiltinTypeKind::Mutex),
+    from("sync", "Atomic", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicBool", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicI8", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicU8", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicI16", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicU16", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicI32", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicU32", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicI64", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicU64", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicUsize", BuiltinTypeKind::Atomic),
+    from("sync", "AtomicIsize", BuiltinTypeKind::Atomic),
+
+    // These three were a second table, keyed by module in the resolver. Same
+    // question, so the same table answers it.
+    from("fs", "File", BuiltinTypeKind::File),
+    from("random", "Random", BuiltinTypeKind::Rng),
+    from("math", "f32x4", BuiltinTypeKind::Simd),
+    from("math", "f32x8", BuiltinTypeKind::Simd),
+    from("math", "f64x2", BuiltinTypeKind::Simd),
+    from("math", "f64x4", BuiltinTypeKind::Simd),
+    from("math", "i32x4", BuiltinTypeKind::Simd),
+    from("math", "i32x8", BuiltinTypeKind::Simd),
+];
+
+/// BI1's set — in scope with no import, and reserved against redeclaration.
+pub fn is_builtin_type(name: &str) -> bool {
+    rask_ast::primitives::is_scalar(name)
+        || BUILTIN_TYPES
+            .iter()
+            .any(|t| t.name == name && t.module.is_none())
+}
+
+/// The builtin type `module` brings into scope under `name`, if any.
+pub fn module_builtin_type(module: &str, name: &str) -> Option<BuiltinTypeKind> {
+    BUILTIN_TYPES
+        .iter()
+        .find(|t| t.name == name && t.module == Some(module))
+        .map(|t| t.kind)
+}
+
+/// The compiler-provided types `module` brings into scope.
+pub fn module_builtin_types(module: &str) -> impl Iterator<Item = &'static BuiltinTypeEntry> + use<'_> {
+    BUILTIN_TYPES.iter().filter(move |t| t.module == Some(module))
+}
+
+/// A builtin function, the name it's in scope under, and whether a program may
+/// declare its own.
+pub struct BuiltinFnEntry {
+    pub name: &'static str,
+    pub kind: BuiltinFunctionKind,
+    /// Return type as the resolver records it — `"!"` for the diverging ones.
+    pub ret_ty: Option<&'static str>,
+    /// BF3 refuses a program's own declaration of this name.
+    ///
+    /// True for BF1's eight, which the compiler knows the signatures of and
+    /// generates code for per call site (BF2) — a program's own `println` would
+    /// be silently ignored at every interpolation. `min`, `max`, `clamp` and the
+    /// test builtins aren't in BF1: they're ordinary generic functions and a
+    /// program defining its own has always been allowed.
+    pub reserved: bool,
+}
+
+const fn bf(
+    name: &'static str,
+    kind: BuiltinFunctionKind,
+    ret_ty: Option<&'static str>,
+    reserved: bool,
+) -> BuiltinFnEntry {
+    BuiltinFnEntry { name, kind, ret_ty, reserved }
+}
+
+/// Functions in scope with no import. The `reserved` ones are BF1's, which BF3
+/// won't let a program redeclare.
+pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
+    bf("println", BuiltinFunctionKind::Println, None, true),
+    bf("print", BuiltinFunctionKind::Print, None, true),
+    bf("panic", BuiltinFunctionKind::Panic, Some("!"), true),
+    bf("format", BuiltinFunctionKind::Format, None, true),
+    bf("todo", BuiltinFunctionKind::Todo, Some("!"), true),
+    bf("unreachable", BuiltinFunctionKind::Unreachable, Some("!"), true),
+    bf("transmute", BuiltinFunctionKind::Transmute, None, true),
+    // `spawn` is BF1's eighth. It's registered by `async`'s companions rather
+    // than here, because `spawn(|| …)` needs `using Multitasking` in scope.
+    bf("min", BuiltinFunctionKind::Min, None, false),
+    bf("max", BuiltinFunctionKind::Max, None, false),
+    bf("clamp", BuiltinFunctionKind::Clamp, None, false),
+    bf("assert_eq", BuiltinFunctionKind::AssertEq, None, false),
+    bf("skip", BuiltinFunctionKind::Skip, Some("!"), false),
+    bf("expect_fail", BuiltinFunctionKind::ExpectFail, None, false),
+    bf("drop", BuiltinFunctionKind::Drop, None, false),
+];
+
+/// BF1's set — the names BF3 reserves.
+pub fn is_reserved_builtin_fn(name: &str) -> bool {
+    name == "spawn"
+        || BUILTIN_FUNCTIONS.iter().any(|f| f.name == name && f.reserved)
+}
+
+/// Enums the resolver puts in scope itself, with no import.
+///
+/// `Option` and `Result` back `T?` and `T or E`; `Ordering` is what `compare()`
+/// answers with. A module's own enums (`Method`, `JsonValue`) are not here —
+/// those arrive with an import and a program is free to name a type after one it
+/// hasn't imported.
+pub const PRELUDE_ENUMS: &[&str] = &["Option", "Result", "Ordering"];
+
+/// Names in scope with no import: BI1's types, BF1's functions, the prelude
+/// enums, the primitives.
+///
+/// This is also exactly what BI3 and BF3 reserve against a program's own
+/// declaration, which isn't a coincidence — a name that's always there is a
+/// name no declaration can have, and a name that isn't is a name IM1 makes the
+/// program ask for. Both rules read this one answer.
+///
+/// Asked by name, not by looking the name up in scope. The stdlib declares
+/// `public struct Vec<T> { }` and `public enum Option<T> { }` of its own, and
+/// those bindings replaced the builtin ones — which is why `struct Vec { … }`
+/// and `struct Option { … }` were accepted while `struct Set { … }` and
+/// `struct Ordering { … }` were refused (#977).
+pub fn is_always_in_scope(name: &str) -> bool {
+    is_builtin_type(name)
+        || is_reserved_builtin_fn(name)
+        || PRELUDE_ENUMS.contains(&name)
+}
+
+/// A stdlib module, identified by the name it's imported under.
+///
+/// This was a hand-written enum, and it listed 17 of the stdlib's 29 files —
+/// `import memory`, `import string`, `import sync` and eleven others answered
+/// "unknown package: `memory`" while the types inside them resolved with no
+/// import at all (#977). The set now comes from
+/// `rask_stdlib::modules::module_names()`, which reads the stub sources, so
+/// there's one list and it can't drift from the stdlib it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BuiltinModuleKind(&'static str);
+
 impl BuiltinModuleKind {
+    /// `async` — `spawn` and friends come into scope with it.
+    pub const ASYNC: Self = Self("async");
+    /// `core` — `transmute`.
+    pub const CORE: Self = Self("core");
+    /// `fs` — carries the builtin `File`.
+    pub const FS: Self = Self("fs");
+    /// `random` — carries the builtin `Random`.
+    pub const RANDOM: Self = Self("random");
+    /// `math` — carries the SIMD vector types.
+    pub const MATH: Self = Self("math");
+    /// `os` — `Output`'s fields are known to the resolver.
+    pub const OS: Self = Self("os");
+
     /// The name this module is imported under. Also the stem of its stdlib
     /// file, which is what `rask_stdlib::modules` keys its exports by.
     pub fn name(self) -> &'static str {
-        match self {
-            BuiltinModuleKind::Io => "io",
-            BuiltinModuleKind::Fs => "fs",
-            BuiltinModuleKind::Env => "env",
-            BuiltinModuleKind::Cli => "cli",
-            BuiltinModuleKind::Std => "std",
-            BuiltinModuleKind::Json => "json",
-            BuiltinModuleKind::Random => "random",
-            BuiltinModuleKind::Time => "time",
-            BuiltinModuleKind::Math => "math",
-            BuiltinModuleKind::Path => "path",
-            BuiltinModuleKind::Os => "os",
-            BuiltinModuleKind::Net => "net",
-            BuiltinModuleKind::Core => "core",
-            BuiltinModuleKind::Async => "async",
-            BuiltinModuleKind::Cfg => "cfg",
-            BuiltinModuleKind::Http => "http",
-            BuiltinModuleKind::Thread => "thread",
-        }
+        self.0
     }
 
     /// The module a name imports, if it's a stdlib module.
     pub fn from_name(name: &str) -> Option<BuiltinModuleKind> {
-        ALL_BUILTIN_MODULES.iter().copied().find(|m| m.name() == name)
+        rask_stdlib::modules::module_names()
+            .iter()
+            .copied()
+            .find(|m| *m == name)
+            .map(BuiltinModuleKind)
     }
 }
-
-/// Every stdlib module. `from_name` walks this, so a new variant is reachable
-/// as soon as it has a name — there's no second list to update.
-pub const ALL_BUILTIN_MODULES: &[BuiltinModuleKind] = &[
-    BuiltinModuleKind::Io,
-    BuiltinModuleKind::Fs,
-    BuiltinModuleKind::Env,
-    BuiltinModuleKind::Cli,
-    BuiltinModuleKind::Std,
-    BuiltinModuleKind::Json,
-    BuiltinModuleKind::Random,
-    BuiltinModuleKind::Time,
-    BuiltinModuleKind::Math,
-    BuiltinModuleKind::Path,
-    BuiltinModuleKind::Os,
-    BuiltinModuleKind::Net,
-    BuiltinModuleKind::Core,
-    BuiltinModuleKind::Async,
-    BuiltinModuleKind::Cfg,
-    BuiltinModuleKind::Http,
-    BuiltinModuleKind::Thread,
-];
 
 /// A declared symbol.
 #[derive(Debug, Clone)]

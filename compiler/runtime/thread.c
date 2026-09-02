@@ -42,6 +42,10 @@ typedef struct RaskTaskState {
     atomic_int   cancel_flag;
     char        *panic_msg;     // set on panic, owned by state
     int64_t      result;        // task body's return value, read by join
+    // Non-zero when `result` is a heap box this task owns rather than a plain
+    // value — a payload wider than a machine word, or one that comes back in a
+    // float register. Freed here when no join ever came for it (#963).
+    int64_t      result_owned;
     pthread_t    thread;        // valid only when !pooled
 
     // A pooled job shares a worker with other jobs, so there is no thread of
@@ -92,6 +96,9 @@ static RaskTaskState *state_new(void) {
 static void state_release(RaskTaskState *s) {
     if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
         if (s->panic_msg) rask_free(s->panic_msg);
+        // Still set means nobody took it — a detached thread whose value no
+        // join ever came for.
+        if (s->result_owned && s->result) rask_free((void *)(intptr_t)s->result);
         pthread_cond_destroy(&s->done_cond);
         pthread_mutex_destroy(&s->report_lock);
         rask_free(s);
@@ -229,6 +236,10 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
         result = -1;
     } else {
         result = state->result;
+        // Ownership of a boxed result moves to the caller — clearing it stops
+        // `state_release` from freeing what the caller is about to read. Same
+        // handover the green path makes (#963).
+        state->result = 0;
         if (msg_out) *msg_out = NULL;
     }
 
@@ -355,7 +366,9 @@ static int64_t closure_spawn_entry(void *arg) {
     return result;
 }
 
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
+// `result_owned`: the closure hands back a heap box rather than a plain value.
+// See `RaskTaskState::result_owned`.
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
@@ -364,13 +377,21 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
     ctx->env = env;
     ctx->alloc_base = closure_ptr;
 
-    return rask_task_spawn(closure_spawn_entry, ctx);
+    RaskTaskHandle *h = rask_task_spawn(closure_spawn_entry, ctx);
+    if (h && h->state) h->state->result_owned = result_owned;
+    return h;
 }
 
 // ─── Hooks for the worker pool (threadpool.c) ──────────────
 // A pooled job needs a task state and a handle without a thread behind them.
 // These keep RaskTaskState private to this file while letting the pool build
 // jobs whose handles join/detach/cancel like any other.
+
+// The pool builds its own states, so it needs a way to say the same thing
+// `rask_closure_spawn` says — keeps `RaskTaskState` private to this file.
+void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned) {
+    if (state) state->result_owned = owned;
+}
 
 RaskTaskState *rask_task_state_new_pooled(void) {
     RaskTaskState *s = state_new();

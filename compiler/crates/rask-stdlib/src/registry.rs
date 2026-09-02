@@ -34,7 +34,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
-        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Mutex" | "Cell"
+        "ThreadHandle" | "Sender" | "Receiver" | "Shared"
         | "AtomicBool" | "AtomicI8" | "AtomicU8"
         | "AtomicI16" | "AtomicU16" | "AtomicI32" | "AtomicU32"
         | "AtomicI64" | "AtomicU64" | "AtomicUsize" | "AtomicIsize"
@@ -109,18 +109,23 @@ const CHAR_METHODS: &[&str] = &[
 
 const STRING_METHODS: &[&str] = &[
     "len", "is_empty", "clone", "starts_with", "ends_with", "contains",
-    "push", "push_str", "trim", "trim_start", "trim_end", "trim_indices",
+    "push", "push_str", "trim", "trim_start", "trim_end",
     // No `to_owned`: it's a Rust name with no entry in std.strings and no
     // signature anywhere, so it resolved as a known method whose return type
     // stayed open — MIR gave the temp `i64`, codegen had no string slot to
     // copy into, and `part.to_owned()` segfaulted. The spec's two storable
     // conversions are `.to_string()` (copies) and `.view()` (zero-copy).
-    "to_string", "to_uppercase", "to_lowercase",
+    "to_string", "to_uppercase", "to_lowercase", "normalized",
     "split", "split_whitespace", "chars", "char_indices", "bytes", "lines",
-    "replace", "substring", "parse_int", "parse",
-    "char_at", "byte_at", "parse_float", "index_of", "last_index_of",
-    "repeat", "reverse", "eq", "ne",
-    "char_count", "is_ascii", "replacen",
+    "graphemes",
+    "replace", "parse",
+    "byte_at", "char_at", "index_of", "last_index_of",
+    "repeat", "reverse", "truncate", "eq", "ne",
+    // `width` is display columns, `len` is bytes (std.strings/U1-U2). No
+    // char_count: a scalar count answers no real question. `char_at` takes a
+    // byte offset like every other index, so it's O(1) instead of a scan from
+    // the start.
+    "width", "is_ascii",
 ];
 
 const VEC_METHODS: &[&str] = &[
@@ -201,9 +206,14 @@ const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
 const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
 const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
-const SHARED_METHODS: &[&str] = &["read", "write", "try_read", "try_write", "clone"];
-const MUTEX_METHODS: &[&str] = &["lock", "try_lock", "clone"];
-const CELL_METHODS: &[&str] = &["get", "set", "replace", "into_inner"];
+// conc.sync: one box, three strategies. Every verb answers under every
+// strategy — `read`/`write` are the scoped views, the rest are the
+// single-expression shorthands `Cell` used to own.
+const SHARED_METHODS: &[&str] = &[
+    "read", "write", "try_read", "try_write", "clone",
+    "get", "set", "replace", "into_inner",
+];
+
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
     "add", "sub", "mul", "div", "scale",
@@ -281,7 +291,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "JsonValue",
     "Duration", "Instant",
     "Path", "Args",
-    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared", "Mutex", "Cell",
+    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared",
     "AtomicBool", "AtomicI8", "AtomicU8",
     "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
     "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
@@ -344,8 +354,6 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Sender" => SENDER_METHODS,
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,
-        "Mutex" => MUTEX_METHODS,
-        "Cell" => CELL_METHODS,
         "AtomicBool" => ATOMIC_BOOL_METHODS,
         "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
         | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicU64"

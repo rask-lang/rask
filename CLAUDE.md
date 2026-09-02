@@ -31,10 +31,35 @@ The big decisions are made (see **Decided** table below). Don't re-derive them a
 
 If something genuinely seems wrong, flag it once with a concrete reason — then drop it unless I bite. Keep critique pointed; no broad "have you considered" rounds on settled areas.
 
+### Nothing is stable — settled is not frozen
+
+Settled means "don't reopen it for fun". It does not mean "can't be changed".
+Nobody is using this language. There are no downstream users, no released API, no
+migration to plan for. **Backward compatibility is never a reason for anything.**
+
+So when a design turns out to be wrong, change it — all of it, everywhere, in one
+go. I would rather have a large destructive change that leaves the design better
+than a careful patch that keeps a bad shape alive. Renaming a method with different
+semantics, deleting an operator, rewriting a decided spec, breaking every call site
+in the repo: all fine, all cheap, do it properly.
+
+What this rules out:
+
+- Hedging a change to avoid breaking existing code. There is no existing code
+  worth protecting — the repo is ours and the compiler will find every call site.
+- Leaving a stub that wears a real name. A method that silently does nothing is
+  worse than a missing one: implement it or delete it.
+- "Keep these two copies in step" comments. Duplication a human has to maintain is
+  rot with a delay fuse — generate it from one source or collapse it.
+- Deprecation periods, aliases, compatibility shims. Delete the old spelling.
+
+If you catch yourself weighing "how much would this break", you are weighing the
+wrong thing. Weigh whether the result is better.
+
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The box family is closed.** `Cell`, `Pool`, `Shared`, `Mutex`, `Owned`, `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
+- **The box family is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Pool` (deprecated), `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
 
 # Working relationship
 
@@ -105,6 +130,8 @@ Releases: https://github.com/rask-lang/rask/releases
 **Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
 
 `RASK_POISON_STACK=1 ./binary` fills the stack with `0xAA` before `main` and before each worker thread's tasks. A slot codegen forgot to write reads as zero on a fresh stack and looks fine, so those bugs only appear once a program has run a while — and vanish the moment you reduce them. Poisoning makes them fire on the first call instead. That's what turned #577 from 40% flaky into 10/10.
+
+If the compiler panics saying a name "belongs to `Vec`" but nothing declares it, MIR has minted an internal spelling nobody accounted for. `INTERNAL_SPELLINGS` in `rask-stdlib/src/mir_metadata.rs` says what each one stands for, and the panic is deliberate — the alternative answer, "no declaration, so the caller owns what came back", frees a string the container still holds. `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each one and carries on instead of stopping at the first, so one sweep over the corpus lists them all.
 
 SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
 
@@ -258,7 +285,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
 | Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
-| Boxes | Container family with `with`-scoped access — Cell, Pool, Shared, Mutex, Owned | [boxes.md](specs/memory/boxes.md) |
+| Boxes | Container family with `with`-scoped access — `Shared<T, S>`, Rack+Link, Heap. `Cell`/`Mutex` are strategies, not types | [boxes.md](specs/memory/boxes.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
@@ -287,7 +314,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Area | Status |
 |------|--------|
 | Build system | Working, including cross-package symbol export |
-| Macros/attributes | Not specified |
+| Macros/attributes | No macro system (rejected). User annotations built — `annotation @name { … }`, attachment checking, `has<A>()`/`get<A>().field` at comptime on both backends, across packages ([annotations.md](specs/types/annotations.md), spec still proposed). Call information is spec only ([call-info.md](specs/control/call-info.md)); gap analysis in [macro-story.md](specs/analysis/macro-story.md) |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
 | Phase B fiber implementation | Decided: stackful fibers with mmap'd virtual stacks, pluggable reactor (io_uring/epoll/kqueue/IOCP), signal-based preemption. Still to prototype: `fiber_switch` assembly, safe-point instrumentation, reactor backends |

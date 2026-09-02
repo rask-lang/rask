@@ -25,6 +25,7 @@
 // program wrote it — that ordering is what the first test is really checking.
 
 import io
+import io.IoError
 
 test "std.io — a handle can be acquired and closed" {
     mut out = io.stdout()

@@ -4,19 +4,20 @@
 // Length, case, trimming, searching, slicing, splitting, joining, replacing,
 // concatenation, and comparison. `len` is bytes and `char_count` is characters,
 // which is the one thing here that surprises people, so both are pinned.
+import string.StringBuilder
 
 test "length and emptiness" {
     assert "".is_empty()
     assert !"a".is_empty()
     assert "".len() == 0
     assert "hello".len() == 5
-    assert "hello".char_count() == 5
+    assert "hello".width() == 5
 }
 
 test "len is bytes, char_count is characters" {
     let s = "héllo"
     assert s.len() == 6
-    assert s.char_count() == 5
+    assert s.width() == 5
     assert !s.is_ascii()
     assert "hello".is_ascii()
 }
@@ -58,10 +59,10 @@ test "index_of returns an absent value when the pattern is missing" {
 
 test "substring slices by byte index" {
     let s = "hello world"
-    assert s.substring(0, 5) == "hello"
-    assert s.substring(6, 11) == "world"
-    assert s.substring(0, 0) == ""
-    assert s.substring(0, s.len()) == s
+    assert s[0..5].to_string() == "hello"
+    assert s[6..11].to_string() == "world"
+    assert s[0..0].to_string() == ""
+    assert s[0..s.len()].to_string() == s
 }
 
 test "char_at and byte_at" {

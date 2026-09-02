@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A spawned task's result type reaches `join()` — #963.
+//
+// `spawn(f: func() -> T) -> TaskHandle<T>` couldn't bind `T` from its argument,
+// because the resolver registered every stdlib function with an empty parameter
+// list. With no parameter to unify the closure against, `T` stayed an inference
+// variable through to MIR, and the join's payload was whatever the lowering
+// fallback invented — i64, whatever the task actually returned.
+//
+// `Thread.spawn` had the same hole for a different reason: a stdlib *method*
+// collected only its explicit `<T>` list, and these declare `T` by using it.
+
+import async.JoinError
+import thread.Thread
+
+func pair_of_tasks() -> i64 or JoinError {
+    using Multitasking {
+        let a = spawn(|| { return 10i64 })
+        let b = spawn(|| { return 32i64 })
+        let x = try a.join()
+        let y = try b.join()
+        return x + y
+    }
+}
+
+test "two tasks keep their own i64 results" {
+    assert pair_of_tasks()! == 42i64
+}
+
+test "Thread.spawn binds its payload the same way" {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    Thread.spawn(own || {
+        let _ = tx.send(7i64)
+        return
+    }).join()
+    mut got = 0i64
+    if rx.receive() is i64 as v {
+        got = v
+    }
+    assert got == 7i64
+}

@@ -6,6 +6,9 @@
 // The store returns only StoreError. Wire-string parsing and validation
 // belong to the handler layer, which widens everything into ApiError — so
 // nothing here ever has to mix error vocabularies.
+import memory.Pool
+import memory.Handle
+import sync.Mutex
 
 // Parsed patch built by the handler; the store never sees wire strings.
 // All fields default (FD1), so a handler starts from `TaskPatch {}` and sets
@@ -320,7 +323,8 @@ extend TaskTx {
         return TaskTx { ops: Vec.new(), done: false }
     }
 
-    func stage(mutate self, op: TxOp) {
+    // `take`: the transaction keeps the op, so the call site shows it going.
+    func stage(mutate self, take op: TxOp) {
         self.ops.push(op)
     }
 
@@ -364,4 +368,4 @@ extend TaskTx {
 }
 
 // Module-level store — write-heavy, so Mutex (conc.sync). Handlers lock it.
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every binding these patterns introduce must come out of the checker with a
+// real type. See `open_nodes_pattern_bindings` in compile_run.rs.
+
+enum Holder<T> {
+    Full(T)
+    Empty
+}
+
+enum Value {
+    Num(f64)
+    Text(string)
+}
+
+func unwrap_float(h: Holder<f64>) -> f64 {
+    match h {
+        Holder.Full(v) => return v
+        Holder.Empty => return -1.0
+    }
+}
+
+func unwrap_text(h: Holder<string>) -> string {
+    match h {
+        Holder.Full(v) => return v
+        Holder.Empty => return "empty"
+    }
+}
+
+func describe(a: Value, b: Value) -> string {
+    match (a, b) {
+        (Value.Num(x), Value.Num(y)) => return "nums {x}+{y}"
+        (Value.Num(x), Value.Text(s)) => return "num {x} then {s}"
+        (Value.Text(s), Value.Num(y)) => return "{s} then num {y}"
+        (Value.Text(p), Value.Text(q)) => return "{p}|{q}"
+    }
+}
+
+func main() {
+    println(unwrap_float(Holder<f64>.Full(2.5)))
+    println(unwrap_text(Holder<string>.Full("text")))
+    println(describe(Value.Num(1.5), Value.Text("tail")))
+    println(none_from_context(Vec<string>.new(), 0))
+}
+
+// `none` has no payload type of its own — whatever it's compared or assigned
+// against is the only place one can come from.
+enum Gone {
+    Yes
+}
+
+extend Gone {
+    func message(self) -> string {
+        return "gone"
+    }
+}
+
+func maybe(i: i64) -> string or Gone {
+    if i < 0 { return Gone.Yes }
+    return "here"
+}
+
+func none_from_context(v: Vec<string>, i: i64) -> bool {
+    let popped = v.get(i)
+    let dropped = maybe(i) catch _ => none
+    return popped == none && dropped == none
+}

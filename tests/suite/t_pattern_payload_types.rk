@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A match binding gets its type from the scrutinee, not from a guess.
+//
+// Two places dropped the connection. A generic enum arrives at the constructor
+// pattern as `Holder<f64>` rather than a plain named type, and only the plain
+// case was handled — so `Holder.Full(v)` bound `v` to a variable nothing solved.
+// A tuple pattern made a fresh variable per element and left the "this is a
+// (Value, Value)" constraint for the solver, which runs after the sub-patterns
+// are checked, so those saw empty variables too.
+//
+// Both came out right anyway whenever the payload was a machine word, because
+// that's what MIR's fallback guesses. These use payloads where the guess is
+// wrong: an `f64` lives in a float register and a `string` is sixteen bytes.
+
+enum Holder<T> {
+    Full(T)
+    Empty
+}
+
+enum Value {
+    Num(f64)
+    Text(string)
+}
+
+func describe(a: Value, b: Value) -> string {
+    match (a, b) {
+        (Value.Num(x), Value.Num(y)) => return "nums {x}+{y}"
+        (Value.Num(x), Value.Text(s)) => return "num {x} then {s}"
+        (Value.Text(s), Value.Num(y)) => return "{s} then num {y}"
+        (Value.Text(p), Value.Text(q)) => return "{p}|{q}"
+    }
+}
+
+test "type.enums — a float payload survives a generic match binding" {
+    let h = Holder<f64>.Full(2.5)
+    mut got = 0.0
+    match h {
+        Holder.Full(v) => got = v
+        Holder.Empty => got = -1.0
+    }
+    assert got == 2.5
+}
+
+test "type.enums — a string payload survives a generic match binding" {
+    let h = Holder<string>.Full("a payload long enough to need the heap")
+    mut got = ""
+    match h {
+        Holder.Full(v) => got = v
+        Holder.Empty => got = "empty"
+    }
+    assert got == "a payload long enough to need the heap"
+    assert got.len() == 38
+}
+
+test "type.enums — tuple patterns type both sides from the scrutinee" {
+    assert describe(Value.Num(1.5), Value.Num(2.5)) == "nums 1.5+2.5"
+    assert describe(Value.Num(0.5), Value.Text("tail")) == "num 0.5 then tail"
+    assert describe(Value.Text("head"), Value.Num(9.5)) == "head then num 9.5"
+    assert describe(Value.Text("a"), Value.Text("b")) == "a|b"
+}

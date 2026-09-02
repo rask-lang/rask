@@ -6,6 +6,9 @@
 // The store returns only StoreError. Wire-string parsing and validation
 // belong to the handler layer, which widens everything into ApiError — so
 // nothing here ever has to mix error vocabularies.
+import memory.Pool
+import memory.Handle
+import sync.Shared
 
 // Parsed patch built by the handler; the store never sees wire strings.
 struct TaskPatch {
@@ -375,4 +378,4 @@ extend TaskTx {
 }
 
 // Module-level store — write-heavy, so Mutex (conc.sync). Handlers lock it.
-const store = Mutex.new(Store.new())
+const store = Shared.mutex(Store.new())

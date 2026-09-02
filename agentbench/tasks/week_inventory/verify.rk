@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func stock() -> Vec<Item> {
+    return [Item {
+        name: "bolt",
+        sku: "B-1",
+        price_cents: 120,
+    }, Item {
+        name: "nut",
+        sku: none,
+        price_cents: 45,
+    }, Item {
+        name: "washer",
+        sku: "W-9",
+        price_cents: 10,
+    }]
+}
+
+test "verify: find" {
+    assert find(stock(), "nut")!.price_cents == 45
+    assert find(stock(), "screw") is none
+    let bolt = find(stock(), "bolt")!
+    assert bolt.sku! == "B-1"
+}
+
+test "verify: sku fallback" {
+    assert sku_or_unknown(stock(), "bolt") == "B-1"
+    assert sku_or_unknown(stock(), "nut") == "unknown"
+    assert sku_or_unknown(stock(), "screw") == "unknown"
+}
+
+test "verify: price fallback" {
+    assert price_of(stock(), "bolt") == 120
+    assert price_of(stock(), "nut") == 45
+    assert price_of(stock(), "screw") == -1
+}
+
+test "verify: labels" {
+    let labels = labelled(stock())
+    assert labels.len() == 3
+    assert labels[0] == "bolt (B-1)"
+    assert labels[1] == "nut"
+    assert labels[2] == "washer (W-9)"
+    mut empty: Vec<Item> = Vec.new()
+    assert labelled(empty).len() == 0
+}

@@ -1,3 +1,5 @@
+import sync.Shared
+
 struct Store {
     last: string
 }
@@ -12,10 +14,10 @@ extend Store {
     }
 }
 
-const store = Mutex.new(Store { last: "" })
+const store = Shared.mutex(Store { last: "" })
 
 func main() {
-    let id = store.lock().put("verify the milestone")
-    let back = store.lock().get_last()
+    let id = store.write().put("verify the milestone")
+    let back = store.write().get_last()
     println("id={id} back=[{back}] len={back.len()}")
 }

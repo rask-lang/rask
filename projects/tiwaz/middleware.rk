@@ -12,6 +12,12 @@ func logging(next: |Request| -> Response) -> |Request| -> Response {
     }
 }
 
+// W9 (tool.warnings) points at the four counter writes below. These are
+// counters: a panic between two of them leaves the totals briefly disagreeing
+// with each other, which nothing here reads as an invariant. `staged()` would
+// clone the metrics struct on every request to protect a consistency this
+// doesn't need.
+@allow(torn_lock_update)
 func with_metrics(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
         let response = next(request)

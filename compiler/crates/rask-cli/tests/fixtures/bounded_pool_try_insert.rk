@@ -1,6 +1,8 @@
 // mem.pools/PL8: try_insert on a bounded pool returns Some(handle) until the
 // pool is full, then none. (Interpreter is the reference; native try_insert is
 // tracked with the handle-repr issue #438.)
+import memory.Pool
+
 struct Ent { hp: i32 }
 
 func main() {

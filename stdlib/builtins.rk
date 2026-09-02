@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+import memory.Heap
+
 /// Print a value followed by a newline to stdout.
 @native
 public func println(msg: string) {}
@@ -22,13 +24,13 @@ public func todo(msg: string?) {}
 @native
 public func unreachable(msg: string?) {}
 
-/// Consume an `Owned<T>` and free its heap value (mem.owned/OW3).
+/// Consume a `Heap<T>` and free its heap value (mem.heap/HP3).
 ///
-/// Exactly one box, per OW1/OW2 — a type that owns further boxes frees them
-/// itself. A scalar `Owned` was never on the heap (it fits its slot), so
+/// Exactly one box, per HP1/HP2 — a type that owns further boxes frees them
+/// itself. A scalar `Heap` was never on the heap (it fits its slot), so
 /// dropping one frees nothing.
 @native
-public func drop(take ptr: Owned) {}
+public func drop(take ptr: Heap) {}
 
 /// Print a value followed by a newline to stderr.
 @native

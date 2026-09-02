@@ -11,6 +11,7 @@
 // gets no message() and can't be an error type. See FINDINGS.
 
 import os
+import os.SysError
 
 // ─── Auth ────────────────────────────────────────────────────────────
 

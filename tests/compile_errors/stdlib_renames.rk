@@ -13,6 +13,11 @@ import fs
 // receiver resolve at all, so the missing-method error is the one that fires
 // rather than a missing-import one (#723).
 import math
+import async.Receiver
+import time.Instant
+import path.Path
+import fs.File
+import os.Command
 
 // Channel.recv → receive
 func old_recv(rx: Receiver<i64>) {

@@ -3,6 +3,11 @@
 # implementation of its feature and flips green (harness reports UNEXPECTED PASS
 # → promote it out of this file) the moment the feature lands.
 #
+# Each line ends with `(<backend> <phase>)` — which backends fail and how far
+# each gets — and the harness holds the file to it. Unbuilt features are
+# `(both check)`: the name doesn't resolve, so neither backend gets past the
+# checker. One that starts failing later than that has partly landed.
+#
 # This is distinct from tests/known_divergences.txt, which tracks BUGS/
 # REGRESSIONS in features that are supposed to work. Red here = roadmap; red
 # there = something broke.
@@ -11,16 +16,11 @@
 # The differential harness treats both files as expected-red (non-fatal).
 
 # --- spec-heavy pending features ---
-p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented
-p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented
-p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial)
-p11_rack_link.rk           # analysis.fourth-option Rack<T>/Link<T> — no native lowering (interp green)
-p12_rack_link_churn.rk     # analysis.fourth-option edge lists/indexes under churn — same native gap
-p13_rack_snapshot.rk       # analysis.fourth-option Rack.snapshot — same native gap
-p14_deleting_mode.rk       # analysis.fourth-option `deleting` parameter mode — same native gap
-p15_read_only_graph.rk     # analysis.fourth-option read-only graph via the rack — same native gap
+p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented (both check)
+p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented (both check)
+p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial) (both check)
 
 # --- declared-but-unbuilt stdlib surface ---
-t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912
-t_month_atomics.rk         # mem.atomics — Atomic<T> has no operations on any spelling, #927
-t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920
+t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912 (both check)
+t_month_atomics.rk         # mem.atomics — Atomic<T> has no operations on any spelling, #927 (both check)
+t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920 (both check)

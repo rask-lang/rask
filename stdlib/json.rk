@@ -262,7 +262,7 @@ extend JsonParser {
             let byte = self.peek()
             if byte == 34 || byte == 92 {
                 if self.pos > run_start {
-                    b.push(self.input.substring(run_start, self.pos))
+                    b.push(self.input[run_start..self.pos].to_string())
                 }
             }
             if byte == 34 {
@@ -576,7 +576,7 @@ func write_escaped(s: string, mutate out: StringBuilder) {
         let byte = s.byte_at(i) ?? 0
         if byte == 34 || byte == 92 || byte < 32 {
             if i > run_start {
-                out.push(s.substring(run_start, i))
+                out.push(s[run_start..i].to_string())
             }
             if byte == 34 {
                 out.push("\\\"")
@@ -602,7 +602,7 @@ func write_escaped(s: string, mutate out: StringBuilder) {
         i = i + 1
     }
     if s.len() > run_start {
-        out.push(s.substring(run_start, s.len()))
+        out.push(s[run_start..s.len()].to_string())
     }
     out.push_char('"')
 }

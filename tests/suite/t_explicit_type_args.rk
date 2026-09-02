@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A written type argument reaches the callee even when the call has no value
+// arguments to infer from (#968).
+//
+// The interpreter used to bind type parameters only from the arguments it was
+// handed, so `name<Doc>()` on `func name<T>()` left `T` unbound and reflect
+// answered about a type called `T` — the string "T" came back where native
+// said "Doc". Silent, and on the reference backend.
+//
+// Every case here has to give the same answer on both backends, which is the
+// whole point of the file.
+
+import std.reflect
+
+struct Doc {
+    title: string
+    body: string
+}
+
+struct Point {
+    x: i64
+    y: i64
+    z: i64
+}
+
+// No arguments at all — the written type is the only source for `T`.
+func type_name<T>() -> string {
+    return reflect.name_of<T>()
+}
+
+func field_count<T>() -> i64 {
+    mut n: i64 = 0
+    comptime for f in reflect.fields<T>() {
+        n += 1
+    }
+    return n
+}
+
+func field_names<T>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name},"
+    }
+    return out
+}
+
+// Still inferred when there's an argument to infer from — the path that
+// already worked, kept honest.
+func inferred_name<T>(value: T) -> string {
+    return reflect.name_of<T>()
+}
+
+// One written, one inferred. The written argument binds positionally against
+// the declaration's list, and the inferred one fills what's left.
+func both<T, U>(value: U) -> string {
+    return "{reflect.name_of<T>()}/{reflect.name_of<U>()}"
+}
+
+test "a written type argument reaches a no-argument call" {
+    assert_eq(type_name<Doc>(), "Doc")
+}
+
+test "the same function answers for a different written type" {
+    assert_eq(type_name<Point>(), "Point")
+}
+
+test "reflect.fields sees the written type" {
+    assert_eq(field_count<Doc>(), 2)
+    assert_eq(field_count<Point>(), 3)
+}
+
+test "field names come from the written type" {
+    assert_eq(field_names<Doc>(), "title,body,")
+}
+
+test "an inferred type argument still works" {
+    let p = Point { x: 1, y: 2, z: 3 }
+    assert_eq(inferred_name(p), "Point")
+}
+
+test "written and inferred together" {
+    let d = Doc { title: "t", body: "b" }
+    assert_eq(both<Point>(d), "Point/Doc")
+}

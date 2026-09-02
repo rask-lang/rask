@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: digit sum" {
+    assert digit_sum(0) == 0
+    assert digit_sum(7) == 7
+    assert digit_sum(123) == 6
+    assert digit_sum(999) == 27
+    assert digit_sum(-123) == 6
+    assert digit_sum(1000000) == 1
+}
+
+test "verify: reversal keeps the sign and drops trailing zeros" {
+    assert reverse_digits(0) == 0
+    assert reverse_digits(5) == 5
+    assert reverse_digits(123) == 321
+    assert reverse_digits(120) == 21
+    assert reverse_digits(-120) == -21
+    assert reverse_digits(-4) == -4
+}
+
+test "verify: palindromes" {
+    assert is_palindrome(0)
+    assert is_palindrome(7)
+    assert is_palindrome(121)
+    assert is_palindrome(1221)
+    assert !is_palindrome(123)
+    assert !is_palindrome(-121)
+    assert !is_palindrome(10)
+}

@@ -66,7 +66,9 @@ test "std.collections — flat_map works on struct elements" {
     v.push(Ranked { name: "b", score: 2 })
     let doubled: Vec<Ranked> = v.flat_map(|r| {
         mut out: Vec<Ranked> = []
-        out.push(r)
+        // `push` keeps what it is handed, and `Ranked` is 24 bytes — past the
+        // copy threshold — so the second one needs its own copy.
+        out.push(r.clone())
         out.push(r)
         return out
     })

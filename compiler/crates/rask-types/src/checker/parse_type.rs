@@ -10,7 +10,7 @@ use crate::types::{GenericArg, Type};
 
 /// Parse a type annotation string into a Type.
 pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
-    let s = s.trim();
+    let s = rask_stdlib::modules::strip_module_qualifier(s.trim());
 
     if s.is_empty() || s == "()" || s == "void" {
         return Ok(Type::Unit);
@@ -68,9 +68,15 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let elem_str = inner[..semi_pos].trim();
             let len_str = inner[semi_pos + 1..].trim();
             let elem = parse_type_string(elem_str, types)?;
-            // Numeric size or comptime param name — use placeholder 0 for symbolic sizes
-            // so element type checking proceeds. Actual size resolves at comptime.
-            let len: usize = len_str.parse().unwrap_or(0);
+            // A literal size, then a module-level `const` naming one. Anything
+            // still symbolic (a comptime parameter, a computed const) keeps the
+            // 0 placeholder so element checking can proceed — the length then
+            // resolves at comptime.
+            let len: usize = len_str
+                .parse()
+                .ok()
+                .or_else(|| types.const_length(len_str))
+                .unwrap_or(0);
             return Ok(Type::Array {
                 elem: Box::new(elem),
                 len,
@@ -100,7 +106,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let args = args?;
 
             match name {
-                "Owned" if args.len() == 1 => {
+                "Heap" if args.len() == 1 => {
                     // Owned<T> is transparent to the type checker — unwrap to T
                     if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
                         return Ok(*ty);
@@ -110,6 +116,33 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                             Span::new(0, 0),
                         ));
                     }
+                }
+                // `Shared<T, S = Readers>` (conc.sync/SH2). The strategy is a
+                // defaulted type parameter, so fill it in here rather than
+                // leaving the arity short: `Shared<T>` and `Shared<T, Local>`
+                // are different types, and while one of them carried no
+                // strategy at all, unify had nothing to compare and a `Local`
+                // box flowed into a `Readers` annotation unchallenged — then
+                // deadlocked at the first access (#960).
+                //
+                // `extend Shared<T, S>` writes both parameters, so the
+                // strategy-generic declarations in `stdlib/sync.rk` are
+                // unaffected: they already have two args.
+                "Shared" if args.len() == 1 => {
+                    let mut args = args;
+                    args.push(GenericArg::Type(Box::new(
+                        Type::UnresolvedNamed("Readers".to_string()),
+                    )));
+                    // Built the same way the fallback below builds every other
+                    // generic, so `Shared<T>` and `Shared<T, Readers>` are the
+                    // same `Type` and not two spellings unify has to reconcile.
+                    if let Some(base_id) = types.get_type_id(name) {
+                        return Ok(Type::Generic { base: base_id, args });
+                    }
+                    return Ok(Type::UnresolvedGeneric {
+                        name: name.to_string(),
+                        args,
+                    });
                 }
                 "Option" if args.len() == 1 => {
                     // Option takes a single type argument
@@ -156,6 +189,16 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
     // Trait object: "any TraitName".
     if let Some(trait_name) = rask_ast::traits::trait_object_name(s) {
         return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
+    }
+
+    // A declared type parameter wins over a type of the same name. Without
+    // this, `struct Holder<Output>` resolved `Output` to the stdlib's
+    // `os.Output` and every use of the field mismatched against a type nobody
+    // wrote (#915). Single letters never reach the lookup at all (PC1), so this
+    // is about the descriptive names — `Output`, `Item`, `Error` — which are
+    // exactly the ones likely to collide.
+    if types.is_type_param_in_scope(s) {
+        return Ok(Type::UnresolvedNamed(s.to_string()));
     }
 
     if let Some(ty) = types.lookup(s) {

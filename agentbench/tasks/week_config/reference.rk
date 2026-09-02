@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+enum ConfigError {
+    MissingKey { key: string }
+    NotANumber { key: string, text: string }
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        return match self {
+            ConfigError.MissingKey(key) => "missing key: {key}"
+            ConfigError.NotANumber(key, text) => "not a number for {key}: {text}"
+        }
+    }
+}
+
+func parse(text: string) -> Map<string, string> {
+    mut out: Map<string, string> = Map.new()
+    for raw in text.lines().to_vec() {
+        let line = raw.trim().to_string()
+        if line.is_empty() { continue }
+        if line.starts_with("#") { continue }
+        let at = line.index_of("=") ?? {
+            continue
+        }
+        let key = line[0..at].to_string().trim().to_string()
+        let value = line[at + 1..line.len()].to_string().trim().to_string()
+        if key.is_empty() { continue }
+        out.insert(key, value)
+    }
+    return out
+}
+
+func get_text(config: Map<string, string>, key: string) -> string or ConfigError {
+    return config.get(key) ?? {
+        return ConfigError.MissingKey(key: key)
+    }
+}
+
+func get_number(config: Map<string, string>, key: string) -> i64 or ConfigError {
+    let text = try get_text(config, key)
+    return text.parse<i64>() catch _ => {
+        return ConfigError.NotANumber(key: key, text: text)
+    }
+}
+
+func port_or_default(text: string) -> i64 {
+    let config = parse(text)
+    return get_number(config, "port") catch _ => 8080
+}

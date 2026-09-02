@@ -98,6 +98,23 @@ impl Interpreter {
         // `<T>` — reading only `type_params` found nothing to bind.
         let mut type_frame: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+
+        // Written type arguments bind positionally against the declaration's
+        // own list: `count<Plain>()` on `func count<T>()` means `T = "Plain"`.
+        // Taken, so it can't leak into a later call, and applied before the
+        // argument-derived bindings below — which use `or_insert`, so an
+        // inferred value can still fill a parameter this didn't name.
+        if let Some(written) = self.pending_type_args.take() {
+            for (tp, concrete) in func
+                .type_params
+                .iter()
+                .filter(|tp| !tp.is_comptime)
+                .zip(written)
+            {
+                type_frame.insert(tp.name.clone(), concrete);
+            }
+        }
+
         for (idx, param) in func.params.iter().enumerate() {
             let declared = param.ty.trim();
             let named_here = func
@@ -128,6 +145,22 @@ impl Interpreter {
             // tag to read (#393).
             let arg = wrap_optional_layers(arg, &param.ty);
             self.env.define(param.name.clone(), arg);
+        }
+
+        // mem.context/CC1, CC4: bind each named context clause to the ambient
+        // `Pool<T>` of matching type. Nothing did this before — the shared
+        // scope stack made `named.get(h)` resolve anyway whenever the
+        // *caller's* own variable happened to be spelled `named` too, since
+        // that binding was just still sitting on the stack. Any other name
+        // hit `undefined variable` (#867). Unnamed clauses need no binding:
+        // they only enable `h.field` auto-deref, which already resolves by
+        // the handle's own pool id (`pool_for_handle`), not by name.
+        for clause in &func.context_clauses {
+            if let Some(name) = &clause.name {
+                if let Some(pool) = self.pool_for_context(&clause.ty) {
+                    self.env.define(name.clone(), Value::Pool(pool));
+                }
+            }
         }
 
         let result = self.exec_stmts(&func.body);
@@ -270,6 +303,14 @@ impl Interpreter {
             }
         }
 
+        // P5/EX3: `os.exit` terminates immediately — no unwind, no ensures. The
+        // ensure-inside-ensure case was already handled below; a plain
+        // `os.exit(7)` in the body still ran every scheduled cleanup on the way
+        // out, which is the opposite of what exit means.
+        if matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Exit(_))) {
+            return Err(exit_error.unwrap());
+        }
+
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
         let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
@@ -278,9 +319,10 @@ impl Interpreter {
         match (exit_error, ensure_fatal) {
             // os.exit() inside an ensure terminates immediately, no matter what (P5).
             (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
-            // A panic/exit from the body is primary; ensure panics were already
-            // reported as secondary inside run_ensures.
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_) | RuntimeError::Exit(_)) => Err(e),
+            // A panic from the body is primary; ensure panics were already
+            // reported as secondary inside run_ensures. (A body `Exit` never
+            // reaches here — it returned above without running any ensure.)
+            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
             // A panic raised by an ensure kills the task (E1), overriding a
             // non-panic body exit (error propagation, return, break, continue).
             (_, Some(f)) => Err(f),
@@ -383,6 +425,15 @@ impl Interpreter {
         let mut last_value = Value::Unit;
         for stmt in body {
             last_value = self.exec_stmt(stmt)?;
+            // A binding statement evaluates to Unit, but the cleanup call whose
+            // failure the `else` handler exists for is its initializer — so
+            // `ensure { let n = s.close() }` has to read `n` back, or a failed
+            // close looks like a body that produced nothing.
+            if let Some(name) = binding_name(&stmt.kind) {
+                if let Some(bound) = self.env.get(name) {
+                    last_value = bound.clone();
+                }
+            }
         }
         Ok(last_value)
     }
@@ -394,6 +445,15 @@ impl Interpreter {
             let _ = self.exec_ensure_body(handler);
             self.env.pop_scope();
         }
+    }
+}
+
+/// The name a single-binding statement binds, if it is one. Destructuring forms
+/// are deliberately absent: a `T or E` can't be taken apart by one.
+fn binding_name(kind: &StmtKind) -> Option<&str> {
+    match kind {
+        StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => Some(name),
+        _ => None,
     }
 }
 

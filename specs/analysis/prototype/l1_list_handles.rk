@@ -3,6 +3,8 @@
 //
 // `remove` is where the models differ. Here: four branches of neighbour
 // splicing, and head/tail maintained by hand.
+import memory.Handle
+import memory.Pool
 
 struct Node {
     value: i32

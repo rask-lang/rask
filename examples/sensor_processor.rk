@@ -4,6 +4,7 @@
 
 import thread.Thread
 import time
+import async.Sender
 
 // ============================================================================
 // Lookup Tables (runtime-initialized)
@@ -297,16 +298,32 @@ func main() {
         time.sleep(time.Duration.from_millis(process_period_ns / 1000000))
     }
 
-    // Wait for interrupt handler
-    isr_handle.join()
+    // Keep draining until every sample the ISR will ever send has been taken,
+    // and only then join.
+    //
+    // Draining *after* the join deadlocks. Main's loop has a fixed floor of
+    // PROCESS_CYCLES sleeps; the ISR's is ten times as many, and under CPU
+    // contention each of its sleeps overshoots — so main reliably finishes
+    // first, stops consuming, and waits in `join()` while the ISR fills the
+    // channel's 1024 slots with the thousands of readings it has left and
+    // blocks in `send` forever. Nobody is left to read (#889). Under light load
+    // main happened to keep up, which is why it only showed up on a busy
+    // machine.
+    //
+    // The count is known up front — the ISR sends SAMPLE_RATE_HZ * 2 sequences
+    // of 3 sensors each — so this terminates without asking the channel
+    // anything it can't answer, and no sample is dropped. Dropping under
+    // backpressure would be the other honest fix (a real ISR does exactly
+    // that), but it would make the totals below a property of the machine.
+    let expected_samples = SAMPLE_RATE_HZ * 2 * 3
 
-    // The ISR is done producing, so whatever is still queued is the tail the
-    // last cycle didn't reach. Draining it here is what makes the sample count
-    // and the averages a property of the program rather than of how the two
-    // threads happened to interleave.
-    while rx.try_receive() is Reading as r {
-        state.process_reading(r.sensor_id, r.value)
+    while state.samples_processed < expected_samples {
+        while rx.try_receive() is Reading as r {
+            state.process_reading(r.sensor_id, r.value)
+        }
     }
+
+    isr_handle.join()
     state.compute_averages()
 
     // Print results

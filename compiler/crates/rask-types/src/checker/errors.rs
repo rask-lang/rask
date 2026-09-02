@@ -236,6 +236,12 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
+    RetiredBoxType {
+        name: String,
+        replacement: String,
+        span: Span,
+    },
     #[error("cannot mutate `{name}` — declared `let`")]
     MutateConst {
         name: String,
@@ -304,6 +310,42 @@ pub enum TypeError {
         type_name: String,
         span: Span,
     },
+    /// tool.warnings/W9 (`torn_lock_update`, W0907): a `with` block over a sync
+    /// box assigns two or more fields of the locked value without `staged()`.
+    ///
+    /// A warning, not an error — partial state is sometimes harmless, and Rask
+    /// has no poisoning to make it loud. But `ctrl.panic/LK3` means a panic
+    /// between those two writes leaves survivors a half-done update, and
+    /// `staged()` is the by-construction fix, so the sites that need it get
+    /// pointed at it rather than left to find it.
+    #[error("multi-field update under a lock without staged()")]
+    TornLockUpdate {
+        binding: String,
+        box_name: String,
+        first_field: String,
+        second_field: String,
+        first_span: Span,
+        second_span: Span,
+    },
+
+    /// conc.sync/ST1: `staged()` is the source of a `with` binding and nothing
+    /// else. `read`/`write` also have an expression-scoped form (R5); staged has
+    /// none, because the commit needs a block boundary to happen at.
+    #[error("`staged()` only works as the source of a `with` block")]
+    StagedOutsideWith {
+        name: String,
+        span: Span,
+    },
+
+    /// conc.sync/ST3a: `staged()` under the `Local` strategy. There is no other
+    /// task to observe a torn update and no unwind boundary to protect against,
+    /// so the clone would buy nothing and cost a copy.
+    #[error("`staged()` has nothing to protect under `Local`")]
+    StagedOnLocal {
+        name: String,
+        span: Span,
+    },
+
     /// conc.sync/R4: bare `with shared as v` — the lock has to be named.
     #[error("`with {name} as {binding}` doesn't say which lock")]
     BareSharedWith {
@@ -510,6 +552,25 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// conc.sync/SH7: a task-local `Shared` sent to another task.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+        span: Span,
+    },
+
+    /// conc.sync/SH2: two `Shared` boxes with different strategies met.
+    ///
+    /// Not a deferrable obligation like most type mismatches — the strategy
+    /// picks which lock the accessors take, so getting it wrong deadlocks
+    /// rather than misbehaving visibly (#960).
+    #[error("this box uses the `{found}` strategy, but `{expected}` is expected here")]
+    SharedStrategyMismatch {
+        found: String,
+        expected: String,
+        span: Span,
+    },
+
     /// CC1: `spawn` used outside any `using Multitasking` block
     #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
     SpawnOutsideBlock {
@@ -695,6 +756,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ctrl.ensure/ER4 (body) and ER3 (`else` handler): `try` has nowhere to
+    /// propagate to from cleanup code. `region` names which of the two it is.
+    #[error("`try` can't be used {region}")]
+    TryInEnsure {
+        region: &'static str,
+        span: Span,
+    },
+
     /// ER22: `else as e` requires a `T or E` condition to bind the error
     #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
     ElseBindingNotResult {
@@ -726,6 +795,21 @@ pub enum TypeError {
         field: String,
         problem: String,
         fix: String,
+        span: Span,
+    },
+
+    /// type.annotations/AN1-AN5: a user annotation declared or attached wrong —
+    /// reserved name, bad field type, wrong target, unknown/missing/duplicate
+    /// argument.
+    #[error("annotation `{name}`: {problem}")]
+    BadAnnotation {
+        name: String,
+        problem: String,
+        fix: String,
+        /// Which annotation rule this violates, in words. One shared reason
+        /// can't cover "you can't construct one" and "that's not a type" —
+        /// each site says why its own rule exists.
+        why: &'static str,
         span: Span,
     },
 
@@ -836,6 +920,18 @@ pub enum TypeError {
         kind: IndexErrorKind,
         span: Span,
     },
+
+    /// std.collections (#901): a length-changing method called on `[T; N]`.
+    /// The length is part of the type, so there is nowhere for the element to
+    /// go — and the `Vec` method table used to answer these calls anyway.
+    #[error("`{method}` doesn't exist on a fixed array")]
+    FixedArrayGrowth {
+        /// The method that was called — named in the message and the fix.
+        method: String,
+        /// The receiver's type, so the message can print its length.
+        array: Type,
+        span: Span,
+    },
 }
 
 /// What went wrong at an index site — drives the E0819 diagnostic.
@@ -912,6 +1008,8 @@ impl TypeError {
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
             | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+
+            FixedArrayGrowth { array, .. } => *array = f(array),
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
@@ -1014,6 +1112,9 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | FrozenContextWrite { .. }
             | MutateConst { .. }
+            | RetiredBoxType { .. }
+            | LocalSharedSent { .. }
+            | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
@@ -1023,6 +1124,9 @@ impl TypeError {
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
             | BareSharedWith { .. }
+            | StagedOnLocal { .. }
+            | StagedOutsideWith { .. }
+            | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
             | MissingMutateAnnotation { .. }
@@ -1057,12 +1161,14 @@ impl TypeError {
             | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
+            | BadAnnotation { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }
             | TagOnUnnamedPayload { .. }
             | TagCollidesWithField { .. }
             | ElseBindingNotResult { .. }
+            | TryInEnsure { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | MatchOnOption { .. }

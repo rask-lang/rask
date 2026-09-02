@@ -16,6 +16,8 @@
 // The self-assignment in the middle is the case that makes unlink-then-relink
 // order matter: dropping the backlink before re-adding it must not leave the
 // live edge unrecorded.
+import memory.Link
+import memory.Rack
 
 const REWRITES: i32 = 50
 

@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a fixed array has no length-changing operations
+// ERROR: `push` doesn't exist on a fixed array
+//
+// `[i32; 3]` is a different type from `[i32; 4]`, and its storage is exactly
+// three elements wide. Until E0843 existed these calls resolved through the
+// `Vec` method table and did real damage: the interpreter grew the value past
+// its own type, and native read the first elements as a Vec header and walked
+// into whatever they spelled (#901).
+//
+// The reads and writes a fixed array *does* have are in `tests/suite/
+// t_day_arrays.rk` and `t_day_array_writes.rk`.
+
+func grow_it() {
+    mut a: [i32; 3] = [1, 2, 3]
+    // ERROR: nowhere for a fourth element to go.
+    a.push(4)
+}
+
+func shrink_it() {
+    mut a: [i32; 3] = [1, 2, 3]
+    // ERROR: same in the other direction — the length is in the type.
+    a.pop()
+}
+
+func clear_it() {
+    mut a: [i32; 3] = [1, 2, 3]
+    // ERROR: clearing would make it `[i32; 0]`.
+    a.clear()
+}
+
+// THE FIX: say the slot can grow. The same literal builds a Vec.
+func growable() {
+    mut a: Vec<i32> = [1, 2, 3]
+    a.push(4)
+    assert a.len() == 4
+}
+
+func main() {
+    growable()
+}

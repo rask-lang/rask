@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use crate::analysis::call_graph::CallGraph;
-use crate::operand::MirConst;
+use crate::operand::{BinOp, MirConst};
 use crate::{
     BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
@@ -97,10 +97,61 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
 /// stores to it, or it passes it as argument `j` to a callee that writes through
 /// its own parameter `j`. Iterated to a fixpoint over the known functions.
 ///
+/// The same hole exists one level down, and cost the rack its root edges (#984).
+/// An edge write does not pass the parameter — it passes an address computed
+/// from it:
+///
+/// ```text
+/// func attach(mutate h: Holder, n: Link<Node>) { h.root = n }
+///
+///     _5 = _0 + 0            // the parameter, plus the field's offset
+///     Link_set(_5, _1)       // the argument is _5, never _0
+/// ```
+///
+/// Matching arguments against parameter ids alone misses that, so `attach`
+/// looked inlinable, the argument was copied into a fresh local, and the write
+/// landed on the copy. So an argument counts when it *aliases* a parameter —
+/// the parameter itself, or anything derived from it by a copy or by address
+/// arithmetic.
+///
 /// Only pointer-shaped parameters are tracked. A scalar passed by value can't be
 /// written through, so a function forwarding an `i64` stays inlinable. An
 /// unknown callee (extern, stdlib) is assumed to write through any pointer-shaped
 /// argument, because there's nothing here that could prove otherwise.
+/// Locals that name a parameter's storage: the parameter itself, plus whatever
+/// is derived from it by a copy or by adding a field offset. Both `Store` and a
+/// forwarded call argument are checked against this rather than against the
+/// parameter ids, so an address computed on the way to a write still counts.
+fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
+    let mut alias: HashMap<LocalId, usize> =
+        f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    // A derived local can be defined after the one it comes from is itself
+    // discovered, so iterate rather than assuming a single pass reaches all.
+    loop {
+        let mut changed = false;
+        for b in &f.blocks {
+            for s in &b.statements {
+                let MirStmtKind::Assign { dst, rvalue } = &s.kind else { continue };
+                let src = match rvalue {
+                    MirRValue::Use(MirOperand::Local(id)) => *id,
+                    // Only `base + offset`: the base is the address, and a
+                    // constant offset keeps it inside the same storage.
+                    MirRValue::BinaryOp { op: BinOp::Add, left: MirOperand::Local(id), .. } => *id,
+                    _ => continue,
+                };
+                let Some(&i) = alias.get(&src) else { continue };
+                if alias.insert(*dst, i).is_none() {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    alias
+}
+
 fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
     use std::collections::HashSet;
 
@@ -112,12 +163,11 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
     // Seed with direct stores through a parameter.
     for f in fns {
         let mut set = HashSet::new();
-        let param_index: HashMap<LocalId, usize> =
-            f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+        let alias = param_aliases(f);
         for b in &f.blocks {
             for s in &b.statements {
                 if let MirStmtKind::Store { addr, .. } = &s.kind {
-                    if let Some(&i) = param_index.get(addr) {
+                    if let Some(&i) = alias.get(addr) {
                         set.insert(i);
                     }
                 }
@@ -130,15 +180,14 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
     loop {
         let mut changed = false;
         for f in fns {
-            let param_index: HashMap<LocalId, usize> =
-                f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+            let alias = param_aliases(f);
             let mut add: HashSet<usize> = HashSet::new();
             for b in &f.blocks {
                 for s in &b.statements {
                     let MirStmtKind::Call { func: callee, args, .. } = &s.kind else { continue };
                     for (j, arg) in args.iter().enumerate() {
                         let MirOperand::Local(id) = arg else { continue };
-                        let Some(&i) = param_index.get(id) else { continue };
+                        let Some(&i) = alias.get(id) else { continue };
                         if !pointer_shaped(&f.params[i].ty) {
                             continue;
                         }
@@ -734,6 +783,9 @@ fn remap_stmt(
             local: local_map.get(local).copied().unwrap_or(*local),
         },
         MirStmtKind::RcDec { local } => MirStmtKind::RcDec {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
+        MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
         MirStmtKind::EnsureHookRegister { thunk, captures } => MirStmtKind::EnsureHookRegister {

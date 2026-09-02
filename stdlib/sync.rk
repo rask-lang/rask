@@ -1,43 +1,86 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// --- Shared (read-heavy concurrent access) ---
+// --- Shared: one value, several accessors, one scoped view (conc.sync) ---
+//
+// The strategy `S` says what synchronization the box takes, and it is a type
+// argument — so `Shared<T>` is `Shared<T, Readers>` everywhere, and nothing
+// about the choice survives into the emitted code. `Cell` and `Mutex` used to be
+// separate types; they are these strategies now.
 
-/// Read-heavy concurrent access. Multiple readers, exclusive writer.
-/// Access via `with shared.read() as v { }` or `with shared.write() as v { }`.
-extend Shared<T> {
+/// `Readers` — a read-write lock. Many readers at once, or one writer.
+/// The default: most boxes are reached by more than one task, and the ones that
+/// aren't only pay for a lock they could have opted out of.
+public struct Readers { }
+
+/// `Local` — no lock at all. Several accessors, one task. Opt in with
+/// `Shared.local(…)` when a box provably never leaves its task.
+public struct Local { }
+
+/// `Mutex` — a plain lock. One holder at a time, reader or writer.
+public struct Mutex { }
+
+// `S` is written out here. These declarations are generic over the strategy —
+// the accessors work under all three — and the constructors each name the one
+// they build. A bare `Shared<T>` in a *user's* annotation means
+// `Shared<T, Readers>`; leaving it bare here would have pinned every method to
+// Readers and turned the other two strategies away at the door.
+extend Shared<T, S> {
+    /// Many tasks, concurrent reads. The default — what you write unless you
+    /// have a reason not to.
     @native("rask_shared_new_ptr")
-    public func new(value: T) -> Shared<T> {}
+    public func new(take value: T) -> Shared<T, Readers> {}
 
-    /// Expression-scoped read lock.
+    /// Many tasks, one at a time — reader or writer. Cheaper than `Readers`
+    /// when writes dominate, since there is no reader count to keep.
+    @native("rask_mutex_new_ptr")
+    public func mutex(take value: T) -> Shared<T, Mutex> {}
+
+    /// No lock at all. One task, several accessors — the box `Cell` used to be.
+    /// Sending one is a compile error (SH7), which is what makes it safe to
+    /// reach for.
+    @native("rask_cell_new")
+    public func local(take value: T) -> Shared<T, Local> {}
+
+    /// Shared access, scoped to the expression or the `with` block.
+    /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would
+    /// be there, never wrong.
     @native("rask_shared_read_ptr")
     public func read(self) -> T {}
 
-    /// Expression-scoped write lock.
+    /// Exclusive access, scoped to the expression or the `with` block.
     @native("rask_shared_write_ptr")
     public func write(self) -> T {}
 
-    /// Non-blocking read. Returns none if contended.
+    /// Exclusive access to a working copy, committed as one move on any
+    /// non-panic exit and discarded on unwind (ST1-ST4). The clone is the price
+    /// and the name says so — reach for it where a panic mid-update would leave
+    /// an invariant other tasks read torn. Not available under `Local`: nothing
+    /// else can observe the tear, and there is no unwind boundary to protect.
+    @native("rask_shared_staged_ptr")
+    public func staged(self) -> T {}
+
+    /// Non-blocking read. `none` if contended; always succeeds under `Local`.
     @native("rask_shared_try_read_ptr")
     public func try_read(self, f: func(T)) -> Option<T> {}
 
-    /// Non-blocking write. Returns none if contended.
+    /// Non-blocking write. `none` if contended; always succeeds under `Local`.
     @native("rask_shared_try_write_ptr")
     public func try_write(self, f: func(T)) -> Option<T> {}
-}
 
-// --- Mutex (exclusive access) ---
+    /// Copy the inner value out. Copy types only — the single-expression
+    /// shorthand `Cell` had.
+    @native("rask_cell_get")
+    public func get(self) -> T {}
 
-/// Exclusive access for write-heavy patterns.
-/// Access via `with mutex as v { }` or `mutex.lock().field`.
-extend Mutex<T> {
-    @native("rask_mutex_new_ptr")
-    public func new(value: T) -> Mutex<T> {}
+    /// Replace the inner value.
+    @native("rask_cell_set")
+    public func set(self, take value: T) {}
 
-    /// Expression-scoped exclusive lock.
-    @native("rask_mutex_lock_ptr")
-    public func lock(self) -> T {}
+    /// Swap in a new value, return the old one.
+    @native("rask_cell_replace")
+    public func replace(self, take value: T) -> T {}
 
-    /// Non-blocking lock. Returns none if held.
-    @native("rask_mutex_try_lock_ptr")
-    public func try_lock(self, f: func(T)) -> Option<T> {}
+    /// Consume the box, return what it held.
+    @native("rask_cell_get")
+    public func into_inner(take self) -> T {}
 }

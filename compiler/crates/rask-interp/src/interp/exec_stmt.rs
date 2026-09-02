@@ -28,6 +28,7 @@ impl Interpreter {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    backfill_pool_type_param(&value, ty_str);
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
@@ -47,7 +48,9 @@ impl Interpreter {
                 };
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
-                    auto_wrap_for_annotation(value, ty_str, is_none_literal(init))
+                    let value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    backfill_pool_type_param(&value, ty_str);
+                    value
                 } else {
                     value
                 };
@@ -611,6 +614,25 @@ impl Interpreter {
     }
 }
 
+/// Stamp a freshly created `Pool`'s element type from its `let`/`mut`
+/// annotation. `Pool.new()` written bare (the normal style — the element
+/// type is already on the left of the `=`) never learns its own element
+/// type otherwise: nothing else records it anywhere on the value. Named
+/// context-clause resolution (mem.context/CC4) needs that to tell one pool
+/// from another when more than one is in scope (`pool_for_context`, #867).
+/// A no-op once the pool already carries one (e.g. `Pool<Item>.new()`
+/// written out, or a pool passed in from elsewhere).
+pub(crate) fn backfill_pool_type_param(value: &Value, ty: &str) {
+    if let Value::Pool(p) = value {
+        if let Some(elem) = ty.trim().strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+            let mut guard = p.lock().unwrap();
+            if guard.type_param.is_none() {
+                guard.type_param = Some(elem.trim().to_string());
+            }
+        }
+    }
+}
+
 /// OPT6/OPT29: wrap `value` to match the declared `T?` / `T??` / `Result<T, E>`
 /// annotation. No-op for non-Option/non-Result annotations, or when the value
 /// already has as many optional layers as the annotation asks for. For Result,
@@ -667,6 +689,24 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
         }
         return out;
     }
+    // A container's elements need the same treatment its binding got. Only the
+    // outer type was ever looked at, so `let xs: Vec<i64?> = [1, none, 3]`
+    // bound the 1 and the 3 bare — `xs[0]!` then failed with "! requires Option
+    // or Result, got i64" while native handled it (#909). The element type is
+    // right there in the annotation.
+    if let Some(elem_ty) = container_element_type(ty) {
+        if let Value::Vec(items) = &value {
+            let mut guard = items.lock().unwrap();
+            for item in guard.items.iter_mut() {
+                // `false` for the none-literal flag: an element that already is
+                // `none` carries its layer, and `value_option_depth` counts it,
+                // so nothing double-wraps.
+                let taken = std::mem::replace(item, Value::Unit);
+                *item = auto_wrap_for_annotation(taken, &elem_ty, false);
+            }
+        }
+        return value;
+    }
     if ty.starts_with("Result<") && ty.ends_with('>') {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
             return value;
@@ -689,6 +729,27 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
         };
     }
     value
+}
+
+/// The element type of a sequence annotation — `Vec<T>`, `[T; N]`, `[]T`.
+///
+/// `None` for anything else, including a `Map`: a map literal's values would
+/// want the same treatment, but its annotation carries two type arguments and
+/// the interpreter's map value isn't a `Value::Vec`, so that's its own case
+/// rather than a widening of this one.
+fn container_element_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = ty.strip_prefix("[]") {
+        return Some(inner.trim().to_string());
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        let elem = inner.split_once(';').map_or(inner, |(e, _)| e);
+        return Some(elem.trim().to_string());
+    }
+    None
 }
 
 /// OPT29: is this expression a bare `none` literal?

@@ -75,7 +75,7 @@ U5 is deliberate. Rask has no hidden destructors — that's the point of linear 
 
 Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into **staged access**: `with mutex.staged() as v { }` works on a copy that commits as one move on non-panic exit and is discarded on unwind. Torn state impossible by construction at staged sites. Rules and example: `conc.sync/ST1–ST4`.
 
-This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`.
+This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`, `W0907`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`. Built, and pointed at two real sites on its first run — both counters, both silenced with `@allow`, which is worth watching: if that stays the ratio the warning is noisier than it is useful.
 
 ## Ensure × Panic
 
@@ -121,7 +121,7 @@ There is no Rust-style double-panic abort. The only code that executes during un
 |------|-------------|
 | **F1: Format** | `panic at <file>:<line>:<col>: <message>` — task id prepended when a runtime is active. (Already the compiled runtime's format) |
 | **F2: Backtrace** | `RASK_BACKTRACE=1` adds a stack trace. Not part of the deterministic surface |
-| **F3: Deterministic message** | Messages are a deterministic function of the failing operation's operands — values, indices, lengths, generations. Never addresses |
+| **F3: Deterministic message** | Messages are a deterministic function of the failing operation's operands — values, indices, lengths, generations. Never addresses. The same operation says the same thing on both backends: `panic_messages_are_the_same_on_both_backends` pins one message per source |
 
 ## Determinism
 
@@ -202,14 +202,17 @@ The interpreter already implements most of this model; compiled code has the big
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
 - Residual: the `mem.resources/R5` and `conc.async/H1` runtime guards firing at an unwound scope exit still override the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
-- `staged()` (`conc.sync/ST1–ST4`) is unimplemented in both paths.
+- `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the box whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):
 - Main-thread panic runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
-- Ensures run on the native panic path (U1). Each ensure body is reified as a thunk over its captures; codegen pushes `rask_ensure_push` at schedule time and pops it at the top of the inline cleanup block, so a normal exit deregisters it and only a panic reaches it via `rask_ensure_run_all`. Consumption cancellation (C1) is re-checked inside the thunk. Remaining gaps (inline-only, no native panic run): ensures with `else` handlers, multi-statement bodies, or captures of plain scalars (need force-spill to stack slots) — tracked on #299.
+- Ensures run on the native panic path (U1). Each ensure body is reified as a thunk over its captures; codegen pushes `rask_ensure_push` at schedule time and pops it at the top of the inline cleanup block, so a normal exit deregisters it and only a panic reaches it via `rask_ensure_run_all`. Consumption cancellation (C1) is re-checked inside the thunk. The thunk lowers any statement list and an `else |e|` handler, through the same helper the inline cleanup block uses, so the two can't drift. Free variables are captured by reference where the MIR value already is an address (struct, enum, array, tuple, string, pointer, handle) and by value for a scalar bound by `let` or a non-`mutate` parameter — written once, so the snapshot is the live value. One gap left: a scalar the function reassigns has no stable address to capture, and a snapshot of it would print a stale number, so those ensures stay inline-only and don't run on a native panic. Closing that needs the scalar spilled to a stack cell it reads and writes through, decided before lowering starts rather than at the `ensure`; [#1011](https://github.com/rask-lang/rask/issues/1011).
 - `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
+- Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same box can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
 - Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
+- Panic messages hold F3 on both backends, and are pinned there. Native's checked-arithmetic messages used to be wholly static — "integer overflow: addition exceeds i32 range [...]" where the interpreter printed "2147483647 + 1 exceeds i32 range [...]" — so a user natively couldn't see which values overflowed. The operands now go to a runtime formatter (`rask_panic_overflow_binary`, and an i128 pair in `int128.c` since `snprintf` has no conversion that wide); the static half it splices behind them is the type and range codegen already registered. Two other messages named `unwrap`, a method Rask doesn't have: `x!` says whether the value was absent or an error (the operand's type decides, so MIR passes a flag), and a missing map key says so without naming a method.
+- Residual F3 gap: `r!` on an error branch doesn't print the error's own `message()`, which is the value the reader wants. Both backends have it at the panic point and neither uses it.
 
 ### See Also
 

@@ -7,6 +7,59 @@
 use crate::{Diagnostic, ToDiagnostic};
 use rask_ast::Span;
 
+/// Base name of a rendered type: `Map<_, _>` -> `Map`, `Vec<string>?` -> `Vec`.
+fn type_base(ty: &str) -> &str {
+    let ty = ty.trim_end_matches(['?', '!']);
+    ty.split(['<', ' ']).next().unwrap_or(ty)
+}
+
+/// Levenshtein distance, capped by the shorter string — only used on method
+/// names, so the quadratic table is a dozen cells.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// Methods on `ty` whose names are close enough to `method` to be worth naming.
+///
+/// Two rules, and containment comes first because it catches the mistake models
+/// and people actually make: a name that's right but truncated or missing its
+/// prefix (`to_lower` for `to_lowercase`, `lower` for the same). Plain typos are
+/// caught by edit distance, scaled to the name's length so short names don't
+/// match everything. Empty when the type has no registry entry — a user-defined
+/// type, where there's nothing to compare against.
+fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
+    let candidates = rask_stdlib::registry::type_method_names(type_base(ty));
+    if candidates.is_empty() || method.is_empty() {
+        return Vec::new();
+    }
+    let budget = (method.len() / 3).max(1);
+    let mut scored: Vec<(usize, &'static str)> = candidates
+        .iter()
+        .filter_map(|cand| {
+            if cand.contains(method) || method.contains(cand) {
+                Some((0, *cand))
+            } else {
+                let d = edit_distance(method, cand);
+                (d <= budget).then_some((d, *cand))
+            }
+        })
+        .collect();
+    scored.sort_by_key(|(d, name)| (*d, name.len(), *name));
+    scored.truncate(2);
+    scored.into_iter().map(|(_, name)| name).collect()
+}
+
 // ============================================================================
 // Lex Errors
 // ============================================================================
@@ -54,11 +107,46 @@ impl ToDiagnostic for rask_parser::ParseError {
 // Resolve Errors
 // ============================================================================
 
+/// Names the language used to have, and what took their place. Keeping the list
+/// here rather than in the resolver means the resolver doesn't have to know
+/// anything about renames — it just fails to find the name, as it should.
+fn retired_name(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "Cell" => Some((
+            "Shared.new(…)` / `Shared<T>",
+            "`Cell`, `Shared` and `Mutex` were one concept — one value, several \
+             accessors, a scoped view — differing only in what synchronization they \
+             took. That is a strategy, not three types, so it moved into \
+             `Shared<T, S>`, and `Cell` is the `Local` strategy \
+             [analysis.storage-consolidation]",
+        )),
+        "Owned" => Some((
+            "Heap<T>",
+            "`Owned` named single ownership, which every Rask value already has, so \
+             it distinguished nothing. What differs is the indirection: the value \
+             lives on the heap instead of inline [mem.heap]",
+        )),
+        _ => None,
+    }
+}
+
 impl ToDiagnostic for rask_resolve::ResolveError {
     fn to_diagnostic(&self) -> Diagnostic {
         use rask_resolve::ResolveErrorKind::*;
 
         match &self.kind {
+            // A name that used to exist gets told what replaced it. "Not found
+            // in this scope" is true and useless for a rename someone is
+            // meeting for the first time.
+            UndefinedSymbol { name } if retired_name(name).is_some() => {
+                let (replacement, why) = retired_name(name).unwrap();
+                Diagnostic::error(format!("`{}` is not a type any more", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, format!("`{}` was removed", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(why)
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")
@@ -72,11 +160,28 @@ impl ToDiagnostic for rask_resolve::ResolveError {
             // not it was imported — native compiled and ran `math.sin(x)` with
             // no import while the interpreter, which binds a module only when it
             // sees the import, died at runtime (#723).
-            ModuleNotImported { name } => Diagnostic::error(format!("`{}` is used but never imported", name))
-                .with_code("E0210")
-                .with_primary(self.span, format!("`{}` needs an import to be in scope", name))
-                .with_fix(format!("import {}", name))
-                .with_why("a module's name comes from its import — without one there's nothing bringing `{}` into scope [structure.modules/IM1]".replace("{}", name)),
+            ModuleNotImported { name, module } => {
+                let d = Diagnostic::error(format!("`{}` is not in scope", name))
+                    .with_code("E0210")
+                    .with_primary(self.span, "needs an import")
+                    .with_why(
+                        "nothing comes pre-imported. A stdlib name is in scope where the \
+                         program asked for it and nowhere else, which is also what leaves \
+                         the name free for a program that wants it for something of its \
+                         own [structure.modules/IM1]",
+                    );
+                match module {
+                    // `import time.Duration` gives the bare `Duration` this code
+                    // is already written against (IM4). Plain `import time`
+                    // would mean rewriting the use as `time.Duration`.
+                    Some(m) if m != name => d
+                        .with_help(format!("add `import {}.{}` at the top of the file", m, name))
+                        .with_fix(format!("import {}.{}", m, name)),
+                    _ => d
+                        .with_help(format!("add `import {}` at the top of the file", name))
+                        .with_fix(format!("import {}", name)),
+                }
+            }
 
             DuplicateDefinition { name, previous } => {
                 Diagnostic::error(format!("duplicate definition: `{}`", name))
@@ -170,13 +275,34 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("items are private by default — only `public` items are accessible from other modules")
             }
 
-            ShadowsImport { name } => {
-                Diagnostic::error(format!("`{}` shadows an imported name", name))
-                    .with_code("E0208")
-                    .with_primary(self.span, "conflicts with import")
-                    .with_help("use a different name or alias the import")
-                    .with_fix("use a different name or alias the import with `import pkg.Name as Alias`")
-                    .with_why("shadowing imports makes code ambiguous — Rask disallows it for clarity")
+            ShadowsImport { name, module } => {
+                // Naming the module the name came from is the difference between
+                // a fix the reader can apply and a hunt through their import
+                // list.
+                let d = Diagnostic::error(match module {
+                    Some(m) => format!("`{}` is already in scope from `{}`", name, m),
+                    None => format!("`{}` is already in scope from an import", name),
+                })
+                .with_code("E0208")
+                .with_primary(self.span, format!("a second `{}` in the same scope", name))
+                .with_why(format!(
+                    "one name, one meaning: with both in scope nothing in the source \
+                     says which `{}` a use means, and the compiler would be picking for \
+                     you [struct.modules/IM8]",
+                    name
+                ));
+                match module {
+                    Some(m) => d
+                        .with_help(format!(
+                            "rename yours, or keep both by aliasing theirs: \
+                             `import {}.{} as Std{}`",
+                            m, name, name
+                        ))
+                        .with_fix(format!("import {}.{} as Std{}", m, name, name)),
+                    None => d
+                        .with_help("rename your declaration, or alias the import")
+                        .with_fix(format!("import pkg.{} as Other{}", name, name)),
+                }
             }
 
             CircularDependency { path } => {
@@ -216,12 +342,34 @@ impl ToDiagnostic for rask_resolve::ResolveError {
             }
 
             ShadowsBuiltin { name } => {
-                Diagnostic::error(format!("`{}` shadows a built-in", name))
-                    .with_code("E0209")
-                    .with_primary(self.span, "cannot redefine built-in")
-                    .with_help("use a different name")
-                    .with_fix("use a different name")
-                    .with_why("built-in types and functions are reserved — redefining them would break language semantics")
+                // Which set the name is in decides what to say about it. A
+                // built-in function is worse than a built-in type: the compiler
+                // generates code for `println` at each call site, so a program's
+                // own would be written and then never called.
+                if rask_resolve::is_reserved_builtin_fn(name) {
+                    Diagnostic::error(format!("`{}` is a built-in function", name))
+                        .with_code("E0209")
+                        .with_primary(self.span, "this name is already taken")
+                        .with_help(format!("rename it — `{}_impl`, or whatever it actually does", name))
+                        .with_fix(format!("give it a name of its own, not `{}`", name))
+                        .with_why(
+                            "the compiler knows this function's signature and generates \
+                             code for it at each call site, so it isn't a symbol a \
+                             declaration can replace — a program's own would be compiled \
+                             and never called [struct.modules/BF2, BF3]",
+                        )
+                } else {
+                    Diagnostic::error(format!("`{}` is a built-in type", name))
+                        .with_code("E0209")
+                        .with_primary(self.span, "this name is already taken")
+                        .with_help("rename the declaration")
+                        .with_fix(format!("give it a name of its own, not `{}`", name))
+                        .with_why(
+                            "the built-in set is fixed — a program can't add to it or \
+                             replace a member — so a second type under this name would \
+                             have no way to be referred to [struct.modules/BI2, BI3]",
+                        )
+                }
             }
 
             NoSuchStdlibExport { module, symbol, suggestion } => {
@@ -287,6 +435,31 @@ impl ToDiagnostic for rask_types::TypeError {
                         format!("expected `{}`, found `{}`", expected, found),
                     )
                     .with_why("Rask is statically typed — every expression must match its expected type");
+
+                // An optional is `Result { ok: T, err: None }` underneath, so the
+                // Result branch below catches it too unless it's split off
+                // first. It used to say "wrap with `try` to propagate the
+                // error" for a `T?` — there is no error, and `try` is not the
+                // fix a reader wants here: it only works at all inside a
+                // function that itself returns an optional, and it throws the
+                // absent case away at the call (#939).
+                if found.is_option() {
+                    if let Some(inner) = found.as_option() {
+                        if *inner == *expected {
+                            return diag
+                                .with_fix(format!(
+                                    "say what an absent value should do:\n\
+                                     x ?? default      // supply one\n\
+                                     x!                // assert it's there, panic if not\n\
+                                     if x? as v {{ … }}  // handle both"
+                                ))
+                                .with_help(format!(
+                                    "this is a `{}` — it may hold nothing, and a `{}` can't",
+                                    found, expected
+                                ));
+                        }
+                    }
+                }
 
                 // Suggest `try` when found is Result<T, E> and expected is T
                 if let rask_types::Type::Result { ok, .. } = found {
@@ -371,15 +544,32 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             NoSuchMethod { ty, method, span } => {
-                Diagnostic::error(format!(
+                // "check available methods on `string`" is a dead end when the
+                // caller is one letter off. Nearly every method-not-found in
+                // agentbench's first real run was a name that exists under
+                // another spelling — `to_lower` for `to_lowercase`, twice in
+                // two different tasks — so name the neighbour when there is one.
+                let ty_name = ty.to_string();
+                let diag = Diagnostic::error(format!(
                     "no method `{}` found for type `{}`",
                     method, ty
                 ))
                 .with_code("E0313")
-                .with_primary(*span, "method not found")
-                .with_help(format!("check available methods on `{}`", ty))
-                .with_fix(format!("check available methods on `{}`", ty))
-                .with_why("method calls are resolved at compile time against the type's extend blocks")
+                .with_primary(*span, "method not found");
+                match nearest_methods(&ty_name, method) {
+                    names if !names.is_empty() => diag
+                        .with_help(format!("did you mean `{}`?", names.join("` or `")))
+                        .with_fix(format!("did you mean `{}`?", names.join("` or `")))
+                        .with_why(format!(
+                            "method calls are resolved at compile time against the type's \
+                             extend blocks, and `{}` has no `{}`",
+                            ty, method
+                        )),
+                    _ => diag
+                        .with_help(format!("check available methods on `{}`", ty))
+                        .with_fix(format!("check available methods on `{}`", ty))
+                        .with_why("method calls are resolved at compile time against the type's extend blocks"),
+                }
             }
 
             UnimplementedStdlibMethod { ty, method, span } => {
@@ -467,7 +657,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0314")
                     .with_primary(*span, "type references itself infinitely")
                     .with_help("break the cycle with an explicit type annotation")
-                    .with_fix("break the cycle with an explicit type annotation or use `Owned<T>` for indirection")
+                    .with_fix("break the cycle with an explicit type annotation or use `Heap<T>` for indirection")
                     .with_why("a type cannot contain itself without indirection")
             }
 
@@ -836,6 +1026,66 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
+            LocalSharedSent { name, span } => {
+                Diagnostic::error("this `Shared` is task-local and cannot be sent")
+                    .with_code("E0346")
+                    .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
+                    .with_fix(
+                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
+                         locks more cheaply when writes dominate"
+                    )
+                    .with_why(
+                        "`Local` takes no lock at all, so two tasks touching it would \
+                         race. It is the opt-out, not the default, and this error is \
+                         what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+
+            SharedStrategyMismatch { found, expected, span } => {
+                Diagnostic::error(format!(
+                    "this box uses the `{}` strategy, but `{}` is expected here",
+                    found, expected
+                ))
+                    .with_code("E0381")
+                    .with_primary(*span, format!("`Shared<_, {}>` here", found))
+                    .with_fix(format!(
+                        "build it with `Shared.{}(…)`, or write the type as \
+                         `Shared<_, {}>` if `{}` is what you meant",
+                        match expected.as_str() {
+                            "Mutex" => "mutex",
+                            "Local" => "local",
+                            _ => "new",
+                        },
+                        found, found
+                    ))
+                    .with_help(
+                        "code that works under any strategy says so: \
+                         `func serve<S>(c: Shared<Config, S>)` [conc.sync/SH4]",
+                    )
+                    .with_why(
+                        "the strategy picks which lock the accessors take, so the two \
+                         have to agree. A `Local` box read through the read-write-lock \
+                         entry points blocks forever — it has no lock for them to take \
+                         [conc.sync/SH2]",
+                    )
+            }
+
+            RetiredBoxType { name, replacement, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is not a type any more — it's a strategy on `Shared`", name
+                ))
+                    .with_code("E0380")
+                    .with_primary(*span, format!("`{}` used as a type here", name))
+                    .with_fix(format!("write `{}`", replacement))
+                    .with_why(
+                        "`Cell`, `Shared` and `Mutex` were one concept — one value, \
+                         several accessors, a scoped view — differing only in what \
+                         synchronization they took. That is a strategy, not three \
+                         types, so it moved into `Shared<T, S>` \
+                         [analysis.storage-consolidation]",
+                    )
+            }
+
             MutateConst { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — declared `let`", name))
                     .with_code("E0322")
@@ -980,6 +1230,40 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("copy a field out, or add a method that returns an owned value")
                     .with_fix(format!("with … as {} {{ {}.some_field }}", name, name))
                     .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
+            }
+
+            TornLockUpdate { binding, box_name, first_field, second_field, first_span, second_span } => {
+                Diagnostic::warning("multi-field update under a lock without staged()".to_string())
+                    .with_code("W0907")
+                    .with_primary(*first_span, format!("`{}` written first", first_field))
+                    .with_secondary(
+                        *second_span,
+                        format!("`{}` second — a panic between these leaves other tasks a half-done update", second_field),
+                    )
+                    .with_help(format!(
+                        "stage the update: `with {}.staged() as {} {{ … }}` commits as one move on a clean exit and discards on a panic",
+                        box_name, binding,
+                    ))
+                    .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
+                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function if partial state is harmless here [tool.warnings/W9]")
+            }
+
+            StagedOutsideWith { name, span } => {
+                Diagnostic::error("`staged()` only works as the source of a `with` block")
+                    .with_code("E0846")
+                    .with_primary(*span, "there is no block here for the commit to happen at")
+                    .with_help(format!("write `with {}.staged() as v {{ … }}`; for a single field, `{}.write().field` takes the lock for the expression", name, name))
+                    .with_fix(format!("with {}.staged() as v {{ … }}", name))
+                    .with_why("staged access works on a copy and commits it as one move when the block exits. `read`/`write` also have an expression-scoped form, where the lock is held for the chain (mem.borrowing/E5) — staged has none, because there would be nowhere to put the commit [conc.sync/ST1]")
+            }
+
+            StagedOnLocal { name, span } => {
+                Diagnostic::error("`staged()` has nothing to protect under `Local`")
+                    .with_code("E0845")
+                    .with_primary(*span, format!("`{}` is a `Shared<T, Local>` — one task, no unwind boundary", name))
+                    .with_help("use `.write()` here; reach for `staged()` under `Readers` or `Mutex`, where another task could read a torn update")
+                    .with_fix(format!("with {}.write() as …", name))
+                    .with_why("staged access exists to make a multi-field update atomic against a panic that other tasks would observe. Under `Local` there is no other task to observe it, so the clone buys nothing and costs a copy [conc.sync/ST3a]")
             }
 
             BareSharedWith { name, binding, span } => {
@@ -1231,13 +1515,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a duck trait matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck traits stay package-internal (DT1)")
             }
 
+            // The fix used to name `string.concat(a, b)`, which has never
+            // existed — following the message got you a second error, "no
+            // method `concat` found for type `string`" (#900). Interpolation is
+            // the one way to join two pieces, and StringBuilder is the one way
+            // to join many, so those are what it says now.
             StringAddForbidden { span } => {
                 Diagnostic::error("the `+` operator cannot be used on strings")
                     .with_code("E0335")
                     .with_primary(*span, "strings don't support `+`")
-                    .with_help("use `string.concat(a, b)` or interpolation `\"{a}{b}\"`")
-                    .with_fix("replace `a + b` with `string.concat(a, b)` or `\"{a}{b}\"`")
-                    .with_why("string concatenation allocates — Rask requires the allocation to be visible through the method name or interpolation syntax")
+                    .with_fix("write the pieces in one string: `\"{a}{b}\"` — or build up with `StringBuilder` when you're joining in a loop")
+                    .with_why("joining strings allocates, and Rask keeps allocation visible at the call. `+` reads as free, so it's spelled out instead: interpolation shows the whole result being built in one place, and StringBuilder shows one allocation reused across many appends")
             }
 
             NominalMismatch { expected, found, nominal_name, span } => {
@@ -1322,8 +1610,12 @@ impl ToDiagnostic for rask_types::TypeError {
                 // `Pool<Player>` → `Pool`, so the suggestion names the constructor
                 // the way it's actually written.
                 let head = ty.split('<').next().unwrap_or(ty).trim();
+                // Was E0831, which `??` on a non-optional already had. Two
+                // errors under one code meant the registry kept only one of
+                // them, so `rask explain E0831` answered about `using` on main
+                // for anyone who hit the `??` error (#892).
                 Diagnostic::error(format!("`{}` cannot declare a `using` context", entry))
-                    .with_code("E0831")
+                    .with_code("E0844")
                     .with_primary(*span, "nothing can supply this")
                     .with_fix(format!(
                         "drop the clause and own it here — `mut {}: {} = {}.new()` — \
@@ -1565,6 +1857,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("flatten the union or rename one branch")
                     .with_why("a sum type cannot contain the same payload variant twice — the compiler picks the branch from the value's type, and a `(T or E) or E` value fits both [type.unions/U5]")
             }
+            TryInEnsure { region, span } => {
+                Diagnostic::error(format!("`try` can\'t be used {}", region))
+                    .with_code("E0847")
+                    .with_primary(*span, "there is no caller to propagate an error to from here")
+                    .with_help("drop the `try` and handle the error where it happens: `ensure f.close() else |e| { log(e.message()) }`")
+                    .with_fix("remove `try`")
+                    .with_why("cleanup runs at scope exit, after the function has already decided what it returns — an error raised there has nowhere to go, so ensure ignores it by default and `else |e|` is how you see it [ctrl.ensure/ER3-ER4]")
+            }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))
                     .with_code("E0345")
@@ -1606,6 +1906,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("`@{}` here", attr))
                     .with_fix(fix.clone())
                     .with_why("a serialization annotation the compiler can't act on is worse than one it rejects — the wire format would differ from what the source says [std.encoding/E19, E21]")
+            }
+
+            BadAnnotation { name, problem, fix, why, span } => {
+                Diagnostic::error(format!("annotation `{}`: {}", name, problem))
+                    .with_code("E0843")
+                    .with_primary(*span, format!("`{}` here", name))
+                    .with_fix(fix.clone())
+                    .with_why(*why)
             }
 
             LegacyWrapperConstructor { name, span } => {
@@ -1844,6 +2152,28 @@ impl ToDiagnostic for rask_types::TypeError {
                     diag = diag.with_help(fix);
                 }
                 diag
+            }
+            FixedArrayGrowth { method, array, span } => {
+                let (elem, len) = match array {
+                    rask_types::Type::Array { elem, len } => (elem.to_string(), *len),
+                    other => (other.to_string(), 0),
+                };
+                let label = format!("`{}` doesn't exist on a fixed array", method);
+                Diagnostic::error(label.clone())
+                    .with_code("E0843")
+                    .with_primary(
+                        *span,
+                        format!("`[{}; {}]` always holds {} element{}",
+                            elem, len, len, if len == 1 { "" } else { "s" }),
+                    )
+                    .with_fix(format!(
+                        "let it grow: `mut a: Vec<{}> = […]` — the same literal builds one",
+                        elem
+                    ))
+                    .with_why(
+                        "a fixed array's length is part of its type, and its storage is exactly that wide — there is nowhere for another element to go [std.collections/V1]"
+                            .to_string(),
+                    )
             }
         }
     }
@@ -2117,7 +2447,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     ),
                     MoveReason::Owned => (
                         format!(
-                            "`{}` is an Owned box — it was consumed there, and its \
+                            "`{}` is a Heap box — it was consumed there, and its \
                              memory went with it",
                             name
                         ),
@@ -2149,7 +2479,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         type_name
                     ),
                     MoveReason::Owned => format!(
-                        "`{}` is an Owned box — consumed on one branch but not the other, \
+                        "`{}` is a Heap box — consumed on one branch but not the other, \
                          and after the branches join the compiler has to assume it went",
                         name
                     ),
@@ -2423,7 +2753,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
 
             OwnedNotConsumed { name } => {
                 Diagnostic::error(format!(
-                    "`{}` was allocated with `own` and never dropped",
+                    "`{}` was allocated with `Heap(…)` and never dropped",
                     name
                 ))
                 .with_code("E0837")
@@ -2435,7 +2765,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("drop({})", name))
                 .with_why(
-                    "an Owned value has one owner and must be consumed exactly once \
+                    "a Heap value has one owner and must be consumed exactly once \
                      (mem.linear/L1) — nothing else frees it",
                 )
             }
@@ -2782,13 +3112,22 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("check detected a test failure")
             }
 
-            RuntimeError::UnwrapError => {
-                Diagnostic::error("unwrap failed: value was None")
+            RuntimeError::ForcedAbsent => {
+                Diagnostic::error("! on a value that was absent")
                     .with_code("R0016")
-                    .with_primary(self.span, "unwrap failed here")
-                    .with_help("use pattern matching or `??` to handle None safely")
-                    .with_fix("replace `!` with `?? default_value` or use `if x is Some { ... }`")
-                    .with_why("unwrap panics when called on None")
+                    .with_primary(self.span, "there was no value here to take")
+                    .with_help("`??` substitutes a value, `x is T as v` tests for one first")
+                    .with_fix("replace `x!` with `x ?? default`")
+                    .with_why("`!` takes the payload of a `T?` and panics when the value is absent [type.optionals/OPT13]")
+            }
+
+            RuntimeError::ForcedError => {
+                Diagnostic::error("! on a value that was an error")
+                    .with_code("R0016")
+                    .with_primary(self.span, "this call returned its error branch")
+                    .with_help("`try` propagates the error, `catch e =>` handles it here")
+                    .with_fix("replace `r!` with `try r`")
+                    .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")
             }
 
             RuntimeError::Generic(msg) => {

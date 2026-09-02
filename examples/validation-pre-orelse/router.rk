@@ -7,6 +7,8 @@
 import http
 import json
 import time
+import http.Request
+import http.Response
 
 func route(req: Request) -> Response {
     let t0 = time.Instant.now()

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+const SAMPLE: string = "name,score\nada,90\nbo, 75\ncy,90\n"
+
+test "verify: parsing" {
+    let rows = parse_csv(SAMPLE)
+    assert rows.len() == 3
+    assert rows[0].name == "ada"
+    assert rows[0].score == 90
+    assert rows[1].name == "bo"
+    assert rows[1].score == 75
+    assert rows[2].name == "cy"
+}
+
+test "verify: bad lines are dropped" {
+    let rows = parse_csv("name,score\nok,1\nbroken\nalso,broken\n\ntoo,many,fields\nfine,2")
+    assert rows.len() == 2
+    assert rows[0].name == "ok"
+    assert rows[1].name == "fine"
+    assert rows[1].score == 2
+}
+
+test "verify: totals and the winner" {
+    let rows = parse_csv(SAMPLE)
+    assert total(rows) == 255
+    assert best(rows) == "ada"
+}
+
+test "verify: nothing at all" {
+    let rows = parse_csv("name,score\n")
+    assert rows.len() == 0
+    assert total(rows) == 0
+    assert best(rows) == ""
+}

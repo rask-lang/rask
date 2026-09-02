@@ -4,6 +4,8 @@
 // Handles give stable references to cached blocks. Eviction removes
 // the least-accessed entry when capacity is hit. Demonstrates Pool<T>
 // and Handle<T> for non-graph use cases.
+import memory.Pool
+import memory.Handle
 
 const MAX_CACHE_ENTRIES: usize = 128
 

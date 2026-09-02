@@ -91,7 +91,7 @@ A string binding is "rc-required" (cannot be elided) when any of these hold:
 | Passed to `take` parameter | Ownership transfers to callee |
 | Captured by escaping closure | Closure may outlive the function |
 | Sent cross-task (channel, spawn capture) | Another task may hold a reference |
-| Stored in `Shared<T>` or `Mutex<T>` | Concurrent access possible |
+| Stored in a `Shared<T, S>` that crosses tasks | Concurrent access possible |
 | Returned from function | Caller takes ownership |
 
 If none of these conditions hold at function exit, the binding's refcount ops are all no-ops.

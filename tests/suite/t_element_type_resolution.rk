@@ -3,6 +3,8 @@
 // here reached a different resolution path, and every one of them used to fall
 // through to the guess — right for integers, silently wrong for an f64, a
 // string, or a struct.
+import sync.Shared
+import memory.Pool
 
 struct Holder {
     public names: Vec<string>
@@ -48,11 +50,11 @@ test "a for loop over a struct's Vec field binds the real element type" {
 }
 
 test "a Map inside a Mutex resolves its value type through lock" {
-    let m = Mutex.new(Map.new())
-    with m as inner {
+    let m = Shared.mutex(Map.new())
+    with m.write() as inner {
         inner.insert("k", 2.5)
     }
-    let got: f64 = m.lock().get("k") ?? 0.0
+    let got: f64 = m.write().get("k") ?? 0.0
     assert_eq(got, 2.5)
 }
 

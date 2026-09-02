@@ -18,6 +18,8 @@ import time.*
 import math
 import random.Random
 import fs
+import time.Instant
+import time.SystemTime
 
 func describe(d: Duration) -> string {
     return "{d.as_millis()}ms"

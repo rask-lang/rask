@@ -67,6 +67,10 @@ impl TypeChecker {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
+                    // AN8: an annotation name here would leave the binding
+                    // asking for a value nothing can produce, and the type
+                    // error would blame the initializer for it.
+                    self.reject_annotation_binding_type(ty_str, *name_span);
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
@@ -105,6 +109,10 @@ impl TypeChecker {
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
+                    // AN8: an annotation name here would leave the binding
+                    // asking for a value nothing can produce, and the type
+                    // error would blame the initializer for it.
+                    self.reject_annotation_binding_type(ty_str, *name_span);
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);
@@ -357,13 +365,39 @@ impl TypeChecker {
             }
             StmtKind::Continue(_) => {}
             StmtKind::Ensure { body, else_handler } => {
+                // ER4/ER3: cleanup has no caller to propagate to. Report the
+                // `try` itself, then keep checking — the rest of the body is
+                // still worth type-checking.
+                Self::report_try_in_ensure(body, "inside an `ensure` body", &mut self.errors);
+                let mut body_ty = None;
                 for s in body {
                     self.check_stmt(s);
+                    if let Some(e) = Self::ensure_body_value(&s.kind) {
+                        body_ty = self.node_types.get(&e.id).cloned();
+                    }
                 }
-                if let Some((_name, handler)) = else_handler {
+                if let Some((name, handler)) = else_handler {
+                    Self::report_try_in_ensure(handler, "in an `ensure` error handler", &mut self.errors);
+                    // ER2: the handler binds the error branch of whatever the
+                    // body's last expression produced. That type is still a
+                    // variable here — the body is a method call — so tie the two
+                    // together and let the solver settle it. Without a binding at
+                    // all, `e.message()` had no receiver type and died in MIR
+                    // lowering as an unresolved receiver.
+                    let err_ty = self.ctx.fresh_var();
+                    if let Some(body_ty) = body_ty {
+                        self.ctx.add_constraint(TypeConstraint::ErrorBranch {
+                            value: body_ty,
+                            result: err_ty.clone(),
+                            span: stmt.span,
+                        });
+                    }
+                    self.push_scope();
+                    self.define_local_const(name.clone(), err_ty);
                     for s in handler {
                         self.check_stmt(s);
                     }
+                    self.pop_scope();
                 }
             }
             StmtKind::Comptime(body) => {
@@ -375,10 +409,14 @@ impl TypeChecker {
                 // CT48–CT54: comptime for loop type checking
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = match &iter_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
-                    _ => self.ctx.fresh_var(),
-                };
+                // The same element-type machinery an ordinary `for` uses. The
+                // hand-written match this replaces knew about arrays and slices
+                // and nothing else, so `reflect.fields<T>()` — a `Vec<FieldInfo>`
+                // — fell through to a fresh variable with nothing tying it to the
+                // iterable. `f` was then typeless for good, and `f.name` had no
+                // type to dispatch a string method from or to infer a Vec's
+                // element from (#931).
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
@@ -599,13 +637,28 @@ impl TypeChecker {
 
     /// Recursively collect all sync access nodes within an expression tree.
     /// Each access is (type_name, method, span).
-    fn collect_sync_accesses(&self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
+    fn collect_sync_accesses(&mut self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
         let mut accesses = Vec::new();
         self.walk_sync_accesses(expr, &mut accesses);
+        let staged = std::mem::take(&mut self.staged_outside_with);
+        for (name, span) in staged {
+            self.errors.push(TypeError::StagedOutsideWith { name, span });
+        }
         accesses
     }
 
-    fn walk_sync_accesses(&self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
+    /// How to spell a sync receiver back to the author, for the suggestion.
+    fn sync_source_text(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::sync_source_text(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
+    fn walk_sync_accesses(&mut self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check if this node itself is a sync access
@@ -613,6 +666,15 @@ impl TypeChecker {
                     if let Some(ty_name) = self.sync_type_of(object) {
                         out.push((ty_name, method.clone(), expr.span));
                     }
+                }
+                // ST1: `staged()` has no expression-scoped form, so reaching one
+                // here at all means it is outside a `with` source — this walk
+                // never descends into a `with` binding.
+                if args.is_empty() && method == "staged" && self.sync_type_of(object).is_some() {
+                    self.staged_outside_with.push((
+                        Self::sync_source_text(object).unwrap_or_else(|| "the box".to_string()),
+                        expr.span,
+                    ));
                 }
                 // Recurse into object and args
                 self.walk_sync_accesses(object, out);
@@ -677,4 +739,198 @@ impl TypeChecker {
             _ => None,
         }
     }
+
+    /// The expression an `ensure` body statement leaves as its result — whatever
+    /// the `else` handler binds the error branch of. A binding counts: writing
+    /// `let n = s.close()` can fail in exactly the way a bare `s.close()` can,
+    /// and taking only bare expressions left the handler's parameter untyped.
+    fn ensure_body_value(kind: &StmtKind) -> Option<&Expr> {
+        use rask_ast::stmt::StmtKind as SK;
+        match kind {
+            SK::Expr(e)
+            | SK::Let { init: e, .. }
+            | SK::Mut { init: e, .. }
+            | SK::LetTuple { init: e, .. }
+            | SK::MutTuple { init: e, .. }
+            | SK::LetStruct { init: e, .. }
+            | SK::Assign { value: e, .. } => Some(e),
+            _ => None,
+        }
+    }
+
+    /// ER4/ER3: report every `try` that would run in the `ensure`'s own frame.
+    ///
+    /// A closure or `spawn` body nested in here is its own frame with its own
+    /// caller, so the walk stops at those. Everything else recurses.
+    fn report_try_in_ensure(
+        body: &[Stmt],
+        region: &'static str,
+        errors: &mut Vec<TypeError>,
+    ) {
+        for stmt in body {
+            Self::scan_stmt_for_try(stmt, region, errors);
+        }
+    }
+
+    fn scan_stmt_for_try(stmt: &Stmt, region: &'static str, errors: &mut Vec<TypeError>) {
+        use rask_ast::stmt::StmtKind as SK;
+        let mut exprs: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<Stmt>> = Vec::new();
+        match &stmt.kind {
+            SK::Let { init, .. } | SK::Mut { init, .. } => exprs.push(init),
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } => exprs.push(init),
+            SK::LetStruct { init, .. } => exprs.push(init),
+            SK::Expr(e) => exprs.push(e),
+            SK::Return(Some(e)) => exprs.push(e),
+            SK::Assign { target, value, .. } => {
+                exprs.push(target);
+                exprs.push(value);
+            }
+            SK::While { cond, body, .. } => {
+                exprs.push(cond);
+                bodies.push(body);
+            }
+            SK::WhileLet { expr, body, .. } => {
+                exprs.push(expr);
+                bodies.push(body);
+            }
+            SK::For { iter, body, .. } => {
+                exprs.push(iter);
+                bodies.push(body);
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => bodies.push(body),
+            SK::ComptimeFor { iter, body, .. } => {
+                exprs.push(iter);
+                bodies.push(body);
+            }
+            SK::Break { value, .. } => exprs.extend(value.iter()),
+            // A nested `ensure` reports against its own region on its own pass.
+            SK::Ensure { .. } => {}
+            // Nothing to walk: no sub-expression, no body.
+            SK::Return(None) | SK::Continue(_) | SK::Discard { .. } => {}
+        }
+        for e in exprs {
+            Self::scan_expr_for_try(e, region, errors);
+        }
+        for b in bodies {
+            for s in b {
+                Self::scan_stmt_for_try(s, region, errors);
+            }
+        }
+    }
+
+    fn scan_expr_for_try(expr: &Expr, region: &'static str, errors: &mut Vec<TypeError>) {
+        use rask_ast::expr::ExprKind as EK;
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<Stmt>> = Vec::new();
+        match &expr.kind {
+            EK::Try { .. } => {
+                errors.push(TypeError::TryInEnsure { region, span: expr.span });
+                return;
+            }
+            // Own frame, own caller — `try` there is the callee's business.
+            EK::Closure { .. } | EK::Spawn { .. } => return,
+
+            EK::Binary { left, right, .. } => {
+                kids.push(left);
+                kids.push(right);
+            }
+            EK::Unary { operand, .. } => kids.push(operand),
+            EK::Call { func, args } => {
+                kids.push(func);
+                kids.extend(args.iter().map(|a| &a.expr));
+            }
+            EK::MethodCall { object, args, .. } => {
+                kids.push(object);
+                kids.extend(args.iter().map(|a| &a.expr));
+            }
+            EK::Field { object, .. } | EK::OptionalField { object, .. } => kids.push(object),
+            EK::IsPresent { expr: inner, .. }
+            | EK::Unwrap { expr: inner, .. }
+            | EK::Cast { expr: inner, .. }
+            | EK::Convert { expr: inner, .. }
+            | EK::IsPattern { expr: inner, .. } => kids.push(inner),
+            EK::GuardPattern { expr: inner, else_branch, .. } => {
+                kids.push(inner);
+                kids.push(else_branch);
+            }
+            EK::DynamicField { object, field_expr } => {
+                kids.push(object);
+                kids.push(field_expr);
+            }
+            EK::Index { object, index } => {
+                kids.push(object);
+                kids.push(index);
+            }
+            EK::NullCoalesce { value, default } => {
+                kids.push(value);
+                kids.push(default);
+            }
+            EK::Catch { value, .. } => kids.push(value),
+            EK::Take { place } => kids.push(place),
+            EK::If { cond, then_branch, else_branch, .. } => {
+                kids.push(cond);
+                kids.push(then_branch);
+                if let Some(e) = else_branch {
+                    kids.push(e);
+                }
+            }
+            EK::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                kids.push(scrut);
+                kids.push(then_branch);
+                if let Some(e) = else_branch {
+                    kids.push(e);
+                }
+            }
+            EK::Match { scrutinee, arms } => {
+                kids.push(scrutinee);
+                // A guard runs in this frame too, so `try` in one is just as
+                // unpropagatable as `try` in the arm body.
+                kids.extend(arms.iter().filter_map(|a| a.guard.as_deref()));
+                kids.extend(arms.iter().map(|a| a.body.as_ref()));
+            }
+            EK::Range { start, end, .. } => {
+                kids.extend(start.iter().map(|b| b.as_ref()));
+                kids.extend(end.iter().map(|b| b.as_ref()));
+            }
+            EK::StructLit { fields, .. } => kids.extend(fields.iter().map(|f| &f.value)),
+            EK::Array(items) | EK::Tuple(items) => kids.extend(items.iter()),
+            EK::ArrayRepeat { value, count } => {
+                kids.push(value);
+                kids.push(count);
+            }
+            EK::WithAs { bindings, body } => {
+                kids.extend(bindings.iter().map(|b| &b.source));
+                bodies.push(body);
+            }
+            EK::Block(body)
+            | EK::Loop { body, .. }
+            | EK::UsingBlock { body, .. }
+            | EK::Unsafe { body }
+            | EK::Comptime { body } => bodies.push(body),
+            EK::Assert { condition, message } | EK::Check { condition, message } => {
+                kids.push(condition);
+                kids.extend(message.iter().map(|m| m.as_ref()));
+            }
+            EK::StringInterp(segments) => {
+                use rask_ast::expr::StringSegment;
+                for seg in segments {
+                    if let StringSegment::Expr(e, _) = seg {
+                        kids.push(e);
+                    }
+                }
+            }
+            _ => {}
+        }
+        for k in kids {
+            Self::scan_expr_for_try(k, region, errors);
+        }
+        for b in bodies {
+            for s in b {
+                Self::scan_stmt_for_try(s, region, errors);
+            }
+        }
+    }
+
+
 }

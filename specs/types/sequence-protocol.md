@@ -124,12 +124,12 @@ func walk<T>(
 
 <!-- test: skip -->
 ```rask
-struct Tree<T> { public root: Owned<Node<T>>? }
+struct Tree<T> { public root: Heap<Node<T>>? }
 
 struct Node<T> {
     public value: T
-    public left: Owned<Node<T>>?
-    public right: Owned<Node<T>>?
+    public left: Heap<Node<T>>?
+    public right: Heap<Node<T>>?
 }
 
 extend Tree<T> {

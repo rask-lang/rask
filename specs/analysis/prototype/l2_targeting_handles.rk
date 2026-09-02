@@ -5,6 +5,8 @@
 // The shape this exists to show: following a stored handle needs a liveness
 // check at every hop, and the `else` branch that clears the dead handle is
 // load-bearing for correctness yet the program runs without it.
+import memory.Handle
+import memory.Pool
 
 struct Entity {
     name: string

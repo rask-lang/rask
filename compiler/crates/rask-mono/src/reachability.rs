@@ -219,9 +219,27 @@ fn register_method(
     method_table: &mut HashMap<String, Decl>,
     method_by_bare_name: &mut HashMap<String, Vec<String>>,
     method_owners: &mut HashMap<String, MethodOwner>,
+    owner_params: &HashMap<String, Vec<String>>,
 ) {
     let qualified = format!("{}_{}", type_name, method.name);
-    if let Some(owner) = parse_owner(type_name) {
+    // `extend Wrapper<T>` says its parameters in the header. `extend Wrapper`
+    // doesn't, and the owning declaration is where they live — the header is
+    // allowed to leave them out. Without this fallback such a method had no
+    // parameters to bind, so it never got a per-receiver copy: one shared
+    // `Wrapper_get` returning a word served `Wrapper<f64>` (which read the
+    // double's bits as an integer) and `Wrapper<string>` (which segfaulted on a
+    // 16-byte value in an 8-byte return slot) alike (#916).
+    let owner = parse_owner(type_name).or_else(|| {
+        let base = type_name.split('<').next().unwrap_or(type_name).trim();
+        owner_params
+            .get(base)
+            .filter(|params| !params.is_empty())
+            .map(|params| MethodOwner {
+                base: base.to_string(),
+                params: params.clone(),
+            })
+    });
+    if let Some(owner) = owner {
         method_owners.insert(format!("{}_{}", owner.base, method.name), owner.clone());
         method_owners.insert(qualified.clone(), owner);
     }
@@ -256,6 +274,39 @@ impl<'a> Monomorphizer<'a> {
         let mut method_by_bare_name: HashMap<String, Vec<String>> = HashMap::new();
         let mut method_owners: HashMap<String, MethodOwner> = HashMap::new();
 
+        // Type parameters per declared type, by bare name — PC1, so a struct
+        // that never wrote `<T>` still reports the parameters its field types
+        // imply. `register_method` falls back to this when an `extend` header
+        // leaves them out.
+        let mut owner_params: HashMap<String, Vec<String>> = HashMap::new();
+        for decl in decls {
+            let (name, params) = match &decl.kind {
+                DeclKind::Struct(s) => (&s.name, rask_types::struct_type_param_names(s)),
+                DeclKind::Enum(e) => (&e.name, rask_types::enum_type_param_names(e)),
+                _ => continue,
+            };
+            if params.is_empty() {
+                continue;
+            }
+            let bare = name.split('<').next().unwrap_or(name).trim().to_string();
+            owner_params.insert(bare, params);
+        }
+
+        // Every type a method could belong to. `Type_method`-shaped free
+        // functions are registered as instance methods below, and without this
+        // the "type" half was whatever came before the first underscore —
+        // making `print_fields` a `fields` method (see below).
+        let mut declared_types: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for decl in decls {
+            let name = match &decl.kind {
+                DeclKind::Struct(s) => &s.name,
+                DeclKind::Enum(e) => &e.name,
+                DeclKind::Impl(i) => &i.target_ty,
+                _ => continue,
+            };
+            declared_types.insert(name.split('<').next().unwrap_or(name).trim().to_string());
+        }
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -268,9 +319,21 @@ impl<'a> Monomorphizer<'a> {
                     }
                     // Free functions with Type_method naming (e.g. compiled stdlib
                     // wrappers) should also be discoverable as instance methods.
+                    //
+                    // Only when the half before the underscore is a type that
+                    // exists. Any underscore used to do, so an ordinary function
+                    // named `print_fields` was filed as a `fields` method of a
+                    // type called `print`. A call to `something.fields()` whose
+                    // receiver this pass couldn't pin down then swept it up along
+                    // with the real ones — and handed it that call's type
+                    // arguments. `reflect.fields<T>()` inside an uninstantiated
+                    // generic template did exactly that, so `print_fields` got
+                    // queued with a `T` that was still an open variable and MIR
+                    // was asked to lower `print_fields$_` (#931).
                     if let Some(underscore_pos) = f.name.find('_') {
-                        let bare_method = &f.name[underscore_pos + 1..];
-                        if !bare_method.is_empty() {
+                        let (owner, bare_method) =
+                            (&f.name[..underscore_pos], &f.name[underscore_pos + 1..]);
+                        if !bare_method.is_empty() && declared_types.contains(owner) {
                             method_by_bare_name
                                 .entry(bare_method.to_string())
                                 .or_default()
@@ -283,7 +346,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &s.name, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }
@@ -292,7 +355,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &e.name, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }
@@ -301,7 +364,7 @@ impl<'a> Monomorphizer<'a> {
                         register_method(
                             &i.target_ty, method, decl,
                             &mut method_table, &mut method_by_bare_name,
-                            &mut method_owners,
+                            &mut method_owners, &owner_params,
                         );
                     }
                 }
@@ -719,12 +782,10 @@ impl<'a> Monomorphizer<'a> {
         let Some(ret_ty) = f.ret_ty.clone() else { return };
         let err_branch = match ret_ty.split_once(" or ") {
             Some((_, e)) => e.trim().to_string(),
-            None => match ret_ty
-                .trim()
-                .strip_prefix("Result<")
-                .and_then(|s| s.strip_suffix('>'))
-                .and_then(split_result_args)
-            {
+            // The canonical form. Splitting it lives in rask_ast::type_str so
+            // this and the checker's stub parser can't drift — they already had,
+            // over whether `[` `]` nest (a `Vec[T, N]` lane count has a comma).
+            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
                 Some((_, e)) => e.trim().to_string(),
                 None => return,
             },
@@ -1479,17 +1540,3 @@ impl<'a> Monomorphizer<'a> {
     }
 }
 
-/// Split `Result<...>`'s arguments at the comma separating ok from err,
-/// ignoring commas nested inside a generic.
-fn split_result_args(inner: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some((&inner[..i], &inner[i + 1..])),
-            _ => {}
-        }
-    }
-    None
-}

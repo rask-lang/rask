@@ -16,6 +16,11 @@ import std
 import http
 import json
 import async.Channel
+import memory.Handle
+import memory.Pool
+import sync.Shared
+import string.StringBuilder
+import json.JsonValue
 
 // ─── Semver ─────────────────────────────────────────────────────────
 
@@ -32,13 +37,13 @@ extend Version {
             return VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}")
         }
 
-        let major = parts[0].trim().parse_int() is i64 as v else {
+        let major = parts[0].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad major version in: {s}")
         }
-        let minor = parts[1].trim().parse_int() is i64 as v else {
+        let minor = parts[1].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad minor version in: {s}")
         }
-        let patch = parts[2].trim().parse_int() is i64 as v else {
+        let patch = parts[2].trim().parse<i64>() is i64 as v else {
             return VersionError.InvalidFormat("bad patch version in: {s}")
         }
 
@@ -770,17 +775,17 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
     println("Fetching {items.len()} packages...")
 
     // Concurrent fetch: spawn a task per package, collect results via channel.
-    // Mutex<i32> tracks fetch count across tasks (conc.sync/MX1).
+    // Shared<i32, Mutex> tracks fetch count across tasks (conc.sync/MX1).
     using Multitasking {
         mut (tx, rx) = Channel.buffered(items.len())
-        let counter = Mutex.new(0)
+        let counter = Shared.mutex(0)
 
         for item in items {
             let item_tx = tx.clone()
             let item_counter = counter.clone()
             spawn(own || {
                 if fetch_one(item, registry) is string as path {
-                    with item_counter.lock() as c {
+                    with item_counter.write() as c {
                         c += 1
                     }
                     let _ = item_tx.send(FetchResult.Done(path))
@@ -810,7 +815,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
             return e
         }
 
-        let fetched = with counter.lock() as c {
+        let fetched = with counter.write() as c {
             c
         }
         println("Fetched {fetched} packages")

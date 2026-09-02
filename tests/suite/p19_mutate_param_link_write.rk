@@ -1,0 +1,105 @@
+// Writing a link field through a `mutate` struct parameter.
+//
+// A link store is a call, not a store: it passes `param + offset` to the
+// runtime rather than writing the slot directly. The inliner's "does this write
+// through a parameter" check matched arguments against parameter ids, so an
+// address computed on the way to the write did not count — the function looked
+// inlinable, the argument was copied into a fresh local, and the write landed on
+// the copy (#984).
+//
+// A body with an ordinary store as well was safe, because that store *was*
+// matched. So the shape that breaks is a function whose only write to the
+// parameter goes through a link field, which is exactly what a list's
+// `push_back` looks like.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+}
+
+struct Holder {
+    nodes: Rack<Node>
+    root: Link<Node>?
+}
+
+struct Marked {
+    root: Link<Node>?
+    count: i64
+}
+
+func main() {}
+
+test "a link write through a mutate parameter reaches the caller" {
+    mut h = Holder { nodes: Rack.new(), root: none }
+    let n = h.nodes.insert(Node { value: 7, next: none })
+    attach(mutate h, n)
+
+    if h.root? as r {
+        assert_eq(r.value, 7)
+    } else {
+        assert false
+    }
+}
+
+func attach(mutate h: Holder, n: Link<Node>) {
+    h.root = n              // the only write in the body
+}
+
+test "a link write still reaches the caller when the callee also stores" {
+    mut m = Marked { root: none, count: 0 }
+    mut rack: Rack<Node> = Rack.new()
+    let n = rack.insert(Node { value: 9, next: none })
+    fill(mutate m, n)
+
+    assert_eq(m.count, 42)
+    if m.root? as r {
+        assert_eq(r.value, 9)
+    } else {
+        assert false
+    }
+}
+
+func fill(mutate m: Marked, n: Link<Node>) {
+    m.count = 42
+    m.root = n
+}
+
+test "the callee's write is visible to a later delete" {
+    mut h = Holder { nodes: Rack.new(), root: none }
+    let n = h.nodes.insert(Node { value: 3, next: none })
+    attach(mutate h, n)
+
+    // Only reachable if the edge was recorded against the caller's field rather
+    // than a copy: the rack has to find this slot to null it.
+    h.nodes.delete(n)
+    if h.root? as _r { assert false }
+}
+
+test "a list built through mutate parameters is traversable" {
+    // The l1_list_links prototype in miniature. Every root-edge write happens
+    // inside push_back, through `mutate list`.
+    mut list = Holder { nodes: Rack.new(), root: none }
+    push(mutate list, 1)
+    push(mutate list, 2)
+    push(mutate list, 3)
+
+    mut seen = 0
+    mut count = 0
+    mut cur = list.root
+    while cur? as node {
+        seen = seen + node.value
+        count = count + 1
+        cur = node.next
+    }
+    assert_eq(count, 3)
+    assert_eq(seen, 6)
+}
+
+// Prepends, so the newest node is the root — one link write on the node and one
+// on the holder, both through parameters.
+func push(mutate list: Holder, value: i32) {
+    let n = list.nodes.insert(Node { value: value, next: list.root })
+    list.root = n
+}

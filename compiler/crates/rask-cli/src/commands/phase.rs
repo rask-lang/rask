@@ -137,7 +137,8 @@ pub fn cmd_resolve(path: &str, format: Format) {
 
     // Use package resolution if in a multi-file context
     let resolve_result = if let Some(mut pkg_ctx) = rask_compiler::detect_package(path) {
-        rask_desugar::desugar(&mut pkg_ctx.all_decls);
+        let dep_annotations = pkg_ctx.dependency_annotations();
+        rask_desugar::desugar_package(&mut pkg_ctx.all_decls, &dep_annotations);
         rask_resolve::resolve_package(&pkg_ctx.all_decls, &pkg_ctx.registry, pkg_ctx.root_id)
     } else {
         rask_resolve::resolve(&parse_result.decls)

@@ -6,23 +6,26 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). Two of the five validation programs run on both backends; the rest are down to one named bug each, not a general regression.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). All five validation programs run on both backends. What is left is a registered backlog — 13 tracked bugs and 7 unbuilt features, each with a probe file in the suite. See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
-Re-measured 2026-08-08 by running all five. Every blocker below is a live
-symptom with an issue; the previous table had drifted badly — it blamed
-`Pool.insert returns Result` (it returns a bare `Handle<T>`), a string-slice
-error in grep clone (which works), and type mismatches in the text editor
-(which type-checks).
+Re-measured 2026-08-24 by running all five. All pass. The four that print and
+exit are enrolled in `tests/examples_gate.sh` with goldens diffed on both
+backends; the server never exits, so it has its own harness driving a CRUD
+request sequence.
 
-| Program | Status | Blocker |
-|---------|--------|---------|
-| Sensor processor | **Works** | — enrolled in the gate with a golden |
-| grep clone | **Works** | not gated: the gate can't pass argv (#658) |
-| Game loop with entities | Native only | native rejects handles from `for h in pool` (#652) |
-| Text editor with undo | Hangs | spins forever at EOF instead of quitting (#659) |
-| HTTP JSON API server | Blocked | needs `json.encode`/`decode` (Phase 1) |
+| Program | Status | Gate |
+|---------|--------|------|
+| Sensor processor | **Works** | examples gate, golden |
+| grep clone | **Works** | examples gate, golden + argv |
+| Game loop with entities | **Works** | examples gate, golden (seeded RNG) |
+| Text editor with undo | **Works** | examples gate, golden + stdin |
+| HTTP JSON API server | **Works** | `tests/http_api_harness.sh`, both backends |
+
+This milestone is met, so it is no longer what to steer by. The next instrument
+is the one NORTH_STAR names: models writing Rask against the compiler, with the
+failure transcripts read.
 
 ## Stdlib architecture
 
@@ -37,16 +40,69 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 ---
 
-## Phase 1: Stdlib in Rask + HTTP validation
+## What comes next, and why in this order
 
-The real test of multi-file compilation, stdlib imports, and native codegen on real code.
+The old phase list was organized around getting the validation programs to run. They
+all run. So the ordering below is organized around the thing that replaces it: knowing
+when the compiler is *done enough*, rather than knowing which five programs work.
 
-- HTTP/1.1 request parser in Rask (method, path, headers, body)
-- HTTP response serialization in Rask (status line, headers, body)
-- JSON parser rewrite in Rask (current C version only handles flat objects)
-- Validate `http_api_server.rk` compiles and runs natively
+### The measure comes first
 
-## Phase 2: Stdlib breadth
+Green gates are not the same as a correct compiler. On 2026-08-24 every gate passed
+while this returned `2`:
+
+```rask
+let a = match n { 1 => 2.5, _ => 0.0 }
+```
+
+`t_week_enums.rk` was 13/13 throughout, because none of its variants happened to carry
+a float. That is the shape of every bug found this year: not a deep design fault, but a
+missing case — one arm of a match, one name absent from a list, one site that answered
+a question locally instead of asking. They are found by *running programs*, never by
+reading the compiler.
+
+So the first work isn't a feature:
+
+1. **Finish the coverage backlog.** The registered red files in
+   `tests/known_divergences.txt`, each with a probe and an issue.
+2. **Close the coverage holes**, not just the red files — the "holes left on purpose"
+   list in `tests/COVERAGE.md` is the real todo. An area file gates the shapes it
+   happens to use, and nothing else.
+3. **Build the agent benchmark.** [NORTH_STAR](NORTH_STAR.md) names it as the
+   instrument — models writing Rask against the compiler, convergence measured, the
+   failure transcripts read — and it does not exist. Without it, "the native compiler
+   is stable" has no exit criterion and stays a feeling.
+
+### Then a program big enough to hurt
+
+The five validation programs are single-file, mostly synchronous, and short-lived. What
+they don't stress is what breaks next: long-running state, a real dependency graph,
+concurrency under load.
+
+The larger program is the *instrument*, not the reward. Dogfooding a piece of the
+toolchain in Rask — `rask fmt`, or the linter — is the honest version, because you feel
+every rough edge yourself and it exercises multi-package builds, string handling and
+error paths harder than any example does.
+
+Before that, the declared-but-unbuilt stdlib surface has to close: `Vec`/`Map` methods
+that exist in the signature and not in the implementation (#912), and ranges with no
+terminals or adapters (#920). A declared method that doesn't exist is worse than a
+missing one — the signature promises and the call fails. A larger program meets those
+in its first hour.
+
+### Then the three that block shipping
+
+1. **Panics and unwinding** ([#299](https://github.com/rask-lang/rask/issues/299)). The
+   panic path runs no `ensure` blocks and aborts the process. A server cannot ship with
+   that, and it undercuts the resource-safety promise everywhere else.
+2. **The sequence protocol** (`type.sequence`). User types can't be iterated at all, and
+   range adapters route through it, so it gates more than it looks like it does.
+3. **Incremental compilation.** NORTH_STAR's first commitment is maximum static checking
+   per millisecond of feedback. This is the item that serves it directly. The IR design
+   for function-level granularity can't be retrofitted — spec in
+   [incremental.md](specs/compiler/incremental.md).
+
+### Stdlib breadth, alongside
 
 | Module | Language | Purpose |
 |--------|----------|---------|
@@ -58,31 +114,34 @@ The real test of multi-file compilation, stdlib imports, and native codegen on r
 | hash | Rask (or C for HW accel) | SHA-256, MD5, CRC32 |
 | tls | C shim + Rask API | TLS/SSL via OpenSSL/mbedTLS |
 
-Each module needs: spec, implementation, tests.
+Each needs spec, implementation, tests. `json.to_value` / `json.from_value` are still
+`@unimplemented` — the tree↔typed bridge waits on Encode/Decode derivation.
 
-## Phase 3: Runtime & codegen maturity
+Also runtime trait dispatch for heterogeneous collections
+([#194](https://github.com/rask-lang/rask/issues/194)), and cross-compilation: the
+`--target` flag wired to Cranelift plus cross-linker detection (XT1–XT6). Cranelift
+already does ARM and WASM; the compiler simply doesn't configure them.
 
-- Runtime trait dispatch — `any Trait` for heterogeneous collections (#194)
-- Cross-compilation — `--target` flag wired to Cranelift + cross-linker detection (XT1–XT6)
+## On the LLVM backend
 
-## Phase 4: Incremental compilation
+I'm deferring it, and the reason is the bug history rather than the engineering.
 
-The IR design for function-level granularity can't be retrofitted. Spec: [incremental.md](specs/compiler/incremental.md).
+The largest single class of bugs in this project is the two backends disagreeing —
+measured at 39% of open issues when [#724](https://github.com/rask-lang/rask/issues/724)
+was written, and the differential harness exists because of it. A third thing that can
+produce an answer is a third thing that can disagree, and the second one still has
+tracked divergences.
 
-- Semantic hashing — hash computation, Merkle tree, cache keys
-- Function identity — `MonoFunctionKey` in monomorphization output
-- MIR serialization — `serde` derives on MIR types
-- Per-function object caching (Phase 1)
-- Fast relink with `mold`/`lld`
-- In-place binary patching — function slots + GOT + ELF patcher (Phase 2, when relink becomes bottleneck)
-
----
+The usual argument for LLVM is more targets. That one is weak here: Cranelift reaches
+ARM and WASM already. The real argument is generated-code quality for a language meant
+to compete with Rust and C — and that is a decision for a benchmark to make, not taste.
+`benchmarks/` is nearly empty. **Nothing goes to LLVM until something measures slow.**
 
 ## Post-v1.0
 
 - State machine codegen — stackless transforms for green tasks
 - Platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
-- LLVM backend
+- LLVM backend, if the benchmarks ask for it
 - Macros / `format!`
 - Comptime debugger
 - Fuzzing / property-based testing

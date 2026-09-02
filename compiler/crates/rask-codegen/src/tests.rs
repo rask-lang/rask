@@ -2038,6 +2038,7 @@ mod tests {
                             is_type_param: false,
                         },
                     ],
+                    is_stdlib: false,
                 },
             ],
             enum_layouts: vec![],

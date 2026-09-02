@@ -86,7 +86,7 @@ pub struct OwnershipChecker<'a> {
     /// wrapper with one resource can't be written at all, because there is no
     /// `w.close()` to call (#828).
     resource_field_debts: HashMap<String, Vec<Vec<String>>>,
-    /// Of those, the ones `own` allocated. They follow the same rules — L1–L6 are
+    /// Of those, the ones `Heap(…)` allocated. They follow the same rules — L1–L6 are
     /// shared between `@resource` and `Owned<T>` — but the fix is `drop(name)`,
     /// so the diagnostic differs (#819).
     owned_bindings: HashSet<String>,
@@ -463,6 +463,7 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Package(_) | DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
             DeclKind::TypeAlias(_) => {}
+            DeclKind::Annotation(_) => {}
         }
     }
 
@@ -546,6 +547,22 @@ impl<'a> OwnershipChecker<'a> {
         for param in &fn_decl.params {
             if (param.is_mutate || param.is_deleting) && self.name_holds_rack(&param.name) {
                 self.writable_racks.insert(param.name.clone());
+            }
+        }
+
+        // What each parameter's type is, the same way a `let` records one.
+        //
+        // Nothing did this, so `consume_arg` — which lets a Copy value through,
+        // because handing one over copies it and the caller keeps theirs — found
+        // no type for any parameter and treated every one as move-only. Passing
+        // a borrowed `n: i32` to a `take` parameter was rejected as giving away
+        // something that isn't yours, when an i32 is four bytes of copy.
+        for param in &fn_decl.params {
+            if param.name == "self" {
+                continue;
+            }
+            if let Some(ty) = self.type_from_name(&param.ty) {
+                self.binding_types.insert(param.name.clone(), ty);
             }
         }
 
@@ -1449,7 +1466,16 @@ impl<'a> OwnershipChecker<'a> {
                         self.kill_links_into_rack(object, expr.span);
                     }
                     if let Some(a) = args.first() {
-                        if let ExprKind::Ident(_) = &a.expr.kind {
+                        if let ExprKind::Ident(name) = &a.expr.kind {
+                            // The link named here dies with its node (RK5). It
+                            // used to die as a side effect of `delete`'s `take
+                            // link` parameter consuming it — but a `Link<T>` is
+                            // a machine word naming a node, so it copies, and
+                            // `consume_arg` rightly leaves a Copy value alone.
+                            // Killing it here says what is actually true: the
+                            // node is gone, so every name for it is dead.
+                            self.bindings
+                                .insert(name.clone(), BindingState::Moved { at: expr.span });
                             self.link_delete_spans.insert(a.expr.span);
                         }
                     }
@@ -1775,6 +1801,20 @@ impl<'a> OwnershipChecker<'a> {
                 // Register closure params as owned
                 for p in params {
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
+                }
+
+                // And what each one's type is. `|x|` writes no annotation, so
+                // the only place that knows is the checker — it typed the
+                // closure itself. Without this a closure parameter had no
+                // recorded type, so `is_copy` said no and `pair.push(x)` on an
+                // `x: i64` read as a move: the next `pair.push(x * 2)` was
+                // rejected as a use after move.
+                if let Some(Type::Fn { params: param_tys, .. }) =
+                    self.program.node_types.get(&expr.id).cloned()
+                {
+                    for (p, ty) in params.iter().zip(param_tys.iter()) {
+                        self.binding_types.insert(p.name.clone(), ty.clone());
+                    }
                 }
 
                 // Register resource captures in closure's resource set
@@ -3161,12 +3201,18 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
 
-            // Handle/WeakHandle are Copy: an 8-byte index+generation pair whose
-            // whole point is to be duplicated freely (mem.pools). The other
-            // compiler-native generics (Vec, Map, Pool, ...) have no fields
-            // visible to the type system — their layout lives in the runtime,
-            // not in a struct decl — so field-based inference can't see them
-            // and they stay hardcoded move-only.
+            // Handle/WeakHandle/Link are Copy: a machine word naming a node,
+            // whose whole point is to be duplicated freely (mem.pools). For
+            // `Link<T>` the rack spec says so from the other side — RK5 has
+            // using one after its node is deleted reported "as a use after free
+            // rather than as a move", which only reads as a rule if links copy.
+            // Without it, `v.push(link)` consumed the name and a later
+            // `rack.delete(link)` drew a bogus use-after-move.
+            //
+            // The other compiler-native generics (Vec, Map, Pool, ...) have no
+            // fields visible to the type system — their layout lives in the
+            // runtime, not in a struct decl — so field-based inference can't
+            // see them and they stay hardcoded move-only.
             //
             // A user-defined generic struct (`struct Wrapping<T> { value: T }`)
             // *does* have real fields, so its Copy-ness depends on what T ends
@@ -3175,7 +3221,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Generic { base, args } => {
                 let base_name = self.program.types.type_name(*base);
                 if Self::is_native_opaque_generic(&base_name) {
-                    matches!(base_name.as_str(), "Handle" | "WeakHandle")
+                    matches!(base_name.as_str(), "Handle" | "WeakHandle" | "Link")
                 } else if let Some(def) = self.program.types.get(*base) {
                     match def {
                         rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
@@ -3216,10 +3262,11 @@ impl<'a> OwnershipChecker<'a> {
             // SIMD vectors: NOT Copy (large, stack-allocated)
             Type::SimdVector { .. } => false,
 
-            // Unresolved types: conservative, except Handle/WeakHandle, which are
-            // Copy regardless of how the name was spelled.
+            // Unresolved types: conservative, except Handle/WeakHandle/Link,
+            // which are Copy regardless of how the name was spelled — same
+            // three as the resolved `Type::Generic` arm above.
             Type::UnresolvedGeneric { name, .. } => {
-                matches!(name.as_str(), "Handle" | "WeakHandle")
+                matches!(name.as_str(), "Handle" | "WeakHandle" | "Link")
             }
             Type::UnresolvedNamed(_) => false,
 
@@ -4440,7 +4487,7 @@ impl<'a> OwnershipChecker<'a> {
     /// type to look at. A scalar is excluded — it was never allocated, so
     /// `Owned<i32>` really is an `i32` and there is nothing to free (#819).
     fn track_owned_binding(&mut self, name: &str, init: &Expr) {
-        if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Own, .. }) {
+        if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Heap, .. }) {
             return;
         }
         let Some(ty) = self.program.node_types.get(&init.id) else { return };

@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.heap/HP3: dereferencing a Heap box is a borrow — safe, and it doesn't
+// consume. These are heap.md's own examples.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func main() {
+    mut p = Heap(Point { x: 1, y: 2 })
+
+    // Borrow for read
+    println("read {(*p).x} {(*p).y}")
+
+    // Borrow for mutate
+    (*p).x = 10
+    println("after write {(*p).x}")
+
+    // The borrow didn't consume — p is still usable.
+    println("still owned {(*p).x} {(*p).y}")
+
+    // And it still has to be consumed exactly once (mem.linear/L1, #819).
+    drop(p)
+}
