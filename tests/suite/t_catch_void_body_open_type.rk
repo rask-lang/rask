@@ -10,6 +10,8 @@
 //
 // Spec: type.errors (ER14a)
 
+import string.ParseError
+
 func maybe_fail(ok: bool) -> void or ParseError {
     if ok {
         return
