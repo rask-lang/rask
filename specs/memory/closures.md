@@ -19,7 +19,7 @@ The `own` prefix is the explicit opt-in to move-capture. Without it, closures bo
 
 | Mode | Non-Copy captures | Copy captures | Can escape scope? |
 |------|-------------------|---------------|-------------------|
-| `\|x\| expr` | Borrowed (source stays valid) | Copied | No |
+| `\|x\| expr` | Borrowed (source stays valid) | Borrowed | No |
 | `own \|x\| expr` | Moved (source consumed) | Copied | Yes |
 
 ```rask
@@ -34,7 +34,14 @@ let f = own |entry: Entry| -> bool { return tags.contains(entry.tag) }
 print(tags.len())  // ERROR: tags moved into closure
 ```
 
-No inference, no context-dependence. The `own` prefix is visible at the use site.
+A scope-limited closure borrows a Copy capture rather than copying it. That's
+what makes MC1's inference mean anything: `mut total = 0; let add = |x| { total
+= total + x }` has to reach the caller's `total`, and an `i32` is Copy. Copy
+decides what happens when a value *escapes* — which is why `own` copies it —
+not whether a borrow is a borrow.
+
+What isn't inferred is the mode. The `own` prefix is visible at the use site,
+and it's the only thing that changes which of these two rows applies.
 
 ## When to use own
 

@@ -2231,8 +2231,23 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Closure { params, body, .. } => {
-                let captured = self.env.capture_shared();
+            ExprKind::Closure { params, body, is_own, .. } => {
+                // mem.closures/MC1: a scope-limited closure borrows what it
+                // captures, so a write inside it reaches the enclosing
+                // variable. An `own` closure copies — it captures by move and
+                // outlives its creation scope, so sharing live storage would
+                // let it read a variable that changed after it was built.
+                //
+                // Both halves of that split were added together and only one
+                // was wired here, so `own` aliased: `mut n = 0; let f = own ||
+                // { print(n) }; n = 42; f()` printed 42 on the interpreter and
+                // 0 on native, which is a divergence as well as the wrong
+                // answer.
+                let captured = if *is_own {
+                    self.env.capture_snapshot()
+                } else {
+                    self.env.capture_shared()
+                };
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),

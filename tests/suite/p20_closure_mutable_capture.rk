@@ -175,6 +175,27 @@ test "mem.closures/MC1 — pushing into a captured Vec is visible outside" {
     assert log[1] == 9
 }
 
+// --- `own` copies, and that is the whole difference ---
+// An `own` closure captures by move and may outlive its creation scope, so it
+// must not read a variable that changed after it was built. Both halves of the
+// split went in together and only the borrow half was wired on the
+// interpreter, so `own` aliased: this printed 42 on interp and 0 on native.
+
+test "mem.closures — an own closure reads the value it was built with" {
+    mut n = 0
+    let snapshot = own || { return n }
+    n = 42
+    assert snapshot() == 0
+    assert n == 42
+}
+
+test "mem.closures/MC1 — a scope-limited closure reads the live value" {
+    mut n = 0
+    let live = || { return n }
+    n = 42
+    assert live() == 42
+}
+
 // --- the capture outlives the closure's last use ---
 
 test "mem.closures/MC3 — the variable is usable again after the closure is done" {
