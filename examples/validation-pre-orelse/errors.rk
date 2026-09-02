@@ -10,6 +10,7 @@
 // a manual impl, and ApiError's wrapper variants delegate by hand. See FINDINGS.
 
 import os
+import os.SysError
 
 // ─── Auth ────────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@
 import fs
 import cli
 import std
+import string.StringBuilder
 
 // ─── Error Types ────────────────────────────────────────────────────
 
@@ -176,7 +177,7 @@ func ordered_list_start(line: string) -> i32? {
             return none
         }
     }
-    let n = num_slice.parse_int() is i64 as v else {
+    let n = num_slice.parse<i64>() is i64 as v else {
         return none
     }
     return n.wrap<i32>()

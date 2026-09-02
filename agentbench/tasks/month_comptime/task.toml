@@ -1,0 +1,30 @@
+title = "Tables computed at compile time"
+horizon = "month"
+concepts = ["comptime", "const", "recursion"]
+issues = []
+
+contract = """
+const FACT_10: i64
+const PRIME_COUNT_100: i64
+const BANNER: string
+
+func factorial(n: i64) -> i64
+func is_prime(n: i64) -> bool
+func count_primes_below(limit: i64) -> i64
+func banner(name: string) -> string
+"""
+
+prompt = """
+Move some arithmetic to compile time.
+
+Write four ordinary functions — `factorial`, `is_prime` (a number below 2 is not
+prime), `count_primes_below` (how many primes are strictly below the limit), and
+`banner`, which returns `== name ==`.
+
+Then define three module-level constants whose values are computed by calling
+those functions inside a `comptime` block: `FACT_10` is `factorial(10)`,
+`PRIME_COUNT_100` is `count_primes_below(100)`, and `BANNER` is `banner("rask")`.
+
+Any pure function is callable at compile time — nothing needs marking. The
+functions still have to work at run time too; the tests call them both ways.
+"""

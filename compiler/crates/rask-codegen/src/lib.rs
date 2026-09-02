@@ -7,6 +7,7 @@ mod builder;
 pub mod closures;
 mod debug_info;
 pub mod dispatch;
+mod elem_offsets;
 pub mod layouts;
 mod module;
 mod tests;

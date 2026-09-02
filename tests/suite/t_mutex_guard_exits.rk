@@ -8,6 +8,8 @@
 // into a local, so it has to be written back — which only happened when the
 // body ran off its end. `with m.write() as v { v = v + 5; return v }` therefore
 // returned the wrong value *and* left the mutex untouched.
+import sync.Shared
+import sync.Mutex
 
 func bump_then_return(m: Shared<i64, Mutex>) -> i64 {
     with m.write() as v {
@@ -85,10 +87,17 @@ test "the lock is free again after an early return" {
     }
 }
 
+// One field per block, which is not a style choice: two field writes in one
+// `with` over a sync box is what W9 (tool.warnings) warns about, and a test
+// block can't carry the `@allow` that would say "harmless here" — `TestDecl`
+// has no attributes (#1010). What this test is about is that the guard writes
+// through to the payload, and one write per block still shows that.
 test "a struct payload is mutated in place" {
     let m = Shared.mutex(Counter { hits: 0, misses: 0 })
     with m.write() as c {
         c.hits = c.hits + 1
+    }
+    with m.write() as c {
         c.misses = c.misses + 2
     }
     with m.write() as c {

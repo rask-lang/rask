@@ -5,6 +5,8 @@
 // a read-only view of the whole graph — every node reachable, none writable —
 // and `mutate s: Rack<T>` is the writable one. No `LinkView`, no `mut` in a
 // type position, and nothing that changes as you follow edges.
+import memory.Link
+import memory.Rack
 
 struct Entity {
     name: string

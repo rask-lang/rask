@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func corpus() -> Vec<string> {
+    return ["the quick brown fox", "the lazy dog", "quick quick fox and dog"]
+}
+
+test "verify: postings" {
+    let index = build_index(corpus())
+    let the = lookup(index, "the")
+    assert the.len() == 2
+    assert the[0] == 0
+    assert the[1] == 1
+    let quick = lookup(index, "quick")
+    assert quick.len() == 2
+    assert quick[0] == 0
+    assert quick[1] == 2
+}
+
+test "verify: repeats collapse and case folds" {
+    let index = build_index(["Fox FOX fox"])
+    let fox = lookup(index, "fox")
+    assert fox.len() == 1
+    assert fox[0] == 0
+}
+
+test "verify: an unknown word has no postings" {
+    let index = build_index(corpus())
+    assert lookup(index, "zebra").len() == 0
+    mut nothing: Vec<string> = Vec.new()
+    assert build_index(nothing).len() == 0
+}
+
+test "verify: intersection" {
+    let index = build_index(corpus())
+    let both = documents_with_all(index, ["quick", "fox"])
+    assert both.len() == 2
+    assert both[0] == 0
+    assert both[1] == 2
+    let one = documents_with_all(index, ["dog", "quick"])
+    assert one.len() == 1
+    assert one[0] == 2
+    assert documents_with_all(index, ["dog", "zebra"]).len() == 0
+}
+
+test "verify: an empty query matches nothing" {
+    let index = build_index(corpus())
+    mut no_words: Vec<string> = Vec.new()
+    assert documents_with_all(index, no_words).len() == 0
+}

@@ -32,11 +32,11 @@ surface stays gated instead of hiding behind a known-fail line.
 
 | Area | File | interp | native | Issues |
 |---|---|---|---|---|
-| println, interpolation, escapes | `t_day_println.rk` | 10/10 | 10/10 | #897 #898 |
+| println, interpolation, escapes | `t_day_println.rk` | 10/10 | 10/10 | |
 | let, mut, shadowing, compound assign | `t_day_bindings.rk` | 10/10 | 10/10 | |
 | integer arithmetic at every width | `t_day_int_math.rk` | 11/11 | 11/11 | |
 | float arithmetic, mixed int/float rules | `t_day_float_math.rk` | 11/11 | 11/11 | |
-| string methods | `t_day_strings.rk` | 13/13 | 13/13 | #900 |
+| string methods | `t_day_strings.rk` | 13/13 | 13/13 | |
 | bool, if/else, logical operators | `t_day_conditionals.rk` | 11/11 | 11/11 | |
 | while, for, loop, break, continue | `t_day_loops.rk` | 12/12 | 12/12 | |
 | Vec basics | `t_day_vec.rk` | 13/13 | 13/13 | |
@@ -49,6 +49,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `[T; N]` element writes | `t_day_array_writes.rk` | 6/6 | 6/6 | |
 | `Map.insert`'s displaced value | `t_day_map_insert_displaced.rk` | 8/8 | 8/8 | |
 | arrays sized by a named const | `t_day_const_array.rk` | 5/5 | 5/5 | |
+| **probe** — `const [string; N]` elements | `t_day_const_string_array.rk` | 4/4 | 2/4 | #1000 |
 | **probe** — `u8`/`u16` `.to<f64>()` | `t_day_unsigned_to_float.rk` | 6/6 | 5/6 | #974 |
 
 ## Week one
@@ -78,7 +79,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | type param vs stdlib name | `t_week_generic_param_shadowing.rk` | 4/4 | 4/4 | |
 | a method returning its own type parameter | `t_week_generic_method_return.rk` | 7/7 | 7/7 | |
 | **probe** — `parse<T>` target range | `t_week_parse_range.rk` | 2/6 | 2/6 | #919 |
-| **probe** — `import X as Y` | `t_week_import_alias.rk` | BUILD-FAIL | BUILD-FAIL | #923 |
+| `import X as Y` | `t_week_import_alias.rk` | 5/5 | 5/5 | |
 | opaque handles as struct fields | `t_week_opaque_struct_fields.rk` | 8/8 | 8/8 | |
 | **pending** — declared-but-unbuilt collection API | `t_week_collection_stubs.rk` | BUILD-FAIL | BUILD-FAIL | #912 |
 | **pending** — range terminals and adapters | `t_week_range_adapters.rk` | BUILD-FAIL | BUILD-FAIL | #920 |
@@ -91,6 +92,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | borrowing, disjoint fields, `with` | `t_month_borrowing.rk` | 13/13 | 13/13 | |
 | box family — Cell, Mutex, Shared, Owned | `t_month_boxes.rk` | 13/13 | 13/13 | |
 | `@resource` and `ensure` | `t_month_resource_ensure.rk` | 11/11 | 11/11 | |
+| a program type named like a stdlib one | `t_month_stdlib_name_collision.rk` | 5/5 | 5/5 | |
 | threads, channels | `t_month_concurrency.rk` | 11/11 | 11/11 | #267 |
 | comptime | `t_month_comptime.rk` | 11/11 | 11/11 | |
 | JSON encode and decode | `t_month_json.rk` | 13/13 | 13/13 | |
@@ -102,14 +104,18 @@ surface stays gated instead of hiding behind a known-fail line.
 | **probe** — test-block parameter scope | `t_month_borrow_name_shadow.rk` | BUILD-FAIL | BUILD-FAIL | #926 |
 | **probe** — `@resource` in a loop | `t_month_resource_loop.rk` | BUILD-FAIL | BUILD-FAIL | #928 |
 | `ensure` block scoping | `t_month_ensure_block_scope.rk` | 11/11 | 11/11 | |
-| **probe** — CT49 field access by literal | `t_month_comptime_field_literal.rk` | 4/4 | BUILD-FAIL | #930 |
-| **probe** — comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 6/6 | BUILD-FAIL | #931 |
+| staged access, commit on every non-panic exit | `t_month_staged.rk` | 6/6 | 6/6 | #292 |
+| what a survivor observes of a panic (O1-O3, P2) | `t_month_panic_observed.rk` | 6/6 | 6/6 | #299 |
+| CT49 field access by literal | `t_month_comptime_field_literal.rk` | 11/11 | 11/11 | |
+| comptime `FieldInfo.name` | `t_month_reflect_field_strings.rk` | 11/11 | 11/11 | |
+| **probe** — `reflect.fields()` as a value | `t_month_reflect_fields_value.rk` | 4/4 | BUILD-FAIL | #997 |
 | **probe** — `try` in a test block | `t_month_try_in_test.rk` | 5/5 | BUILD-FAIL | #932 |
 | i128 in aggregates and conversions | `t_month_i128_aggregates.rk` | 20/20 | 20/20 | |
 | unsigned widening to 128 bits | `t_month_u128_widening.rk` | 6/6 | 6/6 | |
-| **probe** — unsafe blocks and raw pointers | `t_month_unsafe.rk` | 1/6 | 6/6 | #935 |
+| unsafe blocks and raw pointers | `t_month_unsafe.rk` | 16/16 | 16/16 | |
 | **pending** — atomics | `t_month_atomics.rk` | BUILD-FAIL | BUILD-FAIL | #927 |
 | floats in word-wide slots | `t_week_float_slots.rk` | 9/9 | 9/9 | |
+| **probe** — a method on a union-narrowed error | `t_month_error_union_narrowing.rk` | 4/4 | BUILD-FAIL | #1002 |
 
 ---
 
@@ -132,10 +138,20 @@ runs on every invocation shouldn't be binding ports.
 
 **C interop, but not `unsafe`.** I initially wrote the whole area off as needing a
 C toolchain and a companion object file. The raw-pointer half turns out to be
-perfectly testable in one file, and doing so found #935 — the interpreter treats a
-raw pointer as a plain i64, so `*p` silently yields 0 while native reads the byte.
-`t_month_unsafe.rk` covers dereference, `read()`, `offset()`, and the U3 and UF1
-forms.
+perfectly testable in one file, and doing so found #935 — the interpreter treated a
+raw pointer as a plain i64, so `*p` silently yielded 0 while native read the byte.
+Fixed; `t_month_unsafe.rk` now covers dereference, `read()`, `write()`, the
+arithmetic and alignment methods, pointer identity, `cast`, `null`, Vec pointers,
+`string.from_raw`/`from_c`, and the U3 and UF1 forms — 16 tests, green on both
+backends. Widening it past the original six found two more native bugs: #985
+(pointer stride disagrees with the Vec's slot width for elements under 8 bytes)
+and #986 (`cast<U>()` drops the `<U>`, so an inline `*p.cast<u8>()` reads a word).
+
+What can't go in it, for the same reason in both cases — a test that panics
+fails — is reading past the end of a buffer and dereferencing null. mem.unsafe
+specifies those as a panic with a location in debug and UB in release; the
+interpreter always panics, native reads whatever is there. That's the specified
+split between the modes, not a divergence.
 
 What genuinely does need a build harness is the C-interop half: `compile_rust()` in
 a build script, the C ABI, cbindgen, linking a real object file. That stays
@@ -167,9 +183,43 @@ lesson the file records: an area file only gates the shapes it happens to use.
 **Panics and unwinding.** A test that panics fails, so a suite file can't assert
 on a panic's behaviour without failing. `specs/control/panics.md` describes
 task-kill plus unwind with ensures running; the `ensure`-ordering half of that is
-covered in `t_month_resource_ensure.rk` and `t_month_ensure_block_scope.rk`, and
-the panic half wants a harness that runs a program expecting a non-zero exit.
-`tests/compile_errors/` is the nearest existing pattern.
+covered in `t_month_resource_ensure.rk` and `t_month_ensure_block_scope.rk`.
+
+Half of it turned out to be gateable here after all. A test that panics fails —
+but a panic in a *spawned* task is a value at the join, and everything a survivor
+can see about it is an ordinary assertion. That's the whole point of task-kill
+over process-abort, so `t_month_panic_observed.rk` asserts O1 (the join returns
+`JoinError.Panicked` with the message), P2 (the survivor joins a healthy task
+after), O3/LK1-LK3 (the next acquirer gets the lock, unpoisoned, with the last
+write), O2 (a dying sender's buffer drains then closes) and ST3 across a task
+boundary. 12 runs each backend and 6 under `RASK_POISON_STACK=1`, no flakes.
+
+The half that needs the panic to escape `main` — ensures running, locks released
+seen from inside, panic messages — lives in
+`compiler/crates/rask-cli/tests/compile_run.rs`, which runs a program and checks
+its exit code and output. What is asserted there, on both backends: ensures run on
+unwind and in LIFO order across scopes (`panic_ensure_*`), a panicking ensure
+never skips its siblings and the first panic wins (E2/E3), locks release so the
+next acquirer isn't blocked (`panic_releases_lock`, `panic_task_releases_lock` —
+these two hung forever before the fix), `os.exit` skips every ensure
+(`exit_skips_ensures`), a staged block discards its copy while a plain `write`
+keeps the partial one, and one pinned message per panic source
+(`panic_messages_are_the_same_on_both_backends`, 17 sources).
+
+Worth knowing when adding to it: the differential harness never sees any of this,
+so a panic-path regression shows up only in `cargo test`. Anything about panics
+that *can* be asserted without panicking belongs in a suite file instead —
+`t_month_staged.rk` is that split done deliberately, with ST2's commit paths in
+the suite and ST3's discard in the harness.
+
+**Assertion failure messages — no longer a hole.** #897 and #898 were both
+filed as ungateable, on the reasoning that a test can't assert on its own
+failure message. That's true from inside Rask and it doesn't apply from outside:
+a Rust integration test can run `rask test` on a failing file and read what the
+message said. `assertion` in `rask-cli/tests/compile_run.rs` does that on both
+backends, and the float case asserts the two render character for character.
+Anything about how a diagnostic or a runtime message *reads* belongs there
+rather than in a suite file.
 
 **`select`.** Covered by `t_select.rk` and `p06_select.rk`.
 

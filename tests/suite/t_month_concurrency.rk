@@ -17,6 +17,7 @@
 
 import thread.Thread
 import sync.Mutex
+import sync.Shared
 
 func sum_to(n: i64) -> i64 {
     mut acc = 0

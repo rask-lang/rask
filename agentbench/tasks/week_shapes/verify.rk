@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+test "verify: individual areas" {
+    let c = Circle { radius: 2.0 }
+    assert c.area() > 12.56 && c.area() < 12.57
+    assert c.name() == "circle"
+    let r = Rectangle { width: 3.0, height: 4.0 }
+    assert r.area() == 12.0
+    assert r.name() == "rectangle"
+    let t = Triangle { base: 6.0, height: 4.0 }
+    assert t.area() == 12.0
+    assert t.name() == "triangle"
+}
+
+test "verify: total over a mixed list" {
+    let shapes: Vec<any Shape> = [Rectangle { width: 2.0, height: 3.0 } as any Shape, Triangle { base: 4.0, height: 5.0 } as any Shape]
+    assert total_area(shapes) == 16.0
+}
+
+test "verify: largest" {
+    let shapes: Vec<any Shape> = [Rectangle { width: 2.0, height: 3.0 } as any Shape, Circle { radius: 10.0 } as any Shape, Triangle { base: 4.0, height: 5.0 } as any Shape]
+    assert largest(shapes) == "circle"
+}
+
+test "verify: ties go to the first, empty gives nothing" {
+    let tied: Vec<any Shape> = [Rectangle { width: 3.0, height: 4.0 } as any Shape, Triangle { base: 6.0, height: 4.0 } as any Shape]
+    assert largest(tied) == "rectangle"
+    mut none_at_all: Vec<any Shape> = Vec.new()
+    assert largest(none_at_all) == ""
+    assert total_area(none_at_all) == 0.0
+}

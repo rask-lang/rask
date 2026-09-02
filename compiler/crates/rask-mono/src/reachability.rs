@@ -292,6 +292,21 @@ impl<'a> Monomorphizer<'a> {
             owner_params.insert(bare, params);
         }
 
+        // Every type a method could belong to. `Type_method`-shaped free
+        // functions are registered as instance methods below, and without this
+        // the "type" half was whatever came before the first underscore —
+        // making `print_fields` a `fields` method (see below).
+        let mut declared_types: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for decl in decls {
+            let name = match &decl.kind {
+                DeclKind::Struct(s) => &s.name,
+                DeclKind::Enum(e) => &e.name,
+                DeclKind::Impl(i) => &i.target_ty,
+                _ => continue,
+            };
+            declared_types.insert(name.split('<').next().unwrap_or(name).trim().to_string());
+        }
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -304,9 +319,21 @@ impl<'a> Monomorphizer<'a> {
                     }
                     // Free functions with Type_method naming (e.g. compiled stdlib
                     // wrappers) should also be discoverable as instance methods.
+                    //
+                    // Only when the half before the underscore is a type that
+                    // exists. Any underscore used to do, so an ordinary function
+                    // named `print_fields` was filed as a `fields` method of a
+                    // type called `print`. A call to `something.fields()` whose
+                    // receiver this pass couldn't pin down then swept it up along
+                    // with the real ones — and handed it that call's type
+                    // arguments. `reflect.fields<T>()` inside an uninstantiated
+                    // generic template did exactly that, so `print_fields` got
+                    // queued with a `T` that was still an open variable and MIR
+                    // was asked to lower `print_fields$_` (#931).
                     if let Some(underscore_pos) = f.name.find('_') {
-                        let bare_method = &f.name[underscore_pos + 1..];
-                        if !bare_method.is_empty() {
+                        let (owner, bare_method) =
+                            (&f.name[..underscore_pos], &f.name[underscore_pos + 1..]);
+                        if !bare_method.is_empty() && declared_types.contains(owner) {
                             method_by_bare_name
                                 .entry(bare_method.to_string())
                                 .or_default()
@@ -755,12 +782,10 @@ impl<'a> Monomorphizer<'a> {
         let Some(ret_ty) = f.ret_ty.clone() else { return };
         let err_branch = match ret_ty.split_once(" or ") {
             Some((_, e)) => e.trim().to_string(),
-            None => match ret_ty
-                .trim()
-                .strip_prefix("Result<")
-                .and_then(|s| s.strip_suffix('>'))
-                .and_then(split_result_args)
-            {
+            // The canonical form. Splitting it lives in rask_ast::type_str so
+            // this and the checker's stub parser can't drift — they already had,
+            // over whether `[` `]` nest (a `Vec[T, N]` lane count has a comma).
+            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
                 Some((_, e)) => e.trim().to_string(),
                 None => return,
             },
@@ -1515,17 +1540,3 @@ impl<'a> Monomorphizer<'a> {
     }
 }
 
-/// Split `Result<...>`'s arguments at the comma separating ok from err,
-/// ignoring commas nested inside a generic.
-fn split_result_args(inner: &str) -> Option<(&str, &str)> {
-    let mut depth = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some((&inner[..i], &inner[i + 1..])),
-            _ => {}
-        }
-    }
-    None
-}

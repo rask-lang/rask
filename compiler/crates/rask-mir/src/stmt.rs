@@ -137,6 +137,20 @@ pub enum MirStmtKind {
     RcDec {
         local: LocalId,
     },
+    /// Release the strings an aggregate holds, at the point the aggregate dies.
+    ///
+    /// A struct field, an optional's payload, a `T or E`'s payload: the
+    /// aggregate owns a reference to each of them, and without this nothing
+    /// ever gives it back. `RcDec` can't do the job because it takes a value,
+    /// and where the strings sit inside one of these depends on the layout —
+    /// and on a tag, for anything with variants. Codegen walks the type and
+    /// emits the branches; the pass that inserts this doesn't have the layouts
+    /// and doesn't need them.
+    ///
+    /// A no-op for an aggregate holding no strings, which is most of them.
+    RcDecContents {
+        local: LocalId,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

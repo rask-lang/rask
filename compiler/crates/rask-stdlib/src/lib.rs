@@ -19,7 +19,7 @@ pub use ordering::{
 };
 pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodStub, any_builtin_method_mutates, has_method, lookup_method, methods_for};
-pub use stubs::StubRegistry;
+pub use stubs::{StubParamMode, StubRegistry};
 pub use modules::ModuleExports;
 pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,

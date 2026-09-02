@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U1: an ensure whose body is more than one statement still runs
+// during panic unwind. Native used to keep only the inline copy of a
+// multi-statement body, so a panic jumped past all of it (#299).
+struct Ledger9 { total: i32 }
+extend Ledger9 {
+    func show(self) {
+        println(self.total.to_string())
+    }
+}
+func main() {
+    mut led = Ledger9 { total: 1 }
+    ensure {
+        println("closing")
+        led.show()
+        println("closed")
+    }
+    led.total = 42
+    panic("boom")
+}

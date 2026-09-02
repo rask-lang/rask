@@ -17,6 +17,16 @@ pub struct StructLayout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<FieldLayout>,
+    /// Declared in the stdlib rather than in the program.
+    ///
+    /// Layouts live in one flat `Vec` looked up by bare name, so a program's
+    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer` and the
+    /// first one wins. The stdlib's is `public struct Timer { }` — no fields —
+    /// so every field of the user's landed at offset 0 and the literal
+    /// segfaulted (#975). `find_struct` prefers the program's when both exist,
+    /// which is the same rule the checker's `type_names` /
+    /// `stdlib_type_names` split already applies to types (#515).
+    pub is_stdlib: bool,
 }
 
 /// Field layout within struct
@@ -292,7 +302,22 @@ fn is_typevar_name(name: &str) -> bool {
 
 /// Parse a field type string (from AST) to a Type for layout computation.
 pub(crate) fn parse_field_type(s: &str) -> Type {
-    let s = s.trim();
+    // `d: time.Duration` on a field. Left dotted it fell through to the unknown
+    // name at the bottom of `type_size_align`, and the field got pointer-sized
+    // room by default — right for `Duration` by luck, and for anything wider a
+    // hard "field holds 32 bytes but its slot is 8" telling the user to report a
+    // compiler bug.
+    //
+    // Whatever a field's type is reached *through* says nothing about its size,
+    // so the last segment is the whole question here. The checker's
+    // `strip_module_qualifier` is narrower on purpose — it drops the head only
+    // when it names a real module, because there a wrong strip changes which type
+    // resolves (`c.Rect` is the C namespace's, and bare `Rect` is nobody's, #948).
+    // Layout has no such worry: the fallback it replaces was an outright guess.
+    // Being broader is also what makes an *aliased* import work — `import http as h`
+    // binds the module under a name no module list knows, and `h.Response` on a
+    // field hit exactly that hard error.
+    let s = rask_ast::type_str::bare_name(s);
 
     // Option shorthand: T? → Option<T>
     if s.ends_with('?') {
@@ -489,6 +514,15 @@ fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
+/// Was this declaration parsed out of a stdlib stub?
+///
+/// The stdlib's sources occupy the top of the `file_id` range by construction
+/// (`STDLIB_FILE_ID_BASE`), so the span answers it — no flag has to be threaded
+/// down from whoever collected the declarations.
+pub fn is_stdlib_span(span: rask_ast::Span) -> bool {
+    span.file_id >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE
+}
+
 pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
     use rask_ast::decl::DeclKind;
 
@@ -560,6 +594,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(struct_def.span),
     }
 }
 
@@ -605,6 +640,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
+        is_stdlib: is_stdlib_span(union_def.span),
     }
 }
 

@@ -3,6 +3,8 @@
 // here reached a different resolution path, and every one of them used to fall
 // through to the guess — right for integers, silently wrong for an f64, a
 // string, or a struct.
+import sync.Shared
+import memory.Pool
 
 struct Holder {
     public names: Vec<string>

@@ -11,6 +11,8 @@ import json.JsonParser
 import async.TaskGroup
 import time
 import http
+import time.Duration
+import http.Response
 
 test "a plain import registers the module's structs" {
     let d = Duration.from_millis(3)

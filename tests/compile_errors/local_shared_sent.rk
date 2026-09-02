@@ -7,6 +7,7 @@
 // needs no such rule, which is why it's the default.
 
 import async.spawn
+import sync.Shared
 
 func races() {
     using Multitasking {

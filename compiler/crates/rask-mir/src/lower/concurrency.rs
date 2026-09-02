@@ -76,6 +76,17 @@ impl SharedStrategy {
         }
     }
 
+    /// The staged triple (ST1–ST3). `Local` has none — ST3a rejects it at the
+    /// call site, and this falls back to plain exclusive access so a program
+    /// that got past the checker still does something defined.
+    pub(super) fn staged_syms(self) -> BoxWithSyms {
+        match self {
+            SharedStrategy::Local => BoxWithSyms::CELL,
+            SharedStrategy::Mutex => BoxWithSyms::MUTEX_STAGED,
+            SharedStrategy::Readers => BoxWithSyms::SHARED_STAGED,
+        }
+    }
+
     /// Acquire and release for an inline guard access.
     pub(super) fn guard_syms(self, write: bool) -> (&'static str, &'static str) {
         match self {
@@ -118,6 +129,22 @@ impl BoxWithSyms {
         acquire: "Shared_write_acquire",
         data: "Shared_data",
         release: Some("Shared_release"),
+    };
+
+    /// ST1–ST3. `release` is the *commit*: it copies the working copy back and
+    /// unlocks. It sits on the inline cleanup path, which every non-panic exit
+    /// chains through (ST2); a panic skips it and the runtime's unwind drain runs
+    /// the discard the acquire registered instead (ST3).
+    pub(super) const MUTEX_STAGED: Self = Self {
+        acquire: "Mutex_staged_acquire",
+        data: "Mutex_staged_data",
+        release: Some("Mutex_staged_commit"),
+    };
+
+    pub(super) const SHARED_STAGED: Self = Self {
+        acquire: "Shared_staged_acquire",
+        data: "Shared_staged_data",
+        release: Some("Shared_staged_commit"),
     };
 }
 

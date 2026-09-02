@@ -17,6 +17,7 @@
 // no way to hand it back, and a refused `@resource` is dropped with nothing
 // consuming it. The error types don't exist yet, which is why the stub says
 // what it says. #666. Update these tests to match when it lands.
+import memory.Pool
 
 struct Ent {
     hp: i32

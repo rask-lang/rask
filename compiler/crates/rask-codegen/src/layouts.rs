@@ -29,6 +29,9 @@ pub const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
 
 // ── String SSO (string.c) ────────────────────────────────────────
 // Empty string: 16 zero bytes except byte 15 = 0x0F (remaining capacity = 15).
+/// MSB of a `RaskStr`'s second word: set means the heap form, clear means SSO.
+pub const STRING_HEAP_FLAG: u64 = 1u64 << 63;
+
 pub const EMPTY_STRING_LO: i64 = 0;
 pub const EMPTY_STRING_HI: i64 = 0x0F00_0000_0000_0000u64 as i64;
 pub const STRING_SIZE: i32 = 16;

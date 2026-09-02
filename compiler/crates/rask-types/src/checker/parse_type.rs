@@ -10,7 +10,7 @@ use crate::types::{GenericArg, Type};
 
 /// Parse a type annotation string into a Type.
 pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
-    let s = s.trim();
+    let s = rask_stdlib::modules::strip_module_qualifier(s.trim());
 
     if s.is_empty() || s == "()" || s == "void" {
         return Ok(Type::Unit);

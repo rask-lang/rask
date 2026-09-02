@@ -157,6 +157,38 @@ void rask_assert_fail_cmp_i128(rask_i128 left, rask_i128 right,
     rask_panic_at(file, line, col, buf);
 }
 
+// F3 for the widest ints: the same operand-carrying overflow message the
+// narrower widths get. Lives here rather than in runtime.c because printing a
+// 128-bit value needs u128_digits — snprintf has no conversion for it.
+_Noreturn void rask_panic_overflow_binary_i128(const char *file, int32_t line, int32_t col,
+                                              const char *op, const char *tail,
+                                              rask_i128 lhs, rask_i128 rhs,
+                                              int32_t is_unsigned) {
+    RaskStr ls, rs;
+    if (is_unsigned) {
+        rask_u128_to_string(&ls, (rask_u128)lhs);
+        rask_u128_to_string(&rs, (rask_u128)rhs);
+    } else {
+        rask_i128_to_string(&ls, lhs);
+        rask_i128_to_string(&rs, rhs);
+    }
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "integer overflow: %s %s %s exceeds %s",
+             rask_string_ptr(&ls), op ? op : "?", rask_string_ptr(&rs),
+             tail ? tail : "range");
+    rask_panic_at(file, line, col, buf);
+}
+
+_Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int32_t col,
+                                            const char *tail, rask_i128 operand) {
+    RaskStr os;
+    rask_i128_to_string(&os, operand);
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "integer overflow: negating %s exceeds %s",
+             rask_string_ptr(&os), tail ? tail : "range");
+    rask_panic_at(file, line, col, buf);
+}
+
 void rask_assert_fail_cmp_u128(rask_u128 left, rask_u128 right,
                                const char *op, const char *file,
                                int32_t line, int32_t col) {

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every shape that leaked a heap string on every turn of a loop, until the
+// releases stopped being deleted and aggregates learned to give back what they
+// hold (#1024). Driven by `string_release_loop_does_not_grow` in
+// compile_run.rs, which reads peak RSS out of /proc rather than trusting the
+// program's own report.
+
+struct Holder {
+    text: string
+}
+
+enum Gone {
+    Yes
+}
+
+extend Gone {
+    func message(self) -> string {
+        return "gone"
+    }
+}
+
+func build(i: i64) -> string {
+    return "payload-number-{i}-and-then-some-more-text-to-clear-SSO"
+}
+
+func wrapped(i: i64) -> string or Gone {
+    if i < 0 { return Gone.Yes }
+    return "wrapped-{i}-and-long-enough-that-it-lives-on-the-heap"
+}
+
+func optional(i: i64) -> string? {
+    if i < 0 { return none }
+    return "optional-{i}-and-long-enough-that-it-lives-on-the-heap"
+}
+
+func held(i: i64) -> Holder {
+    return Holder { text: "held-{i}-and-long-enough-that-it-lives-on-the-heap" }
+}
+
+func main() {
+    mut n = 0i64
+    mut i = 0i64
+    while i < 200000i64 {
+        // Built here, dropped here. The whole reference belongs to this frame.
+        let local = "made-right-here-{i}-and-long-enough-to-need-the-heap"
+        n += local.len().wrap<i64>()
+
+        // Handed over by a callee, which gave up its reference on the way out.
+        let returned = build(i)
+        n += returned.len().wrap<i64>()
+
+        // The three aggregates. Each owns a string that nothing released when
+        // the aggregate itself went out of scope.
+        let from_result = wrapped(i) catch _ => "x"
+        n += from_result.len().wrap<i64>()
+
+        let from_option = optional(i) ?? "x"
+        n += from_option.len().wrap<i64>()
+
+        let from_struct = held(i)
+        n += from_struct.text.len().wrap<i64>()
+
+        i += 1i64
+    }
+    println(n)
+}

@@ -785,6 +785,9 @@ fn remap_stmt(
         MirStmtKind::RcDec { local } => MirStmtKind::RcDec {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
         MirStmtKind::EnsureHookRegister { thunk, captures } => MirStmtKind::EnsureHookRegister {
             thunk: thunk.clone(),
             captures: captures

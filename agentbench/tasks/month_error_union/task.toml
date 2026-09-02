@@ -1,0 +1,39 @@
+title = "Two error types on one call path"
+horizon = "month"
+concepts = ["errors", "unions", "try", "is as"]
+issues = []
+
+contract = """
+enum ReadError { Empty, TooShort(saw: i64) }
+enum ParseError { NotANumber(text: string) }
+
+extend ReadError with Error { func message(self) -> string }
+extend ParseError with Error { func message(self) -> string }
+
+func first_line(text: string) -> string or ReadError
+func to_number(text: string) -> i64 or ParseError
+func first_number(text: string) -> i64 or (ReadError | ParseError)
+func first_number_or(text: string, fallback: i64) -> i64
+"""
+
+prompt = """
+Two independent failures on one path, joined with an error union.
+
+`first_line` returns the first line of the text. It fails with `Empty` when the
+text has no lines at all, and with `TooShort(saw:)` — carrying the number of
+lines it did see — when the text has fewer than two lines. (Yes, that means a
+one-line input is `TooShort(saw: 1)`.)
+
+`to_number` parses an integer and fails with `NotANumber` carrying the text.
+
+`first_number` does both, and its error type is the union of the two. `try` is
+what widens each error into that union — no conversion trait, no wrapper.
+
+`first_number_or` swallows either failure and gives the fallback.
+
+Messages, exactly:
+
+- `no lines`
+- `too short: 1`
+- `not a number: abc`
+"""

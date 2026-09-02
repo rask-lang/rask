@@ -3,6 +3,7 @@
 // `stringify_pretty_inner` in stdlib/json.rk — same body both backends, reached
 // the same way `encode` reaches the compact one.
 import json
+import json.JsonValue
 
 func main() {
   mut inner = Vec.new()

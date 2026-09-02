@@ -98,14 +98,15 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         };
     }
 
-    // Handle "Result<T, E>" (parser-normalized form)
-    if let Some(inner) = s.strip_prefix("Result<").and_then(|r| r.strip_suffix('>')) {
-        if let Some((ok_str, err_str)) = split_comma(inner) {
-            return Type::Result {
-                ok: Box::new(parse_stub_type(ok_str)),
-                err: Box::new(parse_stub_type(err_str)),
-            };
-        }
+    // Handle "Result<T, E>" (parser-normalized form). The split lives in
+    // rask_ast::type_str so there is one answer: the copy that used to be here
+    // didn't count `[` `]` as nesting, so a stub returning `Vec[f32, 4] or
+    // SimdError` would have split at the comma inside the lane count.
+    if let Some((ok_str, err_str)) = rask_ast::type_str::result_parts(s) {
+        return Type::Result {
+            ok: Box::new(parse_stub_type(ok_str)),
+            err: Box::new(parse_stub_type(err_str)),
+        };
     }
 
     // Handle "Option<T>" (parser-normalized form)
@@ -260,22 +261,6 @@ fn split_or_type(s: &str) -> Option<(&str, &str)> {
             b'>' | b')' => depth -= 1,
             b' ' if depth == 0 && s[i..].starts_with(" or ") => {
                 return Some((s[..i].trim(), s[i + 4..].trim()));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Split `A, B` at the first top-level comma, respecting nesting.
-fn split_comma(s: &str) -> Option<(&str, &str)> {
-    let mut depth: i32 = 0;
-    for (i, b) in s.bytes().enumerate() {
-        match b {
-            b'<' | b'(' => depth += 1,
-            b'>' | b')' => depth -= 1,
-            b',' if depth == 0 => {
-                return Some((s[..i].trim(), s[i + 1..].trim()));
             }
             _ => {}
         }

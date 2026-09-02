@@ -22,6 +22,9 @@
 | **S1: Grammar** | `{[arg_id][:[[fill]align][0][width][.precision][type]]}` |
 | **S2: Align** | `<` left, `>` right, `^` center. Fill defaults to space; a lone `0` before the width fills with zeros and right-aligns. With no align given, numbers go right, text goes left |
 | **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
+| **S4: Width is columns** | Width counts **display columns**, not bytes and not scalars — `s.width()` (`std.strings/U2`). A CJK character is two columns, a combining mark is zero. This is what makes a padded table align |
+| **S5: Precision truncates text** | On text, `.n` cuts to at most `n` display columns without splitting a grapheme — `s.truncate(n)`. On floats it's decimal places, as before |
+| **S6: Width and precision can be runtime** | Both slots take either a decimal literal or an identifier captured from scope: `{:<w}` pads to the value of `w`. Same capture rule as `{name}` (I1) — digits are a literal, a name is a variable |
 
 | Specifier | Example | Result |
 |-----------|---------|--------|
@@ -33,6 +36,8 @@
 | `{:>10}` | `format("{:>10}", "hi")` | `"        hi"` |
 | `{:0>10}` | `format("{:0>10}", 42)` | `"0000000042"` |
 | `{:.3}` | `format("{:.3}", 3.14159)` | `"3.142"` |
+| `{:.6}` | `format("{:.6}", "internationalization")` | `"intern"` |
+| `{:<w}` | `format("{:<w}", name)` | pads to the runtime value of `w` |
 
 <!-- test: parse -->
 ```rask
@@ -40,22 +45,59 @@ let hex = format("0x{:08X}", 0xDEAD)
 let table = format("{:<10} {:>8}", "Name", "Score")
 ```
 
+### Why columns (S4)
+
+A width that counts bytes or scalars produces a table that only lines up for
+ASCII, which is how most CLI tools end up with crooked output the moment a name
+has an accent in it:
+
+<!-- test: skip -->
+```rask
+// Both entries are 5 columns wide. Only a column-counting width knows that.
+println(format("{:<8}|", "Tokyo"))   // "Tokyo   |"
+println(format("{:<8}|", "東京"))     // "東京    |"  — 2 chars, 4 columns
+```
+
+Measure a column, then pad to it — that's the whole reason S6 exists:
+
+<!-- test: skip -->
+```rask
+mut w = 0
+for row in rows {
+    w = max(w, row.name.width())
+}
+for row in rows {
+    println(format("{:<w} {:>8}", row.name, row.score))
+}
+```
+
+For ASCII text this costs a flag test — `width()` is `len()` when the string is
+ASCII (`std.strings/U4`).
+
 ## Displayable Trait
 
 | Rule | Description |
 |------|-------------|
-| **D1: Trait** | `trait Displayable { func to_string(self) -> string }` |
+| **D1: Trait** | `trait Displayable { func display(self) -> string }` |
 | **D2: Primitives** | All primitive types implement `Displayable` by default |
 | **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `extend Type with Displayable` |
-| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `to_string()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
-| **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `to_string()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
+| **D4: Required for {}** | `format("{}", x)` calls `display()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `display()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
+| **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `display()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
+
+**Rendering is not conversion.** `display()` makes a value presentable to a
+person; `to_string()` converts something that already is text into a `string`
+(`StringView`, a slice, `Span`, `cstring`, `Path`). Keeping one verb for both
+meant a `Point` — which contains no text at all — "converted to a string", and it
+put the trait in the way of fallible conversions: `cstring.to_string()` returns
+`string or Utf8Error`, which no `Displayable` signature can accommodate. Two jobs,
+two verbs.
 
 <!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
 extend Point with Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         return format("({}, {})", self.x, self.y)
     }
 }
@@ -87,10 +129,12 @@ extend AppError {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Trait** | `trait Debug { func to_debug_string(self) -> string }` |
+| **G1: Trait** | `trait Debug { func debug(self) -> string }` |
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
-| **G4: Debug format** | `format("{:debug}", x)` calls `to_debug_string()` |
+| **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
+
+The verb matches the trait and the specifier — `Debug`, `{:debug}`, `debug()`.
 
 <!-- test: parse -->
 ```rask
@@ -125,12 +169,12 @@ ERROR [std.fmt/D4]: type does not implement Displayable
 5  |  println(format("{}", my_struct))
    |                       ^^^^^^^^^ `MyStruct` does not implement Displayable
 
-WHY: {} calls to_string(), which requires the Displayable trait.
+WHY: {} calls display(), which requires the Displayable trait.
 
 FIX 1: Add Displayable implementation:
 
   extend MyStruct with Displayable {
-      func to_string(self) -> string { ... }
+      func display(self) -> string { ... }
   }
 
 FIX 2: If this is an error type, add message() instead (auto-bridges to Displayable):
@@ -173,6 +217,24 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | `{{` in template | F4 | Literal `{` |
 | Empty template | F1 | Returns empty string |
 | `format("{:debug}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
+| Text already wider than the width | S4 | Printed in full — width pads, it never truncates. Use `.n` to cut |
+| `{:<x}` where `x` is a variable | S6 | Reads as hex type, not width. A runtime width can't be named `x`, `X`, `b`, `o`, `e` or `debug`; the error says so and suggests renaming |
+| `{:.n}` on a value that isn't text or float | S5 | Compile error — precision means columns or decimals, nothing else |
+| Runtime width naming an undefined variable | S6 | Compile error, same as `{name}` capture (I1) |
+
+## Implementation Notes
+
+`Debug`'s verb is `debug()` on both backends. `Displayable`'s is still spelled
+`to_string()` in the compiler — the split described in D1 is not implemented
+(rask-lang/rask#1033). It isn't a rename: the same resolution path that gives
+Displayable its method is what makes `to_string()` resolve on primitives and on
+`string`, so separating the two verbs means teaching method resolution which
+types own a text conversion, not swapping a string literal.
+
+Two more gaps in this spec, both filed: `{:debug}` is checked against
+`Displayable` instead of `Debug`, so a plain struct is rejected and the two
+backends disagree about what `{:debug}` renders (#1032); and runtime width (S6)
+isn't implemented.
 
 ## Compiler Mechanism
 
@@ -181,6 +243,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | **CM1: Compiler-known** | `format()` is a compiler-known function, not a regular function. It accepts variable arguments through compiler support (`struct.modules/BF4`), not through a general variadic mechanism |
 | **CM2: Template parsing** | The compiler parses the template string at compile time, extracting placeholder positions, names, and format specifiers |
 | **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Displayable`, `{:debug}` requires `Debug`, `{:x}` requires integer type |
+| **CM7: Width lowering** | A literal width on an argument the compiler knows is ASCII (a literal, or a value whose ASCII flag is statically true) lowers to byte padding with no column measurement. Otherwise it calls `width()`, which itself branches on the flag (`std.strings/U4`) |
 | **CM4: Compile-time errors** | Missing arguments, type mismatches, and malformed specifiers are compile-time errors. No runtime formatting failures for static templates |
 | **CM5: Codegen** | The compiler generates specialized string-building code per call site. No runtime template parsing for static templates |
 | **CM6: Comptime folding** | When all arguments are comptime-known, the result is a static string |
@@ -195,9 +258,17 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 
 **D3 (structs opt-in):** Auto-deriving Displayable would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Displayable is for users, so you write it.
 
-**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `to_string()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `to_string()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `extend Type with Displayable`.
+**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `extend Type with Displayable`.
 
 **I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
+
+**S4–S6 (columns, truncation, runtime width):** The grammar shipped with a `width` slot that never said what it counted, and the spec's own tabular example was the thing that breaks when you guess wrong. Bytes and scalars both give a table that lines up until someone's name has an accent in it — which is the failure mode of most CLI tools in most languages, because their format width counts the wrong unit and nobody notices until a bug report arrives from Japan.
+
+Columns is the only answer that makes the example true. It costs a flag test for ASCII text (`std.strings/U4`) and a table lookup otherwise, and CM7 removes even the flag test when the compiler can see the argument is ASCII.
+
+S6 exists because the actual table-formatting task is two passes — measure the widest cell, then pad every row to it — and a format string with only literal widths can't express the second pass. Padding to a name from scope reuses the `{name}` capture rule rather than inventing `{:width$}`.
+
+**D1/G1 (`display` and `debug` as verbs):** `to_string` was doing two unrelated jobs. On `StringView`, a slice, `Span` or `cstring` it's a conversion — there are bytes, they become a `string`. On a `Point` there is no text to convert; it's rendering. Naming both `to_string` also broke `cstring`, whose conversion is fallible (`string or Utf8Error`) and so can't match any `Displayable` signature. Splitting the verbs fixes both, and `to_debug_string` collapses to `debug` on the way, which finally matches the trait and the `{:debug}` specifier it serves.
 
 ### Patterns & Guidance
 
@@ -216,7 +287,7 @@ println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 struct Color { r: u8, g: u8, b: u8 }
 
 extend Color with Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
 }

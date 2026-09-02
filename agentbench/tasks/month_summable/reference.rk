@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+trait Summable {
+    func add(self, other: Self) -> Self
+}
+
+struct Money { cents: i64 }
+
+struct Meters { value: f64 }
+
+extend Money with Summable {
+    func add(self, other: Money) -> Money {
+        return Money { cents: self.cents + other.cents }
+    }
+}
+
+extend Meters with Summable {
+    func add(self, other: Meters) -> Meters {
+        return Meters { value: self.value + other.value }
+    }
+}
+
+func total<T: Summable>(values: Vec<T>, take zero: T) -> T {
+    mut acc = zero
+    for value in values {
+        acc = acc.add(value)
+    }
+    return acc
+}
+
+func doubled<T: Summable>(value: T) -> T {
+    return value.add(value)
+}

@@ -7,6 +7,7 @@
 // compilation. And the interpreter got the right answer from the *wrong* code:
 // its own Rust encoder, a second implementation of this same output.
 import json
+import json.JsonValue
 
 func main() {
   mut arr = Vec.new()

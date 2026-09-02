@@ -20,6 +20,12 @@ Foundational types and modules for systems programming.
 
 **Transparent costs.** Allocations, I/O, syscalls — visible in code.
 
+**Bytes for machines, graphemes for humans.** Every index and length is a byte
+offset; anything a person sees or counts — `width`, `truncate`, `graphemes`, format
+padding — works in display columns. Unicode scalars are not a unit and never appear
+as one. For ASCII text all three coincide, so correct text handling costs a flag
+test ([strings.md](strings.md) `U1`–`U5`).
+
 ---
 
 ## Module Organization
@@ -44,16 +50,17 @@ Foundational types and modules for systems programming.
 |--------|---------|--------|
 | [net](net.md) | TCP/UDP sockets, DNS | Specified |
 | [http](http.md) | HTTP client and server | Specified |
-| [tls](#tls) | TLS/SSL connections | Planned |
-| [url](#url) | URL parsing | Planned |
+| [tls](tls.md) | TLS/SSL connections | Specified |
+| [url](url.md) | URL parsing, percent-encoding | Specified |
 
 ### Data Formats
 | Module | Purpose | Status |
 |--------|---------|--------|
 | [json](json.md) | JSON encoding and decoding | Specified |
 | [encoding](encoding.md) | Encode/Decode traits, field annotations | Specified |
-| [csv](#csv) | CSV parsing and writing | Planned |
-| [encoding (base64/hex/url)](#encoding-1) | Base64, hex, URL encoding — planned additions to `std.encoding` | Planned |
+| [csv](csv.md) | CSV reading and writing | Specified |
+| [base64](base64.md) | Base64 encoding | Specified |
+| [hex](hex.md) | Hex encoding | Specified |
 
 ### Utilities
 | Module | Purpose | Status |
@@ -64,11 +71,10 @@ Foundational types and modules for systems programming.
 | [fmt](fmt.md) | String formatting | Specified |
 | [math](math.md) | Mathematical functions | Specified |
 | [random](random.md) | Random number generation | Specified |
-| [hash](#hash) | SHA256, MD5, CRC32 | Planned |
+| [digest](digest.md) | SHA-256, SHA-1, MD5, CRC32 | Specified |
 | [bits](bits.md) | Bit manipulation, byte order, binary pack/unpack | Specified |
 | [reflect](reflect.md) | Compile-time type introspection | Specified |
-| [unicode](#unicode) | Unicode utilities | Planned |
-| [terminal](#terminal) | ANSI colors, terminal detection | Planned |
+| [terminal](terminal.md) | ANSI styling, terminal detection | Specified |
 
 ### Concurrency & Testing
 | Module | Purpose | Status |
@@ -329,47 +335,9 @@ let resp = try client.post("https://api.example.com/submit")
 
 ## TLS
 
-TLS/SSL connections (wraps system TLS library).
-
-### Types
-
-| Type | Description | Linear? |
-|------|-------------|---------|
-| `TlsStream` | Encrypted TCP stream | Yes |
-| `TlsListener` | TLS server listener | Yes |
-| `TlsConfig` | TLS configuration | No |
-
-### Client Connection
-
-```rask
-import tls
-
-let stream = try tls.connect("example.com:443")
-ensure stream.close()
-
-try stream.write_text(request)
-let response = try stream.read_text()
-```
-
-### Server
-
-```rask
-import tls
-
-let config = tls.Config.new()
-let config = try config.cert_file("server.crt")
-let config = try config.key_file("server.key")
-
-let listener = try tls.listen(":443", config)
-ensure listener.close()
-
-loop {
-    let stream = try listener.accept()
-    // handle encrypted connection
-}
-```
-
-**Status:** Planned — detailed specification TODO.
+Encrypted connections over TCP. `tls.connect(addr)` to dial, `tls.wrap(own conn, host:)`
+to upgrade an existing connection. Verification is on by default and turning it off
+is explicit at the call site. See [tls.md](tls.md).
 
 ---
 
@@ -381,264 +349,42 @@ Command-line argument parsing (flags, options, positional args, help generation)
 
 ## Encoding
 
-Common encodings (RFC 4648). Planned additions to `std.encoding` ([encoding.md](encoding.md)), alongside the Encode/Decode serialization traits.
+`Encode`/`Decode` traits and comptime field iteration — how a struct becomes any
+format. See [encoding.md](encoding.md).
 
-### Base64
-
-```rask
-import encoding
-
-let encoded = encoding.base64.encode(data)      // -> string
-let decoded = try encoding.base64.decode(encoded)  // -> []u8
-
-// URL-safe variant
-let encoded = encoding.base64url.encode(data)
-```
-
-### Hex
-
-```rask
-let hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
-let data = try encoding.hex.decode(hex)     // -> []u8
-```
-
-### URL Encoding
-
-```rask
-let encoded = encoding.url.encode("hello world")  // "hello%20world"
-let decoded = try encoding.url.decode(encoded)       // "hello world"
-```
-
-**Status:** Planned — detailed specification TODO.
+Binary-to-text encodings are their own modules, because they do a different job that
+happens to share the word: [base64.md](base64.md), [hex.md](hex.md).
+Percent-encoding lives in [url.md](url.md), where the grammar it serves is.
 
 ---
 
-## Hash
+## Digest
 
-Hash functions for integrity (not security).
-
-### Functions
-
-| Function | Output | Use Case |
-|----------|--------|----------|
-| `hash.sha256(data)` | `[32]u8` | Content addressing, integrity |
-| `hash.sha1(data)` | `[20]u8` | Git compatibility (legacy) |
-| `hash.md5(data)` | `[16]u8` | Checksums (legacy) |
-| `hash.crc32(data)` | `u32` | Fast checksums |
-
-### Usage
-
-```rask
-import hash
-
-let digest = hash.sha256(file_contents)
-let hex = encoding.hex.encode(digest)
-
-// Incremental hashing
-let hasher = hash.Sha256.new()
-hasher.update(chunk1)
-hasher.update(chunk2)
-let digest = hasher.digest()
-```
-
-**Note:** For cryptographic security (HMAC, signatures), use the `crypto` package.
-
-**Status:** Planned — detailed specification TODO.
+Content hashing — SHA-256, SHA-1, MD5, CRC32, one-shot or incremental. Named
+`digest` rather than `hash` because `Hashable.hash()` already means the other kind
+of hashing. See [digest.md](digest.md).
 
 ---
 
 ## URL
 
-URL parsing (RFC 3986).
-
-### Types
-
-```rask
-struct Url {
-    scheme: string,      // "https"
-    host: string,        // "example.com"
-    port: u16?,          // 443
-    path: string,        // "/api/users"
-    query: string?,      // "page=1&limit=10"
-    fragment: string?,   // "section"
-}
-```
-
-### Parsing
-
-```rask
-import url
-
-let u = try url.parse("https://example.com:8080/path?query=1")
-
-u.scheme    // "https"
-u.host      // "example.com"
-u.port      // 8080 (present)
-u.path      // "/path"
-u.query     // "query=1" (present)
-```
-
-### Query Parameters
-
-```rask
-let params = try url.parse_query("name=Alice&age=30")
-params["name"]  // "Alice" (present)
-
-let query = url.encode_query([("name", "Alice"), ("age", "30")])
-// "name=Alice&age=30"
-```
-
-### Construction
-
-```rask
-let u = Url {
-    scheme: "https",
-    host: "api.example.com",
-    path: "/users",
-}   // port, query, fragment: field defaults fill in
-u.to_string()  // "https://api.example.com/users"
-```
-
-**Status:** Planned — detailed specification TODO.
-
----
-
-## Unicode
-
-Unicode utilities beyond basic string operations.
-
-### Character Properties
-
-```rask
-import unicode
-
-unicode.is_letter('A')      // true
-unicode.is_digit('5')       // true
-unicode.is_whitespace(' ')  // true
-unicode.is_uppercase('A')   // true
-unicode.is_lowercase('a')   // true
-```
-
-### Case Conversion
-
-```rask
-unicode.to_uppercase('a')   // 'A'
-unicode.to_lowercase('A')   // 'a'
-unicode.to_titlecase('a')   // 'A'
-```
-
-### Normalization
-
-```rask
-let nfc = unicode.normalize_nfc(text)   // Canonical composition
-let nfd = unicode.normalize_nfd(text)   // Canonical decomposition
-```
-
-### Categories
-
-```rask
-unicode.category('A')  // Category.UppercaseLetter
-unicode.category('5')  // Category.DecimalNumber
-unicode.category(' ')  // Category.SpaceSeparator
-```
-
-**Status:** Planned — detailed specification TODO.
+Taking a URL apart and putting it back together, plus percent-encoding. `http` keeps
+taking plain `string` URLs; `Url` is for when you need the pieces. See [url.md](url.md).
 
 ---
 
 ## Terminal
 
-Terminal utilities and ANSI styling.
-
-### Colors
-
-```rask
-import terminal
-
-let label = terminal.red("Error: ")
-println("{label}{message}")
-println(terminal.green("Success"))
-println(terminal.bold(terminal.blue("Header")))
-```
-
-### Styles
-
-| Function | Description |
-|----------|-------------|
-| `terminal.bold(s)` | Bold text |
-| `terminal.dim(s)` | Dimmed text |
-| `terminal.italic(s)` | Italic text |
-| `terminal.underline(s)` | Underlined text |
-
-### Colors
-
-| Function | Description |
-|----------|-------------|
-| `terminal.red(s)` | Red foreground |
-| `terminal.green(s)` | Green foreground |
-| `terminal.blue(s)` | Blue foreground |
-| `terminal.yellow(s)` | Yellow foreground |
-| `terminal.rgb(s, r, g, b)` | Custom RGB color |
-
-### Detection
-
-```rask
-if terminal.is_tty() {
-    print(terminal.green("colored"))
-} else {
-    print("plain")
-}
-
-terminal.width()   // -> u16?
-terminal.height()  // -> u16?
-```
-
-**Status:** Planned — detailed specification TODO.
+ANSI styling as a value — build a `Style`, apply it where you print, and it gates
+itself on whether output is a terminal. Plus terminal size and tty detection. See
+[terminal.md](terminal.md).
 
 ---
 
 ## CSV
 
-CSV parsing and writing (RFC 4180).
-
-### Reading
-
-```rask
-import csv
-
-let reader = csv.Reader.from_string(data)
-for row in reader {
-    let name = row[0]
-    let age = row[1]
-}
-
-// With headers
-let reader = csv.Reader.from_string(data).with_headers()
-for row in reader {
-    let name = try row["name"]
-    let age = try row["age"]
-}
-```
-
-### Writing
-
-```rask
-let writer = csv.Writer.new()
-try writer.write_row(["name", "age"])
-try writer.write_row(["Alice", "30"])
-let output = writer.build()
-```
-
-### Options
-
-```rask
-let reader = csv.Reader.from_string(data)
-    .delimiter(';')
-    .quote('"')
-    .with_headers()
-```
-
-**Status:** Planned — detailed specification TODO.
+Typed decode into structs first (`csv.decode<Sale>(text)`), raw rows as the fallback,
+streaming for files that don't fit in memory. See [csv.md](csv.md).
 
 ---
 
@@ -660,6 +406,8 @@ The following are **not** part of stdlib — use packages:
 | Full cryptography | AES, RSA, ECDSA need expert maintenance |
 | GUI | Platform-specific, large |
 | Regex | Complex engine, multiple implementations |
+| Unicode collation, locale, IDNA, bidi | Needs the full character database and a locale table. `width`, `graphemes` and `normalized()` cover what ordinary programs hit |
+| TUI frameworks | Cursor control, raw mode, event loops — opinions about rendering. `terminal` does styling and size |
 | Compression | gzip, zstd, lz4 — specialized |
 | Serialization frameworks | MessagePack, Protocol Buffers — opinionated |
 | Image/Audio/Video | Media processing — large, specialized |

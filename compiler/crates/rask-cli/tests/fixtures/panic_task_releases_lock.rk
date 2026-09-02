@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/LK1–LK3 + O1/O3: a task panics holding the write lock. Its death
+// surfaces at the join as `JoinError.Panicked`, the lock is free for the next
+// acquirer, and that acquirer sees the last write the dying task made — no
+// poisoning (LK2), no rollback (U2).
+//
+// Natively the survivor's `with` blocked on a lock the dead task still held.
+
+import sync.Shared
+import sync.Mutex
+import thread.Thread
+
+struct Counter9 { n: i64 }
+const C: Shared<Counter9, Mutex> = Shared.mutex(Counter9 { n: 5 })
+
+func main() {
+    using Multitasking {
+        let h = Thread.spawn(|| {
+            with C.write() as c {
+                c.n = 99
+                panic("worker boom")
+            }
+            return 0
+        })
+        match h.join() {
+            i64 as v => println("joined {v}"),
+            JoinError.Panicked(msg) => println("panicked"),
+            JoinError.Cancelled => println("cancelled"),
+        }
+    }
+    with C.read() as c {
+        println(c.n.to_string())
+    }
+}

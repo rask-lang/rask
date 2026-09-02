@@ -6,6 +6,8 @@
 // skip it. Get that wrong and a delete nulls a neighbouring field instead of the
 // one that pointed at the dying node — and with a single link field, which is
 // what the rest of the corpus uses, nothing notices.
+import memory.Link
+import memory.Rack
 
 struct Cell {
     id: i32

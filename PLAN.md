@@ -1,54 +1,56 @@
 # Plan
 
-**Measured 2026-08-24, at `60678a7` and again after this branch's fixes.** Every number below
-came from running the thing, not from reading the previous version of this file. Re-measure
-before planning off it — the last three times this document went wrong, it was because a
-state column outlived its evidence.
+**Measured 2026-08-26, on all seven lane branches merged together.** Every number below came
+from running the thing, not from reading the previous version of this file. Re-measure before
+planning off it — the last three times this document went wrong, it was because a state column
+outlived its evidence.
 
 ```
-tests/differential.sh      329 green, 20 expected-red, 0 untracked, 0 unexpected-pass
+tests/differential.sh      343 green, 15 expected-red, 0 untracked, 0 unexpected-pass, 0 misfiled
 tests/examples_gate.sh     34 ok, 0 failed, 0 pending
 tests/projects_gate.sh     21 ok, 0 failed
-tests/fmt_roundtrip_gate.sh 431 round-tripped, 567 reformatted, 0 failures
+tests/prototypes_gate.sh   13 agree, 0 untracked
+tests/fmt_roundtrip_gate.sh 438 round-tripped, 577 reformatted, 0 failures
 tests/http_api_harness.sh  ok on both backends
-cargo test --release --workspace   52 binaries, 0 failures
+tests/agentbench_gate.sh   17 green, 1 quarantined, 0 broken
+cargo test --release --workspace   0 failures
 ```
 
-## Where things stand
+## The seven lanes, merged
 
-**The five validation programs all pass.** Sensor processor, grep clone, game loop and text
-editor are enrolled in the examples gate with goldens; the HTTP JSON API server serves a CRUD
-sequence on both backends through its own harness. ROADMAP's "two of five" table was from
-2026-08-08 and is now fixed. That milestone is met — it is no longer the thing to steer by.
+Seven sessions ran in parallel, partitioned by crate. All seven landed: #987 codegen, #988
+interpreter, #989 namespace rules, #991 diagnostics, #995 comptime reflection, #1003 agent
+benchmark, #1004 panics — plus #1015, which the namespace lane needed because it kept working
+after #989 merged and a merged PR cannot take new commits.
 
-**The soundness track is closed.** Spot-checked today, all four rejecting correctly with the
-fix shown as code: consuming a value on one branch and using it after the join (E0813),
-consuming twice (E0800), `vec["a"]` (E0819), `i64 as u8` (E0817, offering `to`/`wrap`/`clamp`),
-and `i32::MAX + 1` panicking at runtime instead of wrapping.
+What integrating them cost, since none of it is visible from any single PR: seven collisions
+where one lane met another lane's work. Three were caught by a guard one lane had written
+firing on another's change — #989's stub-set check caught `reflect` in two lists, #991's
+error-code audit caught two lanes allocating E0844, the fmt gate caught a formatter bug the
+corpus had never reached. That is the argument for writing them.
 
-**What is left is a backlog, not a frontier.** 20 files in the suite are registered red: 13
-tracked bugs and 7 unbuilt features — down from 24 bugs when this was written, as A1, A3, half
-of A4, three of A2, and three of A5 came off. Nothing is untracked and nothing has silently started passing. Every red file
-has a probe and an issue.
+Four nothing caught:
 
-## The one thing worth deciding
+- **A branch's green CI says nothing about a base it never merged.** #989 was still on
+  `125d039` and had not seen the files its own rule rejects.
+- **Thirteen files across five lanes needed imports they never got.** A rule applied to a
+  snapshot of the tree cannot reach files written after the snapshot, and no single branch's
+  CI sees the combination. Three of the thirteen were the quiet kind, where the file still
+  failed and so still looked fine: a registered-red file, a compile-error fixture, and a
+  fixture asserting a warning *count* — all three failing on the import instead of on the
+  thing they exist to pin.
+- **A registered-red file rotted.** `t_day_const_string_array.rk` stopped compiling entirely
+  and stayed "red", so #1000 quietly stopped being exercised. Fixed, and the gate now holds
+  every red file to a `(backend phase)` claim so it cannot recur (#1005).
+- **The benchmark would have measured our own documentation.** It hands a model
+  LANGUAGE_GUIDE.md as normative and scores whether the reply compiles; the guide never said
+  stdlib names need importing. A low solve rate would have read as a language-usability result.
 
-The day/week/month coverage sweep of 2026-08-19 filed ~40 bugs — one systematic pass over
-what a person meets in their first hour, first week, first month. In the five days since,
-the work went to Rack/Link native codegen, the `Shared<T, S>` consolidation, and the
-annotations + call-information specs. **None of the 40 were fixed** — the first nineteen came
-off in this branch.
-
-Those bugs are the first hour of the language. A fixed-size array as a struct field doesn't
-compile. `Map.insert` hands back a flag instead of the displaced value. A named-payload enum
-variant never matches. A struct with implicit type parameters can't be named at an
-instantiation — SYNTAX.md's own `Pair` example doesn't compile. NORTH_STAR says the
-instrument is models writing Rask against the compiler and measuring convergence; a model
-writing Rask reaches these inside ten minutes, and the examples that pass the gate pass
-because they happen to route around them.
-
-So: **stop adding surface until the backlog shrinks.** Every new shape is another place a
-bug in these clusters can hide.
+And one mistake of my own worth keeping: resolving a contested file with `git checkout
+--theirs` dropped three tests belonging to a lane that did not own that file. Verifying
+against the *lane branch* said clean and then went stale — a test that arrives in a later
+lane commit does not come back, because git reads the earlier deletion as the newer intent.
+Verify against `origin/main`, which is where the work accumulates.
 
 ---
 

@@ -1,0 +1,19 @@
+title = "Grades and a histogram"
+horizon = "day"
+concepts = ["match", "guards", "Map", "Vec"]
+issues = []
+
+contract = """
+func grade(score: i32) -> string
+func histogram(scores: Vec<i32>) -> Map<string, i64>
+"""
+
+prompt = """
+Turn exam scores into letter grades.
+
+`grade` maps a score to "A" (90 and up), "B" (80-89), "C" (70-79), "D" (60-69)
+or "F" (below 60). A score above 100 or below 0 is "invalid".
+
+`histogram` counts how many scores fall in each letter. Letters nobody got are
+absent from the map rather than present with a zero.
+"""

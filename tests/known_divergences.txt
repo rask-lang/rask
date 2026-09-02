@@ -3,7 +3,12 @@
 # reports them as KNOWN-FAIL (non-fatal), and FAILS if one silently starts
 # passing (prune it) or a NEW untracked red file appears.
 #
-# Format: one basename per line. Trailing `# <cluster> — #<issue> (<backend>)`.
+# Format: one basename per line. Trailing
+# `# <cluster> — #<issue> (<backend> <phase>)`, where backend is native, interp
+# or both and phase is check, compile or run — how far that backend gets before
+# it fails. The harness checks the file still fails that way, so a line that
+# stops matching is MISFILED rather than quietly still-red; see the header of
+# differential.sh and #1005.
 # When a bug is fixed, delete its line so the file rejoins the green gate.
 #
 # Direction is noted because divergence goes both ways: native rot AND interp
@@ -34,7 +39,15 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
-t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, pointer methods missing — #935 (interp)
+# (empty)
+#
+# Pruned 2026-08-26, fixed and re-verified on both backends before removing the line:
+#   t_month_unsafe.rk — #935. The interpreter had no pointer value: `as_ptr()`
+#     handed back the integer 0, `*p` folded to 0, and `read`/`offset` were
+#     "no method on `i64`". It now carries a real pointer — the buffer it came
+#     from plus an element index — so pointer arithmetic, reads, writes and
+#     identity all answer what native answers. The file grew from 6 tests to 16
+#     while it was open; all 16 pass on both backends.
 
 # --- shared / both-backend bugs ---
 # (t_parse_float was the previous one, fixed in #610: a float payload sits in a
@@ -45,15 +58,16 @@ t_month_unsafe.rk             # a raw pointer is a plain i64: `*p` yields 0, poi
 
 # Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
 # out so the working surface stays gated; only the bug lives here.
-t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both)
-t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native)
-t_month_reflect_field_strings.rk # a comptime FieldInfo.name has no resolved type — #931 (native)
-t_month_comptime_field_literal.rk # CT49 `p.("x")` reaches native MIR unresolved — #930 (native)
-t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both)
-t_week_import_alias.rk        # `import X as Y` carries the name but not the methods — #923 (both)
-t_week_parse_range.rk         # parse<T> ignores the target's range — #919 (interp keeps the value, native wraps)
-t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native). #907 (the `as` cast) is fixed.
-t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both); inferred string param reaches MIR as void — #905 (native)
+t_day_const_string_array.rk   # a module-level `const [string; N]` element reads back as garbage — #1000 (native run)
+t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both run)
+t_month_error_union_narrowing.rk # a method on a union-narrowed error dispatches against the whole union — #1002 (native compile)
+t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native compile)
+t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both check)
+t_week_parse_range.rk         # parse<T> ignores the target's range — interp keeps the value, native wraps — #919 (both run)
+t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native run). #907 (the `as` cast) is fixed.
+t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both check); inferred string param reaches MIR as void — #905 (native)
+t_array_string_join.rk        # `join` on a `[string; N]` returns empty, or segfaults after element reads — #1021 (native run)
+t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, so a method on it won't lower — #1022 (native compile)
 
 # --- E0361: binding whose type inference left open (#620) ---
 # Empty. All 19 files that lit up when E0361 went on by default now compile.
@@ -81,3 +95,4 @@ t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native compile)

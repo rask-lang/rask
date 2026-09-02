@@ -66,20 +66,13 @@ impl LookupStats {
     }
 }
 
-fn type_is_open(ty: &rask_types::Type) -> bool {
-    use rask_types::{GenericArg, Type};
-    match ty {
-        Type::Var(_) => true,
-        Type::Result { ok, err } => type_is_open(ok) || type_is_open(err),
-        Type::RawPtr(inner) | Type::Slice(inner) => type_is_open(inner),
-        Type::Array { elem, .. } => type_is_open(elem),
-        Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(type_is_open),
-        Type::Fn { params, ret } => params.iter().any(type_is_open) || type_is_open(ret),
-        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
-            .iter()
-            .any(|a| matches!(a, GenericArg::Type(t) if type_is_open(t))),
-        _ => false,
-    }
+/// Does this type still contain an inference variable?
+///
+/// The checker recorded something, but it never got solved — present and
+/// useless, which reads the same as absent to every consumer. A caller about to
+/// size a slot from it wants to know that before it does.
+pub(crate) fn type_is_open(ty: &rask_types::Type) -> bool {
+    ty.has_unsolved_var()
 }
 
 /// Record the outcome of one `node_types` lookup.

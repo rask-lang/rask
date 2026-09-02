@@ -311,7 +311,9 @@ impl MiriEngine {
             }
 
             // RC ops are no-ops at comptime — strings are GC'd by the interpreter.
-            MirStmtKind::RcInc { .. } | MirStmtKind::RcDec { .. } => {}
+            MirStmtKind::RcInc { .. }
+            | MirStmtKind::RcDec { .. }
+            | MirStmtKind::RcDecContents { .. } => {}
         }
         Ok(())
     }

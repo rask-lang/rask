@@ -151,16 +151,70 @@ _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     exit(1);
 }
 
-void rask_panic_unwrap(void) {
-    rask_panic("called unwrap on None/Err value");
+// ─── Checked-arithmetic panic messages (ctrl.panic/F3) ─────
+//
+// F3: a panic message is a deterministic function of the failing operation's
+// operands. Codegen used to emit a wholly static string — "integer overflow:
+// addition exceeds i32 range [...]" — where the interpreter said "integer
+// overflow: 2147483647 + 1 exceeds i32 range [...]". The type and range were
+// there; the two numbers that actually overflowed weren't, so a user natively
+// couldn't see which values got them there.
+//
+// `tail` is the static half codegen already had ("i32 range [...]"), `op` the
+// operator's symbol. The operands come in as raw i64 words with `is_unsigned`
+// saying how to read them, matching how the interpreter reinterprets a stored
+// i64 as its kind's logical value.
+
+_Noreturn void rask_panic_overflow_binary(const char *file, int32_t line, int32_t col,
+                                          const char *op, const char *tail,
+                                          int64_t lhs, int64_t rhs, int32_t is_unsigned) {
+    char buf[RASK_PANIC_MSG_MAX];
+    if (is_unsigned) {
+        snprintf(buf, sizeof(buf), "integer overflow: %llu %s %llu exceeds %s",
+                 (unsigned long long)lhs, op ? op : "?", (unsigned long long)rhs,
+                 tail ? tail : "range");
+    } else {
+        snprintf(buf, sizeof(buf), "integer overflow: %lld %s %lld exceeds %s",
+                 (long long)lhs, op ? op : "?", (long long)rhs, tail ? tail : "range");
+    }
+    rask_panic_at(file, line, col, buf);
+}
+
+_Noreturn void rask_panic_overflow_neg(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t operand) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "integer overflow: negating %lld exceeds %s",
+             (long long)operand, tail ? tail : "range");
+    rask_panic_at(file, line, col, buf);
+}
+
+_Noreturn void rask_panic_shift_amount(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t amount) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "shift amount %lld exceeds %s",
+             (long long)amount, tail ? tail : "bit width");
+    rask_panic_at(file, line, col, buf);
+}
+
+// `x!` failed. The two cases are different mistakes — nothing was there, versus
+// a failure the code threw away — so they say so. `was_error` comes from the
+// operand's type at the `!`, which is the only place that knows.
+static const char *forced_message(int32_t was_error) {
+    return was_error ? "! on a value that was an error"
+                     : "! on a value that was absent";
+}
+
+void rask_panic_unwrap(int32_t was_error) {
+    rask_panic(forced_message(was_error));
 }
 
 void rask_assert_fail(void) {
     rask_panic("assertion failed");
 }
 
-void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col) {
-    rask_panic_at(file, line, col, "called unwrap on None/Err value");
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col,
+                          int32_t was_error) {
+    rask_panic_at(file, line, col, forced_message(was_error));
 }
 
 void rask_assert_fail_at(const char *file, int32_t line, int32_t col) {
@@ -223,13 +277,42 @@ void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
     rask_panic_at(file, line, col, buf);
 }
 
+// `%g` here rounded both operands to 6 significant digits, so two floats that
+// differ past the 6th printed as the same number — "assertion failed: 1 == 1"
+// for 1.000000001 vs 1.000000002, which reads like the assert machinery is
+// broken rather than like a failing test (#898). Use the same formatter
+// `println` and `assert_eq` already use: shortest round-trip, never exponent
+// form. What matters is that a reader comparing this message against a
+// `println` of the same value sees one number, not two.
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
+    char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
+    rask_fmt_double(l, sizeof(l), left);
+    rask_fmt_double(r, sizeof(r), right);
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assertion failed: %g %s %g (left: %g, right: %g)",
-             left, op ? op : "?", right, left, right);
+             "assertion failed: %s %s %s (left: %s, right: %s)",
+             l, op ? op : "?", r, l, r);
+    rask_panic_at(file, line, col, buf);
+}
+
+// f32 operands get their own helper because the shortest round-trip depends on
+// the width you check against. Widening to double first and formatting as a
+// double spells out the f32's exact binary value — 1.1f reports as
+// 1.100000023841858 — which is why `println` has had a separate f32 formatter
+// all along. Reaching the f64 helper, an f32 assert printed a number no `println`
+// of the same value would ever show.
+void rask_assert_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
+    rask_fmt_float(l, sizeof(l), left);
+    rask_fmt_float(r, sizeof(r), right);
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: %s %s %s (left: %s, right: %s)",
+             l, op ? op : "?", r, l, r);
     rask_panic_at(file, line, col, buf);
 }
 
@@ -274,6 +357,16 @@ void rask_assert_eq_fail_f64(double got, double expected,
     char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
     rask_fmt_double(g, sizeof(g), got);
     rask_fmt_double(e, sizeof(e), expected);
+    assert_eq_fail_fmt(g, e, file, line, col);
+}
+
+// See rask_assert_fail_cmp_f32: the round-trip has to be checked at the
+// operand's own width, or an f32 reports its exact binary expansion.
+void rask_assert_eq_fail_f32(float got, float expected,
+                             const char *file, int32_t line, int32_t col) {
+    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
+    rask_fmt_float(g, sizeof(g), got);
+    rask_fmt_float(e, sizeof(e), expected);
     assert_eq_fail_fmt(g, e, file, line, col);
 }
 
@@ -333,7 +426,7 @@ int64_t rask_clone(int64_t value) { return value; }
 // cli.args() → Vec of RaskStr values (16 bytes each).
 
 RaskVec *rask_cli_args(void) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t count = rask_args_count();
     for (int64_t i = 0; i < count; i++) {
         const char *arg = rask_args_get(i);
@@ -347,7 +440,7 @@ RaskVec *rask_cli_args(void) {
 // ─── FS module ────────────────────────────────────────────────────
 
 RaskVec *rask_fs_read_lines(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     const char *p = rask_string_ptr(path);
 
     FILE *f = fopen(p, "r");
@@ -420,7 +513,7 @@ void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
 }
 
 RaskVec *rask_fs_read_bytes(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(1);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "rb");
     if (!f) return v;
@@ -696,7 +789,7 @@ int64_t rask_file_read_bytes(int64_t file) {
     if (size < 0) size = 0;
     char *buf = (char *)rask_alloc((int64_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1);
+    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1, NULL, 0);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -737,7 +830,7 @@ void rask_file_write_line(int64_t file, const RaskStr *content) {
 }
 
 RaskVec *rask_file_lines(int64_t file) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return v;
     // Rewind to start
@@ -981,7 +1074,7 @@ int64_t rask_io_std_flush(int64_t which) {
 // Read up to `max` bytes from stdin, stopping at end of input. Returns a
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
-    RaskVec *v = rask_vec_new(1);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
@@ -1016,7 +1109,7 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
         rask_string_from_bytes(method, "GET", 3);
         rask_string_from_bytes(path, "/", 1);
         rask_string_new(body);
-        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16);
+        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
         return (int64_t)(uintptr_t)req;
     }
 
@@ -1068,7 +1161,7 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
     }
 
     // Parse headers — map stores RaskStr keys and values (16B each)
-    RaskMap *headers = rask_map_new_string_keys(16, 16);
+    RaskMap *headers = rask_map_new_string_keys(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
     int64_t line_start = -1;
     // Find start of second line (after first \r\n)
     for (int64_t i = 0; i < header_end; i++) {
@@ -1241,7 +1334,7 @@ int64_t rask_net_read_bytes(int64_t fd) {
             buf = (char *)rask_realloc(buf, cap / 2, cap);
         }
     }
-    RaskVec *v = rask_vec_from_static(buf, total, 1);
+    RaskVec *v = rask_vec_from_static(buf, total, 1, NULL, 0);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -1329,9 +1422,9 @@ int64_t rask_args_parse(void) {
         if (p) rask_string_from(program, p);
     }
 
-    RaskVec *positional = rask_vec_new(16);
-    RaskVec *flags = rask_vec_new(16);
-    RaskMap *options = rask_map_new(16, 16);
+    RaskVec *positional = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskVec *flags = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskMap *options = rask_map_new(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
 
     int past_separator = 0;
     for (int64_t i = 1; i < count; i++) {
@@ -1568,7 +1661,7 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
     if (hdr_end < 0) hdr_end = rlen;
 
     // Parse response headers
-    RaskMap *resp_headers = rask_map_new_string_keys(16, 16);
+    RaskMap *resp_headers = rask_map_new_string_keys(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
     // Skip status line
     int64_t lstart = -1;
     for (int64_t i = 0; i < hdr_end; i++) {
@@ -1626,7 +1719,7 @@ int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
 // Stub: create a Map from a static array of key-value pairs.
 int64_t rask_map_from(int64_t pairs_ptr) {
     (void)pairs_ptr;
-    return (int64_t)(uintptr_t)rask_map_new(8, 8);
+    return (int64_t)(uintptr_t)rask_map_new(8, 8, NULL, 0, NULL, 0);
 }
 
 // Stub: generic json.encode — returns JSON string representation.
@@ -2064,10 +2157,19 @@ int main(int argc, char **argv) {
     if (checks_env && checks_env[0] == '1') {
         rask_runtime_checks_enabled = 1;
     }
+    const char *strdbg_env = getenv("RASK_STRING_DEBUG");
+    if (strdbg_env && strdbg_env[0] == '1') {
+        rask_string_debug_enabled = 1;
+    }
+    const char *leak_env = getenv("RASK_LEAK_CHECK");
+    if (leak_env && leak_env[0] == '1') {
+        rask_leak_check_enabled = 1;
+    }
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();
     // O4: a detached task's panic report can't be lost to process exit.
     rask_await_detached_tasks();
+    rask_leak_check();
     return 0;
 }

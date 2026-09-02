@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Stack<T> {
+    items: Vec<T>
+}
+
+extend Stack<T> {
+    func new() -> Stack<T> {
+        return Stack { items: Vec.new() }
+    }
+
+    func push(mutate self, take value: T) {
+        self.items.push(value)
+    }
+
+    func pop(mutate self) -> T? {
+        if self.items.len() == 0 { return none }
+        return self.items.pop()
+    }
+
+    func peek(self) -> T? {
+        if self.items.len() == 0 { return none }
+        return self.items[self.items.len() - 1]
+    }
+
+    func len(self) -> i64 {
+        return self.items.len().to<i64>()!
+    }
+
+    func is_empty(self) -> bool {
+        return self.items.len() == 0
+    }
+}

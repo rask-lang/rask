@@ -13,6 +13,16 @@ done until both agree. This is the map of what enforces that.
 | Suite (per backend) | `rask test tests/suite/` | `test { … assert }` blocks on one backend |
 | **Differential** | `tests/differential.sh` | **Every suite file on BOTH backends; fails on any untracked divergence** |
 | **Example gate** | `tests/examples_gate.sh` | Every example with a golden matches on both backends |
+| **Agent benchmark gate** | `tests/agentbench_gate.sh` | Every `agentbench/` reference solution still builds on both backends, and the harness runs end to end on a mock model |
+
+The agent-benchmark gate is a different question. `agentbench/` measures how
+well models write Rask against this compiler — solve rate, how many attempts to
+converge, and which diagnostics actually get a model unstuck. The gate here
+calls no model and spends nothing; it checks that every task's hand-written
+reference solution is still green on both backends (a task whose reference has
+gone red is measuring the compiler, not the model) and that the harness itself
+still works, using a deterministic mock. `agentbench/quarantine.txt` is that
+side's `known_divergences.txt`. See [agentbench/README.md](../agentbench/README.md).
 
 The differential harness is the parity gate. `rask test` runs one backend per
 invocation, so interp/native drift was invisible; the harness runs both, strips

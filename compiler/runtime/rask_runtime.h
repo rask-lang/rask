@@ -80,13 +80,43 @@ void    rask_resource_scope_check(int64_t scope_depth);
 
 typedef struct RaskVec RaskVec;
 
-RaskVec *rask_vec_new(int64_t elem_size);
-RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
-RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size);
+// Where the strings sit inside one element.
+//
+// A container is a byte store: it knows how big an element is and nothing
+// else, so it can't tell a sixteen-byte string from a sixteen-byte struct. It
+// is told once, at construction, by the only place that knows the element type
+// — lowering, reading the checker. From then on the map travels with the
+// value, through a return, into another function, across an inlining, so
+// `free` needs no argument and no caller has to work the answer out again.
+//
+// `offsets` is NULL and `count` 0 when the elements own nothing. Built by
+// codegen's `string_offsets_of` from the element tag lowering emitted.
+typedef struct {
+    const int32_t *offsets;
+    int64_t        count;
+} RaskElemStrs;
+
+// Two maps the runtime needs constantly: a container of bare strings (one
+// string, at offset zero) and one of (string, string) pairs — `split`,
+// `lines`, `os.args`, `env_vars`, HTTP headers. The runtime builds those
+// itself and hands them to the program, which is what frees them.
+extern const int32_t rask_elem_strs_one[1];
+extern const int32_t rask_elem_strs_pair[2];
+
+RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
+                                const int32_t *str_offs, int64_t n_str_offs);
+RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
+                              const int32_t *str_offs, int64_t n_str_offs);
+// Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
+// Takes a reference to every string the elements hold. A container built by
+// copying another's elements owns them only after this.
+void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
-RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n);
+RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
+                        const int32_t *str_offs, int64_t n_str_offs);
 int64_t  rask_vec_bound(const RaskVec *v);
 int64_t  rask_vec_remaining(const RaskVec *v);
 int64_t  rask_vec_is_bounded(const RaskVec *v);
@@ -152,6 +182,18 @@ void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
 void        rask_string_free(const RaskStr *s);
 void        rask_string_clone(const RaskStr *s);
 
+// `RASK_STRING_DEBUG=1`: a released string buffer is poisoned and kept rather
+// than returned to the allocator, so the next retain or release of it says so
+// and aborts instead of corrupting whatever moved into those bytes. Leaks by
+// design — a debugging mode, not a hardening one.
+extern int  rask_string_debug_enabled;
+
+// `RASK_LEAK_CHECK=1`: at the end of `main`, anything this program allocated
+// and never gave back is reported and the process exits 97. Every
+// `rask_alloc`, not just strings — a clean program ends at exactly zero.
+extern int  rask_leak_check_enabled;
+void        rask_leak_check(void);
+
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
@@ -175,7 +217,7 @@ int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
-int64_t     rask_string_char_at(const RaskStr *s, int64_t index);
+int64_t     rask_string_char_at(const RaskStr *s, int64_t byte_offset);
 int64_t     rask_string_index(const RaskStr *s, int64_t index);
 int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
@@ -196,9 +238,14 @@ void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_reverse(RaskStr *out, const RaskStr *s);
 void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
-void        rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to, int64_t n);
-int64_t     rask_string_char_count(const RaskStr *s);
+void        rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to, int64_t limit);
 int64_t     rask_string_str_is_ascii(const RaskStr *s);
+
+// Text units (std.strings/U1-U5): bytes index, graphemes display.
+int64_t     rask_string_width(const RaskStr *s);
+RaskVec    *rask_string_graphemes(const RaskStr *s);
+void        rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols);
+void        rask_string_normalized(RaskStr *out, const RaskStr *s);
 void        rask_string_from_char(RaskStr *out, int64_t cp);
 
 // Builder operations (out-param: mutates string via promote-to-heap)
@@ -349,6 +396,15 @@ typedef struct {
 #define RASK_CLASS_CONTROL    4
 int rask_char_class(uint32_t cp, int which);
 
+/// Text units (std.strings/U1-U5). Generated into unicode_text.c from the same
+/// crates the interpreter uses, so the backends cannot drift.
+int      rask_scalar_width(uint32_t cp);
+int      rask_grapheme_joins_left(uint32_t cp);
+int      rask_grapheme_is_prepend(uint32_t cp);
+uint8_t  rask_ccc(uint32_t cp);
+int      rask_canonical_decompose(uint32_t cp, uint32_t *out, int cap);
+uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
+
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
@@ -370,10 +426,16 @@ typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
 void    *rask_map_borrow_elem(RaskMap *m, const void *key);
 void     rask_map_release_elem(RaskMap *m);
 
-RaskMap *rask_map_new(int64_t key_size, int64_t val_size);
-RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
+// The two element maps are the keys' and the values'. See `RaskElemStrs`.
+RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
+                      const int32_t *key_offs, int64_t n_key_offs,
+                      const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
+                                  const int32_t *key_offs, int64_t n_key_offs,
+                                  const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
+// Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
@@ -791,7 +853,12 @@ void rask_print_unlock_all(void);
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.
 
-#define RASK_PANIC_MSG_MAX 512
+// Big enough to hold an assertion message whose operands are floats spelled out
+// in full. A double near the top of its range is ~309 digits with no exponent
+// form (RASK_F64_BUF_SIZE), and the comparison messages print each operand
+// twice — so 512 truncated mid-number for large magnitudes. These are stack
+// buffers on a path that is about to unwind, so the headroom is free.
+#define RASK_PANIC_MSG_MAX 2048
 
 _Noreturn void rask_panic(const char *msg);
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
@@ -809,8 +876,25 @@ int  rask_in_ffi_boundary(void);
 void rask_set_panic_location(const char *file, int32_t line, int32_t col);
 
 // Location-aware panic wrappers for codegen
-void rask_panic_unwrap(void);
-void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col);
+void rask_panic_unwrap(int32_t was_error);
+
+// Checked-arithmetic panics that name their operands (ctrl.panic/F3). `tail` is
+// the static "<type> range [min, max]" / "<type> bit width (n)" half.
+_Noreturn void rask_panic_overflow_binary(const char *file, int32_t line, int32_t col,
+                                          const char *op, const char *tail,
+                                          int64_t lhs, int64_t rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t operand);
+_Noreturn void rask_panic_shift_amount(const char *file, int32_t line, int32_t col,
+                                       const char *tail, int64_t amount);
+// The 128-bit forms. Separate because printing a 128-bit value needs the digit
+// walk in int128.c — snprintf has no conversion for one.
+_Noreturn void rask_panic_overflow_binary_i128(const char *file, int32_t line, int32_t col,
+                                               const char *op, const char *tail,
+                                               RaskI128 lhs, RaskI128 rhs, int32_t is_unsigned);
+_Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int32_t col,
+                                            const char *tail, RaskI128 operand);
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col, int32_t was_error);
 void rask_assert_fail(void);
 void rask_assert_fail_at(const char *file, int32_t line, int32_t col);
 void rask_assert_fail_msg(const char *msg);
@@ -828,6 +912,9 @@ void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col);
 
 // assert_eq failure reporting — got/expected wording (testing A4).
 // Generated code does the comparison and calls the variant matching the
@@ -839,6 +926,8 @@ void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
 void rask_assert_eq_fail_char(int64_t got, int64_t expected,
                               const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_f64(double got, double expected,
+                             const char *file, int32_t line, int32_t col);
+void rask_assert_eq_fail_f32(float got, float expected,
                              const char *file, int32_t line, int32_t col);
 void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
                              const char *file, int32_t line, int32_t col);
@@ -882,7 +971,7 @@ int64_t   rask_green_join_simple(void *handle);
 int64_t   rask_green_cancel_simple(void *handle);
 
 // Closure-based spawn (bridge for codegen before state machine transform).
-void     *rask_green_closure_spawn(void *closure_ptr);
+void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // Yield helpers — called by state machines to pause on I/O.
 void      rask_yield_read(int fd, void *buf, size_t len);
@@ -935,7 +1024,7 @@ int64_t rask_sleep_ns(int64_t ns);
 
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are
@@ -951,7 +1040,9 @@ void rask_threadpool_shutdown(void);
 // ThreadPool.spawn — enqueues a job and hands back the same handle shape
 // Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
 // `using ThreadPool` block there is no pool, so it falls back to one thread.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr);
+RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+struct RaskTaskState;
+void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned);
 
 // Simplified join: no panic message output. Returns 0 on success, -1 on panic.
 int64_t rask_task_join_simple(void *h);
@@ -1068,6 +1159,25 @@ void rask_ensure_run_all(void);
 void *rask_ensure_stack_take(void);
 void  rask_ensure_stack_set(void *head);
 
+// ─── Held access (ctrl.panic/U3, U4) ───────────────────────
+// A `with` block over a sync box, and the inline `m.lock().f` form, emit an
+// acquire and a release around the access. Only the release is inline, so a
+// panic in between jumped straight past it and left the lock held for the rest
+// of the process — the next acquirer blocked forever, including an ensure body
+// running during that very unwind. Each acquire registers its release here, the
+// matching release deregisters it, and the panic path drains what's left before
+// running any ensure.
+
+typedef void (*RaskReleaseFn)(int64_t handle);
+
+void rask_access_push(RaskReleaseFn fn, int64_t handle);
+void rask_access_pop(int64_t handle);
+void rask_access_release_all(void);
+
+// Park/resume the current thread's held-access stack (opaque; fiber workers).
+void *rask_access_stack_take(void);
+void  rask_access_stack_set(void *head);
+
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
 // Wraps pthread_mutex (conc.sync/MX1-MX2).
@@ -1097,6 +1207,21 @@ int64_t rask_shared_read_acquire(int64_t shared);
 int64_t rask_shared_write_acquire(int64_t shared);
 int64_t rask_shared_data(int64_t shared);
 void    rask_shared_release(int64_t shared);
+
+// Staged access (conc.sync/ST1–ST4). `acquire` locks and hands back a working
+// copy; `commit` puts it back as one move and unlocks; `discard` drops it and
+// unlocks. Codegen schedules the commit as the block's inline cleanup, and the
+// acquire registers the discard on the unwind stack — so a panic runs one and an
+// ordinary exit the other, without either path knowing about the other.
+int64_t rask_mutex_staged_acquire(int64_t mutex);
+int64_t rask_mutex_staged_data(int64_t mutex);
+void    rask_mutex_staged_commit(int64_t mutex);
+void    rask_mutex_staged_discard(int64_t mutex);
+int64_t rask_shared_staged_acquire(int64_t shared);
+int64_t rask_shared_staged_data(int64_t shared);
+void    rask_shared_staged_commit(int64_t shared);
+void    rask_shared_staged_discard(int64_t shared);
+int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
@@ -1136,6 +1261,7 @@ int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
+_Noreturn void rask_os_exit(int64_t code);
 void    rask_os_set_env(const RaskStr *name, const RaskStr *value);
 void    rask_os_remove_env(const RaskStr *name);
 RaskVec *rask_os_args(void);

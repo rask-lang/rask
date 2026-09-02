@@ -18,6 +18,7 @@
 // reader following the documented procedure for a shared counter lands here.
 // `Shared.mutex(0)` with `with m.write()` is the working answer today and is covered
 // in `t_month_boxes.rk`.
+import sync.Atomic
 
 // A word-sized, padding-free, Copy struct — a legal payload per GA1.
 struct Slot {

@@ -1,5 +1,8 @@
 // mem.context/CC7 (#434): a private function with a Handle param and no `using`
 // clause infers an unnamed Pool<Player> context from its `h.field` access.
+import memory.Handle
+import memory.Pool
+
 struct Player { health: i32 }
 
 func report(h: Handle<Player>) {

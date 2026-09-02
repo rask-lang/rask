@@ -160,6 +160,17 @@ impl TypeChecker {
                 self.node_types.insert(expr.id, ty.clone());
                 return ty;
             }
+            // `none` carries no payload type of its own, so the slot it lands in
+            // is the only thing that can say what it's an absent *what*. Typed
+            // from itself it comes out `Option<?>` and the variable is still
+            // there at the end — the unification that should have closed it runs
+            // after the node has been recorded.
+            ExprKind::None if expected.is_option() => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                self.note_node_origin(expr);
+                return ty;
+            }
             // CV1a: push the expectation into a tuple literal's elements, so each
             // one is checked against the slot it fills and the tuple's recorded
             // type is the annotated shape. Typed from its elements instead, the
@@ -602,8 +613,18 @@ impl TypeChecker {
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
             ExprKind::DynamicField { object, field_expr } => {
-                // Infer both sub-expressions; actual comptime field resolution
-                // happens in the comptime pass — here we just type-check children.
+                // CT49: `value.("x")` is a field access spelled with the name in
+                // quotes. When the name is right there in the source, check it as
+                // one — that gives the expression the field's real type, and makes
+                // a name that doesn't exist the same error `value.x` would give
+                // instead of something for MIR to trip over later (#930).
+                if let Some(name) = Self::literal_field_name(field_expr) {
+                    self.infer_expr(field_expr);
+                    return self.check_field_access(object, &name, expr.span);
+                }
+                // Anything else — a `comptime for` binding's `.name`, a binding
+                // holding a comptime string — is only known once the loop is
+                // unrolled, which happens after this pass.
                 let _obj_ty = self.infer_expr(object);
                 let _field_ty = self.infer_expr(field_expr);
                 Type::Error
@@ -1341,11 +1362,19 @@ impl TypeChecker {
                     // the whole expression produces, so it passes straight
                     // through — marking it "keeps shape" would make both
                     // backends re-wrap and hand back a `T??` (#634).
+                    //
+                    // Either way the `none` is that same optional. Its own node
+                    // was typed before we knew which, from nothing but the word
+                    // `none`, so it kept an empty payload variable unless it's
+                    // tied to the answer here.
                     if ok_ty.is_option() {
+                        let _ = self.unify(&body_ty, &ok_ty, clause.body.span);
                         return ok_ty;
                     }
                     self.fallback_keeps_shape.insert(expr.id);
-                    return Type::option(ok_ty);
+                    let result = Type::option(ok_ty);
+                    let _ = self.unify(&body_ty, &result, clause.body.span);
+                    return result;
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
@@ -1549,6 +1578,17 @@ impl TypeChecker {
                     }
                     expected_ret
                 } else {
+                    // A body that diverges returns nothing, so no constraint
+                    // reaches the return variable: `spawn(|| { panic("boom") })`
+                    // finished inference with it open, and every consumer
+                    // downstream then invented a width for a value that never
+                    // exists. Register `Never` as the answer of last resort — a
+                    // `return` in the same body coerces later and wins.
+                    if matches!(inferred_ret, Type::Never) && !body_returns_a_value(body) {
+                        if let Type::Var(id) = self.ctx.apply(&closure_return_type) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                     closure_return_type
                 };
 
@@ -1820,6 +1860,44 @@ impl TypeChecker {
                         ExprKind::MethodCall { method, .. }
                             if matches!(method.as_str(), "read" | "write" | "staged")
                     );
+                    // ST3a: `staged()` under `Local`. The strategy is in the
+                    // type, so the compiler can decide it — and ctrl.panic/S7
+                    // says a condition fixed at the declaration is a diagnostic,
+                    // not a runtime message.
+                    let stages = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. } if method == "staged"
+                    );
+                    // `source_ty` is the type of the whole `box.staged()` call —
+                    // the payload — so the strategy has to come off the receiver.
+                    let staged_recv = match &binding.source.kind {
+                        ExprKind::MethodCall { object, method, .. } if method == "staged" => {
+                            let ty = self
+                                .node_types
+                                .get(&object.id)
+                                .map(|t| self.resolve_named(&self.ctx.apply(t)));
+                            ty.map(|t| (object.as_ref(), t))
+                        }
+                        _ => None,
+                    };
+                    if let Some((recv, recv_ty)) = staged_recv {
+                        if Self::type_is_shared(&recv_ty, &self.types)
+                            && self.shared_strategy_name(&recv_ty) == "Local"
+                        {
+                            self.errors.push(TypeError::StagedOnLocal {
+                                name: Self::source_text_for(recv)
+                                    .unwrap_or_else(|| "the box".to_string()),
+                                span: binding.source.span,
+                            });
+                        }
+                    }
+                    // W9 (tool.warnings, W0907): two or more fields of the
+                    // locked value written without staging. Checked here rather
+                    // than in a syntactic pass because it must not fire under
+                    // `Local` — there is nothing to tear and `staged()` is an
+                    // error there (ST3a), so the suggestion would be one.
+                    self.check_torn_lock_update(binding, body);
+
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {
                             name: Self::source_text_for(&binding.source)
@@ -2054,7 +2132,20 @@ impl TypeChecker {
         let ty = self.unwrap_try_chain_step(expr, ty);
 
         self.node_types.insert(expr.id, ty.clone());
+        self.note_node_origin(expr);
         ty
+    }
+
+
+    /// Remember where a node came from, for the open-node census. Off unless
+    /// `RASK_TRACE_OPEN_NODES` is set — a span and a kind name per expression
+    /// is not worth carrying otherwise.
+    fn note_node_origin(&mut self, expr: &Expr) {
+        if !crate::checker::resolved_types::tracing_open_nodes() {
+            return;
+        }
+        let kind = rask_ast::expr::expr_kind_name(&expr.kind);
+        self.node_origins.insert(expr.id, (expr.span, kind));
     }
 
     /// ER16a: mark every postfix step below `chain` as a candidate for the
@@ -2147,7 +2238,11 @@ impl TypeChecker {
             } else {
                 *elem.clone()
             }),
-            Type::String => Some(if is_range { Type::String } else { Type::Char }),
+            // `[]` on a string means bytes in both forms (std.strings/U1b):
+            // a range slices, a scalar index reads one byte. It used to yield
+            // a `char` at a *character* index, so the same bracket counted two
+            // different units and `s[i]` in a loop scanned from byte zero.
+            Type::String => Some(if is_range { Type::String } else { Type::U8 }),
             // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
             // Map<K,V> indexed by K → value type from second arg.
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
@@ -2535,6 +2630,19 @@ impl TypeChecker {
 
 
     /// Validate that call-site annotations match parameter declarations.
+    /// Check that call-site `mutate`/`take` annotations match the declaration.
+    ///
+    /// This reads the callee's parameter *symbols*, so it does nothing for a
+    /// callee that has none. Stdlib stubs used to be exactly that — the resolver
+    /// registered them with an empty parameter list — which meant these rules
+    /// silently did not apply to any stdlib call. Stubs carry their real
+    /// parameters and modes now, so the checks apply there like anywhere else.
+    ///
+    /// Nothing changed for existing code: the only `public func` stub taking a
+    /// mode is `drop(take ptr: Heap)`, and `drop` returns before reaching here.
+    /// A stub added later with a `mutate` parameter will start enforcing at its
+    /// call sites, which is the intent — noted because it turned on as a side
+    /// effect of fixing the parameter list, not as a change written here.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
         use rask_ast::expr::ArgMode;
         use rask_resolve::SymbolKind;
@@ -2778,12 +2886,26 @@ impl TypeChecker {
         // Also handles generic forms like Vec<Route>.from().
         if let ExprKind::Ident(name) = &object.kind {
             // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
-            let base_name = name.split('<').next().unwrap_or(name);
+            let spelled = name.split('<').next().unwrap_or(name);
+            // IM3: a transparent alias names the same type, so a namespace call
+            // through one is a call on the target. The gate below asks the stub
+            // registry by spelling, and `import time.Duration as Span` puts
+            // `Span` in scope under a name that isn't in there — so the branch
+            // was skipped, the receiver went through `infer_expr`, and `let d =
+            // Span.from_millis(1)` came back "couldn't work out the type of `d`"
+            // (#923).
+            let base_name = self.types.alias_target(spelled).unwrap_or(spelled);
+            let name = if base_name == spelled {
+                name.clone()
+            } else {
+                name.replacen(spelled, base_name, 1)
+            };
+            let name = &name;
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
             // `len` found for type `fs`".
-            let shadowed = !name.contains('<') && self.local_shadows_namespace(name);
+            let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
                 && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
@@ -3448,6 +3570,21 @@ impl TypeChecker {
         }
     }
 
+    /// The field name in `value.(expr)` when the source spells it out: a string
+    /// literal, or a `comptime { … }` block whose value is one. Read off the
+    /// syntax — this pass has no comptime evaluator, and doesn't need one for
+    /// the shapes a reader actually writes.
+    fn literal_field_name(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::String(s) => Some(s.clone()),
+            ExprKind::Comptime { body } => match body.as_slice() {
+                [Stmt { kind: StmtKind::Expr(e), .. }] => Self::literal_field_name(e),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
         // AN6/AN8: `item.get<A>().weight` — the one legal shape for `get`. The
         // field's type comes straight from the annotation's declaration, and
@@ -4038,20 +4175,100 @@ impl TypeChecker {
         }
     }
 
-    /// The strategy argument's name, or `"Local"` when there isn't one — bare
-    /// `Shared<T>` is `Shared<T, Local>` in every position (SH3).
+    /// W9: warn when a `with` block over a sync box assigns two or more fields
+    /// of the locked binding without `staged()`.
+    ///
+    /// Exclusive access only — a read lock can't be written through (R1), and
+    /// `staged()` is already the fix. `Local` is excluded: nothing else can
+    /// observe a torn update there and `staged()` is refused (ST3a), so a
+    /// warning would point at a compile error.
+    ///
+    /// Field assignments only. A mutating method call (`q.push(a)` twice) leaves
+    /// the same invariant torn, but a method body is opaque and flagging every
+    /// pair of calls would drown the real signal — the spec draws that line, not
+    /// this code (tool.warnings, W9 scope).
+    fn check_torn_lock_update(
+        &mut self,
+        binding: &rask_ast::expr::WithBinding,
+        body: &[rask_ast::stmt::Stmt],
+    ) {
+        use rask_ast::stmt::StmtKind;
+
+        if self.allowed_warnings.iter().any(|a| a == "torn_lock_update") {
+            return;
+        }
+        let ExprKind::MethodCall { object, method, args, .. } = &binding.source.kind else {
+            return;
+        };
+        if !args.is_empty() || !matches!(method.as_str(), "write" | "lock") {
+            return;
+        }
+        let Some(recv_ty) = self
+            .node_types
+            .get(&object.id)
+            .map(|t| self.resolve_named(&self.ctx.apply(t)))
+        else {
+            return;
+        };
+        if !Self::type_is_shared(&recv_ty, &self.types)
+            || self.shared_strategy_name(&recv_ty) == "Local"
+        {
+            return;
+        }
+
+        // Distinct fields of the binding, in the order they are first written.
+        let mut written: Vec<(String, rask_ast::Span)> = Vec::new();
+        for stmt in body {
+            let StmtKind::Assign { target, .. } = &stmt.kind else { continue };
+            let ExprKind::Field { object: base, field } = &target.kind else { continue };
+            if !matches!(&base.kind, ExprKind::Ident(n) if *n == binding.name) {
+                continue;
+            }
+            if written.iter().any(|(f, _)| f == field) {
+                continue;
+            }
+            written.push((field.clone(), target.span));
+            if written.len() == 2 {
+                break;
+            }
+        }
+        if written.len() < 2 {
+            return;
+        }
+        self.errors.push(TypeError::TornLockUpdate {
+            binding: binding.name.clone(),
+            box_name: Self::source_text_for(object).unwrap_or_else(|| "the box".to_string()),
+            first_field: written[0].0.clone(),
+            second_field: written[1].0.clone(),
+            first_span: written[0].1,
+            second_span: written[1].1,
+        });
+    }
+
+    /// The strategy argument's name, or `"Readers"` when there isn't one.
+    ///
+    /// SH3: bare `Shared<T>` is `Shared<T, Readers>` in every position — a
+    /// `let`, a parameter, a field, a return type. This said `Local` and cited
+    /// SH3 for it, which is the opposite of what SH3 says; `rask-mir`'s
+    /// `shared_strategy` had it right ("a lock you didn't need costs time, and
+    /// one you did need and skipped costs correctness", SH8). Both callers here
+    /// test for `Local` specifically, so the wrong default only ever made a bare
+    /// `Shared<T>` look like the one strategy it can't be.
+    ///
+    /// Callers guard on `type_is_shared` first; anything unreadable lands on the
+    /// default, which is the safe side of both rules that read this.
     fn shared_strategy_name(&self, ty: &Type) -> String {
         let args = match ty {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
-            _ => return "Local".to_string(),
+            _ => return "Readers".to_string(),
         };
         match args.get(1) {
             Some(GenericArg::Type(s)) => match self.resolve_named(s) {
                 Type::UnresolvedNamed(n) => n,
                 Type::Named(id) => self.types.type_name(id),
-                _ => "Local".to_string(),
+                _ => "Readers".to_string(),
             },
-            _ => "Local".to_string(),
+            _ => "Readers".to_string(),
         }
     }
 
@@ -4802,4 +5019,49 @@ fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
         }
         _ => InvalidCastClass::Other,
     }
+}
+
+/// Does this closure body hand a value out through a `return`?
+///
+/// A body's type is `Never` both when it panics and when it ends in `return x`
+/// — control doesn't fall off the end either way. Only the first means no value
+/// ever comes out, and that's the one whose return type nothing constrains.
+/// Nested closures don't count: their `return` returns from them.
+fn body_returns_a_value(body: &Expr) -> bool {
+    fn in_stmts(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(in_stmt)
+    }
+    fn in_stmt(stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Return(Some(_)) => true,
+            StmtKind::Expr(e) => in_expr(e),
+            StmtKind::Let { init, .. } => in_expr(init),
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::Loop { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Comptime(body) => in_stmts(body),
+            StmtKind::Ensure { body, else_handler } => {
+                in_stmts(body)
+                    || else_handler.as_ref().map_or(false, |(_, h)| in_stmts(h))
+            }
+            _ => false,
+        }
+    }
+    fn in_expr(expr: &Expr) -> bool {
+        match &expr.kind {
+            // A nested closure's `return` is its own.
+            ExprKind::Closure { .. } => false,
+            ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+                in_stmts(body)
+            }
+            ExprKind::If { then_branch, else_branch, .. } => {
+                in_expr(then_branch)
+                    || else_branch.as_ref().map_or(false, |e| in_expr(e))
+            }
+            ExprKind::Match { arms, .. } => arms.iter().any(|a| in_expr(&a.body)),
+            _ => false,
+        }
+    }
+    in_expr(body)
 }

@@ -6,6 +6,8 @@
 // Block-scoped borrowing would have caught it, except a link is Copy and escapes
 // the scope that produced it, which is the whole point of a link. So links opt
 // out of the one mechanism built to prevent exactly this.
+import memory.Link
+import memory.Rack
 
 struct Node {
     value: i32

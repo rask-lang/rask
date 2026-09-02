@@ -17,6 +17,35 @@ impl TypeChecker {
     // Pass 1: Declaration Collection
     // ------------------------------------------------------------------------
 
+    /// IM3: register the aliases the resolver made out of `import m.T as A`.
+    ///
+    /// `SymbolKind::TypeAlias` existed and was only ever produced, never read —
+    /// the checker learned aliases from `type alias` declarations and nothing
+    /// else, so an aliased import bound a name with nothing behind it. Same
+    /// registration as a written `type alias A = T`, so `A` resolves to the same
+    /// TypeId as `T` and carries its `extend` blocks (#923).
+    ///
+    /// Runs before the declarations, so a program's own `type alias` of the same
+    /// name overwrites this one rather than the other way round.
+    pub(super) fn collect_import_aliases(&mut self) {
+        let aliases: Vec<(String, String)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                rask_resolve::SymbolKind::TypeAlias { target, from_import: true } => {
+                    Some((sym.name.clone(), target.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (name, target) in aliases {
+            if self.types.check_alias_cycle(&name, &target).is_none() {
+                self.types.register_alias(name, target);
+            }
+        }
+    }
+
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {
@@ -269,7 +298,24 @@ impl TypeChecker {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
             }
         }
-        let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
+        // The receiver's parameters as its *declaration* spells them, not as the
+        // extend block does. `extend Wrapper { func get(self) -> T }` on a
+        // `struct Wrapper<T>` leaves them out of the block header entirely, and
+        // reading only `Wrapper` would make `T` look like the method's own —
+        // a second variable per call, shadowing the one the receiver bound.
+        let impl_params = self
+            .types
+            .get(type_id)
+            .and_then(|d| match d {
+                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                    Some(type_params.clone())
+                }
+                _ => None,
+            })
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
+        let new_methods: Vec<_> =
+            i.methods.iter().map(|m| self.method_signature(m, &impl_params)).collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }
@@ -347,7 +393,8 @@ impl TypeChecker {
             .map(|f| f.name.clone())
             .collect();
 
-        let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
+        let struct_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = s.methods.iter().map(|m| self.method_signature(m, &struct_params)).collect();
 
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
@@ -495,7 +542,8 @@ impl TypeChecker {
             .map(|(vname, fts)| (vname, fts.into_iter().map(|(_, t)| t).collect::<Vec<_>>()))
             .collect();
 
-        let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
+        let enum_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+        let methods = e.methods.iter().map(|m| self.method_signature(m, &enum_params)).collect();
 
         // Field names for the struct-shaped variants, so a pattern that names
         // them can be matched against the positional payload types (#809).
@@ -530,7 +578,7 @@ impl TypeChecker {
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
-        let methods = t.methods.iter().map(|m| self.method_signature(m)).collect();
+        let methods = t.methods.iter().map(|m| self.method_signature(m, &[])).collect();
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -598,7 +646,26 @@ impl TypeChecker {
         });
     }
 
-    pub(super) fn method_signature(&self, m: &FnDecl) -> MethodSig {
+    /// The type parameter names in a target type spelling: `Ring<T>` → `["T"]`.
+    ///
+    /// An `extend` block names its receiver as a string, so this is the only
+    /// place the owner's parameters can be read back out.
+    pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
+        let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
+        rest.trim_end()
+            .trim_end_matches('>')
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| is_type_param_name(s))
+            .collect()
+    }
+
+    /// `owner_params` are the receiver type's own parameters — `T` in
+    /// `extend Ring<T>`. They're excluded from the method's list: the receiver
+    /// binds them once, and a method claiming them again takes a *second* fresh
+    /// variable per call that shadows the first, so `self.value.width()` loses
+    /// the type it was already given (#872).
+    pub(super) fn method_signature(&self, m: &FnDecl, owner_params: &[String]) -> MethodSig {
         let self_param_decl = m.params.iter().find(|p| p.name == "self");
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
@@ -646,9 +713,32 @@ impl TypeChecker {
             self_param,
             params,
             ret,
-            type_params: m.type_params.iter()
-                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                .collect(),
+            // PC1, the same rule a free function gets: the explicit `<T>` list
+            // plus every single uppercase letter appearing in the signature.
+            //
+            // This used to read the explicit list only. A stdlib method almost
+            // never has one — `Thread.spawn(f: func() -> T) -> ThreadHandle<T>`
+            // declares `T` by using it — so nothing gave `T` a variable, the
+            // argument had nothing to bind to, and the handle's payload stayed
+            // unresolved all the way to MIR (#963).
+            type_params: {
+                let declared: std::collections::HashMap<&str, &Vec<String>> = m
+                    .type_params
+                    .iter()
+                    .map(|tp| (tp.name.as_str(), &tp.bounds))
+                    .collect();
+                signature_type_param_names(m)
+                    .into_iter()
+                    .filter(|name| !owner_params.iter().any(|o| o == name))
+                    .map(|name| {
+                        let bounds = declared
+                            .get(name.as_str())
+                            .map(|b| (*b).clone())
+                            .unwrap_or_default();
+                        (name, bounds)
+                    })
+                    .collect()
+            },
         }
     }
 
@@ -855,11 +945,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -961,11 +1051,11 @@ impl TypeChecker {
                         }
                     }
 
-                    // G2: auto-derive debug_string for all types
-                    if !methods.iter().any(|m| m.name == "debug_string") {
+                    // G2: auto-derive debug for all types
+                    if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
                             type_params: Vec::new(),
-                            name: "debug_string".to_string(),
+                            name: "debug".to_string(),
                             self_param: SelfParam::Value,
                             params: vec![],
                             ret: Type::String,
@@ -1001,20 +1091,20 @@ impl TypeChecker {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // CO4: f32/f64 NOT Comparable (NaN breaks totality)
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "clone" | "default" | "debug")
             }
             Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
             // Named types: check registered methods
             Type::Named(id) => {

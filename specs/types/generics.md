@@ -156,7 +156,7 @@ For `duck trait`, the same signature check runs at the use site against the type
 // The common shape for a trait-rich type: one block, header carries the claims
 extend LogSource with Reader, Displayable, Error {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
-    func to_string(self) -> string { ... }
+    func display(self) -> string { ... }
     func message(self) -> string { ... }
     func rewind(mutate self) { ... }            // plain method, same block
 }
@@ -209,8 +209,8 @@ The core-trait family carries cross-trait contracts (`a == b` implies `hash(a) =
 <!-- test: skip -->
 ```rask
 extend Ring<T> with Displayable where T: Displayable {
-    func to_string(self) -> string {
-        return self.items.map(|x| x.to_string()).join(", ")
+    func display(self) -> string {
+        return self.items.map(|x| x.display()).join(", ")
     }
 }
 ```
@@ -521,8 +521,8 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Hashable`: Equal | `hash(self) -> u64` | Yes — all Hashable fields, no floats (HA1) |
 | `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
 | `Error` | `message(self) -> string` | Yes — enums, from variant names + payloads (`type.errors/ER6`); structs declare |
-| `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
-| `Debug` | `to_debug_string(self) -> string` | Yes — all types |
+| `Displayable` | `display(self) -> string` | No — opt-in (user-facing output is intentional) |
+| `Debug` | `debug(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
 | `Convert<From, To>` | `convert(self: From) -> To` | No |
 | `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |

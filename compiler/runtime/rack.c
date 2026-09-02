@@ -683,7 +683,7 @@ void rask_rack_clear(RaskRack *r) {
 
 // Links to every live node, in slot order.
 RaskVec *rask_rack_nodes(const RaskRack *r) {
-    RaskVec *out = rask_vec_new(8);
+    RaskVec *out = rask_vec_new(8, NULL, 0);
     if (!r) return out;
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+enum Token {
+    Number { value: i64 }
+    Plus
+    Minus
+    Times
+}
+
+enum RpnError {
+    NotEnoughOperands
+    LeftoverOperands
+    Empty
+}
+
+extend RpnError with Error {
+    func message(self) -> string {
+        return match self {
+            RpnError.NotEnoughOperands => "not enough operands"
+            RpnError.LeftoverOperands => "leftover operands"
+            RpnError.Empty => "empty expression"
+        }
+    }
+}
+
+func eval_rpn(tokens: Vec<Token>) -> i64 or RpnError {
+    if tokens.len() == 0 { return RpnError.Empty }
+    mut stack: Vec<i64> = Vec.new()
+    for token in tokens {
+        match token {
+            Token.Number(value) => stack.push(value)
+            _ => {
+                if stack.len() < 2 { return RpnError.NotEnoughOperands }
+                let right = stack.pop()!
+                let left = stack.pop()!
+                match token {
+                    Token.Plus => stack.push(left + right)
+                    Token.Minus => stack.push(left - right)
+                    Token.Times => stack.push(left * right)
+                    _ => {}
+                }
+            }
+        }
+    }
+    if stack.len() != 1 { return RpnError.LeftoverOperands }
+    return stack.pop()!
+}

@@ -6,8 +6,8 @@ func parse_wind(metar: string) -> Wind {
     let dir_str = metar[0..3]
     let spd_str = metar[3..5]
     return Wind {
-        direction: dir_str.parse_int()!,
-        speed: spd_str.parse_int()!,
+        direction: dir_str.parse<i64>()!,
+        speed: spd_str.parse<i64>()!,
     }
 }
 

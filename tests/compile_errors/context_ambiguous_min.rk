@@ -5,6 +5,8 @@
 // Minimal repro using explicit `players[h]` indexing in the callee, so the only
 // error is the ambiguity itself (not the still-unimplemented `h.field`
 // auto-deref that the fuller context_ambiguous.rk exercises).
+import memory.Handle
+import memory.Pool
 
 struct Player { health: i32 }
 

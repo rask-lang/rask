@@ -2354,6 +2354,11 @@ impl TypeChecker {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
             }
+            // Shared<T>.staged() -> T  (ST1: a working copy under the
+            // exclusive lock, committed as one move on any non-panic exit)
+            ("Shared", "staged") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
@@ -3601,6 +3606,15 @@ impl TypeChecker {
                     if self.ctx.literal_vars.contains_key(&id) {
                         let _ = self.unify(&args[0], inner, span);
                     }
+                }
+                // The other side is an optional too — `x == none` most of the
+                // time. `none` has no payload type of its own, so unless it's
+                // tied to the receiver here it stays `?` forever: the node came
+                // out of the checker still holding a variable, and MIR had to
+                // guess a width for it. Comparing two optionals means comparing
+                // the same optional, so say so.
+                if self.ctx.apply(&args[0]).is_option() {
+                    let _ = self.unify(&args[0], &self_ty, span);
                 }
                 self.unify(ret, &Type::Bool, span)
             }

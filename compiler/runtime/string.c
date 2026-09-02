@@ -21,7 +21,15 @@
 #include <string.h>
 #include <math.h>
 #include <dirent.h>
+#include <unistd.h>
 #include <errno.h>
+
+// Live heap string buffers. `RASK_LEAK_CHECK=1` makes a program that still
+// holds any at exit fail loudly instead of quietly handing them to the OS —
+// which is what "Rask is leak free" has to mean if it is to mean anything.
+static _Atomic int64_t rask_string_live_buffers = 0;
+
+int rask_leak_check_enabled = 0;
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
@@ -62,10 +70,17 @@ static void str_make_sso(RaskStr *out, const char *data, int64_t len) {
     out->sso.remaining = (uint8_t)(15 - len);
 }
 
+/// One place to allocate a string header, so one place counts them.
+static uint8_t *str_alloc_header(int64_t cap) {
+    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    __atomic_add_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+    return header;
+}
+
 static void str_make_heap(RaskStr *out, const char *data, int64_t len) {
     int64_t cap = len;
     // Header: [refcount: u32][capacity: u32][data: u8[cap+1]]
-    uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+    uint8_t *header = str_alloc_header(cap);
     *(uint32_t *)header = 1;              // refcount = 1
     *(uint32_t *)(header + 4) = (uint32_t)cap; // capacity
     if (len > 0) memcpy(header + 8, data, (size_t)len);
@@ -98,20 +113,108 @@ void rask_string_from_bytes(RaskStr *out, const char *data, int64_t len) {
 
 // ─── RC operations ──────────────────────────────────────────
 
+// `RASK_STRING_DEBUG=1` turns a wrong refcount into a message instead of a
+// silent wrong answer.
+//
+// Getting string ownership wrong reads as data corruption several steps later:
+// the buffer is freed, malloc hands the same bytes to the next allocation, and
+// what comes out is the *other* value. That's most of a day of bisecting, every
+// time. Under this flag a buffer that reaches zero is filled with 0xDE and its
+// refcount is set to a poison word, and the allocation is deliberately kept —
+// so the next touch of the same header lands on the poison and says so, naming
+// the operation, instead of landing on whatever moved in.
+//
+// It leaks by construction. That's the point: the process is meant to die on
+// the first mistake, not to survive.
+#define RASK_RC_POISON ((uint32_t)0xDEADBEEF)
+
+int rask_string_debug_enabled = 0;
+
+static void rc_poison_check(const uint32_t *rc, const char *op) {
+    if (*rc != RASK_RC_POISON) return;
+    fprintf(stderr,
+            "rask: string %s on a buffer that was already released\n"
+            "  the last reference was dropped and something still points at it\n",
+            op);
+    fflush(stderr);
+    abort();
+}
+
 void rask_string_free(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "release");
+    }
     if (__atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0) {
         uint32_t cap = heap_cap(s);
+        __atomic_sub_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+        if (__builtin_expect(rask_string_debug_enabled, 0)) {
+            memset(s->heap.header + 8, 0xDE, (size_t)cap + 1);
+            *rc = RASK_RC_POISON;
+            return;
+        }
         rask_realloc(s->heap.header, 8 + cap + 1, 0);
     }
+}
+
+/// Everything this program allocated and never gave back.
+///
+/// Called at the end of `main`. Handing memory to the OS on exit is not the
+/// same as not leaking: a long-running program never gets there, and a leak
+/// that only shows up under load is the expensive kind to find.
+///
+/// The count is every `rask_alloc` the runtime made, not just strings — so a
+/// `Vec` handle, a data array, a closure box and a trait object are all in it.
+/// A clean program ends at exactly zero, which is what makes this usable as a
+/// gate rather than a threshold: the runtime itself holds nothing at exit.
+///
+/// The string tally comes out alongside when it's nonzero, because a leaked
+/// refcount is a different bug from a leaked allocation and it saves a bisect
+/// to know which one this is.
+void rask_leak_check(void) {
+    if (!rask_leak_check_enabled) return;
+
+    // The two debugging modes don't compose. `RASK_STRING_DEBUG` keeps every
+    // released buffer on purpose so a later touch of it can be caught, which
+    // makes every correct release look like a leak. Say so rather than
+    // reporting thousands of phantoms.
+    if (rask_string_debug_enabled) {
+        fprintf(stderr,
+                "rask: RASK_LEAK_CHECK is off — RASK_STRING_DEBUG keeps released\n"
+                "  buffers on purpose, so the two can't be used together. Run them\n"
+                "  one at a time.\n");
+        fflush(stderr);
+        return;
+    }
+
+    RaskAllocStats st;
+    rask_alloc_stats(&st);
+    int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
+    if (live_bytes <= 0) return;
+
+    int64_t live_strings = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
+    fprintf(stderr,
+            "rask: %lld bytes never released, in %lld allocation%s\n",
+            (long long)live_bytes,
+            (long long)(st.alloc_count - st.free_count),
+            (st.alloc_count - st.free_count) == 1 ? "" : "s");
+    if (live_strings > 0) {
+        fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
+                (long long)live_strings, live_strings == 1 ? "is" : "are");
+    }
+    fflush(stderr);
+    _exit(97);
 }
 
 void rask_string_clone(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
     if (*rc == RASK_RC_SENTINEL) return;
+    if (__builtin_expect(rask_string_debug_enabled, 0)) {
+        rc_poison_check(rc, "retain");
+    }
     __atomic_add_fetch(rc, 1, __ATOMIC_RELAXED);
 }
 
@@ -179,74 +282,6 @@ int64_t rask_string_byte_at(const RaskStr *s, int64_t pos) {
     return (int64_t)(uint8_t)str_data(s)[pos];
 }
 
-// The Unicode scalar at *character* index `index`, or -1 when out of range.
-// Character index, not byte index — `s.char_at(i)` and `s[i]` both count
-// scalars, and `s.len()` counting bytes doesn't change that.
-static int64_t str_scalar_at(const RaskStr *s, int64_t index) {
-    if (index < 0) return -1;
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t byte = 0;
-    int64_t seen = 0;
-    while (byte < len) {
-        unsigned char c = (unsigned char)d[byte];
-        int64_t width = c < 0x80 ? 1
-                      : (c & 0xE0) == 0xC0 ? 2
-                      : (c & 0xF0) == 0xE0 ? 3
-                      : (c & 0xF8) == 0xF0 ? 4
-                      : 1;
-        if (byte + width > len) return -1;
-        if (seen == index) {
-            switch (width) {
-                case 2: return ((c & 0x1F) << 6) | (d[byte + 1] & 0x3F);
-                case 3: return ((c & 0x0F) << 12) | ((d[byte + 1] & 0x3F) << 6)
-                             | (d[byte + 2] & 0x3F);
-                case 4: return ((c & 0x07) << 18) | ((d[byte + 1] & 0x3F) << 12)
-                             | ((d[byte + 2] & 0x3F) << 6) | (d[byte + 3] & 0x3F);
-                default: return c;
-            }
-        }
-        byte += width;
-        seen++;
-    }
-    return -1;
-}
-
-// How many Unicode scalars the string holds (for the index-out-of-bounds message).
-static int64_t str_char_count(const RaskStr *s) {
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t byte = 0;
-    int64_t seen = 0;
-    while (byte < len) {
-        unsigned char c = (unsigned char)d[byte];
-        int64_t width = c < 0x80 ? 1
-                      : (c & 0xE0) == 0xC0 ? 2
-                      : (c & 0xF0) == 0xE0 ? 3
-                      : (c & 0xF8) == 0xF0 ? 4
-                      : 1;
-        byte += width;
-        seen++;
-    }
-    return seen;
-}
-
-int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
-    return str_scalar_at(s, index);
-}
-
-// s[i] — indexing, so an out-of-range index panics rather than answering none.
-int64_t rask_string_index(const RaskStr *s, int64_t index) {
-    int64_t scalar = str_scalar_at(s, index);
-    if (scalar < 0) {
-        char buf[128];
-        snprintf(buf, sizeof(buf),
-                 "string index out of bounds: index is %lld but length is %lld",
-                 (long long)index, (long long)str_char_count(s));
-        rask_panic(buf);
-    }
-    return scalar;
-}
 
 int64_t rask_string_contains(const RaskStr *haystack, const RaskStr *needle) {
     int64_t hlen = str_len(haystack);
@@ -466,7 +501,7 @@ void rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b) {
         if (blen > 0) memcpy(out->sso.data + alen, bd, (size_t)blen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         if (alen > 0) memcpy(header + 8, ad, (size_t)alen);
@@ -484,26 +519,6 @@ static int str_is_char_boundary(const char *d, int64_t len, int64_t i) {
     return ((unsigned char)d[i] & 0xC0) != 0x80;
 }
 
-void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
-    int64_t slen = str_len(s);
-    /* Out of range clamps — there's no ambiguity about what was meant. */
-    if (start < 0) start = 0;
-    if (end > slen) end = slen;
-    if (start >= end) { rask_string_new(out); return; }
-    /* A cut inside a character is a different matter: it would hand back a
-       `string` that isn't valid UTF-8, which the type says can't exist. The
-       caller asked for something that doesn't exist, so say so rather than
-       returning a nearby slice they didn't ask for. */
-    const char *d = str_data(s);
-    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
-        rask_panic_fmt(
-            "substring(%lld, %lld) cuts a character in half - "
-            "these are byte offsets, and one of them lands inside a multi-byte "
-            "character. `char_indices()` gives offsets that don't.",
-            (long long)start, (long long)end);
-    }
-    str_make(out, d + start, end - start);
-}
 
 // ─── UTF-8 scalar decode/encode ─────────────────────────────
 // One decoder, shared by `chars()` and case conversion. `chars()` walked bytes
@@ -531,6 +546,33 @@ static uint32_t str_decode_at(const char *d, int64_t len, int64_t i, int64_t *wi
     }
     *width = w;
     return ch;
+}
+
+// `s[i]` — one byte at byte offset `i` (std.strings/U1b). Indexing panics on
+// an out-of-range index rather than answering none; `byte_at` is the probe.
+int64_t rask_string_index(const RaskStr *s, int64_t index) {
+    int64_t len = str_len(s);
+    if (index < 0 || index >= len) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "string index out of bounds: index is %lld but length is %lld bytes",
+                 (long long)index, (long long)len);
+        rask_panic(buf);
+    }
+    return (int64_t)(unsigned char)str_data(s)[index];
+}
+
+// The scalar starting at *byte* offset `index`, or -1 when the offset is out
+// of range or lands inside a character. Byte-offset like every other index
+// (std.strings/U1), so it's O(1): the old character-indexed version scanned
+// from byte zero, which made every cursor loop quadratic.
+int64_t rask_string_char_at(const RaskStr *s, int64_t index) {
+    int64_t len = str_len(s);
+    if (index < 0 || index >= len) return -1;
+    const char *d = str_data(s);
+    if (((unsigned char)d[index] & 0xC0) == 0x80) return -1;  // mid-character
+    int64_t w;
+    return (int64_t)str_decode_at(d, len, index, &w);
 }
 
 // Unicode White_Space, the same set Rust's `char::is_whitespace` uses. The
@@ -665,10 +707,6 @@ void rask_string_trim(RaskStr *out, const RaskStr *s) {
 // std.strings: the byte range `trim` would keep, without building the copy.
 // The pair lands in the destination tuple's own slot, so `out` is that slot:
 // start at +0, end at +8.
-void rask_string_trim_indices(int64_t *out, const RaskStr *s) {
-    if (str_len(s) == 0) { out[0] = 0; out[1] = 0; return; }
-    str_trim_range(s, &out[0], &out[1]);
-}
 
 void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
@@ -710,7 +748,7 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
             memcpy(out->sso.data + i * slen, d, (size_t)slen);
         out->sso.remaining = (uint8_t)(15 - total);
     } else {
-        uint8_t *header = (uint8_t *)rask_alloc(8 + total + 1);
+        uint8_t *header = str_alloc_header(total);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)total;
         for (int64_t i = 0; i < count; i++)
@@ -721,28 +759,39 @@ void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
     }
 }
 
-// By Unicode scalars, which is what the stub documents. Reversing bytes tore
-// every multi-byte scalar apart: `"Wörld".reverse()` came back with the two
-// halves of `ö` swapped, so the text was no longer valid UTF-8 (#841).
-void rask_string_reverse(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    char *buf = (char *)rask_alloc(len);
-    int64_t written = 0;
-    int64_t i = len;
-    while (i > 0) {
-        int64_t prev = str_prev_scalar(d, i);
-        int64_t w = i - prev;
-        for (int64_t k = 0; k < w; k++) buf[written + k] = d[prev + k];
-        written += w;
-        i = prev;
-    }
-    str_make(out, buf, len);
-    rask_realloc(buf, len, 0);
+// Replace every occurrence. The `limit:` form (std.strings) needs default
+// arguments on methods — rask-lang/rask#1028 — so only this one is reachable
+// from Rask today.
+void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from,
+                         const RaskStr *to) {
+    rask_string_replace_limit(out, s, from, to, -1);
 }
 
-void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to) {
+// Byte range of a string — this is what `s[i..j]` lowers to (std.strings/U1).
+// Not exposed as a `substring` method: that was the slice under a second name.
+void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+    int64_t slen = str_len(s);
+    /* Out of range clamps — there's no ambiguity about what was meant. */
+    if (start < 0) start = 0;
+    if (end > slen) end = slen;
+    if (start >= end) { rask_string_new(out); return; }
+    /* A cut inside a character is a different matter: it would hand back a
+       `string` that isn't valid UTF-8, which the type says can't exist. The
+       caller asked for something that doesn't exist, so say so rather than
+       returning a nearby slice they didn't ask for. */
+    const char *d = str_data(s);
+    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
+        rask_panic_fmt(
+            "s[%lld..%lld] cuts a character in half - "
+            "these are byte offsets, and one of them lands inside a multi-byte "
+            "character. `char_indices()` gives offsets that don't.",
+            (long long)start, (long long)end);
+    }
+    str_make(out, d + start, end - start);
+}
+
+void rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from,
+                               const RaskStr *to, int64_t limit) {
     int64_t slen = str_len(s);
     int64_t flen = str_len(from);
     if (slen == 0) { rask_string_new(out); return; }
@@ -757,61 +806,29 @@ void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, co
     const char *fd = str_data(from);
     const char *td = str_data(to);
 
-    // Count occurrences
+    // `limit` caps how many get replaced, left to right. Negative means no
+    // limit — 0 has to stay available for "replace none".
+    if (limit == 0) { str_make(out, str_data(s), slen); return; }
+
     int64_t count = 0;
     const char *p = sd;
     const char *end = sd + slen;
     while (p + flen <= end) {
-        if (memcmp(p, fd, (size_t)flen) == 0) { count++; p += flen; }
-        else p++;
-    }
-
-    int64_t new_len = rask_safe_add(slen, rask_safe_mul(count, tlen - flen));
-    char *buf = (char *)rask_alloc(new_len);
-    char *dst = buf;
-    p = sd;
-    while (p < end) {
-        if (p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
-            if (tlen > 0) memcpy(dst, td, (size_t)tlen);
-            dst += tlen;
+        if (memcmp(p, fd, (size_t)flen) == 0) {
+            count++;
             p += flen;
-        } else {
-            *dst++ = *p++;
-        }
-    }
-    str_make(out, buf, new_len);
-    rask_realloc(buf, new_len, 0);
-}
-
-// Replace the first `n` occurrences (S: replacen). n <= 0 leaves the string
-// alone; a larger n than there are matches just replaces them all.
-void rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from,
-                          const RaskStr *to, int64_t n) {
-    int64_t slen = str_len(s);
-    int64_t flen = str_len(from);
-    if (slen == 0) { rask_string_new(out); return; }
-    if (flen == 0 || n <= 0) { str_make(out, str_data(s), slen); return; }
-
-    int64_t tlen = str_len(to);
-    const char *sd = str_data(s);
-    const char *fd = str_data(from);
-    const char *td = str_data(to);
-    const char *end = sd + slen;
-
-    int64_t count = 0;
-    const char *p = sd;
-    while (p + flen <= end && count < n) {
-        if (memcmp(p, fd, (size_t)flen) == 0) { count++; p += flen; }
-        else p++;
+            if (limit >= 0 && count == limit) break;
+        } else p++;
     }
 
     int64_t new_len = rask_safe_add(slen, rask_safe_mul(count, tlen - flen));
     char *buf = (char *)rask_alloc(new_len);
     char *dst = buf;
-    int64_t done = 0;
     p = sd;
+    int64_t done = 0;
     while (p < end) {
-        if (done < n && p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
+        if ((limit < 0 || done < limit)
+            && p + flen <= end && memcmp(p, fd, (size_t)flen) == 0) {
             if (tlen > 0) memcpy(dst, td, (size_t)tlen);
             dst += tlen;
             p += flen;
@@ -824,17 +841,8 @@ void rask_string_replacen(RaskStr *out, const RaskStr *s, const RaskStr *from,
     rask_realloc(buf, new_len, 0);
 }
 
-// Number of Unicode scalars, not bytes (S: char_count). Counts the bytes that
-// aren't UTF-8 continuation bytes.
-int64_t rask_string_char_count(const RaskStr *s) {
-    int64_t len = str_len(s);
-    const unsigned char *p = (const unsigned char *)str_data(s);
-    int64_t n = 0;
-    for (int64_t i = 0; i < len; i++) {
-        if ((p[i] & 0xC0) != 0x80) n++;
-    }
-    return n;
-}
+// Replace the first `n` occurrences (S: replacen). n <= 0 leaves the string
+// alone; a larger n than there are matches just replaces them all.
 
 // True when every byte is ASCII (0x00–0x7F).
 int64_t rask_string_str_is_ascii(const RaskStr *s) {
@@ -875,7 +883,7 @@ void rask_string_from_char(RaskStr *out, int64_t cp) {
 // ─── Split / lines / chars → Vec ────────────────────────────
 
 RaskVec *rask_string_lines(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16); // elem_size = sizeof(RaskStr) = 16
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1); // elem_size = sizeof(RaskStr) = 16
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *p = str_data(s);
@@ -892,7 +900,7 @@ RaskVec *rask_string_lines(const RaskStr *s) {
 }
 
 RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     int64_t sep_len = str_len(sep);
     const char *p = str_data(s);
@@ -943,7 +951,7 @@ RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
 }
 
 RaskVec *rask_string_split_whitespace(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t slen = str_len(s);
     if (slen == 0) return v;
     const char *d = str_data(s);
@@ -969,7 +977,7 @@ RaskVec *rask_string_split_whitespace(const RaskStr *s) {
 // 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
 // the Vec is iterated exactly like any other `Vec<(usize, char)>`.
 RaskVec *rask_string_char_indices(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -985,7 +993,7 @@ RaskVec *rask_string_char_indices(const RaskStr *s) {
 }
 
 RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(8);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
@@ -1005,7 +1013,7 @@ RaskVec *rask_string_chars(const RaskStr *s) {
 // string_bytes".
 RaskVec *rask_string_bytes(const RaskStr *s) {
     int64_t len = str_len(s);
-    RaskVec *v = rask_vec_new(len < 8 ? 8 : len);
+    RaskVec *v = rask_vec_new(len < 8 ? 8 : len, NULL, 0);
     const char *d = str_data(s);
     for (int64_t i = 0; i < len; i++) {
         int64_t b = (int64_t)(unsigned char)d[i];
@@ -1025,7 +1033,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Promote SSO to heap
         const char *d = str_data(s);
         int64_t cap = len < 8 ? 8 : len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1039,7 +1047,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Shared — detach (COW)
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1053,7 +1061,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         // Literal — create mutable copy
         const char *d = str_data(s);
         int64_t cap = len;
-        uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
+        uint8_t *header = str_alloc_header(cap);
         *(uint32_t *)header = 1;
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
@@ -1341,24 +1349,18 @@ void rask_f64_to_exp(RaskStr *out, double val) {
     rask_string_from(out, buf);
 }
 
-// Keep the first `count` characters — a precision on a string truncates it.
+// `{:.n}` on text keeps the first `n` display columns without splitting a
+// grapheme (std.fmt/S5) — the same operation as `s.truncate(n)`.
 void rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count) {
     if (count < 0) { *out = *s; rask_string_clone(out); return; }
-    const char *data = str_data(s);
-    int64_t len = str_len(s);
-    int64_t i = 0, seen = 0;
-    while (i < len && seen < count) {
-        unsigned char c = (unsigned char)data[i];
-        i += (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
-        seen++;
-    }
-    if (i > len) i = len;
-    str_make(out, data, i);
+    rask_string_truncate(out, s, count);
 }
 
-// align: 0 left, 1 right, 2 center. Width counts characters, not bytes.
+// align: 0 left, 1 right, 2 center. Width is display columns (std.fmt/S4) —
+// bytes or scalars would line up only for ASCII, which is how a table goes
+// crooked the moment a name has an accent or a CJK character in it.
 void rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill) {
-    int64_t count = str_char_count(s);
+    int64_t count = rask_string_width(s);
     if (width <= 0 || count >= width) {
         *out = *s;
         rask_string_clone(out);
@@ -1530,7 +1532,7 @@ int64_t rask_char_eq(int32_t a, int32_t b) {
 // ─── Filesystem ─────────────────────────────────────────────
 
 RaskVec *rask_fs_list_dir(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
     int64_t plen = str_len(path);
     if (plen == 0) return v;
 
@@ -1647,4 +1649,244 @@ int64_t rask_string_builder_len(int64_t handle) {
 int64_t rask_string_builder_is_empty(int64_t handle) {
     RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
     return sb->len == 0 ? 1 : 0;
+}
+
+// ─── Text units (std.strings/U1–U5) ────────────────────────────────────────
+//
+// The tables live in unicode_text.c, generated from the same crates the
+// interpreter uses (scripts/gen_unicode_text). They used to be hand-written
+// here and again in the interpreter, with a comment asking a human to keep the
+// two copies in step.
+
+static int str_is_regional_indicator(uint32_t c) {
+    return c >= 0x1F1E6 && c <= 0x1F1FF;
+}
+
+// End of the grapheme cluster starting at byte `i` (UAX #29): CRLF stays
+// together, marks and joiners attach to what precedes them, ZWJ glues emoji
+// sequences, and regional indicators pair into one flag.
+static int64_t str_grapheme_end(const char *d, int64_t len, int64_t i) {
+    if (i >= len) return len;
+    int64_t w;
+    uint32_t first = str_decode_at(d, len, i, &w);
+    int64_t j = i + w;
+
+    if (first == '\r' && j < len && d[j] == '\n') return j + 1;
+
+    // Prepend attaches to what follows, and chains: two in a row before a
+    // base letter are still one cluster. Absorbing exactly one left the second
+    // starting a cluster of its own, where the segmenter kept them together.
+    if (rask_grapheme_is_prepend(first)) {
+        while (j < len) {
+            int64_t w2;
+            uint32_t c = str_decode_at(d, len, j, &w2);
+            j += w2;
+            if (!rask_grapheme_is_prepend(c)) break;
+        }
+    }
+
+    if (str_is_regional_indicator(first) && j < len) {
+        int64_t w2;
+        uint32_t next = str_decode_at(d, len, j, &w2);
+        if (str_is_regional_indicator(next)) j += w2;
+    }
+
+    while (j < len) {
+        int64_t w2;
+        uint32_t c = str_decode_at(d, len, j, &w2);
+        if (c == 0x200D) {                  // ZWJ — glue, then take what follows
+            j += w2;
+            if (j < len) {
+                int64_t w3;
+                str_decode_at(d, len, j, &w3);
+                j += w3;
+            }
+            continue;
+        }
+        if (rask_grapheme_joins_left(c)) {
+            j += w2;
+            continue;
+        }
+        break;
+    }
+    return j;
+}
+
+// Columns one grapheme cluster occupies. A ZWJ sequence renders as a single
+// glyph, so it counts once rather than summing its parts — 👨‍👩‍👧 is two
+// columns, not six. Everything else is the sum of its scalars, which puts a
+// base character's combining marks at zero.
+static int64_t str_cluster_width(const char *d, int64_t len, int64_t start, int64_t end) {
+    int64_t cols = 0;
+    for (int64_t k = start; k < end; ) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, k, &w);
+        if (c == 0x200D) return 2;
+        cols += rask_scalar_width(c);
+        k += w;
+    }
+    return cols;
+}
+
+// Display columns (U2). ASCII is the byte length (U4) — the common case never
+// touches a table.
+int64_t rask_string_width(const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (rask_string_str_is_ascii(s)) {
+        int64_t n = 0;
+        for (int64_t i = 0; i < len; i++) {
+            unsigned char c = (unsigned char)d[i];
+            if (c >= 0x20 && c < 0x7F) n++;
+        }
+        return n;
+    }
+    int64_t cols = 0;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        cols += str_cluster_width(d, len, i, end);
+        i = end;
+    }
+    return cols;
+}
+
+// Cut to at most `cols` display columns, never inside a grapheme (U2).
+void rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (cols <= 0 || len == 0) { rask_string_new(out); return; }
+
+    int64_t used = 0;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        int64_t gw = str_cluster_width(d, len, i, end);
+        if (used + gw > cols) break;
+        used += gw;
+        i = end;
+    }
+    str_make(out, d, i);
+}
+
+// Reverse by graphemes (U2). Scalar reversal separated combining marks from
+// the characters they sit on and tore ZWJ emoji sequences apart.
+void rask_string_reverse(RaskStr *out, const RaskStr *s) {
+    int64_t len = str_len(s);
+    if (len == 0) { rask_string_new(out); return; }
+    const char *d = str_data(s);
+    char *buf = (char *)rask_alloc(len);
+    int64_t written = len;
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        int64_t w = end - i;
+        written -= w;
+        for (int64_t k = 0; k < w; k++) buf[written + k] = d[i + k];
+        i = end;
+    }
+    str_make(out, buf, len);
+    rask_realloc(buf, len, 0);
+}
+
+// One string per grapheme (U2) — the unit for cursors and truncation, and
+// what split() would give if the separator were "between characters".
+RaskVec *rask_string_graphemes(const RaskStr *s) {
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    int64_t i = 0;
+    while (i < len) {
+        int64_t end = str_grapheme_end(d, len, i);
+        RaskStr g;
+        str_make(&g, d + i, end - i);
+        rask_vec_push(v, &g);
+        i = end;
+    }
+    return v;
+}
+
+// NFC (U5): canonical decomposition, canonical ordering, then canonical
+// composition (UAX #15). ASCII is already normal, so the common case is a copy
+// and never touches a table (U4).
+void rask_string_normalized(RaskStr *out, const RaskStr *s) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (len == 0 || rask_string_str_is_ascii(s)) {
+        str_make(out, d, len);
+        return;
+    }
+
+    // Decompose. A scalar expands to at most 4 (Hangul LVT is 3, the longest
+    // canonical decomposition is 2, applied recursively).
+    int64_t cap = 0;
+    for (int64_t i = 0; i < len; ) {
+        int64_t w;
+        str_decode_at(d, len, i, &w);
+        i += w;
+        cap += 4;
+    }
+    uint32_t *buf = (uint32_t *)rask_alloc(cap * (int64_t)sizeof(uint32_t));
+    int64_t n = 0;
+    for (int64_t i = 0; i < len; ) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, i, &w);
+        i += w;
+        uint32_t parts[3];
+        int k = rask_canonical_decompose(c, parts, 3);
+        if (k == 0) {
+            buf[n++] = c;
+            continue;
+        }
+        // One more level covers every canonical decomposition in Unicode.
+        for (int p = 0; p < k; p++) {
+            uint32_t inner[3];
+            int m = rask_canonical_decompose(parts[p], inner, 3);
+            if (m == 0) buf[n++] = parts[p];
+            else for (int q = 0; q < m; q++) buf[n++] = inner[q];
+        }
+    }
+
+    // Canonical ordering: a stable sort of each combining run by class.
+    for (int64_t i = 1; i < n; i++) {
+        uint8_t ci = rask_ccc(buf[i]);
+        if (ci == 0) continue;
+        int64_t j = i;
+        while (j > 0) {
+            uint8_t cj = rask_ccc(buf[j - 1]);
+            if (cj == 0 || cj <= ci) break;
+            uint32_t t = buf[j - 1]; buf[j - 1] = buf[j]; buf[j] = t;
+            j--;
+        }
+    }
+
+    // Compose: hold the last starter, fold what follows into it when the pair
+    // has a primary composite and nothing blocks it.
+    int64_t outn = 0;
+    int64_t starter = -1;
+    uint8_t last_class = 0;
+    for (int64_t i = 0; i < n; i++) {
+        uint32_t c = buf[i];
+        uint8_t k = rask_ccc(c);
+        if (starter >= 0 && (last_class == 0 || last_class < k)) {
+            uint32_t composed = rask_canonical_compose(buf[starter], c);
+            if (composed != 0) {
+                buf[starter] = composed;
+                continue;
+            }
+        }
+        if (k == 0) starter = outn;
+        last_class = k;
+        buf[outn++] = c;
+    }
+
+    // Back to UTF-8.
+    char *bytes = (char *)rask_alloc(outn * 4);
+    int64_t blen = 0;
+    for (int64_t i = 0; i < outn; i++) {
+        blen += str_encode_scalar(bytes + blen, buf[i]);
+    }
+    str_make(out, bytes, blen);
+    rask_realloc(bytes, outn * 4, 0);
+    rask_realloc(buf, cap * (int64_t)sizeof(uint32_t), 0);
 }

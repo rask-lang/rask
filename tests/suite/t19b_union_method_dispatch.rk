@@ -19,7 +19,15 @@
 //
 // Still open: a function returning `i32 or (A | B)`, compiled alongside other
 // code, has been seen to corrupt memory — every test passes but the process
-// exits non-zero, order- and layout-dependent (#375).
+// exits non-zero, order- and layout-dependent (#375, since closed).
+//
+// And the shape this file does NOT cover, which is where three native bugs live
+// (#1013): `combined` reaches its error side only through `try` propagation from
+// single-error functions. A direct `return ParseError { … }` from a function whose
+// error type is the union takes a different path — one with no member index
+// written and the Result tag set to Ok — so natively the error reads back as a
+// success carrying the payload bytes as its value, silently. Two producers for
+// one shape, one of them covered.
 //
 // Spec: type.errors (ER4, ER31)
 //

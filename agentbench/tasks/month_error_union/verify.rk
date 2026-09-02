@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import string.ParseError
+
+func why(r: i64 or ReadError|ParseError) -> string {
+    if r is ReadError as e { return e.message() }
+    if r is ParseError as p { return p.message() }
+    return "no error"
+}
+
+test "verify: the happy path" {
+    assert first_number("42\nrest")! == 42
+    assert first_line("42\nrest")! == "42"
+    assert to_number("42")! == 42
+    assert to_number("-7")! == -7
+}
+
+test "verify: read failures" {
+    assert why(first_number("")) == "no lines"
+    assert why(first_number("only")) == "too short: 1"
+}
+
+test "verify: a parse failure travels the same path" {
+    assert why(first_number("abc\nrest")) == "not a number: abc"
+}
+
+test "verify: which side failed is still visible" {
+    let r = first_number("only")
+    assert r is ReadError
+    let p = first_number("abc\nrest")
+    assert p is ParseError
+}
+
+test "verify: the fallback" {
+    assert first_number_or("42\nrest", -1) == 42
+    assert first_number_or("", -1) == -1
+    assert first_number_or("only", -1) == -1
+    assert first_number_or("abc\nrest", -1) == -1
+}

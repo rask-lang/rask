@@ -626,6 +626,11 @@ impl Interpreter {
                 origin: None,
             }),
 
+            // The null pointer. This used to fall through to the catch-all
+            // and evaluate to unit, so `null.is_null()` was "method not found
+            // on `void`" (#935).
+            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
+
             ExprKind::Ident(name) => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
@@ -1183,12 +1188,18 @@ impl Interpreter {
                             expr.span
                         )),
                     },
-                    // mem.owned/OW3: `*owned` is a borrow, not a raw-pointer
-                    // read. `Owned<T>` is transparent — the value already is
-                    // the T — so the deref hands it straight back. A raw
-                    // pointer never reaches the interpreter to begin with;
-                    // `unsafe` code is native-only.
-                    UnaryOp::Deref => Ok(val),
+                    // Two different derefs share the `*` spelling. On a raw
+                    // pointer it's a read through the pointer, the same thing
+                    // `p.read()` does. On anything else it's `*owned`, a
+                    // borrow: `Owned<T>` is transparent — the value already is
+                    // the T — so the deref hands it straight back
+                    // (mem.owned/OW3).
+                    UnaryOp::Deref => match &val {
+                        Value::RawPtr(p) => p
+                            .read()
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span)),
+                        _ => Ok(val),
+                    },
                     // `own` heap-allocates on native (#739); the interpreter's
                     // values are already independent of any stack frame, so
                     // there's nothing further to do here — same OW5 transparency
@@ -1843,19 +1854,32 @@ impl Interpreter {
                         let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
                         Ok(Value::vec(slice))
                     }
+                    // `[]` on a string means bytes in both forms
+                    // (std.strings/U1b): a range slices, a scalar index reads
+                    // one byte. It used to yield the character at index `i`,
+                    // scanning from byte zero, so the same bracket counted two
+                    // different units. Indexing panics out of range; `byte_at`
+                    // is the probe.
                     (Value::String(s), Value::Int(i, _)) => {
                         let str_val = s.lock().unwrap();
-                        match str_val.chars().nth(*i as usize) {
-                            Some(c) => Ok(Value::Char(c)),
+                        match usize::try_from(*i).ok().and_then(|n| str_val.as_bytes().get(n)) {
+                            Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
                             None => Err(RuntimeDiagnostic::new(
                                 RuntimeError::Panic(format!(
-                                    "string index out of bounds: index is {} but length is {}",
-                                    i, str_val.chars().count()
+                                    "string index out of bounds: index is {} but length is {} bytes",
+                                    i,
+                                    str_val.len()
                                 )),
                                 expr.span,
                             )),
                         }
                     }
+                    // Byte offsets (std.strings/U1, S5). Out of range clamps;
+                    // an offset inside a character panics, because the result
+                    // would be a `string` that isn't valid UTF-8. Both have to
+                    // match `rask_string_substr` — an empty range used to reach
+                    // Rust's slicing and abort the process with a Rust panic
+                    // instead of a Rask one.
                     (Value::String(s), Value::Range { start, end, inclusive, .. }) => {
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
@@ -1866,7 +1890,20 @@ impl Interpreter {
                             let e = if *inclusive { *end + 1 } else { *end };
                             e.max(0).min(len) as usize
                         };
-                        let slice = &str_val[start_idx..end_idx];
+                        if start_idx >= end_idx {
+                            return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                        }
+                        let Some(slice) = str_val.get(start_idx..end_idx) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!(
+                                    "s[{start_idx}..{end_idx}] cuts a character in half - \
+                                     these are byte offsets, and one of them lands inside \
+                                     a multi-byte character. `char_indices()` gives offsets \
+                                     that don't."
+                                )),
+                                expr.span,
+                            ));
+                        };
                         Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
                     }
                     (
@@ -2168,7 +2205,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, expr.span))
                             }
                         }
                         "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
@@ -2179,7 +2216,7 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
@@ -2696,6 +2733,12 @@ impl Interpreter {
             struct WithInfo {
                 source: WithSource,
                 name: String,
+                /// ST1: bound to a working copy that commits as one move on a
+                /// non-panic exit and is discarded on unwind. Every `with` over
+                /// a sync box already works on a copy here and writes it back at
+                /// block exit — staged is that, minus the writeback when the
+                /// body panicked (ST3).
+                staged: bool,
             }
 
             let mut infos: Vec<WithInfo> = Vec::new();
@@ -2715,8 +2758,8 @@ impl Interpreter {
                     // older spelling.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
-                        (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock" | "read" | "write") => {
+                        (Value::Shared(s), "write" | "staged") => WithSource::SharedWrite(Arc::clone(s)),
+                        (Value::RaskMutex(m), "lock" | "read" | "write" | "staged") => {
                             WithSource::Mutex(Arc::clone(m))
                         }
                         (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),
@@ -2748,9 +2791,14 @@ impl Interpreter {
                     }
                 };
 
+                let staged = matches!(
+                    &binding.source.kind,
+                    ExprKind::MethodCall { method, .. } if method == "staged"
+                );
                 infos.push(WithInfo {
                     source,
                     name: binding.name.clone(),
+                    staged,
                 });
             }
 
@@ -2793,7 +2841,13 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        // ST1: staged works on a copy. A plain `Value::clone`
+                        // shares the `Arc` behind a struct or a Vec, so writes
+                        // through the binding land in the box whatever the
+                        // writeback below decides — deep_clone is what makes the
+                        // discard on unwind mean anything.
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         mutex_guards.push((info.name.clone(), guard));
                     }
                     WithSource::Cell(c) => {
@@ -2819,7 +2873,8 @@ impl Interpreter {
                             RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
                             expr.span,
                         ))?;
-                        self.env.define(info.name.clone(), guard.clone());
+                        let bound = if info.staged { guard.deep_clone() } else { guard.clone() };
+                        self.env.define(info.name.clone(), bound);
                         rw_write_guards.push((info.name.clone(), guard));
                     }
                 }
@@ -2836,12 +2891,24 @@ impl Interpreter {
                 }
             }
 
+            // ST3: a staged binding's copy is discarded on unwind, so survivors
+            // see the last committed state and never a torn one. Every other
+            // binding flushes (U2: unwind releases access but keeps writes).
+            let unwinding = matches!(&body_result, Err(d) if d.error.is_panic());
+            let discard: std::collections::HashSet<&str> = infos
+                .iter()
+                .filter(|i| i.staged && unwinding)
+                .map(|i| i.name.as_str())
+                .collect();
+
             // Writeback (U2: mutations made before the panic are flushed,
             // not rolled back). Read locks never write back — the checker
             // rejects mutation through them (conc.sync/R1).
             let mut writeback_err: Option<RuntimeDiagnostic> = None;
             for info in &infos {
-                if !matches!(info.source, WithSource::SharedRead(_)) {
+                if !matches!(info.source, WithSource::SharedRead(_))
+                    && !discard.contains(info.name.as_str())
+                {
                     if let Some(updated) = self.env.get(&info.name).cloned() {
                         match &info.source {
                             WithSource::Index { collection, key } => {
@@ -2864,6 +2931,9 @@ impl Interpreter {
 
             // Write back to Mutex/Cell guards
             for (name, mut guard) in mutex_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }
@@ -2871,6 +2941,9 @@ impl Interpreter {
 
             // Write back to Shared write guards
             for (name, mut guard) in rw_write_guards {
+                if discard.contains(name.as_str()) {
+                    continue;
+                }
                 if let Some(updated) = self.env.get(&name) {
                     *guard = updated.clone();
                 }

@@ -1,0 +1,23 @@
+title = "Digit arithmetic"
+horizon = "day"
+concepts = ["integer math", "recursion", "while"]
+issues = []
+
+contract = """
+func digit_sum(n: i64) -> i64
+func reverse_digits(n: i64) -> i64
+func is_palindrome(n: i64) -> bool
+"""
+
+prompt = """
+Three small numeric routines, all working on the decimal digits of a number.
+
+- `digit_sum` adds the digits. Negative input uses the digits of the magnitude,
+  so `digit_sum(-123)` is 6.
+- `reverse_digits` reverses them and keeps the sign: `reverse_digits(-120)` is
+  -21.
+- `is_palindrome` is true when the digits read the same both ways. A negative
+  number is never a palindrome.
+
+Assume the input fits comfortably in i64 — no overflow handling needed.
+"""
