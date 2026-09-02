@@ -110,6 +110,22 @@ impl<'a> MirLowerer<'a> {
             Some(Type::Array { .. }) | Some(Type::Slice(_)) => return true,
             Some(Type::UnresolvedGeneric { name, .. }) if name == "Vec" => return true,
             Some(Type::UnresolvedNamed(name)) if name == "Vec" => return true,
+            // A field access (`t.deps`, `pool[h].field`) resolves through the
+            // checker's `HasField` constraint to the *registered* form, not the
+            // unresolved one above — without this, `.filter()`/`.map()` on any
+            // Vec-typed field fell through to the raw `Vec_filter`/`Vec_map`
+            // builtins, which don't pass the closure's env pointer and crash.
+            // `type_names` stores the declaration name with its parameter list
+            // attached ("Vec<T>"), same as `collection_elem_type` in the checker.
+            Some(Type::Generic { base, .. })
+                if self
+                    .ctx
+                    .type_names
+                    .get(base)
+                    .is_some_and(|n| n.split('<').next() == Some("Vec")) =>
+            {
+                return true;
+            }
             _ => {}
         }
         // The checker doesn't type every Ident node — an annotated

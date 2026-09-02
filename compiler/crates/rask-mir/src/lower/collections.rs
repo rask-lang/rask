@@ -236,13 +236,13 @@ impl<'a> MirLowerer<'a> {
         // A `Vec<T>` field is an array, not a number. Without this the field
         // went through json_buf_add_i64 and `{"items": [...]}` came out as
         // `{"items":{}}`.
+        //
+        // `field_ty` comes from the struct's own declaration (via
+        // `StructLayout`), not from the checker's inferred node types — it
+        // stays in the pre-resolve `UnresolvedGeneric` spelling, so there's no
+        // resolved `Generic { base, .. }` form to match here.
         let vec_args = match field_ty {
             Type::UnresolvedGeneric { name, args } if name == "Vec" => Some(args),
-            Type::Generic { base, args }
-                if self.ctx.type_names.get(base).map(|n| n == "Vec").unwrap_or(false) =>
-            {
-                Some(args)
-            }
             _ => None,
         };
         let vec_elem = vec_args.and_then(|args| {
