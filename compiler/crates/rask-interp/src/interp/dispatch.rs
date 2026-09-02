@@ -347,6 +347,13 @@ impl Interpreter {
     pub(crate) fn nominal_type_name(v: &Value) -> Option<String> {
         Some(match v {
             Value::Struct(s) => s.lock().unwrap().name.clone(),
+            // A callable is a `Sequence<T>` as far as method lookup goes: that
+            // is the type the adapters and terminals are written on, and a
+            // closure of the right shape *is* one (type.sequence/SEQ36). The
+            // checker has already refused any other method, and the primitive
+            // layer's error is the one reported, so a genuine typo still reads
+            // "no method `foo` on type `closure`".
+            Value::Closure { .. } | Value::Function { .. } => "Sequence".to_string(),
             Value::Enum { name, .. } => name.clone(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),

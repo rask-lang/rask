@@ -2283,9 +2283,22 @@ impl<'a> FunctionBuilder<'a> {
         // land at PAYLOAD_OFFSET of the Option slot, not just the
         // pointer in the first 8 bytes — otherwise field reads
         // through the Option's payload return garbage.
+        // A borrowed aggregate's variable points into the frame that built the
+        // closure, so every write has to go through that pointer. Replacing the
+        // variable would only retarget this frame's copy of it, which is how
+        // `mut best: T? = none` written from inside a closure stayed `none` and
+        // took `find`, `reduce`, `min_by` and `max_by` with it (#1038).
+        let borrowed_addr: Option<Value> = if ctx.addr_taken.borrowed.contains(dst)
+            && dst_local.ty.passed_by_address()
+        {
+            ctx.var_map.get(dst).map(|v| builder.use_var(*v))
+        } else {
+            None
+        };
+
         let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
             && !needs_copy
-            && ctx.stack_slot_map.contains_key(dst);
+            && (ctx.stack_slot_map.contains_key(dst) || borrowed_addr.is_some());
         // If the source is an aggregate and dst is Option<aggregate>,
         // we need full-aggregate wrap (tag + memcpy payload), not the
         // scalar wrap.
@@ -2341,11 +2354,19 @@ impl<'a> FunctionBuilder<'a> {
         if needs_copy {
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
                 Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
-            } else if matches!(&dst_local.ty,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+            } else if borrowed_addr.is_some()
+                || matches!(&dst_local.ty,
+                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
             {
-                // Dst variable holds an external pointer (mutate-param) —
-                // copy bytes through it instead of overwriting the pointer.
+                // Dst variable holds an external pointer — a `mutate` param, or
+                // an aggregate a closure captured by reference. Copy the bytes
+                // through it; assigning the variable would replace the pointer
+                // and the write would land nowhere the caller looks.
+                //
+                // The type list alone wasn't enough once captures started
+                // borrowing (#1038): `mut best: T? = none` written from inside
+                // a closure is an `Option`, which isn't on it, so `find`,
+                // `reduce`, `min_by` and `max_by` all answered `none`.
                 let size = Self::resolve_type_alloc_size(
                     &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
                 ).unwrap_or(0);
@@ -2366,16 +2387,44 @@ impl<'a> FunctionBuilder<'a> {
             }
         } else if wrap_as_some_aggregate {
             // Some(aggregate): tag + payload bytes copied at PAYLOAD_OFFSET.
-            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
             let inner_size = if let MirType::Option(inner) = &dst_local.ty {
                 Self::resolve_type_alloc_size(
                     inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
                 ).unwrap_or(inner.size())
             } else { 0 };
-            Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+            match (ctx.stack_slot_map.get(dst), borrowed_addr) {
+                (Some((dst_ss, _)), _) => {
+                    Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+                }
+                (None, Some(addr)) => {
+                    let tag = builder.ins().iconst(types::I64, 0);
+                    builder.ins().store(MemFlags::new(), tag, addr, crate::layouts::TAG_OFFSET);
+                    Self::copy_bytes(
+                        builder, val, 0, addr, crate::layouts::PAYLOAD_OFFSET, inner_size,
+                    );
+                }
+                (None, None) => {}
+            }
         } else if wrap_as_some {
-            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
-            Self::build_some(builder, *dst_ss, val);
+            match (ctx.stack_slot_map.get(dst), borrowed_addr) {
+                (Some((dst_ss, _)), _) => Self::build_some(builder, *dst_ss, val),
+                (None, Some(addr)) => {
+                    let tag = builder.ins().iconst(types::I64, 0);
+                    builder.ins().store(MemFlags::new(), tag, addr, crate::layouts::TAG_OFFSET);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), val, addr, crate::layouts::PAYLOAD_OFFSET);
+                }
+                (None, None) => {}
+            }
+        } else if let Some(addr) = borrowed_addr {
+            // Aggregate to aggregate through the pointer — an `Option` assigned
+            // from another `Option`, say. `def_var` here would swap this
+            // frame's pointer and leave the borrowed storage untouched.
+            let size = Self::resolve_type_alloc_size(
+                &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
+            ).unwrap_or(dst_local.ty.size());
+            Self::copy_bytes(builder, val, 0, addr, 0, size);
         } else {
             let var = ctx.var_map.get(dst)
                 .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;

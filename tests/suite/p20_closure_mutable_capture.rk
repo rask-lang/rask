@@ -126,6 +126,43 @@ test "mem.closures/MC1 — an element write through a captured Vec is visible" {
     assert w[1] == 0
 }
 
+// --- whole-value writes to a captured aggregate ---
+// The aggregate half of the `a = 1` row. A field write goes through a place and
+// always worked; replacing the whole value is a fresh SSA version, and native
+// gave that version storage of its own — so the write landed somewhere the
+// caller never looked. An `Option` is the shape that found it: `mut best: T? =
+// none` written from inside a closure is what `find`, `reduce`, `min_by` and
+// `max_by` are all built on, and every one of them answered `none`.
+
+test "mem.closures/MC1 — a write to a captured optional is visible" {
+    mut hit: i32? = none
+    let record = |x| { hit = x }
+    record(4)
+    assert hit! == 4
+}
+
+test "mem.closures/MC1 — replacing a captured struct wholesale is visible" {
+    mut c = Counter { n: 1 }
+    let reset = || { c = Counter { n: 9 } }
+    reset()
+    assert c.n == 9
+}
+
+test "mem.closures/MC4 — an optional accumulates across calls" {
+    mut best: i32? = none
+    let keep_larger = |x| {
+        if best? as seen {
+            if x > seen { best = x }
+        } else {
+            best = x
+        }
+    }
+    keep_larger(3)
+    keep_larger(9)
+    keep_larger(5)
+    assert best! == 9
+}
+
 // --- a captured container, mutated structurally ---
 
 test "mem.closures/MC1 — pushing into a captured Vec is visible outside" {

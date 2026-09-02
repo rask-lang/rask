@@ -85,9 +85,7 @@ pub fn wants_address(func: &MirFunction) -> AddrTaken {
                 MirStmtKind::ClosureCreate { captures, .. }
                 | MirStmtKind::EnsureHookRegister { captures, .. } => {
                     for c in captures.iter().filter(|c| c.by_ref) {
-                        if is_scalar(func, c.local_id) {
-                            found.owned.insert(c.local_id);
-                        }
+                        found.owned.insert(c.local_id);
                     }
                 }
                 MirStmtKind::LoadCapture { dst, by_ref: true, .. } => {
@@ -132,7 +130,14 @@ pub fn analyze(func: &MirFunction) -> AddrTaken {
     }
     let written = locals_written_as_values(func);
     AddrTaken {
-        owned: wanted.owned.difference(&written).copied().collect(),
+        // Only a scalar needs a slot of its own here; an aggregate local
+        // already has one and its variable already holds the address.
+        owned: wanted
+            .owned
+            .difference(&written)
+            .copied()
+            .filter(|id| is_scalar(func, *id))
+            .collect(),
         borrowed: wanted.borrowed.difference(&written).copied().collect(),
     }
 }
@@ -392,21 +397,33 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
         id
     };
 
-    // Only scalars need rewriting. An aggregate local is addressed already —
-    // its variable holds a pointer and codegen's reads and writes go through
-    // it — so a by-ref capture of one needs nothing here.
+    // Every address-taken local has to stop being written as a value, whatever
+    // its type. Otherwise SSA versions it, each version gets storage of its
+    // own, and the capture points at one while the write lands in another —
+    // which is how `mut hit: T? = none` written from inside a closure stayed
+    // `none` while the same write to an `i32` worked.
+    //
+    // Reads are the part that differs by type. A scalar's variable holds its
+    // value, so a read becomes a load. An aggregate's variable holds its
+    // address already and every read of one goes through that address, so
+    // reads are left as they are.
     let types: Vec<(LocalId, MirType)> = func
         .locals
         .iter()
         .chain(func.params.iter())
         .filter(|l| taken.contains(l.id))
-        .filter(|l| !l.ty.passed_by_address() && l.ty != MirType::Void)
+        .filter(|l| l.ty != MirType::Void)
         .map(|l| (l.id, l.ty.clone()))
         .collect();
     if types.is_empty() {
         return taken;
     }
     let rewritable: HashSet<LocalId> = types.iter().map(|(id, _)| *id).collect();
+    let load_on_read: HashSet<LocalId> = types
+        .iter()
+        .filter(|(_, ty)| !ty.passed_by_address())
+        .map(|(id, _)| *id)
+        .collect();
     let ty_of = |id: LocalId| -> MirType {
         types.iter().find(|(i, _)| *i == id).map(|(_, t)| t.clone()).unwrap()
     };
@@ -429,7 +446,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
             // local loads the old value before storing the new one.
             let span = stmt.span;
             uses::visit_stmt_use_locals_mut(&mut stmt, &mut |id, kind| {
-                if kind == UseKind::AddressOf || !rewritable.contains(id) {
+                if kind == UseKind::AddressOf || !load_on_read.contains(id) {
                     return;
                 }
                 let ty = ty_of(*id);
@@ -476,7 +493,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
         let mut loads: Vec<MirStmt> = Vec::new();
         let span = block.terminator.span;
         uses::visit_terminator_use_locals_mut(&mut block.terminator, &mut |id, kind| {
-            if kind == UseKind::AddressOf || !taken.contains(*id) {
+            if kind == UseKind::AddressOf || !load_on_read.contains(id) {
                 return;
             }
             let ty = ty_of(*id);

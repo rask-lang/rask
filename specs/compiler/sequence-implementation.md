@@ -24,10 +24,10 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 0 — Infer mutable captures (`mem.closures/MC1`, #1038) | ✓ done | `60f338b` interp, `6fe0847` native |
 | 1 — Parser `\|mutate x: T\|` | ✓ done | `9f2f831` |
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
-| 3 — MIR for-loop lowering for Sequence | pending | — |
-| 4 — Interpreter for-loop over a Sequence | pending | — |
-| 5 — Adapters + terminals as `extend Sequence<T>` | pending | — |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | pending | — |
+| 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d` |
+| 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
+| 5 — Adapters + terminals as `extend Sequence<T>` | written, blocked on stage 6 — #1046 | — |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | **next, and it gates stage 5** | — |
 | 7 — `Range<T>` as one nominal type with `iter()` (#920) | pending | — |
 | 8 — Channel `stream()` method | pending | — |
 | 9 — Retire `Iterator<Item>` trait | pending | — |
@@ -56,6 +56,12 @@ The same lie — `Ref` on a scalar spilling a copy — was also #899, so `mutate
 | A stale `rask` binary fails to link (#1041) | Not a compiler bug. The runtime source list is a compile-time constant, so a `.c` file added since the binary was built isn't linked. `cargo build --release -p rask-cli` |
 
 One thing stages 3–7 have to work around rather than rely on: a closure that *escapes* its frame still copies its captures, and a returned one is stack-allocated in a frame that has already been popped (#1045). Adapters must not depend on writing through a capture of a returned closure.
+
+### Stage 6 moved to the front, because stage 5 needs it
+
+Stage 5's bodies are written and correct on both backends (#1046) and still can't land. `Vec.iter()` returns `Iterator<T>`, `Iterator` is a compiler-provided trait with no `map` of its own, so the moment `Sequence.map` has a body the chain `vec.iter().map(…)` resolves to it — and monomorphization emits the uninstantiated `Sequence_map` template, with `T` unbound, which MIR can't lower. Native fuses those chains, so the template is dead code that fails to compile, and it takes four passing tests with it.
+
+That is stage 6's job to fix properly rather than something to filter out: once the collections return `Sequence<T>`, those chains *are* Sequence chains and the instantiation is derived from the receiver. So the order is 6 then 5, not 5 then 6.
 
 ## Stages
 

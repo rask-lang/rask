@@ -1496,7 +1496,7 @@ impl TypeChecker {
     /// shape still fills a Sequence-typed slot with no constructor (SEQ36), so
     /// the checker has to know the shape the name stands for. Same arrangement
     /// as `string`: a compiler type whose representation the compiler knows.
-    fn sequence_element(&self, ty: &Type) -> Option<Type> {
+    pub(super) fn sequence_element(&self, ty: &Type) -> Option<Type> {
         let (base, args) = match ty {
             Type::Generic { base, args } => (Some(*base), args),
             Type::UnresolvedGeneric { name, args } => (self.types.get_type_id(name), args),
@@ -1517,7 +1517,7 @@ impl TypeChecker {
 
     /// The function type a sequence over `elem` is written as:
     /// `func(func(elem) -> bool)`.
-    fn sequence_fn_shape(elem: Type) -> Type {
+    pub(super) fn sequence_fn_shape(elem: Type) -> Type {
         Type::Fn {
             params: vec![Type::Fn {
                 params: vec![elem],

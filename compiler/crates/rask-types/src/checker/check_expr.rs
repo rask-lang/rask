@@ -2492,6 +2492,17 @@ impl TypeChecker {
             func_ty
         };
 
+        // type.sequence/SEQ36: calling a `Sequence<T>` is calling the function
+        // it stands for. Expanding it here is what types the yield closure —
+        // `self(|item| { … })` inside an adapter has nothing else to say what
+        // `item` is, and the `Type::Fn` arm below is what propagates it.
+        // Unifying the two shapes isn't enough on its own: unification happens
+        // once the argument already has a type, and this is where it gets one.
+        let func_ty = match self.sequence_element(&func_ty) {
+            Some(elem) => Self::sequence_fn_shape(elem),
+            None => func_ty,
+        };
+
         match func_ty {
             Type::Fn { ref params, ref ret } => {
                 if params.is_empty() && !args.is_empty() {
