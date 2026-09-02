@@ -3822,8 +3822,17 @@ impl<'a> MirLowerer<'a> {
     fn vec_elem_raw_type<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
         let args = match ty {
             Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            // `type_names` stores the declaration name with its parameter list
+            // attached ("Vec<T>"), not the bare "Vec" — an exact match here
+            // never fired, so a `Vec<any Trait>` field (which resolves to this
+            // form through the checker's `HasField` constraint) lost its
+            // trait-object element type and segfaulted iterating natively.
             Type::Generic { base, args }
-                if self.ctx.type_names.get(base).is_some_and(|n| n == "Vec") => args,
+                if self
+                    .ctx
+                    .type_names
+                    .get(base)
+                    .is_some_and(|n| n.split('<').next() == Some("Vec")) => args,
             _ => return None,
         };
         match args.first()? {
