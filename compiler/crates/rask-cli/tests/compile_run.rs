@@ -943,6 +943,26 @@ fn error_annotation_against_a_container_initializer() {
 }
 
 #[test]
+fn error_catch_void_body_blames_itself_not_a_later_use() {
+    // #876: `catch e => { println(...) }` supplies a void fallback, which is
+    // only legal when the value's success type is actually void. When that
+    // type was still open, the checker used to *decide* it from this catch's
+    // own void body — so a later, correctly-typed use of the same value
+    // (`a catch _ => -1`, a real `i32` fallback) got blamed for the mismatch
+    // instead of the void-bodied catch that's actually wrong.
+    let (failed, out) = compile_error_output("catch_void_body_blame.rk");
+    assert!(failed, "a void catch on a non-void success type must be rejected: {}", out);
+    assert!(
+        out.contains("expected `i32`, found `void`"),
+        "should name the real success type, not void: {}", out,
+    );
+    assert!(
+        out.contains("catch_void_body_blame.rk:12:5"),
+        "should blame the void-bodied catch's own line, not the later use: {}", out,
+    );
+}
+
+#[test]
 fn error_module_used_without_import() {
     // #723: the stdlib's source is resolved alongside the program and declares
     // each module as a plain type (`struct math { }`), so the name was in scope

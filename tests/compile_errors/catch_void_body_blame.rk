@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER14a: `catch` supplies a fallback of the success type, so a body that
+// yields nothing (void) is only legal when the success type actually is
+// void. When the success type is still open (here, `"3".parse()`'s `T`),
+// the checker used to *decide* it from whichever catch it saw first instead
+// of checking against it — so the void-bodied catch below (the actual
+// mistake) went unreported, and the later interpolation, which correctly
+// hands back an `i64`, was blamed instead (#876).
+
+func main() {
+    let a = "3".parse()
+    a catch e => {                     // ERROR: expected i32, found void
+        println("bad")
+    }
+    println("A {a catch _ => -1}")
+}
