@@ -193,6 +193,9 @@ struct CodegenCtx<'a> {
     panicking_fns: &'a HashSet<String>,
     internal_fns: &'a HashSet<String>,
     stack_slot_map: &'a HashMap<LocalId, (StackSlot, u32)>,
+    /// Locals that hold an address rather than a value — see
+    /// `rask_mir::transform::addr_taken`.
+    addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
     block_map: &'a HashMap<BlockId, Block>,
     build_mode: BuildMode,
     source_file: Option<&'a str>,
@@ -374,10 +377,23 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Build the Cranelift IR from MIR.
     pub fn build(&mut self) -> CodegenResult<()> {
+        // A scalar whose address a closure environment holds lives in memory,
+        // not in an SSA value — `transform::addr_taken` has already rewritten
+        // its reads to loads and its writes to stores, so all that is left here
+        // is to give it the storage those refer to. `analyze` is the same
+        // function the rewrite used, so the two cannot disagree about which
+        // locals hold a value and which hold an address (#1038).
+        let addr_taken = rask_mir::transform::addr_taken::analyze(self.mir_fn);
+
         // Pre-compute stack allocation sizes before builder borrows self.func.
         // Entries: (local_id, byte size) for each aggregate local.
-        let stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
+        let mut stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
             .filter(|l| !l.is_param)
+            // A borrowed local's storage is the frame that built the closure,
+            // so it gets no slot here. Leaving it one puts a slot address in
+            // `stack_slot_map` while the variable points at the caller's data,
+            // and each site reads whichever of the two it happens to consult.
+            .filter(|l| !addr_taken.borrowed.contains(&l.id))
             .filter_map(|l| {
                 let size = Self::resolve_type_alloc_size(
                     &l.ty, self.struct_layouts, self.enum_layouts,
@@ -385,6 +401,15 @@ impl<'a> FunctionBuilder<'a> {
                 size.filter(|&s| s > 0).map(|s| (l.id, s))
             })
             .collect();
+        // An owned address-taken scalar needs a slot of its own — that is the
+        // storage the rewritten loads and stores refer to. `params` is a subset
+        // of `locals`, so iterating only `locals` covers both without listing
+        // a parameter twice.
+        for local in self.mir_fn.locals.iter() {
+            if addr_taken.owned.contains(&local.id) {
+                stack_allocs.push((local.id, local.ty.size().max(8)));
+            }
+        }
 
         // Collect cleanup-only blocks (appear in CleanupReturn chains)
         // and their transitive sub-blocks (handler/done blocks reachable
@@ -476,7 +501,13 @@ impl<'a> FunctionBuilder<'a> {
         // Declare all variables (locals)
         for (idx, local) in self.mir_fn.locals.iter().enumerate() {
             let var = Variable::new(idx);
-            let ty = mir_to_cranelift_type(&local.ty)?;
+            // An address-taken scalar's variable holds the address of its slot,
+            // not the value — same convention an aggregate local already uses.
+            let ty = if addr_taken.contains(local.id) {
+                types::I64
+            } else {
+                mir_to_cranelift_type(&local.ty)?
+            };
             builder.declare_var(var, ty);
             self.var_map.insert(local.id, var);
         }
@@ -486,18 +517,19 @@ impl<'a> FunctionBuilder<'a> {
             .ok_or_else(|| CodegenError::UnsupportedFeature("Entry block not found".to_string()))?;
         builder.switch_to_block(*entry_block);
 
-        // Append parameters to entry block and bind to variables
+        // Append parameters to the entry block. Binding them is a separate step
+        // below: an address-taken parameter has to be stored into its slot, and
+        // the slot doesn't exist until the loop after this one has run.
+        let mut incoming: Vec<(LocalId, Value)> = Vec::with_capacity(self.mir_fn.params.len());
         for param in &self.mir_fn.params {
             let param_ty = mir_to_cranelift_type(&param.ty)?;
             let block_param = builder.append_block_param(*entry_block, param_ty);
-            let var = self.var_map.get(&param.id)
-                .ok_or_else(|| CodegenError::UnsupportedFeature("Parameter variable not found".to_string()))?;
-            builder.def_var(*var, block_param);
+            incoming.push((param.id, block_param));
         }
 
-        // Allocate stack slots for aggregate locals (structs, enums, arrays).
-        // These types are represented as pointers (i64) — the variable holds
-        // the address of the stack-allocated storage.
+        // Allocate stack slots for aggregate locals (structs, enums, arrays)
+        // and for address-taken scalars. These are represented as pointers
+        // (i64) — the variable holds the address of the storage.
         for (local_id, size) in &stack_allocs {
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -508,6 +540,22 @@ impl<'a> FunctionBuilder<'a> {
             let addr = builder.ins().stack_addr(types::I64, ss, 0);
             let var = self.var_map[local_id];
             builder.def_var(var, addr);
+        }
+
+        // Bind parameters.
+        for (param_id, block_param) in incoming {
+            let var = *self.var_map.get(&param_id)
+                .ok_or_else(|| CodegenError::UnsupportedFeature("Parameter variable not found".to_string()))?;
+            if let Some((ss, _)) = self.stack_slot_map.get(&param_id) {
+                if addr_taken.owned.contains(&param_id) {
+                    // The variable holds the slot address, so the argument goes
+                    // *into* the slot — `func f(n: i32) { let c = || { n = 1 } }`
+                    // has to start from the value the caller passed.
+                    builder.ins().stack_store(block_param, *ss, 0);
+                    continue;
+                }
+            }
+            builder.def_var(var, block_param);
         }
 
         // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
@@ -538,6 +586,7 @@ impl<'a> FunctionBuilder<'a> {
             panicking_fns: self.panicking_fns,
             internal_fns: self.internal_fns,
             stack_slot_map: &self.stack_slot_map,
+            addr_taken: &addr_taken,
             block_map: &self.block_map,
             build_mode: self.build_mode,
             source_file: self.mir_fn.source_file.as_deref(),
@@ -2037,8 +2086,9 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().load(tag_cranelift_ty, flags, ptr_val, tag_offset))
             }
 
-            // Address-of: return the pointer that the local already holds (for aggregates)
-            // or spill a scalar to a stack slot and return its address.
+            // Address-of: return the pointer that the local already holds (for aggregates
+            // and address-taken scalars) or spill a scalar to a stack slot and return
+            // its address.
             MirRValue::Ref(local_id) => {
                 let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
@@ -2053,7 +2103,11 @@ impl<'a> FunctionBuilder<'a> {
                          | MirType::Result { .. } | MirType::Union(_))
                 );
 
-                if is_aggregate {
+                // A scalar that lives in a slot is addressed the same way. The
+                // spill below is a *copy*, so handing back its address is only
+                // right for a local nothing writes through — which is why a
+                // captured scalar's writes used to vanish (#1038).
+                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address
@@ -2705,7 +2759,13 @@ impl<'a> FunctionBuilder<'a> {
         let mut env_layout = crate::closures::ClosureEnvLayout::new();
         for c in captures {
             let local = ctx.locals.iter().find(|l| l.id == c.local_id);
-            let (real_size, is_aggregate) = if let Some(l) = local {
+            let (real_size, is_aggregate) = if c.by_ref {
+                // An address is a word whatever it points at, and MIR laid the
+                // env out on that basis. Re-deriving a real aggregate size here
+                // would put the next capture at a different offset than the
+                // `LoadCapture` that reads it.
+                (8, false)
+            } else if let Some(l) = local {
                 if let Some(alloc_size) = Self::resolve_type_alloc_size(
                     &l.ty, ctx.struct_layouts, ctx.enum_layouts,
                 ) {
@@ -2716,7 +2776,7 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 (c.size, false)
             };
-            env_layout.add_capture(c.local_id, real_size, is_aggregate);
+            env_layout.add_capture(c.local_id, real_size, is_aggregate, c.by_ref);
         }
 
         // Get function pointer for the closure function
@@ -6017,6 +6077,19 @@ impl<'a> FunctionBuilder<'a> {
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Option<Value>> {
+        // A borrowed aggregate has no slot here — its storage is the frame that
+        // built the closure — so the load goes through whatever address the
+        // variable holds. Without this `|| { return s }` on a word-sized struct
+        // returned the pointer and the caller read it as the value.
+        if let Some((addr, size)) = Self::borrowed_aggregate_return(builder, value, ctx) {
+            if size <= 8 && !matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                return Ok(Some(builder.ins().load(types::I64, MemFlags::new(), addr, 0)));
+            }
+            // Wider than a word, or a component that needs wrapping: hand back
+            // the address and let the caller copy, exactly as the slot path does.
+            return Ok(Some(addr));
+        }
+
         if let Some(stack_info) = Self::return_stack_info(value, ctx.stack_slot_map) {
             // For small aggregate return values (≤8 bytes) in stack slots:
             //   - If the function return type is Result/Option, the small value
@@ -6201,6 +6274,25 @@ impl<'a> FunctionBuilder<'a> {
             None => builder.ins().return_(&[]),
         };
         Ok(())
+    }
+
+    /// The address and size of a returned aggregate whose storage this frame
+    /// doesn't own — a by-ref closure capture. `None` for anything else.
+    fn borrowed_aggregate_return(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> Option<(Value, u32)> {
+        let Some(MirOperand::Local(id)) = value else { return None };
+        if !ctx.addr_taken.borrowed.contains(id) {
+            return None;
+        }
+        let local = ctx.locals.iter().find(|l| l.id == *id)?;
+        let size = Self::resolve_type_alloc_size(
+            &local.ty, ctx.struct_layouts, ctx.enum_layouts,
+        )?;
+        let var = ctx.var_map.get(id)?;
+        Some((builder.use_var(*var), size))
     }
 
     /// Check if a return value comes from a stack-allocated aggregate local.

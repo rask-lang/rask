@@ -201,16 +201,32 @@ impl<'a> MirLowerer<'a> {
         let closure_name = format!("{}__closure_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
 
-        // 3. Build the closure environment layout
+        // 3. Build the closure environment layout.
+        //
+        // A scope-limited closure borrows what it captures (mem.closures/MC1):
+        // the env holds each variable's address and the body reads and writes
+        // through it, so `let bump = || { n = n + 1 }` bumps the caller's `n`.
+        // Copying instead is what lost every such write on native (#1038).
+        //
+        // `own` copies. It captures by move and outlives its creation scope, so
+        // pointing into a dead frame is exactly what it must not do. Same split
+        // the interpreter draws between `capture_shared` and `capture_snapshot`.
+        //
+        // Borrowing is safe here because a scope-limited closure is never heap
+        // allocated (`heap: is_own`, step 5) and so cannot outlive the frame it
+        // points into.
+        let by_ref = !is_own && !for_spawn;
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
-            let size = ty.size();
+            // An address is a word regardless of what it points at.
+            let size = if by_ref { 8 } else { ty.size() };
             let aligned_offset = (env_offset + 7) & !7;
             captures.push(ClosureCapture {
                 local_id: *local_id,
                 offset: aligned_offset,
                 size,
+                by_ref,
             });
             env_offset = aligned_offset + size;
         }
@@ -325,7 +341,7 @@ impl<'a> MirLowerer<'a> {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-                by_ref: false,
+                by_ref,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
@@ -475,7 +491,11 @@ impl<'a> MirLowerer<'a> {
         let spawn_name = format!("{}__spawn_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
 
-        // 3. Build the closure environment layout
+        // 3. Build the spawn environment layout.
+        //
+        // By value: a task must not alias its parent's locals. Same reason the
+        // interpreter gives a spawned closure `capture_snapshot` rather than
+        // `capture_shared`.
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
@@ -485,6 +505,7 @@ impl<'a> MirLowerer<'a> {
                 local_id: *local_id,
                 offset: aligned_offset,
                 size,
+                by_ref: false,
             });
             env_offset = aligned_offset + size;
         }

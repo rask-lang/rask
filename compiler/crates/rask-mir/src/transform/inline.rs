@@ -63,6 +63,7 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
         .iter()
         .filter(|f| should_inline(&cg, &f.name))
         .filter(|f| !writers.get(&f.name).is_some_and(|s| !s.is_empty()))
+        .filter(|f| !builds_borrowing_closure(f))
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 
@@ -76,6 +77,32 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
     }
 
     inline_metadata
+}
+
+/// True if the function builds a closure that borrows what it captures.
+///
+/// Such a function can't be inlined. `transform::addr_taken` has already given
+/// each captured scalar a home in memory and rewritten the body's reads and
+/// writes to go through it, but it ran before this pass. Copying the statements
+/// into a caller moves the `ClosureCreate` away from that preparation: the
+/// caller's fresh locals hold values, so the closure would take the address of
+/// a variable nothing made memory-resident, and codegen would find a local
+/// declared as a pointer being assigned an `i32` (#1038).
+///
+/// Same shape as the `mutate`-parameter exclusion below — inlining copies the
+/// argument into a fresh local, and anything that depended on the original
+/// storage is left pointing at the wrong thing.
+fn builds_borrowing_closure(func: &MirFunction) -> bool {
+    func.blocks
+        .iter()
+        .flat_map(|b| &b.statements)
+        .any(|s| match &s.kind {
+            MirStmtKind::ClosureCreate { captures, .. }
+            | MirStmtKind::EnsureHookRegister { captures, .. } => {
+                captures.iter().any(|c| c.by_ref)
+            }
+            _ => false,
+        })
 }
 
 /// Which parameter positions a function can write through, by name.
@@ -698,6 +725,7 @@ fn remap_stmt(
                     local_id: local_map.get(&c.local_id).copied().unwrap_or(c.local_id),
                     offset: c.offset,
                     size: c.size,
+                    by_ref: c.by_ref,
                 })
                 .collect(),
             heap: *heap,
@@ -796,6 +824,7 @@ fn remap_stmt(
                     local_id: local_map.get(&c.local_id).copied().unwrap_or(c.local_id),
                     offset: c.offset,
                     size: c.size,
+                    by_ref: c.by_ref,
                 })
                 .collect(),
         },

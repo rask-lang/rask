@@ -1,4 +1,3 @@
-// PENDING mem.closures/MC1 — a closure that writes an enclosing local captures it mutably, by inference. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Spec: specs/memory/closures.md
 //   MC1  captures are inferred — read it and it's borrowed, write it and it's
@@ -7,9 +6,9 @@
 //
 // Read captures already work (`t06_closures.rk`, `t_week_closures.rk`) and so do
 // mutable *parameters* (`modify`, covered in `t_week_closures.rk`). The write
-// capture is the hole: today it compiles and the write silently vanishes on both
-// backends (#1038). That is the worst shape of wrong — a program that looks like
-// it worked — so every assertion here is about the value actually landing.
+// capture was the hole: it compiled and the write silently vanished on both
+// backends (#1038) — the worst shape of wrong, a program that looks like it
+// worked — so every assertion here is about the value actually landing.
 //
 // This gates the sequence protocol. `for x in seq { total = total + x }` lowers
 // to `seq(|x| { total = total + x; return true })`, so nothing in
@@ -104,10 +103,10 @@ test "mem.closures/MC1 — two captures, one read and one written" {
 }
 
 // --- writes that go through a place, rather than rebinding the variable ---
-// These separate the two halves of the bug. Rebinding a captured variable
-// (`a = …`) is lost on both backends. Writing *through* it reaches shared
-// contents and survives — except a struct field, which interp writes through
-// and native drops. That last one is a backend divergence, not just a gap.
+// These separated the two halves of the bug. Rebinding a captured variable
+// (`a = …`) was lost on both backends; writing *through* it reached shared
+// contents and survived — except a struct field, which interp wrote through and
+// native dropped. Keep both shapes: they fail for different reasons.
 
 struct Counter { n: i32 }
 

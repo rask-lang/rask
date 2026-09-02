@@ -570,6 +570,7 @@ fn remap_stmt(
                     local_id: remap_id(c.local_id, map),
                     offset: c.offset,
                     size: c.size,
+                    by_ref: c.by_ref,
                 })
                 .collect(),
             heap: *heap,

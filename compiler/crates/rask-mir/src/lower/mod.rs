@@ -3134,6 +3134,7 @@ impl<'a> MirLowerer<'a> {
                 local_id: c.outer,
                 offset: (i as u32) * 8,
                 size: 8,
+                by_ref: c.by_ref,
             })
             .collect();
         Some((thunk_name, captures))

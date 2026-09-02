@@ -177,6 +177,15 @@ pub struct ClosureCapture {
     pub local_id: LocalId,
     pub offset: u32,
     pub size: u32,
+    /// The env slot holds the variable's *address*, not a copy of it.
+    ///
+    /// This is what makes a scope-limited closure borrow rather than copy: the
+    /// body reads and writes through the pointer, so a write inside the closure
+    /// is a write to the enclosing variable (#1038). `own` and `spawn` captures
+    /// are by value — neither may alias the definer.
+    ///
+    /// A by-ref slot is 8 bytes whatever the variable's type.
+    pub by_ref: bool,
 }
 
 /// MIR terminator kind — ends a basic block

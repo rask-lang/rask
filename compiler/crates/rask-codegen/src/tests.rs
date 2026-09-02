@@ -1309,15 +1309,15 @@ mod tests {
         let mut layout = ClosureEnvLayout::new();
         assert_eq!(layout.size, 0);
 
-        let off0 = layout.add_capture(LocalId(0), 8, false);
+        let off0 = layout.add_capture(LocalId(0), 8, false, false);
         assert_eq!(off0, 0);
         assert_eq!(layout.size, 8);
 
-        let off1 = layout.add_capture(LocalId(1), 4, false);
+        let off1 = layout.add_capture(LocalId(1), 4, false, false);
         assert_eq!(off1, 8); // aligned to 8
         assert_eq!(layout.size, 12);
 
-        let off2 = layout.add_capture(LocalId(2), 8, false);
+        let off2 = layout.add_capture(LocalId(2), 8, false, false);
         assert_eq!(off2, 16); // aligned up from 12 → 16
         assert_eq!(layout.size, 24);
 
@@ -1454,6 +1454,7 @@ mod tests {
                                 local_id: LocalId(0),
                                 offset: 0,
                                 size: 8,
+                                by_ref: false,
                             },
                         ],
                         heap: false,
@@ -1536,7 +1537,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "make_closure__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: true,
                     }),
@@ -1626,7 +1627,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: true,
                     }),
@@ -1708,7 +1709,7 @@ mod tests {
                         dst: LocalId(2),
                         func_name: "main__closure_1".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8 },
+                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: false,
                     }),
@@ -1740,7 +1741,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: false,
                     }),
