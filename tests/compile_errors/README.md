@@ -56,6 +56,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [trait_bound_unsatisfied.rk](trait_bound_unsatisfied.rk) | Type argument doesn't implement the bound's trait (#314) |
 | [trait_bound_missing_method.rk](trait_bound_missing_method.rk) | Method not provided by the type param's bounds (#314) |
 | [generic_disjointness.rk](generic_disjointness.rk) | Generic instantiation collapses `T or E` into `E or E` (ER3a, #488) — free function, propagated through a generic caller, and a method on a generic receiver |
+| [catch_void_body_blame.rk](catch_void_body_blame.rk) | A void-bodied `catch` on a value whose success type is still open (ER14a, #876) — the checker used to decide that type from whichever catch it saw first instead of checking against it, so the void body's own mismatch went unreported and a later, correctly-typed use of the same value was blamed instead |
 
 ### Ownership & Borrowing
 
