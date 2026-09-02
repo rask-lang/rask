@@ -184,8 +184,15 @@ test "std.collections — iter then adapters then to_vec" {
     assert skipped[0] == 2
 }
 
-// `zip` is left out: no native lowering, blocked behind #887 because its
-// signature mentions a type parameter of its own (#886).
+test "std.collections — zip" {
+    let a: Vec<i32> = [1, 2, 3]
+    let b: Vec<string> = ["x", "y", "z"]
+    let pairs: Vec<(i32, string)> = a.zip(b)
+    assert pairs.len() == 3
+    assert pairs[1].0 == 2
+    assert pairs[1].1 == "y"
+}
+
 test "std.collections — enumerate" {
     let letters: Vec<string> = ["a", "b", "c"]
     let pairs = letters.enumerate()
