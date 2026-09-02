@@ -1669,9 +1669,14 @@ impl<'a> MirLowerer<'a> {
         // e.g., `const add_5 = make_adder(5)` where make_adder returns |i32| -> i32.
         // Check via type checker's node_types: if init expr has Type::Fn, it's a closure.
         if !is_closure {
-            if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
+            // A `Sequence<T>` counts: `let chain = src.filter(p)` binds
+            // something callable, and calling it is how the next adapter drives
+            // it (type.sequence/SEQ1 makes it nominal, so the `Type::Fn` test
+            // alone doesn't see it).
+            let bound_ret = self.ctx.node_types.get(&init.id)
+                .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names));
+            if let Some(ret_mir) = bound_ret {
                 self.closure_locals.insert(name.to_string());
-                let ret_mir = self.ctx.type_to_mir(ret);
                 self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
@@ -2047,6 +2052,13 @@ impl<'a> MirLowerer<'a> {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
                 return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
             }
+        }
+
+        // type.sequence/SEQ6: a Sequence is a function taking a yield, so
+        // iterating one is calling it. Ahead of the index loop below, which
+        // would ask a closure for its `len()`.
+        if let Some(elem) = self.sequence_elem_ty(iter_expr) {
+            return self.lower_for_sequence(label, binding, iter_expr, body, elem);
         }
 
         // pool.entries(): for (h, val) in pool.entries() { ... }

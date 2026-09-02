@@ -308,8 +308,9 @@ impl<'a> MirLowerer<'a> {
             // instead of looking for a function named `f`; without it, lowering
             // found no signature and gave up on the return type (#870). The same
             // registration a `for` binding gets in #869, one level down.
-            if let Some(rask_types::Type::Fn { ret, .. }) = checked_param_tys.get(i) {
-                let ret_mir = self.ctx.type_to_mir(ret.as_ref());
+            if let Some(ret_mir) = checked_param_tys.get(i)
+                .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names))
+            {
                 if self.closure_locals.insert(param.name.clone()) {
                     callable_params.push(param.name.clone());
                 }
@@ -431,6 +432,264 @@ impl<'a> MirLowerer<'a> {
         }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
+
+
+    /// The element type of a `Sequence<T>` / `SequenceMut<T>` iterable, or
+    /// `None` for anything else.
+    ///
+    /// The checker's own type is the authority: `Sequence` is nominal (SEQ1), so
+    /// a closure that fills the slot arrives already unified with the sequence
+    /// shape and reads back as `Sequence<T>` rather than as its function type.
+    pub(super) fn sequence_elem_ty(&self, iter_expr: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
+        // `type_prefix` is the shared answer to "what is this type called", and
+        // it knows about stdlib types the local name table doesn't carry.
+        let name = super::MirContext::type_prefix(ty, self.ctx.type_names)?;
+        let head = name.split('<').next();
+        if head != Some("Sequence") && head != Some("SequenceMut") {
+            return None;
+        }
+        let args = match ty {
+            rask_types::Type::Generic { args, .. }
+            | rask_types::Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some(self.ctx.type_to_mir(t)),
+            rask_types::GenericArg::ConstUsize(_) => None,
+        }
+    }
+
+    /// `for x in seq { … }` over a `Sequence<T>` (type.sequence/SEQ6).
+    ///
+    /// Iterating a sequence is *calling* it. The loop synthesizes a yield
+    /// closure whose body is the loop body, hands it to the sequence, and waits;
+    /// the sequence walks itself in its own frame, so nothing has to be stored
+    /// between items (SEQ38).
+    ///
+    /// The control-flow translation (SEQ7, SEQ8) falls out of block structure
+    /// rather than needing new machinery:
+    ///
+    /// - fall off the end → `return true`
+    /// - `break` → the loop's exit block, which is `return false`
+    /// - `continue` → the loop's continue block, which is `return true`
+    /// - `return v` → write `v` and a flag through captures the enclosing frame
+    ///   owns, then `return false`; the frame tests the flag after the call
+    ///
+    /// The last one is why SEQ8 records the answer beside the loop instead of
+    /// unwinding: unwinding would cross adapter frames that would each have to
+    /// know to pass it on, and `SEQ13a` is already load-bearing enough.
+    ///
+    /// Writing through a capture is exactly what #1038 unblocked, and so is the
+    /// ordinary accumulating body — `for x in seq { total = total + x }` reaches
+    /// `total` because the yield closure borrows it.
+    pub(super) fn lower_for_sequence(
+        &mut self,
+        label: Option<&str>,
+        binding: &rask_ast::stmt::ForBinding,
+        iter_expr: &Expr,
+        body: &[Stmt],
+        elem_ty: MirType,
+    ) -> Result<(), LoweringError> {
+        use rask_ast::stmt::ForBinding;
+
+        let (seq_op, _) = self.lower_expr(iter_expr)?;
+        let seq_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: seq_local,
+            rvalue: MirRValue::Use(seq_op),
+        }));
+
+        // Where a `return` inside the body leaves its answer. The flag is
+        // separate from the value because the value's type is the enclosing
+        // function's return type, and `void` has no value to test.
+        let outer_ret = self.builder.ret_ty().clone();
+        let ret_flag = self.builder.alloc_local(
+            format!("__seq_ret_flag_{}", self.closure_counter), MirType::I64,
+        );
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: ret_flag,
+            rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(0))),
+        }));
+        let ret_value = if outer_ret == MirType::Void {
+            None
+        } else {
+            Some(self.builder.alloc_local(
+                format!("__seq_ret_value_{}", self.closure_counter), outer_ret.clone(),
+            ))
+        };
+
+        let closure_name = format!("{}__yield_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        // The body's free variables, minus the binding the yield introduces.
+        let bound_name = match binding {
+            ForBinding::Single(name) => name.clone(),
+            ForBinding::Tuple(names) => names.first().cloned().unwrap_or_default(),
+        };
+        let mut free_vars: Vec<(String, LocalId, MirType)> = self
+            .collect_free_vars_block(body)
+            .into_iter()
+            .filter(|(name, _, _)| *name != bound_name)
+            .collect();
+        // The two the loop just made are captured like any other local, so a
+        // `return` in the body writes the enclosing frame's storage.
+        free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64));
+        if let Some(v) = ret_value {
+            free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone()));
+        }
+
+        let mut captures = Vec::new();
+        let mut env_offset = 0u32;
+        for _ in &free_vars {
+            // A scope-limited closure borrows (mem.closures/MC1), and an address
+            // is a word. The sequence only calls it, so it never outlives this
+            // frame — see `transform::addr_taken` for why that matters.
+            captures.push(crate::stmt::ClosureCapture {
+                local_id: LocalId(0), // filled in below
+                offset: env_offset,
+                size: 8,
+                by_ref: true,
+            });
+            env_offset += 8;
+        }
+        for (cap, (_, id, _)) in captures.iter_mut().zip(free_vars.iter()) {
+            cap.local_id = *id;
+        }
+
+        let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
+        let env_param = yb.add_param("__env".to_string(), MirType::Ptr);
+        let item_param = yb.add_param(bound_name.clone(), elem_ty.clone());
+
+        let mut yield_locals = std::collections::HashMap::new();
+        yield_locals.insert(bound_name.clone(), (item_param, elem_ty.clone()));
+
+        let mut inner_flag = None;
+        let mut inner_value = None;
+        for (i, (name, outer_id, ty)) in free_vars.iter().enumerate() {
+            let dst = yb.alloc_local(name.clone(), ty.clone());
+            yb.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
+                dst,
+                env_ptr: env_param,
+                offset: captures[i].offset,
+                by_ref: true,
+            }));
+            if *outer_id == ret_flag {
+                inner_flag = Some(dst);
+            } else if Some(*outer_id) == ret_value {
+                inner_value = Some(dst);
+            } else {
+                yield_locals.insert(name.clone(), (dst, ty.clone()));
+            }
+        }
+
+        // Three exits, each a block that returns the right answer.
+        let continue_block = yb.create_block();
+        let exit_block = yb.create_block();
+        let nonlocal_block = yb.create_block();
+
+        let mut body_result = Ok(());
+        {
+            let saved_builder = std::mem::replace(&mut self.builder, yb);
+            let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
+            let saved_loops = std::mem::take(&mut self.loop_stack);
+            let saved_inline = self.inline_return_target.take();
+
+            // `break` and `continue` in the body are this loop's, and this loop
+            // is one call of the yield.
+            self.loop_stack.push(super::LoopContext {
+                label: label.map(|s| s.to_string()),
+                continue_block,
+                exit_block,
+                result_local: None,
+                ensure_depth: self.ensure_stack.len(),
+            });
+            // `return v` assigns to the captured value local and jumps to the
+            // block that raises the flag. Writing the local *is* a store through
+            // the capture pointer — `transform::addr_taken` rewrites it.
+            self.inline_return_target = inner_value
+                .or(inner_flag)
+                .map(|dst| (dst, nonlocal_block));
+
+            for stmt in body {
+                if let Err(e) = self.lower_stmt(stmt) {
+                    body_result = Err(e);
+                    break;
+                }
+            }
+            // Fell off the end of the body: another item, please (SEQ3).
+            if self.builder.current_block_unterminated() {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: continue_block,
+                }));
+            }
+
+            self.loop_stack = saved_loops;
+            self.inline_return_target = saved_inline;
+            yb = std::mem::replace(&mut self.builder, saved_builder);
+            self.locals = saved_locals;
+        }
+        body_result?;
+
+        yb.switch_to_block(continue_block);
+        yb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Constant(crate::operand::MirConst::Int(1))),
+        }));
+        yb.switch_to_block(exit_block);
+        yb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Constant(crate::operand::MirConst::Int(0))),
+        }));
+        yb.switch_to_block(nonlocal_block);
+        if let Some(flag) = inner_flag {
+            yb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: flag,
+                rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(1))),
+            }));
+        }
+        yb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Constant(crate::operand::MirConst::Int(0))),
+        }));
+
+        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
+            ret_ty: MirType::Bool,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
+        });
+        self.synthesized_functions.push(yb.finish());
+
+        // Build the closure and hand it to the sequence.
+        let closure_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: closure_local,
+            func_name: closure_name,
+            captures,
+            heap: false,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: None,
+            closure: seq_local,
+            args: vec![MirOperand::Local(closure_local)],
+        }));
+
+        // SEQ8: the body asked to leave the enclosing function. Test the flag
+        // the yield raised and do it here, where `return` means what it says.
+        let taken = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(ret_flag),
+            then_block: taken,
+            else_block: done,
+        }));
+        self.builder.switch_to_block(taken);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: ret_value.map(MirOperand::Local),
+        }));
+        self.builder.switch_to_block(done);
+        Ok(())
     }
 
     /// Build the one-word entry point for a spawned closure whose result is

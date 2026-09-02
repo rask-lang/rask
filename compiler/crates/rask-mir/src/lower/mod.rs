@@ -1451,6 +1451,40 @@ impl<'a> MirContext<'a> {
 
     /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
     /// Used when resolving method calls on struct fields.
+    /// A written type you can call.
+    ///
+    /// Function types are spelled `|T| -> R` or `func(T) -> R`, so a string test
+    /// used to be enough. `Sequence<T>` is also callable but wears a nominal
+    /// name — it has to, so adapters can attach to it (type.sequence/SEQ1) —
+    /// and it names no arrow at all, so the string test missed it and a
+    /// `func evens(src: Sequence<i32>)` lowered `src(…)` as a call to a
+    /// function called "src".
+    pub fn is_callable_ty_str(s: &str) -> bool {
+        let s = s.trim();
+        s.starts_with('|')
+            || s.starts_with("func(")
+            || s.starts_with("Sequence<")
+            || s.starts_with("SequenceMut<")
+    }
+
+    /// The answer a callable type hands back, for a type the checker resolved.
+    /// `None` if it isn't callable. A sequence answers nothing — it is driven
+    /// for its yields, not for a return value.
+    pub fn callable_ret_ty(
+        &self,
+        ty: &Type,
+        type_names: &HashMap<rask_types::TypeId, String>,
+    ) -> Option<MirType> {
+        if let Type::Fn { ret, .. } = ty {
+            return Some(self.type_to_mir(ret));
+        }
+        let head = Self::type_prefix(ty, type_names)?;
+        match head.split('<').next() {
+            Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
+            _ => None,
+        }
+    }
+
     pub fn type_prefix_str(s: &str) -> Option<String> {
         let s = s.trim();
         match s {
@@ -3596,7 +3630,7 @@ impl<'a> MirLowerer<'a> {
             // Function-type params (|args| -> ret) are closures passed as arguments.
             // Register them so call sites emit ClosureCall instead of Call.
             // Parser normalizes |T| -> R to "func(T) -> R", so check both forms.
-            if param_ty_str.starts_with('|') || param_ty_str.starts_with("func(") {
+            if MirContext::is_callable_ty_str(param_ty_str) {
                 lowerer.closure_locals.insert(param.name.clone());
                 let ret_ty = if let Some(arrow_pos) = param_ty_str.rfind("-> ") {
                     let ret_str = param_ty_str[arrow_pos + 3..].trim();
