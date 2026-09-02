@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `.filter()`/`.map()` on a Vec reached through field access, natively (#866).
+// Adapter chains on a Vec reached through field access, natively (#866).
 //
 // `is_iterable_source` only recognized a Vec by its *unresolved* type form
 // (`UnresolvedGeneric`/`UnresolvedNamed`, from a source annotation). A field
 // access resolves through the checker's `HasField` constraint to the
-// registered form instead (`Generic { base, .. }`), so it was never
-// recognized as a chain source — `t.deps.filter(...)` and
-// `pool[h].field.filter(...)` both fell through to the raw `Vec_filter`/
-// `Vec_map` runtime calls, which don't carry the closure's env pointer and
-// segfault on native as soon as the vec has an element.
+// registered form instead (`Generic { base, .. }`), so a Vec reached through
+// a field was never recognized as a chain source and fell out of the fused
+// loop into a per-adapter runtime call.
+//
+// `.filter()`/`.map()` are the two adapters that have such a call, so those
+// now merely take the slow path. The rest don't: `.fold()` on a Vec field
+// still fails to compile natively at all ("Function not found: Vec_fold"),
+// and so do `.enumerate()` and `.sum()`. That's what the last three tests
+// here pin.
+
+import memory.Pool
 
 struct Task {
     deps: Vec<i64>
@@ -61,6 +67,43 @@ test "std.collections — map on a Vec field reached through a with-block bindin
         assert_eq(mapped[0], 2)
         assert_eq(mapped[2], 4)
     }
+}
+
+// The three below have no runtime builtin to fall back on, so before this
+// they didn't crash — codegen refused the program.
+
+test "std.collections — fold on a plain struct field" {
+    let t: Task = Task { deps: [1, 2, 3, 4] }
+    let total = t.deps.fold(0, |acc, x| {
+        return acc + x
+    })
+    assert_eq(total, 10)
+}
+
+test "std.collections — enumerate on a plain struct field" {
+    let t: Task = Task { deps: [7, 8, 9] }
+    mut seen = ""
+    for p in t.deps.enumerate() {
+        seen = "{seen}({p.0},{p.1})"
+    }
+    assert_eq(seen, "(0,7)(1,8)(2,9)")
+}
+
+test "std.collections — chained filter into map on a struct field" {
+    let t: Task = Task { deps: [1, 2, 3, 4] }
+    let out = t.deps.filter(|x| {
+        return x % 2 == 0
+    }).map(|x| {
+        return x * 3
+    })
+    assert_eq(out.len(), 2)
+    assert_eq(out[0], 6)
+    assert_eq(out[1], 12)
+}
+
+test "std.collections — sum on a struct field" {
+    let t: Task = Task { deps: [1, 2, 3, 4] }
+    assert_eq(t.deps.sum(), 10)
 }
 
 func main() {}
