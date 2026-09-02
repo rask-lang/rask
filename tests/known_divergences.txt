@@ -59,7 +59,6 @@
 # Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
 # out so the working surface stays gated; only the bug lives here.
 t_day_const_string_array.rk   # a module-level `const [string; N]` element reads back as garbage — #1000 (native run)
-t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both run)
 t_month_error_union_narrowing.rk # a method on a union-narrowed error dispatches against the whole union — #1002 (native compile)
 t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native compile)
 t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both check)

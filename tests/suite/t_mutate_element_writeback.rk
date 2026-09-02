@@ -92,11 +92,13 @@ test "mutate element — a struct field still writes back" {
     assert_eq(p.y, 2)
 }
 
-// mem.parameters: a Copy argument is copied in, so a plain local is untouched.
-test "mutate element — a plain local is still a copy" {
+// mem.parameters/PM2: a plain local is a place like any other. It used to be
+// the exception — the call site spilled a copy of the scalar and passed that
+// copy's address, so the callee's write had nowhere to land (#899).
+test "mutate element — a plain local writes back like any other place" {
     mut n = 1
     bump(mutate n)
-    assert_eq(n, 1)
+    assert_eq(n, 101)
 }
 
 func main() {}

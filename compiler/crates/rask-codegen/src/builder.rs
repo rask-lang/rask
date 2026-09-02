@@ -384,6 +384,17 @@ impl<'a> FunctionBuilder<'a> {
         // function the rewrite used, so the two cannot disagree about which
         // locals hold a value and which hold an address (#1038).
         let addr_taken = rask_mir::transform::addr_taken::analyze(self.mir_fn);
+        // A by-ref capture the rewrite never prepared has no correct lowering —
+        // the environment would hold the scalar's value while the closure body
+        // loads through it as a pointer. Say so here rather than emit it.
+        if let Some(id) = rask_mir::transform::addr_taken::unprepared_capture(self.mir_fn) {
+            return Err(CodegenError::UnsupportedFeature(format!(
+                "closure in `{}` captures {:?} by reference, but that local is \
+                 still written as a value — `transform::addr_taken` did not see \
+                 this `ClosureCreate`, so a pass moved it here after the rewrite",
+                self.mir_fn.name, id,
+            )));
+        }
 
         // Pre-compute stack allocation sizes before builder borrows self.func.
         // Entries: (local_id, byte size) for each aggregate local.

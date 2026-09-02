@@ -23,19 +23,6 @@ const SPAWN_NO_RUNTIME_MSG: &str =
 
 /// Copy scalar primitives are copied into a `mutate` param, so a whole-variable
 /// argument of scalar type isn't written back (mem.parameters Copy interaction).
-fn value_is_copy_scalar(v: &Value) -> bool {
-    matches!(
-        v,
-        Value::Int(..)
-            | Value::Int128(_)
-            | Value::Uint128(_)
-            | Value::Float(_, _)
-            | Value::Bool(_)
-            | Value::Char(_)
-            | Value::Unit
-    )
-}
-
 /// type.primitives/NT1 — associated constants on the numeric types.
 /// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
 /// bounds; `ZERO`/`ONE` are the same value everywhere.
@@ -439,13 +426,20 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Write a `mutate` param's final value back to its argument place. A whole
-    /// Copy scalar variable is copied in — the caller keeps the original — so
-    /// only field/index projections and aggregate values write back (this is the
-    /// `modify_int(x)` vs `swap_fields(p.x, p.y)` distinction in the spec).
+    /// Write a `mutate` param's final value back to its argument place
+    /// (mem.parameters/PM2).
+    ///
+    /// Every place writes back, whatever its type. A whole Copy scalar used to
+    /// be skipped on the strength of the spec's edge-case table ("Copy type +
+    /// mutate: mutations affect the copy") while aggregates followed PM2's
+    /// prose, so `bump(mutate n)` did nothing for an `i32` and worked for a
+    /// four-byte one-field struct wrapping the same `i32` (#899). A mode whose
+    /// effect depends on whether you wrapped your number in a struct isn't one
+    /// anyone can reason about, and PM5 is explicit that the marker "never
+    /// depends on a type's size" — so the semantics can't either. The edge-case
+    /// row is gone from the spec.
     fn writeback_mutate_place(&mut self, arg: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &arg.kind {
-            ExprKind::Ident(_) if value_is_copy_scalar(&value) => Ok(()),
             ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 self.assign_target(arg, value)
             }

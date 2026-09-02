@@ -72,12 +72,11 @@ impl AddrTaken {
     }
 }
 
-/// Which locals of `func` live in memory rather than in an SSA value.
+/// Which locals something wants the *address* of, before the rewrite runs.
 ///
-/// Codegen calls this too — it decides variable types and stack slots from the
-/// same answer the rewrite used, so the two cannot disagree about which locals
-/// hold a value and which hold an address.
-pub fn analyze(func: &MirFunction) -> AddrTaken {
+/// This is the rewrite's own input. It says who needs memory, not who has it
+/// yet — `analyze` is the post-rewrite question, and codegen asks that one.
+pub fn wants_address(func: &MirFunction) -> AddrTaken {
     let mut found = AddrTaken::default();
 
     for block in &func.blocks {
@@ -94,6 +93,15 @@ pub fn analyze(func: &MirFunction) -> AddrTaken {
                 MirStmtKind::LoadCapture { dst, by_ref: true, .. } => {
                     found.borrowed.insert(*dst);
                 }
+                // Any scalar whose address is taken needs a stable one. `Ref` on
+                // a scalar used to spill a copy and hand back the copy's
+                // address, which is a lie the moment anything writes through it
+                // — that is #899 as well as #1038.
+                MirStmtKind::Assign { rvalue: MirRValue::Ref(id), .. } => {
+                    if is_scalar(func, *id) {
+                        found.owned.insert(*id);
+                    }
+                }
                 _ => {}
             }
         }
@@ -106,6 +114,72 @@ pub fn analyze(func: &MirFunction) -> AddrTaken {
         found.owned.remove(id);
     }
     found
+}
+
+/// Which locals of `func` actually live in memory — what codegen needs to know
+/// to type their variables and hand them slots.
+///
+/// A local qualifies when something wants its address *and* nothing writes it
+/// as a value any more. The second half is what the rewrite establishes, so
+/// asking for it here rather than assuming it means codegen reads the MIR in
+/// front of it instead of trusting that a pass ran. MIR that never went through
+/// `run` keeps its old meaning — `Ref` spills a copy — rather than being
+/// miscompiled, which is what tests and other MIR producers depend on.
+pub fn analyze(func: &MirFunction) -> AddrTaken {
+    let wanted = wants_address(func);
+    if wanted.is_empty() {
+        return wanted;
+    }
+    let written = locals_written_as_values(func);
+    AddrTaken {
+        owned: wanted.owned.difference(&written).copied().collect(),
+        borrowed: wanted.borrowed.difference(&written).copied().collect(),
+    }
+}
+
+/// Locals some statement still assigns a value to.
+///
+/// A by-ref `LoadCapture` is excluded: it establishes the local's address, and
+/// that is the one write a memory-resident local keeps.
+fn locals_written_as_values(func: &MirFunction) -> HashSet<LocalId> {
+    let mut written = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if matches!(&stmt.kind, MirStmtKind::LoadCapture { by_ref: true, .. }) {
+                continue;
+            }
+            if let Some(dst) = uses::stmt_def(stmt) {
+                written.insert(dst);
+            }
+        }
+    }
+    written
+}
+
+/// A by-ref capture whose local codegen would not treat as memory-resident.
+///
+/// There is no safe way to compile that: the environment would hold the
+/// scalar's value while the closure body loads through it as a pointer, which
+/// is a wrong answer rather than a crash. It means a pass moved a
+/// `ClosureCreate` into a function the rewrite had already finished with —
+/// `transform::inline` declines such functions for exactly this reason.
+pub fn unprepared_capture(func: &MirFunction) -> Option<LocalId> {
+    let wanted = wants_address(func);
+    if wanted.is_empty() {
+        return None;
+    }
+    let written = locals_written_as_values(func);
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::ClosureCreate { captures, .. } = &stmt.kind else { continue };
+            for c in captures.iter().filter(|c| c.by_ref) {
+                if wanted.owned.contains(&c.local_id) && written.contains(&c.local_id) {
+                    return Some(c.local_id);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// True when the local is held in an SSA value rather than addressed.
@@ -290,7 +364,7 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
 /// Rewrite every read of an address-taken scalar into a load and every write
 /// into a store. Returns the locals that were made memory-resident.
 pub fn run(func: &mut MirFunction) -> AddrTaken {
-    let taken = analyze(func);
+    let taken = wants_address(func);
     if taken.is_empty() {
         return taken;
     }

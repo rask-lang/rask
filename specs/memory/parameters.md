@@ -208,7 +208,7 @@ See `mem.borrowing/F1`–`F4` for the full disjoint field borrowing rules.
 
 ## Interaction with Copy Types
 
-For Copy types (≤16 bytes), values are copied in. The mode distinction matters for non-Copy types.
+For Copy types (≤16 bytes), `borrow` and `take` collapse into the same thing: the value is copied in and the caller keeps the original either way.
 
 <!-- test: parse -->
 ```rask
@@ -219,6 +219,21 @@ func process(x: i32) {
 func process(take x: i32) {
     // Also copied, but semantically "taken"
     // Useful for move-only small types
+}
+```
+
+`mutate` does not collapse. It means the caller sees the write, at every type and every size — Copy governs whether the *source* is still usable after the call, not whether `mutate` has an effect. PM5 says the call-site marker never depends on a type's size, and the semantics can't either: a mode that quietly does nothing for `i32` but works for a four-byte struct wrapping one is not a mode anyone can reason about (#899).
+
+<!-- test: parse -->
+```rask
+func bump(mutate c: i32) {
+    c = c + 1
+}
+
+func main() {
+    mut n = 0
+    bump(mutate n)
+    // n is 1
 }
 ```
 
@@ -304,7 +319,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Generic parameters | PM1–PM3 | Mode applies to concrete type at instantiation |
 | Closure captures | — | Captured borrows follow closure lifetime rules (`mem.closures`) |
 | Pattern matching | PM2 | Mutation only allowed if parameter is `mutate` |
-| Copy type + mutate | PM2/PM5 | Value is copied in; mutations affect the copy. Call site still writes `mutate` — the marker follows the signature, not the size |
+| Copy type + mutate | PM2/PM5 | The caller sees the write, same as any other type. Copy decides whether the *source* stays usable, not whether `mutate` does anything |
 | Disjoint field borrows | — | Passing `mutate value.field` borrows only that field (`mem.borrowing/F1`) |
 | Method receiver | PM4 | Exempt — `x.method()` never marks the receiver, even for `mutate self` |
 | `mutate` marker on a borrow argument | PM4 | Compile error — marker without a `mutate` parameter is a lie the compiler rejects |
