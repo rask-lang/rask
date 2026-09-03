@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A runtime call that hands back a container: does the caller free it?
+//
+// `container_drop` learns "this call made a container the caller owns" from
+// `elem_strs::CTORS`, and that list was written for the constructors —
+// `Vec_new`, `Map_new`. Everything else that allocates a container and returns
+// it was invisible to the pass, so `let k = m.keys().to_vec()` leaked the Vec.
+//
+// It only shows up when the result is bound. `v.filter(p).to_vec()` fuses into
+// `Vec_new` plus a loop of pushes, so the fresh container *is* a `Vec_new` and
+// was always freed — which is why the whole family sat unnoticed (#1050).
+//
+// The assertions are ordinary correctness; the leak check is the point. This
+// file is not in known_leaks.txt, so the gate fails if any of these leaks
+// again. Each shape appears twice: bound locally, and handed back out of a
+// function — a fresh container returned to the caller must be freed once, by
+// the caller, and the second spelling is what catches a double free.
+
+test "skip and take hand back a fresh Vec" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let head = v.take(2)
+    let tail = v.skip(3)
+    assert head.len() == 2
+    assert tail.len() == 2
+    assert head[0] == 1
+    assert tail[1] == 5
+}
+
+// `keys` and `values` are `Map_` calls that hand back a `Vec`. The drop pass
+// used to guess the free from the name prefix, which would have freed a Vec
+// with `Map_free` — reading a byte store as a hash table. The free is written
+// down in the table now, next to the shape.
+test "map keys land in a Vec the caller owns" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    let k = m.keys().to_vec()
+    assert k.len() == 2
+}
+
+test "map values land in a Vec the caller owns" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 10)
+    m.insert("b", 20)
+    let vs = m.values().to_vec()
+    assert vs.len() == 2
+}
+
+test "iterating a map builds a Vec of pairs the caller owns" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    mut total = 0
+    for (k, v) in m {
+        total = total + v
+    }
+    assert total == 3
+}
+
+func head_of(v: Vec<i32>) -> Vec<i32> {
+    return v.take(2)
+}
+
+func tail_of(v: Vec<i32>) -> Vec<i32> {
+    return v.skip(3)
+}
+
+func keys_of(m: Map<string, i64>) -> Vec<string> {
+    return m.keys().to_vec()
+}
+
+test "a fresh Vec handed back to the caller is freed once" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let head = head_of(v)
+    let tail = tail_of(v)
+    assert head.len() == 2
+    assert tail.len() == 2
+    assert v.len() == 5
+}
+
+test "a fresh Vec of strings handed back to the caller" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    let k = keys_of(m)
+    assert k.len() == 2
+    assert m.len() == 2
+}

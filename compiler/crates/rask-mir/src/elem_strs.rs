@@ -39,48 +39,74 @@ pub fn tag_of(ty: Option<&MirType>) -> i64 {
     }
 }
 
-/// The container constructors, with how many size arguments come first and how
-/// many element tags follow them.
+/// Every call that hands back a container the caller owns: how many size
+/// arguments come first, how many element tags follow them, and what frees the
+/// result.
 ///
 /// One list, read by everything that needs it: lowering appends that many tags,
 /// codegen's dispatch table builds the C signature from it and expands the tags
 /// into offset pointers, the pre-pass that registers those offset blobs finds
 /// the tags with it, and the drop pass knows a fresh container when it sees one
 /// come out of a call to one of these.
-pub const CTORS: &[(&str, u8, u8)] = &[
-    ("Vec_new", 1, 1),
+///
+/// The free function is spelled out rather than guessed from the name, because
+/// the two part company: `Map_keys` is a `Map_` call that hands back a `Vec`,
+/// and freeing that with `Map_free` would read a Vec as a hash table.
+pub const CTORS: &[(&str, u8, u8, &str)] = &[
+    ("Vec_new", 1, 1, "Vec_free"),
     // `mut v: Vec<T> = []` and `Vec.from([...])`: the elements come from a
     // static blob, but anything pushed later does not.
-    ("rask_vec_from_static", 3, 1),
-    ("Vec_with_capacity", 2, 1),
-    ("Vec_fixed", 2, 1),
+    ("rask_vec_from_static", 3, 1, "Vec_free"),
+    ("Vec_with_capacity", 2, 1, "Vec_free"),
+    ("Vec_fixed", 2, 1, "Vec_free"),
     // `skip`/`take` outside a fused chain call the runtime, which hands back a
     // freshly allocated Vec. No size arguments and no element tags — the source
     // Vec already carries both, and the runtime copies them across — so these
     // are here only to tell the drop pass the result is the caller's to free.
-    ("Vec_skip", 0, 0),
-    ("Vec_take", 0, 0),
-    ("Map_new", 2, 2),
-    ("Map_new_string_keys", 2, 2),
+    ("Vec_skip", 0, 0, "Vec_free"),
+    ("Vec_take", 0, 0, "Vec_free"),
+    // `chunks` hands back a fresh `Vec<Vec<T>>`. Freeing it releases the outer
+    // Vec only — the inner ones are elements, and `Vec_free` frees a byte
+    // store, not what its elements point at. That nested half is #943.
+    ("Vec_chunks", 0, 0, "Vec_free"),
+    ("Map_new", 2, 2, "Map_free"),
+    ("Map_new_string_keys", 2, 2, "Map_free"),
+    // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
+    // what they found — a `Map_` name with a `Vec` result, which is why the
+    // free is written down rather than read off the prefix.
+    ("Map_keys", 0, 0, "Vec_free"),
+    ("Map_values", 0, 0, "Vec_free"),
+    ("Map_entries", 0, 0, "Vec_free"),
     // Racks and pools carry no element tag: a rack is told about its fields
     // separately, through `Link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it
     // leaked (#1048).
-    ("Rack_new", 0, 0),
-    ("Rack_snapshot", 1, 0),
-    ("Pool_new", 1, 0),
-    ("Pool_with_capacity", 2, 0),
+    ("Rack_new", 0, 0, "Rack_free"),
+    ("Rack_snapshot", 1, 0, "Rack_free"),
+    ("Pool_new", 1, 0, "Pool_free"),
+    ("Pool_with_capacity", 2, 0, "Pool_free"),
+    // `Vec_clone` and `Map_clone` are absent on purpose. `clone_elision` can
+    // decide a clone is unnecessary and leave the caller's own container in the
+    // slot, and freeing that is a double free — `return v.clone()` printed the
+    // right length and died on the way out. It needs the drop pass and the
+    // elision to agree on what an elided clone left behind (#1050, #1045).
 ];
 
 /// `(leading sizes, element tags)` for a container constructor, by the name MIR
 /// calls it — monomorphization's `$` suffix and any module path stripped.
 pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
+    entry(name).map(|(_, l, t, _)| (*l as usize, *t as usize))
+}
+
+/// What frees the container this call handed back, or `None` if it isn't one.
+pub fn free_fn(name: &str) -> Option<&'static str> {
+    entry(name).map(|(_, _, _, free)| *free)
+}
+
+fn entry(name: &str) -> Option<&'static (&'static str, u8, u8, &'static str)> {
     let head = name.rsplit("::").next().unwrap_or(name);
     let base = head.split('$').next().unwrap_or(head);
-    CTORS
-        .iter()
-        .find(|(n, _, _)| *n == base)
-        .map(|(_, l, t)| (*l as usize, *t as usize))
+    CTORS.iter().find(|(n, _, _, _)| *n == base)
 }

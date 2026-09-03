@@ -56,7 +56,6 @@ t51_pools.rk  # 6 allocations
 t53_format.rk  # 1 allocation
 t54_displayable.rk  # 1 allocation
 t54_strings.rk  # 8 allocations
-t55_collections.rk  # 4 allocations
 t57_spawn.rk  # 24 allocations
 t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
@@ -92,7 +91,6 @@ t_float_formatting.rk  # 1 allocation
 t_float_payloads.rk  # 4 allocations
 t_float_width.rk  # 5 allocations
 t_for_mutate_early_exit.rk  # 2 allocations
-t_for_mutate_map.rk  # 12 allocations
 t_fs_open_failure.rk  # 4 allocations
 t_generic_clone_any_t.rk  # 8 allocations
 t_generic_forwarding.rk  # 1 allocation
@@ -147,7 +145,6 @@ t_random_seeded.rk  # 13 allocations
 t_range_adapters.rk  # 8 allocations
 t_range_element_type.rk  # 2 allocations
 t_reflect_type_facts.rk  # 1 allocation
-t_return_from_loop_body.rk  # 2 allocations
 t_runtime_handle_out_of_result.rk  # 1 allocation
 t_select.rk  # 74 allocations
 t_sequence_join.rk  # 25 allocations
@@ -191,7 +188,6 @@ t_week_ranges.rk  # 6 allocations
 t_week_results.rk  # 4 allocations
 t_week_sorting.rk  # 15 allocations
 t_week_traits.rk  # 5 allocations
-t_week_tuples.rk  # 2 allocations
 t_while_presence_binding.rk  # 8 allocations
 t_with_collection_field_writes.rk  # 14 allocations
 t_with_mutex_value.rk  # 4 allocations

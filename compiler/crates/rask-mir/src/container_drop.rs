@@ -32,18 +32,11 @@ use crate::{
 
 /// What frees a container made by `ctor`, or `None` if this isn't one.
 ///
-/// The constructors are `elem_strs::CTORS` — the same list lowering appends
-/// element tags to and codegen builds C signatures from. The free is that
-/// type's own, and it now takes nothing but the container: it knows what its
-/// elements are.
+/// `elem_strs::CTORS` names both — the calls that hand a container back and
+/// the free that matches each. The free takes nothing but the container: it
+/// knows what its elements are.
 fn free_for(ctor: &str) -> Option<&'static str> {
-    match crate::elem_strs::CTORS.iter().find(|(c, _, _)| *c == ctor)?.0 {
-        c if c.starts_with("Vec_") || c.starts_with("rask_vec_") => Some("Vec_free"),
-        c if c.starts_with("Map_") => Some("Map_free"),
-        c if c.starts_with("Rack_") => Some("Rack_free"),
-        c if c.starts_with("Pool_") => Some("Pool_free"),
-        _ => None,
-    }
+    crate::elem_strs::free_fn(ctor)
 }
 
 pub fn insert_container_drops(fns: &mut [MirFunction]) {
