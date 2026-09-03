@@ -172,6 +172,14 @@ pub(crate) struct YieldFrame {
     pub(crate) body: Vec<rask_ast::stmt::Stmt>,
     pub(crate) label: Option<String>,
     pub(crate) escaped: Option<RuntimeDiagnostic>,
+    /// The variables the `for` could see, shared not copied.
+    ///
+    /// The body belongs to the loop's scope, but it runs from inside the
+    /// sequence's frame — a closure call pushes its captures onto the same
+    /// scope stack, so whatever the sequence captured shadows the loop's own
+    /// names. An `own` sequence captures by copy, so `for x in seq { sum += x }`
+    /// wrote to the copy and the loop read `sum` back as 0.
+    pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
 }
 
 /// Source location info for computing error origins (ER15).

@@ -88,7 +88,10 @@ pub fn wants_address(func: &MirFunction) -> AddrTaken {
                         found.owned.insert(c.local_id);
                     }
                 }
-                MirStmtKind::LoadCapture { dst, by_ref: true, .. } => {
+                // Both addressed modes name storage this frame does not own —
+                // the creating frame's for a borrow, the environment block's
+                // for an `own` capture — so neither gets a slot here.
+                MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => {
                     found.borrowed.insert(*dst);
                 }
                 // Any scalar whose address is taken needs a stable one. `Ref` on
@@ -144,13 +147,13 @@ pub fn analyze(func: &MirFunction) -> AddrTaken {
 
 /// Locals some statement still assigns a value to.
 ///
-/// A by-ref `LoadCapture` is excluded: it establishes the local's address, and
-/// that is the one write a memory-resident local keeps.
+/// An addressed `LoadCapture` is excluded: it establishes the local's address,
+/// and that is the one write a memory-resident local keeps.
 fn locals_written_as_values(func: &MirFunction) -> HashSet<LocalId> {
     let mut written = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
-            if matches!(&stmt.kind, MirStmtKind::LoadCapture { by_ref: true, .. }) {
+            if matches!(&stmt.kind, MirStmtKind::LoadCapture { access, .. } if access.is_addressed()) {
                 continue;
             }
             if let Some(dst) = uses::stmt_def(stmt) {
@@ -354,11 +357,15 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
         let mut nth = 0usize;
         for block in &mut func.blocks {
             for stmt in &mut block.statements {
-                if let MirStmtKind::LoadCapture { offset, by_ref, .. } = &mut stmt.kind {
+                if let MirStmtKind::LoadCapture { offset, access, .. } = &mut stmt.kind {
                     if let Some(o) = offsets.get(nth) {
                         *offset = *o;
                     }
-                    *by_ref = false;
+                    // The environment now holds the value rather than a pointer
+                    // to a frame that has gone. It is the variable's home from
+                    // here on, so the body still works through its address —
+                    // dropping to a loaded copy would throw away every write.
+                    *access = crate::CaptureAccess::Owned;
                     nth += 1;
                 }
             }
@@ -435,8 +442,8 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
             // The by-ref LoadCapture is what *establishes* the address. Leave
             // it alone: rewriting its destination into a store would store the
             // pointer through itself.
-            if matches!(&stmt.kind, MirStmtKind::LoadCapture { dst, by_ref: true, .. }
-                if rewritable.contains(dst))
+            if matches!(&stmt.kind, MirStmtKind::LoadCapture { dst, access, .. }
+                if access.is_addressed() && rewritable.contains(dst))
             {
                 out.push(stmt);
                 continue;

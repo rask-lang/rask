@@ -739,12 +739,12 @@ fn remap_stmt(
             dst,
             env_ptr,
             offset,
-            by_ref,
+            access,
         } => MirStmtKind::LoadCapture {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             env_ptr: local_map.get(env_ptr).copied().unwrap_or(*env_ptr),
             offset: *offset,
-            by_ref: *by_ref,
+            access: *access,
         },
         MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
             closure: local_map.get(closure).copied().unwrap_or(*closure),

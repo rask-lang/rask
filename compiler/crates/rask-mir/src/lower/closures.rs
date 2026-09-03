@@ -216,6 +216,17 @@ impl<'a> MirLowerer<'a> {
         // allocated (`heap: is_own`, step 5) and so cannot outlive the frame it
         // points into.
         let by_ref = !is_own && !for_spawn;
+        // The environment slot holds a pointer for a borrow, and the value
+        // itself otherwise — but for `own` the value in the slot *is* the
+        // variable, so the body has to write back into it rather than into a
+        // loaded copy.
+        let capture_access = if for_spawn {
+            crate::CaptureAccess::Value
+        } else if is_own {
+            crate::CaptureAccess::Owned
+        } else {
+            crate::CaptureAccess::Borrowed
+        };
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
@@ -342,7 +353,7 @@ impl<'a> MirLowerer<'a> {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-                by_ref,
+                access: capture_access,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
@@ -584,7 +595,7 @@ impl<'a> MirLowerer<'a> {
                 dst,
                 env_ptr: env_param,
                 offset: captures[i].offset,
-                by_ref: true,
+                access: crate::CaptureAccess::Borrowed,
             }));
             if *outer_id == ret_flag {
                 inner_flag = Some(dst);
@@ -808,7 +819,7 @@ impl<'a> MirLowerer<'a> {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-                by_ref: false,
+                access: crate::CaptureAccess::Value,
             }));
             spawn_locals.insert(name.clone(), (local_id, ty.clone()));
         }

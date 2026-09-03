@@ -73,16 +73,12 @@ pub enum MirStmtKind {
         closure: LocalId,
         args: Vec<MirOperand>,
     },
-    /// Load a captured variable from the closure environment pointer.
-    /// `by_ref`: the env slot holds an 8-byte pointer to the original value
-    /// (not a copy) — used by ensure-hook thunks so cleanup runs against the
-    /// live resource. For an aggregate dst this sets the local's address to the
-    /// original instead of deep-copying the env bytes.
+    /// Get at a captured variable through the closure environment pointer.
     LoadCapture {
         dst: LocalId,
         env_ptr: LocalId,
         offset: u32,
-        by_ref: bool,
+        access: CaptureAccess,
     },
     /// Free a heap-allocated closure. Emitted before returns for owned closures.
     ClosureDrop {
@@ -186,6 +182,32 @@ pub struct ClosureCapture {
     ///
     /// A by-ref slot is 8 bytes whatever the variable's type.
     pub by_ref: bool,
+}
+
+/// How a closure body reaches one of its captures.
+///
+/// The three answers differ in what the environment slot holds and therefore
+/// in where a write inside the body lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureAccess {
+    /// The slot holds the value and the body only reads it. Spawn bodies run
+    /// once from a state machine that rebuilds the environment itself.
+    Value,
+    /// The slot holds a pointer into the frame that built the closure, so a
+    /// write through it is a write to that frame's variable (mem.closures/MC1).
+    Borrowed,
+    /// The slot *is* the variable: an `own` closure moved the value in, so the
+    /// environment is its home for as long as the closure lives. Loading the
+    /// value out instead threw every write away, and a counter closure answered
+    /// 1 forever however many times it was called.
+    Owned,
+}
+
+impl CaptureAccess {
+    /// True when the body works through an address rather than a loaded value.
+    pub fn is_addressed(self) -> bool {
+        matches!(self, CaptureAccess::Borrowed | CaptureAccess::Owned)
+    }
 }
 
 /// MIR terminator kind — ends a basic block

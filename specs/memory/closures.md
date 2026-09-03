@@ -216,9 +216,22 @@ FIX: Use Shared<T> for shared mutable state:
 marked consumed by the ownership checker.
 
 Non-`own` closures borrow. The ownership checker records a shared borrow on each captured
-variable; the source stays valid. At the MIR level, the closure environment currently holds
-copies of the values (the borrow is enforced by scope-limiting, not by pointer indirection).
-True reference-based capture is a planned optimization.
+variable; the source stays valid.
+
+The environment slot is what makes the difference concrete, and there are three shapes of it:
+
+| Capture | Slot holds | A write inside the body lands on |
+|---|---|---|
+| Non-`own` | The variable's address (8 bytes) | The creating frame's variable |
+| `own` | The variable itself | The environment — so it survives to the next call |
+| `spawn` | A copy | The task's own state, by construction |
+
+The `own` row is the one that's easy to get wrong. Loading the value out at the top of the call
+and working on the loaded copy reads correctly and throws every write away, so a counter closure
+answers 1 however many times you call it. The environment *is* the variable's home once `own`
+moved it there, so the body works through the slot's address for its whole life.
+
+A returned `own` closure's block is heap-allocated and nothing frees it yet (#1045).
 
 ### Closure block layout
 

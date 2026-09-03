@@ -1087,7 +1087,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
-            MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
+            MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture env_ptr not found".to_string()
@@ -1101,13 +1101,23 @@ impl<'a> FunctionBuilder<'a> {
                         "LoadCapture destination variable not found".to_string()
                     ))?;
 
-                if *by_ref {
-                    // Ensure-hook capture: the env slot holds an 8-byte pointer to
-                    // the original value. Point the local's variable straight at it
-                    // (for aggregates the variable already IS the address), so
-                    // cleanup runs against the live resource rather than a copy.
+                if *access == rask_mir::CaptureAccess::Borrowed {
+                    // The env slot holds an 8-byte pointer to the original
+                    // value. Point the local's variable straight at it (for
+                    // aggregates the variable already IS the address), so a
+                    // write inside the closure lands on the creating frame's
+                    // variable and an ensure hook runs against the live
+                    // resource rather than a copy.
                     let val = crate::closures::load_capture(builder, env_val, *offset, types::I64);
                     builder.def_var(*var, val);
+                } else if *access == rask_mir::CaptureAccess::Owned {
+                    // The slot *is* the variable. Hand the body the slot's
+                    // address so reads and writes both land in the environment
+                    // and survive to the next call — `addr_taken` has already
+                    // turned a scalar's reads into loads and its writes into
+                    // stores through this pointer.
+                    let addr = builder.ins().iadd_imm(env_val, *offset as i64);
+                    builder.def_var(*var, addr);
                 } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst) {
                     // Aggregate types (String, Struct, etc.) were deep-copied into
                     // the closure environment. Copy into the local stack slot and

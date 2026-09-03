@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `own` closure keeps its captures between calls.
+//
+// Spec: specs/memory/closures.md
+//   MC1  a mutable capture is inferred; writes inside the closure are writes
+//   MC3  a scope-limited closure can't outlive what it captured, so anything
+//        that escapes is `own` and carries its own copy
+//
+// `own` moves the variable into the closure environment, which makes the
+// environment its home. Native lowering loaded the value out of the
+// environment at the top of every call and never wrote it back, so
+// `counter()` answered 1 forever however many times it was called. The
+// interpreter had the mirror-image bug: it ran a `for` body inside the
+// sequence's own frame, so an `own` sequence's snapshot shadowed the loop's
+// variables and the loop read its accumulator back as 0.
+
+import sequence.Sequence
+
+func counter() -> func() -> i32 {
+    mut n = 0
+    return own || { n += 1; return n }
+}
+
+test "mem.closures/MC1 — an own closure's scalar capture survives the call" {
+    let tick = counter()
+    assert tick() == 1
+    assert tick() == 2
+    assert tick() == 3
+}
+
+test "mem.closures/MC3 — two closures from the same function don't share state" {
+    let a = counter()
+    let b = counter()
+    assert a() == 1
+    assert a() == 2
+    assert b() == 1
+}
+
+func collector() -> func(i32) -> i32 {
+    mut v = Vec<i32>.new()
+    return own |x| {
+        v.push(x)
+        return v.len().wrap<i32>()
+    }
+}
+
+test "mem.closures/MC1 — an own closure's aggregate capture accumulates" {
+    let add = collector()
+    assert add(1) == 1
+    assert add(2) == 2
+    assert add(3) == 3
+    let other = collector()
+    assert other(9) == 1
+}
+
+// An `own` sequence: the producer owns its traversal state, and the loop body
+// still writes the loop's own variables.
+func upto(hi: i32) -> Sequence<i32> {
+    return own |yield| {
+        mut i = 1
+        while i <= hi {
+            if !yield(i) { return }
+            i += 1
+        }
+    }
+}
+
+test "type.sequence/SEQ6 — a for body over an own sequence writes its own frame" {
+    mut sum = 0
+    mut count = 0
+    for x in upto(4) {
+        sum += x
+        count += 1
+    }
+    assert sum == 10
+    assert count == 4
+}
+
+test "type.sequence/SEQ7 — break out of an own sequence" {
+    mut seen = 0
+    for x in upto(10) {
+        seen += 1
+        if x == 3 { break }
+    }
+    assert seen == 3
+}

@@ -3090,7 +3090,11 @@ impl<'a> MirLowerer<'a> {
                 dst,
                 env_ptr: env_param,
                 offset: (i as u32) * 8,
-                by_ref: cap.by_ref,
+                access: if cap.by_ref {
+                    crate::CaptureAccess::Borrowed
+                } else {
+                    crate::CaptureAccess::Value
+                },
             }));
             if Some(i) == res_index {
                 thunk_res_local = Some(dst);

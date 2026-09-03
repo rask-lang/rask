@@ -532,6 +532,7 @@ impl Interpreter {
                             body: body.clone(),
                             label: label.clone(),
                             escaped: None,
+                            scope: self.env.capture_shared(),
                         });
                         let driven = self.call_value(seq, vec![Value::Builtin(
                             crate::value::BuiltinKind::SequenceYield,
@@ -638,7 +639,13 @@ impl Interpreter {
         }
 
         let item = args.into_iter().next().unwrap_or(Value::Unit);
+        // Rebind the loop's own variables on top of the sequence's frame. The
+        // body reads and writes the scope the `for` sits in, not the one the
+        // yield was called from.
         self.env.push_scope();
+        for (name, cell) in &frame.scope {
+            self.env.define_slot(name.clone(), std::sync::Arc::clone(cell));
+        }
         self.define_for_binding(&frame.binding, item);
         let outcome = self.exec_stmts(&frame.body);
         self.env.pop_scope();
