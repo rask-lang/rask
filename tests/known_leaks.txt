@@ -20,8 +20,10 @@
 # Format: one basename per line, then `# N allocations`.
 
 
+
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
+p08_sequence.rk  # 2 allocations — adapter closures capture self, #1045
 p11_rack_link.rk  # 18 allocations
 p12_rack_link_churn.rk  # 129 allocations
 p13_rack_snapshot.rk  # 27 allocations

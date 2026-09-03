@@ -174,15 +174,6 @@ extend Sequence<T> {
         return out
     }
 
-    /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
-    /// ones, exactly like repeated `insert`.
-    @unimplemented
-    public func to_map<K, V>(self) -> Map<K, V> {}
-
-    /// Concatenate a sequence of strings with `sep` between them.
-    @unimplemented
-    public func join(self, sep: string) -> string {}
-
     /// Reduce with a starting value.
     public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {
         mut acc = init
@@ -196,14 +187,6 @@ extend Sequence<T> {
     @unimplemented
     public func reduce(self, f: func(T, T) -> T) -> T? {}
 
-    /// Add every item. Zero on an empty sequence.
-    @unimplemented
-    public func sum(self) -> T {}
-
-    /// Multiply every item. One on an empty sequence.
-    @unimplemented
-    public func product(self) -> T {}
-
     /// How many items the sequence yields.
     public func count(self) -> usize {
         mut n: usize = 0
@@ -212,14 +195,6 @@ extend Sequence<T> {
         }
         return n
     }
-
-    /// Smallest item, or `none` if empty.
-    @unimplemented
-    public func min(self) -> T? {}
-
-    /// Largest item, or `none` if empty.
-    @unimplemented
-    public func max(self) -> T? {}
 
     /// Smallest by comparator.
     @unimplemented
@@ -268,4 +243,99 @@ extend Sequence<T> {
             f(x)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Terminals that need something of the element (type.generics/OP1, CC3).
+//
+// `sum` needs `+` and a zero, `min` needs `<`. A generic `T` has neither, so
+// these state the bound and the body is then ordinary Rask — `total + x`
+// resolves through `Numeric` like any other bounded generic call. One `where`
+// per block is CC3, which is why there are two of them.
+//
+// The comment that used to sit above these said the stdlib "has no Numeric or
+// Cloneable trait to name". It has both; the line predated them.
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> where T: Numeric {
+    /// Add every item. Zero on an empty sequence.
+    public func sum(self) -> T {
+        mut total: T = 0
+        for x in self {
+            total = total + x
+        }
+        return total
+    }
+
+    /// Multiply every item. One on an empty sequence.
+    public func product(self) -> T {
+        mut total: T = 1
+        for x in self {
+            total = total * x
+        }
+        return total
+    }
+}
+
+extend Sequence<T> {
+    /// Smallest item, or `none` if empty.
+    ///
+    /// Declared, not implemented, and not for want of a bound — `T: Comparable`
+    /// is all the body needs and it works. Giving these a body steals the bare
+    /// name from the free `min(a, b)` in `builtins.rk`: registration is
+    /// last-writer-wins and `stubs.rs` loads `sequence.rk` after `builtins.rk`,
+    /// so `min(5.0, 3.0)` starts resolving here and reports "expected 1
+    /// argument, found 2". `Vec.min` is unaffected only because
+    /// `collections.rk` loads *before* builtins. Filed separately; the names
+    /// here are the ones SEQ28-SEQ33 asks for, so the registration is what
+    /// should move.
+    @unimplemented
+    public func min(self) -> T? {}
+
+    /// Largest item, or `none` if empty. Same story as `min` above.
+    @unimplemented
+    public func max(self) -> T? {}
+}
+
+// ---------------------------------------------------------------------------
+// Terminals that need the element to be a particular *shape* rather than to
+// satisfy a trait. A concrete instantiation says it directly.
+// ---------------------------------------------------------------------------
+
+extend Sequence<string> {
+    /// Concatenate a sequence of strings with `sep` between them.
+    public func join(self, sep: string) -> string {
+        mut out = StringBuilder.new()
+        mut first = true
+        for x in self {
+            if !first {
+                out.push(sep)
+            }
+            out.push(x)
+            first = false
+        }
+        return out.build()
+    }
+}
+
+extend Sequence<(K, V)> {
+    /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
+    /// ones, exactly like repeated `insert`.
+    ///
+    /// The body below is correct and runs on the interpreter. It doesn't lower:
+    /// iterating a `Sequence<(K, V)>` inside a generic method needs the element
+    /// type at lowering time, and with `K` and `V` still open MIR gives up in
+    /// `lower/stmt:for_loop_elem`. Writing the pair as one name instead of
+    /// `for (k, v) in self` moves the failure to `unresolved field 1` rather
+    /// than fixing it — the element type is what's missing, not the
+    /// destructuring. So this stays declared-only until the tuple element
+    /// resolves, which is a lowering gap rather than a missing bound (#1046).
+    ///
+    ///     mut out: Map<K, V> = Map<K, V>.new()
+    ///     for (k, v) in self {
+    ///         out.insert(k, v)
+    ///     }
+    ///     return out
+    @unimplemented
+    public func to_map(self) -> Map<K, V> {}
 }
