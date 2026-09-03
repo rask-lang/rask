@@ -80,10 +80,11 @@ impl ClosureEnvLayout {
     }
 }
 
-/// Heap-allocate a closure: `[func_ptr | captures...]`.
+/// Heap-allocate a closure: `[func_ptr | captures...]`, behind a size header.
 ///
-/// Calls `rask_alloc(8 + env_size)` and stores func_ptr + captures.
-/// Used for escaping closures (returned, stored, sent to spawn).
+/// Calls `rask_closure_alloc(8 + env_size)`, which puts the block's size in
+/// front of what it hands back so the free can account for the bytes. Used for
+/// escaping closures (returned, stored, sent to spawn).
 pub fn allocate_closure_heap(
     builder: &mut FunctionBuilder,
     func_ptr: Value,
@@ -212,7 +213,7 @@ pub fn call_closure(
     builder.ins().call_indirect(sig_ref, func_ptr, &all_args)
 }
 
-/// Free a heap-allocated closure.
+/// Free a heap-allocated closure, header and all.
 pub fn free_closure(
     builder: &mut FunctionBuilder,
     closure_ptr: Value,

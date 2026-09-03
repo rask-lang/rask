@@ -1139,8 +1139,8 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureDrop closure variable not found".to_string()
                     ))?);
-                let free_ref = ctx.func_refs.get("rask_free")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                let free_ref = ctx.func_refs.get("rask_closure_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_free".to_string()))?;
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
@@ -2855,9 +2855,11 @@ impl<'a> FunctionBuilder<'a> {
         let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
         let closure_ptr = if *heap {
-            // Escaping closure: heap-allocate via rask_alloc
-            let alloc_ref = ctx.func_refs.get("rask_alloc")
-                .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+            // Escaping closure: heap-allocate behind a size header, so
+            // whoever frees it can account for the bytes without knowing the
+            // capture layout.
+            let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
             crate::closures::allocate_closure_heap(
                 builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
             )?

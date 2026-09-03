@@ -36,6 +36,8 @@ void  rask_alloc_stats(RaskAllocStats *out);
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
+void *rask_closure_alloc(int64_t block_size);
+void  rask_closure_free(void *ptr);
 
 // Overflow-checked arithmetic for allocation sizes.
 _Noreturn void rask_panic(const char *msg);

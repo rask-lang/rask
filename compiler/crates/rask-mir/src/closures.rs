@@ -29,40 +29,37 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns);
+
     for func in fns.iter_mut() {
-        optimize_closures(func, &callee_escapes);
+        decide_allocation(func, &callee_escapes);
+    }
+
+    // A function that hands a heap closure back makes its caller the owner —
+    // `let tick = counter()` is the caller receiving a block nobody else will
+    // free. Which functions those are can only be read off the finished
+    // allocation decisions, so it waits for every function to have one.
+    let hands_back = functions_handing_back_a_closure(fns);
+
+    for func in fns.iter_mut() {
+        insert_drops(func, &callee_escapes, &hands_back);
     }
 }
 
-fn optimize_closures(
-    func: &mut MirFunction,
-    callee_escapes: &HashMap<String, Vec<bool>>,
-) {
-    // Step 1: Find all closure locals
-    let mut closure_locals: HashMap<LocalId, bool> = HashMap::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            if let MirStmtKind::ClosureCreate { dst, heap, .. } = &stmt.kind {
-                closure_locals.insert(*dst, *heap);
-            }
-        }
-    }
-
-    if closure_locals.is_empty() {
+/// Heap exactly when the closure outlives this frame.
+///
+/// This used to only downgrade. Lowering picks the initial answer from `own`,
+/// so a scope-limited closure that escaped anyway — by being returned, which is
+/// every sequence source and every adapter — kept a stack environment in a
+/// frame that had already been popped. It read back whatever was left there:
+/// the right answer in a small program, a wrong one or a segfault in a real
+/// one (#1045).
+fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Vec<bool>>) {
+    let created = created_closures(func);
+    if created.is_empty() {
         return;
     }
+    let escaping = find_escaping_closures(func, &created, callee_escapes);
 
-    // Step 2: Determine which closures escape (using callee info for Call args)
-    let escaping = find_escaping_closures(func, &closure_locals, callee_escapes);
-
-    // Step 3: Heap exactly when the closure outlives this frame.
-    //
-    // This used to only downgrade. Lowering picks the initial answer from
-    // `own`, so a scope-limited closure that escaped anyway — by being
-    // returned, which is every sequence source and every adapter — kept a
-    // stack environment in a frame that had already been popped. It read back
-    // whatever was left there: the right answer in a small program, a wrong
-    // one or a segfault in a real one (#1045).
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
             if let MirStmtKind::ClosureCreate { dst, heap, .. } = &mut stmt.kind {
@@ -70,13 +67,44 @@ fn optimize_closures(
             }
         }
     }
+}
 
-    // Step 4: Find closures whose ownership was transferred
-    let transferred = find_transferred_closures(func, &closure_locals, callee_escapes);
+/// Free the heap closures this frame is left holding.
+///
+/// Two ways to be left holding one: build it here, or take one back from a
+/// call. Both are owned values with a single owner like anything else in Rask,
+/// so the frame that still has one when it returns is the frame that frees it
+/// (mem.ownership/O1). A closure it handed on — returned, stored, or passed to
+/// something that keeps it — belongs to whoever took it.
+fn insert_drops(
+    func: &mut MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+    hands_back: &HashSet<String>,
+) {
+    let mut owned: HashMap<LocalId, bool> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::ClosureCreate { dst, heap: true, .. } => {
+                    owned.insert(*dst, true);
+                }
+                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                    if hands_back.contains(&callee.name) =>
+                {
+                    owned.insert(*dst, true);
+                }
+                _ => {}
+            }
+        }
+    }
 
-    // Step 5: Insert ClosureDrop before returns for remaining heap closures
-    let heap_closures: HashSet<LocalId> = closure_locals.keys()
-        .filter(|id| escaping.contains(id))
+    if owned.is_empty() {
+        return;
+    }
+
+    let transferred = find_transferred_closures(func, &owned, callee_escapes);
+    let heap_closures: HashSet<LocalId> = owned
+        .keys()
         .filter(|id| !transferred.contains(id))
         .copied()
         .collect();
@@ -86,6 +114,45 @@ fn optimize_closures(
     }
 
     insert_closure_drops(func, &heap_closures);
+}
+
+/// The `ClosureCreate` destinations in a function.
+fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
+    let mut found = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let MirStmtKind::ClosureCreate { dst, heap, .. } = &stmt.kind {
+                found.insert(*dst, *heap);
+            }
+        }
+    }
+    found
+}
+
+/// Functions whose return value is a heap closure the caller now owns.
+fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for func in fns {
+        let heap: HashMap<LocalId, bool> = created_closures(func)
+            .into_iter()
+            .filter(|(_, heap)| *heap)
+            .collect();
+        if heap.is_empty() {
+            continue;
+        }
+        let aliases = closure_aliases(func, &heap);
+        for block in &func.blocks {
+            let returned = match &block.terminator.kind {
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => *id,
+                _ => continue,
+            };
+            if aliases.contains_key(&returned) {
+                names.insert(func.name.clone());
+            }
+        }
+    }
+    names
 }
 
 /// Build a map of callee name → per-parameter escape info.

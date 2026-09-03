@@ -231,7 +231,9 @@ and working on the loaded copy reads correctly and throws every write away, so a
 answers 1 however many times you call it. The environment *is* the variable's home once `own`
 moved it there, so the body works through the slot's address for its whole life.
 
-A returned `own` closure's block is heap-allocated and nothing frees it yet (#1045).
+The block itself is owned like any other value: whoever is holding it when their
+frame ends frees it. What that free doesn't yet do is release the captures inside
+— an `own` closure holding a `Vec` frees the block and leaks the Vec (#1045).
 
 ### Closure block layout
 
@@ -244,13 +246,20 @@ implicit first argument to the closure function.
 
 ### Heap vs. stack
 
-`own` closures start as heap-allocated. A per-function pass downgrades non-escaping ones to
-stack allocation. Non-`own` closures are always stack-allocated (they can't escape by contract).
+Heap exactly when the closure outlives the frame that built it — returned, stored through a
+pointer, or handed to something that keeps it. Everything else is a stack slot.
 
-| Closure kind | Initial allocation | Can be downgraded? |
+`own` is not the question, and treating it as one is what made a returned scope-limited closure
+read a popped frame. A scope-limited closure *can* escape, by being returned; the escape analysis
+decides, not the keyword.
+
+| Escapes its frame? | Allocation | Freed by |
 |---|---|---|
-| `own` | Heap | Yes, if provably non-escaping |
-| Non-`own` (scope-limited) | Stack | N/A — never heap |
+| No | Stack slot | The frame, on the way out |
+| Yes | Heap, behind a size header | Whichever frame is still holding it when it ends |
+
+The size header is there because the frame that frees a closure usually isn't the one that built
+it: `let tick = counter()` hands the caller a block whose capture layout only `counter` knew.
 
 ---
 

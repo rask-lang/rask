@@ -831,7 +831,7 @@ static int closure_poll_fn(void *state, void *task_ctx) {
     // and the payload is never read.
     int64_t r = s->func(s->env);
     if (task_ctx) ((GreenTask *)task_ctx)->result = r;
-    rask_free(s->alloc_base);
+    rask_closure_free(s->alloc_base);
     s->alloc_base = NULL; // prevent double-free in task_release
     return RASK_POLL_READY;
 }
