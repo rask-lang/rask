@@ -96,6 +96,7 @@ run_backend() {
     backend="$2"
     argsfile="$3"
     stdinfile="$4"
+    errlog="$5"
     # A stdin-driven example reads its session from a fixture. Without one,
     # stdin is /dev/null so an interactive example hits EOF and exits instead
     # of blocking the gate forever.
@@ -104,8 +105,12 @@ run_backend() {
     else
         infile=/dev/null
     fi
+    # stderr goes to the caller's log rather than /dev/null. It stays out of the
+    # golden comparison either way, but when a run fails the panic message is
+    # the whole diagnosis — discarding it left "example X failed" and nothing
+    # else. Per-example, because the workers run in parallel.
     if [ ! -f "$argsfile" ]; then
-        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" 2>/dev/null < "$infile")
+        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" 2>"$errlog" < "$infile")
         return $?
     fi
     rc=0
@@ -113,7 +118,7 @@ run_backend() {
         case "$argv" in ''|\#*) continue ;; esac
         # Word-split argv on purpose: the file holds a command line.
         # shellcheck disable=SC2086
-        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>/dev/null < "$infile") || rc=$?
+        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>"$errlog" < "$infile") || rc=$?
     done < "$argsfile"
     return $rc
 }
@@ -149,8 +154,8 @@ run_one() {
 
     # PIPESTATUS, not $? — through a pipe $? is the normalizer's status, and a
     # crashed program would read as a clean run with odd output.
-    iout="$(run_backend "$src" --interp "$argsfile" "$stdinfile" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; ic=$?
-    nout="$(run_backend "$src" --native "$argsfile" "$stdinfile" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; nc=$?
+    iout="$(run_backend "$src" --interp "$argsfile" "$stdinfile" "$WORK/$name.ierr" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; ic=$?
+    nout="$(run_backend "$src" --native "$argsfile" "$stdinfile" "$WORK/$name.nerr" | normalize "$normfile"; exit "${PIPESTATUS[0]}")"; nc=$?
 
     bad=""
     [ "$ic" -ne 0 ] && bad="$bad interp-exit=$ic"
@@ -199,6 +204,12 @@ for golden in "$GOLDEN_DIR"/*.out; do
             echo "  native diff (want → got):"
             cat "$WORK/$name.diff"
         fi
+        for stream in nerr ierr; do
+            if [ -s "$WORK/$name.$stream" ]; then
+                case "$stream" in nerr) echo "  native stderr:" ;; *) echo "  interp stderr:" ;; esac
+                head -8 "$WORK/$name.$stream" | sed 's/^/    /'
+            fi
+        done
         fails=$((fails+1))
     fi
 done
