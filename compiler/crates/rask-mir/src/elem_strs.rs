@@ -92,6 +92,13 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // slot, and freeing that is a double free — `return v.clone()` printed the
     // right length and died on the way out. It needs the drop pass and the
     // elision to agree on what an elided clone left behind (#1050, #1045).
+    //
+    // The string splitters — `string_split`, `string_lines`, `string_bytes`
+    // and friends — are absent for a nearer reason: each does hand back a
+    // fresh Vec, and registering them clears the leak, but `simple_grep` then
+    // finds nothing and `markdown_renderer` aborts on `malloc(): unaligned
+    // tcache chunk`. Their result is read after the drop pass frees it.
+    // Measured both ways on #1050.
 ];
 
 /// `(leading sizes, element tags)` for a container constructor, by the name MIR
