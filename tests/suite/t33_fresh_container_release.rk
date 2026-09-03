@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+import memory.Pool
+import memory.Handle
+
 // A runtime call that hands back a container: does the caller free it?
 //
 // `container_drop` learns "this call made a container the caller owns" from
@@ -86,4 +89,35 @@ test "a fresh Vec of strings handed back to the caller" {
     let k = keys_of(m)
     assert k.len() == 2
     assert m.len() == 2
+}
+
+// A pool's accessors are the same shape as a map's: a `Pool_` name handing back
+// a `Vec`, which is why the free is written down and not read off the prefix.
+test "pool handles land in a Vec the caller owns" {
+    mut p = Pool<i32>.new()
+    let a = p.insert(1)
+    let b = p.insert(2)
+    let hs = p.handles()
+    assert hs.len() == 2
+}
+
+test "draining a pool hands the caller a Vec" {
+    mut p = Pool<i32>.new()
+    let a = p.insert(1)
+    let b = p.insert(2)
+    let d = p.drain()
+    assert d.len() == 2
+    assert p.len() == 0
+}
+
+func handles_of(p: Pool<i32>) -> Vec<Handle<i32>> {
+    return p.handles()
+}
+
+test "a pool's handles handed back to the caller are freed once" {
+    mut p = Pool<i32>.new()
+    let a = p.insert(1)
+    let hs = handles_of(p)
+    assert hs.len() == 1
+    assert p.len() == 1
 }

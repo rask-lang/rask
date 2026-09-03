@@ -87,6 +87,10 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Rack_snapshot", 1, 0, "Rack_free"),
     ("Pool_new", 1, 0, "Pool_free"),
     ("Pool_with_capacity", 2, 0, "Pool_free"),
+    // `handles` and `drain` walk the pool and hand back a fresh Vec — another
+    // pair whose name family and result type disagree.
+    ("Pool_handles", 0, 0, "Vec_free"),
+    ("Pool_drain", 0, 0, "Vec_free"),
     // `Vec_clone` and `Map_clone` are absent on purpose. `clone_elision` can
     // decide a clone is unnecessary and leave the caller's own container in the
     // slot, and freeing that is a double free — `return v.clone()` printed the
