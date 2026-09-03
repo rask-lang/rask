@@ -4,16 +4,13 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 ## Where things stand
 
-Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 73 decided specs.
+Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 90 decided specs (up from 73 a week ago — a batch of stdlib specs landed: url, base64, hex, csv, terminal, digest, tls).
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). All five validation programs run on both backends. What is left is a registered backlog — 13 tracked bugs and 7 unbuilt features, each with a probe file in the suite. See [PLAN.md](PLAN.md) for the work order.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). What's left is a registered backlog — 11 tracked bugs and 6 unbuilt features, each with a probe file in the suite (down from 13+7 at the last measure). See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
-Re-measured 2026-08-24 by running all five. All pass. The four that print and
-exit are enrolled in `tests/examples_gate.sh` with goldens diffed on both
-backends; the server never exits, so it has its own harness driving a CRUD
-request sequence.
+Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `6c835416` after #953, #962 and #969 landed — every figure below still holds, and the HTTP server is still red.
 
 | Program | Status | Gate |
 |---------|--------|------|
@@ -21,11 +18,18 @@ request sequence.
 | grep clone | **Works** | examples gate, golden + argv |
 | Game loop with entities | **Works** | examples gate, golden (seeded RNG) |
 | Text editor with undo | **Works** | examples gate, golden + stdin |
-| HTTP JSON API server | **Works** | `tests/http_api_harness.sh`, both backends |
+| HTTP JSON API server | **Broken on native** | `tests/http_api_harness.sh` fails; interp is fine |
 
-This milestone is met, so it is no longer what to steer by. The next instrument
-is the one NORTH_STAR names: models writing Rask against the compiler, with the
-failure transcripts read.
+The HTTP server is a new regression, found by this re-measure: every response's
+first 8 bytes come back as garbage instead of `HTTP/1.1 `. Traced to a minimal
+repro — `StringBuilder` plus one `unsafe` call to a native function taking a
+`string` argument — so it's not HTTP-specific: **anything native that hands a
+built string across an `unsafe` FFI boundary is corrupting its first 8 bytes
+right now.** Filed as [#1036](https://github.com/rask-lang/rask/issues/1036)
+with the repro. This is the same lesson as the `match n { 1 => 2.5, _ => 0.0 }`
+bug from last month: every other gate was green while the flagship example
+silently broke. Fix this first — it's the widest blast radius of anything on
+this list, and it undoes "the five validation programs work."
 
 ## Stdlib architecture
 
@@ -42,67 +46,132 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 ## What comes next, and why in this order
 
-The old phase list was organized around getting the validation programs to run. They
-all run. So the ordering below is organized around the thing that replaces it: knowing
-when the compiler is *done enough*, rather than knowing which five programs work.
+### 1. Fix the native string→FFI corruption (#1036)
 
-### The measure comes first
+Leads the list because of blast radius, not because it's hard to characterize.
+Every native program that writes a built string to a raw fd through `unsafe`
+gets its first 8 bytes clobbered — that's the actual send path for the whole
+HTTP server (`write_raw` in `stdlib/http.rk`), so every native HTTP response is
+wrong today. Repro is 12 lines, no networking needed. Whoever picks this up:
+start at how `string as i64` gets codegen'd for an argument headed into an
+`unsafe` block.
 
-Green gates are not the same as a correct compiler. On 2026-08-24 every gate passed
-while this returned `2`:
+### 2. The sequence protocol — now the leading feature gap
 
-```rask
-let a = match n { 1 => 2.5, _ => 0.0 }
+Panics used to be here (see "what came off this list" below); with that mostly
+done, this is the item that unblocks the most other things. `type.sequence` is
+unimplemented (`p08_sequence.rk`), and three separate gaps chain off it:
+
+- Ranges have no methods beyond `for` — no `.sum()`, `.map()`, `.to_vec()` — because
+  they're meant to reach adapters through the sequence protocol
+  ([#920](https://github.com/rask-lang/rask/issues/920)).
+- Eleven declared Vec/Map methods (capacity control, `get_clone`, `remove_where`)
+  are unimplemented on both backends
+  ([#912](https://github.com/rask-lang/rask/issues/912)).
+- `Atomic` — the one atomic-type spelling the spec mandates — has zero operations,
+  while the eleven `AtomicU64`-style names the spec forbids are still registered
+  ([#927](https://github.com/rask-lang/rask/issues/927)).
+
+One protocol landing turns three "unbuilt" rows into "done" rows, which is why
+it leads over finishing the smaller registered-bug backlog.
+
+### 3. Finish the coverage backlog
+
+11 registered bugs (`tests/known_divergences.txt`) + 6 unbuilt features
+(`tests/pending_features.txt`, 3 of which are the sequence-protocol cluster
+above). Each has a probe file and an issue. Spot-checked a sample against
+their issues and code this pass — all still accurately described, nothing
+found already fixed or already built.
+
+### 4. Incremental compilation
+
+NORTH_STAR's first commitment is maximum static checking per millisecond of
+feedback. Unchanged since last measure: the function-granularity design
+(spec: [incremental.md](specs/compiler/incremental.md)) has no implementation
+yet — semantic hashing is done, the LSP has its own editor-facing incremental
+checking, but `rask build` itself doesn't cache or patch at function
+granularity. The IR design can't be retrofitted, so this has to be deliberate
+when it's picked up.
+
+### 5. Panics — nearly done, one small tracker left
+
+This used to be the headline blocker ("the panic path runs no `ensure` blocks
+and aborts the process"). That's fixed:
+
+```
+$ rask run panic_test.rk
+panic at panic_test.rk:10: boom
+closing g1
+exit: 101
 ```
 
-`t_week_enums.rk` was 13/13 throughout, because none of its variants happened to carry
-a float. That is the shape of every bug found this year: not a deep design fault, but a
-missing case — one arm of a match, one name absent from a list, one site that answered
-a question locally instead of asking. They are found by *running programs*, never by
-reading the compiler.
+Verified directly this pass — `ensure` runs on panic, native exits 101 instead
+of aborting. 10 of [#299](https://github.com/rask-lang/rask/issues/299)'s 11
+sub-issues are closed. What's left is
+[#298](https://github.com/rask-lang/rask/issues/298) — genuinely small,
+runtime-surface items, not a redo: a detached task's panic should print to
+stderr (currently prints nothing), a guard that panics during unwind should be
+contained and reported as a secondary panic instead of replacing the original,
+the task id should prefix the panic line when a runtime is active, and a panic
+that reaches an FFI boundary should abort there instead of unwinding into
+foreign frames.
 
-So the first work isn't a feature:
+### 6. Cross-compilation — partly built already, don't re-derive it
 
-1. **Finish the coverage backlog.** The registered red files in
-   `tests/known_divergences.txt`, each with a probe and an issue.
-2. **Close the coverage holes**, not just the red files — the "holes left on purpose"
-   list in `tests/COVERAGE.md` is the real todo. An area file gates the shapes it
-   happens to use, and nothing else.
-3. **Build the agent benchmark.** [NORTH_STAR](NORTH_STAR.md) names it as the
-   instrument — models writing Rask against the compiler, convergence measured, the
-   failure transcripts read — and it does not exist. Without it, "the native compiler
-   is stable" has no exit criterion and stays a feeling.
+Corrected this pass: the roadmap used to say "the compiler simply doesn't
+configure" ARM/WASM targets. Wrong — `--target` reaches Cranelift's ISA lookup
+today, and `rask targets` lists all three tiers. Tried it directly:
 
-### Then a program big enough to hurt
+```
+$ rask compile examples/http_api_server.rk --target aarch64-linux -o out
+error: link: cross-compilation to aarch64-linux requires a C cross-compiler
+Install one of: zig (recommended), aarch64-linux-gnu-gcc, or set CC=...
+```
 
-The five validation programs are single-file, mostly synchronous, and short-lived. What
-they don't stress is what breaks next: long-running state, a real dependency graph,
-concurrency under load.
+That's the compiler working correctly and reporting what's missing (this is
+literally what spec rule XT3 asks for), not a gap. What's actually missing,
+per `specs/structure/build.md`'s own status table: the wider toolchain — cross
+compiler detection, platform-specific deps, multi-target builds (XT1–XT8,
+listed "Not started"). Also worth knowing: the runtime is a static C library
+linked into every binary, so "pure Rask needs only the compiler to
+cross-compile" (XT2) doesn't hold yet even for programs with no `unsafe` in
+them — the C runtime always needs a matching cross-linker. Couldn't verify the
+zig/gcc path end-to-end — neither is installed in this environment.
 
-The larger program is the *instrument*, not the reward. Dogfooding a piece of the
-toolchain in Rask — `rask fmt`, or the linter — is the honest version, because you feel
-every rough edge yourself and it exercises multi-package builds, string handling and
-error paths harder than any example does.
+## On the LLVM backend
 
-Before that, the declared-but-unbuilt stdlib surface has to close: `Vec`/`Map` methods
-that exist in the signature and not in the implementation (#912), and ranges with no
-terminals or adapters (#920). A declared method that doesn't exist is worse than a
-missing one — the signature promises and the call fails. A larger program meets those
-in its first hour.
+Deferring it, and the reason is the bug history rather than the engineering.
 
-### Then the three that block shipping
+The largest single class of bugs in this project is the two backends disagreeing —
+measured at 39% of open issues when [#724](https://github.com/rask-lang/rask/issues/724)
+was written, and the differential harness exists because of it. A third thing that can
+produce an answer is a third thing that can disagree, and the second one still has
+tracked divergences.
 
-1. **Panics and unwinding** ([#299](https://github.com/rask-lang/rask/issues/299)). The
-   panic path runs no `ensure` blocks and aborts the process. A server cannot ship with
-   that, and it undercuts the resource-safety promise everywhere else.
-2. **The sequence protocol** (`type.sequence`). User types can't be iterated at all, and
-   range adapters route through it, so it gates more than it looks like it does.
-3. **Incremental compilation.** NORTH_STAR's first commitment is maximum static checking
-   per millisecond of feedback. This is the item that serves it directly. The IR design
-   for function-level granularity can't be retrofitted — spec in
-   [incremental.md](specs/compiler/incremental.md).
+The usual argument for LLVM is more targets. That one is weak here: Cranelift reaches
+ARM and WASM already. The real argument is generated-code quality for a language meant
+to compete with Rust and C — and that is a decision for a benchmark to make, not taste.
+`benchmarks/` now has one apples-to-apples pair (`grep.c` vs `examples/grep_clone.rk` —
+ceremony came out a tie, ED 0.96) but nothing measuring raw speed yet.
+**Nothing goes to LLVM until something measures slow.**
 
-### Stdlib breadth, alongside
+## The agent benchmark (built, since last measure it didn't exist)
+
+Last measure said this instrument "does not exist." It does now:
+`agentbench/` — 19 tasks, reference solutions, model adapters (`mock:*`, `cli:<model>`
+against a Claude subscription, `api:<model>`), and it measures solve rate, pass@1,
+convergence, backend divergences, thrash, and teach rate against the targets in
+its README. CI runs `agentbench_gate.sh` (the free `selftest` — do the references
+still build), which passed this measure: 18 green, 1 quarantined
+(`month_error_union`, [#1002](https://github.com/rask-lang/rask/issues/1002),
+already tracked). The one real-model run on record (2026-08-28): pass@1 61%→72%,
+convergence 1.47→1.29, after the language card got a "method surface" section —
+method-not-found was the top first-attempt failure. Running it against a live
+model isn't automated (deliberately — it spends plan quota or API credit), so
+that number will go stale between measures; re-run it by hand when a stdlib or
+diagnostics change is large enough to matter.
+
+## Stdlib breadth, alongside
 
 | Module | Language | Purpose |
 |--------|----------|---------|
@@ -114,33 +183,13 @@ in its first hour.
 | hash | Rask (or C for HW accel) | SHA-256, MD5, CRC32 |
 | tls | C shim + Rask API | TLS/SSL via OpenSSL/mbedTLS |
 
-Each needs spec, implementation, tests. `json.to_value` / `json.from_value` are still
-`@unimplemented` — the tree↔typed bridge waits on Encode/Decode derivation.
-
-Also runtime trait dispatch for heterogeneous collections
-([#194](https://github.com/rask-lang/rask/issues/194)), and cross-compilation: the
-`--target` flag wired to Cranelift plus cross-linker detection (XT1–XT6). Cranelift
-already does ARM and WASM; the compiler simply doesn't configure them.
-
-## On the LLVM backend
-
-I'm deferring it, and the reason is the bug history rather than the engineering.
-
-The largest single class of bugs in this project is the two backends disagreeing —
-measured at 39% of open issues when [#724](https://github.com/rask-lang/rask/issues/724)
-was written, and the differential harness exists because of it. A third thing that can
-produce an answer is a third thing that can disagree, and the second one still has
-tracked divergences.
-
-The usual argument for LLVM is more targets. That one is weak here: Cranelift reaches
-ARM and WASM already. The real argument is generated-code quality for a language meant
-to compete with Rust and C — and that is a decision for a benchmark to make, not taste.
-`benchmarks/` is nearly empty. **Nothing goes to LLVM until something measures slow.**
+All seven now have specs (landed this week). Implementation and tests still
+open per module. `json.to_value` / `json.from_value` are still `@unimplemented` —
+the tree↔typed bridge waits on Encode/Decode derivation.
 
 ## Post-v1.0
 
-- State machine codegen — stackless transforms for green tasks
-- Platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
+- Platform-specific deps (XT7), multi-target builds (XT8), `rask targets` polish (XT9 itself already ships)
 - LLVM backend, if the benchmarks ask for it
 - Macros / `format!`
 - Comptime debugger
@@ -151,3 +200,27 @@ to compete with Rust and C — and that is a decision for a benchmark to make, n
 - Pointer provenance rules
 - `compile_cpp()` build script support
 - Auto Rask wrapper generation from cbindgen
+
+## What came off this list since last measure (2026-08-24)
+
+- **Panics and unwinding** — was the #1 blocker, now #5 and nearly closed. `ensure`
+  runs on panic, native exits 101. Verified directly, not just by issue status.
+- **The agent benchmark** — was "doesn't exist," now built, in CI, and has one
+  real measured run on record.
+- **Cross-compilation was reported worse than it is.** `--target` and
+  `rask targets` work; only the wider toolchain (cross-linkers, multi-target)
+  is unbuilt. Corrected the framing above rather than re-deriving it.
+- **Stackless state-machine transform for spawned tasks** — landed 2026-08-14
+  (`rask-mir/src/transform/state_machine.rs`, wired into spawn lowering), was
+  still listed under Post-v1.0 as future work. Removed from that list.
+- **#194 (trait-object vtable dispatch)** — the roadmap cited this as an open
+  gap ("runtime trait dispatch for heterogeneous collections"). It's been
+  closed since July 22, fixed by #344. Dropped the reference.
+- **Coverage backlog shrank 20 → 17** (13 bugs + 7 unbuilt → 11 bugs + 6 unbuilt).
+
+## New this measure
+
+- **HTTP server broken on native (#1036)** — see Validation programs above. Not
+  fixed as part of this pass per the "measure, don't fix" rule for this task,
+  but filed with a minimal repro since it's a live regression, not a documentation
+  correction.
