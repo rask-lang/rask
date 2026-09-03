@@ -55,13 +55,18 @@ fn optimize_closures(
     // Step 2: Determine which closures escape (using callee info for Call args)
     let escaping = find_escaping_closures(func, &closure_locals, callee_escapes);
 
-    // Step 3: Downgrade non-escaping closures to stack allocation
+    // Step 3: Heap exactly when the closure outlives this frame.
+    //
+    // This used to only downgrade. Lowering picks the initial answer from
+    // `own`, so a scope-limited closure that escaped anyway — by being
+    // returned, which is every sequence source and every adapter — kept a
+    // stack environment in a frame that had already been popped. It read back
+    // whatever was left there: the right answer in a small program, a wrong
+    // one or a segfault in a real one (#1045).
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
             if let MirStmtKind::ClosureCreate { dst, heap, .. } = &mut stmt.kind {
-                if !escaping.contains(dst) {
-                    *heap = false;
-                }
+                *heap = escaping.contains(dst);
             }
         }
     }
@@ -142,7 +147,12 @@ fn find_escaping_closures(
     closure_locals: &HashMap<LocalId, bool>,
     callee_escapes: &HashMap<String, Vec<bool>>,
 ) -> HashSet<LocalId> {
-    let mut escaping = HashSet::new();
+    // Lowering routinely copies the `ClosureCreate` result on before returning
+    // it, so reading only the original destination missed the escape. Every
+    // alias answers for the closure it came from.
+    let aliases = closure_aliases(func, closure_locals);
+    let closure_locals = &aliases.keys().map(|id| (*id, false)).collect::<HashMap<_, _>>();
+    let mut found = HashSet::new();
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -157,7 +167,7 @@ fn find_escaping_closures(
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    escaping.insert(id);
+                                    found.insert(id);
                                 }
                             }
                         }
@@ -165,7 +175,7 @@ fn find_escaping_closures(
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
                     if closure_locals.contains_key(id) {
-                        escaping.insert(*id);
+                        found.insert(*id);
                     }
                 }
                 _ => {}
@@ -176,14 +186,44 @@ fn find_escaping_closures(
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
                 if closure_locals.contains_key(id) {
-                    escaping.insert(*id);
+                    found.insert(*id);
                 }
             }
             _ => {}
         }
     }
 
-    escaping
+    // Answer in terms of the `ClosureCreate` destinations, which is what the
+    // caller rewrites.
+    found.iter().filter_map(|id| aliases.get(id).copied()).collect()
+}
+
+/// Every local that holds one of this function's closures, mapped to the
+/// `ClosureCreate` destination it came from — itself, for the original.
+fn closure_aliases(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+) -> HashMap<LocalId, LocalId> {
+    let mut holds: HashMap<LocalId, LocalId> = closure_locals.keys().map(|id| (*id, *id)).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } =
+                    &stmt.kind
+                else {
+                    continue;
+                };
+                if let Some(origin) = holds.get(src).copied() {
+                    if holds.insert(*dst, origin) != Some(origin) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    holds
 }
 
 /// Find closures whose ownership was transferred out of the function.
