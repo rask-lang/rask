@@ -11,25 +11,24 @@
 # grep, so every file read as clean. Forwarding that stderr is what made these
 # visible; none of them are new (#1048).
 #
-# Two shapes account for most of them, both already tracked:
-#   - a container moved into a struct field, or handed to a function that keeps
-#     it, is never freed (#1047)
+# What's left, after wiring Rack and Pool into the drop pass:
+#   - a container moved into a struct field, or nested inside another
+#     container, is never freed (#1047) — the biggest remaining share
 #   - freeing a closure block doesn't release what it captured (#1045)
+#   - a const string built by interpolation is never released (#1048)
 #
 # Format: one basename per line, then `# N allocations`.
 
-
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
-p11_rack_link.rk  # 99 allocations
+p11_rack_link.rk  # 18 allocations
 p12_rack_link_churn.rk  # 129 allocations
-p13_rack_snapshot.rk  # 94 allocations
-p14_deleting_mode.rk  # 22 allocations
+p13_rack_snapshot.rk  # 27 allocations
+p14_deleting_mode.rk  # 10 allocations
 p15_read_only_graph.rk  # 37 allocations
-p16_rack_link_holders.rk  # 42 allocations
-p17_link_none.rk  # 30 allocations
-p18_rack_multi_link_fields.rk  # 36 allocations
-p19_mutate_param_link_write.rk  # 25 allocations
+p16_rack_link_holders.rk  # 4 allocations
+p18_rack_multi_link_fields.rk  # 11 allocations
+p19_mutate_param_link_write.rk  # 19 allocations
 p20_closure_mutable_capture.rk  # 4 allocations
 t09_vec.rk  # 2 allocations
 t14_ownership.rk  # 2 allocations
@@ -49,7 +48,7 @@ t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t49_comptime.rk  # 2 allocations
 t50_boxes.rk  # 4 allocations
-t51_pools.rk  # 28 allocations
+t51_pools.rk  # 6 allocations
 t53_format.rk  # 1 allocation
 t54_displayable.rk  # 1 allocation
 t54_strings.rk  # 8 allocations
@@ -60,11 +59,10 @@ t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
 t_any_error_boxing.rk  # 5 allocations
 t_assert_side_effects.rk  # 12 allocations
-t_assert_string_message.rk  # 12 allocations
+t_assert_string_message.rk  # 4 allocations
 t_bare_lock_value.rk  # 21 allocations
 t_binding_types.rk  # 4 allocations
 t_borrow_param_consume.rk  # 7 allocations
-t_bounded_pool.rk  # 10 allocations
 t_box_replace_payload.rk  # 9 allocations
 t_card_method_surface.rk  # 9 allocations
 t_catch_drop_flat_shape.rk  # 1 allocation
@@ -77,14 +75,13 @@ t_collection_api_gaps.rk  # 28 allocations
 t_collection_literal.rk  # 8 allocations
 t_conditional_conformance.rk  # 2 allocations
 t_container_ownership.rk  # 3 allocations
-t_container_through_field.rk  # 36 allocations
-t_context_entry_point.rk  # 4 allocations
+t_container_through_field.rk  # 32 allocations
 t_day_const.rk  # 1 allocation
 t_day_map.rk  # 8 allocations
-t_day_strings.rk  # 8 allocations
+t_day_strings.rk  # 7 allocations
 t_day_vec.rk  # 4 allocations
 t_decode_defaults.rk  # 1 allocation
-t_element_type_resolution.rk  # 28 allocations
+t_element_type_resolution.rk  # 26 allocations
 t_enum_small_payload.rk  # 1 allocation
 t_f32_arithmetic_width.rk  # 1 allocation
 t_float_formatting.rk  # 1 allocation
@@ -101,9 +98,9 @@ t_i128_arithmetic.rk  # 12 allocations
 t_implicit_widening.rk  # 2 allocations
 t_index_through_field.rk  # 64 allocations
 t_int_literal_range.rk  # 6 allocations
-t_io_buffer.rk  # 83 allocations
+t_io_buffer.rk  # 71 allocations
 t_iterate_field_collection.rk  # 29 allocations
-t_json_decode.rk  # 76 allocations
+t_json_decode.rk  # 69 allocations
 t_json_encode_shapes.rk  # 17 allocations
 t_json_enum.rk  # 12 allocations
 t_json_field_annotations.rk  # 1 allocation
@@ -130,21 +127,18 @@ t_month_stdlib_modules.rk  # 14 allocations
 t_mutate_element_writeback.rk  # 1 allocation
 t_mutex_guard_exits.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
-t_named_context_resolves_by_type.rk  # 10 allocations
+t_named_context_resolves_by_type.rk  # 4 allocations
 t_nested_with_return.rk  # 12 allocations
-t_net_loopback.rk  # 13 allocations
-t_niche_handle_option.rk  # 20 allocations
-t_niche_option_handle.rk  # 12 allocations
+t_net_loopback.rk  # 8 allocations
+t_niche_handle_option.rk  # 18 allocations
+t_niche_option_handle.rk  # 2 allocations
 t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 157 allocations
 t_parse_error_variants.rk  # 8 allocations
 t_parse_widths.rk  # 12 allocations
 t_path_module.rk  # 11 allocations
 t_pattern_payload_types.rk  # 2 allocations
-t_pool_capacity.rk  # 8 allocations
-t_pool_iter_handles.rk  # 22 allocations
-t_pool_remove.rk  # 14 allocations
-t_projected_index_writes.rk  # 6 allocations
+t_pool_iter_handles.rk  # 20 allocations
 t_random_seeded.rk  # 13 allocations
 t_range_adapters.rk  # 8 allocations
 t_range_element_type.rk  # 2 allocations
@@ -158,10 +152,10 @@ t_sort_by_closure.rk  # 3 allocations
 t_sort_contracts.rk  # 7 allocations
 t_spawn_join_result.rk  # 2 allocations
 t_spawn_payload_type.rk  # 5 allocations
-t_string_builder_mutate.rk  # 8 allocations
+t_string_builder_mutate.rk  # 3 allocations
 t_string_clone_width.rk  # 2 allocations
-t_string_field_and_enum_clone.rk  # 10 allocations
-t_string_from_utf8.rk  # 42 allocations
+t_string_field_and_enum_clone.rk  # 6 allocations
+t_string_from_utf8.rk  # 29 allocations
 t_string_hash.rk  # 2 allocations
 t_string_rc_escapes.rk  # 10 allocations
 t_string_unicode.rk  # 5 allocations
@@ -178,8 +172,7 @@ t_tuple_match_payloads.rk  # 2 allocations
 t_u64_literals.rk  # 4 allocations
 t_vec_elem_from_call.rk  # 2 allocations
 t_vec_element_returns.rk  # 7 allocations
-t_vec_field_filter_map.rk  # 20 allocations
-t_vec_of_optional_handles.rk  # 4 allocations
+t_vec_field_filter_map.rk  # 16 allocations
 t_vec_position_reduce.rk  # 6 allocations
 t_void_result_ok.rk  # 2 allocations
 t_week_closures.rk  # 20 allocations
@@ -188,7 +181,7 @@ t_week_generic_param_shadowing.rk  # 1 allocation
 t_week_generics.rk  # 4 allocations
 t_week_imports.rk  # 2 allocations
 t_week_nested_data.rk  # 51 allocations
-t_week_opaque_struct_fields.rk  # 2 allocations
+t_week_opaque_struct_fields.rk  # 1 allocation
 t_week_parse_format.rk  # 2 allocations
 t_week_ranges.rk  # 6 allocations
 t_week_results.rk  # 4 allocations
@@ -196,5 +189,5 @@ t_week_sorting.rk  # 15 allocations
 t_week_traits.rk  # 5 allocations
 t_week_tuples.rk  # 2 allocations
 t_while_presence_binding.rk  # 8 allocations
-t_with_collection_field_writes.rk  # 16 allocations
+t_with_collection_field_writes.rk  # 14 allocations
 t_with_mutex_value.rk  # 4 allocations

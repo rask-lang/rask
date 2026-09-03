@@ -5,7 +5,9 @@
 //! `Vec.new()` allocates a `RaskVec` and, on the first push, a data array.
 //! Nothing in the pipeline ever freed either (#1027) — a vector built in a
 //! loop leaked the handle, the array, and every heap string in it, once per
-//! turn. `Map`, `Rack` and `Pool` are the same.
+//! turn. `Map`, `Rack` and `Pool` are the same — and for the last two that
+//! sentence stayed aspirational until #1048: their frees existed in the runtime
+//! and no constructor of theirs was on the list this pass reads.
 //!
 //! Modelled on `trait_drop.rs`, which solves the same problem for trait
 //! objects, and shares its rules: track only *fresh* allocations — the
@@ -38,6 +40,8 @@ fn free_for(ctor: &str) -> Option<&'static str> {
     match crate::elem_strs::CTORS.iter().find(|(c, _, _)| *c == ctor)?.0 {
         c if c.starts_with("Vec_") || c.starts_with("rask_vec_") => Some("Vec_free"),
         c if c.starts_with("Map_") => Some("Map_free"),
+        c if c.starts_with("Rack_") => Some("Rack_free"),
+        c if c.starts_with("Pool_") => Some("Pool_free"),
         _ => None,
     }
 }

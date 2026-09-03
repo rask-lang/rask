@@ -56,6 +56,16 @@ pub const CTORS: &[(&str, u8, u8)] = &[
     ("Vec_fixed", 2, 1),
     ("Map_new", 2, 2),
     ("Map_new_string_keys", 2, 2),
+    // Racks and pools carry no element tag: a rack is told about its fields
+    // separately, through `Link_register_*`, and a pool's slots are opaque
+    // bytes. They are here so the drop pass recognises one coming out of a
+    // constructor — `rask_rack_free` and `rask_pool_free` have existed all
+    // along with nothing calling them, so `Rack.new()` with nothing in it
+    // leaked (#1048).
+    ("Rack_new", 0, 0),
+    ("Rack_snapshot", 1, 0),
+    ("Pool_new", 1, 0),
+    ("Pool_with_capacity", 2, 0),
 ];
 
 /// `(leading sizes, element tags)` for a container constructor, by the name MIR
