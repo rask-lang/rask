@@ -26,8 +26,8 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
-| 5 — Adapters + terminals as `extend Sequence<T>` | written, blocked on stage 6 — #1046 | — |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | blocked on #1047 | — |
+| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ the 14 writable in Rask; 6 need a bound — #1046 | `t31` |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | blocked on stage 5's last six | — |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
 | 7 — `Range<T>` as one nominal type with `iter()` (#920) | pending | — |
@@ -99,13 +99,53 @@ Still open on #1045: freeing the block doesn't release what it captured, so an
 `own` closure holding a `Vec` leaks the vector. The block would need drop glue
 next to its size.
 
-### What stage 6 waits on now (#1047)
+### What stage 6 waits on now — six terminals that need a bound
 
-Not #1045 — `Vec.iter()` borrows the vector rather than moving it. It waits on a
-container leak found while measuring #1045: passing a `Vec` by value to any
-function leaks it, because the caller sees it handed away and the callee sees a
-parameter rather than something it built. `for x in v.iter()` moves a container
-across a call boundary once per loop, so this would fire every time.
+Measured by doing it: changing `Vec.iter()` to return `Sequence<T>` is one line,
+and it turns 9 suite files red. Every one is the same thing — the chain now
+resolves to `Sequence`'s adapters, and those were all `@unimplemented`.
+
+Fourteen of them are now written, in Rask, in the protocol they define: each
+adapter is a closure over `self` that re-yields, each terminal is a `for` loop
+over `self`. That fixed 7 of the 9 and the two examples that broke with them.
+
+The six that are left can't be written in Rask at all, and it isn't an
+oversight — `stdlib/sequence.rk` already says why:
+
+> Bounds are compiler-enforced rather than written: `sum` needs a numeric
+> element, `min`/`max` an ordered one, `to_vec` a Copy or chain-owned one.
+
+`sum`, `product`, `min`, `max` and `join` need an element bound Rask has no way
+to name. `total = total + x` on a generic `T` is "method not found — check
+available methods on `T`". `Vec.sum` gets away with it by being `@native`.
+
+Marking them `@native` and leaning on the MIR fusion that already implements
+`v.iter().min()` *does* work for a fused chain — the whole `iter_min_max`
+fixture passes on both backends that way. It breaks the moment a chain isn't
+fused:
+
+```
+let s = nums()
+println("sum={s.sum()}")
+
+error: codegen 'main': Function not found: Sequence_sum
+```
+
+That is exactly the failure `@unimplemented` exists to turn into a good message,
+so the trade is a worse error for a working fast path. Not worth taking.
+
+So stage 6 needs real implementations for those six, on both backends, ahead of
+the `Vec.iter()` switch. Until then the switch stays reverted: the adapters are
+in and exercised through user sequences (`t31_sequence_adapters.rk`, 16 tests),
+and the collections keep returning `Iterator<T>`.
+
+### The ordering that has to hold once it lands
+
+`for x in v.iter()` fuses into an index loop with no closure at all. `lower_for`
+now tries chain fusion *before* asking SEQ6, because the moment a collection's
+`iter()` returns a `Sequence<T>` the SEQ6 branch would claim the language's most
+common loop and put a yield closure call on every element. Fusion wins the tie;
+SEQ6 catches what fusion declines, which is what `for x in bag.iter()` needs.
 
 ### Stage 6 moved to the front, because stage 5 needs it
 

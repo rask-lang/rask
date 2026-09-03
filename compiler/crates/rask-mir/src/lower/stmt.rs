@@ -2033,14 +2033,9 @@ impl<'a> MirLowerer<'a> {
         // changes went into a local copy and the collection never saw them
         // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
         // it was landing here.
-        // type.sequence/SEQ6, asked of the expression as written. A method that
-        // hands back a `Sequence<T>` is the thing to call, and the `.iter()`
-        // unwrapping just below would ask its receiver instead — so
-        // `for x in bag.iter()` looked at `Bag`, found no element type, and gave
-        // up in MIR while the interpreter ran it fine.
-        if let Some(elem) = self.sequence_elem_ty(iter_expr) {
-            return self.lower_for_sequence(label, binding, iter_expr, body, elem);
-        }
+        // The expression as written, kept because the `.iter()` unwrapping just
+        // below loses it and SEQ6 has to be asked about the method's *result*.
+        let as_written = iter_expr;
 
         // A bare `.iter()` with nothing chained onto it iterates exactly what
         // its receiver does, so unwrap it and let the checks below see the
@@ -2057,15 +2052,28 @@ impl<'a> MirLowerer<'a> {
             _ => iter_expr,
         };
 
+        // Fusion first, and it has to stay first. `for x in v.iter()` fuses into
+        // an index loop with no closure at all; asking SEQ6 before this would
+        // send it through a yield closure per element instead, once a
+        // collection's `iter()` returns a `Sequence<T>`. That is the language's
+        // most common loop, so the fast path wins the tie.
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
                 return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
             }
         }
 
-        // type.sequence/SEQ6: a Sequence is a function taking a yield, so
-        // iterating one is calling it. Ahead of the index loop below, which
-        // would ask a closure for its `len()`.
+        // type.sequence/SEQ6, asked of the expression as written. A method that
+        // hands back a `Sequence<T>` is the thing to call, and the unwrapping
+        // above would ask its receiver instead — so `for x in bag.iter()` looked
+        // at `Bag`, found no element type, and gave up in MIR while the
+        // interpreter ran the same program fine.
+        if let Some(elem) = self.sequence_elem_ty(as_written) {
+            return self.lower_for_sequence(label, binding, as_written, body, elem);
+        }
+
+        // The same question about the unwrapped receiver: a `Sequence<T>` held
+        // in a variable, rather than one a method just returned.
         if let Some(elem) = self.sequence_elem_ty(iter_expr) {
             return self.lower_for_sequence(label, binding, iter_expr, body, elem);
         }

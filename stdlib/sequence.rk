@@ -39,45 +39,112 @@ public struct SequenceMut<T> { }
 
 extend Sequence<T> {
     /// Yield only the items `pred` accepts.
-    @unimplemented
-    public func filter(self, pred: func(T) -> bool) -> Sequence<T> {}
+    public func filter(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if pred(x) {
+                    if !yield(x) { return }
+                }
+            }
+        }
+    }
 
     /// Yield `f` applied to each item.
-    @unimplemented
-    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {}
+    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {
+        return |yield| {
+            for x in self {
+                if !yield(f(x)) { return }
+            }
+        }
+    }
 
     /// Yield at most the first `n` items, then stop.
-    @unimplemented
-    public func take(self, n: usize) -> Sequence<T> {}
+    public func take(self, n: usize) -> Sequence<T> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if i >= n { return }
+                if !yield(x) { return }
+                i = i + 1
+            }
+        }
+    }
 
     /// Skip the first `n` items, yield the rest.
-    @unimplemented
-    public func skip(self, n: usize) -> Sequence<T> {}
+    public func skip(self, n: usize) -> Sequence<T> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if i >= n {
+                    if !yield(x) { return }
+                }
+                i = i + 1
+            }
+        }
+    }
 
     /// Yield items until `pred` first fails, then stop.
-    @unimplemented
-    public func take_while(self, pred: func(T) -> bool) -> Sequence<T> {}
+    public func take_while(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if !pred(x) { return }
+                if !yield(x) { return }
+            }
+        }
+    }
 
     /// Skip while `pred` holds, yield everything after the first failure.
-    @unimplemented
-    public func skip_while(self, pred: func(T) -> bool) -> Sequence<T> {}
+    public func skip_while(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            mut skipping = true
+            for x in self {
+                if skipping {
+                    if pred(x) { continue }
+                    skipping = false
+                }
+                if !yield(x) { return }
+            }
+        }
+    }
 
     /// Yield this sequence's items, then `other`'s.
-    @unimplemented
-    public func chain(self, other: Sequence<T>) -> Sequence<T> {}
+    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if !yield(x) { return }
+            }
+            for y in other {
+                if !yield(y) { return }
+            }
+        }
+    }
 
     /// Pair each item with its position. The tuple carries a borrow and lives
     /// for one yield call — a yield parameter is not storage (SEQ44).
-    @unimplemented
-    public func enumerate(self) -> Sequence<(usize, T)> {}
+    public func enumerate(self) -> Sequence<(usize, T)> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if !yield((i, x)) { return }
+                i = i + 1
+            }
+        }
+    }
 
     /// Flatten one level: yield every item of every inner sequence.
     @unimplemented
     public func flatten<U>(self) -> Sequence<U> {}
 
     /// Map each item to a sequence, then flatten one level.
-    @unimplemented
-    public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {}
+    public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {
+        return |yield| {
+            for x in self {
+                for inner in f(x) {
+                    if !yield(inner) { return }
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +166,13 @@ extend Sequence<T> {
     /// them is a compile error pointing at the clone you meant to write:
     /// `map` is the ownership boundary, so `.map(|u| u.clone()).to_vec()`
     /// clones exactly once, at the call site that asked for it.
-    @unimplemented
-    public func to_vec(self) -> Vec<T> {}
+    public func to_vec(self) -> Vec<T> {
+        mut out: Vec<T> = Vec<T>.new()
+        for x in self {
+            out.push(x)
+        }
+        return out
+    }
 
     /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
     /// ones, exactly like repeated `insert`.
@@ -112,8 +184,13 @@ extend Sequence<T> {
     public func join(self, sep: string) -> string {}
 
     /// Reduce with a starting value.
-    @unimplemented
-    public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {}
+    public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {
+        mut acc = init
+        for x in self {
+            acc = f(acc, x)
+        }
+        return acc
+    }
 
     /// Reduce without one. `none` on an empty sequence.
     @unimplemented
@@ -128,8 +205,13 @@ extend Sequence<T> {
     public func product(self) -> T {}
 
     /// How many items the sequence yields.
-    @unimplemented
-    public func count(self) -> usize {}
+    public func count(self) -> usize {
+        mut n: usize = 0
+        for _x in self {
+            n = n + 1
+        }
+        return n
+    }
 
     /// Smallest item, or `none` if empty.
     @unimplemented
@@ -156,19 +238,34 @@ extend Sequence<T> {
     public func max_by_key<K>(self, key: func(T) -> K) -> T? {}
 
     /// True if any item satisfies `pred`. Stops at the first that does.
-    @unimplemented
-    public func any(self, pred: func(T) -> bool) -> bool {}
+    public func any(self, pred: func(T) -> bool) -> bool {
+        for x in self {
+            if pred(x) { return true }
+        }
+        return false
+    }
 
     /// True if every item satisfies `pred`. Stops at the first that doesn't.
-    @unimplemented
-    public func all(self, pred: func(T) -> bool) -> bool {}
+    public func all(self, pred: func(T) -> bool) -> bool {
+        for x in self {
+            if !pred(x) { return false }
+        }
+        return true
+    }
 
     /// The first item satisfying `pred`, or `none`. Stops there.
-    @unimplemented
-    public func find(self, pred: func(T) -> bool) -> T? {}
+    public func find(self, pred: func(T) -> bool) -> T? {
+        for x in self {
+            if pred(x) { return x }
+        }
+        return none
+    }
 
     /// Run `f` for each item. The loop form reads better — this is for passing
     /// a function that already exists.
-    @unimplemented
-    public func for_each(self, f: func(T)) {}
+    public func for_each(self, f: func(T)) -> void {
+        for x in self {
+            f(x)
+        }
+    }
 }
