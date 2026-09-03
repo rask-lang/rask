@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A fused `.iter().skip(n).take(m).map(…).to_vec()` chain.
+// A fused `.skip(n).take(m).map(…).to_vec()` chain.
 //
 // Two bugs met here. `take(m)` set the loop's end bound to `skip + m` with no
 // regard for how long the source actually is, so taking 50 of three elements
@@ -28,7 +28,6 @@ func rows() -> Vec<Ranked> {
 
 test "stdlib.collections — take past the end yields what there is" {
     let page = rows()
-        .iter()
         .skip(0)
         .take(50)
         .map(|r| r.view.clone())
@@ -43,7 +42,6 @@ test "stdlib.collections — take past the end yields what there is" {
 
 test "stdlib.collections — skip and take page a slice out of the middle" {
     let page = rows()
-        .iter()
         .skip(1)
         .take(1)
         .map(|r| r.view.clone())
@@ -56,7 +54,6 @@ test "stdlib.collections — skip and take page a slice out of the middle" {
 
 test "stdlib.collections — skipping past the end yields nothing" {
     let page = rows()
-        .iter()
         .skip(9)
         .take(50)
         .map(|r| r.view.clone())
@@ -70,7 +67,6 @@ test "stdlib.collections — skipping past the end yields nothing" {
 // aggregates reads garbage inside a `test` block on native (#495).
 test "stdlib.collections — a collected Vec of structs reads at the right stride" {
     let page = rows()
-        .iter()
         .take(3)
         .map(|r| r.view.clone())
         .to_vec()
@@ -91,7 +87,6 @@ test "stdlib.collections — a collected Vec of structs reads at the right strid
 
 test "a map closure knows its parameter's type from the source" {
     let titles = rows()
-        .iter()
         .map(|r| r.view.title)
         .to_vec()
 
@@ -102,7 +97,6 @@ test "a map closure knows its parameter's type from the source" {
 
 test "a filter closure knows it too, and the chain keeps the element type" {
     let ids = rows()
-        .iter()
         .filter(|r| r.rank > 1)
         .map(|r| r.view.id)
         .to_vec()
@@ -114,7 +108,6 @@ test "a filter closure knows it too, and the chain keeps the element type" {
 
 test "a fold closure sees both the accumulator and the element" {
     let total = rows()
-        .iter()
         .fold(0, |acc: i64, r| acc + r.rank)
 
     assert total == 6

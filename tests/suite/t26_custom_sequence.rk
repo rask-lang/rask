@@ -185,8 +185,11 @@ func main() {}
 // so the thing to call is the method's result — but a bare `.iter()` used to be
 // unwrapped to its receiver before anything looked, on the theory that it's the
 // no-op `v.iter()` on a Vec. MIR then asked `Bag` for an element type, found
-// none, and gave up while the interpreter ran the same program fine. This is the
-// shape stage 6 gives every collection.
+// none, and gave up while the interpreter ran the same program fine.
+//
+// `Vec.iter()` is gone now, so nothing named `iter` is a compiler concern and
+// the unwrap is gone with it. The name survives here as a user method to keep
+// the old hijack from coming back.
 struct Bag {
     items: Vec<i32>
 }

@@ -52,7 +52,7 @@ test "adapters chain without an explicit iter()" {
 
 test "explicit iter().map().to_vec() agrees" {
     let v = Vec.from([1, 2, 3])
-    let out: Vec<i64> = v.iter().map(|x| { return x + 1 }).to_vec()
+    let out: Vec<i64> = v.map(|x| { return x + 1 }).to_vec()
     assert out.len() == 3
     assert out[0] == 2
     assert out[2] == 4
@@ -74,4 +74,34 @@ test "float elements are not read as pointers" {
         total = total + f
     }
     assert total == 4.0
+}
+
+// `v.take(n)` bound to a variable, with no chain around it to fuse into.
+// `Vec.take` had no runtime symbol and no lowering outside fusion, so this died
+// with "codegen 'main': Function not found: Vec_take" while `v.skip(n)` — which
+// has always had `rask_iter_skip` — worked. Nothing in the suite spelled it
+// until `.iter()` went away and chains started at the collection.
+test "take and skip standing on their own" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let first3 = v.take(3)
+    assert first3.len() == 3
+    assert first3[0] == 1
+    assert first3[2] == 3
+    let rest = v.skip(3)
+    assert rest.len() == 2
+    assert rest[0] == 4
+}
+
+test "take more than there is, and take none" {
+    let v: Vec<i32> = [1, 2, 3]
+    assert v.take(99).len() == 3
+    assert v.take(0).len() == 0
+}
+
+test "take keeps string elements alive" {
+    let words: Vec<string> = ["alpha", "beta", "gamma"]
+    let two = words.take(2)
+    assert two.len() == 2
+    assert two[0] == "alpha"
+    assert two[1] == "beta"
 }

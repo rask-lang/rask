@@ -9,8 +9,8 @@
 //     Map_insert_if_missing
 //
 // `enumerate` got the standalone-adapter treatment `map`/`filter` already had —
-// the `IterAdapter::Enumerate` existed, only the spelling without `.iter()` was
-// missing. `insert_if_missing` is written in Rask now: a condition around two
+// the `IterAdapter::Enumerate` existed, only the spelling with the collection
+// as the chain head was missing. `insert_if_missing` is written in Rask now: a condition around two
 // primitives, one source for both backends.
 //
 // The other four each mention a type parameter of their *own* — `zip`'s `U`,
@@ -24,7 +24,7 @@
 // pair, and after the last — and the native branch pushed one *byte* per
 // character with no empties, which also cut a multi-byte character in half.
 
-test "vec enumerate — standalone, without .iter()" {
+test "vec enumerate — standalone, off the collection" {
     let base: Vec<i64> = [3, 1, 2]
     let pairs = base.enumerate()
     assert_eq(pairs.len(), 3)
@@ -41,7 +41,7 @@ test "vec enumerate — standalone, without .iter()" {
 test "vec enumerate — through iter() still works" {
     let base: Vec<i64> = [10, 20]
     mut seen = ""
-    for p in base.iter().enumerate() {
+    for p in base.enumerate() {
         seen = "{seen}{p.0}:{p.1} "
     }
     assert_eq(seen, "0:10 1:20 ")

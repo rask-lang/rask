@@ -64,9 +64,9 @@ test "closures in a Vec — named functions too" {
     assert_eq(total, 50)
 }
 
-// The element type has to survive `.iter()`, which is a different lowering path
-// from a bare `for` over the collection.
-test "closures in a Vec — through iter()" {
+// The element type has to survive an adapter chain, which is a different
+// lowering path from a bare `for` over the collection.
+test "closures in a Vec — through an adapter chain" {
     mut fs: Vec<func(i64) -> i64> = Vec.new()
     fs.push(|x| {
         return x + 1
@@ -75,7 +75,7 @@ test "closures in a Vec — through iter()" {
         return x + 2
     })
     mut out: Vec<i64> = Vec.new()
-    for f in fs.iter() {
+    for f in fs {
         out.push(f(0))
     }
     assert_eq(out.join(","), "1,2")

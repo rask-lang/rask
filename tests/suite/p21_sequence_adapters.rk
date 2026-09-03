@@ -14,9 +14,9 @@
 // answer is obvious by inspection.
 //
 // Two sources on purpose. `count_to_five()` is user-authored, which is the case
-// that has never worked at all. `v.iter()` is a built-in collection, which today
-// hands back an Iterator<T> and must hand back a Sequence<T> after the stage-6
-// migration — so these also pin that the two are the same protocol.
+// that has never worked at all. `v` is a built-in collection, which today fuses
+// its chain and must go through `Sequence<T>` after the stage-6 migration — so
+// these also pin that the two are the same protocol.
 
 import sequence.Sequence
 
@@ -202,7 +202,7 @@ test "type.sequence/SEQ12 — for_each visits every item" {
 
 test "type.sequence/SEQ41 — Vec.iter is a Sequence and takes the same adapters" {
     let v: Vec<i32> = [1, 2, 3, 4, 5]
-    let out: Vec<i32> = v.iter().filter(|x| x % 2 == 1).map(|x| x * 10).to_vec()
+    let out: Vec<i32> = v.filter(|x| x % 2 == 1).map(|x| x * 10).to_vec()
     assert out.len() == 3
     assert out[0] == 10
     assert out[2] == 50
@@ -210,7 +210,7 @@ test "type.sequence/SEQ41 — Vec.iter is a Sequence and takes the same adapters
 
 test "type.sequence/SEQ41 — a Vec chain and a user chain answer alike" {
     let v: Vec<i32> = [1, 2, 3, 4, 5]
-    let from_vec: i32 = v.iter().filter(|x| x > 2).sum()
+    let from_vec: i32 = v.filter(|x| x > 2).sum()
     let from_user: i32 = count_to_five().filter(|x| x > 2).sum()
     assert from_vec == from_user
     assert from_vec == 12

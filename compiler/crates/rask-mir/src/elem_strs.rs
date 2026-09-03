@@ -54,6 +54,12 @@ pub const CTORS: &[(&str, u8, u8)] = &[
     ("rask_vec_from_static", 3, 1),
     ("Vec_with_capacity", 2, 1),
     ("Vec_fixed", 2, 1),
+    // `skip`/`take` outside a fused chain call the runtime, which hands back a
+    // freshly allocated Vec. No size arguments and no element tags — the source
+    // Vec already carries both, and the runtime copies them across — so these
+    // are here only to tell the drop pass the result is the caller's to free.
+    ("Vec_skip", 0, 0),
+    ("Vec_take", 0, 0),
     ("Map_new", 2, 2),
     ("Map_new_string_keys", 2, 2),
     // Racks and pools carry no element tag: a rack is told about its fields

@@ -2037,21 +2037,6 @@ impl<'a> MirLowerer<'a> {
         // below loses it and SEQ6 has to be asked about the method's *result*.
         let as_written = iter_expr;
 
-        // A bare `.iter()` with nothing chained onto it iterates exactly what
-        // its receiver does, so unwrap it and let the checks below see the
-        // collection. The fused-chain path assumes a Vec-shaped source: on a
-        // Map it ran `Vec_len` and `Vec_get` against the map pointer, and
-        // reading a field off what came back gave "unresolved field `1`" and
-        // then a segfault (#398).
-        let iter_expr = match &iter_expr.kind {
-            ExprKind::MethodCall { object, method, args, .. }
-                if method == "iter" && args.is_empty() =>
-            {
-                object.as_ref()
-            }
-            _ => iter_expr,
-        };
-
         // Fusion first, and it has to stay first. `for x in v.iter()` fuses into
         // an index loop with no closure at all; asking SEQ6 before this would
         // send it through a yield closure per element instead, once a
@@ -3086,7 +3071,7 @@ impl<'a> MirLowerer<'a> {
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
-            setup.inc_block, setup.idx,
+            &setup,
         )?;
 
         // Destructuring needs the element's real shape. A `Vec<(string, i64)>`

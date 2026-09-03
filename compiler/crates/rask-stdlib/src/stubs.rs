@@ -778,7 +778,7 @@ mod tests {
             "new", "with_capacity", "len", "is_empty", "capacity", "is_bounded",
             "insert", "remove", "clear", "get", "get_clone", "contains_key",
             "read", "modify", "insert_if_missing", "modify_with_default",
-            "iter", "keys", "values", "freeze",
+            "keys", "values", "freeze",
         ];
         for method in &expected {
             assert!(reg.has_method("Map", method), "Map missing method: {}", method);

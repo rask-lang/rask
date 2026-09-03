@@ -1628,7 +1628,6 @@ impl TypeChecker {
             "next" if args.is_empty() => {
                 self.unify(ret, &Type::option(elem), span)
             }
-            "iter" if args.is_empty() => self.unify(ret, &self_ty, span),
             // SEQ28/SEQ31: the target is named, and `Vec<T>` is the only thing
             // it can be. There is no `collect()`.
             "to_vec" if args.is_empty() => {
@@ -2909,8 +2908,39 @@ impl TypeChecker {
             "to_vec" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
             }
-            "iter" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
+            // SEQ29: `v.map(|u| (u.id, u.name)).to_map()`. A chain's head is the
+            // collection itself now that `.iter()` is gone, so the terminal has
+            // to be reachable from `Vec<(K, V)>` and not only from a sequence.
+            // Same pair-or-error rule; MIR fuses either spelling identically.
+            "to_map" if args.is_empty() => {
+                let resolved = self.ctx.apply(&inner_type);
+                match &resolved {
+                    Type::Tuple(parts) if parts.len() == 2 => {
+                        let map_ty = Type::UnresolvedGeneric {
+                            name: "Map".to_string(),
+                            args: vec![
+                                GenericArg::Type(Box::new(parts[0].clone())),
+                                GenericArg::Type(Box::new(parts[1].clone())),
+                            ],
+                        };
+                        self.unify(ret, &map_ty, span)
+                    }
+                    Type::Var(_) => {
+                        self.ctx.add_constraint(TypeConstraint::HasMethod {
+                            ty: self_ty.clone(),
+                            method: "to_map".to_string(),
+                            args: args.to_vec(),
+                            ret: ret.clone(),
+                            span,
+                            call_node: None,
+                        });
+                        Ok(false)
+                    }
+                    other => Err(TypeError::ToMapNeedsPairs {
+                        elem: other.clone(),
+                        span,
+                    }),
+                }
             }
             "skip" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);

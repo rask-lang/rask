@@ -124,10 +124,6 @@ extend Vec<T> {
     @native("rask_vec_swap")
     public func swap(mutate self, i: i64, j: i64) {}
 
-    /// Iterate over elements by reference.
-    @native
-    public func iter(self) -> Iterator<T> {}
-
     /// Drain all elements into an iterator, leaving the vec empty.
     @native("rask_vec_take_all")
     public func take_all(mutate self) -> Iterator<T> {}
@@ -137,7 +133,7 @@ extend Vec<T> {
     public func skip(self, n: usize) -> Vec<T> {}
 
     /// Take the first n elements.
-    @native
+    @native("rask_iter_take")
     public func take(self, n: usize) -> Vec<T> {}
 
     /// Remove elements where f returns true, return count removed. No `retain`
@@ -414,10 +410,6 @@ extend Map<K, V> {
     /// Panics on alloc failure.
     @native
     public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
-
-    /// Iterate over (key, value) pairs.
-    @native("rask_map_entries")
-    public func iter(self) -> Iterator<(K, V)> {}
 
     /// Iterate over keys.
     @native("rask_map_keys")

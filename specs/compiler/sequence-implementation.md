@@ -26,11 +26,11 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
-| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ the 14 writable in Rask; 6 need a bound — #1046 | `t31` |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | blocked on stage 5's last six | — |
+| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`; `min`/`max`/`to_map` open — #1046 | `t31` |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | `.iter()` deleted (SEQ48); the eager Vec adapters still stand | — |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
-| 7 — `Range<T>` as one nominal type with `iter()` (#920) | pending | — |
+| 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | pending | — |
 | 8 — Channel `stream()` method | pending | — |
 | 9 — Retire `Iterator<Item>` trait | pending | — |
 | 10 — Test suite migration | pending | — |
@@ -99,59 +99,64 @@ Still open on #1045: freeing the block doesn't release what it captured, so an
 `own` closure holding a `Vec` leaks the vector. The block would need drop glue
 next to its size.
 
-### What stage 6 waits on now — six terminals that need a bound
+### The terminals, and which ones landed
 
-Measured by doing it: changing `Vec.iter()` to return `Sequence<T>` is one line,
-and it turns 9 suite files red. Every one is the same thing — the chain now
-resolves to `Sequence`'s adapters, and those were all `@unimplemented`.
-
-Fourteen of them are now written, in Rask, in the protocol they define: each
+Fourteen adapters are written, in Rask, in the protocol they define: each
 adapter is a closure over `self` that re-yields, each terminal is a `for` loop
-over `self`. That fixed 7 of the 9 and the two examples that broke with them.
+over `self`.
 
-The six that are left can't be written in Rask at all, and it isn't an
-oversight — `stdlib/sequence.rk` already says why:
+The six terminals that need to know something about the element — `sum`,
+`product`, `min`, `max`, `join`, `to_map` — needed a bound, and Rask turned out
+to have one. `extend Sequence<T> where T: Numeric` gives `sum` and `product` a
+`+` and a `*`; `extend Sequence<string>` gives `join` its `push`. Three landed
+that way.
 
-> Bounds are compiler-enforced rather than written: `sum` needs a numeric
-> element, `min`/`max` an ordered one, `to_vec` a Copy or chain-owned one.
+Two are still open, and neither is a bounds problem:
 
-`sum`, `product`, `min`, `max` and `join` need an element bound Rask has no way
-to name. `total = total + x` on a generic `T` is "method not found — check
-available methods on `T`". `Vec.sum` gets away with it by being `@native`.
+- **`min`/`max`** collide with the free `min(a, b)`/`max(a, b)` in
+  `builtins.rk`. Registration is last-writer-wins and `sequence.rk` loads
+  later, so `Sequence.min` takes the bare name and `min(5.0, 3.0)` starts
+  reporting "expected 1 argument, found 2". The registration is what's wrong,
+  not the method (#1046).
+- **`to_map`** can't derive the element type of `Sequence<(K, V)>` inside a
+  generic method (`lower/stmt:for_loop_elem`). The Vec-headed spelling
+  `v.map(|u| (u.id, u.name)).to_map()` works — MIR fuses it — so the gap is
+  only in the standalone sequence method.
 
-Marking them `@native` and leaning on the MIR fusion that already implements
-`v.iter().min()` *does* work for a fused chain — the whole `iter_min_max`
-fixture passes on both backends that way. It breaks the moment a chain isn't
-fused:
+### `.iter()` is gone (SEQ48)
 
-```
-let s = nums()
-println("sum={s.sum()}")
+A collection is its own chain head: `v.filter(p)`, `for x in v`. The call bought
+nothing — `for x in v` and `for x in v.iter()` compiled to the identical fused
+index loop — and the borrow-vs-move distinction it draws in Rust is spelled
+`take_all()` and `for mutate x in v` here.
 
-error: codegen 'main': Function not found: Sequence_sum
-```
+Deleting it took the compiler's `iter` special-cases with it: the chain-head
+match in `try_parse_iter_chain`, the bare-`.iter()` unwrap in `lower_for`, the
+`Vec.iter()`/`Sequence.iter()` arms in the checker, and the interpreter
+builtins. A user method named `iter` that returns a sequence is now an ordinary
+method the compiler has no opinion about — `t26_custom_sequence.rk` holds that
+line.
 
-That is exactly the failure `@unimplemented` exists to turn into a good message,
-so the trade is a worse error for a working fast path. Not worth taking.
+**What it cost.** `Vec` reaches the Sequence terminals through fusion, so the
+chain spellings all still work — except `to_map`, which the checker only knew
+on a sequence. It's on `Vec<(K, V)>` now, same pair-or-error rule, on both
+backends.
 
-So stage 6 needs real implementations for those six, on both backends, ahead of
-the `Vec.iter()` switch. Until then the switch stays reverted: the adapters are
-in and exercised through user sequences (`t31_sequence_adapters.rk`, 16 tests),
-and the collections keep returning `Iterator<T>`.
+**What it exposed.** `take(n)` was lowered as a loop bound — stop at source
+index n — which is only "n elements out" while everything upstream survives.
+`v.filter(p).take(3)` was stopping after three *candidates*:
+`[0..9].filter(%3 == 0).take(3)` gave one element instead of three. The old
+suite spelling hid it, because `.iter()` in the middle of the chain split it in
+two and `take` only ever saw a dense Vec. A `skip`/`take` downstream of a filter
+now carries a runtime counter instead of a bound (`t32_counted_skip_take.rk`).
 
-### The ordering that has to hold once it lands
+### The ordering that has to hold
 
-`for x in v.iter()` fuses into an index loop with no closure at all. `lower_for`
-now tries chain fusion *before* asking SEQ6, because the moment a collection's
-`iter()` returns a `Sequence<T>` the SEQ6 branch would claim the language's most
-common loop and put a yield closure call on every element. Fusion wins the tie;
-SEQ6 catches what fusion declines, which is what `for x in bag.iter()` needs.
-
-### Stage 6 moved to the front, because stage 5 needs it
-
-Stage 5's bodies are written and correct on both backends (#1046) and still can't land. `Vec.iter()` returns `Iterator<T>`, `Iterator` is a compiler-provided trait with no `map` of its own, so the moment `Sequence.map` has a body the chain `vec.iter().map(…)` resolves to it — and monomorphization emits the uninstantiated `Sequence_map` template, with `T` unbound, which MIR can't lower. Native fuses those chains, so the template is dead code that fails to compile, and it takes four passing tests with it.
-
-That is stage 6's job to fix properly rather than something to filter out: once the collections return `Sequence<T>`, those chains *are* Sequence chains and the instantiation is derived from the receiver. So the order is 6 then 5, not 5 then 6.
+`for x in v` fuses into an index loop with no closure at all. `lower_for` tries
+chain fusion *before* asking SEQ6, because a collection returning a `Sequence<T>`
+would otherwise let the SEQ6 branch claim the language's most common loop and
+put a yield closure call on every element. Fusion wins the tie; SEQ6 catches
+what fusion declines, which is what `for x in bag` needs.
 
 ## Stages
 
@@ -224,12 +229,12 @@ Each stage is independently shippable and testable.
 
 ### Stage 6 — Migrate collection iteration methods to `Sequence<T>`
 
-- **`stdlib/collections.rk`** — `Vec::iter()`, `Vec::take_all()` return `Sequence<T>` (lines 80, 83)
-- **`stdlib/memory.rk`** — `Pool::iter()`, `Pool::handles()`, `Pool::values()`, `Pool::take_all()` (lines 61, 64, 67)
+- **`stdlib/collections.rk`** — `Vec::take_all()` returns `Sequence<T>` (line 83)
+- **`stdlib/memory.rk`** — `Pool::handles()`, `Pool::values()`, `Pool::take_all()` (lines 61, 64, 67)
 - **`stdlib/string.rk`** — `chars()`, `bytes()`, `char_indices()`, `split()`, `split_whitespace()`, `lines()` (lines 102–117)
-- **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `iter()`, `take_all()`, `handles()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
+- **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `take_all()`, `handles()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
 - **Type checker** (`compiler/crates/rask-types/src/checker/resolve.rs`): remove the Iterator-return references for `drain()`/`take_all()` (lines 1365, 1746–1748)
-- The existing iterator-chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.iter().filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator trait
+- The existing chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator trait
 
 ### Stage 7 — Channel `stream()` method
 
@@ -326,7 +331,7 @@ Each stage is independently shippable and testable.
 7. `rask test-project tests/suite` passes
 
 **Performance sanity check:**
-- `vec.iter().sum()` on 1M i32s matches hand-written `for i in 0..vec.len() { sum += vec[i] }` within ±5%
+- `vec.sum()` on 1M i32s matches hand-written `for i in 0..vec.len() { sum += vec[i] }` within ±5%
 - `cargo test -p rask-mir --test sequence_fusion` confirms fusion MIR shape
 
 ## Resolved questions

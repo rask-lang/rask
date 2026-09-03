@@ -155,7 +155,7 @@ test "std.collections — map and filter on a Vec" {
 // through the iterator spelling, which works on both.
 test "std.collections — take and skip on a Vec" {
     let v: Vec<i32> = [0, 1, 2, 3, 4, 5]
-    let first3: Vec<i32> = v.iter().take(3).to_vec()
+    let first3: Vec<i32> = v.take(3).to_vec()
     assert first3.len() == 3
     assert first3[2] == 2
     let after3 = v.skip(3)
@@ -165,7 +165,7 @@ test "std.collections — take and skip on a Vec" {
 
 test "std.collections — an adapter chain landing in a Vec" {
     let v: Vec<i32> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    let out: Vec<i32> = v.filter(|x| x % 3 == 0).map(|x| x * x).iter().take(3).to_vec()
+    let out: Vec<i32> = v.filter(|x| x % 3 == 0).map(|x| x * x).take(3).to_vec()
     assert out.len() == 3
     assert out[0] == 0
     assert out[1] == 9
@@ -174,12 +174,12 @@ test "std.collections — an adapter chain landing in a Vec" {
 
 test "std.collections — iter then adapters then to_vec" {
     let v: Vec<i32> = [1, 2, 3]
-    let doubled: Vec<i32> = v.iter().map(|x| x * 2).to_vec()
+    let doubled: Vec<i32> = v.map(|x| x * 2).to_vec()
     assert doubled.len() == 3
     assert doubled[2] == 6
-    let taken: Vec<i32> = v.iter().take(2).to_vec()
+    let taken: Vec<i32> = v.take(2).to_vec()
     assert taken.len() == 2
-    let skipped: Vec<i32> = v.iter().skip(1).to_vec()
+    let skipped: Vec<i32> = v.skip(1).to_vec()
     assert skipped.len() == 2
     assert skipped[0] == 2
 }

@@ -58,7 +58,7 @@ for file in files.take_all() {     // drained Vec — the loop owns each file
     try file.close()
 }
 
-let stale = files.iter().filter(|f| f.stale).to_vec()    // borrowed — adapt freely
+let stale = files.filter(|f| f.stale).to_vec()    // borrowed — adapt freely
 ```
 
 A sequence that *produces* values rather than walking a collection — a channel reader, a parser — owns them in its own frame and lends from there. `rx.stream()` receives a message into a local and yields a borrow of it; a body that wants to keep the message clones it.
@@ -78,7 +78,7 @@ The reason is the same one that makes authoring easy: a push source keeps its po
 <!-- test: skip -->
 ```rask
 // Lazy: nothing runs until to_vec, and no intermediate Vec is built
-let first_ten = readings.iter().filter(|r| r.valid).map(|r| r.value).take(10).to_vec()
+let first_ten = readings.filter(|r| r.valid).map(|r| r.value).take(10).to_vec()
 
 // Not resumable: two positions, so use indices
 for i in 0..min(a.len(), b.len()) {
@@ -150,7 +150,7 @@ Both dead ends existed only because `MC1` demanded the annotation. Once captures
 
 <!-- test: skip -->
 ```rask
-let s = users.iter().filter(|u| u.active)
+let s = users.filter(|u| u.active)
 // nothing has run yet
 
 for u in s { print(u.name) }     // runs the chain
@@ -161,7 +161,7 @@ To consume twice without re-running, materialize with `.to_vec()`:
 
 <!-- test: skip -->
 ```rask
-let active = users.iter().filter(|u| u.active).to_vec()
+let active = users.filter(|u| u.active).to_vec()
 for u in active { print(u.name) }
 let count = active.len()
 ```
@@ -267,7 +267,8 @@ Adapters are methods on `Sequence<T>`, declared in one `extend Sequence<T>` bloc
 |------|-------------|
 | **SEQ12: Adapter shape** | Adapters are `extend Sequence<T> { public func name<...>(self, ...) -> Sequence<U> }`. Ordinary methods on a nominal type — nothing special-cased in the checker, and users can add their own |
 | **SEQ13: Chain syntax** | `seq.adapter(args)` resolves like any method call. An earlier draft declared adapters as free functions taking the sequence as the first parameter *and* said they resolve as methods; those are different mechanisms and the method one wins |
-| **SEQ41: One adapter surface** | Adapters and terminals live on `Sequence<T>` and nowhere else. Collections carry no eager `map`/`filter`/`take`/`fold`/`sum`/… of their own: `v.map(f)` returning a fresh `Vec` is a second spelling of `v.iter().map(f).to_vec()` with a different cost profile, and `std.api/SD5` says one operation gets one spelling. The chain is the spelling; SEQ18 is what makes it free |
+| **SEQ41: One adapter surface** | Adapters and terminals live on `Sequence<T>` and nowhere else. A collection has no eager `map`/`filter`/`take`/`fold`/`sum` of its own: `v.map(f)` is the chain's head, and it builds a sequence, not a second `Vec`. An eager copy allocates per stage; the chain allocates once, at the terminal, where you asked for it. `std.api/SD5` says one operation gets one spelling, and this is it |
+| **SEQ48: A collection is its own chain head** | There is no `.iter()`. `v.filter(p)` starts a sequence over `v` directly, and `for x in v` walks it. Rust needs `.iter()` to separate borrowing from `into_iter()`'s move and `iter_mut()`'s mutable borrow; Rask spells those `take_all()` and `for mutate x in v`, so the distinction `.iter()` exists to draw isn't there and the call was pure ceremony. A user type still reaches iterability by returning a sequence from a method of its own (SEQ6) — that method may be called `iter`, and nothing in the compiler treats the name specially |
 | **SEQ13a: Short-circuit propagation** | If the downstream yield returns `false`, the adapter must stop and return `false` from its own yield call. Sources must likewise stop emitting when their yield returns `false`. This is the contract that makes `.take(n)`, `.find()`, and `break` work. Violating it changes observable semantics |
 
 | Adapter | Behavior | Signature |
@@ -286,7 +287,6 @@ Adapters are methods on `Sequence<T>`, declared in one `extend Sequence<T>` bloc
 <!-- test: skip -->
 ```rask
 for name in users
-    .iter()
     .filter(|u| u.active)
     .map(|u| u.name)
     .take(10)
@@ -322,16 +322,16 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 
 <!-- test: skip -->
 ```rask
-let total = orders.iter().map(|o| o.amount).sum()
-let admin = users.iter().find(|u| u.is_admin)
-let active = users.iter().filter(|u| u.active).map(|u| u.clone()).to_vec()
+let total = orders.map(|o| o.amount).sum()
+let admin = users.find(|u| u.is_admin)
+let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
 ```
 
 ## Specialized Terminals
 
 | Rule | Description |
 |------|-------------|
-| **SEQ42: A terminal may be computed** | A source that knows an answer without walking may compute it, provided the result is what the walk would have produced. `(0..n).count()` is `n`; `(a..b).sum()` is the closed form; `v.iter().count()` is `v.len()`. Specialization is invisible — same answer, same type, less work |
+| **SEQ42: A terminal may be computed** | A source that knows an answer without walking may compute it, provided the result is what the walk would have produced. `(0..n).count()` is `n`; `(a..b).sum()` is the closed form; `v.count()` is `v.len()`. Specialization is invisible — same answer, same type, less work |
 | **SEQ43: Only where the walk is pure** | A terminal that runs a user closure (`find`, `any`, `fold`, `for_each`) is never specialized: the closure may have effects, and skipping it would change what the program does. `count`, `sum`, `product`, `min`, `max` over a range or a Vec are the specializable set |
 
 Routing `(1..n).sum()` through a yield closure to add integers one at a time would be a pessimisation of the two most obvious calls anyone makes on a range. The protocol says what the answer is; it doesn't require arriving at it the slow way.
@@ -356,14 +356,13 @@ let lines = input.lines().to_vec()
 let parts = version.split(".").to_vec()
 
 let views = rows()
-    .iter()
     .skip(page * size)
     .take(size)
     .map(|r| r.view.clone())
     .to_vec()
 
-let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
-let csv = fields.iter().map(|f| f.escaped()).join(",")
+let by_id = users.map(|u| (u.id, u.clone())).to_map()
+let csv = fields.map(|f| f.escaped()).join(",")
 ```
 
 Each line says what it produces, at the end of the chain, with no annotation and no type argument. The element type comes from the chain; the container type comes from the method name.
@@ -456,13 +455,12 @@ Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the retur
 ```rask
 func collect_active(users: Vec<User>) -> Vec<User> {
     return users
-        .iter()                        // Sequence borrows users
-        .filter(|u| u.active)          // Filter borrows the Sequence
+        .filter(|u| u.active)          // Sequence borrows users
         .to_vec()                      // Materialized here — no Sequence escapes
 }
 
 func bad_return(users: Vec<User>) -> Sequence<User> {
-    return users.iter().filter(|u| u.active)
+    return users.filter(|u| u.active)
     // ERROR: Sequence borrows `users` (a parameter borrow);
     // cannot escape the function. Same rule as returning a closure
     // that captures a block-scoped borrow (mem.closures/SL2).
@@ -491,16 +489,16 @@ func make_active_seq(take users: Vec<User>) -> Sequence<User> {
 ```
 ERROR [mem.closures/SL2]: sequence borrows a value that does not outlive the return
    |
-3  |  return users.iter().filter(|u| u.active)
-   |         ^^^^^^^^^^^^ borrows `users` (parameter borrow)
-   |                      sequence cannot escape the function
+3  |  return users.filter(|u| u.active)
+   |         ^^^^^ borrows `users` (parameter borrow)
+   |               sequence cannot escape the function
 
 WHY: A Sequence<T> built over a borrowed source is scope-limited
      to that borrow. Returning it would outlive the source.
 
 FIX 1: Consume inside the function (to_vec, fold, for-loop):
 
-  return users.iter().filter(|u| u.active).to_vec()
+  return users.filter(|u| u.active).to_vec()
 
 FIX 2: Take ownership of the source:
 
@@ -528,15 +526,15 @@ FIX: pick the one you meant:
 ```
 ERROR [type.sequence/SEQ29]: `to_map` needs a sequence of pairs, got Sequence<User>
    |
-3  |  let by_id = users.iter().to_map()
-   |                           ^^^^^^ each item must be a (K, V) tuple
+3  |  let by_id = users.to_map()
+   |                    ^^^^^^ each item must be a (K, V) tuple
 
 WHY: A Map needs a key per value. `to_map` reads the key out of the
      first tuple slot — it will not invent one.
 
 FIX: produce the pairs first:
 
-  let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
+  let by_id = users.map(|u| (u.id, u.clone())).to_map()
 ```
 
 **Break with value in Sequence for-loop:**
@@ -567,12 +565,12 @@ ERROR [type.sequence/SEQ41]: no method `map` on Vec<User>
 7  |  let names = users.map(|u| u.name)
    |                    ^^^ adapters live on Sequence, not on the collection
 
-WHY: `Vec.map` allocated a second Vec. `.iter().map(f)` fuses into one loop
-     and allocates once, at the terminal, where you asked for it.
+WHY: an eager `Vec.map` allocated a second Vec. The chain fuses into one
+     loop and allocates once, at the terminal, where you asked for it.
 
 FIX: start a sequence, and let the terminal name what you build:
 
-  let names = users.iter().map(|u| u.name).to_vec()
+  let names = users.map(|u| u.name).to_vec()
 ```
 
 **Asking a sequence for one item [type.sequence/SEQ38]:**
@@ -602,8 +600,8 @@ FIX: index an indexable source, and keep the position yourself:
 ```
 ERROR [type.sequence/SEQ39]: no method `zip` on Sequence<i32>
    |
-5  |  for (a, b) in xs.iter().zip(ys.iter()) {
-   |                          ^^^ lockstep needs two positions at once
+5  |  for (a, b) in xs.zip(ys) {
+   |                   ^^^ lockstep needs two positions at once
 
 WHY: the same reason there is no `next` — a push sequence cannot hold a
      position, so two of them cannot be advanced together. Buffering one
@@ -620,8 +618,8 @@ FIX: index both, up to the shorter:
 ```
 ERROR [type.sequence/SEQ47]: `to_vec` has nothing it may move — `User` is lent, not owned
    |
-6  |  let active = users.iter().filter(|u| u.active).to_vec()
-   |                                                 ^^^^^^ needs an owned element
+6  |  let active = users.filter(|u| u.active).to_vec()
+   |                                           ^^^^^^ needs an owned element
 
 WHY: this chain filters what `users` lent it, so every item still belongs to
      `users`. A Vec owns what it holds, and `to_vec` will not deep-clone on
@@ -630,26 +628,26 @@ WHY: this chain filters what `users` lent it, so every item still belongs to
 FIX: clone where you mean it. A `map` closure's result belongs to the chain,
      so the terminal moves it in and clones exactly once:
 
-  let active = users.iter().filter(|u| u.active).map(|u| u.clone()).to_vec()
+  let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
 
   // Copy elements need none of this — `string` and the small structs move
   // straight in:
-  let names = users.iter().map(|u| u.name).to_vec()
+  let names = users.map(|u| u.name).to_vec()
 ```
 
 **Materializing a resource [type.sequence/SEQ47]:**
 ```
 ERROR [type.sequence/SEQ47]: `File` is a resource — it can't be cloned into a Vec
    |
-6  |  let open = files.iter().filter(|f| f.is_open).map(|f| f.clone()).to_vec()
-   |                                                        ^^^^^ File has no clone
+6  |  let open = files.filter(|f| f.is_open).map(|f| f.clone()).to_vec()
+   |                                                 ^^^^^ File has no clone
 
 WHY: cloning a file handle would duplicate the resource, so `@resource` types
      have no clone to call.
 
 FIX: do the work in the loop, where each item is still just lent:
 
-  for f in files.iter().filter(|f| f.is_open) { use(f) }
+  for f in files.filter(|f| f.is_open) { use(f) }
 
   // or take ownership of all of them by draining the source:
   for f in files.take_all() { try f.close() }
@@ -727,7 +725,7 @@ Rejected, with the sketches that killed them:
 - **Infer the target from later use.** Best-looking call site, and it doesn't work on Rask's own code. `let lines = input.lines().collect()` is followed by `lines[i]`, `lines.len()` and `for l in lines` — every one of those is shared between `Vec` and `Map`, so there's nothing to infer *from*. Inference only bites when the value is returned or passed to a typed parameter, which the common local-buffer case never does. Paying for backwards type flow through a function body, and getting a worse error when it fails, to resolve a fraction of call sites — no.
 - **Require the annotation.** `let parts: Vec<string> = s.split(".").collect()` — the source already said `string` twice and the reader already knew it was a Vec. Worse in the shape that motivated it: `let users: Vec<UserResponse> = d.users.values().map(|u| UserResponse { … }).collect()` names `UserResponse` twice in one statement. Go writes this in one term with no annotation; principle 4 says that's a design bug, not a style preference.
 - **Keep `collect()` for Vec, add `to_map()` for the rest.** Works, and it's the closest runner-up. It loses on consistency: `collect` names the process, `to_map` names the result, and they sit in the same slot at the end of the same chain. Renaming the Vec case to match is a smaller change than teaching everyone why the two look different.
-- **Target leads: `Vec.from(seq)`, `Map.from(seq)`.** Reads fine on one-liners and badly on the chains that matter. `Vec.from(rows().iter().skip(n).take(m).map(|r| r.view.clone()))` puts the opening paren four lines above its close and forces the reader to jump back to the head to find out what's being built. Terminals belong in trailing position because that's the direction chains are read. `Vec.from` keeps its array-literal job (SEQ33) and doesn't grow a sequence overload — one operation, one spelling.
+- **Target leads: `Vec.from(seq)`, `Map.from(seq)`.** Reads fine on one-liners and badly on the chains that matter. `Vec.from(rows().skip(n).take(m).map(|r| r.view.clone()))` puts the opening paren four lines above its close and forces the reader to jump back to the head to find out what's being built. Terminals belong in trailing position because that's the direction chains are read. `Vec.from` keeps its array-literal job (SEQ33) and doesn't grow a sequence overload — one operation, one spelling.
 
 This also settles the note in `rejected-features.md` about associated types being worth promoting for "a `collect` that targets `Vec` or `Map`": there is no such `collect`, so that particular argument for associated types is withdrawn.
 
@@ -743,8 +741,8 @@ The retired `Iterator<Item>` trait mapped to these patterns:
 
 | Old | New |
 |-----|-----|
-| `extend MyType with Iterator<T> { func next(...) }` | `public func iter(self) -> Sequence<T> { return \|yield\| { ... } }` |
-| `collection.iterate()` (returned `VecRefIterator<T>` etc.) | `collection.iter()` returns `Sequence<T>` |
+| `extend MyType with Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
+| `collection.iterate()` (returned `VecRefIterator<T>` etc.) | the collection *is* the chain head — `collection.filter(p)`, `for x in collection` (SEQ48) |
 | `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
 | `.take_all()` returning consuming iterator struct | `.take_all()` returns the drained `Vec<T>` (SEQ35) — not a Sequence |
 | `pool.handles()` returning handle iterator | `pool.handles()` returns `Sequence<Handle<T>>` |

@@ -2318,12 +2318,12 @@ impl<'a> MirLowerer<'a> {
         // A view over a collection holds what the collection holds, so ask the
         // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
         // leaves the element a variable — while `PRIMES` itself knows.
-        // `iter`/`values` view a collection; `lock`/`read`/`write` unwrap a box
+        // `values` views a collection; `lock`/`read`/`write` unwrap a box
         // around one. Either way the receiver is the thing that knows.
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             if matches!(
                 method.as_str(),
-                "iter" | "values" | "into_iter" | "lock" | "read" | "write"
+                "values" | "into_iter" | "lock" | "read" | "write"
             ) {
                 if let Some(elem) = self.collection_elem_of_expr(object) {
                     return Some(elem);
