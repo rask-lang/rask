@@ -10,7 +10,7 @@ Simple programs compile natively (hello world, structs, closures, Vec/Map, threa
 
 ## Validation programs
 
-Re-measured 2026-08-31 by running all five.
+Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `6c835416` after #953, #962 and #969 landed — every figure below still holds, and the HTTP server is still red.
 
 | Program | Status | Gate |
 |---------|--------|------|
