@@ -1596,12 +1596,19 @@ int64_t rask_string_builder_with_capacity(int64_t cap) {
     return (int64_t)(uintptr_t)sb;
 }
 
+// Grow through the tracked allocator, not bare realloc.
+//
+// The builder's handle came from `rask_alloc`, so every byte of it has to go
+// back through the same door or the allocator's tally never balances. It didn't:
+// the buffer grew with `realloc` and the whole thing was released with `free`,
+// so `StringBuilder.new()` counted as an allocation and `build()` counted as
+// nothing. Every program that formatted a string reported a leak it didn't have.
 static void sb_grow(RaskStringBuilder *sb, int64_t extra) {
     int64_t needed = sb->len + extra;
     if (needed <= sb->cap) return;
     int64_t new_cap = sb->cap < 16 ? 16 : sb->cap;
     while (new_cap < needed) new_cap *= 2;
-    sb->data = (char *)realloc(sb->data, (size_t)new_cap);
+    sb->data = (char *)rask_realloc(sb->data, sb->cap, new_cap);
     sb->cap = new_cap;
 }
 
@@ -1644,8 +1651,10 @@ void rask_string_builder_append_char(int64_t handle, int64_t codepoint) {
 void rask_string_builder_build(RaskStr *out, int64_t handle) {
     RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
     str_make(out, sb->data, sb->len);
-    free(sb->data);
-    free(sb);
+    // Sized releases, so the byte tally comes back down too — `rask_free` is
+    // never told how much it released.
+    rask_realloc(sb->data, sb->cap, 0);
+    rask_realloc(sb, (int64_t)sizeof(RaskStringBuilder), 0);
 }
 
 int64_t rask_string_builder_len(int64_t handle) {

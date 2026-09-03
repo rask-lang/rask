@@ -81,7 +81,6 @@ t_container_through_field.rk  # 36 allocations
 t_context_entry_point.rk  # 4 allocations
 t_day_const.rk  # 1 allocation
 t_day_map.rk  # 8 allocations
-t_day_println.rk  # 1 allocation
 t_day_strings.rk  # 8 allocations
 t_day_vec.rk  # 4 allocations
 t_decode_defaults.rk  # 1 allocation
@@ -129,7 +128,6 @@ t_month_resource_ensure.rk  # 10 allocations
 t_month_staged.rk  # 4 allocations
 t_month_stdlib_modules.rk  # 14 allocations
 t_mutate_element_writeback.rk  # 1 allocation
-t_mutate_param_refill.rk  # 5 allocations
 t_mutex_guard_exits.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
 t_named_context_resolves_by_type.rk  # 10 allocations
