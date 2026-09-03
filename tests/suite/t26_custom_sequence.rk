@@ -180,3 +180,52 @@ test "type.sequence/SEQ6 — nested for loops over two sequences" {
 }
 
 func main() {}
+
+// SEQ6 asked of the expression as written. `bag.iter()` hands back a sequence,
+// so the thing to call is the method's result — but a bare `.iter()` used to be
+// unwrapped to its receiver before anything looked, on the theory that it's the
+// no-op `v.iter()` on a Vec. MIR then asked `Bag` for an element type, found
+// none, and gave up while the interpreter ran the same program fine. This is the
+// shape stage 6 gives every collection.
+struct Bag {
+    items: Vec<i32>
+}
+
+extend Bag {
+    public func iter(self) -> Sequence<i32> {
+        return |yield| {
+            mut i = 0
+            while i < self.items.len() {
+                if !yield(self.items[i]) { return }
+                i = i + 1
+            }
+        }
+    }
+}
+
+test "type.sequence/SEQ6 — a method that returns a sequence is iterable" {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    let bag = Bag { items: v }
+    mut sum = 0
+    for x in bag.iter() {
+        sum = sum + x
+    }
+    assert sum == 6
+}
+
+test "type.sequence/SEQ7 — break works through a method-returned sequence" {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    let bag = Bag { items: v }
+    mut seen = 0
+    for x in bag.iter() {
+        seen = seen + 1
+        if x == 2 { break }
+    }
+    assert seen == 2
+}

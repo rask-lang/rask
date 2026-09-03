@@ -2033,6 +2033,15 @@ impl<'a> MirLowerer<'a> {
         // changes went into a local copy and the collection never saw them
         // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
         // it was landing here.
+        // type.sequence/SEQ6, asked of the expression as written. A method that
+        // hands back a `Sequence<T>` is the thing to call, and the `.iter()`
+        // unwrapping just below would ask its receiver instead — so
+        // `for x in bag.iter()` looked at `Bag`, found no element type, and gave
+        // up in MIR while the interpreter ran it fine.
+        if let Some(elem) = self.sequence_elem_ty(iter_expr) {
+            return self.lower_for_sequence(label, binding, iter_expr, body, elem);
+        }
+
         // A bare `.iter()` with nothing chained onto it iterates exactly what
         // its receiver does, so unwrap it and let the checks below see the
         // collection. The fused-chain path assumes a Vec-shaped source: on a
