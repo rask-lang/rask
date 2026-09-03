@@ -309,6 +309,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     match run_output {
         Ok(out) => {
+            forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
             if !out.status.success() || !complete {
@@ -319,6 +320,20 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             eprintln!("{}: executing test binary: {}", output::error_label(), e);
             process::exit(1);
         }
+    }
+}
+
+/// Pass the test binary's stderr through to ours.
+///
+/// `.output()` captures both streams and only the results parser wants stdout,
+/// so stderr was read and dropped. Everything the binary said on the way out
+/// went with it: a panic message, a runtime warning, and — the one that made
+/// this worth chasing — the leak checker's report. `tests/leak_gate.sh` decides
+/// by grepping for "never released", so it read every file as clean while the
+/// binaries were exiting 97 underneath it.
+fn forward_test_stderr(stderr: &[u8]) {
+    if !stderr.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(stderr));
     }
 }
 
@@ -496,6 +511,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
 
     match run_output {
         Ok(out) => {
+            forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
             out.status.success() && complete

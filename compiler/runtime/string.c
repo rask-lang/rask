@@ -191,15 +191,22 @@ void rask_leak_check(void) {
 
     RaskAllocStats st;
     rask_alloc_stats(&st);
+    // The allocation count is the verdict, not the byte total. `rask_free`
+    // isn't told the size of what it releases, so `bytes_freed` undercounts
+    // every free that goes through it — a program that gave everything back
+    // still reported "32 bytes never released, in 0 allocations". The count is
+    // exact on both sides, so a clean program ends at exactly zero live
+    // allocations, and that is what makes this a gate rather than a threshold.
+    int64_t live_allocs = st.alloc_count - st.free_count;
+    if (live_allocs <= 0) return;
     int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
-    if (live_bytes <= 0) return;
 
     int64_t live_strings = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
     fprintf(stderr,
-            "rask: %lld bytes never released, in %lld allocation%s\n",
-            (long long)live_bytes,
-            (long long)(st.alloc_count - st.free_count),
-            (st.alloc_count - st.free_count) == 1 ? "" : "s");
+            "rask: %lld allocation%s never released (%lld bytes, undercounted)\n",
+            (long long)live_allocs,
+            live_allocs == 1 ? "" : "s",
+            (long long)live_bytes);
     if (live_strings > 0) {
         fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
                 (long long)live_strings, live_strings == 1 ? "is" : "are");
