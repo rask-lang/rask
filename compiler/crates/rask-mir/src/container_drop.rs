@@ -62,9 +62,17 @@ pub fn insert_container_drops(fns: &mut [MirFunction]) {
 /// parameter modes and `closures.rs` already answers the same question about
 /// closure arguments the same way. A parameter that is returned, stored,
 /// captured, or passed on to something that keeps it counts as kept; anything
-/// else is a borrow. The approximation is only ever wrong in the direction of
-/// leaking: calling a borrow "kept" leaves a container to nobody, which is what
-/// this fixes, while the reverse would be a double free.
+/// else is a borrow.
+///
+/// That reads like an approximation of `take` and, for a program that compiles,
+/// isn't one: PM6 makes giving away a borrow a compile error, so a body that
+/// keeps a parameter has `take` on the declaration and a body that doesn't,
+/// doesn't. `dst.push(v)` on a plain `v: Vec<i32>` is rejected with "cannot give
+/// away `v` — it's borrowed, not owned". The two answers can't disagree.
+///
+/// Where it could still drift is MIR the checker never saw, or a body this pass
+/// can't read. Both land on "kept", which leaves a container to nobody — a leak,
+/// where the other direction would be a double free.
 ///
 /// Grows to a fixed point because "passed on to something that keeps it" is
 /// itself one of these answers.

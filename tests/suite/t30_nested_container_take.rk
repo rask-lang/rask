@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container handed on with `take`, and containers nested inside containers.
+//
+// Spec: specs/memory/parameters.md
+//   PM3  `take param: T` transfers ownership; the caller's name dies with it
+//
+// The answers are right on both backends. The memory isn't: this file is on
+// tests/known_leaks.txt because nothing frees a container that lives inside
+// another one, which is the same gap as a container in a struct field (#1047).
+// It's here rather than folded into t29 so that file can stay clean and mean
+// "the parameter fix works", while this one means "the nested shape doesn't".
+
+func stash(mutate dst: Vec<Vec<i32>>, take v: Vec<i32>) {
+    dst.push(v)
+}
+
+test "mem.parameters/PM3 — take hands the vector on, and it stays readable there" {
+    mut outer = Vec<Vec<i32>>.new()
+    mut i = 0
+    while i < 3 {
+        mut inner = Vec<i32>.new()
+        inner.push(i)
+        stash(mutate outer, inner)
+        i = i + 1
+    }
+    assert outer.len() == 3
+    mut seen = 0
+    mut j = 0
+    while j < outer.len() {
+        seen = seen + outer[j].len().wrap<i32>()
+        j = j + 1
+    }
+    assert seen == 3
+}

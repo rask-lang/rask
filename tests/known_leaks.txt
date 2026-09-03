@@ -18,6 +18,7 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
+
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
 p11_rack_link.rk  # 99 allocations
@@ -41,6 +42,7 @@ t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
 t27_own_closure_state.rk  # 4 allocations
 t29_branch_merge.rk  # 4 allocations
+t30_nested_container_take.rk  # 6 allocations — nested containers, #1047
 t31_channels.rk  # 20 allocations
 t36_cross_task_ownership.rk  # 18 allocations
 t40_stdlib_renames.rk  # 8 allocations
