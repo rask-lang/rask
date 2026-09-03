@@ -27,8 +27,9 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
 | 5 — Adapters + terminals as `extend Sequence<T>` | written, blocked on stage 6 — #1046 | — |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | blocked on #1045 | — |
-| — **#1045: who owns a returned closure's environment** | **the real next thing, and it needs a decision** | — |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | blocked on #1047 | — |
+| — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
+| — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
 | 7 — `Range<T>` as one nominal type with `iter()` (#920) | pending | — |
 | 8 — Channel `stream()` method | pending | — |
 | 9 — Retire `Iterator<Item>` trait | pending | — |
@@ -56,36 +57,55 @@ The same lie — `Ref` on a scalar spilling a copy — was also #899, so `mutate
 | `\|mutate x\|` is rejected by the parser (#1039) | Not a bug. Captures are inferred, so there is no capture syntax to parse — everything in the pipes is a parameter (`CP3`) |
 | A stale `rask` binary fails to link (#1041) | Not a compiler bug. The runtime source list is a compile-time constant, so a `.c` file added since the binary was built isn't linked. `cargo build --release -p rask-cli` |
 
-### The protocol's foundation is unsound on native (#1045)
+### The protocol's foundation was unsound on native (#1045) — fixed
 
-Measured, not suspected. A function that *returns* a capturing closure puts the
-environment in a stack slot of its own frame, and the closure reads it after
-that frame is gone:
+A function that *returned* a capturing closure put the environment in a stack
+slot of its own frame, and the closure read it after that frame was gone. A
+captured scalar came back as a silently wrong answer (`sum=6` where the
+interpreter said 33, a `max` of 1194732450 read out of the popped frame); a
+captured `Vec` segfaulted. Since every adapter and every source returns a
+closure, that sat under the whole protocol.
 
-```
-func big_source(base: i32) -> ptr {
-  bb3:
-    _89 = closure[stack](big_source__closure_0, [_0@0])
-    return _89
-}
-```
+Three things were wrong, and none of them turned out to need a decision.
 
-A captured scalar comes back as a **silently wrong answer** (`sum=6` where the
-interpreter says 33, and a `max` of 1194732450 read out of the popped frame). A
-captured `Vec` **segfaults**.
+*Allocation.* Lowering picked heap-vs-stack from `own`, and the escape pass only
+ever downgraded, so a scope-limited closure that escaped anyway kept its stack
+environment. It's heap exactly when it escapes now, in both directions. The pass
+also read only the `ClosureCreate` destination, and lowering copies that on
+before returning it, so the return didn't look like an escape; it follows plain
+copies now.
 
-Every adapter returns a closure. Every source returns one. Stage 6 needs
-`Vec.iter()` to return one — the segfaulting repro *is* stage 6's `Vec.iter()`
-written in Rask. So this sits under the whole protocol.
+*Writes.* An `own` closure loaded its captures out of the environment at the top
+of every call and never wrote back, so `counter()` answered 1 forever. `own`
+moves the variable *into* the environment, which makes the environment its home,
+so the body works through the slot's address for its whole life.
 
-`t26_custom_sequence.rk` passes because everything in it is small enough for the
-inliner to move the `ClosureCreate` into a live frame. That is luck. Grow a
-source past the inline threshold, or call it from enough places, and it stops.
+*Ownership.* I'd written this up as needing a choice between refcounting,
+leaking and an owned box. It doesn't: a `func` value is an owned value, so single
+owner, and the frame still holding it when it ends frees it
+(`mem.ownership/O1`). What was missing is that the drop pass only knew about
+closures *built* in a frame, not ones taken back from a call — and
+`let tick = counter()` is the caller receiving a block nobody else will free.
+The block carries its size in a header word, because the frame that frees a
+closure usually isn't the one that built it and has no idea what the capture
+layout was.
 
-Stages 6 and 5 both wait on it, and it needs a decision rather than a fix:
-heap-allocating escaping closures is the easy half, and nothing then drops the
-environment — a returned closure counts as *transferred*, so no `ClosureDrop` is
-inserted and it leaks.
+`t26_custom_sequence.rk` used to pass by luck — everything in it is small enough
+for the inliner to move the `ClosureCreate` into a live frame.
+`t28_escaping_closure.rk` is deliberately too big for that, which is what makes
+it a regression test.
+
+Still open on #1045: freeing the block doesn't release what it captured, so an
+`own` closure holding a `Vec` leaks the vector. The block would need drop glue
+next to its size.
+
+### What stage 6 waits on now (#1047)
+
+Not #1045 — `Vec.iter()` borrows the vector rather than moving it. It waits on a
+container leak found while measuring #1045: passing a `Vec` by value to any
+function leaks it, because the caller sees it handed away and the callee sees a
+parameter rather than something it built. `for x in v.iter()` moves a container
+across a call boundary once per loop, so this would fire every time.
 
 ### Stage 6 moved to the front, because stage 5 needs it
 
