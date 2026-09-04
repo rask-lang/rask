@@ -142,8 +142,85 @@ test "a user header whose argument is generic" {
     mut rows = Vec<Vec<i64>>.new()
     rows.push(r1)
     rows.push(r2)
-    // Annotated rather than `Layers<Vec<i64>> { … }`: the parser can't read a
-    // struct literal whose type argument is itself generic (#1078).
-    let l: Layers<Vec<i64>> = Layers { rows: rows }
+    let l = Layers<Vec<i64>> { rows: rows }
     assert l.total() == 4u64
+}
+
+// Writing that literal at all is a third bracket bug, in the parser this time.
+// Deciding whether `Name<...>` starts a struct literal was its own hand-written
+// scan that only matched a single `>`, and `Layers<Vec<i64>> {` closes both
+// brackets with one `>>` token — so the scan never finished, the `<` stayed an
+// operator, and the error landed on the `{`. The two neighbouring scans, for
+// `Name<...>(` and `Name<...>.`, had handled `>>` all along; this one now calls
+// the same function instead of keeping its own copy (#1078).
+test "a struct literal whose type argument is itself generic" {
+    mut rows = Vec<Vec<i64>>.new()
+    let r: Vec<i64> = [1, 2]
+    rows.push(r)
+    let l = Layers<Vec<i64>> { rows: rows }
+    assert l.rows.len() == 1
+    assert l.total() == 2u64
+}
+
+test "three levels of brackets" {
+    let deep = Vec<Vec<Vec<i64>>>.new()
+    let l = Layers<Vec<Vec<i64>>> { rows: deep }
+    assert l.rows.len() == 0
+}
+
+struct Pair<A, B> {
+    public a: A
+    public b: B
+}
+
+test "two type arguments, the second one nested" {
+    let v: Vec<i64> = [1]
+    let p = Pair<i64, Vec<i64>> { a: 5, b: v }
+    assert p.a == 5
+    assert p.b.len() == 1
+}
+
+// The shared scan also tracks parens and brackets, so a type argument that
+// contains its own `(` doesn't run the scan past the enclosing group.
+struct Holder<T> {
+    public v: T
+}
+
+test "a function type as the argument" {
+    let h = Holder<func(i64) -> bool> { v: |x| x > 0 }
+    let f = h.v
+    assert f(3)
+}
+
+test "a tuple type as the argument" {
+    let t = Holder<(i64, string)> { v: (1, "a") }
+    assert t.v.0 == 1
+}
+
+// Not a bracket bug — a name one. A field declared `T` is declared `i64?`
+// once the struct is instantiated, and the interpreter has to wrap the bare 5
+// on the way in or `!` later finds a plain integer. It was looking the field's
+// type up under the base name `Holder`, where the field is still `T`; the
+// instantiated decl, with `T` substituted, was already built and its name
+// thrown away (#1080).
+//
+// Native has the same bug one shape further out and it is NOT fixed here: an
+// optional over an aggregate — `Holder<Vec<i64>?>` — reads back as `none`, and
+// a 24-byte struct payload kills the binary (#1081).
+test "an optional as the argument" {
+    let h = Holder<i64?> { v: 5 }
+    assert h.v! == 5
+}
+
+// The other side of the same decision: a `<` that really is a comparison, and
+// a `>>` that really is a shift.
+test "a comparison is still a comparison" {
+    let a = 1
+    let b = 4
+    mut hits = 0
+    if a < b {
+        hits = hits + 1
+    }
+    assert hits == 1
+    assert (16 >> 2) == 4
 }

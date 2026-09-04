@@ -3656,29 +3656,13 @@ impl Parser {
                     // Only type names (uppercase) can have static methods or struct literals
                     let is_static_method = Self::is_type_name(&name)
                         && self.looks_like_generic_type_with_static_method();
-                    let is_struct_literal = Self::is_type_name(&name) && {
-                        // Look ahead: Name<Args> {
-                        let mut lookahead_pos = self.pos + 1;
-                        let mut depth = 1;
-                        let mut found_brace = false;
-
-                        while lookahead_pos < self.tokens.len() && depth > 0 {
-                            match &self.tokens[lookahead_pos].kind {
-                                TokenKind::Lt => depth += 1,
-                                TokenKind::Gt => {
-                                    depth -= 1;
-                                    if depth == 0 {
-                                        if lookahead_pos + 1 < self.tokens.len() {
-                                            found_brace = matches!(self.tokens[lookahead_pos + 1].kind, TokenKind::LBrace);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            lookahead_pos += 1;
-                        }
-                        found_brace
-                    };
+                    // Same scan as the two above: `Name<Args>` followed by `{`.
+                    // This used to be its own copy that only matched a single
+                    // `>`, so `Layers<Vec<i64>> {` — where one `>>` token closes
+                    // both brackets — never closed its counter and the literal
+                    // read as a comparison (#1078).
+                    let is_struct_literal = Self::is_type_name(&name)
+                        && self.looks_like_generic_followed_by(&TokenKind::LBrace);
 
                     if is_generic_call || is_static_method || is_struct_literal {
                         self.advance(); // consume '<'

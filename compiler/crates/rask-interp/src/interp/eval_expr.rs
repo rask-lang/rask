@@ -1464,16 +1464,21 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, fields, spread } => {
-                // Explicit generic args (`Ring<i64> { }`): run monomorphization
-                // for its side effects, but the value carries the BASE name —
-                // methods and field decls register under the stripped name
+                // Explicit generic args (`Ring<i64> { }`) give two names, and
+                // they are not interchangeable. The value carries the BASE name
+                // — methods and field decls register under the stripped name
                 // (like the inferred `Ring { }` form), so dispatch keys match.
-                let concrete_name = if name.contains('<') {
-                    self.monomorphize_struct_from_name(name)
+                // The field-type lookup further down needs the INSTANTIATED one
+                // instead: that decl has the type parameters substituted, and
+                // without it a field declared `T` never looks like the `i64?`
+                // it was instantiated to, so the wrap below never fires (#1080).
+                let (concrete_name, decl_name) = if name.contains('<') {
+                    let instantiated = self
+                        .monomorphize_struct_from_name(name)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    name.split('<').next().unwrap_or(name).to_string()
+                    (name.split('<').next().unwrap_or(name).to_string(), instantiated)
                 } else {
-                    name.clone()
+                    (name.clone(), name.clone())
                 };
 
                 // `A4.N { v: 5 }` is an enum variant with a named payload, not a
@@ -1532,11 +1537,15 @@ impl Interpreter {
                 // wrapped here, the same way an annotated binding is — without
                 // it `Holder { slot: 77 }` stored a raw 77 and `h.slot?` then
                 // complained the value wasn't an optional at all (#376).
-                let field_types = self.struct_decls.get(&concrete_name).map(|d| {
-                    d.fields.iter()
-                        .map(|f| (f.name.clone(), f.ty.clone()))
-                        .collect::<Vec<_>>()
-                });
+                let field_types = self
+                    .struct_decls
+                    .get(&decl_name)
+                    .or_else(|| self.struct_decls.get(&concrete_name))
+                    .map(|d| {
+                        d.fields.iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect::<Vec<_>>()
+                    });
                 for field in fields {
                     let value = self.eval_owned(&field.value)?;
                     let value = match field_types.as_ref()

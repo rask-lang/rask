@@ -110,8 +110,38 @@ test "draining a pool hands the caller a Vec" {
     assert p.len() == 0
 }
 
+// `values` is the third one, and it hides behind its declared type: the stdlib
+// says `Iterator<T>`, but `rask_pool_values` builds the same plain `RaskVec`
+// its two neighbours do. Going by the declaration there was nothing to free,
+// so it leaked 96 bytes per call.
+test "a pool's values land in a Vec the caller owns" {
+    mut p = Pool<i32>.new()
+    let a = p.insert(1)
+    let b = p.insert(2)
+    mut n = 0
+    for x in p.values() {
+        n = n + x
+    }
+    assert n == 3
+}
+
 func handles_of(p: Pool<i32>) -> Vec<Handle<i32>> {
     return p.handles()
+}
+
+func values_of(p: Pool<i32>) -> Iterator<i32> {
+    return p.values()
+}
+
+test "a pool's values handed back to the caller are freed once" {
+    mut p = Pool<i32>.new()
+    let a = p.insert(4)
+    mut n = 0
+    for x in values_of(p) {
+        n = n + x
+    }
+    assert n == 4
+    assert p.len() == 1
 }
 
 test "a pool's handles handed back to the caller are freed once" {

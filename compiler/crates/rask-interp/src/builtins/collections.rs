@@ -1030,6 +1030,18 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(handles))
             }
+            // The same slot walk as `handles`, handing back the elements
+            // instead of the handles. `rask_pool_values` builds a plain Vec
+            // too, whatever the `Iterator<T>` in the declaration says.
+            "values" => {
+                let pool = p.lock().unwrap();
+                let items: Vec<Value> = pool
+                    .slots
+                    .iter()
+                    .filter_map(|(_gen, slot)| slot.clone())
+                    .collect();
+                Ok(Value::vec(items))
+            }
             "clone" => {
                 let pool = p.lock().unwrap();
                 // Create a new pool with a new ID (old handles won't work with clone)
