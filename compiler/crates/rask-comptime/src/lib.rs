@@ -2407,6 +2407,19 @@ impl ComptimeInterpreter {
                     }),
                 }
             }
+            // `freeze` ends a `comptime` block to say the Vec it built is the
+            // constant's value. Everything here is already a compile-time
+            // value, so there is nothing to do but hand it back. It was
+            // declared `comptime func` with an empty body and nothing
+            // implemented it, so every `const X = comptime { … v.freeze() }`
+            // reached codegen as a call to `Vec_freeze` (#1069).
+            "freeze" => match obj {
+                ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
+                _ => Err(ComptimeError::TypeMismatch {
+                    expected: "Vec or Map".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
+            },
             _ => Err(ComptimeError::NotSupported(format!("method {} on {}", method, obj.type_name()))),
         }
     }

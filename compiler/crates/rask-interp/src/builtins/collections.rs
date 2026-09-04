@@ -278,7 +278,13 @@ impl Interpreter {
                     Ok(Value::Bool(true))
                 }
             }
-            "clone" | "to_vec" => {
+            // `freeze` is what a `comptime` block ends with to say the Vec it
+            // built is the constant's value. The block has already been
+            // evaluated by the time anything asks, so there is nothing left to
+            // do but hand it over — it was declared `comptime func` with an
+            // empty body and neither backend had an answer, which made every
+            // `const X = comptime { … v.freeze() }` fail (#1069).
+            "clone" | "to_vec" | "freeze" => {
                 let cloned = v.lock().unwrap().clone();
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }

@@ -319,6 +319,13 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_slice", Internal::FreshFromReceiver),
     ("Map_entries", Internal::FreshFromReceiver),
     ("Sender_clone", Internal::FreshFromReceiver),
+    // Every strategy's clone hands back another handle on the same cell, so
+    // the receiver is borrowed and the result is the caller's. `Mutex_clone`
+    // was here and the other two spellings weren't, which made a
+    // `Shared.new(…).clone()` look like an owner of everything it touched —
+    // and leak.
+    ("Shared_clone", Internal::FreshFromReceiver),
+    ("Cell_clone", Internal::FreshFromReceiver),
     ("Mutex_clone", Internal::FreshFromReceiver),
     ("Handle_clone", Internal::FreshFromReceiver),
     ("string_eq", Internal::FreshFromReceiver),
