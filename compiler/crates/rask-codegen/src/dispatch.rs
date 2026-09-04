@@ -1342,15 +1342,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
 
-        // Receiver methods
-        StdlibEntry::simple("Receiver_receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
+        // Receiver methods. Both receives are out-param recvs returning the
+        // channel status, which the Custom adapter turns into `T or E` — one
+        // shape for every element size, and a closed channel is a value rather
+        // than a panic (#1067).
         StdlibEntry {
-            mir_name: "Receiver_receive_struct", c_name: "rask_channel_recv_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            mir_name: "Receiver_receive", c_name: "rask_channel_recv_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        // try_receive() -> T or E: out-param recv (handles structs, distinguishes
-        // empty/closed from a real value); Custom adapter builds the Result.
         StdlibEntry {
             mir_name: "Receiver_try_receive", c_name: "rask_channel_try_recv_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

@@ -31,7 +31,10 @@
 //   Channels are like Python's queue.Queue, but type-safe.
 //   let (tx, rx) = Channel<i32>.buffered(100)
 //   tx.send(42)           // put a value in
-//   let v = rx.receive()   // take a value out (waits if empty)
+//   let r = rx.receive()   // take a value out (waits if empty)
+//   The result is `T or ReceiveError` — the error branch is how you find out
+//   the channel closed, so a consumer can drain until there's nothing left:
+//   loop { let r = rx.receive(); if r? as v { use(v) } else { break } }
 //
 
 import async.spawn

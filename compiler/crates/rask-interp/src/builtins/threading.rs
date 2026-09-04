@@ -279,48 +279,23 @@ impl Interpreter {
                 let val = args.into_iter().next().unwrap_or(Value::Unit);
                 let tx = tx.lock().unwrap();
                 match tx.send(val) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(chan_ok(Value::Unit)),
+                    Err(_) => Ok(chan_err(chan_error("SendError", "Closed", 0, vec![]))),
                 }
             }
             "try_send" => {
                 let val = args.into_iter().next().unwrap_or(Value::Unit);
                 let tx = tx.lock().unwrap();
                 match tx.try_send(val) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(mpsc::TrySendError::Full(_)) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel full".to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(mpsc::TrySendError::Disconnected(_)) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(chan_ok(Value::Unit)),
+                    // Both variants carry the value back — the send didn't
+                    // happen, so the caller still owns what it tried to send.
+                    Err(mpsc::TrySendError::Full(v)) => {
+                        Ok(chan_err(chan_error("TrySendError", "Full", 0, vec![v])))
+                    }
+                    Err(mpsc::TrySendError::Disconnected(v)) => {
+                        Ok(chan_err(chan_error("TrySendError", "Closed", 1, vec![v])))
+                    }
                 }
             }
             "close" => {
@@ -360,45 +335,20 @@ impl Interpreter {
             "receive" => {
                 let rx = rx.lock().unwrap();
                 match rx.recv() {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(val) => Ok(chan_ok(val)),
+                    Err(_) => Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![]))),
                 }
             }
             "try_receive" => {
                 let rx = rx.lock().unwrap();
                 match rx.try_recv() {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(mpsc::TryRecvError::Empty) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new("empty".to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(mpsc::TryRecvError::Disconnected) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(val) => Ok(chan_ok(val)),
+                    Err(mpsc::TryRecvError::Empty) => {
+                        Ok(chan_err(chan_error("TryReceiveError", "Empty", 0, vec![])))
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Ok(chan_err(chan_error("TryReceiveError", "Closed", 1, vec![])))
+                    }
                 }
             }
             "close" => {
@@ -419,5 +369,43 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+}
+
+/// `Ok(value)` for a channel operation.
+fn chan_ok(value: Value) -> Value {
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Ok".to_string(),
+        fields: vec![value],
+        variant_index: 0,
+        origin: None,
+    }
+}
+
+/// `Err(error)` for a channel operation. The tag is 1 — `Err` was built with
+/// index 0 here, the same number `Ok` uses.
+fn chan_err(error: Value) -> Value {
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Err".to_string(),
+        fields: vec![error],
+        variant_index: 1,
+        origin: None,
+    }
+}
+
+/// One of `stdlib/async.rk`'s channel error enums.
+///
+/// These used to be bare strings, so `match rx.receive() { ReceiveError as e =>
+/// … }` matched no arm and `e.message()` had nothing to resolve against — the
+/// error branch the signature promises was unreachable (#1067).
+fn chan_error(ty: &str, variant: &str, index: u32, fields: Vec<Value>) -> Value {
+    Value::Enum {
+        name: ty.to_string(),
+        variant: variant.to_string(),
+        fields,
+        variant_index: index,
+        origin: None,
     }
 }

@@ -242,11 +242,11 @@ enum CallAdapt {
     /// Receiver.try_recv: call returned a channel status; the payload was
     /// written into the given slot. Build a `T or E` Result in dst —
     /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
-    TryRecvResult(StackSlot, u32),
-    /// Receiver.receive on a struct element: the call wrote the value into the
-    /// buffer it returns (and panicked if the channel was closed), so the result
-    /// is always Ok. Copy `elem_size` bytes out of it into dst's payload.
-    RecvStructOk(u32),
+    /// The bool says whether a closed channel is a distinct error variant.
+    /// `try_receive` answers `TryReceiveError` — Empty(0) or Closed(1) — and
+    /// stored a bare tag with no variant, so a drained closed channel reported
+    /// "channel is empty" (#1067). `receive`'s `ReceiveError` has one variant.
+    TryRecvResult(StackSlot, u32, bool),
     /// parse: the call returned 0/1; the value was written into the given slot.
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries (slot, type the runtime wrote, type the destination wants).
@@ -5213,25 +5213,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     ptr
                 }
-                CallAdapt::RecvStructOk(elem_size) => {
-                    // The value is in the buffer the call returns; wrap it as Ok.
-                    // Storing the pointer instead left the payload holding an
-                    // address, so the received struct read as garbage (#463).
-                    let results = builder.inst_results(call_inst);
-                    let ptr = if !results.is_empty() { results[0] } else {
-                        builder.ins().iconst(types::I64, 0)
-                    };
-                    if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                        let is_result = ctx.locals.iter()
-                            .find(|l| l.id == *dst_id)
-                            .map(|l| matches!(l.ty, MirType::Result { .. }))
-                            .unwrap_or(false);
-                        Self::build_wrapped_aggregate(builder, *ss, is_result, 0, ptr, elem_size);
-                        slot_already_written = true;
-                    }
-                    ptr
-                }
-                CallAdapt::TryRecvResult(payload_ss, elem_size) => {
+                CallAdapt::TryRecvResult(payload_ss, elem_size, closed_is_own_variant) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else (EMPTY/CLOSED) → Err.
                     let results = builder.inst_results(call_inst);
@@ -5256,11 +5238,19 @@ impl<'a> FunctionBuilder<'a> {
                         );
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err: tag only (recv failure carries no payload).
+                        // Err(variant). The payload is the error enum's own
+                        // discriminant: `TryReceiveError` is Empty(0) or
+                        // Closed(1), and the channel reports CLOSED as -1.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        let variant = if closed_is_own_variant {
+                            let closed = builder.ins().iconst(types::I64, -1);
+                            let is_closed = builder.ins().icmp(IntCC::Equal, status, closed);
+                            builder.ins().uextend(types::I64, is_closed)
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
+                        Self::build_err(builder, dst_ss, variant);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -7825,24 +7815,12 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Receiver_receive_struct: replace elem_size arg with stack buffer address
-            "Receiver_receive_struct" => {
-                let elem_size = match mir_args.get(1) {
-                    Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
-                    _ => 8,
-                };
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, elem_size, 0,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::RecvStructOk(elem_size)
-            }
-
-            // Receiver_try_receive: recv into a buffer of the element's real size;
-            // the C call returns the channel status. Args in: [rx, elem_size].
-            // Args out: [rx, out_ptr]. Post-call builds the `T or E` Result.
-            "Receiver_try_receive" => {
+            // Both receives take the value through a buffer of the element's
+            // real size; the C call returns the channel status. Args in:
+            // [rx, elem_size]. Args out: [rx, out_ptr]. Post-call builds the
+            // `T or E` Result the signature promises — the blocking one used to
+            // return the payload and panic on a closed channel (#1067).
+            "Receiver_receive" | "Receiver_try_receive" => {
                 let elem_size = match mir_args.get(1) {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,
@@ -7852,7 +7830,7 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::TryRecvResult(ss, elem_size)
+                CallAdapt::TryRecvResult(ss, elem_size, func_name == "Receiver_try_receive")
             }
 
             _ => CallAdapt::None,

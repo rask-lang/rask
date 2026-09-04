@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `rx.receive()` hands back its declared `T or ReceiveError` (#1067).
+//
+// The signature said so and there was no way to reach the error branch. Native
+// panicked — "recv on closed channel" — because the C wrapper returned the
+// payload itself and had nowhere to report a closed channel. The interpreter
+// did build an `Err`, but with a bare string inside, so `ReceiveError as e`
+// matched no arm and an exhaustive match failed at run time.
+//
+// That made the consumer loop in `specs/concurrency/async.md` impossible to
+// write: it stops when the channel closes, and finding that out killed the
+// task. The workaround was to know the message count in advance.
+//
+// Both receives now go through an out-param buffer and hand back the channel's
+// status, which codegen turns into the Result. One shape for every element
+// size — the old `Receiver_receive_struct` spelling existed only because the
+// payload had to fit in the return value.
+
+struct Reading {
+    sensor: i64
+    value: f64
+    label: string
+}
+
+test "the error branch is reachable on a drained, closed channel" {
+    using Multitasking {
+        mut (tx, rx) = Channel<i32>.buffered(4)
+        tx.send(1)
+        tx.close()
+        match rx.receive() {
+            i32 as v => { assert v == 1 }
+            ReceiveError as e => { assert false }
+        }
+        match rx.receive() {
+            i32 as v => { assert false }
+            ReceiveError as e => { assert e.message() == "receive on closed channel" }
+        }
+    }
+}
+
+test "the consumer loop from the spec terminates" {
+    using Multitasking {
+        mut (tx, rx) = Channel<i64>.buffered(8)
+        for i in 1..5 {
+            tx.send(i)
+        }
+        tx.close()
+
+        mut total = 0
+        loop {
+            let r = rx.receive()
+            if r? as v {
+                total = total + v
+            } else {
+                break
+            }
+        }
+        assert total == 10
+    }
+}
+
+test "a struct element survives the round trip" {
+    using Multitasking {
+        mut (tx, rx) = Channel<Reading>.buffered(4)
+        tx.send(Reading { sensor: 3, value: 1.5, label: "north" })
+        tx.close()
+
+        let first = rx.receive()
+        if first? as r {
+            assert r.sensor == 3
+            assert r.value == 1.5
+            assert r.label == "north"
+        } else {
+            assert false
+        }
+
+        let second = rx.receive()
+        assert second is ReceiveError
+    }
+}
+
+test "try_receive tells empty apart from closed" {
+    using Multitasking {
+        mut (tx, rx) = Channel<i64>.buffered(4)
+        match rx.try_receive() {
+            i64 as v => { assert false }
+            TryReceiveError as e => { assert e.message() == "channel is empty" }
+        }
+        tx.send(7)
+        match rx.try_receive() {
+            i64 as v => { assert v == 7 }
+            TryReceiveError as e => { assert false }
+        }
+        tx.close()
+        match rx.try_receive() {
+            i64 as v => { assert false }
+            TryReceiveError as e => { assert e.message() == "receive on closed channel" }
+        }
+    }
+}

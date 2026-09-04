@@ -43,14 +43,17 @@ func channel_sum(n: i32) -> i32 or Error {
             tx.close()
         })
 
-        // A receiver isn't iterable, so take the values one at a time. The
-        // producer sends exactly `n`, which is what makes the count the right
-        // stopping condition — draining until the channel closes would be the
-        // natural way to write this, and `receive` panics instead of reporting
-        // the close (#1067).
+        // Drain until the channel closes. `receive` hands back
+        // `i32 or ReceiveError`, so the loop stops when the error branch shows
+        // up — the consumer never has to know how many the producer sent.
         mut sum = 0
-        for i in 0..n {
-            sum = sum + rx.receive()!
+        loop {
+            let r = rx.receive()
+            if r? as v {
+                sum = sum + v
+            } else {
+                break
+            }
         }
 
         try producer.join()

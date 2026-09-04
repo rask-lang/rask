@@ -4717,12 +4717,32 @@ impl TypeChecker {
                         }),
                         None => ContainerElem::Deferred,
                     },
+                    // A channel end isn't a sequence. There's no cursor to
+                    // advance and no end to reach — you ask it for the next
+                    // value and it tells you when the channel closed. `for v in
+                    // rx` type-checked on the deferred branch below and then
+                    // died in lowering with a type error about the element
+                    // (#1067).
+                    _ if matches!(
+                        self.generic_name_of(ty).as_deref(),
+                        Some("Receiver") | Some("Sender") | Some("Channel")
+                    ) => ContainerElem::NotIterable,
                     // A user generic may implement the iterator protocol, and
                     // its element type isn't readable from here.
                     _ => ContainerElem::Deferred,
                 }
             }
             _ => ContainerElem::NotIterable,
+        }
+    }
+
+    /// The head name of a generic type, whatever spelling it's in.
+    /// `generic_base_name` only answers for the six container names it knows.
+    fn generic_name_of(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+            Type::Generic { base, .. } => Some(self.types.type_name(*base)),
+            _ => None,
         }
     }
 

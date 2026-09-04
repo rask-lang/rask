@@ -433,6 +433,17 @@ int64_t rask_channel_send_i64(int64_t tx, int64_t value) {
     return rask_channel_send((RaskSender *)(intptr_t)tx, &value);
 }
 
+// Blocking receive that reports a closed channel instead of killing the task.
+// `Receiver.receive` is declared `T or ReceiveError`, and while the recv
+// wrappers panicked, that error branch was unreachable — a consumer that
+// doesn't know how many messages to expect couldn't be written (#1067).
+//
+// Status is the channel's own: OK(0), or CLOSED(-1) when the last sender is
+// gone and the buffer is drained.
+int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr) {
+    return rask_channel_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
+}
+
 int64_t rask_channel_recv_i64(int64_t rx) {
     int64_t data = 0;
     int64_t status = rask_channel_recv((RaskRecver *)(intptr_t)rx, &data);

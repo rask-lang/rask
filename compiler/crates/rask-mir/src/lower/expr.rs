@@ -5548,25 +5548,18 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Channel recv with struct elements: switch to struct variant
-        // and inject elem_size so the builder can allocate the right buffer.
-        let qualified_name = if qualified_name == "Receiver_receive" {
-            let elem_size = self.channel_elem_size(object);
-            if elem_size > 8 {
-                all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
-                "Receiver_receive_struct".to_string()
-            } else {
-                qualified_name
-            }
-        } else if qualified_name == "Receiver_try_receive" {
-            // try_receive recvs into a buffer of the element's real size and
-            // maps status→Result in codegen. Pass elem_size for the buffer.
+        // Both receives take the value through an out-param buffer of the
+        // element's real size and hand back the channel's status, which codegen
+        // turns into the `T or E` the signature promises. Pass the size.
+        //
+        // `receive` used to return the payload itself and panic on a closed
+        // channel, with a separate `_struct` spelling for elements too big to
+        // fit in the return value. One shape covers both, and the error branch
+        // works (#1067).
+        if matches!(qualified_name.as_str(), "Receiver_receive" | "Receiver_try_receive") {
             let elem_size = self.channel_elem_size(object);
             all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
-            qualified_name
-        } else {
-            qualified_name
-        };
+        }
 
         // Use tracked element type for Vec_get/index return instead of default I64.
         // Checks per-function map first, then shared cross-function map.
@@ -5712,25 +5705,17 @@ impl<'a> MirLowerer<'a> {
             // then read a tag that isn't there.
             self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
         } else if matches!(qualified_name.as_str(),
-            "Receiver_receive_struct" | "Receiver_try_receive")
+            "Receiver_receive" | "Receiver_try_receive")
         {
-            // Renamed from Receiver_receive above for struct elements. Only the
-            // original name is in the stub metadata, so the fallback typed the
-            // result a bare i64 — then `r?` read a tag off a local that never got
-            // a Result slot and every receive looked like a failure (#463).
-            //
-            // `try_receive` has the same gap and a worse symptom. Its stub says
-            // `T or TryReceiveError`; neither side survives to MIR, so the result
-            // typed as `i64 or i64`. With both sides nameless the ok/err routing
-            // ran out of type identities and fell through to its last-resort
-            // capitalization guess, which sent `is Reading` to the *error* tag —
-            // so the success branch ran on an empty channel and read a payload
-            // nothing had written (#631).
-            let stub = if qualified_name == "Receiver_try_receive" {
-                "Receiver_try_receive"
-            } else {
-                "Receiver_receive"
-            };
+            // The stub's `T or E` doesn't survive to MIR — neither side has a
+            // name by the time it gets here, so the fallback typed the result a
+            // bare i64. `r?` then read a tag off a local that never got a Result
+            // slot and every receive looked like a failure (#463); for
+            // `try_receive` the ok/err routing ran out of type identities and
+            // fell through to a capitalization guess that sent the success case
+            // to the error tag, so the ok branch ran on an empty channel and
+            // read a payload nothing had written (#631).
+            let stub = qualified_name.as_str();
             // The checker's answer has to be a wrapper — a `Result` or an
             // `Option`. The nested `!matches!(**ok, MirType::Ptr)` this used to
             // carry was the same guess at "the ok side is still `T`" the rest of

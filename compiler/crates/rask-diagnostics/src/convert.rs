@@ -1459,11 +1459,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     "i8" | "i16" | "i32" | "i64" | "i128"
                         | "u8" | "u16" | "u32" | "u64" | "u128"
                 );
+                // A channel end has no elements to walk — you ask it for the
+                // next value, and it tells you when the channel closed.
+                let is_channel_end = ty.starts_with("Receiver<")
+                    || ty.starts_with("Sender<")
+                    || ty.starts_with("Channel<");
                 diag = match ty.as_str() {
                     // A string is a sequence, just not of itself.
                     "string" => diag.with_fix("ask for the elements: `for c in s.chars()`"),
                     // A count in the iterator position wants the range it counts.
                     _ if is_number => diag.with_fix("count with a range: `for i in 0..n`"),
+                    _ if is_channel_end => diag.with_fix(
+                        "receive in a loop and stop on the error branch: `loop { let r = rx.receive(); if r? as v { use(v) } else { break } }`",
+                    ),
                     _ => diag.with_fix(format!(
                         "iterate a collection — a `Vec<{}>`, or a field of `{}` that holds one",
                         ty, ty
