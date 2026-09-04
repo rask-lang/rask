@@ -2413,9 +2413,15 @@ impl ComptimeInterpreter {
             // declared `comptime func` with an empty body and nothing
             // implemented it, so every `const X = comptime { … v.freeze() }`
             // reached codegen as a call to `Vec_freeze` (#1069).
+            // A `Vec` is the only thing that reaches here: `Map.new` isn't
+            // supported at comptime, so a map-valued const never folds and its
+            // `freeze` is handled at runtime instead.
             "freeze" => match obj {
                 ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
-                other => Ok(other.clone()),
+                _ => Err(ComptimeError::TypeMismatch {
+                    expected: "Vec".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
             },
             _ => Err(ComptimeError::NotSupported(format!("method {} on {}", method, obj.type_name()))),
         }

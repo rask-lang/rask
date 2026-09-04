@@ -36,6 +36,11 @@ const FACTORIALS = comptime {
     v.freeze()
 }
 
+// This one doesn't actually fold: `Map.new` isn't supported at comptime, so
+// the block runs at runtime and `freeze` is handled there instead. That's
+// #1072 — CT2 says a `comptime` const is a compile-time guarantee, and a block
+// the evaluator can't handle falls back silently. It's here because `freeze`
+// has to work on both paths, and this is the runtime one.
 const CODES = comptime {
     mut m = Map.new()
     m.insert("alpha", 1)
