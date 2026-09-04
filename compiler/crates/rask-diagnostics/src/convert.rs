@@ -3205,10 +3205,10 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("`!` takes the payload of a `T?` and panics when the value is absent [type.optionals/OPT13]")
             }
 
-            RuntimeError::ForcedError => {
-                Diagnostic::error("! on a value that was an error")
+            RuntimeError::ForcedError(msg) => {
+                Diagnostic::error(format!("! on a value that was an error: {}", msg))
                     .with_code("R0016")
-                    .with_primary(self.span, "this call returned its error branch")
+                    .with_primary(self.span, format!("this call returned `{}`", msg))
                     .with_help("`try` propagates the error, `catch e =>` handles it here")
                     .with_fix("replace `r!` with `try r`")
                     .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")

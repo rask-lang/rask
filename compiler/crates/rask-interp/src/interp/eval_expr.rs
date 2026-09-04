@@ -2242,7 +2242,17 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
+                                // ER15: `!` panics *using* the error's message.
+                                // The payload is right here, and every error
+                                // type has a `message()` — E0344 is what makes
+                                // that true — so there is always something to
+                                // say beyond "it was an error" (#1009).
+                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                                let text = self.describe_error_value(&payload);
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::ForcedError(text),
+                                    expr.span,
+                                ))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(

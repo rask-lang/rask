@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `r!` panics using the error's own `message()` (#1009).
+//
+// ER15 says exactly that, and ctrl.panic/F3 wants a panic message to be a
+// function of the failing operation's operands — here the operand *is* the
+// error. Both backends used to say only "! on a value that was an error",
+// throwing away the one thing the reader wanted and had in hand.
+//
+// Every error type has a `message()`; that's what E0344 enforces, and since
+// ER6 an error enum gets one derived. So there is always something to print.
+//
+// The absent case is unchanged: `x!` on a `T?` has no error to ask, and
+// "absent" is the whole content.
+//
+// This file only checks the messages that are *reachable without panicking* —
+// the panic text itself is pinned in `rask-cli/tests/compile_run.rs`, which
+// runs both backends and compares. What's here is that the derived and
+// hand-written messages the panic path reaches for say what they should.
+
+struct RouteErr {
+    why: string
+}
+
+extend RouteErr {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+enum ParseErr {
+    Empty
+    UnexpectedEnd(ctx: string)
+}
+
+func routed(n: i64) -> i64 or RouteErr {
+    if n == 0 { return RouteErr { why: "no route" } }
+    return n
+}
+
+func parsed(n: i64) -> i64 or ParseErr {
+    if n == 0 { return ParseErr.Empty }
+    if n == 1 { return ParseErr.UnexpectedEnd(ctx: "line 3") }
+    return n
+}
+
+func route_msg(n: i64) -> string {
+    match routed(n) {
+        i64 as v => { return "ok" }
+        RouteErr as e => { return e.message() }
+    }
+}
+
+func parse_msg(n: i64) -> string {
+    match parsed(n) {
+        i64 as v => { return "ok" }
+        ParseErr as e => { return e.message() }
+    }
+}
+
+test "a hand-written message is what the panic would print" {
+    assert route_msg(0) == "no route"
+}
+
+test "a derived message is what the panic would print" {
+    assert parse_msg(0) == "empty"
+    assert parse_msg(1) == "unexpected end: line 3"
+}
+
+test "the ok branch is untouched" {
+    assert routed(5)! == 5
+    assert parsed(5)! == 5
+}

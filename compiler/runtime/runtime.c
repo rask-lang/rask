@@ -208,6 +208,36 @@ void rask_panic_unwrap(int32_t was_error) {
     rask_panic(forced_message(was_error));
 }
 
+// `r!` on the error branch, with the error's own `message()` already rendered.
+// ER15 says `!` panics using it, and every error type has one — so the reader
+// gets "no route" rather than only "it was an error" (#1009). The absent case
+// keeps `rask_panic_unwrap`: "absent" is the whole content there, and a `T?`
+// has no error to ask.
+static void forced_error_text(char *buf, size_t cap, const RaskStr *msg) {
+    const char *text = msg ? rask_string_ptr(msg) : NULL;
+    int64_t len = msg ? rask_string_len(msg) : 0;
+    if (!text || len <= 0) {
+        snprintf(buf, cap, "%s", forced_message(1));
+        return;
+    }
+    // `rask_string_ptr` isn't NUL-terminated for every representation, so the
+    // length comes along rather than being trusted to the format string.
+    snprintf(buf, cap, "! on a value that was an error: %.*s", (int)len, text);
+}
+
+void rask_panic_forced_error(const RaskStr *msg) {
+    char buf[512];
+    forced_error_text(buf, sizeof(buf), msg);
+    rask_panic(buf);
+}
+
+void rask_panic_forced_error_at(const char *file, int32_t line, int32_t col,
+                                const RaskStr *msg) {
+    char buf[512];
+    forced_error_text(buf, sizeof(buf), msg);
+    rask_panic_at(file, line, col, buf);
+}
+
 void rask_assert_fail(void) {
     rask_panic("assertion failed");
 }

@@ -1081,6 +1081,30 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// The name of the type the checker gave a node, if it has one.
+    /// `{ErrType}_message` for a `T or E` whose `E` is one concrete named type
+    /// that has a `message()` to call. `None` for an optional (`err` is
+    /// `none`), for a union error, and for anything without the method.
+    fn forced_error_message_fn(&self, id: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        let ty = self
+            .instantiated_node_types
+            .get(&id)
+            .or_else(|| typed.node_types.get(&id))?;
+        let Type::Result { err, .. } = ty else { return None };
+        if **err == Type::None {
+            return None;
+        }
+        let name = rask_types::receiver_name(err, &typed.types)?;
+        // `receiver_name` answers "Result" for a nested result and a bare
+        // primitive name for a primitive; neither can carry a `message()`,
+        // and E0344 means neither is a legal error type anyway. Asking the
+        // method table for a body settles all of it at once — including an
+        // error type whose `message()` is derived (ER6), since the derive runs
+        // in desugaring and is an ordinary method by the time we get here.
+        let mangled = format!("{}_message", name);
+        self.has_instantiable_body(&mangled).then_some(mangled)
+    }
+
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self
@@ -1417,7 +1441,26 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(&clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
-            ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
+            ExprKind::Unwrap { expr: e, message } => {
+                // ER15: `r!` panics *using* the error's `message()`. Lowering
+                // can't name that method itself — the same lesson as
+                // `json.encode` above, which came out of codegen as "Function
+                // not found: JsonValue_to_string" because nothing had queued
+                // the body. So the name is decided here, where bodies are
+                // queued, and MIR reads the rewrite (#1009).
+                //
+                // Only when no custom message was written (`r! "msg"` says
+                // what to print), and only for a concrete error type: a union
+                // needs a switch on the member, which is more than a rewrite
+                // can carry.
+                if message.is_none() {
+                    if let Some(name) = self.forced_error_message_fn(e.id) {
+                        self.call_rewrites.insert(expr.id, name.clone());
+                        self.enqueue(name, Vec::new());
+                    }
+                }
+                self.visit_expr(e)
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.visit_expr(value);
                 self.visit_expr(default);

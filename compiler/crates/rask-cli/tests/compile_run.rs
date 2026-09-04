@@ -4092,7 +4092,10 @@ const PANIC_MESSAGES: &[(&str, &str)] = &[
     ("map_key_missing.rk", "key not found in map"),
     ("map_key_missing_mutate.rk", "key not found in map"),
     ("force_absent.rk", "! on a value that was absent"),
-    ("force_error.rk", "! on a value that was an error"),
+    // ER15: `!` panics *using* the error's `message()`. Both backends reach
+    // for it now — the pinned text changed together, which is the point of
+    // this test (#1009).
+    ("force_error.rk", "! on a value that was an error: no route"),
     ("explicit.rk", "hand written"),
     ("not_implemented.rk", "not yet implemented"),
     ("unreachable_reached.rk", "entered unreachable code"),

@@ -1083,8 +1083,15 @@ pub enum RuntimeError {
     /// ForcedAbsent because they are different mistakes: one had nothing there,
     /// the other had a failure it threw away. Both used to report "value was
     /// None", which for the error case names something that never happened.
-    #[error("! on a value that was an error")]
-    ForcedError,
+    ///
+    /// Carries the error's own `message()`. ER15 says `!` panics *using* it,
+    /// and ctrl.panic/F3 wants a panic message to be a function of the failing
+    /// operation's operands — here the operand is the error, and every error
+    /// type has a `message()` (that's what E0344 enforces), so there is always
+    /// something to print. Reporting only "was an error" threw away the one
+    /// thing the reader wanted and had in hand (#1009).
+    #[error("! on a value that was an error: {0}")]
+    ForcedError(String),
 
     /// Assertion failed (assert expr) — stops test immediately
     #[error("assertion failed: {0}")]
@@ -1130,7 +1137,7 @@ impl RuntimeError {
                 | RuntimeError::DivisionByZero
                 | RuntimeError::IndexOutOfBounds { .. }
                 | RuntimeError::ForcedAbsent
-                | RuntimeError::ForcedError
+                | RuntimeError::ForcedError(_)
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)

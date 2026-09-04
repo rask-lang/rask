@@ -311,6 +311,9 @@ void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
 void        rask_f64_to_exp(RaskStr *out, double val);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
+void        rask_panic_forced_error(const RaskStr *msg);
+void        rask_panic_forced_error_at(const char *file, int32_t line, int32_t col,
+                                       const RaskStr *msg);
 void        rask_string_debug(RaskStr *out, const RaskStr *s);
 void        rask_char_debug(RaskStr *out, int32_t codepoint);
 

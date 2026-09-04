@@ -371,6 +371,29 @@ impl CodeGenerator {
             self.func_ids.insert("panic_unwrap_at".to_string(), id);
         }
 
+        // panic_forced_error(msg: RaskStr ptr) -> void (diverges), and the
+        // located variant. `r!` on the error branch, with the error's own
+        // `message()` already rendered (#1009).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // RaskStr ptr
+            let id = self.module
+                .declare_function("rask_panic_forced_error", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_forced_error".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // RaskStr ptr
+            let id = self.module
+                .declare_function("rask_panic_forced_error_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_forced_error_at".to_string(), id);
+        }
+
         // assert_fail_at(file: ptr, line: i32, col: i32) -> void (diverges)
         {
             let mut sig = self.module.make_signature();

@@ -543,6 +543,48 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
+    /// Emit `panic_forced_error(err.message())` in the panic block of a `r!`.
+    /// `false` when there's nothing to call, and the caller falls back to the
+    /// message that only says which kind of `!` failed.
+    fn lower_forced_error_panic(
+        &mut self,
+        outer: &Expr,
+        inner: &Expr,
+        val: &MirOperand,
+    ) -> Result<bool, LoweringError> {
+        let Some(msg_fn) = self.ctx.call_rewrites.get(&outer.id).cloned() else {
+            return Ok(false);
+        };
+        let Some(crate::lower::Type::Result { err, .. }) = self.ctx.lookup_raw_type(inner.id)
+        else {
+            return Ok(false);
+        };
+        let err_ty = self.ctx.type_to_mir(err);
+        let size = err_ty.size();
+        let payload = self.builder.alloc_temp(err_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: payload,
+            rvalue: MirRValue::Field {
+                base: val.clone(),
+                field_index: 0,
+                byte_offset: self.payload_byte_offset(&err_ty),
+                access: FieldAccess::for_field(&err_ty, size),
+            },
+        }));
+        let text = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(msg_fn),
+            args: vec![MirOperand::Local(payload)],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic_forced_error".to_string()),
+            args: vec![MirOperand::Local(text)],
+        }));
+        Ok(true)
+    }
+
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
             MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
@@ -2987,15 +3029,29 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(panic_block);
 
-                // The message differs by what went wrong: nothing was there, or
-                // a failure got thrown away. Only the operand's type knows.
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("panic_unwrap".to_string()),
-                    args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
-                        self.forced_operand_was_result(inner) as i64,
-                    ))],
-                }));
+                // ER15: `!` panics *using* the error's `message()`, and
+                // ctrl.panic/F3 wants the message to be a function of the
+                // failing operation's operands. The operand here is the error,
+                // it's in the slot we're standing on, and every error type has
+                // a `message()` — so "was an error" alone threw away the one
+                // thing the reader wanted (#1009).
+                //
+                // Reachability picked the method and queued its body;
+                // naming it here instead is how `json.encode` once reached
+                // codegen as a function nothing emits.
+                if !self.lower_forced_error_panic(expr, inner, &val)? {
+                    // No message to reach for: an absent `T?`, a union error
+                    // (which needs a switch on the member rather than one
+                    // call — #1073), or an error type whose `message()` has no
+                    // body to instantiate.
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic_unwrap".to_string()),
+                        args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
+                            self.forced_operand_was_result(inner) as i64,
+                        ))],
+                    }));
+                }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
                 self.builder.switch_to_block(ok_block);

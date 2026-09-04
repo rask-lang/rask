@@ -4711,6 +4711,34 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().call(*func_ref, &call_args);
                 }
             }
+        } else if func.name == "panic_forced_error" {
+            // `r!` on the error branch, with the error's `message()` already
+            // rendered into the one argument (#1009). Same shape as
+            // `panic_unwrap` below, including the `_at` variant that carries
+            // the source location — without it the panic still says what went
+            // wrong and stops saying where.
+            let msg = match args.first() {
+                Some(op) => Self::lower_operand(builder, op, ctx)?,
+                None => return Err(CodegenError::UnsupportedFeature(
+                    "panic_forced_error with no message operand".into(),
+                )),
+            };
+            let located = ctx.source_file.and_then(|file_str| {
+                let f = ctx.func_refs.get("panic_forced_error_at")?;
+                let gv = ctx.string_globals.get(file_str)?;
+                Some((*f, *gv))
+            });
+            if let Some((func_ref, gv)) = located {
+                let file_ptr = builder.ins().global_value(types::I64, gv);
+                let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                builder.ins().call(func_ref, &[file_ptr, line_val, col_val, msg]);
+            } else {
+                let plain = ctx.func_refs.get("panic_forced_error").ok_or_else(|| {
+                    CodegenError::FunctionNotFound("panic_forced_error".into())
+                })?;
+                builder.ins().call(*plain, &[msg]);
+            }
         } else if func.name == "panic_unwrap" {
             // MIR already handled branching; this is the panic path. The single
             // argument says which mistake it was — an absent optional or a
