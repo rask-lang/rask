@@ -15,9 +15,6 @@
 // This file is about the receiver's own shape, so each case puts a type
 // parameter somewhere `base<args…>` would have flattened it.
 //
-// Registered as a divergence: the two `Holder<(K, V)>` cases don't run on the
-// interpreter, which splits `Holder<(i64, string)>` into two type arguments and
-// rejects the arity (#1052). Native runs all five.
 
 import sequence.Sequence
 
@@ -98,15 +95,10 @@ test "a sequence of pairs counts" {
     assert numbered().count() == 2u64
 }
 
-// Binding, not just spelling — noted rather than tested. `extend Holder<(K, V)>`
-// names two parameters under one type argument, and the binding used to be
-// positional: it zipped the names against the receiver's arguments one for one,
-// so `K` took the whole `(i64, string)` and `V` bound to nothing. The copy came
-// out as `$___`.
+// Binding, not just spelling. `extend Holder<(K, V)>` names two parameters under
+// one type argument, and the binding used to be positional: it zipped the names
+// against the receiver's arguments one for one, so `K` took the whole
+// `(i64, string)` and `V` bound to nothing. It binds through the tuple now.
 //
-// It binds through the tuple now — `Sequence_to_map$i32_i32` where it used to be
-// `Sequence_to_map$___`. There is no passing test for it here because every
-// method that would *observe* both halves hits something further in: reading
-// `self.items` needs the struct's own `T` refined to `(K, V)`, which the checker
-// doesn't do, and a method naming `K` and `V` in its signature binds them from
-// its arguments rather than the receiver. Both are #1046.
+// What a method can *observe* of both halves is t37's subject — the header has
+// to reach the signature and `Self` as well as the mangled name, which is #1046.

@@ -12,7 +12,7 @@ pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
-    ParamMode, Callee, ErrorWrap, receiver_name, BoundFrom,
+    ParamMode, Callee, ErrorWrap, receiver_name, BoundFrom, TypeBinding,
     parse_type_string, signature_type_param_names, struct_type_param_names,
     enum_type_param_names, UnsafeCategory,
 };

@@ -12,9 +12,36 @@ impl TypeChecker {
     /// Resolve the self type for an extend block, handling generic params.
     /// "SpscRingBuffer<T, N>" -> Type::Generic { base, args: [T, N] }
     /// "TimingStats" -> Type::Named(id)
+    ///
+    /// The header wins where it says anything: `extend Sequence<(K, V)>` makes
+    /// `Self` a `Sequence<(K, V)>`, not the `Sequence<T>` the declaration spells.
+    /// Rebuilding it from the declaration's own names gave `self` an element
+    /// type of `T`, which no binding in such a block ever fills — so the copy
+    /// dropped the record and `for (k, v) in self` fell through to the
+    /// index-based path and walked a closure as if it were a Vec (#1046).
     pub(super) fn resolve_impl_self_type(&self, target_ty: &str) -> Option<Type> {
         let base_name = target_ty.split('<').next().unwrap_or(target_ty);
         let type_id = self.types.get_type_id(base_name)?;
+
+        let declared = self.declared_type_params(type_id).len();
+        let header_args = Self::target_type_args(target_ty);
+        if !header_args.is_empty() && header_args.len() == declared {
+            let args = header_args
+                .iter()
+                .map(|arg| {
+                    // A bare parameter name stays symbolic — resolving it would
+                    // find any type that happens to share the letter.
+                    let ty = if super::declarations::is_type_param_name(arg) {
+                        Type::UnresolvedNamed(arg.clone())
+                    } else {
+                        crate::parse_type_string(arg, &self.types)
+                            .unwrap_or_else(|_| Type::UnresolvedNamed(arg.clone()))
+                    };
+                    GenericArg::Type(Box::new(ty))
+                })
+                .collect();
+            return Some(Type::Generic { base: type_id, args });
+        }
 
         // Check if the struct/enum has type params
         let has_type_params = self.types.get(type_id).map_or(false, |def| {
@@ -70,6 +97,16 @@ impl TypeChecker {
     pub(super) fn enum_type_params(&self, id: crate::types::TypeId) -> Vec<String> {
         match self.types.get(id) {
             Some(TypeDef::Enum { type_params, .. }) => type_params.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Declared type parameter names of a struct or an enum; empty for anything
+    /// that has none.
+    pub(super) fn declared_type_params(&self, id: crate::types::TypeId) -> Vec<String> {
+        match self.types.get(id) {
+            Some(TypeDef::Struct { type_params, .. })
+            | Some(TypeDef::Enum { type_params, .. }) => type_params.clone(),
             _ => Vec::new(),
         }
     }
@@ -200,6 +237,30 @@ impl TypeChecker {
         for (param, arg) in type_params.iter().zip(args.iter()) {
             if let GenericArg::Type(ty) = arg {
                 subst.insert(param.as_str(), *ty.clone());
+            }
+        }
+        subst
+    }
+
+    /// What an extend header's target arguments bind to, given the receiver's
+    /// actual arguments.
+    ///
+    /// `extend Sequence<(K, V)>` on a `Sequence<(i64, string)>` binds `K` to
+    /// `i64` and `V` to `string` — the pattern is matched against the argument
+    /// member-wise, so a parameter nested in a tuple gets the matching half
+    /// rather than the whole thing. A pattern that is just a name is the
+    /// ordinary case and binds exactly as `build_type_param_subst` does.
+    ///
+    /// A pattern that doesn't line up with what arrived contributes nothing,
+    /// which leaves the name unbound rather than bound to the wrong type.
+    pub(super) fn build_owner_pattern_subst(
+        patterns: &[String],
+        args: &[GenericArg],
+    ) -> HashMap<String, Type> {
+        let mut subst = HashMap::new();
+        for (pattern, arg) in patterns.iter().zip(args.iter()) {
+            if let GenericArg::Type(ty) = arg {
+                bind_owner_pattern(pattern, ty, &mut subst);
             }
         }
         subst
@@ -385,5 +446,42 @@ impl TypeChecker {
             }
             GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
+    }
+}
+
+/// The parameter names an extend header's target argument introduces:
+/// `["K", "V"]` for `(K, V)`, `["T"]` for `T`, and nothing for a concrete
+/// spelling like `i64`.
+pub(super) fn pattern_names(pattern: &str) -> Vec<String> {
+    let pattern = pattern.trim();
+    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        return super::parse_type::split_type_args(members)
+            .into_iter()
+            .flat_map(pattern_names)
+            .collect();
+    }
+    if super::declarations::is_type_param_name(pattern) {
+        vec![pattern.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Match one target argument, as written, against the type that arrived.
+fn bind_owner_pattern(pattern: &str, actual: &Type, out: &mut HashMap<String, Type>) {
+    let pattern = pattern.trim();
+    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let Type::Tuple(elems) = actual else { return };
+        let parts = super::parse_type::split_type_args(members);
+        if parts.len() != elems.len() {
+            return;
+        }
+        for (p, a) in parts.iter().zip(elems.iter()) {
+            bind_owner_pattern(p, a, out);
+        }
+        return;
+    }
+    if super::declarations::is_type_param_name(pattern) {
+        out.insert(pattern.to_string(), actual.clone());
     }
 }

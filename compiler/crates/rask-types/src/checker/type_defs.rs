@@ -196,6 +196,21 @@ pub struct MethodSig {
     /// from the receiver type's own parameters: these get a fresh variable per
     /// *call*, not per receiver.
     pub type_params: Vec<(String, Vec<String>)>,
+    /// The extend header's target arguments as written, one per parameter the
+    /// receiving type declares: `["(K, V)"]` for `extend Sequence<(K, V)>` on a
+    /// `Sequence<T>`, `["K", "V"]` for `extend Map<K, V>`.
+    ///
+    /// Names inside these belong to the *receiver*, and a call binds them
+    /// against the receiver's actual arguments — member-wise where one is
+    /// nested. Dropping the header used to misfile them as the method's own:
+    /// `to_map(self) -> Map<K, V>` in `extend Sequence<(K, V)>` looked like a
+    /// method with two parameters of its own, and `probe_keys(self) -> Vec<K>`
+    /// like one with a single unbindable parameter — so the return type stayed
+    /// open however concrete the receiver was (#1046).
+    ///
+    /// Empty for a method with no generic receiver, and for the derived and
+    /// trait-supplied signatures, which have no header to read.
+    pub owner_patterns: Vec<String>,
 }
 
 /// How self is passed to a method.
@@ -258,6 +273,26 @@ pub struct BinaryStructInfo {
     pub size_bytes: u32,
 }
 
+/// One type parameter and what a call site settled it to.
+///
+/// The name is the point. Monomorphization has to know which parameter an
+/// argument belongs to before it can substitute anything, and a bare positional
+/// list can't say: a method's own arguments and its extend header's arrive
+/// through different routes and land in one list, so reading them back means
+/// guessing where the seam is. Whoever resolved the argument knew the name —
+/// carrying it costs a string and removes the guess.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeBinding {
+    pub param: String,
+    pub ty: Type,
+}
+
+impl TypeBinding {
+    pub fn new(param: impl Into<String>, ty: Type) -> Self {
+        Self { param: param.into(), ty }
+    }
+}
+
 /// Result of type checking.
 #[derive(Debug)]
 pub struct TypedProgram {
@@ -269,9 +304,9 @@ pub struct TypedProgram {
     pub types: TypeTable,
     /// Computed type for each expression node.
     pub node_types: HashMap<NodeId, Type>,
-    /// Resolved type arguments for each generic call site.
-    /// Key is the Call/MethodCall expression's NodeId.
-    pub call_type_args: HashMap<NodeId, Vec<Type>>,
+    /// Resolved type arguments for each generic call site, each named by the
+    /// type parameter it binds. Key is the Call/MethodCall expression's NodeId.
+    pub call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
     /// CALL6: the function each call resolves to, keyed by the Call/MethodCall
     /// expression's NodeId. The single source of truth for dispatch — lowering
     /// and the hidden-param pass read this instead of mangling type names.

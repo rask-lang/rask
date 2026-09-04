@@ -710,6 +710,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
     {
         match trait_name {
             "Add" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "add".to_string(),
                 self_param: SelfParam::Value,
@@ -717,6 +718,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Sub" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "sub".to_string(),
                 self_param: SelfParam::Value,
@@ -724,6 +726,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Mul" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "mul".to_string(),
                 self_param: SelfParam::Value,
@@ -731,6 +734,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Div" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "div".to_string(),
                 self_param: SelfParam::Value,
@@ -738,6 +742,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Rem" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "rem".to_string(),
                 self_param: SelfParam::Value,
@@ -745,6 +750,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Neg" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "neg".to_string(),
                 self_param: SelfParam::Value,
@@ -752,6 +758,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "eq".to_string(),
                 self_param: SelfParam::Value,
@@ -760,6 +767,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
@@ -772,6 +780,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                     ret: Type::UnresolvedNamed("Ordering".to_string()),
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
@@ -779,6 +788,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "le".to_string(),
                     self_param: SelfParam::Value,
@@ -786,6 +796,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "gt".to_string(),
                     self_param: SelfParam::Value,
@@ -793,6 +804,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "ge".to_string(),
                     self_param: SelfParam::Value,
@@ -801,6 +813,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "clone".to_string(),
                 self_param: SelfParam::Value,
@@ -808,6 +821,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Default" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "default".to_string(),
                 self_param: SelfParam::None, // Static method
@@ -816,6 +830,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "hash".to_string(),
                     self_param: SelfParam::Value,
@@ -823,6 +838,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                     ret: Type::U64,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "eq".to_string(),
                     self_param: SelfParam::Value,
@@ -831,6 +847,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "to_string".to_string(),
                 self_param: SelfParam::Value,
@@ -838,6 +855,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
                 ret: Type::String,
             }]),
             "Debug" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "debug".to_string(),
                 self_param: SelfParam::Value,
@@ -846,6 +864,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             }]),
             // Iterator<Item> trait — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "next".to_string(),
                 self_param: SelfParam::Mutate,
@@ -873,6 +892,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             "Float" => {
                 let mut sigs = numeric_method_sigs();
                 sigs.push(MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "is_nan".to_string(),
                     self_param: SelfParam::Value,
@@ -883,6 +903,7 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             }
             // ER4/ER32: the Error trait — `func message(self) -> string`
             "Error" => Some(vec![MethodSig {
+                owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
@@ -1151,6 +1172,7 @@ fn is_abstract_arg(ty: &Type) -> bool {
 /// saturate.
 fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
@@ -1170,6 +1192,7 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
 /// The eight methods the roster gives `Numeric`.
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
@@ -1177,6 +1200,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         ret: Type::Var(crate::types::TypeVarId(0)),
     };
     let nullary = |name: &str, self_param| MethodSig {
+        owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param,
@@ -1192,6 +1216,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         nullary("zero", SelfParam::None),
         nullary("one", SelfParam::None),
         MethodSig {
+            owner_patterns: Vec::new(),
             type_params: Vec::new(),
             name: "from_int".to_string(),
             self_param: SelfParam::None,
@@ -1353,6 +1378,7 @@ mod tests {
 
         let mut types = TypeTable::new();
         let show = || MethodSig {
+            owner_patterns: Vec::new(),
             type_params: Vec::new(),
             name: "show".to_string(),
             self_param: SelfParam::Value,

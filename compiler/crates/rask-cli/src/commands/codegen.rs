@@ -140,7 +140,7 @@ pub fn cmd_mono(path: &str, format: Format) {
                     mono_fn
                         .type_args
                         .iter()
-                        .map(|t| format!("{:?}", t))
+                        .map(|b| format!("{}={}", b.param, b.ty))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )

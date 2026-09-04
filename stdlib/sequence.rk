@@ -342,45 +342,11 @@ extend Sequence<string> {
 extend Sequence<(K, V)> {
     /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
     /// ones, exactly like repeated `insert`.
-    ///
-    /// The body below is correct — it runs on the interpreter, and the identical
-    /// body as a *free* generic function is right on both backends:
-    ///
-    ///     func collect_pairs<K, V>(s: Sequence<(K, V)>) -> Map<K, V> { … }
-    ///     collect_pairs(pairs())      // 3 entries, get(2) == 20
-    ///
-    /// The binding is right now — the target is matched against the receiver
-    /// structurally, so `K` and `V` bind through the tuple and the copy comes
-    /// out as `Sequence_to_map$i32_i32` rather than `$___`.
-    ///
-    /// What stops it now is that type arguments reach an extend method by more
-    /// than one route, and the routes disagree. Two methods in *this* block,
-    /// same receiver, same call shape:
-    ///
-    ///     to_map(self) -> Map<K, V>      instantiates as $i32_i32   — both bound
-    ///     probe_keys(self) -> Vec<K>     instantiates as $_         — one arg
-    ///
-    /// `to_map` mentions `K` and `V` in its return type, so inference has
-    /// somewhere to get them. `probe_keys` mentions only `K`, and the receiver's
-    /// tuple doesn't supply the pair — so nothing binds and lowering gives up.
-    /// Dropping the type arguments from the constructor (`Map.new()`) changes
-    /// nothing, so it isn't the constructor spelling.
-    ///
-    /// That is an architecture question about where an extend method's type
-    /// arguments come from, not a missing case to add. Left alone until it has
-    /// an answer (#1046).
-    ///
-    /// Measured, so the parts that *do* work are known: the loop runs three
-    /// times in this block (`for p in self` counts 3), and `to_vec`, `count`
-    /// and `fold` are all correct on a `Sequence<(i64, i64)>` — they live in
-    /// `extend Sequence<T>`, where one parameter sits directly under the
-    /// bracket. It is the tuple nesting alone (#1046).
-    ///
-    ///     mut out: Map<K, V> = Map<K, V>.new()
-    ///     for (k, v) in self {
-    ///         out.insert(k, v)
-    ///     }
-    ///     return out
-    @unimplemented
-    public func to_map(self) -> Map<K, V> {}
+    public func to_map(self) -> Map<K, V> {
+        mut out: Map<K, V> = Map<K, V>.new()
+        for (k, v) in self {
+            out.insert(k, v)
+        }
+        return out
+    }
 }

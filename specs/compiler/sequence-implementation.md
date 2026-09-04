@@ -26,7 +26,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
-| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`/`min`/`max`; `to_map` open — #1046 | `t31` |
+| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`/`min`/`max`/`to_map` | `t31`, `t37` |
 | 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | `.iter()` deleted (SEQ48); the eager Vec adapters still stand | — |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
@@ -111,7 +111,7 @@ to have one. `extend Sequence<T> where T: Numeric` gives `sum` and `product` a
 `+` and a `*`; `extend Sequence<string>` gives `join` its `push`. Three landed
 that way.
 
-Two are still open, and neither is a bounds problem:
+The last two took longer, and neither was a bounds problem:
 
 - **`min`/`max`** are in, written in Rask under `T: Comparable`. They used to
   collide with the free `min(a, b)`/`max(a, b)` in `builtins.rk` — a method and
@@ -120,10 +120,14 @@ Two are still open, and neither is a bounds problem:
   "expected 1 argument, found 2". `Vec.min` never had the problem only because
   `collections.rk` already loaded first. `sequence.rk` loads ahead of builtins
   now and both spellings work.
-- **`to_map`** can't derive the element type of `Sequence<(K, V)>` inside a
-  generic method (`lower/stmt:for_loop_elem`). The Vec-headed spelling
-  `v.map(|u| (u.id, u.name)).to_map()` works — MIR fuses it — so the gap is
-  only in the standalone sequence method.
+- **`to_map`** is in, and what stopped it was the `extend` header, not the
+  bound. `extend Sequence<(K, V)>` names two parameters under the one parameter
+  `Sequence` declares, and three places rebuilt the receiver from the
+  declaration's own names instead: the method's signature counted `K` and `V` as
+  its *own* type parameters, `Self` came out as `Sequence<T>` so `self` had `T`
+  for an element type, and monomorphization zipped the two names against the
+  receiver's one argument. Carrying the header through all three fixed it (see
+  **Where an extend method's type parameters come from** below).
 
 ### `.iter()` is gone (SEQ48)
 
@@ -143,6 +147,48 @@ line.
 chain spellings all still work — except `to_map`, which the checker only knew
 on a sequence. It's on `Vec<(K, V)>` now, same pair-or-error rule, on both
 backends.
+
+### Where an extend method's type parameters come from
+
+A block header can name the receiver's parameters differently from the
+declaration, and can name *more* of them:
+
+```
+struct Sequence<T>          // one parameter
+extend Sequence<(K, V)>     // two names, under that one parameter
+```
+
+`K` and `V` are the receiver's — the halves of its element type. Nothing
+recorded that, so three separate places each rebuilt the receiver from
+`Sequence<T>` and lost the header:
+
+| Place | What it did instead | Symptom |
+|-------|--------------------|---------|
+| `method_signature` | counted `K`, `V` as the method's own parameters | one fresh inference variable per call, nothing to bind it: `to_map`'s `Map<K, V>` came back "type is still open" |
+| `resolve_impl_self_type` | built `Self` as `Sequence<T>` | `self`'s element type was `T`, which no call in such a block binds — so the copy dropped the record and `for (k, v) in self` fell through to the index loop and walked a closure as if it were a `Vec` |
+| `instantiation_params` | zipped the header's names against the receiver's arguments one for one | `K` took the whole `(i64, i64)`, `V` bound to nothing: `Sequence_to_map$___` |
+
+`MethodSig` carries the header's arguments as written now (one per parameter the
+type declares), and a call binds them against the receiver member-wise, so a
+parameter nested in a tuple gets the matching half. A header that just repeats
+the declaration's names is the same thing it always was.
+
+Two related routes collapsed into one on the way:
+
+- **A call's type arguments are named.** `TypedProgram.call_type_args` holds
+  `(parameter, type)` pairs rather than a positional list. Monomorphization used
+  to receive the receiver's arguments and the method's own merged into one flat
+  list and split it at a seam it had to *count* — the count that `(K, V)` breaks.
+  Both producers had the names in hand already and threw them away.
+- **A call's receiver is read from the dispatch record.** `call_targets` is the
+  checker's answer to "what does this call dispatch on", and it was recorded
+  before inference settled and never re-applied — so `wrap(3.14).get()` carried
+  `Box<?2133>`. Applying the substitution on the way out (which `node_types` and
+  `span_types` already got) makes it usable, and a static method's receiver is
+  recorded instantiated — `Box.new("hei")` gives the type name a fresh variable
+  per declared parameter and lets `-> Box<T>` bind it. That deleted the guess
+  that used to read a constructor's instantiation back out of the call's result
+  type.
 
 **What it exposed.** `take(n)` was lowered as a loop bound — stop at source
 index n — which is only "n elements out" while everything upstream survives.

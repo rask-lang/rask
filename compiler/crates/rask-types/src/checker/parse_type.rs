@@ -222,7 +222,7 @@ fn parse_generic_arg(s: &str, types: &TypeTable) -> Result<GenericArg, TypeError
     Ok(GenericArg::Type(Box::new(ty)))
 }
 
-fn split_type_args(s: &str) -> Vec<&str> {
+pub(crate) fn split_type_args(s: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut depth = 0;
     let mut paren_depth = 0;

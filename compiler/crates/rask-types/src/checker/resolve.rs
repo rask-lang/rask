@@ -438,10 +438,12 @@ impl TypeChecker {
             }
         }
         let Some(node) = call_node else { return };
-        let args: Vec<Type> = method_sig
+        let args: Vec<(String, Type)> = method_sig
             .type_params
             .iter()
-            .filter_map(|(name, _)| subst.get(name.as_str()).cloned())
+            .filter_map(|(name, _)| {
+                subst.get(name.as_str()).cloned().map(|ty| (name.clone(), ty))
+            })
             .collect();
         if args.len() == method_sig.type_params.len() {
             self.pending_call_type_args.push((node, args));
@@ -1192,9 +1194,29 @@ impl TypeChecker {
                     }
                 };
 
-                let mut subst = Self::build_type_param_subst(&type_params, generic_args);
+                let found = methods.iter().find(|m| m.name == method);
 
-                if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                // What the block's header binds, on top of what the type
+                // declares. `extend Sequence<(K, V)>` on a `Sequence<(i64, i64)>`
+                // binds `T` to the pair *and* `K` and `V` to its halves — the
+                // header's names are the receiver's, not the method's, and
+                // nothing else in the signature can settle them. Held in an
+                // owned list because the names come out of the pattern, not out
+                // of the declaration `subst` borrows from.
+                let header_bound: Vec<(String, Type)> = found
+                    .map(|m| {
+                        Self::build_owner_pattern_subst(&m.owner_patterns, generic_args)
+                            .into_iter()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let mut subst = Self::build_type_param_subst(&type_params, generic_args);
+                for (name, bound) in &header_bound {
+                    subst.insert(name.as_str(), bound.clone());
+                }
+
+                if let Some(method_sig) = found {
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
