@@ -3795,20 +3795,29 @@ impl TypeChecker {
         if same_kind {
             return Ok(());
         }
-        // Not a primitive on the other side — a type variable, a named type
-        // that may still resolve, a container. Those are somebody else's error.
-        let arg_is_primitive = matches!(
+        // A *resolved* operand is judged whether it's a primitive or not.
+        // `f64 * Meters` type-checked and natively multiplied the struct's
+        // address — `2.0 * Meters { v: 3.0 }` printed 281465035398656 — because
+        // the unify that would have caught it was discarded (#978). A struct, an
+        // enum and a string are all as wrong here as a `char` is.
+        //
+        // `Named` is a resolved nominal type: a struct, an enum, an alias that
+        // has already been followed. `UnresolvedNamed` and `Generic` are not —
+        // they may still turn into something that fits — so they, and every
+        // inference variable, are left to the rest of inference.
+        let arg_is_resolved = matches!(
             arg,
             Type::Bool | Type::Char | Type::String
             | Type::F32 | Type::F64
+            | Type::Named(_) | Type::Tuple(_)
         ) || Self::integer_is_signed(&arg).is_some();
-        if !arg_is_primitive {
+        if !arg_is_resolved {
             return Ok(());
         }
         Err(TypeError::IncomparableOperands {
             left: recv.clone(),
             right: arg,
-            method: method.to_string(),
+            op: Self::operator_spelling(method).to_string(),
             span,
         })
     }
@@ -3824,7 +3833,7 @@ impl TypeChecker {
 
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
-    fn operator_spelling(method: &str) -> &'static str {
+    pub(super) fn operator_spelling(method: &str) -> &'static str {
         match method {
             "add" => "+",
             "sub" => "-",
@@ -3869,6 +3878,7 @@ impl TypeChecker {
                 if let Err(mixed) = self
                     .reject_mixed_signedness(method, ty, &args[0], span)
                     .and_then(|()| self.reject_int_float_mix(method, ty, &args[0], span))
+                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
                 {
                     // Pin the result to the receiver on the way out. The
                     // operands are the complaint; leaving `ret` open turns one
@@ -3885,12 +3895,23 @@ impl TypeChecker {
             "bit_not" | "abs" if args.is_empty() => self.unify(ret, ty, span),
             // Comparison → bool
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.reject_incomparable_operand(method, ty, &args[0], span)?;
+                // The comparison answers `bool` whatever is wrong with the
+                // operands, so pin that before reporting. Returning first left
+                // the binding's type open and turned one error into two, the
+                // second blaming a `let` that is fine.
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let _ = self.unify(ret, &Type::Bool, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &Type::Bool, span)
             }
             "compare" if args.len() == 1 => {
-                self.reject_incomparable_operand(method, ty, &args[0], span)?;
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let ord = self.ordering_type();
+                    let _ = self.unify(ret, &ord, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }
@@ -4009,10 +4030,19 @@ impl TypeChecker {
             FloatSig::Unary => self.unify(ret, ty, span),
             FloatSig::BinaryFloat => {
                 // The other side of #816: `f64 + i64` was accepted too, and the
-                // discarded unify is why nothing said so.
-                if let Err(mixed) = self.reject_int_float_mix(method, ty, &args[0], span) {
+                // discarded unify is why nothing said so. #816 added the
+                // int/float guard and left the discard, so every *other* wrong
+                // operand still sailed through — `f64 * Meters` type-checked and
+                // multiplied the struct's address (#978).
+                if let Err(bad) = self
+                    .reject_int_float_mix(method, ty, &args[0], span)
+                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
+                {
+                    // Pin the result to the receiver on the way out, so one
+                    // error doesn't become two with the second blaming a
+                    // binding that is fine.
                     let _ = self.unify(ret, ty, span);
-                    return Err(mixed);
+                    return Err(bad);
                 }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
@@ -4023,11 +4053,22 @@ impl TypeChecker {
             }
             FloatSig::Predicate | FloatSig::Comparison => {
                 if entry.sig == FloatSig::Comparison {
+                    if let Err(bad) =
+                        self.reject_incomparable_operand(method, ty, &args[0], span)
+                    {
+                        let _ = self.unify(ret, &Type::Bool, span);
+                        return Err(bad);
+                    }
                     let _ = self.unify(&args[0], ty, span);
                 }
                 self.unify(ret, &Type::Bool, span)
             }
             FloatSig::Compare => {
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let ord = self.ordering_type();
+                    let _ = self.unify(ret, &ord, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }

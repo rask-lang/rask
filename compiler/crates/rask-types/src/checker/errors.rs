@@ -57,11 +57,14 @@ pub enum TypeError {
     /// Mixed signedness is allowed on purpose (ORD4); `char` against an integer
     /// is the case this exists for, because native compares a `char` as its
     /// underlying scalar and quietly answers by code point.
-    #[error("cannot apply `{method}` to {left} and {right}")]
+    #[error("cannot apply `{op}` to {left} and {right}")]
     IncomparableOperands {
         left: Type,
         right: Type,
-        method: String,
+        /// The operator as written (`*`, `==`), not the desugared method name.
+        /// `operator_spelling` in the resolver is the one table for this; the
+        /// diagnostic had started keeping a second, shorter copy.
+        op: String,
         span: Span,
     },
     #[error("no such method '{method}' on type {ty}")]

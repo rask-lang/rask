@@ -144,7 +144,7 @@ impl TypeChecker {
                                 self.errors.push(TypeError::IncomparableOperands {
                                     left: resolved,
                                     right: arg,
-                                    method,
+                                    op: Self::operator_spelling(&method).to_string(),
                                     span,
                                 });
                             }

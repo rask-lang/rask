@@ -927,6 +927,32 @@ fn compile_error_output(name: &str) -> (bool, String) {
 /// operand with the receiver and discard the result on purpose — mixed
 /// signedness is allowed (ORD4) and would fail that unification — and
 /// discarding it discarded every real mismatch with it.
+/// #978: a primitive on the left of an operator accepted *any* right operand.
+/// `f64 * Meters` type-checked and natively multiplied the struct's address —
+/// `2.0 * Meters { v: 3.0 }` printed 281465035398656 — while `f < d` failed the
+/// Cranelift verifier and `i == d` segfaulted. Same discarded unify as #1034,
+/// across the float and arithmetic arms.
+#[test]
+fn primitive_operator_rejects_a_wrong_operand() {
+    let (failed, out) = compile_error_output("primitive_operator_wrong_operand.rk");
+    assert!(failed, "a primitive operator on a struct must not compile: {out}");
+    // Seven bad operators, seven errors — and no follow-on "couldn't work out
+    // the type", which is what pinning the result before reporting buys.
+    assert_eq!(
+        out.matches("E0382").count(),
+        7,
+        "one error per bad operator, no more and no fewer: {out}"
+    );
+    // The operator is named as written, not as the desugared method.
+    for op in ["`*`", "`+`", "`<`", "`==`", "`-`", "`<<`"] {
+        assert!(out.contains(op), "message should name {op} as written: {out}");
+    }
+    assert!(
+        !out.contains("E0361"),
+        "a bad operand should not also report an un-inferrable binding: {out}"
+    );
+}
+
 #[test]
 fn integer_compared_to_char_is_rejected() {
     let (failed, out) = compile_error_output("char_int_comparison.rk");

@@ -528,19 +528,14 @@ impl ToDiagnostic for rask_types::TypeError {
 
             // SEQ31: `collect` was removed, so the bare "no method" reads as if
             // it were a typo. Name the replacement instead.
-            IncomparableOperands { left, right, method, span } => {
-                let op = match method.as_str() {
-                    "eq" => "==", "ne" => "!=",
-                    "lt" => "<", "gt" => ">", "le" => "<=", "ge" => ">=",
-                    "add" => "+", "sub" => "-", "mul" => "*",
-                    "div" => "/", "rem" => "%",
-                    other => other,
-                };
+            IncomparableOperands { left, right, op, span } => {
                 let is_int = |t: &str| matches!(
                     t,
                     "i8" | "i16" | "i32" | "i64" | "i128"
                     | "u8" | "u16" | "u32" | "u64" | "u128"
                 );
+                let is_primitive = |t: &str| is_int(t)
+                    || matches!(t, "f32" | "f64" | "bool" | "char" | "string");
                 let l = left.to_string();
                 let r = right.to_string();
                 let diag = Diagnostic::error(format!(
@@ -565,6 +560,25 @@ impl ToDiagnostic for rask_types::TypeError {
                         "for everything else. Mixed signedness is the one deliberate ",
                         "exception here [type.operators/ORD4]",
                     ).to_string())
+                } else if is_primitive(&l) && !is_primitive(&r) {
+                    // A struct or enum on the right of a primitive operator.
+                    // "convert one side" is no help — there is nothing to
+                    // convert a `Meters` into. Either reach into it or give the
+                    // type the operator.
+                    diag.with_fix(format!(
+                        "reach into it — `{} {} value.field` — or give `{}` the operator: `extend {} {{ func {}(self, other: {}) -> … }}`",
+                        l, op, r, r,
+                        match op.as_str() {
+                            "+" => "add", "-" => "sub", "*" => "mul",
+                            "/" => "div", "%" => "rem",
+                            _ => "compare",
+                        },
+                        l,
+                    ))
+                    .with_why(format!(
+                        "`{}` has no `{}` with a `{}`, so nothing defines what the result would be. Native computed on the value's address instead of saying so [type.operators]",
+                        l, op, r
+                    ))
                 } else {
                     diag.with_fix(format!(
                         "convert one side, so both are `{}` or both are `{}`", l, r
