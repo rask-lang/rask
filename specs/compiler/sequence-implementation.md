@@ -26,7 +26,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 2 — Stdlib **nominal** `Sequence<T>` / `SequenceMut<T>` | ✓ done | `1ebca5d` |
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
-| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`; `min`/`max`/`to_map` open — #1046 | `t31` |
+| 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`/`min`/`max`; `to_map` open — #1046 | `t31` |
 | 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | `.iter()` deleted (SEQ48); the eager Vec adapters still stand | — |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
@@ -113,11 +113,13 @@ that way.
 
 Two are still open, and neither is a bounds problem:
 
-- **`min`/`max`** collide with the free `min(a, b)`/`max(a, b)` in
-  `builtins.rk`. Registration is last-writer-wins and `sequence.rk` loads
-  later, so `Sequence.min` takes the bare name and `min(5.0, 3.0)` starts
-  reporting "expected 1 argument, found 2". The registration is what's wrong,
-  not the method (#1046).
+- **`min`/`max`** are in, written in Rask under `T: Comparable`. They used to
+  collide with the free `min(a, b)`/`max(a, b)` in `builtins.rk` — a method and
+  a free function share one name table, and whichever file loads later wins the
+  bare name, so `min(5.0, 3.0)` started resolving to the method and reported
+  "expected 1 argument, found 2". `Vec.min` never had the problem only because
+  `collections.rk` already loaded first. `sequence.rk` loads ahead of builtins
+  now and both spellings work.
 - **`to_map`** can't derive the element type of `Sequence<(K, V)>` inside a
   generic method (`lower/stmt:for_loop_elem`). The Vec-headed spelling
   `v.map(|u| (u.id, u.name)).to_map()` works — MIR fuses it — so the gap is

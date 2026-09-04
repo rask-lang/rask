@@ -144,3 +144,40 @@ test "type.sequence/SEQ26 — a chain of three composes left to right" {
     assert out[1] == 16
     assert out[2] == 36
 }
+
+// SEQ28-SEQ33: `min` and `max` on a sequence.
+//
+// These were declared-only, and not for want of a bound — `T: Comparable` is
+// all the body needs. Giving them a body used to steal the bare name from the
+// free `min(a, b)` in `builtins.rk`, because a method and a free function share
+// one name table and whichever file loads later wins: `min(5.0, 3.0)` started
+// resolving to the method and reported "expected 1 argument, found 2".
+// `Vec.min` never had the problem only because `collections.rk` already loaded
+// first. `sequence.rk` loads before builtins now, so both spellings work.
+test "type.sequence/SEQ28 — min over a sequence" {
+    assert (upto(5).min() ?? 999) == 1
+    assert (upto(1).min() ?? 999) == 1
+}
+
+test "type.sequence/SEQ28 — max over a sequence" {
+    assert (upto(5).max() ?? 999) == 5
+    assert (upto(1).max() ?? 999) == 1
+}
+
+test "min and max over an empty sequence answer none" {
+    assert (upto(0).min() ?? 999) == 999
+    assert (upto(0).max() ?? 999) == 999
+}
+
+test "min and max after an adapter" {
+    assert (upto(6).filter(|x| { return x > 3 }).min() ?? 999) == 4
+    assert (upto(6).filter(|x| { return x > 3 }).max() ?? 999) == 6
+    assert (upto(4).map(|x| { return x * 10 }).min() ?? 999) == 10
+}
+
+// The free functions the method used to shadow.
+test "the free min and max still resolve" {
+    assert min(2, 7) == 2
+    assert max(2, 7) == 7
+    assert min(5.0, 3.0) == 3.0
+}

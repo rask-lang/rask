@@ -49,6 +49,13 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("result.rk", include_str!("../../../../stdlib/result.rk")),
     ("io.rk", include_str!("../../../../stdlib/io.rk")),
     ("random.rk", include_str!("../../../../stdlib/random.rk")),
+    // Ahead of builtins for the same reason collections.rk is: a method and a
+    // free function share one name table, so whichever loads later wins the
+    // bare name. With sequence.rk after builtins, giving `Sequence.min` a body
+    // made `min(5.0, 3.0)` resolve to it and report "expected 1 argument,
+    // found 2". `Vec.min` never had the problem only because collections.rk
+    // already loads first (#1046).
+    ("sequence.rk", include_str!("../../../../stdlib/sequence.rk")),
     ("builtins.rk", include_str!("../../../../stdlib/builtins.rk")),
     ("fs.rk", include_str!("../../../../stdlib/fs.rk")),
     ("net.rk", include_str!("../../../../stdlib/net.rk")),
@@ -66,7 +73,6 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
-    ("sequence.rk", include_str!("../../../../stdlib/sequence.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
 ];

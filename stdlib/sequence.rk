@@ -277,24 +277,45 @@ extend Sequence<T> where T: Numeric {
     }
 }
 
-extend Sequence<T> {
+extend Sequence<T> where T: Comparable {
     /// Smallest item, or `none` if empty.
     ///
-    /// Declared, not implemented, and not for want of a bound — `T: Comparable`
-    /// is all the body needs and it works. Giving these a body steals the bare
-    /// name from the free `min(a, b)` in `builtins.rk`: registration is
-    /// last-writer-wins and `stubs.rs` loads `sequence.rk` after `builtins.rk`,
-    /// so `min(5.0, 3.0)` starts resolving here and reports "expected 1
-    /// argument, found 2". `Vec.min` is unaffected only because
-    /// `collections.rk` loads *before* builtins. Filed separately; the names
-    /// here are the ones SEQ28-SEQ33 asks for, so the registration is what
-    /// should move.
-    @unimplemented
-    public func min(self) -> T? {}
+    /// These were declared-only for a while, and not for want of a bound —
+    /// `T: Comparable` is all the body needs. Giving them a body used to steal
+    /// the bare name from the free `min(a, b)` in `builtins.rk`, because a
+    /// method and a free function share one name table and whichever loads
+    /// later wins: `min(5.0, 3.0)` started resolving here and reported
+    /// "expected 1 argument, found 2". `Vec.min` never had the problem only
+    /// because `collections.rk` already loaded first. `sequence.rk` loads
+    /// before builtins now, so both spellings work (#1046).
+    public func min(self) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if x < b {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
 
-    /// Largest item, or `none` if empty. Same story as `min` above.
-    @unimplemented
-    public func max(self) -> T? {}
+    /// Largest item, or `none` if empty.
+    public func max(self) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if x > b {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
 }
 
 // ---------------------------------------------------------------------------
