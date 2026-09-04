@@ -216,6 +216,11 @@ impl Interpreter {
                 })
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
+            "process_run" | "process_stdout" | "process_stderr" => {
+                self.call_process_function(method, args)
+            }
+
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "os".to_string(),
                 method: method.to_string(),
@@ -223,207 +228,80 @@ impl Interpreter {
         }
     }
 
-    /// Handle Command type static methods (Command.new, etc.).
+    /// `os.Command`'s three native entry points. Everything else about the
+    /// builder is Rask now (`stdlib/os.rk`), so both backends run one
+    /// implementation — this used to be a second one, modelling `Command` as a
+    /// struct with fields the compiler had never heard of.
+    ///
+    /// The captured output belongs to the last run on this thread, which is
+    /// what `Command.run` reads on its next two lines.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn call_command_type_method(
+    pub(crate) fn call_process_function(
         &self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "new" => {
+            "process_run" => {
                 let program = self.expect_string(&args, 0)?;
-                let mut fields = indexmap::IndexMap::new();
-                fields.insert("program".to_string(), Value::String(Arc::new(Mutex::new(program))));
-                fields.insert("args".to_string(), Value::vec(vec![]));
-                fields.insert("env_vars".to_string(), Value::vec(vec![]));
-                fields.insert("cwd".to_string(), Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0,
-                    origin: None,
-                });
-                Ok(Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                    name: "Command".to_string(),
-                    fields,
-                    resource_id: None,
-                }))))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "Command has no static method '{}'", method
-            ))),
-        }
-    }
-
-    /// Handle Command instance methods (arg, args, run, spawn, etc.).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn call_command_instance_method(
-        &self,
-        fields: &indexmap::IndexMap<String, Value>,
-        method: &str,
-        mut extra_args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        match method {
-            "arg" => {
-                let arg = self.expect_string(&extra_args, 0)?;
-                let mut new_fields = fields.clone();
-                if let Value::Vec(ref v) = new_fields["args"] {
-                    let mut guard = v.lock().unwrap();
-                    guard.push(Value::String(Arc::new(Mutex::new(arg))));
-                }
-                Ok(Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                    name: "Command".to_string(),
-                    fields: new_fields,
-                    resource_id: None,
-                }))))
-            }
-            "args" => {
-                if let Some(Value::Vec(extra)) = extra_args.first() {
-                    let extra_guard = extra.lock().unwrap();
-                    let mut new_fields = fields.clone();
-                    if let Value::Vec(ref v) = new_fields["args"] {
-                        let mut guard = v.lock().unwrap();
-                        for a in extra_guard.iter() {
-                            guard.push(a.clone());
-                        }
-                    }
-                    Ok(Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                        name: "Command".to_string(),
-                        fields: new_fields,
-                        resource_id: None,
-                    }))))
-                } else {
-                    Err(RuntimeError::TypeError("args() expects a Vec<string>".into()))
-                }
-            }
-            "working_dir" => {
-                let dir = self.expect_string(&extra_args, 0)?;
-                let mut new_fields = fields.clone();
-                new_fields.insert("cwd".to_string(), Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![Value::String(Arc::new(Mutex::new(dir)))],
-                    variant_index: 0,
-                    origin: None,
-                });
-                Ok(Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                    name: "Command".to_string(),
-                    fields: new_fields,
-                    resource_id: None,
-                }))))
-            }
-            "run" => {
-                let program = extract_string_field(fields, "program")?;
-                let cmd_args = extract_string_vec_field(fields, "args")?;
-                let cwd = extract_optional_string_field(fields, "cwd");
+                let cmd_args = string_vec_arg(&args, 1);
+                let envs = string_vec_arg(&args, 2);
+                let dir = self.expect_string(&args, 3).unwrap_or_default();
 
                 let mut cmd = std::process::Command::new(&program);
-                for a in &cmd_args {
-                    cmd.arg(a);
+                cmd.args(&cmd_args);
+                if !dir.is_empty() {
+                    cmd.current_dir(&dir);
                 }
-                if let Some(dir) = cwd {
-                    cmd.current_dir(dir);
+                for pair in envs.chunks(2) {
+                    if let [k, v] = pair {
+                        cmd.env(k, v);
+                    }
                 }
+                // Stdio modes: 0 inherit, 1 piped, 2 null. `output()` always
+                // captures, so Inherit and Null both mean "nothing to read".
+                let mode = |i: usize| match args.get(i) {
+                    Some(Value::Int(n, _)) => *n,
+                    _ => 1,
+                };
+                let (want_out, want_err) = (mode(5) == 1, mode(6) == 1);
 
                 match cmd.output() {
                     Ok(output) => {
-                        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-                        let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-                        let status = output.status.code().unwrap_or(-1);
-
-                        let mut out_fields = indexmap::IndexMap::new();
-                        out_fields.insert("status".to_string(), Value::int(status as i64));
-                        out_fields.insert("stdout".to_string(), Value::String(Arc::new(Mutex::new(stdout_str))));
-                        out_fields.insert("stderr".to_string(), Value::String(Arc::new(Mutex::new(stderr_str))));
-
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                                name: "Output".to_string(),
-                                fields: out_fields,
-                                resource_id: None,
-                            })))],
-                            variant_index: 0,
-                            origin: None,
-                        })
-                    }
-                    Err(e) => {
-                        let variant = if e.kind() == std::io::ErrorKind::NotFound {
-                            "NotFound"
+                        let out = if want_out {
+                            String::from_utf8_lossy(&output.stdout).to_string()
                         } else {
-                            "Other"
+                            String::new()
                         };
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "IoError".to_string(),
-                                variant: variant.to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                                variant_index: 0,
-                                origin: None,
-                            }],
-                            variant_index: 0,
-                            origin: None,
-                        })
+                        let err = if want_err {
+                            String::from_utf8_lossy(&output.stderr).to_string()
+                        } else {
+                            String::new()
+                        };
+                        PROCESS_CAPTURE.with(|c| *c.borrow_mut() = (out, err));
+                        // A signalled child has no exit code; 128+signal is
+                        // what a shell reports and what native answers.
+                        Ok(Value::int(output.status.code().unwrap_or(-1) as i64))
+                    }
+                    // Never started. Native reports the child's errno through
+                    // a close-on-exec pipe; this is the same number.
+                    Err(e) => {
+                        PROCESS_CAPTURE.with(|c| *c.borrow_mut() = (String::new(), String::new()));
+                        let code = e.raw_os_error().unwrap_or(0);
+                        Ok(Value::int(if code > 0 { -(code as i64) } else { -1 }))
                     }
                 }
             }
-            "spawn" => {
-                let program = extract_string_field(fields, "program")?;
-                let cmd_args = extract_string_vec_field(fields, "args")?;
-                let cwd = extract_optional_string_field(fields, "cwd");
-
-                let mut cmd = std::process::Command::new(&program);
-                for a in &cmd_args {
-                    cmd.arg(a);
-                }
-                if let Some(dir) = cwd {
-                    cmd.current_dir(dir);
-                }
-                cmd.stdin(std::process::Stdio::piped());
-                cmd.stdout(std::process::Stdio::piped());
-                cmd.stderr(std::process::Stdio::piped());
-
-                match cmd.spawn() {
-                    Ok(child) => {
-                        let mut proc_fields = indexmap::IndexMap::new();
-                        proc_fields.insert("child".to_string(), Value::int(0)); // placeholder
-                        let proc = Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                            name: "Process".to_string(),
-                            fields: proc_fields,
-                            resource_id: None,
-                        })));
-                        // Store child process for later wait/kill
-                        CHILD_PROCESSES.lock().unwrap().push(child);
-
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![proc],
-                            variant_index: 0,
-                            origin: None,
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "IoError".to_string(),
-                            variant: "Other".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                            variant_index: 0,
-                            origin: None,
-                        }],
-                        variant_index: 0,
-                        origin: None,
-                    }),
-                }
+            "process_stdout" => {
+                let out = PROCESS_CAPTURE.with(|c| c.borrow().0.clone());
+                Ok(Value::String(Arc::new(Mutex::new(out))))
+            }
+            "process_stderr" => {
+                let err = PROCESS_CAPTURE.with(|c| c.borrow().1.clone());
+                Ok(Value::String(Arc::new(Mutex::new(err))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Command".to_string(),
+                ty: "os".to_string(),
                 method: method.to_string(),
             }),
         }
@@ -453,51 +331,27 @@ impl Interpreter {
 
 // --- Helper functions ---
 
-fn extract_string_field(
-    fields: &indexmap::IndexMap<String, Value>,
-    name: &str,
-) -> Result<String, RuntimeError> {
-    match fields.get(name) {
-        Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
-        _ => Err(RuntimeError::NoSuchField {
-            ty: "Command".to_string(),
-            field: name.to_string(),
-        }),
-    }
+// What the last `process_run` on this thread captured — the same convention
+// the C runtime uses, so the two backends answer the same way.
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static PROCESS_CAPTURE: std::cell::RefCell<(String, String)> =
+        const { std::cell::RefCell::new((String::new(), String::new())) };
 }
 
-fn extract_string_vec_field(
-    fields: &indexmap::IndexMap<String, Value>,
-    name: &str,
-) -> Result<Vec<String>, RuntimeError> {
-    match fields.get(name) {
-        Some(Value::Vec(v)) => {
-            let guard = v.lock().unwrap();
-            Ok(guard.iter().filter_map(|v| {
-                if let Value::String(s) = v {
-                    Some(s.lock().unwrap().clone())
-                } else {
-                    None
-                }
-            }).collect())
-        }
-        _ => Ok(vec![]),
-    }
-}
-
-fn extract_optional_string_field(
-    fields: &indexmap::IndexMap<String, Value>,
-    name: &str,
-) -> Option<String> {
-    match fields.get(name) {
-        Some(Value::Enum { variant, fields, .. }) if variant == "Some" => {
-            if let Some(Value::String(s)) = fields.first() {
-                Some(s.lock().unwrap().clone())
-            } else {
-                None
-            }
-        }
-        _ => None,
+/// The elements of a `Vec<string>` argument, or empty when it isn't one.
+fn string_vec_arg(args: &[Value], index: usize) -> Vec<String> {
+    match args.get(index) {
+        Some(Value::Vec(v)) => v
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.lock().unwrap().clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

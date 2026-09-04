@@ -1135,6 +1135,15 @@ int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
 int64_t rask_recver_close_i64(int64_t rx);
 
+// ─── Subprocess (std.os) ────────────────────────────────────
+// The builder lives in Rask; this is the part that needs the OS. The captured
+// output is thread-local and belongs to the most recent run on that thread.
+int64_t rask_process_run(const RaskStr *program, const RaskVec *args, const RaskVec *envs,
+                         const RaskStr *dir, int64_t stdin_mode, int64_t stdout_mode,
+                         int64_t stderr_mode);
+void    rask_process_stdout(RaskStr *out);
+void    rask_process_stderr(RaskStr *out);
+
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.
 int64_t rask_select_rotate(int64_t num_arms);

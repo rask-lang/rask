@@ -49,6 +49,19 @@ extend os {
     /// Register a signal handler. Returns a channel receiver for signals.
     @native
     public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError {}
+
+    /// Fork, exec, drain the pipes, wait. The child's exit status, or -1 if it
+    /// couldn't be started at all. Not public: `Command.run` is the surface,
+    /// and this is the one part of it that needs the OS.
+    @native("rask_process_run")
+    func process_run(program: string, args: Vec<string>, envs: Vec<string>, dir: string, stdin_mode: i64, stdout_mode: i64, stderr_mode: i64) -> i64 {}
+
+    /// What the last `process_run` on this thread captured. `Command.run`
+    /// reads both on the next two lines, so nothing can overwrite them first.
+    @native("rask_process_stdout")
+    func process_stdout() -> string {}
+    @native("rask_process_stderr")
+    func process_stderr() -> string {}
 }
 
 /// I/O configuration for subprocess stdin/stdout/stderr.
@@ -59,48 +72,124 @@ public enum Stdio {
 }
 
 /// Command builder for subprocess execution.
-public struct Command { }
+///
+/// The builder is Rask — both backends run this source, so there is nothing to
+/// disagree about. Only running the child needs the OS, and that's the three
+/// `@native` functions below.
+public struct Command {
+    program: string
+    args: Vec<string>
+    /// Flattened key, value, key, value — a `Vec<(string, string)>` would be
+    /// one more shape for the runtime to read.
+    envs: Vec<string>
+    dir: string
+    stdin_cfg: Stdio
+    stdout_cfg: Stdio
+    stderr_cfg: Stdio
+}
 
 extend Command {
     /// Create a new command for the given program.
-    @native
-    public func new(program: string) -> Command {}
+    ///
+    /// Both output streams are captured by default — a `run()` whose output you
+    /// can't read has little to offer — and stdin is inherited.
+    public func new(program: string) -> Command {
+        return Command {
+            program,
+            args: Vec.new(),
+            envs: Vec.new(),
+            dir: "",
+            stdin_cfg: Stdio.Inherit,
+            stdout_cfg: Stdio.Piped,
+            stderr_cfg: Stdio.Piped,
+        }
+    }
 
     /// Add a single argument.
-    @native
-    public func arg(self, arg: string) -> Command {}
+    public func arg(take self, arg: string) -> Command {
+        mut c = self
+        c.args.push(arg)
+        return c
+    }
 
     /// Add multiple arguments.
-    @native
-    public func args(self, args: Vec<string>) -> Command {}
+    public func args(take self, args: Vec<string>) -> Command {
+        mut c = self
+        for a in args {
+            c.args.push(a)
+        }
+        return c
+    }
 
     /// Set an environment variable for the child process.
-    @native("rask_os_env")
-    public func env(self, key: string, value: string) -> Command {}
+    public func env(take self, key: string, value: string) -> Command {
+        mut c = self
+        c.envs.push(key)
+        c.envs.push(value)
+        return c
+    }
 
     /// Set the working directory.
-    @native
-    public func working_dir(take self, dir: string) -> Command {}
+    public func working_dir(take self, dir: string) -> Command {
+        mut c = self
+        c.dir = dir
+        return c
+    }
 
     /// Configure stdin.
-    @native
-    public func stdin(self, cfg: Stdio) -> Command {}
+    public func stdin(take self, cfg: Stdio) -> Command {
+        mut c = self
+        c.stdin_cfg = cfg
+        return c
+    }
 
     /// Configure stdout.
-    @native
-    public func stdout(self, cfg: Stdio) -> Command {}
+    public func stdout(take self, cfg: Stdio) -> Command {
+        mut c = self
+        c.stdout_cfg = cfg
+        return c
+    }
 
     /// Configure stderr.
-    @native
-    public func stderr(self, cfg: Stdio) -> Command {}
+    public func stderr(take self, cfg: Stdio) -> Command {
+        mut c = self
+        c.stderr_cfg = cfg
+        return c
+    }
 
     /// Run command to completion and capture output.
-    @native
-    public func run(self) -> Output or IoError {}
+    ///
+    /// A program that never started is an error, not a status — the child
+    /// reports why through a close-on-exec pipe, so "no such program" and "the
+    /// program ran and exited 127" stay apart.
+    public func run(take self) -> Output or IoError {
+        let status = os.process_run(self.program, self.args, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
+        if status < 0 {
+            // The negative of the child's errno. ENOENT(2) and EACCES(13) are
+            // the two worth naming; POSIX fixes both numbers.
+            if status == -2 { return IoError.NotFound(self.program) }
+            if status == -13 { return IoError.PermissionDenied(self.program) }
+            return IoError.Other("could not start `{self.program}`")
+        }
+        return Output {
+            status: status.clamp<i32>(),
+            stdout: os.process_stdout(),
+            stderr: os.process_stderr(),
+        }
+    }
 
     /// Spawn command as a background process.
-    @native("rask_green_closure_spawn")
+    @unimplemented
     public func spawn(self) -> Process or IoError {}
+}
+
+/// The number the runtime reads for a stream's configuration.
+func stdio_code(cfg: Stdio) -> i64 {
+    match cfg {
+        Stdio.Inherit => return 0
+        Stdio.Piped => return 1
+        Stdio.Null => return 2
+    }
 }
 
 /// Output from a completed subprocess.
@@ -112,8 +201,9 @@ public struct Output {
 
 extend Output {
     /// Check if the process exited successfully (status == 0).
-    @native
-    public func success(self) -> bool {}
+    public func success(self) -> bool {
+        return self.status == 0
+    }
 }
 
 /// A running subprocess handle. Must be consumed via wait() or kill_and_wait().

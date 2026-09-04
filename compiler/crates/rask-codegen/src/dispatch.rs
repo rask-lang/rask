@@ -1153,6 +1153,25 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
+        // Subprocess. The builder is Rask (stdlib/os.rk); only these three
+        // reach the OS. `process_run` takes the pieces and returns the exit
+        // status; the two readers hand back what it captured on this thread.
+        StdlibEntry::simple(
+            "os_process_run", "rask_process_run",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64), false,
+        ),
+        StdlibEntry {
+            mir_name: "os_process_stdout", c_name: "rask_process_stdout",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_stderr", c_name: "rask_process_stderr",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // ── StringBuilder ───────────────────────────────────────────
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
@@ -1856,22 +1875,15 @@ mod tests {
     ///   - lowered somewhere bespoke: `Vec.fold` and friends are fused into an
     ///     iterator chain, `reflect.*` is resolved at comptime, `math.*` goes to
     ///     libm. These are fine and will stay listed.
-    ///   - no entry point at all: `Command.new` gives "Function not found:
-    ///     Command_new", `Timer.after` the same. These are real, and the list is
-    ///     where they stop being invisible — #1066 tracks the ones confirmed by
-    ///     running them.
+    ///   - no entry point at all, which is a bug: the call type-checks, runs on
+    ///     the interpreter, and dies at codegen with "Function not found". The
+    ///     list is where those stop being invisible. `Command.*` and `Timer.*`
+    ///     were the first two families confirmed that way (#1066); `Command` is
+    ///     implemented now and `Timer` says `@unimplemented`, so both are off.
     ///
     /// The test fails both ways. An unlisted name with no row is a new gap; a
     /// listed name that has since gained a row is stale and must come off.
     const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
-    "Command.arg",
-    "Command.args",
-    "Command.new",
-    "Command.run",
-    "Command.stderr",
-    "Command.stdin",
-    "Command.stdout",
-    "Command.working_dir",
     "FieldInfo.get",
     "FieldInfo.has",
     "Map.capacity",
@@ -1879,7 +1891,6 @@ mod tests {
     "Map.modify_with_default",
     "Map.read",
     "Map.with_capacity",
-    "Output.success",
     "Pool.capacity",
     "Pool.clear",
     "Pool.entries",
@@ -1895,8 +1906,6 @@ mod tests {
     "Pool.with_valid_mut",
     "TaskGroup.join_all",
     "TaskGroup.new",
-    "Timer.after",
-    "Timer.interval",
     "Vec.all",
     "Vec.any",
     "Vec.enumerate",

@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `os.Command` runs a child process on both backends (#1066).
+//
+// Every method on it was declared `@native` against a symbol nobody had
+// written, so a call type-checked, ran on the interpreter, and died at codegen
+// with "Function not found: Command_new". Two of the markers named the wrong
+// symbol outright: `env` pointed at `rask_os_env` (reading an environment
+// variable) and `spawn` at `rask_green_closure_spawn` (the task scheduler).
+//
+// The builder is Rask now, so both backends run one implementation. Only three
+// things need the OS — run the child, and read what it wrote — and those are
+// native on each side.
+//
+// `sh -c` rather than a bare program: it's the one thing every POSIX box has,
+// and it lets one test cover arguments, the working directory, an environment
+// variable and both output streams.
+
+import os
+import os.Stdio
+
+test "a command runs and its output comes back" {
+    let out = os.Command.new("sh").arg("-c").arg("echo hello").run()!
+    assert out.status == 0
+    assert out.success()
+    assert out.stdout == "hello\n"
+    assert out.stderr == ""
+}
+
+test "the exit status is the child's" {
+    let out = os.Command.new("sh").arg("-c").arg("exit 3").run()!
+    assert out.status == 3
+    assert !out.success()
+}
+
+test "stderr is captured separately" {
+    let out = os.Command.new("sh").arg("-c").arg("echo out; echo err 1>&2").run()!
+    assert out.stdout == "out\n"
+    assert out.stderr == "err\n"
+}
+
+test "args adds several at once" {
+    mut extra = Vec.new()
+    extra.push("-c")
+    extra.push("echo a b")
+    let out = os.Command.new("sh").args(extra).run()!
+    assert out.stdout == "a b\n"
+}
+
+test "the working directory is the child's" {
+    let out = os.Command.new("sh").arg("-c").arg("pwd").working_dir("/").run()!
+    assert out.stdout == "/\n"
+}
+
+test "an environment variable reaches the child" {
+    let out = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo $RASK_TEST_VAR")
+        .env("RASK_TEST_VAR", "seen")
+        .run()!
+    assert out.stdout == "seen\n"
+}
+
+test "a program that doesn't exist is an error, not a status" {
+    // The child reports the failed exec through a close-on-exec pipe, so this
+    // stays apart from a program that ran and exited 127.
+    match os.Command.new("rask_no_such_program_xyz").run() {
+        Output as o => { assert false }
+        IoError as e => { assert e.message() == "not found: rask_no_such_program_xyz" }
+    }
+}
+
+test "a stream configured Null is not captured" {
+    let out = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo quiet")
+        .stdout(Stdio.Null)
+        .run()!
+    assert out.status == 0
+    assert out.stdout == ""
+}
