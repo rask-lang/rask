@@ -56,18 +56,39 @@ test "the bare and qualified spellings of an ordering are the same value" {
 }
 
 test "compare_exchange reports the value it found" {
-    // `catch` rather than a type pattern: the signature is `T or T` today, so
-    // both branches are the same type and no type pattern can tell them apart.
-    // The spec's `T or CasFailed<T>` would — that's what the wrapper is for.
+    // `T or CasFailed<T>`, so the two branches tell apart. Both carry a `T` —
+    // the old value on success, the observed one on failure — and as `T or T`
+    // no pattern could separate them.
     let a = Atomic<i64>.new(5)
-    let swapped = a.compare_exchange(5, 9, SeqCst, SeqCst) catch e => -1
-    assert swapped == 5
+    match a.compare_exchange(5, 9, SeqCst, SeqCst) {
+        i64 as old => { assert old == 5 }
+        CasFailed as e => { assert false }
+    }
     assert a.load(SeqCst) == 9
 
-    // It holds 9 now, so exchanging against 5 fails and the catch runs.
-    let missed = a.compare_exchange(5, 1, SeqCst, SeqCst) catch e => -1
-    assert missed == -1
+    // It holds 9 now, so exchanging against 5 fails and hands back what's there.
+    match a.compare_exchange(5, 1, SeqCst, SeqCst) {
+        i64 as old => { assert false }
+        CasFailed as e => { assert e.found == 9 }
+    }
     assert a.load(SeqCst) == 9
+}
+
+test "the spec's retry loop terminates" {
+    let a = Atomic<i64>.new(0)
+    mut swaps = 0
+    loop {
+        let current = a.load(Relaxed)
+        if current >= 5 {
+            break
+        }
+        match a.compare_exchange_weak(current, current + 1, SeqCst, Relaxed) {
+            i64 as _ => { swaps = swaps + 1 }
+            CasFailed as _ => { }
+        }
+    }
+    assert a.load(SeqCst) == 5
+    assert swaps == 5
 }
 
 test "swap hands back the old value" {

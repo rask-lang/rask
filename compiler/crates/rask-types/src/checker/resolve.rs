@@ -3522,9 +3522,16 @@ impl TypeChecker {
                 let _ = self.unify(&args[1], &val_ty, span);
                 let _ = self.unify(&args[2], &ordering_ty, span);
                 let _ = self.unify(&args[3], &ordering_ty, span);
+                // `T or CasFailed<T>`, not `T or T`. Both sides carry a `T` —
+                // the old value on success, the observed one on failure — so
+                // without the wrapper every match arm was ambiguous and `r is
+                // …` had no error type to name.
                 let result_ty = Type::Result {
                     ok: Box::new(val_ty.clone()),
-                    err: Box::new(val_ty),
+                    err: Box::new(Type::UnresolvedGeneric {
+                        name: "CasFailed".to_string(),
+                        args: vec![GenericArg::Type(Box::new(val_ty))],
+                    }),
                 };
                 self.unify(ret, &result_ty, span)
             }

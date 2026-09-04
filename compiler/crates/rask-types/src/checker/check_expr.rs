@@ -3938,9 +3938,22 @@ impl TypeChecker {
                 return;
             }
 
+            // A generic branch named without its arguments covers it —
+            // `CasFailed` for a `CasFailed<i64>` branch. Only when the base
+            // name picks out one branch; two instantiations of the same type
+            // would both answer to it and neither would be covered.
+            let base_of = |t: &str| t.split('<').next().unwrap_or(t).to_string();
             let missing: Vec<String> = required
-                .into_iter()
-                .filter(|r| !covered.contains(r))
+                .iter()
+                .filter(|r| {
+                    if covered.contains(*r) {
+                        return false;
+                    }
+                    let base = base_of(r);
+                    let same_base = required.iter().filter(|o| base_of(o) == base).count();
+                    !(same_base == 1 && covered.contains(&base))
+                })
+                .cloned()
                 .collect();
 
             if !missing.is_empty() {

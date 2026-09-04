@@ -153,6 +153,8 @@ let old = counter.swap(new_value, AcqRel)
 - `compare_exchange`: Must succeed if value matches. Use for single-attempt operations.
 - `compare_exchange_weak`: May fail spuriously even if value matches. More efficient in loops on some architectures.
 
+`CasFailed<T>` is one field — the value the atomic actually held — so it is the same word and costs nothing at run time. The wrapper is what separates the branches: both sides carry a `T`, and as `T or T` no pattern could tell success from failure. A branch written without its type argument (`CasFailed as e`) names the whole branch, so `e.found` reads.
+
 <!-- test: skip -->
 ```rask
 loop {

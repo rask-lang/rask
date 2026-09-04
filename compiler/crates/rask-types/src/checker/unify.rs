@@ -470,6 +470,35 @@ impl TypeChecker {
         }
     }
 
+    /// Do these two name the same type, ignoring type arguments?
+    ///
+    /// Only useful when one side has none: a pattern written `CasFailed`
+    /// against a `CasFailed<i64>` branch. Two *different* instantiations would
+    /// both answer true here, which is why the caller requires exactly one
+    /// branch to match.
+    pub(super) fn same_type_head(&self, a: &Type, b: &Type) -> bool {
+        let head = |t: &Type| -> Option<String> {
+            match t {
+                Type::Named(id) | Type::Generic { base: id, .. } => {
+                    Some(self.types.type_name(*id))
+                }
+                Type::UnresolvedNamed(n) => Some(n.clone()),
+                Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+                _ => None,
+            }
+        };
+        let bare = |t: &Type| matches!(t, Type::Named(_) | Type::UnresolvedNamed(_));
+        // One side written bare, the other generic — otherwise this is either
+        // an exact match (already handled) or a genuine mismatch.
+        if bare(a) == bare(b) {
+            return false;
+        }
+        match (head(a), head(b)) {
+            (Some(x), Some(y)) => x.split('<').next() == y.split('<').next(),
+            _ => false,
+        }
+    }
+
     /// ER27: verify that `narrow_ty` matches either the ok or err branch of
     /// the scrutinee's `T or E` type. Defer if scrutinee is still unresolved.
     fn resolve_type_pattern(
@@ -505,6 +534,22 @@ impl TypeChecker {
                     .filter(|b| matches!(b, Type::Var(_)))
                     .cloned()
                     .collect();
+                // A generic branch named without its arguments. `T or
+                // CasFailed<T>` is matched `CasFailed as e` in mem.atomics's
+                // own example, and repeating the payload type at the pattern
+                // adds nothing — there is only one branch it could mean. Bind
+                // the pattern to the whole branch so `e.found` still resolves.
+                if !branches.contains(&narrow_applied) {
+                    let heads: Vec<Type> = branches
+                        .iter()
+                        .filter(|b| self.same_type_head(b, &narrow_applied))
+                        .cloned()
+                        .collect();
+                    if heads.len() == 1 {
+                        self.unify(&narrow_ty, &heads[0], span)?;
+                        return Ok(true);
+                    }
+                }
                 if !branches.contains(&narrow_applied) && unresolved.len() == 1 {
                     self.unify(&unresolved[0], &narrow_applied, span)?;
                     return Ok(true);

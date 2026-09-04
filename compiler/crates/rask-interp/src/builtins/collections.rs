@@ -1852,12 +1852,20 @@ impl Interpreter {
                         origin: None,
                     })
                 } else {
-                    // `CasFailed(actual)` — what's there now, so a retry loop
-                    // has the value it needs without a second load.
+                    // `CasFailed { found }` — what's there now, so a retry loop
+                    // has the value it needs without a second load. The wrapper
+                    // is what tells the two branches apart: both carry a `T`,
+                    // and a bare payload made `CasFailed as e` match the ok arm.
+                    let mut fields = indexmap::IndexMap::new();
+                    fields.insert("found".to_string(), current);
                     Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![current],
+                        fields: vec![Value::new_struct(
+                            "CasFailed".to_string(),
+                            fields,
+                            None,
+                        )],
                         variant_index: 1,
                         origin: None,
                     })

@@ -379,6 +379,23 @@ impl TypeChecker {
                         // Every branch the scrutinee could hold — a flat
                         // `T? or E` offers `T`, `none` and `E` (OPT30).
                         let branches = two_branch_leaves(&mut self.ctx, &self.types, &resolved);
+                        // A generic branch named without its arguments —
+                        // `CasFailed` against a `CasFailed<i64>` branch, which
+                        // is how mem.atomics writes it. Bind the pattern to
+                        // the whole branch so a field read on it resolves.
+                        if !branches.contains(&narrow_ty) {
+                            let heads: Vec<Type> = branches
+                                .iter()
+                                .filter(|b| self.same_type_head(b, &narrow_ty))
+                                .cloned()
+                                .collect();
+                            if heads.len() == 1 {
+                                return match binding {
+                                    Some(name) => vec![(name.clone(), heads[0].clone())],
+                                    None => vec![],
+                                };
+                            }
+                        }
                         // A branch that hasn't resolved yet can't be compared
                         // against. Defer — by then it's either a match or a
                         // real error, and the message can name the type.
