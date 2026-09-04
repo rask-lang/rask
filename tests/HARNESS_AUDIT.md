@@ -1,9 +1,14 @@
 # Test harness audit — 2026-09-04
 
 A review of what the test harness actually verifies, and where the tests, the
-specs and the compiler disagree. **Nothing here is fixed.** Each entry says what
-the spec says, what the compiler does, and what the test claims — deciding which
-of the three is wrong is a separate call.
+specs and the compiler disagree. Each entry says what the spec says, what the
+compiler does, and what the test claims — deciding which of the three is wrong
+is a separate call.
+
+Most of it is still findings-only. Two entries have been decided and fixed on
+this branch and say so in place: **3.1 (CV1)** — spec kept, compiler now
+enforces it — and **3.2 (P2)** — rule built, in the parser. Everything else
+stands as written.
 
 Measured on `e68e957` (main with #1057 merged) with a release build of the
 compiler. The numbers were re-taken after that merge; where a finding changed,
