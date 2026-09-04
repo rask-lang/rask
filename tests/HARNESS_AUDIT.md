@@ -201,7 +201,7 @@ The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 | **T7** | parallel by default, `--sequential` opts out | always sequential; the flag is accepted and the field is never read |
 | **T8** | `--seed X` reproduces a run | prints "accepted but random ordering not yet implemented" |
 | **T10** (nested) | `test` blocks nest, output `PASS: parent > child` | parse error: "Expected expression, found 'test'" |
-| **T10** (no `try`) | bare `try` in a test body is an `ER47` compile error | `rask check` says OK; interp runs it and passes; native fails the Cranelift verifier (#932) |
+| **T10** (no `try`) | bare `try` in a test body is an `ER47` compile error | both backends accept it deliberately, and a propagated error fails that test by name (see below) |
 | **T11** | `comptime test` runs during compilation, failure is a compile error | `rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test` |
 | **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
 | **T17** | `spawn` with no `using Multitasking` is a `CC2` compile error at the call site | type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block" |
@@ -212,6 +212,28 @@ The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 Working as specified: A1 (assert stops), A2 (check continues), A3 (messages),
 T2 (`@test` functions), T12 (`skip`), T13 (`expect_fail`, both directions),
 B1/B2 (benchmarks, with real statistics).
+
+**T10's `try` rule is the one place the implementation is ahead of the spec.**
+#1057 (`aaabcf3`) made `try` in a void-returning function an `E0316` and stopped
+MIR guessing at test bodies from their return type, so what used to be a
+three-way split — spec says error, interp passed silently, native failed the
+Cranelift verifier (#932) — is now a coherent feature:
+
+```
+$ rask test t10d.rk          # a test whose `try` propagates an error
+  ✗ try that actually propagates an error out of a test body
+      try propagated an error out of a test block
+  ✓ later test still runs
+2 tests, 1 passed, 1 failed
+```
+
+Both backends agree, the happy path works, and the failure names the test. The
+spec's argument for banning `try` was that a test block has nowhere to
+propagate to, so the failure would be uninformative — "an assertion that
+swallows the error reports 'assertion failed' and nothing else". The
+implementation gave it somewhere to go and made the message say what happened,
+which retires the rationale. This looks like the spec being wrong rather than
+the compiler being behind.
 
 **Spec bug:** `T10` is used twice — once for "no `try` in a test body" and once
 for nested blocks.
