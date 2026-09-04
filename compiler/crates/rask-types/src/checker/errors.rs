@@ -52,6 +52,18 @@ pub enum TypeError {
     NotCallable { ty: Type, span: Span },
     #[error("no such field '{field}' on type {ty}")]
     NoSuchField { ty: Type, field: String, span: Span },
+    /// An operator whose two sides can't be compared or combined.
+    ///
+    /// Mixed signedness is allowed on purpose (ORD4); `char` against an integer
+    /// is the case this exists for, because native compares a `char` as its
+    /// underlying scalar and quietly answers by code point.
+    #[error("cannot apply `{method}` to {left} and {right}")]
+    IncomparableOperands {
+        left: Type,
+        right: Type,
+        method: String,
+        span: Span,
+    },
     #[error("no such method '{method}' on type {ty}")]
     NoSuchMethod {
         ty: Type,
@@ -1010,6 +1022,11 @@ impl TypeError {
             | ResultNotDisjoint { ty, .. } => *ty = f(ty),
 
             FixedArrayGrowth { array, .. } => *array = f(array),
+
+            IncomparableOperands { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
+            }
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }

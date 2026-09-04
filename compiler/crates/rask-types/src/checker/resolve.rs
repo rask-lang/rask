@@ -3746,6 +3746,52 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// Reject an operand that isn't the same *kind* of thing as the receiver.
+    ///
+    /// The comparison arms unify the operand with the receiver and throw the
+    /// result away, deliberately — mixed signedness is allowed (ORD4) and would
+    /// fail that unification. Discarding it also discarded every real mismatch,
+    /// so `some_u8 == 'h'` type-checked and native compared the char as its
+    /// underlying scalar: `true`, because 104 is both a byte and `'h'` (#1034).
+    /// The interpreter refused the same program at runtime.
+    ///
+    /// Only concrete primitives are judged. Anything still settling is left to
+    /// the rest of inference.
+    fn reject_incomparable_operand(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let arg = self.resolve_named(&self.ctx.apply(arg));
+        let same_kind = match (&recv, &arg) {
+            _ if Self::integer_is_signed(recv).is_some()
+                && Self::integer_is_signed(&arg).is_some() => true,
+            (Type::F32 | Type::F64, Type::F32 | Type::F64) => true,
+            _ => *recv == arg,
+        };
+        if same_kind {
+            return Ok(());
+        }
+        // Not a primitive on the other side — a type variable, a named type
+        // that may still resolve, a container. Those are somebody else's error.
+        let arg_is_primitive = matches!(
+            arg,
+            Type::Bool | Type::Char | Type::String
+            | Type::F32 | Type::F64
+        ) || Self::integer_is_signed(&arg).is_some();
+        if !arg_is_primitive {
+            return Ok(());
+        }
+        Err(TypeError::IncomparableOperands {
+            left: recv.clone(),
+            right: arg,
+            method: method.to_string(),
+            span,
+        })
+    }
+
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
@@ -3818,10 +3864,12 @@ impl TypeChecker {
             "bit_not" | "abs" if args.is_empty() => self.unify(ret, ty, span),
             // Comparison → bool
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                self.reject_incomparable_operand(method, ty, &args[0], span)?;
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &Type::Bool, span)
             }
             "compare" if args.len() == 1 => {
+                self.reject_incomparable_operand(method, ty, &args[0], span)?;
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }

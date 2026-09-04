@@ -129,11 +129,27 @@ impl TypeChecker {
                         });
                         continue;
                     }
-                    // Skip operator methods on primitive types — these are
-                    // desugared from +, *, etc. and resolved at the MIR level.
-                    if !Self::is_placeholder_type(&resolved)
-                        && !Self::is_operator_on_primitive(&resolved, &method)
-                    {
+                    // Operator methods on primitive types are desugared from
+                    // `+`, `==` and friends and resolved at the MIR level, so
+                    // there's no method to look up. Their *operand* still has to
+                    // agree with the receiver, and dropping the whole constraint
+                    // meant nothing ever checked it: `some_u8 == 'h'` and even
+                    // `some_u8 == "x"` type-checked, then native compared `char`
+                    // as its underlying scalar and answered `true` while the
+                    // interpreter refused at runtime (#1034).
+                    if Self::is_operator_on_primitive(&resolved, &method) {
+                        if let Some(arg) = args.first() {
+                            let arg = self.resolve_named(&self.ctx.apply(arg));
+                            if !Self::operand_agrees(&resolved, &arg, &method) {
+                                self.errors.push(TypeError::IncomparableOperands {
+                                    left: resolved,
+                                    right: arg,
+                                    method,
+                                    span,
+                                });
+                            }
+                        }
+                    } else if !Self::is_placeholder_type(&resolved) {
                         self.errors.push(TypeError::NoSuchMethod {
                             ty: resolved,
                             method,
@@ -316,6 +332,48 @@ impl TypeChecker {
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
             | "abs" | "min" | "max" | "pow" | "to_float" | "compare"
         )
+    }
+
+    /// Whether an operator's operand type works with its receiver.
+    ///
+    /// Mixed signedness is the one deliberate exception (`type.operators/ORD4`),
+    /// so any two integers agree. Everything else has to be the same type: a
+    /// `char` is a Unicode scalar, not a number, and comparing it to an integer
+    /// would answer by code point — which is right for ASCII and silently wrong
+    /// for everything else.
+    ///
+    /// Only asked of two concrete primitives. Anything still settling, or a
+    /// named type that might yet resolve, is left to the rest of inference.
+    fn operand_agrees(recv: &Type, arg: &Type, method: &str) -> bool {
+        // Bit operations and shifts take a count or mask whose width is its own
+        // business — `x << 2` is not a claim that both sides are the same type.
+        let checked = matches!(
+            method,
+            "eq" | "ne" | "lt" | "gt" | "le" | "ge" | "compare"
+            | "add" | "sub" | "mul" | "div" | "rem" | "pow" | "min" | "max"
+        );
+        if !checked {
+            return true;
+        }
+        let is_int = |t: &Type| matches!(
+            t,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+        );
+        let is_float = |t: &Type| matches!(t, Type::F32 | Type::F64);
+        let is_concrete_primitive = |t: &Type| is_int(t) || is_float(t)
+            || matches!(t, Type::Bool | Type::Char | Type::String);
+
+        if !is_concrete_primitive(recv) || !is_concrete_primitive(arg) {
+            return true;
+        }
+        if is_int(recv) && is_int(arg) {
+            return true;
+        }
+        if is_float(recv) && is_float(arg) {
+            return true;
+        }
+        recv == arg
     }
 
     pub(super) fn solve_constraint(&mut self, constraint: TypeConstraint) -> Result<bool, TypeError> {

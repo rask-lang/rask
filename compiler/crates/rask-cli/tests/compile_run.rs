@@ -921,6 +921,26 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
+/// underlying scalar and answered `true` because 104 is both a byte and `'h'`,
+/// while the interpreter refused at runtime. The comparison arms unify the
+/// operand with the receiver and discard the result on purpose — mixed
+/// signedness is allowed (ORD4) and would fail that unification — and
+/// discarding it discarded every real mismatch with it.
+#[test]
+fn integer_compared_to_char_is_rejected() {
+    let (failed, out) = compile_error_output("char_int_comparison.rk");
+    assert!(failed, "an integer compared to a char must not compile: {out}");
+    assert!(
+        out.contains("E0382"),
+        "should be the incomparable-operands error, got: {out}"
+    );
+    assert!(
+        out.contains("char"),
+        "the message should name the char side: {out}"
+    );
+}
+
 #[test]
 fn error_annotation_against_a_container_initializer() {
     // #730: `unify` defers whenever either side is an unresolved generic, since

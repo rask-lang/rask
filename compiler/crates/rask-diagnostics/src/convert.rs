@@ -528,6 +528,54 @@ impl ToDiagnostic for rask_types::TypeError {
 
             // SEQ31: `collect` was removed, so the bare "no method" reads as if
             // it were a typo. Name the replacement instead.
+            IncomparableOperands { left, right, method, span } => {
+                let op = match method.as_str() {
+                    "eq" => "==", "ne" => "!=",
+                    "lt" => "<", "gt" => ">", "le" => "<=", "ge" => ">=",
+                    "add" => "+", "sub" => "-", "mul" => "*",
+                    "div" => "/", "rem" => "%",
+                    other => other,
+                };
+                let is_int = |t: &str| matches!(
+                    t,
+                    "i8" | "i16" | "i32" | "i64" | "i128"
+                    | "u8" | "u16" | "u32" | "u64" | "u128"
+                );
+                let l = left.to_string();
+                let r = right.to_string();
+                let diag = Diagnostic::error(format!(
+                    "cannot apply `{}` to `{}` and `{}`", op, l, r
+                ))
+                .with_code("E0382")
+                .with_primary(*span, format!("`{}` on the left, `{}` on the right", l, r));
+
+                // The case worth spelling out. `s[i]` is a byte, so reaching for
+                // a character literal next to it is the natural typo, and it
+                // compiles into a code-point comparison that happens to be right
+                // for ASCII.
+                let char_and_int = (l == "char" && is_int(&r)) || (r == "char" && is_int(&l));
+                if char_and_int {
+                    diag.with_fix(concat!(
+                        "`line[i] == 44u8` if you meant the byte, or ",
+                        "`line.char_at(i)? as c` then compare `c` if you meant the character",
+                    ).to_string())
+                    .with_why(concat!(
+                        "`char` is a Unicode scalar, not a number, so comparing it to an ",
+                        "integer answers by code point — right for ASCII, silently wrong ",
+                        "for everything else. Mixed signedness is the one deliberate ",
+                        "exception here [type.operators/ORD4]",
+                    ).to_string())
+                } else {
+                    diag.with_fix(format!(
+                        "convert one side, so both are `{}` or both are `{}`", l, r
+                    ))
+                    .with_why(concat!(
+                        "operands have to be the same type; two integers are the one ",
+                        "exception, so signedness can be mixed [type.operators/ORD4]",
+                    ).to_string())
+                }
+            }
+
             NoSuchMethod { ty, method, span } if method == "collect" => {
                 Diagnostic::error(format!("no method `collect` on `{}`", ty))
                     .with_code("E0313")
