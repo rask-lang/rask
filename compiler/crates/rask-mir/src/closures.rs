@@ -179,6 +179,23 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
+                // A parameter captured by a closure leaves with it. This was
+                // missing, and it is how a caller came to free a closure the
+                // callee had handed on: every adapter captures the sequence it
+                // wraps, so `Sequence_filter(self, pred)` reported that neither
+                // parameter escaped, callers read "borrow", and the frame
+                // dropped the source while the returned adapter still pointed
+                // at it (#1051).
+                //
+                // Conservative on purpose — this map is built before allocation
+                // is decided, so there is no "does the closure escape" to ask
+                // yet. Erring toward escaping costs a leak; erring the other way
+                // costs a use-after-free.
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    if captures.iter().any(|c| c.local_id == param_id) {
+                        return true;
+                    }
+                }
                 MirStmtKind::Call { args, .. } => {
                     if args.iter().any(|a| uses::operand_reads(a, param_id)) {
                         return true;
@@ -262,7 +279,59 @@ fn find_escaping_closures(
 
     // Answer in terms of the `ClosureCreate` destinations, which is what the
     // caller rewrites.
-    found.iter().filter_map(|id| aliases.get(id).copied()).collect()
+    let mut escaping: HashSet<LocalId> =
+        found.iter().filter_map(|id| aliases.get(id).copied()).collect();
+
+    // An escaping closure takes its captures with it, so a capture that is
+    // itself a closure has to outlive the frame too.
+    //
+    // Without this the outer closure went to the heap and the one it wraps
+    // stayed on the stack, so what came back pointed into a dead frame. An
+    // adapter chain returned from a function is the shape that finds it —
+    //
+    //     func chained(v: Vec<i32>) -> Sequence<i32> {
+    //         let src: Sequence<i32> = v.as_sequence()
+    //         return src.filter(|x| x > 1)
+    //     }
+    //
+    // — where `src` is a local nothing else escapes, and calling the result
+    // segfaulted (#1051). One level works and always did, which is why it went
+    // unnoticed: a closure built directly over a parameter has no inner
+    // environment to leave behind.
+    //
+    // A fixpoint rather than one pass: chains nest arbitrarily deep, and each
+    // adapter captures the one before it.
+    let captured_closures: Vec<(LocalId, Vec<LocalId>)> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureCreate { dst, captures, .. } => Some((
+                *dst,
+                captures.iter().map(|c| c.local_id).collect::<Vec<_>>(),
+            )),
+            _ => None,
+        })
+        .collect();
+
+    loop {
+        let mut grew = false;
+        for (dst, captures) in &captured_closures {
+            if !escaping.contains(dst) {
+                continue;
+            }
+            for cap in captures {
+                if let Some(inner) = aliases.get(cap).copied() {
+                    grew |= escaping.insert(inner);
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    escaping
 }
 
 /// Every local that holds one of this function's closures, mapped to the
@@ -308,34 +377,55 @@ fn find_transferred_closures(
 ) -> HashSet<LocalId> {
     let mut passed_or_stored = HashSet::new();
     let mut used_locally = HashSet::new();
+    // Lowering copies a closure on before capturing it, so the capture names an
+    // alias rather than the `ClosureCreate` destination this pass is keyed by.
+    let aliases = closure_aliases(func, closure_locals);
 
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
+                // A closure captured by an *escaping* closure went with it: the
+                // environment now holding it outlives this frame, so this frame
+                // is not the one that frees it. `decide_allocation` has already
+                // run, so `heap` here means exactly "escapes".
+                //
+                // `ClosureCreate` is neither a call nor a store, so nothing saw
+                // the transfer and the frame dropped a closure the returned one
+                // still pointed at. An adapter chain returned from a function is
+                // the shape: `return src.filter(p)` emitted `closure_drop(src)`
+                // immediately before `return`, and calling the result read freed
+                // memory (#1051).
+                MirStmtKind::ClosureCreate { heap: true, captures, .. } => {
+                    for cap in captures {
+                        if let Some(origin) = aliases.get(&cap.local_id).copied() {
+                            passed_or_stored.insert(origin);
+                        }
+                    }
+                }
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if closure_locals.contains_key(&id) {
+                            if let Some(origin) = aliases.get(&id).copied() {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    passed_or_stored.insert(id);
+                                    passed_or_stored.insert(origin);
                                 }
                             }
                         }
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
-                    if closure_locals.contains_key(id) {
-                        passed_or_stored.insert(*id);
+                    if let Some(origin) = aliases.get(id).copied() {
+                        passed_or_stored.insert(origin);
                     }
                 }
                 MirStmtKind::ClosureCall { closure, .. } => {
-                    if closure_locals.contains_key(closure) {
-                        used_locally.insert(*closure);
+                    if let Some(origin) = aliases.get(closure).copied() {
+                        used_locally.insert(origin);
                     }
                 }
                 _ => {}

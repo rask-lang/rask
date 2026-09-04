@@ -168,6 +168,13 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 }
 
 /// naming/as: `as_*` should return a reference or primitive (cheap view).
+///
+/// "Cheap" means O(1) and no copy of the receiver's contents — not "returns
+/// something small". The list below started as references, slices and
+/// primitives, and said the wrong thing about the three cheapest views in the
+/// stdlib: `as_ptr` and `as_mut_ptr` hand back a raw pointer, and
+/// `as_sequence` hands back a closure that walks the receiver in place. All
+/// three read as "may allocate", which is exactly backwards.
 pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     let cheap_types = [
@@ -182,10 +189,16 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            // Heuristic: references start with & or [], primitives are in the list
+            // References start with & or [], raw pointers with *, primitives are
+            // in the list. A `Sequence<T>` is a closure over the receiver: it
+            // walks in place and copies nothing, which is the cheap view this
+            // rule is named for.
+            let ret_base = ret.split('<').next().unwrap_or(ret).trim();
             let is_cheap = ret.starts_with('&')
                 || ret.starts_with("[]")
-                || cheap_types.contains(&ret.as_str());
+                || ret.starts_with('*')
+                || cheap_types.contains(&ret.as_str())
+                || matches!(ret_base, "Sequence" | "SequenceMut");
             if !is_cheap {
                 diags.push(make_diagnostic(
                     "naming/as",
