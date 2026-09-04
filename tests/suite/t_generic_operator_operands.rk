@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The guard that rejects a wrong operand (#978, #1034) must not fire on a type
+// parameter that can still resolve.
+//
+// `reject_incomparable_operand` judges a *resolved* operand: a primitive, or a
+// nominal type whose name has already been followed. An unresolved name, a
+// generic parameter and every inference variable are left to the rest of
+// inference, because they may yet turn into something that fits. That line is
+// the whole edge of the change — too eager and ordinary generic code stops
+// compiling, too lax and `f64 * Meters` type-checks again.
+//
+// So this is the other side of `primitive_operator_wrong_operand.rk`: the same
+// operators, on operands that are right.
+
+struct Money {
+    cents: i64
+}
+
+extend Money {
+    public func add(self, other: Money) -> Money {
+        return Money { cents: self.cents + other.cents }
+    }
+
+    public func compare(self, other: Money) -> Ordering {
+        return self.cents.compare(other.cents)
+    }
+}
+
+func biggest<T: Comparable>(a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+func total<T: Numeric>(items: Vec<T>, take zero: T) -> T {
+    mut acc = zero
+    for it in items {
+        acc = acc + it
+    }
+    return acc
+}
+
+func eq_pair<T: Equal>(a: T, b: T) -> bool {
+    return a == b
+}
+
+test "a Comparable parameter compares at every instantiation" {
+    assert biggest(3, 7) == 7
+    assert biggest(1.5, 0.5) == 1.5
+    assert biggest("a", "b") == "b"
+}
+
+test "a Numeric parameter adds at every instantiation" {
+    let ints: Vec<i64> = [1, 2, 3].iter().to_vec()
+    assert total(ints, 0) == 6
+    let floats: Vec<f64> = [1.5, 2.5].iter().to_vec()
+    assert total(floats, 0.0) == 4.0
+}
+
+test "an Equal parameter compares chars and bools" {
+    assert eq_pair('x', 'x')
+    assert eq_pair(true, true)
+    assert !eq_pair('x', 'y')
+}
+
+test "a user type with its own operator is untouched" {
+    // Not a primitive on the left, so the guard never sees it.
+    let m = Money { cents: 100 }.add(Money { cents: 50 })
+    assert m.cents == 150
+}
+
+test "mixed signedness is still the one deliberate exception" {
+    // ORD4. This is what the discarded unify was protecting, and why the guard
+    // had to be written rather than the discard simply removed.
+    let a: u8 = 3u8
+    let b: i64 = 3
+    assert a == 3u8
+    assert b > 0
+}
