@@ -136,6 +136,18 @@ pub fn terminator_reads(term: &MirTerminator, local: LocalId) -> bool {
     }
 }
 
+/// All locals read by a terminator.
+pub fn terminator_uses(term: &MirTerminator) -> Vec<LocalId> {
+    let op = match &term.kind {
+        MirTerminatorKind::Return { value: Some(op) }
+        | MirTerminatorKind::Branch { cond: op, .. }
+        | MirTerminatorKind::Switch { value: op, .. }
+        | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => op,
+        _ => return Vec::new(),
+    };
+    operand_local(op).into_iter().collect()
+}
+
 /// Return the local defined (written) by this statement, if any.
 pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
     match &stmt.kind {
