@@ -3122,6 +3122,18 @@ impl TypeChecker {
             self.ptr_method_sites.insert(span, self.in_unsafe);
         }
 
+        // What the call wrote between the angle brackets. `resolve_method` binds
+        // the method's own type parameters to these instead of freshening them,
+        // so `s.parse<i64>()` means i64 whether or not anything downstream would
+        // have pinned it (#1029).
+        if let Some(ta) = type_args {
+            let written: Vec<Type> = ta
+                .iter()
+                .map(|name| self.resolve_type_name(name, span))
+                .collect();
+            self.written_method_type_args.insert(call_id, written);
+        }
+
         let ret_ty = self.ctx.fresh_var();
 
         self.ctx.add_constraint(TypeConstraint::HasMethod {

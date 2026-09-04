@@ -162,6 +162,15 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, fresh type vars for type params).
     /// Resolved after constraint solving to populate TypedProgram.call_type_args.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
+    /// Type arguments written at a *method* call, keyed by the call's NodeId.
+    ///
+    /// `s.parse<i64>()` says what it wants and nothing carried it: the method's
+    /// `T` became a fresh variable for the call site to settle, so with no
+    /// annotation and no `??` there was nothing to settle it from and the
+    /// binding was reported un-inferrable. Worse, the turbofish was decorative
+    /// even when it did infer — `let x: f64 = "42".parse<i64>()!` type-checked
+    /// and ran the float parse (#1029).
+    pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
     /// CALL6: the function each call resolves to, keyed by the call's NodeId.
     /// Free calls record here immediately; method calls record when their
     /// `HasMethod` constraint resolves.
@@ -385,6 +394,7 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            written_method_type_args: HashMap::new(),
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),

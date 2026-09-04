@@ -532,6 +532,12 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
+        // Type arguments the call wrote, if any. They bind the method's own type
+        // parameters where a stub signature has them (#1029).
+        let written: Vec<Type> = call_node
+            .and_then(|n| self.written_method_type_args.get(&n).cloned())
+            .unwrap_or_default();
+
         // CALL6: record the resolved receiver before any arm runs. Every path
         // below dispatches on this exact type, so recording once here covers
         // user types, stdlib types and the builtin methods alike — and it's the
@@ -984,13 +990,13 @@ impl TypeChecker {
                     }
                 }
             }
-            Type::String => self.resolve_string_method(&method, &args, &ret, span),
+            Type::String => self.resolve_string_method(&method, &args, &ret, &written, span),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
             // and used to miss the resolver above entirely.
             Type::UnresolvedNamed(ref name) if name == "string" => {
-                self.resolve_string_method(&method, &args, &ret, span)
+                self.resolve_string_method(&method, &args, &ret, &written, span)
             }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } | Type::Slice(_) => {
@@ -1799,6 +1805,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        written: &[Type],
         span: Span,
     ) -> Result<bool, TypeError> {
         if let Some(method_def) = rask_stdlib::lookup_method("string", method) {
@@ -1816,9 +1823,17 @@ impl TypeChecker {
             // every parse yield the literal type `T`, so `const x: f64 =
             // s.parse()` never learned the target and ran the integer parse
             // (#480). A fresh var lets the call site decide.
+            // A type argument written at the call binds the method's own
+            // parameter; `freshen_free_type_params` only invents a variable for
+            // the ones nothing named. `parse_stub_type` has already rewritten a
+            // single-uppercase name to `_Any`, so that is the key to seed.
+            let mut seen = std::collections::HashMap::new();
+            if let Some(first) = written.first() {
+                seen.insert("_Any".to_string(), first.clone());
+            }
             let ret_ty = self.freshen_free_type_params(
                 &super::builtins::parse_stub_type(&method_def.ret_ty),
-                &mut std::collections::HashMap::new(),
+                &mut seen,
             );
             return self.unify(ret, &ret_ty, span);
         }
