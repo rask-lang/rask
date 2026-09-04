@@ -352,4 +352,10 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 methods at all — no `insert`, no `contains`, no `len` (#1017). Use a
 `Map<T, bool>` until that's settled.
 
+`Error` is auto-derived for enums a signature names as an error type — the `E`
+of a `T or E` return. That covers how error types are written, but it is
+narrower than ER6, which says every enum. An enum reached as an error only
+through inference (a private function with no declared error type, or `or _`)
+still needs a hand-written `message()`.
+
 The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Trait` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.

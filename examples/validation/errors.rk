@@ -7,8 +7,9 @@
 //   ValidationError — hand-written `extend … with Error`, because its
 //     messages weave the payloads into prose
 //
-// Not shown: pure auto-derive (ER6) — a bare error enum with no @message still
-// gets no message() and can't be an error type. See FINDINGS.
+// ER6 works now (#1001): an enum a signature names as an error type gets a
+// message() derived from its variant names and payloads with nothing written.
+// These keep @message because their messages are prose, not variant names.
 
 import os
 import os.SysError

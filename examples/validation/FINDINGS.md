@@ -79,11 +79,17 @@ asserts it directly. (A hand-written `Comparable` still needs all five of
 compare/lt/le/gt/ge — no derive-from-compare — so EmailAddress, never sorted,
 stays non-Comparable. That's the reason now, not "Ordering unnameable".)
 
-### B3 — `Error` auto-derive (ER6) is unimplemented — [#378], open
-A bare error enum gets no `message()` and can't be used as an error type
-(`does not implement Error`). **Workaround:** every error enum needs
-`@message` or a manual `extend … with Error`. AuthError carries `@message`
-(no pure-auto-derive demo).
+### B3 — `Error` auto-derive (ER6) — [#1001], **fixed**
+A bare error enum used to get no `message()` and couldn't be an error type
+(`does not implement Error`), so every error enum here needed `@message` or a
+hand-written `extend … with Error`. An enum a signature names as an error type
+now gets `message()` derived from its variant names and payloads, with nothing
+written. `@message` is still how you supply prose per variant, which is why the
+enums here keep it.
+
+The one gap left: an error type reached only through inference — a private
+function with no declared error type, or `or _` — isn't seen by the derive,
+because it decides syntactically from signatures.
 
 ### B4 — `@message` auto-delegation (ER37) — [#446], **fixed**
 A wrapper variant `Store(StoreError)` with no template auto-delegates its
