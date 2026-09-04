@@ -270,7 +270,8 @@ Worth saying, because most of this machinery is good:
 - `COVERAGE.md` — 67 of 68 per-file counts current. Only `t_week_ranges.rk` is
   stale (doc says 14/14, it's 15/15). The "Holes left on purpose" section is
   honest about what a suite file structurally can't cover.
-- `leak_gate.sh` — no `known_leaks.txt` exists, so the gate is fully strict.
+- `leak_gate.sh` — no `known_leaks.txt` exists, so the gate is fully strict, and
+  it passes: 373 clean, 0 leaking. Every suite file returns every allocation.
 - `assert` requires `bool`. There is no vacuous-assert path.
 - `mem.ownership/O2` — enforced, and the diagnostic names the size and the
   threshold ("`Over` is 17 bytes (copy threshold is 16)").
