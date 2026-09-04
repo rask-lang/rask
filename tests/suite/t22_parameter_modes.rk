@@ -133,17 +133,17 @@ test "take self" {
     // p is now invalid
 }
 
-// --- mutate reaches the caller at every type, Copy included (PM2) ---
-// Copy decides whether the *source* is still usable after the call, not whether
-// `mutate` does anything. The spec used to carry an edge-case row saying a Copy
-// type mutated a copy, which made `mutate` a silent no-op for `i32` while
-// working for a one-field struct wrapping one; that row is gone (#899).
+// --- mutate reaches the caller at every size (mem.parameters/PM2) ---
+// It used to stop at Copy types, on the strength of one edge-case row that read
+// "value is copied in; mutations affect the copy". PM2 says the opposite and the
+// rest of the spec agrees with PM2, so a `mutate i32` now behaves like every
+// other `mutate` (#899).
 
 func modify_int(mutate x: i32) {
     x = 999
 }
 
-test "mutate on a copy type reaches the caller too" {
+test "mutate on a copy type reaches the caller" {
     mut x = 42
     modify_int(mutate x)
     assert x == 999

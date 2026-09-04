@@ -200,3 +200,7 @@ t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1
 t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
 t41_closure_environment_drop.rk  # 212 allocations — a closure made on one branch has no point where freeing it is safe, and a chain's intermediate environments belong to the one that captured them, #1045
+t_array_string_join.rk  # 6 allocations — clean on main; regressed by tracing a container through a capture cell, #1076
+t_day_const_string_array.rk  # 2 allocations — clean on main; regressed by tracing a container through a capture cell, #1076
+t_for_tuple_binding_dispatch.rk  # 4 allocations — clean on main; regressed by tracing a container through a capture cell, #1076
+t_month_reflect_fields_value.rk  # 1 allocation — clean on main; regressed by tracing a container through a capture cell, #1076

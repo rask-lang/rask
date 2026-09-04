@@ -1167,6 +1167,17 @@ impl<'a> MirLowerer<'a> {
             .and_then(|ta| ta.first())
             .ok_or_else(unsupported)?;
 
+        self.reflect_field_consts(type_name)
+    }
+
+    /// The same field metadata, by type name — shared with the value form in
+    /// `expr.rs`, which builds a runtime `Vec<FieldInfo>` out of it.
+    pub(super) fn reflect_field_consts(
+        &self,
+        type_name: &str,
+    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
+        use rask_ast::decl::field_attrs;
+
         let Some((_, layout)) = self.ctx.find_struct(type_name) else {
             // The uninstantiated generic template gets lowered too (alongside
             // every real instantiation), with its type params still literal

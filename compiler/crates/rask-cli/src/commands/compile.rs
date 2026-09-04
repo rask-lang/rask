@@ -475,6 +475,11 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                 }
                 let fn_name = format!("__test_{}", tests.len());
                 tests.push((t.name.clone(), fn_name.clone()));
+                // Marked so MIR can tell a test body from any other function
+                // that happens to return nothing. `try` inside one has no
+                // caller and ends the test (#932); inside an ordinary void
+                // function it's a compile error, and the two must not be
+                // told apart by the return type they share.
                 test_fns.push(Decl {
                     id: decl.id,
                     kind: DeclKind::Fn(FnDecl {
@@ -489,7 +494,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                         is_comptime: false,
                         is_unsafe: false,
                         abi: None,
-                        attrs: vec![],
+                        attrs: vec!["test_body".to_string()],
                         doc: None,
                         span: decl.span,
                     }),

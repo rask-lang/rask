@@ -318,6 +318,29 @@ impl Interpreter {
         }
     }
 
+    /// The numeric type a `parse` call was inferred to produce, spelled the way
+    /// a turbofish would have spelled it. `None` when the slot isn't a number
+    /// the parse surface has a width for.
+    fn parse_target_from_node(&self, node_id: rask_ast::NodeId) -> Option<&'static str> {
+        use rask_types::Type as T;
+        let T::Result { ok, .. } = self.node_types.get(&node_id)? else {
+            return None;
+        };
+        Some(match **ok {
+            T::I8 => "i8",
+            T::I16 => "i16",
+            T::I32 => "i32",
+            T::I64 => "i64",
+            T::U8 => "u8",
+            T::U16 => "u16",
+            T::U32 => "u32",
+            T::U64 => "u64",
+            T::F32 => "f32",
+            T::F64 => "f64",
+            _ => return None,
+        })
+    }
+
     /// Pick which string parse a `parse` call wants. An explicit
     /// `parse<f64>()` names the target; `const x: f64 = s.parse()` leaves it to
     /// inference, so fall back to the checker's type for the call node. Names
@@ -429,15 +452,11 @@ impl Interpreter {
     /// Write a `mutate` param's final value back to its argument place
     /// (mem.parameters/PM2).
     ///
-    /// Every place writes back, whatever its type. A whole Copy scalar used to
-    /// be skipped on the strength of the spec's edge-case table ("Copy type +
-    /// mutate: mutations affect the copy") while aggregates followed PM2's
-    /// prose, so `bump(mutate n)` did nothing for an `i32` and worked for a
-    /// four-byte one-field struct wrapping the same `i32` (#899). A mode whose
-    /// effect depends on whether you wrapped your number in a struct isn't one
-    /// anyone can reason about, and PM5 is explicit that the marker "never
-    /// depends on a type's size" — so the semantics can't either. The edge-case
-    /// row is gone from the spec.
+    /// A scalar used to be exempt, on the strength of one edge-case row that
+    /// said a Copy type is copied in. PM2 itself says the caller keeps the value
+    /// and gets the write, and every other mode reading agrees, so the scalar
+    /// now writes back like everything else — `bump(mutate n)` was a silent
+    /// no-op on both backends before (#899).
     fn writeback_mutate_place(&mut self, arg: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &arg.kind {
             ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
@@ -1020,6 +1039,20 @@ impl Interpreter {
                                 origin: None,
                             };
                         }
+                    }
+                }
+
+                // `let a: u8 = "300".parse()` names its target through
+                // inference rather than a turbofish, and without the name here
+                // `parse` fell back to the 64-bit parse and kept 300 in a u8
+                // (#919). The checker's type for the call node is the same
+                // answer the turbofish would have given.
+                if type_args.is_none()
+                    && method == "parse"
+                    && matches!(&receiver, Value::String(_))
+                {
+                    if let Some(name) = self.parse_target_from_node(expr.id) {
+                        arg_vals.insert(0, Value::String(Arc::new(Mutex::new(name.to_string()))));
                     }
                 }
 

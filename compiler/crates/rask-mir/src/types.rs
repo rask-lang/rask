@@ -255,10 +255,16 @@ impl MirType {
             // word where the tag belongs and the read loaded one word back, so
             // `[i32?; 3]` couldn't hold a `none` at all (#783).
             //
+            // A string's 16 bytes live in the element slot too. Storing the
+            // pointer instead aimed every element at whichever frame built the
+            // literal: fine while that frame is alive, garbage the moment it
+            // isn't — a module-level `const [string; N]` copied to the heap came
+            // back pointing at the dead init thunk (#1000), and `join` got an
+            // array of addresses where it wanted strings (#1021).
+            MirType::String => true,
             // The one exception is the niche: a `Handle<T>?` is a single word
             // where the handle *is* the value and `none` is the all-ones
-            // sentinel, so it keeps the word store. `string` is a pointer to its
-            // 16 bytes and keeps it too, which is why this isn't just
+            // sentinel, so it keeps the word store. That's why this isn't just
             // "everything passed by address".
             MirType::Option(inner) => !matches!(**inner, MirType::Handle | MirType::Link(_)),
             _ => false,

@@ -784,22 +784,33 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal(borrow.to_string()),
             args: vec![coll_op.clone(), idx_op],
         }));
-        self.elem_writebacks.push(super::ElemWriteback {
+        self.elem_writebacks.push(super::ElemWriteback::ReleaseBorrow {
             collection: coll_op,
             release,
         });
         Some((MirOperand::Local(ptr), elem_ty))
     }
 
-    /// Release every element borrowed since `mark`. Called right after the call
-    /// statement, so the borrow covers exactly the call that writes through it.
+    /// Settle every `mutate` argument opened since `mark`. Called right after
+    /// the call statement, so a borrow covers exactly the call that writes
+    /// through it and a spilled scalar is read back before anything else runs.
     fn flush_elem_writebacks(&mut self, mark: usize) {
         for wb in self.elem_writebacks.split_off(mark) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal(wb.release.to_string()),
-                args: vec![wb.collection],
-            }));
+            match wb {
+                super::ElemWriteback::ReleaseBorrow { collection, release } => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(release.to_string()),
+                        args: vec![collection],
+                    }));
+                }
+                super::ElemWriteback::ScalarCopyBack { dst, addr } => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                    }));
+                }
+            }
         }
     }
 
@@ -905,6 +916,19 @@ impl<'a> MirLowerer<'a> {
             dst: addr,
             rvalue: MirRValue::Ref(tmp),
         }));
+        // A named variable is the caller's storage and PM2 says the caller sees
+        // the write. The spill above is unavoidable — a scalar lives in a
+        // register, so there is no address to hand over — so read the slot back
+        // into the variable once the call returns. Without it `bump(mutate n)`
+        // incremented a copy nobody looked at again (#899).
+        if let ExprKind::Ident(name) = &arg.kind {
+            if let Some((id, _)) = self.locals.get(name).cloned() {
+                self.elem_writebacks.push(super::ElemWriteback::ScalarCopyBack {
+                    dst: id,
+                    addr,
+                });
+            }
+        }
         Ok((MirOperand::Local(addr), MirType::Ptr))
     }
 
@@ -4405,7 +4429,94 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        // Anything left on an array goes to the shared `Vec` lowering, which
+        // reads a `RaskVec` header the array doesn't have. Give it a real one.
+        let (obj_op, obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
+            Some(v) => v,
+            None => (obj_op, obj_ty),
+        };
+
         self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty, wb_mark)
+    }
+
+    /// A `Vec` view over a `[T; N]` receiver, for the methods an array borrows
+    /// from `Vec`.
+    ///
+    /// An array local *is* its buffer — no header, no length word — so handing
+    /// it to `Vec_join` or `Vec_contains` made those read the first element as
+    /// a `RaskVec` and walk off whatever it spelled (#1021, and #946 before it
+    /// for `as_ptr`). Copy the elements into a real vector instead; the
+    /// container-drop pass frees it, since `rask_vec_from_static` is one of the
+    /// constructors it tracks.
+    fn array_receiver_as_vec(
+        &mut self,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Option<(MirOperand, MirType)> {
+        let MirType::Array { elem, len } = obj_ty else {
+            return None;
+        };
+        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size
+        // 8 and every Vec method reads a whole word per element. An array packs
+        // them at their natural stride, so handing the buffer over as-is built a
+        // Vec whose stride and readers disagreed: `[1i32, 2i32, 3i32].join(",")`
+        // answered `8589934593,12884901890,3`, where 8589934593 is `(2<<32)|1` —
+        // two elements read as one. Copy narrow scalars up to the slot width
+        // first; `lower_vec_from_array_with` widens for the same reason.
+        let (buffer, slot_size) = self.array_buffer_at_vec_stride(obj_op, elem, *len);
+        let vec_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(vec_local),
+            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            args: vec![
+                buffer,
+                MirOperand::Constant(MirConst::Int(*len as i64)),
+                MirOperand::Constant(MirConst::Int(slot_size as i64)),
+                MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(elem)))),
+            ],
+        }));
+        Some((MirOperand::Local(vec_local), MirType::I64))
+    }
+
+    /// The array's elements laid out the way a Vec expects them, and the stride
+    /// that describes it.
+    ///
+    /// Anything already a word or wider is handed over as-is — the strides
+    /// agree, so there is nothing to copy. A narrower scalar is read out
+    /// element by element into a fresh array of word-sized slots; the length is
+    /// a compile-time constant, so this is a fixed sequence rather than a loop.
+    fn array_buffer_at_vec_stride(
+        &mut self,
+        obj_op: &MirOperand,
+        elem: &MirType,
+        len: u32,
+    ) -> (MirOperand, u32) {
+        let elem_size = elem.size();
+        if elem_size >= 8 || matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
+            return (obj_op.clone(), elem_size);
+        }
+        // Word-sized slots, so the buffer is `8 * len` bytes and the stores
+        // below land where the Vec's readers look.
+        let wide_ty = MirType::Array { elem: Box::new(MirType::I64), len };
+        let wide = self.builder.alloc_temp(wide_ty);
+        for i in 0..len {
+            let slot = self.builder.alloc_temp(elem.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::ArrayIndex {
+                    base: obj_op.clone(),
+                    index: MirOperand::Constant(MirConst::Int(i as i64)),
+                    elem_size,
+                },
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: wide,
+                offset: i * 8,
+                value: MirOperand::Local(slot),
+                store_size: None,
+            }));
+        }
+        (MirOperand::Local(wide), 8)
     }
 
     /// Calls where the receiver is a type or module name, not a value:
@@ -5628,8 +5739,7 @@ impl<'a> MirLowerer<'a> {
         // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
         // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
         let (final_name, final_args) = if qualified_name.starts_with("string_parse")
-            && matches!(&ret_ty, MirType::Result { ok, .. }
-                if matches!(**ok, MirType::F32 | MirType::F64))
+            && Self::parse_variant_for_slot(&ret_ty).is_some()
         {
             // The parse variant has to agree with the slot it writes into. The
             // name comes from the turbofish and the slot from inference, and
@@ -5637,10 +5747,14 @@ impl<'a> MirLowerer<'a> {
             // annotation is an `f64 or E` slot (the fallback literal is f64),
             // so `string_parse_f32` wrote four bytes where eight were read.
             // The slot's own payload type decides.
-            let by_slot = match &ret_ty {
-                MirType::Result { ok, .. } if matches!(**ok, MirType::F32) => "string_parse_f32",
-                _ => "string_parse_f64",
-            };
+            //
+            // Integers get the same treatment, and it isn't only about width:
+            // each narrow variant range-checks against its own type, so
+            // `let a: u8 = "300".parse()` is `ParseError.OutOfRange` instead of
+            // 44 (native) or 300 in a u8 (interp) (#919). Without this the
+            // inferred call kept the bare 64-bit parse.
+            let by_slot = Self::parse_variant_for_slot(&ret_ty)
+                .expect("checked just above");
             (by_slot.to_string(), all_args)
         } else if qualified_name == "Pool_alloc" && all_args.len() == 2 {
             ("Pool_insert".to_string(), all_args)
@@ -6187,19 +6301,22 @@ impl<'a> MirLowerer<'a> {
         if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
             return Ok(None);
         }
-        // `fields` is the unrolled `comptime for` iterable, handled in stmt.rs.
-        // Reaching here means it was used as an ordinary value instead, which
-        // native has no way to build — there's no runtime `Vec<FieldInfo>` to
-        // hand back, only the constants the unroller splices. Say that, rather
-        // than falling through to dispatch and failing in codegen with
-        // "Function not found: reflect_fields" (#997).
+        // `fields` as the iterable of a `comptime for` is unrolled in stmt.rs
+        // and never reaches here. Reaching here means it was used as an
+        // ordinary value — `let v = reflect.fields<T>()` — which the
+        // declaration promises and the interpreter delivers. Native used to
+        // refuse it outright (#997); it builds the vector instead now, out of
+        // the same constants the unroller splices.
         if method == "fields" {
-            return Err(LoweringError::InvalidConstruct(
-                "native can only use `reflect.fields<T>()` as the iterable of a `comptime for` — \
-                 it resolves to compile-time constants there, and there is no runtime \
-                 `Vec<FieldInfo>` for it to become anywhere else"
-                    .into(),
-            ));
+            let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {
+                return Err(LoweringError::InvalidConstruct(
+                    "reflect.fields() needs the type it's asking about: \
+                     write `reflect.fields<T>()`"
+                        .into(),
+                ));
+            };
+            let type_name = type_name.clone();
+            return self.lower_reflect_fields_value(&type_name).map(Some);
         }
 
         let Some(type_name) = type_args.as_ref().and_then(|ta| ta.first()) else {
@@ -7798,6 +7915,114 @@ impl<'a> MirLowerer<'a> {
             return Ok(Some((MirOperand::Local(result_local), payload_ty)));
         }
         Ok(None)
+    }
+
+    /// `reflect.fields<T>()` as a value: a real `Vec<FieldInfo>`, built from
+    /// the same compile-time constants the `comptime for` unroller splices.
+    ///
+    /// Everything in a `FieldInfo` is known once mono has picked `T`, so this
+    /// is a stack array of literals handed to `rask_vec_from_static` — the same
+    /// shape `Vec.from([…])` takes. The container-drop pass frees it.
+    fn lower_reflect_fields_value(
+        &mut self,
+        type_name: &str,
+    ) -> Result<TypedOperand, LoweringError> {
+        let consts = self.reflect_field_consts(type_name)?;
+
+        let Some((idx, layout)) = self.ctx.find_struct("FieldInfo") else {
+            return Err(LoweringError::InvalidConstruct(
+                "reflect.fields<T>() as a value needs `FieldInfo`, which this program \
+                 never names — add `import std.reflect`"
+                    .into(),
+            ));
+        };
+        // Offset and MIR type of each FieldInfo field, in declaration order,
+        // so the stores below don't depend on the layout's field order.
+        let field_at = |name: &str| -> Option<(u32, MirType)> {
+            layout
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| (f.offset, self.ctx.type_to_mir(&f.ty)))
+        };
+        let slots: Vec<(&'static str, u32, MirType)> = [
+            "name", "type_name", "offset", "size", "is_public", "serial_name",
+            "is_skipped", "has_default",
+        ]
+        .into_iter()
+        .filter_map(|n| field_at(n).map(|(off, ty)| (n, off, ty)))
+        .collect();
+        let elem_ty = MirType::Struct(crate::types::StructLayoutId::new(
+            idx, layout.size, layout.align,
+        ));
+        let elem_size = elem_ty.size();
+
+        let array_ty = MirType::Array {
+            elem: Box::new(elem_ty.clone()),
+            len: consts.len() as u32,
+        };
+        let arr = self.builder.alloc_temp(array_ty);
+        for (i, fc) in consts.iter().enumerate() {
+            let base = i as u32 * elem_size;
+            for (name, off, ty) in &slots {
+                let value = match *name {
+                    "name" => MirConst::String(fc.name.clone()),
+                    "type_name" => MirConst::String(fc.type_name.clone()),
+                    "offset" => MirConst::Int(fc.offset as i64),
+                    "size" => MirConst::Int(fc.size as i64),
+                    "is_public" => MirConst::Bool(fc.is_public),
+                    "serial_name" => MirConst::String(fc.serial_name.clone()),
+                    "is_skipped" => MirConst::Bool(fc.is_skipped),
+                    _ => MirConst::Bool(fc.has_default),
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: arr,
+                    offset: base + off,
+                    value: MirOperand::Constant(value),
+                    // A string is 16 bytes of value and the operand is their
+                    // address; a bool is one byte and a wider store would run
+                    // over the field beside it.
+                    store_size: Some(ty.size()),
+                }));
+            }
+        }
+
+        let vec_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(vec_local),
+            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            args: vec![
+                MirOperand::Local(arr),
+                MirOperand::Constant(MirConst::Int(consts.len() as i64)),
+                MirOperand::Constant(MirConst::Int(elem_size as i64)),
+                MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(&elem_ty)))),
+            ],
+        }));
+        self.collected_elem_types.insert(vec_local, elem_ty);
+        Ok((MirOperand::Local(vec_local), MirType::I64))
+    }
+
+    /// Which `string_parse_*` runtime writes into this result slot, by the
+    /// slot's own payload type. `None` when the payload isn't a number the
+    /// runtime has a variant for — a still-open type, or a generic body that
+    /// hasn't been instantiated, both of which keep the 64-bit parse.
+    fn parse_variant_for_slot(ret_ty: &MirType) -> Option<&'static str> {
+        let MirType::Result { ok, .. } = ret_ty else {
+            return None;
+        };
+        Some(match **ok {
+            MirType::F32 => "string_parse_f32",
+            MirType::F64 => "string_parse_f64",
+            MirType::I8 => "string_parse_i8",
+            MirType::I16 => "string_parse_i16",
+            MirType::I32 => "string_parse_i32",
+            MirType::I64 => "string_parse_i64",
+            MirType::U8 => "string_parse_u8",
+            MirType::U16 => "string_parse_u16",
+            MirType::U32 => "string_parse_u32",
+            MirType::U64 => "string_parse_u64",
+            _ => return None,
+        })
     }
 
     /// The `[T; N]` methods that need no call — the answer is in the type or is

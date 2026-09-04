@@ -3019,7 +3019,32 @@ impl TypeChecker {
 
             // Deep const: reject `mutate self` methods on const bindings and read-only params.
             // `take self` is allowed — it consumes the value, not mutates it.
-            if self.method_mutates_self(var_name, method) {
+            //
+            // A receiver bound in the same block is often still a type variable
+            // here — nothing solves between the statements of a loop body — and
+            // `method_mutates_self` then falls back to "is this name `mutate
+            // self` on *any* stdlib type", which says yes to `close`. That is
+            // how `let h = Handle.open(i)` followed by `h.close()` — a `take
+            // self` method on a user struct — was rejected inside a loop and
+            // accepted outside one (#928). Defer to after solving, where the
+            // receiver has a real type, exactly as field and index writes
+            // already are.
+            let recv_ty = self.lookup_local(var_name).unwrap_or(Type::Error);
+            let recv_open = matches!(
+                self.resolve_named(&self.ctx.apply(&recv_ty)),
+                Type::Var(_)
+            );
+            if self.method_mutates_self(var_name, method) && recv_open {
+                if let Some(kind) = self.lookup_binding_kind(var_name) {
+                    self.pending_self_mutations.push(super::PendingSelfMutation {
+                        root: var_name.clone(),
+                        ty: recv_ty,
+                        kind,
+                        method: method.to_string(),
+                        span: object.span,
+                    });
+                }
+            } else if self.method_mutates_self(var_name, method) {
                 match self.lookup_binding_kind(var_name) {
                     Some(super::BindingKind::Let) => {
                         self.errors.push(TypeError::MutateConst {
@@ -4146,12 +4171,29 @@ impl TypeChecker {
     /// ER47: bare `try` on a result needs a return with an error branch. False
     /// when it reported, so the caller stops rather than piling on.
     fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
+        // No return type at all is a `test` (or `benchmark`) block, which has no
+        // caller to propagate to: the error ends the test instead, which is what
+        // the interpreter has always done and what native does since #932.
         let Some(return_ty) = &self.current_return_type else {
             return true;
         };
         let resolved = self.ctx.apply(return_ty);
         if resolved.is_option() {
             self.errors.push(TypeError::TryErrorIntoOptional {
+                return_ty: resolved,
+                span,
+            });
+            return false;
+        }
+        // A function that returns nothing has nowhere to send the error either,
+        // and unlike a test block it isn't a place where ending the run is the
+        // right answer. This used to fall through: `func helper() { try f() }`
+        // type-checked, then native panicked with a message about test blocks
+        // and the interpreter dropped the error on the floor and carried on.
+        // The unresolved-operand path below has always reported this; the
+        // concrete-Result path is where it leaked.
+        if matches!(resolved, Type::Unit) {
+            self.errors.push(TypeError::TryInNonPropagatingContext {
                 return_ty: resolved,
                 span,
             });
@@ -4743,7 +4785,44 @@ impl TypeChecker {
     /// root's type, and during the statement walk that type is often still a
     /// variable — a link bound by `if e.target? as t` comes from a deferred
     /// `HasField`, and a handle can arrive the same way.
+    /// Re-ask "does this method mutate its receiver?" now that the receiver has
+    /// a type. A method whose name happens to match some stdlib type's `mutate
+    /// self` method is not one — `Handle.close(take self)` is a consume, and
+    /// consuming a `let` binding is fine (SYNTAX.md, mem.parameters/PM2).
+    fn validate_pending_self_mutations(&mut self) {
+        let pending = std::mem::take(&mut self.pending_self_mutations);
+        for pm in pending {
+            let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
+            // Still open after solving: the receiver has its own diagnostic,
+            // and guessing here would stack a wronger one on top.
+            if matches!(ty, Type::Var(_) | Type::Error) {
+                continue;
+            }
+            if !self.method_mutates_self_ty(&ty, &pm.method) {
+                continue;
+            }
+            let name = pm.root;
+            let span = pm.span;
+            match pm.kind {
+                super::BindingKind::Let => {
+                    self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::WithRead => {
+                    self.errors.push(TypeError::MutateWithBinding { name, span })
+                }
+                super::BindingKind::Param => {
+                    self.errors.push(TypeError::MutateReadOnlyParam { name, span })
+                }
+                super::BindingKind::Bound(from) => {
+                    self.errors.push(TypeError::MutateBoundName { name, from, span })
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn validate_pending_mutations(&mut self) {
+        self.validate_pending_self_mutations();
         let pending = std::mem::take(&mut self.pending_mutations);
         for pm in pending {
             if matches!(pm.kind, super::BindingKind::Mut) {

@@ -24,3 +24,25 @@ test "join on the array itself" {
     let arr = ["a", "b"]
     assert arr.join("-") == "a-b"
 }
+
+// An array packs scalars at their natural stride; a Vec keeps them in 8-byte
+// slots and reads a whole word per element. Handing the array's buffer over
+// unchanged made the two disagree — `[1, 2, 3]` joined as
+// `8589934593,12884901890,3`, where 8589934593 is `(2<<32)|1`: two elements
+// read as one. Flagged from #1054 while both branches were fixing #1021.
+test "join on an array of narrower-than-word elements" {
+    let ints: [i32; 3] = [1, 2, 3]
+    assert ints.join(",") == "1,2,3"
+    let small: [u8; 2] = [7, 8]
+    assert small.join("-") == "7-8"
+}
+
+// The two ends of the loop, where an off-by-one in the copy would show.
+test "join on an empty and a single-element array" {
+    let empty: [string; 0] = []
+    assert empty.join("-") == ""
+    let one = ["solo"]
+    assert one.join("-") == "solo"
+    let one_int: [i32; 1] = [42]
+    assert one_int.join(",") == "42"
+}

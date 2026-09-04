@@ -15,10 +15,10 @@
 // elements and was guarded to aggregates only, on the grounds that "a scalar
 // element is passed by value" — true on the aggregate path, not on this one.
 //
-// A plain local is a different matter and stays a copy: mem.parameters says a
-// Copy argument to a `mutate` parameter is copied in and mutations affect the
-// copy, so `bump(mutate n)` on a local leaves `n` alone. That's asserted here too
-// so the three positions can't drift apart silently.
+// A plain local writes back too, since #899: PM2 says the caller keeps the value
+// and sees the write, and it never depended on the argument's size. All three
+// positions — element, field, local — are asserted here so they can't drift apart
+// silently.
 
 func bump(mutate v: i64) -> void {
     v = v + 100
@@ -92,10 +92,8 @@ test "mutate element — a struct field still writes back" {
     assert_eq(p.y, 2)
 }
 
-// mem.parameters/PM2: a plain local is a place like any other. It used to be
-// the exception — the call site spilled a copy of the scalar and passed that
-// copy's address, so the callee's write had nowhere to land (#899).
-test "mutate element — a plain local writes back like any other place" {
+// mem.parameters/PM2: the caller sees the write here as well (#899).
+test "mutate element — a plain local writes back too" {
     mut n = 1
     bump(mutate n)
     assert_eq(n, 101)

@@ -14,7 +14,7 @@ pub use checker::{
     TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, BoundFrom, TypeBinding,
     parse_type_string, signature_type_param_names, struct_type_param_names,
-    enum_type_param_names, UnsafeCategory,
+    enum_type_param_names, UnsafeCategory, binary_field_runtime_type,
 };
 pub use traits::{
     TraitBound, TraitChecker, TraitError,

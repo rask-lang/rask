@@ -1,7 +1,8 @@
-// #270: scalar `mutate` params write back through the caller's place — for a
-// field or index projection and for a whole variable alike (#899). Native and
-// interp agree; native passes a pointer to the variable itself, which is why
-// the last line changed from 42 to 999.
+// #270: scalar `mutate` params write back through the caller's place for
+// field/index projections. Since #899 a whole Copy variable does too —
+// mem.parameters/PM2 says the caller keeps the value and gets the write, and
+// size was never part of that. Native and interp agree (native scalar mutate is
+// a by-pointer convention, and the caller reads its spill slot back).
 struct Point { x: i32, y: i32 }
 
 func swap_fields(mutate x: i32, mutate y: i32) {
@@ -27,5 +28,5 @@ func main() {
     print(p.x)   // 12
     mut z = 42
     modify_int(mutate z)
-    print(z)     // 999 — a whole variable writes back like any other place
+    print(z)     // 999 — a whole Copy variable writes back like everything else
 }

@@ -458,7 +458,14 @@ impl TypeChecker {
     /// `const v = Vec.new(); v.push(1)` before constraint solving runs).
     pub(super) fn method_mutates_self(&self, var_name: &str, method_name: &str) -> bool {
         let Some(ty) = self.lookup_local(var_name) else { return false };
-        let resolved = self.resolve_named(&self.ctx.apply(&ty));
+        self.method_mutates_self_ty(&ty, method_name)
+    }
+
+    /// The same question asked of a type rather than a binding, so the deferred
+    /// check in `validate_pending_self_mutations` can re-ask it once the
+    /// receiver has actually been solved (#928).
+    pub(super) fn method_mutates_self_ty(&self, ty: &Type, method_name: &str) -> bool {
+        let resolved = self.resolve_named(&self.ctx.apply(ty));
 
         // A box mutates through its heap slot, not through the binding
         // (conc.sync, and `mem.cell/CE2` before it) — `let c = Shared.new(0)`

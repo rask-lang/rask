@@ -1247,12 +1247,22 @@ impl TypeChecker {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
                 // PC2: field types must name declared types (single letters
-                // stay auto-generic, matching function signatures)
+                // stay auto-generic, matching function signatures).
+                //
+                // A `@binary` struct's fields are wire specifiers, not type
+                // names — `u16be` says "16 bits, big-endian" (type.binary/F2)
+                // and no such type is declared, nor should one be.
+                // `parse_binary_struct_fields` validates them at registration
+                // and turns them into the runtime types. Judging the raw
+                // spelling here as well rejected every `@binary` struct there
+                // is, with a message telling you to declare `u16be`.
                 let allowed: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
-                for field in &s.fields {
-                    if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
-                        self.validate_signature_names(&ty, &allowed, field.name_span);
-                        self.reject_non_optional_link(&ty, field.name_span);
+                if !s.attrs.iter().any(|a| a == "binary") {
+                    for field in &s.fields {
+                        if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
+                            self.validate_signature_names(&ty, &allowed, field.name_span);
+                            self.reject_non_optional_link(&ty, field.name_span);
+                        }
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
@@ -1495,6 +1505,15 @@ impl TypeChecker {
 }
 
 /// Parse a binary field type specifier and return (bits, endian, runtime_type).
+/// The runtime type a `@binary` field specifier stands for, or `None` when the
+/// spelling isn't one. Layout asks this too — the specifier is the declared
+/// type string everywhere downstream, and `u16be` names no type, so a `@binary`
+/// struct was laid out with a pointer-sized slot per field and a warning per
+/// compile.
+pub fn binary_field_runtime_type(ty_str: &str) -> Option<Type> {
+    parse_binary_field_spec(ty_str).ok().map(|(_, _, ty, _, _)| ty)
+}
+
 fn parse_binary_field_spec(ty_str: &str) -> Result<(u32, Option<Endian>, Type, bool, usize), String> {
     let s = ty_str.trim();
 
