@@ -560,6 +560,28 @@ impl ToDiagnostic for rask_types::TypeError {
                         "for everything else. Mixed signedness is the one deliberate ",
                         "exception here [type.operators/ORD4]",
                     ).to_string())
+                } else if r.contains(" or ") || r.ends_with('?') {
+                    // A `T or E` or a `T?` as an operand. "Give it the
+                    // operator" is nonsense for a wrapper — nobody extends
+                    // `i64 or ParseError`. The answer is always to extract the
+                    // value first, which is what these wrappers exist to make
+                    // you do.
+                    let inner = r
+                        .split(" or ")
+                        .next()
+                        .unwrap_or(&r)
+                        .trim_end_matches('?')
+                        .to_string();
+                    diag.with_fix(format!(
+                        "take the value out first — `try expr`, `expr!`, or a `match` \
+                         arm binding the `{inner}` — then apply `{op}` to that"
+                    ))
+                    .with_why(format!(
+                        "`{r}` wraps `{inner}`, it isn't one. The wrappers have no \
+                         operators at all, so the branch you didn't handle can't be \
+                         silently skipped — native computed on the wrapper's address \
+                         instead [type.errors/ER16]"
+                    ))
                 } else if is_primitive(&l) && !is_primitive(&r) {
                     // A struct or enum on the right of a primitive operator.
                     // "convert one side" is no help — there is nothing to

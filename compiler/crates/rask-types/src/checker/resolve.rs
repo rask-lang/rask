@@ -3805,11 +3805,19 @@ impl TypeChecker {
         // has already been followed. `UnresolvedNamed` and `Generic` are not —
         // they may still turn into something that fits — so they, and every
         // inference variable, are left to the rest of inference.
+        //
+        // A `T or E` and a `T?` are resolved too, and they were the ones that
+        // survived the first pass: `total + rx.receive()` type-checked and
+        // added the *wrapper*, so a channel sum came out as `1422162048`. There
+        // is no reading of an operator where the wrapper is the operand —
+        // ER16's `try`, `!` or a `match` extracts first — so both are as wrong
+        // here as a struct is.
         let arg_is_resolved = matches!(
             arg,
             Type::Bool | Type::Char | Type::String
             | Type::F32 | Type::F64
             | Type::Named(_) | Type::Tuple(_)
+            | Type::Result { .. } | Type::Union(_)
         ) || Self::integer_is_signed(&arg).is_some();
         if !arg_is_resolved {
             return Ok(());
