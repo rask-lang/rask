@@ -31,7 +31,7 @@ struct Nested {
 func make() -> Summary {
     let errors: u64 = 1
     let total: u64 = 4
-    let rate = if total == 0: 0.0 else: (errors as f64) / (total as f64)
+    let rate = if total == 0: 0.0 else: errors.round<f64>() / total.round<f64>()
     return Summary { total: total, errors: errors, rate: rate, p50: 8.5, slow: 0 }
 }
 

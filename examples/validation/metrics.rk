@@ -48,7 +48,7 @@ extend Metrics {
 
         let errors = self.total_errors
         let total = self.total_requests
-        let rate = if total == 0 { 0.0 } else { (errors as f64) / (total as f64) }
+        let rate = if total == 0 { 0.0 } else { errors.round<f64>() / total.round<f64>() }
 
         return MetricsSummary {
             total_requests: total,

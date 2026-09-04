@@ -1986,6 +1986,11 @@ impl ToDiagnostic for rask_types::TypeError {
                         "`as` only permits lossless widening — narrowing a float loses precision [type.primitives/CV4]",
                         None,
                     ),
+                    C::IntToFloat => (
+                        format!("cannot convert `{}` to `{}` with `as`", source, target),
+                        "an `as` cast promises nothing was lost, and this one can lose precision: past its mantissa a float lands on multiples of 2, then 4, then 128 [type.primitives/CV1]",
+                        Some(format!("x.round<{n}>()   // nearest representable, ties to even", n = n)),
+                    ),
                     C::IntToChar => (
                         format!("cannot convert `{}` to `char` with `as`", source),
                         "not every integer is a valid Unicode scalar value [type.primitives/CH5]",

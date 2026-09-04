@@ -5076,16 +5076,40 @@ fn as_cast_is_lossless(src_ty: &Type, tgt_ty: &Type, s: Prim, t: Prim) -> bool {
         (Prim::Int { bits: sb, signed: ss }, Prim::Int { bits: tb, signed: ts }) => {
             tb > sb && (ss == ts || !ss)
         }
-        (Prim::Int { .. }, Prim::Float { .. }) => true,
+        (Prim::Int { bits, signed }, Prim::Float { bits: fb }) => {
+            int_fits_float_exactly(bits, signed, fb)
+        }
         (Prim::Float { bits: sb }, Prim::Float { bits: tb }) => tb >= sb,
         (Prim::Char, Prim::Int { bits, .. }) => bits >= 32,
         _ => false,
     }
 }
 
+/// CV1: can every value of this integer type land on a float exactly?
+///
+/// A float holds every integer up to 2^mantissa exactly and nothing past it —
+/// `f32` stops at 2^24, `f64` at 2^53. So an `i32` survives an `f64` (2^31 is
+/// well under 2^53) and an `i64` doesn't, which is the whole rule. Signed types
+/// get one bit of slack because their magnitude is 2^(bits-1); unsigned ones
+/// reach 2^bits - 1 and need the full width.
+///
+/// This is the difference between `as` and `.round<f64>()`. Past the mantissa a
+/// float lands on multiples of 2, then 4, then 128 — so `1_000_000_001 as f32`
+/// would come back as 1000000000. `as` promises nothing was lost, so it can't
+/// be the operator that does that quietly.
+fn int_fits_float_exactly(int_bits: u32, signed: bool, float_bits: u32) -> bool {
+    let mantissa = match float_bits {
+        32 => 24,
+        64 => 53,
+        _ => return false,
+    };
+    if signed { int_bits <= mantissa + 1 } else { int_bits <= mantissa }
+}
+
 fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
     match (s, t) {
         (Prim::Bool, _) | (_, Prim::Bool) => InvalidCastClass::Bool,
+        (Prim::Int { .. }, Prim::Float { .. }) => InvalidCastClass::IntToFloat,
         (Prim::Int { .. }, Prim::Char) => InvalidCastClass::IntToChar,
         (Prim::Float { .. }, Prim::Int { .. }) => InvalidCastClass::FloatToInt,
         (Prim::Float { .. }, Prim::Float { .. }) => InvalidCastClass::FloatNarrowing,

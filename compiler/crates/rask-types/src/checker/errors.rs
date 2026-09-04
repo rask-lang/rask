@@ -975,6 +975,8 @@ pub enum InvalidCastClass {
     FloatToInt,
     /// CV4-adjacent: float→float narrowing (f64→f32).
     FloatNarrowing,
+    /// CV1: integer→float where the float can't hold every source value.
+    IntToFloat,
     /// CH5: integer→char via `as`.
     IntToChar,
     /// BL3: any conversion involving bool.

@@ -7,12 +7,14 @@
 //   int→int where the value fits, f32→f64.
 //
 //   Anything lossy has to say what happens when it doesn't fit. Float→int names
-//   a rounding (`.round<i32>()`, `.floor`, `.ceil`, `.to` for exact-only), and
-//   int→float names one too, because past 2^53 an i64 doesn't survive an f64.
-//   Those return a result, hence the `!`.
+//   a rounding (`.round<i32>()`, `.floor`, `.ceil`, `.to` for exact-only) and
+//   those return a result, hence the `!`. Int→float names one too —
+//   `.round<f64>()` — but it's total, so no `!`: every integer has a nearest
+//   float, it just isn't always the same number.
 //
-// So `x as f64` on an i32 is fine (32 bits fit in a double exactly) and
-// `n as i32` on an i64 is not.
+// So `x as f64` on an i32 is fine (every i32 lands on a double exactly) and on
+// an i64 it isn't, because past 2^53 a double starts skipping integers. Same
+// rule one size down: an f32 keeps every i16 and starts skipping at 2^24.
 
 test "widening an integer with as" {
     let a: i8 = 100
@@ -35,6 +37,11 @@ test "unsigned to a wider signed type" {
 
 // Signed sources only here: an unsigned source with its top bit set takes the
 // signed conversion on native (#907), which `t_day_unsigned_to_float.rk` carries.
+//
+// This test used to end with `let d: i64 = -1000; assert (d as f64) == -1000.0`,
+// which the spec's CV1 table has never allowed — it was asserting the compiler's
+// behaviour rather than the rule, and the compiler was wrong. -1000 does survive
+// an f64, but `as` answers per type, not per value, and some i64s don't.
 test "int to float where nothing can be lost" {
     let a: i32 = 3
     assert (a as f64) == 3.0
@@ -42,8 +49,20 @@ test "int to float where nothing can be lost" {
     assert (b as f64) == -7.0
     let c: u8 = 100
     assert (c as f64) == 100.0
-    let d: i64 = -1000
-    assert (d as f64) == -1000.0
+    let d: u32 = 4000000000
+    assert (d as f64) == 4000000000.0
+}
+
+// The sources `as` won't take need `.round<T>()`, which is total — every
+// integer has a nearest float. The value only moves once you're past the
+// mantissa, and `t_float_formatting.rk` pins where that starts.
+test "int to float where something could be lost names the rounding" {
+    let big: i64 = -1000
+    assert big.round<f64>() == -1000.0
+    let count: u64 = 42
+    assert count.round<f64>() == 42.0
+    let n: i32 = 7
+    assert n.round<f32>() == 7.0
 }
 
 test "f32 widens to f64" {

@@ -2570,7 +2570,45 @@ fn error_unknown_lowercase_type() {
 
 #[test]
 fn error_cast_rules() {
-    assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
+    // This used to check only that the file failed to compile, which any one of
+    // its twelve markers satisfied — so CV1 went unenforced under a green test
+    // for as long as it took someone to count the diagnostics by hand. Assert
+    // each class by its own message instead.
+    let (failed, out) = compile_error_output("cast_rules.rk");
+    assert!(failed, "should reject invalid `as` casts and misused conversion forms: {}", out);
+
+    // CV1: int→float only where every source value lands exactly. An f64 keeps
+    // integers to 2^53 and an f32 to 2^24, so the wide sources are out — and an
+    // i32 is legal into an f64 and not into an f32, which is the rule doing
+    // something a blanket ban wouldn't.
+    for pair in ["`i64` to `f64`", "`i64` to `f32`", "`u64` to `f64`",
+                 "`i32` to `f32`", "`u32` to `f32`"] {
+        assert!(
+            out.contains(&format!("cannot convert {} with `as`", pair)),
+            "CV1 should reject {}: {}", pair, out,
+        );
+    }
+    assert!(
+        out.contains("x.round<f64>()"),
+        "CV1 should point at the conversion that names its rounding: {}", out,
+    );
+
+    // CV2/CV3/CV4, CH5, BL3 — one per class, by message.
+    assert!(out.contains("cannot narrow `i32` to `i8` with `as`"), "CV2: {}", out);
+    assert!(out.contains("cannot reinterpret sign converting `i32` to `u32`"), "CV3: {}", out);
+    assert!(out.contains("cannot convert float `f64` to integer `i32`"), "CV4: {}", out);
+    assert!(out.contains("cannot convert `u32` to `char` with `as`"), "CH5: {}", out);
+    assert!(out.contains("no conversion between `bool` and numeric types"), "BL3: {}", out);
+
+    // E0818: a conversion form used where its policy means nothing.
+    assert!(out.contains("`floor` rounds a float to an integer"), "CV15 misuse: {}", out);
+    assert!(out.contains("`wrap` produces an integer"), "CV12 misuse: {}", out);
+    assert!(out.contains("`round` has nothing to round"), "CV14 misuse: {}", out);
+    assert!(out.contains("`clamp` works between integer types"), "CV13 misuse: {}", out);
+
+    // E0838: `as` to a non-numeric target reinterprets bits (#862).
+    assert!(out.contains("`as Vec<i64>` reinterprets the bits"), "E0838 collection: {}", out);
+    assert!(out.contains("`as Point` reinterprets the bits"), "E0838 struct: {}", out);
 }
 
 #[test]
