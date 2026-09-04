@@ -869,15 +869,25 @@ mod tests {
     }
 
     #[test]
-    fn stderr_and_assert_builtins() {
+    fn stderr_builtins() {
         let reg = StubRegistry::load();
         let fns = reg.functions();
         let names: Vec<&str> = fns.iter().map(|f| f.name.as_str()).collect();
         // eprintln/eprint: same convenience as println/print but for stderr
         assert!(names.contains(&"eprintln"), "Missing eprintln");
         assert!(names.contains(&"eprint"), "Missing eprint");
-        // assert: runtime assertion (panics on false), distinct from test-only assert
-        assert!(names.contains(&"assert"), "Missing assert");
+        // `assert` is deliberately absent. It used to be declared in
+        // `builtins.rk` and this test required it — but `assert` is a keyword,
+        // so the parser rejected that declaration and everything after it in
+        // the file. The extractor is line-based and picked the name up anyway,
+        // which is the only reason the requirement passed. The declaration is
+        // gone; `assert cond, "msg"` is parsed as a keyword form and needs no
+        // stub, which the whole suite demonstrates on every run.
+        assert!(
+            !names.contains(&"assert"),
+            "`assert` is a keyword — a stub declaration for it can't parse, and \
+             the file it sits in stops parsing there"
+        );
     }
 
     #[test]
@@ -988,6 +998,43 @@ mod boundary_tests {
     /// implementations of `Path` came to disagree (#688).
     ///
     /// The list below is what remains unmarked. It shrinks; it must not grow.
+    #[test]
+    /// Every stdlib source parses.
+    ///
+    /// A syntax error in `stdlib/*.rk` was swallowed whole: `cargo build`
+    /// exited 0, the method with the error silently vanished from the
+    /// registry, and the first anyone heard of it was a user's call site
+    /// failing with `Function not found: Set_clear` at codegen — a name from
+    /// a file they never wrote. The stub extractor reads what it can and
+    /// skips the rest, which is the right behaviour for a *reader* and the
+    /// wrong one for a build.
+    #[test]
+    fn every_stdlib_source_parses() {
+        let mut broken: Vec<String> = Vec::new();
+        for (name, src) in STUB_SOURCES {
+            let lex = rask_lexer::Lexer::new(src).tokenize();
+            if !lex.errors.is_empty() {
+                broken.push(format!("{name}: {} lex error(s), first: {:?}",
+                    lex.errors.len(), lex.errors[0]));
+                continue;
+            }
+            let parsed = rask_parser::Parser::new(lex.tokens).parse();
+            if !parsed.errors.is_empty() {
+                broken.push(format!("{name}: {} parse error(s), first: {}",
+                    parsed.errors.len(), parsed.errors[0].message));
+            }
+        }
+        assert!(
+            broken.is_empty(),
+            "{} stdlib source file(s) don't parse. Nothing else catches this — \
+             the build stays green and the declarations in the broken file go \
+             missing, surfacing later as `Function not found` at a call \
+             site:\n  {}",
+            broken.len(),
+            broken.join("\n  ")
+        );
+    }
+
     #[test]
     fn every_stdlib_function_says_where_its_body_lives() {
         let reg = StubRegistry::load();
