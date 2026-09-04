@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Set<T>` — the BI1 always-available type that had no methods (#1017).
+//
+// `Set` resolved as a builtin and was named in the prelude list, so
+// `Set.new()` type-checked and then `s.insert(x)` was "no method `insert`
+// found" three lines later. The error pointed at the call; the problem was the
+// type. An agent benchmark run found it by reaching for a set, which is what
+// anyone would do.
+//
+// It's a `Map<T, bool>` written in Rask, so both backends run the same source.
+// The membership test is `contains` and not `contains_key`: a set has no keys,
+// and `Vec` and `string` already spell it that way.
+//
+// Iteration is in `t_set_iteration.rk` — it works on the interpreter and won't
+// lower natively, and the cause isn't the set (#1070).
+
+test "a new set is empty" {
+    mut s: Set<string> = Set.new()
+    assert s.len() == 0
+    assert s.is_empty()
+}
+
+test "insert reports whether the value was new" {
+    mut s: Set<string> = Set.new()
+    assert s.insert("a")
+    assert !s.insert("a")
+    assert s.insert("b")
+    assert s.len() == 2
+}
+
+test "contains answers membership" {
+    mut s: Set<string> = Set.new()
+    s.insert("a")
+    assert s.contains("a")
+    assert !s.contains("z")
+}
+
+test "remove reports whether the value was there" {
+    mut s: Set<string> = Set.new()
+    s.insert("a")
+    assert s.remove("a")
+    assert !s.remove("a")
+    assert s.is_empty()
+}
+
+test "clear empties it" {
+    mut s: Set<i64> = Set.new()
+    s.insert(1)
+    s.insert(2)
+    s.clear()
+    assert s.len() == 0
+    assert !s.contains(1)
+}
+
+test "a set of integers works the same" {
+    mut s: Set<i64> = Set.new()
+    assert s.insert(7)
+    assert !s.insert(7)
+    assert s.contains(7)
+    assert !s.contains(8)
+    assert s.len() == 1
+}
+

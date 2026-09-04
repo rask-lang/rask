@@ -117,7 +117,7 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 ## Collections and iteration
 
-`Vec<T>` and `Map<K,V>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
+`Vec<T>`, `Map<K,V>` and `Set<T>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. `Set` is `insert`/`contains`/`remove`/`len`/`is_empty`/`clear`, where `insert` and `remove` answer `bool` — whether the set changed. Membership is `contains`, not `contains_key`: a set has no keys. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
 
 There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`). **There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
 
@@ -374,10 +374,6 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `Pool`, `Handle`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
 ## Spec vs compiler (temporary)
-
-`Set` is named in the prelude and `Set<T>` type-checks, but the type has no
-methods at all — no `insert`, no `contains`, no `len` (#1017). Use a
-`Map<T, bool>` until that's settled.
 
 `Error` is auto-derived for enums a signature names as an error type — the `E`
 of a `T or E` return. That covers how error types are written, but it is

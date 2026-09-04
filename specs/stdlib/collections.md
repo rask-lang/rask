@@ -3,9 +3,9 @@
 <!-- summary: Vec and Map with inline access + `with`, optional capacity bounds, fallible try_ variants -->
 <!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
 
-# Collections (Vec and Map)
+# Collections (Vec, Map and Set)
 
-Vec and Map with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
+Vec, Map and Set with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
 
 ## Collection Types
 
@@ -20,6 +20,29 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 |------|---------|----------|
 | `Vec<T>` | Ordered, indexed | `Vec.new()`, `Vec.with_capacity(n)`, `Vec.fixed(n)`, `Vec.from([T; N])` |
 | `Map<K,V>` | Key-value associative | `Map.new()`, `Map.with_capacity(n)`, `Map.from([(K,V); N])` |
+| `Set<T>` | Unique values | `Set.new()` |
+
+## Set
+
+| Rule | Description |
+|------|-------------|
+| **C5: Membership is `contains`** | `s.contains(v)`, not `contains_key`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains_key` because there a key is one of two things you could mean |
+| **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
+| **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
+
+<!-- test: skip -->
+```rask
+mut seen: Set<string> = Set.new()
+if seen.insert(name) {
+    // first time we've seen this one
+}
+if seen.contains(other) { … }
+seen.remove(name)
+```
+
+`Set` has been in BI1's always-available list from the start. It resolved as a
+builtin and had no methods at all until #1017 — `Set.new()` type-checked and
+`s.insert(x)` was "no method `insert` found" three lines later.
 
 ## Capacity Semantics
 

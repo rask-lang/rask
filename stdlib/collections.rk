@@ -466,3 +466,74 @@ extend Wide<T> {
     @native
     public func max(self) -> T {}
 }
+
+/// A set of unique values.
+///
+/// `Set` has been in BI1's always-available list since the start, and resolved
+/// as a builtin, with no declaration anywhere — so `Set.new()` type-checked and
+/// then `s.insert(x)` was "no method `insert` found" three lines later, with
+/// the error pointing at the call rather than at the type (#1017).
+///
+/// It's a `Map<T, bool>` underneath, written in Rask so both backends run the
+/// same source. That costs a byte per entry over a purpose-built hash set, and
+/// buys a set that behaves exactly like the map it's made of — same hashing,
+/// same growth, same iteration order. (`Map<T, void>` would be the tighter
+/// shape and isn't available: `void` is a type, not a value, so there'd be
+/// nothing to pass to `insert`.)
+///
+/// The membership test is `contains`, not `contains_key`: a set has no keys,
+/// and `Vec` and `string` both spell it `contains`. `Map` keeps
+/// `contains_key` because there a key is one of two things you could mean.
+public struct Set<T> {
+    entries: Map<T, bool>
+}
+
+extend Set<T> {
+    /// Create a new empty set.
+    public func new() -> Set<T> {
+        return Set { entries: Map.new() }
+    }
+
+    /// Number of values.
+    public func len(self) -> usize {
+        return self.entries.len()
+    }
+
+    /// True if the set contains no values.
+    public func is_empty(self) -> bool {
+        return self.entries.is_empty()
+    }
+
+    /// Add a value. True if it wasn't already there.
+    public func insert(mutate self, take value: T) -> bool {
+        if self.entries.contains_key(value) {
+            return false
+        }
+        self.entries.insert(value, true)
+        return true
+    }
+
+    /// True if the value is in the set.
+    public func contains(self, value: T) -> bool {
+        return self.entries.contains_key(value)
+    }
+
+    /// Remove a value. True if it was there.
+    public func remove(mutate self, value: T) -> bool {
+        if !self.entries.contains_key(value) {
+            return false
+        }
+        self.entries.remove(value)
+        return true
+    }
+
+    /// Remove all values.
+    public func clear(mutate self) -> void {
+        self.entries.clear()
+    }
+
+    /// Iterate over the values.
+    public func iter(self) -> Iterator<T> {
+        return self.entries.keys()
+    }
+}
