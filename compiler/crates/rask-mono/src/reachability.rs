@@ -1081,28 +1081,46 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// The name of the type the checker gave a node, if it has one.
-    /// `{ErrType}_message` for a `T or E` whose `E` is one concrete named type
-    /// that has a `message()` to call. `None` for an optional (`err` is
-    /// `none`), for a union error, and for anything without the method.
-    fn forced_error_message_fn(&self, id: NodeId) -> Option<String> {
-        let typed = self.typed?;
-        let ty = self
+    /// The `{ErrType}_message` bodies a `r!` on this operand could need: one
+    /// for a concrete error type, one per member for a union. Empty for an
+    /// optional (`err` is `none`) and whenever any candidate has no body,
+    /// since a switch that can't cover every member is worse than the message
+    /// it replaces.
+    fn forced_error_message_fns(&self, id: NodeId) -> Vec<String> {
+        let Some(typed) = self.typed else { return Vec::new() };
+        let Some(ty) = self
             .instantiated_node_types
             .get(&id)
-            .or_else(|| typed.node_types.get(&id))?;
-        let Type::Result { err, .. } = ty else { return None };
+            .or_else(|| typed.node_types.get(&id))
+        else {
+            return Vec::new();
+        };
+        let Type::Result { err, .. } = ty else { return Vec::new() };
         if **err == Type::None {
-            return None;
+            return Vec::new();
         }
-        let name = rask_types::receiver_name(err, &typed.types)?;
-        // `receiver_name` answers "Result" for a nested result and a bare
-        // primitive name for a primitive; neither can carry a `message()`,
-        // and E0344 means neither is a legal error type anyway. Asking the
-        // method table for a body settles all of it at once — including an
-        // error type whose `message()` is derived (ER6), since the derive runs
-        // in desugaring and is an ordinary method by the time we get here.
-        let mangled = format!("{}_message", name);
-        self.has_instantiable_body(&mangled).then_some(mangled)
+        let members: Vec<&Type> = match &**err {
+            Type::Union(types) => types.iter().collect(),
+            other => vec![other],
+        };
+        let mut names = Vec::new();
+        for member in members {
+            // `receiver_name` answers "Result" for a nested result and a bare
+            // primitive name for a primitive; neither can carry a `message()`,
+            // and E0344 means neither is a legal error type anyway. Asking the
+            // method table for a body settles all of it at once — including an
+            // error type whose `message()` is derived (ER6), since the derive
+            // runs in desugaring and is an ordinary method by now.
+            let Some(name) = rask_types::receiver_name(member, &typed.types) else {
+                return Vec::new();
+            };
+            let mangled = format!("{}_message", name);
+            if !self.has_instantiable_body(&mangled) {
+                return Vec::new();
+            }
+            names.push(mangled);
+        }
+        names
     }
 
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
@@ -1454,9 +1472,17 @@ impl<'a> Monomorphizer<'a> {
                 // needs a switch on the member, which is more than a rewrite
                 // can carry.
                 if message.is_none() {
-                    if let Some(name) = self.forced_error_message_fn(e.id) {
-                        self.call_rewrites.insert(expr.id, name.clone());
-                        self.enqueue(name, Vec::new());
+                    let names = self.forced_error_message_fns(e.id);
+                    if !names.is_empty() {
+                        // A union error contributes one per member. The rewrite
+                        // carries the whole set joined by `|`, which no mangled
+                        // name can contain, and lowering matches each member
+                        // against it — so the two never have to agree on the
+                        // order members come out in.
+                        self.call_rewrites.insert(expr.id, names.join("|"));
+                        for name in names {
+                            self.enqueue(name, Vec::new());
+                        }
                     }
                 }
                 self.visit_expr(e)

@@ -571,18 +571,98 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::for_field(&err_ty, size),
             },
         }));
+
+        // The rewrite carries every body reachability queued for this `!`,
+        // joined by `|`. One name is a concrete error type; several is a
+        // union, where which member is present isn't known until run time.
+        let queued: Vec<&str> = msg_fn.split('|').collect();
         let text = self.builder.alloc_temp(MirType::String);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(text),
-            func: FunctionRef::internal(msg_fn),
-            args: vec![MirOperand::Local(payload)],
-        }));
+        if let MirType::Union(members) = err_ty.clone() {
+            let Some(arms) = self.union_message_arms(&members, &queued) else {
+                return Ok(false);
+            };
+            // A union discriminates by the member index it carries at offset
+            // 0, not by a one-byte tag — the same read `match` does.
+            let idx = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: idx,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(payload),
+                    field_index: 0,
+                    byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            let merge = self.builder.create_block();
+            let blocks: Vec<crate::BlockId> =
+                arms.iter().map(|_| self.builder.create_block()).collect();
+            let cases: Vec<(u64, crate::BlockId)> = blocks
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (i as u64, *b))
+                .collect();
+            let default = blocks.first().copied().unwrap_or(merge);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                value: MirOperand::Local(idx),
+                cases,
+                default,
+            }));
+            for (i, (member_ty, fn_name)) in arms.into_iter().enumerate() {
+                self.builder.switch_to_block(blocks[i]);
+                let member_size = member_ty.size();
+                let member = self.builder.alloc_temp(member_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: member,
+                    rvalue: MirRValue::Field {
+                        base: MirOperand::Local(payload),
+                        field_index: 0,
+                        byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                        access: FieldAccess::for_field(&member_ty, member_size),
+                    },
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(text),
+                    func: FunctionRef::internal(fn_name),
+                    args: vec![MirOperand::Local(member)],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge,
+                }));
+            }
+            self.builder.switch_to_block(merge);
+        } else {
+            let [only] = queued[..] else { return Ok(false) };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(text),
+                func: FunctionRef::internal(only.to_string()),
+                args: vec![MirOperand::Local(payload)],
+            }));
+        }
+
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("panic_forced_error".to_string()),
             args: vec![MirOperand::Local(text)],
         }));
         Ok(true)
+    }
+
+    /// `(member type, message fn)` per union member, in member-index order.
+    /// `None` when any member's `{Name}_message` isn't among the bodies
+    /// reachability queued — a switch missing an arm would call a function
+    /// nothing emits, which is worse than the generic message it replaces.
+    fn union_message_arms(
+        &self,
+        members: &[MirType],
+        queued: &[&str],
+    ) -> Option<Vec<(MirType, String)>> {
+        members
+            .iter()
+            .map(|m| {
+                let name = format!("{}_message", self.mir_type_name(m)?);
+                queued.contains(&name.as_str()).then(|| (m.clone(), name))
+            })
+            .collect()
     }
 
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
@@ -3040,10 +3120,8 @@ impl<'a> MirLowerer<'a> {
                 // naming it here instead is how `json.encode` once reached
                 // codegen as a function nothing emits.
                 if !self.lower_forced_error_panic(expr, inner, &val)? {
-                    // No message to reach for: an absent `T?`, a union error
-                    // (which needs a switch on the member rather than one
-                    // call — #1073), or an error type whose `message()` has no
-                    // body to instantiate.
+                    // No message to reach for: an absent `T?`, or an error
+                    // type whose `message()` has no body to instantiate.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
                         func: FunctionRef::internal("panic_unwrap".to_string()),

@@ -44,6 +44,40 @@ func parsed(n: i64) -> i64 or ParseErr {
     return n
 }
 
+struct AErr {
+    a: string
+}
+
+extend AErr {
+    func message(self) -> string {
+        return "a: {self.a}"
+    }
+}
+
+struct BErr {
+    b: i64
+}
+
+extend BErr {
+    func message(self) -> string {
+        return "b: {self.b}"
+    }
+}
+
+func either(n: i64) -> i64 or (AErr | BErr) {
+    if n == 0 { return AErr { a: "x" } }
+    if n == 1 { return BErr { b: 7 } }
+    return n
+}
+
+func either_msg(n: i64) -> string {
+    match either(n) {
+        i64 as v => { return "ok" }
+        AErr as e => { return e.message() }
+        BErr as e => { return e.message() }
+    }
+}
+
 func route_msg(n: i64) -> string {
     match routed(n) {
         i64 as v => { return "ok" }
@@ -70,4 +104,14 @@ test "a derived message is what the panic would print" {
 test "the ok branch is untouched" {
     assert routed(5)! == 5
     assert parsed(5)! == 5
+    assert either(5)! == 5
+}
+
+test "a union error reaches the member's own message" {
+    // Which member is present isn't known until run time, so the panic path
+    // switches on the union's member index and calls that member's
+    // `message()`. Both members, so a switch that only ever took arm 0 would
+    // show.
+    assert either_msg(0) == "a: x"
+    assert either_msg(1) == "b: 7"
 }
