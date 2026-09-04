@@ -128,6 +128,21 @@ extend Vec<T> {
     @native("rask_vec_take_all")
     public func take_all(mutate self) -> Iterator<T> {}
 
+    /// A sequence over these elements — the chain head a collection stands for
+    /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
+    /// spelling anyone writes, and not a second `.iter()`.
+    public func as_sequence(self) -> Sequence<T> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                if !yield(self[i]) {
+                    return
+                }
+                i = i + 1
+            }
+        }
+    }
+
     /// Skip the first n elements.
     @native("rask_iter_skip")
     public func skip(self, n: usize) -> Vec<T> {}

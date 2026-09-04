@@ -355,6 +355,14 @@ impl Interpreter {
             // "no method `foo` on type `closure`".
             Value::Closure { .. } | Value::Function { .. } => "Sequence".to_string(),
             Value::Enum { name, .. } => name.clone(),
+            // The collections, so a method written in Rask on one of them is
+            // reachable. Nothing was until `Vec.as_sequence` — the chain head a
+            // collection stands for (SEQ48) — so the fallback below had never
+            // been asked for a Vec and these arms were simply missing.
+            Value::Vec(_) => "Vec".to_string(),
+            Value::Map(_) => "Map".to_string(),
+            Value::Pool(_) => "Pool".to_string(),
+            Value::Rack(_) => "Rack".to_string(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),
             Value::File(_) => "File".to_string(),

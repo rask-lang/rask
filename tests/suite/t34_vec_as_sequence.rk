@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// `Vec.as_sequence()` — the chain head a collection stands for (SEQ48).
+//
+// Written in Rask, in `stdlib/collections.rk`, so both backends run one
+// implementation. It is the first method on a built-in collection that has a
+// Rask body rather than a native one, and that turned up a hole: the
+// interpreter's "when no Rust arm recognises the method, the answer is a Rask
+// implementation" fallback keys on a value's nominal type name, and
+// `Value::Vec` had none — so the fallback had never been asked for a collection
+// and silently reported "no method `as_sequence` on type `Vec`" while native ran
+// it fine. Vec, Map, Pool and Rack have names now.
+//
+// Not a second `.iter()`: nothing here is a spelling a program should reach
+// for. `for x in v` and `v.filter(p)` are the spellings. This exists so the
+// call-site coercion has something to call once adapters move to the one
+// surface SEQ41 asks for.
+
+test "a sequence over a Vec yields its elements" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    mut total = 0
+    for x in v.as_sequence() {
+        total = total + x
+    }
+    assert total == 10
+}
+
+test "the terminals reach it" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    assert v.as_sequence().count() == 4u64
+}
+
+test "adapters compose over it" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5, 6]
+    let evens: Vec<i32> = v.as_sequence().filter(|x| x % 2 == 0).to_vec()
+    assert evens.len() == 3
+    assert evens[0] == 2
+    assert evens[2] == 6
+}
+
+test "map through a sequence over a Vec" {
+    let v: Vec<i32> = [1, 2, 3]
+    let doubled: Vec<i32> = v.as_sequence().map(|x| x * 2).to_vec()
+    assert doubled.len() == 3
+    assert doubled[2] == 6
+}
+
+// SEQ13a: a `break` has to stop the source, not just the loop.
+test "break stops the walk" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    mut seen = 0
+    for x in v.as_sequence() {
+        seen = seen + 1
+        if x == 3 { break }
+    }
+    assert seen == 3
+}
+
+// The source is re-runnable: a Sequence is a function value, so consuming it
+// twice walks twice (SEQ11/SEQ32).
+test "a sequence over a Vec runs again" {
+    let v: Vec<i32> = [1, 2, 3]
+    let s = v.as_sequence()
+    assert s.count() == 3u64
+    assert s.count() == 3u64
+}
+
+test "a sequence over an empty Vec yields nothing" {
+    let v: Vec<i32> = []
+    mut seen = 0
+    for x in v.as_sequence() {
+        seen = seen + 1
+    }
+    assert seen == 0
+    assert v.as_sequence().count() == 0u64
+}
+
+// A method call on the element is deliberately absent: `for w in
+// words.as_sequence() { w.len() }` fails native lowering with "method `len` on
+// receiver of unresolved type" — MIR doesn't carry the element type out of a
+// Rask-bodied sequence source. Same gap as #1046, noted there.
