@@ -58,7 +58,6 @@
 
 # Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
 # out so the working surface stays gated; only the bug lives here.
-t_week_parse_range.rk         # parse<T> ignores the target's range — interp keeps the value, native wraps — #919 (both run)
 t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both check); inferred string param reaches MIR as void — #905 (native)
 
 # --- E0361: binding whose type inference left open (#620) ---
@@ -87,4 +86,3 @@ t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
-t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native compile)
