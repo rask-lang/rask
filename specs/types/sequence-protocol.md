@@ -267,7 +267,7 @@ Adapters are methods on `Sequence<T>`, declared in one `extend Sequence<T>` bloc
 |------|-------------|
 | **SEQ12: Adapter shape** | Adapters are `extend Sequence<T> { public func name<...>(self, ...) -> Sequence<U> }`. Ordinary methods on a nominal type — nothing special-cased in the checker, and users can add their own |
 | **SEQ13: Chain syntax** | `seq.adapter(args)` resolves like any method call. An earlier draft declared adapters as free functions taking the sequence as the first parameter *and* said they resolve as methods; those are different mechanisms and the method one wins |
-| **SEQ41: One adapter surface** | Adapters and terminals live on `Sequence<T>` and nowhere else. A collection has no eager `map`/`filter`/`take`/`fold`/`sum` of its own: `v.map(f)` is the chain's head, and it builds a sequence, not a second `Vec`. An eager copy allocates per stage; the chain allocates once, at the terminal, where you asked for it. `std.api/SD5` says one operation gets one spelling, and this is it |
+| **SEQ41: One adapter surface** | An adapter builds a sequence, never a second collection. `v.map(f)` is legal — SEQ48 makes the collection its own chain head — and it hands back a `Sequence<U>`, so nothing is allocated until a terminal asks. An eager copy allocates per stage; the chain allocates once, where you wrote the terminal. `std.api/SD5` says one operation gets one spelling, and this is it. `zip` and `chunks` are *not* adapters and stay on the indexable source (SEQ14, SEQ39): lockstep and position need two positions at once, which a push source can't hold |
 | **SEQ48: A collection is its own chain head** | There is no `.iter()`. `v.filter(p)` starts a sequence over `v` directly, and `for x in v` walks it. Rust needs `.iter()` to separate borrowing from `into_iter()`'s move and `iter_mut()`'s mutable borrow; Rask spells those `take_all()` and `for mutate x in v`, so the distinction `.iter()` exists to draw isn't there and the call was pure ceremony. A user type still reaches iterability by returning a sequence from a method of its own (SEQ6) — that method may be called `iter`, and nothing in the compiler treats the name specially |
 | **SEQ13a: Short-circuit propagation** | If the downstream yield returns `false`, the adapter must stop and return `false` from its own yield call. Sources must likewise stop emitting when their yield returns `false`. This is the contract that makes `.take(n)`, `.find()`, and `break` work. Violating it changes observable semantics |
 
@@ -558,20 +558,28 @@ FIX: Use find() or capture via a local:
   }
 ```
 
-**Collection adapter that no longer exists [type.sequence/SEQ41]:**
+**A collection's adapter hands back a sequence [type.sequence/SEQ41]:**
+
+`users.map(f)` is legal — the collection is the chain's head (SEQ48) — but what
+comes back is a `Sequence<U>`, not a `Vec<U>`. Treating it as a collection is
+where the error lands:
+
 ```
-ERROR [type.sequence/SEQ41]: no method `map` on Vec<User>
+ERROR [type.sequence/SEQ39]: `Sequence<string>` has no positions to index
    |
-7  |  let names = users.map(|u| u.name)
-   |                    ^^^ adapters live on Sequence, not on the collection
+7  |  let first = users.map(|u| u.name)[0]
+   |                                    ^
 
-WHY: an eager `Vec.map` allocated a second Vec. The chain fuses into one
-     loop and allocates once, at the terminal, where you asked for it.
+WHY: a sequence yields its elements one at a time as it runs, so nothing is
+     stored at a position until something drives it.
 
-FIX: start a sequence, and let the terminal name what you build:
+FIX: materialize it first, and let the terminal name what you build:
 
   let names = users.map(|u| u.name).to_vec()
+  let first = names[0]
 ```
+
+The same goes for `.len()` — a sequence has a `count()`, which runs it.
 
 **Asking a sequence for one item [type.sequence/SEQ38]:**
 ```

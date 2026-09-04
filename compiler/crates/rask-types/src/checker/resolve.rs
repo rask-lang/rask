@@ -2865,6 +2865,13 @@ impl TypeChecker {
             name: "Vec".to_string(),
             args: type_args.to_vec(),
         };
+        // SEQ41: an adapter on a collection is the chain's head and builds a
+        // sequence. `zip` and `chunks` are not adapters — SEQ14/SEQ39 keep them
+        // on the indexable source, where two positions are actually available.
+        let sequence_of = |elem: Type| Type::UnresolvedGeneric {
+            name: "Sequence".to_string(),
+            args: vec![GenericArg::Type(Box::new(elem))],
+        };
 
         match method {
             // The element slot is an argument position like any other, so it
@@ -2964,13 +2971,10 @@ impl TypeChecker {
                     }),
                 }
             }
-            "skip" if args.len() == 1 => {
+            "skip" | "take" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
-            }
-            "take" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
+                let seq = sequence_of(inner_type);
+                self.unify(ret, &seq, span)
             }
             "limit" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
@@ -3031,9 +3035,9 @@ impl TypeChecker {
             "remove_adjacent_duplicates" if args.is_empty() => {
                 self.unify(ret, &Type::Unit, span)
             }
-            // vec.filter(predicate) -> Vec<T>
             "filter" if args.len() == 1 => {
-                self.unify(ret, &self_ty, span)
+                let seq = sequence_of(inner_type);
+                self.unify(ret, &seq, span)
             }
             // vec.map(transform) -> Vec<U>. U is the closure's return type —
             // without tying the two together the element stayed an unbound var
@@ -3045,14 +3049,11 @@ impl TypeChecker {
                     ret: Box::new(fresh.clone()),
                 };
                 let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
+                let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
             }
-            // vec.flat_map(transform) -> Vec<U>, where the closure hands back a
-            // Vec<U> per element.
+            // vec.flat_map(transform) -> Sequence<U>, where the closure hands
+            // back a Vec<U> per element.
             "flat_map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
                 let inner_vec = Type::UnresolvedGeneric {
@@ -3064,10 +3065,7 @@ impl TypeChecker {
                     ret: Box::new(inner_vec),
                 };
                 let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
+                let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
             }
             // vec.flatten() -> Vec<T>
@@ -3095,13 +3093,10 @@ impl TypeChecker {
                 let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
-            // vec.enumerate() -> Vec<(i64, T)>
+            // vec.enumerate() -> Sequence<(i64, T)>
             "enumerate" if args.is_empty() => {
                 let pair_ty = Type::Tuple(vec![Type::I64, inner_type]);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(pair_ty))],
-                };
+                let result_ty = sequence_of(pair_ty);
                 self.unify(ret, &result_ty, span)
             }
             // vec.zip(other) -> Vec<(T, U)>. U never had anywhere to come

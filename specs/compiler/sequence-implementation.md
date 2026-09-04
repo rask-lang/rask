@@ -27,7 +27,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
 | 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`/`min`/`max`/`to_map` | `t31`, `t37` |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | `.iter()` deleted (SEQ48); the eager Vec adapters still stand | — |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | ✓ `.iter()` deleted (SEQ48); `filter`/`map`/`skip`/`take`/`enumerate`/`flat_map` on a collection are lazy. `zip`/`chunks` stay eager by SEQ39; `flatten` is the one exception left | `t38` |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
 | 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | pending | — |
@@ -147,6 +147,41 @@ line.
 chain spellings all still work — except `to_map`, which the checker only knew
 on a sequence. It's on `Vec<(K, V)>` now, same pair-or-error rule, on both
 backends.
+
+### The lazy switch (SEQ41)
+
+`v.filter(p)` hands back a `Sequence<T>` now, not a second `Vec`. The type
+changed; the AST didn't, and that distinction is the whole implementation.
+
+**Fusion is untouched.** `try_lower_iter_terminal` matches the terminal first
+and consumes the whole chain, so `v.filter(p).to_vec()` and
+`for x in v.filter(p)` are the same index loop with no closure they always were.
+Measured: zero heap closures in the enclosing frame either way. That mattered
+enough to check, because routing the chain through `as_sequence()` in the AST
+costs three heap closures per stage — `v.as_sequence().filter(p).to_vec()` is
+26ms where the fused form is a few.
+
+**What changed is the un-terminated case.** A bare adapter used to be lowered as
+"the chain, with an implicit `.to_vec()`" — arms in `iterators.rs` for `map`,
+`filter`, `enumerate` and `flat_map`. Those are gone. `let odd = v.filter(p)`
+now builds the closure chain, and `odd` is re-runnable like any sequence.
+
+Leaving one of those arms in place while the type said `Sequence` is worth
+knowing about: the frame handed the caller a Vec pointer where its type said
+closure, and `Sequence_count` jumped through it. A segfault, not a type error.
+
+**Which adapters moved, and why the rest didn't:**
+
+| Method | State | Why |
+|--------|-------|-----|
+| `filter`, `skip`, `take`, `enumerate` | lazy, forwards to `self.as_sequence().<same>(…)` | nothing to say |
+| `map`, `flat_map` | lazy, body written out | forwarding to a callee that declares its own type parameter loses the argument and the call mangles bare — #1065 |
+| `zip`, `chunks` | eager, on the collection | SEQ14/SEQ39: lockstep and position need two positions at once, and a push source can't hold one |
+| `flatten` | eager | `Sequence.flatten` has no body either; a lazy type with nothing behind it would be a name wearing no implementation. Nothing in the corpus calls it |
+
+**Indexing a sequence** is a type error now (`E0819`, SEQ39) rather than
+"Function not found: Sequence_index" out of codegen. `.len()` is likewise a
+"no method" error pointing at `count()`.
 
 ### Where an extend method's type parameters come from
 

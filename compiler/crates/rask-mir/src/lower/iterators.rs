@@ -297,30 +297,17 @@ impl<'a> MirLowerer<'a> {
             //
             // Without it these fell through to `Vec_map`, a runtime function
             // that ignores the closure-object/env ABI and segfaulted (#441).
-            "map" | "filter" if args.len() == 1 => {
-                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                    if let Some(mut chain) = self.try_parse_iter_chain(object) {
-                        chain.adapters.push(if method == "map" {
-                            super::IterAdapter::Map { closure: &args[0].expr }
-                        } else {
-                            super::IterAdapter::Filter { closure: &args[0].expr }
-                        });
-                        let result = self.lower_iter_collect(&chain)?;
-                        return Ok(Some(result));
-                    }
-                }
-            }
-            // `v.enumerate()` on its own is `v.iter().enumerate().to_vec()`.
-            // Same argument as `map`/`filter` above, and the adapter already
-            // existed — only the standalone spelling was missing, so it reached
-            // codegen as `Vec_enumerate`, which nothing emits (#886).
-            "enumerate" if args.is_empty() => {
-                if let Some(mut chain) = self.try_parse_iter_chain(object) {
-                    chain.adapters.push(super::IterAdapter::Enumerate);
-                    let result = self.lower_iter_collect(&chain)?;
-                    return Ok(Some(result));
-                }
-            }
+            // There is no arm for a bare adapter here any more. `map`,
+            // `filter`, `skip`, `take` and `enumerate` used to be treated as a
+            // chain with an implicit `.to_vec()`, which is what made them eager.
+            // SEQ41 made them lazy: a bare `v.filter(p)` is a `Sequence<T>`, so
+            // materializing it handed the caller a Vec pointer where its type
+            // said closure, and `Sequence_count` jumped through it. Their Rask
+            // bodies forward to `self.as_sequence().<adapter>(…)` instead.
+            //
+            // A chain that *is* terminated still fuses: the terminal arms above
+            // match first and consume the whole chain, so `v.filter(p).to_vec()`
+            // and `for x in v.filter(p)` are the same index loop they were.
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
@@ -418,26 +405,14 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             // `v.zip(other)` pairs elements at matching indices, stopping at
-            // the shorter side. Same "implicit .collect()" reasoning as
-            // `map`/`filter` above; without this it reached codegen as a call
-            // to `Vec_zip`, which nothing emits (#887).
+            // the shorter side, and materializes. It is not an adapter:
+            // SEQ14/SEQ39 keep lockstep on the indexable source, because a push
+            // source can't hold two positions. Without this it reached codegen
+            // as a call to `Vec_zip`, which nothing emits (#887).
             "zip" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_zip(&chain, &args[0].expr)?;
                     return Ok(Some(result));
-                }
-            }
-            // `v.flat_map(f)` on its own is the same "implicit .collect()"
-            // reasoning as `map`/`filter` above, except each pushed value is one
-            // of `f(elem)`'s own elements, not `f(elem)` itself. Without this it
-            // reached codegen as a call to `Vec_flat_map`, which nothing emits
-            // (#842).
-            "flat_map" if args.len() == 1 => {
-                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                    if let Some(chain) = self.try_parse_iter_chain(object) {
-                        let result = self.lower_iter_flat_map(&chain, &args[0].expr)?;
-                        return Ok(Some(result));
-                    }
                 }
             }
             // `v.sort_by_key(f)` — in place, answers unit. Not an iterator

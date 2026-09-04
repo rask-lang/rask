@@ -143,13 +143,15 @@ extend Vec<T> {
         }
     }
 
-    /// Skip the first n elements.
-    @native("rask_iter_skip")
-    public func skip(self, n: usize) -> Vec<T> {}
+    /// Skip the first n elements. Lazy (type.sequence/SEQ41).
+    public func skip(self, n: usize) -> Sequence<T> {
+        return self.as_sequence().skip(n)
+    }
 
-    /// Take the first n elements.
-    @native("rask_iter_take")
-    public func take(self, n: usize) -> Vec<T> {}
+    /// Take the first n elements. Lazy (type.sequence/SEQ41).
+    public func take(self, n: usize) -> Sequence<T> {
+        return self.as_sequence().take(n)
+    }
 
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
@@ -191,23 +193,59 @@ extend Vec<T> {
     @native("rask_vec_dedup")
     public func remove_adjacent_duplicates(mutate self) {}
 
-    /// Keep only elements where f returns true.
-    @native("rask_vec_filter")
-    public func filter(self, f: func(T) -> bool) -> Vec<T> {}
+    /// Keep only elements where f returns true. Lazy: the chain's head, not a
+    /// second Vec (type.sequence/SEQ41). `.to_vec()` materializes.
+    public func filter(self, f: func(T) -> bool) -> Sequence<T> {
+        return self.as_sequence().filter(f)
+    }
 
-    /// Transform each element.
-    @native("rask_vec_map")
-    public func map(self, f: func(T) -> U) -> Vec<U> {}
+    /// Transform each element. Lazy (type.sequence/SEQ41).
+    ///
+    /// Written out rather than `self.as_sequence().map(f)` — see `flat_map`
+    /// below and #1065.
+    public func map(self, f: func(T) -> U) -> Sequence<U> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                if !yield(f(self[i])) {
+                    return
+                }
+                i = i + 1
+            }
+        }
+    }
 
     /// Stage this data as a Wide plan for data-parallel execution.
     @native("rask_vec_clone")
     public func wide(self) -> Wide<T> {}
 
-    /// Map then flatten results.
-    @native
-    public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> {}
+    /// Map then flatten results. Lazy (type.sequence/SEQ41).
+    ///
+    /// Written out rather than forwarded to `Sequence.flat_map`, because
+    /// forwarding to a method that declares its own type parameter loses the
+    /// argument and the call mangles bare (#1065). Same for `map` above.
+    public func flat_map(self, f: func(T) -> Vec<U>) -> Sequence<U> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                let inner = f(self[i])
+                mut j = 0
+                while j < inner.len() {
+                    if !yield(inner[j]) {
+                        return
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+    }
 
     /// Flatten a Vec of Vecs into a single Vec.
+    ///
+    /// The one adapter still eager. `Sequence.flatten` has no body either, and
+    /// giving this one a lazy type before there's something to forward to would
+    /// be a name with nothing behind it. Nothing in the corpus calls it.
     @native
     public func flatten(self) -> Vec<T> {}
 
@@ -219,9 +257,10 @@ extend Vec<T> {
     @native
     public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
 
-    /// Yield (index, element) pairs.
-    @native
-    public func enumerate(self) -> Vec<(usize, T)> {}
+    /// Yield (index, element) pairs. Lazy (type.sequence/SEQ41).
+    public func enumerate(self) -> Sequence<(usize, T)> {
+        return self.as_sequence().enumerate()
+    }
 
     /// Zip with another vector into pairs.
     ///

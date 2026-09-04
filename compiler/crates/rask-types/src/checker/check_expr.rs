@@ -4591,7 +4591,28 @@ impl TypeChecker {
                 }
             }
             // Unknown / unresolved container, or `Handle<T>` itself — leave it.
-            None => {}
+            None => {
+                // A `Sequence<T>` is the one unindexable thing worth naming.
+                // SEQ41 made a collection's adapters lazy, so `v.filter(p)[0]`
+                // is now an ordinary mistake to make — and it used to reach
+                // codegen as "Function not found: Sequence_index", which tells
+                // the reader nothing about what to do.
+                if matches!(
+                    &self.ctx.apply(container),
+                    Type::UnresolvedGeneric { name, .. } if name == "Sequence" || name == "SequenceMut"
+                ) || matches!(
+                    &self.ctx.apply(container),
+                    Type::Generic { base, .. }
+                        if self.types.type_name(*base).starts_with("Sequence")
+                ) {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: self.nameable(&self.ctx.apply(container)),
+                        found: index.clone(),
+                        kind: IndexErrorKind::NotPositioned,
+                        span,
+                    });
+                }
+            }
         }
     }
 

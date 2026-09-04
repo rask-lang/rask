@@ -52,6 +52,7 @@ t35_returned_sequence.rk  # 36 allocations — returned sequences keep their env
 t36_cross_task_ownership.rk  # 18 allocations
 t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
 t37_extend_header_binding.rk  # 4 allocations — a container in a struct field, #1047
+t38_lazy_collection_adapters.rk  # 46 allocations — SEQ41 routes a collection's adapters through the sequence path, and an adapter closure's captures are never released, #1045
 t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t49_comptime.rk  # 2 allocations
@@ -193,3 +194,6 @@ t_week_traits.rk  # 5 allocations
 t_while_presence_binding.rk  # 8 allocations
 t_with_collection_field_writes.rk  # 14 allocations
 t_with_mutex_value.rk  # 4 allocations
+t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
+t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
+t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045

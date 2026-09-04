@@ -27,7 +27,7 @@
 test "vec enumerate — standalone, off the collection" {
     let base: Vec<i64> = [3, 1, 2]
     let pairs = base.enumerate()
-    assert_eq(pairs.len(), 3)
+    assert_eq(pairs.count(), 3)
     mut indices = 0
     mut values = 0
     for p in pairs {
@@ -85,7 +85,7 @@ test "vec zip — stops at the shorter side" {
 test "vec zip — filter before it doesn't skew the other side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20, 30]
-    let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).zip(b)
+    let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).to_vec().zip(b)
     assert_eq(pairs.len(), 2)
     assert_eq(pairs[0].0, 2)
     assert_eq(pairs[0].1, 10)
@@ -96,7 +96,7 @@ test "vec zip — filter before it doesn't skew the other side" {
 test "vec zip — skip before it doesn't skew the other side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20, 30]
-    let pairs: Vec<(i64, i64)> = a.skip(2).zip(b)
+    let pairs: Vec<(i64, i64)> = a.skip(2).to_vec().zip(b)
     assert_eq(pairs.len(), 3)
     assert_eq(pairs[0].0, 3)
     assert_eq(pairs[0].1, 10)
@@ -123,7 +123,7 @@ test "vec zip — both sides reached through a struct field" {
 
 test "vec zip — a filter on a field receiver still doesn't skew the other side" {
     let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
-    let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).zip(r.names)
+    let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).to_vec().zip(r.names)
     assert_eq(pairs.len(), 2)
     assert_eq(pairs[0].0, 1)
     assert_eq(pairs[0].1, "a")
