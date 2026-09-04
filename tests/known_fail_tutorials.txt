@@ -1,0 +1,9 @@
+# Tutorial solutions that check but whose `test` run fails, with the bug.
+#
+# tests/tutorials_gate.sh reports these without failing, and fails if one
+# starts passing — delete the line when that happens. Every solution here has
+# to pass `rask check` regardless; only the test run is excused.
+#
+# Format: one basename, then the reason and its issue.
+
+18_comptime.rk  # every const ends in `v.freeze()`, and native lowers that as a call rather than using the folded value — #1069 (the interpreter runs it: `rask test --interp` passes all four)

@@ -115,6 +115,15 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
 
+    # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
+    # by nothing at all, and seven of nineteen solutions didn't compile (#1030)
+    # — they'd been broken for a while, since the same seven fail on the commit
+    # before the string-API change that surfaced them. These are what a learner
+    # reads when they're stuck, so a wrong one costs more than a missing one.
+    - name: Tutorial solutions
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/tutorials_gate.sh
+
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
     # and exits 0 — so the programs written to show Rack/Link working end to end

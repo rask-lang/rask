@@ -38,7 +38,7 @@ import async.spawn
 
 // --- Example ---
 
-func example_concurrency() -> () or Error {
+func example_concurrency() -> void or Error {
     // Spawn two tasks, each returns a value. Join both.
     using Multitasking {
         let h1 = spawn(|| {

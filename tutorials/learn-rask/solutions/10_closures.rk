@@ -35,9 +35,13 @@ test "integrate x^2 from 0 to 1" {
 }
 
 test "integrate sin-like from 0 to pi" {
+    // `x - x³/6` is sin's first two Taylor terms, and they part company with
+    // sin well before π — the integral here is π²/2 - π⁴/24 = 0.8761, not the
+    // 2.0 that ∫sin over [0, π] gives. The old bounds asked for sin's answer
+    // from a polynomial that isn't sin out this far.
     let result = integrate(|x| x - x * x * x / 6.0, 0.0, 3.14159, 10000)
-    assert result > 1.9
-    assert result < 2.1
+    assert result > 0.87
+    assert result < 0.88
 }
 
 test "cruising altitudes" {

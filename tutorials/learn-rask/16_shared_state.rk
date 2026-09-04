@@ -31,33 +31,41 @@
 
 import async.spawn
 import sync.AtomicI64
+import sync.Relaxed
+import sync.Shared
 
 // --- Example ---
 
-func example_shared() -> () or Error {
+func example_shared() -> void or Error {
     using Multitasking {
         mut counter = Shared.new(0)
 
-        let h1 = spawn(|| {
+        // Each task gets its own handle on the same cell. `own` moves the
+        // capture into the closure — a spawned task outlives the block that
+        // made it, so borrowing wouldn't be safe — and `clone` is what gives
+        // the second task something to move.
+        let c1 = counter.clone()
+        let c2 = counter.clone()
+
+        let h1 = spawn(own || {
             for i in 0..1000 {
-                counter.write(|c| {
+                with c1.write() as c {
                     c = c + 1
-                })
+                }
             }
         })
-        let h2 = spawn(|| {
+        let h2 = spawn(own || {
             for i in 0..1000 {
-                counter.write(|c| {
+                with c2.write() as c {
                     c = c + 1
-                })
+                }
             }
         })
 
         try h1.join()
         try h2.join()
 
-        let final_count = counter.read(|c| c)
-        println("counter: {final_count}")
+        println("counter: {counter.get()}")
         // always 2000, never wrong
     }
 }

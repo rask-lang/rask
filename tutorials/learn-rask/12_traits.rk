@@ -10,9 +10,17 @@
 //       func area(self) -> f64
 //   }
 //
-// Any type that has an area() method with the right signature
-// automatically satisfies the trait. You don't need to write
-// "implements HasArea" — if the methods match, it just works.
+// Having the right methods isn't enough on its own: the type says which
+// trait it's conforming to, in the header of the block that implements it.
+//
+//   extend Circle with HasArea {
+//       func area(self) -> f64 { return 3.14159 * self.r * self.r }
+//   }
+//
+// That's one word more than duck typing, and it buys two things: a type
+// can't satisfy a trait it never meant to just because a name collided,
+// and the error when a method is missing points at the extend block that
+// promised it rather than at the call site three files away.
 //
 // Why is this useful? You can write functions that work with any type
 // that has certain methods:
@@ -36,7 +44,7 @@ struct Star {
     mass_solar: f64
 }
 
-extend Star {
+extend Star with Describable {
     func describe(self) -> string {
         return "{self.name}: {self.mass_solar} solar masses"
     }
@@ -78,7 +86,7 @@ struct Cessna172 {
 //   max_speed_knots → 453.0
 //   range_nm → 3500.0
 //   designation → "Boeing 737-{variant}" (use self.variant)
-extend Boeing737 {
+extend Boeing737 with Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -94,7 +102,7 @@ extend Boeing737 {
 //   max_speed_knots → 124.0
 //   range_nm → 640.0
 //   designation → "Cessna 172 ({registration})" (use self.registration)
-extend Cessna172 {
+extend Cessna172 with Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -125,7 +133,7 @@ struct Measurement {
 }
 
 // Implement Summable for Measurement — return self.reading
-extend Measurement {
+extend Measurement with Summable {
     func value(self) -> f64 {
         todo()
     }
@@ -141,7 +149,7 @@ func total<T: Summable>(items: Vec<T>) -> f64 {
 test "boeing 737" {
     let b = Boeing737 { variant: "800", passenger_count: 189 }
     assert b.max_speed_knots() == 453.0
-    assert b.range_nm() == 2935.0
+    assert b.range_nm() == 3500.0
     assert b.designation() == "Boeing 737-800"
 }
 

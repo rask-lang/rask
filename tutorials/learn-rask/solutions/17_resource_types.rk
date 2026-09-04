@@ -57,12 +57,14 @@ func two_bookings() -> BookingStatus {
 }
 
 func process_flights(flights: Vec<string>) -> i32 or BookingError {
-    return flights.len()
+    return flights.len().to<i32>()!
 }
 
 test "booking commit" {
     let result = book_flight(1, "Besse")
-    assert result?
+    // `?` asks whether a value is present; a result's other branch is an
+    // error, so the question is `is` (ER12).
+    assert !(result is BookingError)
 }
 
 test "booking failure" {
