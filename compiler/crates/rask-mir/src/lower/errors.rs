@@ -2,7 +2,7 @@
 
 //! Error handling lowering: try, try-else, map_err.
 
-use crate::FieldAccess;
+use crate::{FieldAccess, FunctionRef};
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::{BinOp, MirConst}, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
@@ -10,6 +10,10 @@ use crate::{
     types::RESULT_PAYLOAD_OFFSET,
 };
 use rask_ast::expr::{CallArg, CatchClause, Expr, ExprKind};
+
+/// What a `try` says when it has nowhere to propagate to. Both backends print
+/// this, so a test that hits an error reads the same either way.
+pub const TRY_PROPAGATED_NOWHERE: &str = "try propagated an error out of a test block";
 
 /// ER31a: where a propagated error goes inside the caller's error enum.
 struct ErrorWrapTarget {
@@ -266,6 +270,30 @@ impl<'a> MirLowerer<'a> {
         // which member it is, because nothing in its bytes does (#776).
         let (err_val, err_store_size) =
             self.wrap_union_member(err_val, err_store_size, &err_ty);
+
+        // Nothing to propagate into: a `test` block's body is lowered as a
+        // void function, and the checker lets `try` through there. There is no
+        // Result slot to build, so the error ends the test the way the
+        // interpreter already ends it — as a failure naming what happened.
+        // Building one anyway returned a value out of a void signature and the
+        // Cranelift verifier rejected the whole function (#932).
+        //
+        // Asking whether this *is* a test body, not whether it returns void:
+        // every function without a return annotation returns void, `main`
+        // included, so the void test panicked in ordinary helpers with a
+        // message about test blocks. Those are a compile error now (E0316), and
+        // this arm is only for the one case that isn't.
+        if self.in_test_body {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("panic".to_string()),
+                args: vec![MirOperand::Constant(MirConst::String(
+                    TRY_PROPAGATED_NOWHERE.to_string(),
+                ))],
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
+        }
 
         // An optional-returning function propagates *absence*, and an Option is
         // a tag with nothing beside it — no origin fields, no payload. The

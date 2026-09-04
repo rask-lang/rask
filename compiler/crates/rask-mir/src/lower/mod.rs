@@ -1622,6 +1622,13 @@ pub struct MirLowerer<'a> {
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
     catch_frames: Vec<CatchFrame>,
+    /// This body is a `test` block's, lowered as a void function by
+    /// `extract_tests`. A `try` here has no caller to propagate to and ends the
+    /// test instead (#932). Read off the synthetic declaration's `test_body`
+    /// attribute rather than guessed from the void return type — every function
+    /// without a return annotation has one of those, `main` included, and
+    /// guessing panicked in them with a message about test blocks.
+    in_test_body: bool,
     /// ER16a: the `try` whose branch is still owed, and the chain step it
     /// attaches to. Armed by `lower_try` and discharged by `lower_expr` when it
     /// reaches that step.
@@ -1879,6 +1886,13 @@ impl<'a> MirLowerer<'a> {
     /// What a collection holds: the element of a `Vec`/`Pool`, the *value* of a
     /// `Map`. Indexing any of them yields this type.
     pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        // A fixed array holds its element type outright. Without this arm every
+        // element-typed dispatch decision — `join`'s string vs integer variant,
+        // `sort`'s comparator — read "not a collection" and took the integer
+        // branch, so `["a", "b"].join("-")` printed the bytes as numbers (#1021).
+        if let Type::Array { elem, .. } = ty {
+            return Some(self.ctx.type_to_mir(elem));
+        }
         let (name, args) = self.generic_head(ty)?;
         // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
         // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
@@ -3521,6 +3535,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
+            in_test_body: fn_decl.attrs.iter().any(|a| a == "test_body"),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
@@ -4188,6 +4203,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Which member of a union a *name* is, by position as written.
+    /// The member type and its byte offset when `ty_name` names one member of
+    /// the error union of `scrutinee_ty`. `None` for anything else — a plain
+    /// error type, or a name that isn't a member.
+    fn union_member_binding(&self, scrutinee_ty: &MirType, ty_name: &str) -> Option<(MirType, u32)> {
+        let MirType::Result { err, .. } = scrutinee_ty else {
+            return None;
+        };
+        let MirType::Union(members) = err.as_ref() else {
+            return None;
+        };
+        let bare = ty_name.rsplit('.').next().unwrap_or(ty_name);
+        let idx = self.union_member_index_by_name(err.as_ref(), bare)?;
+        let member = members.get(idx)?.clone();
+        Some((
+            member,
+            crate::types::RESULT_PAYLOAD_OFFSET + crate::types::UNION_PAYLOAD_OFFSET,
+        ))
+    }
+
     pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
         let MirType::Union(members) = union_ty else {
             return None;
@@ -4637,6 +4671,32 @@ impl<'a> MirLowerer<'a> {
                     }
                     return;
                 }
+                // `r is AErr as e` on an `i64 or (AErr | BErr)`. The test that
+                // got us here already checked the member index, so `e` is an
+                // `AErr` and nothing else — binding it at the union type made
+                // every call on it a switch over all members, which emitted a
+                // call to `BErr_tag` that doesn't exist (#1002). The member's
+                // bytes sit past the index, inside the Result's payload.
+                if let Some((member_ty, member_off)) =
+                    self.union_member_binding(scrutinee_ty, ty_name)
+                {
+                    let local = self.builder.alloc_local(name.clone(), member_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Field {
+                            base: value.clone(),
+                            field_index: 0,
+                            byte_offset: Some(member_off),
+                            access: FieldAccess::for_field(&member_ty, member_ty.size()),
+                        },
+                    }));
+                    self.locals.insert(name.clone(), (local, member_ty.clone()));
+                    if let Some(prefix) = self.mir_type_name(&member_ty) {
+                        self.meta_mut(name).type_prefix = Some(prefix);
+                    }
+                    return;
+                }
+
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
                     crate::fallback::i64_fallback("lower/mod:typepat_payload")
                 });
@@ -5541,13 +5601,24 @@ pub(crate) struct MutateWriteback {
     map_value: Option<LocalId>,
 }
 
-/// One outstanding element borrow, waiting for its call to be emitted so the
-/// borrow can be released.
-pub(crate) struct ElemWriteback {
-    /// The collection the element was borrowed from.
-    collection: MirOperand,
-    /// Which release to call — Vec and Map keep separate borrow counts.
-    release: &'static str,
+/// Something owed to a `mutate` argument once its call has been emitted.
+pub(crate) enum ElemWriteback {
+    /// An element borrowed out of a collection, waiting to be released.
+    ReleaseBorrow {
+        /// The collection the element was borrowed from.
+        collection: MirOperand,
+        /// Which release to call — Vec and Map keep separate borrow counts.
+        release: &'static str,
+    },
+    /// A scalar variable handed over as `mutate`. Codegen keeps scalars in
+    /// registers, so the address the callee wrote through is a spilled copy —
+    /// read it back into the variable or the write is lost (#899).
+    ScalarCopyBack {
+        /// The caller's variable.
+        dst: LocalId,
+        /// The spill slot the callee wrote through.
+        addr: LocalId,
+    },
 }
 
 impl MutateWriteback {

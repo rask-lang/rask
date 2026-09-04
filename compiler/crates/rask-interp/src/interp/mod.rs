@@ -1045,8 +1045,10 @@ pub enum RuntimeError {
     #[error("continue")]
     Continue(Option<String>),
 
-    /// Error propagation via try operator
-    #[error("try error")]
+    /// Error propagation via try operator. The text only shows when one escapes
+    /// uncaught — a `try` in a `test` block, which has no caller to hand the
+    /// error to. Native panics with the same words there (#932).
+    #[error("try propagated an error out of a test block")]
     TryError(Value),
 
     /// `x!` on an absent optional (type.optionals/OPT13).

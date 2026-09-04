@@ -208,7 +208,10 @@ See `mem.borrowing/F1`–`F4` for the full disjoint field borrowing rules.
 
 ## Interaction with Copy Types
 
-For Copy types (≤16 bytes), values are copied in. The mode distinction matters for non-Copy types.
+For Copy types (≤16 bytes), `borrow` and `take` both copy the value in — the
+caller keeps its original either way, and the mode is only a statement of intent.
+`mutate` is the exception, and it is not a size question: the caller sees the
+write for an `i32` exactly as it does for a struct.
 
 <!-- test: parse -->
 ```rask
@@ -219,6 +222,10 @@ func process(x: i32) {
 func process(take x: i32) {
     // Also copied, but semantically "taken"
     // Useful for move-only small types
+}
+
+func bump(mutate x: i32) {
+    x = x + 1        // the caller's variable ends up one higher
 }
 ```
 
@@ -304,7 +311,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Generic parameters | PM1–PM3 | Mode applies to concrete type at instantiation |
 | Closure captures | — | Captured borrows follow closure lifetime rules (`mem.closures`) |
 | Pattern matching | PM2 | Mutation only allowed if parameter is `mutate` |
-| Copy type + mutate | PM2/PM5 | Value is copied in; mutations affect the copy. Call site still writes `mutate` — the marker follows the signature, not the size |
+| Copy type + mutate | PM2/PM5 | The caller sees the write, same as any other type — `bump(mutate n)` on an `i32` leaves `n` incremented. Size decides nothing here: PM2 says the caller keeps the value and gets the write, and a mode that quietly did nothing for the small types would be the worst kind of surprise. Call site still writes `mutate` — the marker follows the signature |
 | Disjoint field borrows | — | Passing `mutate value.field` borrows only that field (`mem.borrowing/F1`) |
 | Method receiver | PM4 | Exempt — `x.method()` never marks the receiver, even for `mutate self` |
 | `mutate` marker on a borrow argument | PM4 | Compile error — marker without a `mutate` parameter is a lie the compiler rejects |
