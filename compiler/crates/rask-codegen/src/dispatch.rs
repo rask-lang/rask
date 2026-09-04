@@ -1794,4 +1794,217 @@ mod tests {
             );
         }
     }
+
+    /// Every `@native("symbol")` in the stdlib names a symbol that exists.
+    ///
+    /// `@native` is an assertion, and nothing checked it. `os.exit` was declared
+    /// `@native` with no `os_exit` row anywhere, so it type-checked, ran on the
+    /// interpreter, and died at codegen with "Function not found: os_exit". The
+    /// same thing had already happened to `os.set_env` (#855) — twice is a
+    /// pattern, hence #1007.
+    ///
+    /// The failure mode is the worst one available: the program builds on one
+    /// backend and fails on the other with an internal message rather than a
+    /// diagnostic, which is exactly what ctrl.panic/S7 says not to do.
+    ///
+    /// A named symbol has to be reachable — a row in this table, or a
+    /// declaration in the runtime header. That covers 240 of the stubs and
+    /// needs no list to maintain.
+    #[test]
+    fn every_named_native_symbol_exists() {
+        let header = include_str!("../../../runtime/rask_runtime.h");
+        let declared: HashSet<&str> = header
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|w| w.starts_with("rask_"))
+            .collect();
+        let dispatched: HashSet<&str> =
+            stdlib_entries().iter().map(|e| e.c_name).collect();
+
+        let reg = rask_stdlib::StubRegistry::load();
+        let mut missing: Vec<String> = Vec::new();
+        for type_name in reg.type_names() {
+            let Some(t) = reg.get_type(&type_name) else { continue };
+            for m in &t.methods {
+                let Some(symbol) = m.native.as_deref().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                if declared.contains(symbol) || dispatched.contains(symbol) {
+                    continue;
+                }
+                missing.push(format!("{}.{} → {}", type_name, m.name, symbol));
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "{} stdlib declarations name a native symbol that doesn't exist. Either \
+             implement it (a row in `stdlib_entries()` plus the C function) or drop \
+             the symbol from the `@native` marker if the call is lowered some other \
+             way:\n  {}",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
+    /// `@native` with no symbol derives its name, and those are the ones that
+    /// go missing quietly. Each either has a dispatch row or is on this list.
+    ///
+    /// The list is a snapshot of the gap as it stands, and it may only shrink.
+    /// Two kinds of entry are mixed in it deliberately, because from here they
+    /// look the same and only trying one tells them apart:
+    ///
+    ///   - lowered somewhere bespoke: `Vec.fold` and friends are fused into an
+    ///     iterator chain, `reflect.*` is resolved at comptime, `math.*` goes to
+    ///     libm. These are fine and will stay listed.
+    ///   - no entry point at all: `Command.new` gives "Function not found:
+    ///     Command_new", `Timer.after` the same. These are real, and the list is
+    ///     where they stop being invisible — #1066 tracks the ones confirmed by
+    ///     running them.
+    ///
+    /// The test fails both ways. An unlisted name with no row is a new gap; a
+    /// listed name that has since gained a row is stale and must come off.
+    const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
+    "Command.arg",
+    "Command.args",
+    "Command.new",
+    "Command.run",
+    "Command.stderr",
+    "Command.stdin",
+    "Command.stdout",
+    "Command.working_dir",
+    "FieldInfo.get",
+    "FieldInfo.has",
+    "Map.capacity",
+    "Map.modify",
+    "Map.modify_with_default",
+    "Map.read",
+    "Map.with_capacity",
+    "Output.success",
+    "Pool.capacity",
+    "Pool.clear",
+    "Pool.entries",
+    "Pool.get_mut_unchecked",
+    "Pool.get_unchecked",
+    "Pool.iter",
+    "Pool.modify",
+    "Pool.read",
+    "Pool.remaining",
+    "Pool.snapshot",
+    "Pool.weak",
+    "Pool.with_valid",
+    "Pool.with_valid_mut",
+    "TaskGroup.join_all",
+    "TaskGroup.new",
+    "Timer.after",
+    "Timer.interval",
+    "Vec.all",
+    "Vec.any",
+    "Vec.enumerate",
+    "Vec.find",
+    "Vec.flat_map",
+    "Vec.flatten",
+    "Vec.fold",
+    "Vec.iter",
+    "Vec.max",
+    "Vec.min",
+    "Vec.modify",
+    "Vec.position",
+    "Vec.push_with",
+    "Vec.read",
+    "Vec.reduce",
+    "Vec.sort_by_key",
+    "Vec.sum",
+    "Vec.take",
+    "Vec.zip",
+    "WeakHandle.upgrade",
+    "WeakHandle.valid",
+    "Wide.map",
+    "Wide.max",
+    "Wide.min",
+    "Wide.reduce",
+    "Wide.zip_with",
+    "cstring.to_string",
+    "json.encode_pretty",
+    "math.acos",
+    "math.asin",
+    "math.atan",
+    "math.atan2",
+    "math.cos",
+    "math.exp",
+    "math.hypot",
+    "math.ln",
+    "math.log10",
+    "math.log2",
+    "math.sin",
+    "math.tan",
+    "math.to_degrees",
+    "math.to_radians",
+    "os.signals",
+    "reflect.align_of",
+    "reflect.fields",
+    "reflect.is_copy",
+    "reflect.is_enum",
+    "reflect.is_flat",
+    "reflect.is_float",
+    "reflect.is_integer",
+    "reflect.is_map",
+    "reflect.is_optional",
+    "reflect.is_resource",
+    "reflect.is_struct",
+    "reflect.is_vec",
+    "reflect.name_of",
+    "reflect.size_of",
+    ];
+
+    #[test]
+    fn derived_native_names_are_listed_or_dispatched() {
+        let dispatched: HashSet<&str> =
+            stdlib_entries().iter().map(|e| e.mir_name).collect();
+        let listed: HashSet<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW.iter().copied().collect();
+
+        let reg = rask_stdlib::StubRegistry::load();
+        let mut unlisted: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for type_name in reg.type_names() {
+            let Some(t) = reg.get_type(&type_name) else { continue };
+            for m in &t.methods {
+                if !matches!(m.native.as_deref(), Some("")) {
+                    continue;
+                }
+                let key = format!("{}.{}", type_name, m.name);
+                if dispatched.contains(format!("{}_{}", type_name, m.name).as_str()) {
+                    continue;
+                }
+                seen.insert(key.clone());
+                if !listed.contains(key.as_str()) {
+                    unlisted.push(key);
+                }
+            }
+        }
+        unlisted.sort();
+        assert!(
+            unlisted.is_empty(),
+            "{} `@native` declarations have no dispatch row and aren't listed. If the \
+             call is lowered somewhere bespoke, add it to \
+             NATIVE_WITHOUT_A_DISPATCH_ROW; otherwise it needs an entry point:\n  {}",
+            unlisted.len(),
+            unlisted.join("\n  ")
+        );
+
+        let mut stale: Vec<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW
+            .iter()
+            .copied()
+            .filter(|k| !seen.contains(*k))
+            .collect();
+        stale.sort();
+        assert!(
+            stale.is_empty(),
+            "{} entries in NATIVE_WITHOUT_A_DISPATCH_ROW no longer describe anything — \
+             the declaration gained a row, changed its marker, or went away. Delete \
+             them; the list only shrinks:\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        );
+    }
 }
+
