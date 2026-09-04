@@ -33,7 +33,7 @@ pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
-pub use declarations::{signature_type_param_names, struct_type_param_names, enum_type_param_names};
+pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
 
