@@ -57,7 +57,7 @@ stops before the checker ever sees them:
 | 48 | `?` for propagation is rejected | never reached |
 | 66 | `let` reassignment | never reached |
 | 71 | missing return | never reached |
-| 78 | comparison chaining | never reached |
+| 78 | comparison chaining | ~~never reached~~ — fires since `1d54fbd` moved P2 into the parser |
 
 Three more fire with a different message than the marker claims: `impl` gets
 "Expected ';' or newline after statement" rather than "did you mean 'extend'";
@@ -251,7 +251,7 @@ for nested blocks.
 
 ## Part 3 — Where a test asserts something the spec forbids
 
-### 3.1 CV1's int→float table isn't enforced, and a test bakes that in
+### 3.1 CV1's int→float table isn't enforced, and a test bakes that in — FIXED
 
 `specs/types/primitives.md` restricts `as` to conversions where every source
 value survives:
@@ -288,7 +288,15 @@ in a file whose own header says the opposite — "int→float names one too, bec
 past 2^53 an i64 doesn't survive an f64." `cast_rules.rk` covers CV2, CV3, CV4,
 CH5 and BL3; CV1 has no compile-error test at all.
 
-### 3.2 P2 (no comparison chaining) isn't enforced
+**Resolved (`03817ec`), spec kept as written.** The check was one line:
+`(Prim::Int { .. }, Prim::Float { .. }) => true`. It now tests the target's
+mantissa — 24 bits for an f32, 53 for an f64 — which reproduces the spec's two
+source lists without a second copy of them to keep in step. 8 example sites and
+6 suite files moved to `.round<f64>()`; `t_day_casts.rk` lost the assertion that
+contradicted the spec. `cast_rules.rk` gained five CV1 cases and stopped being
+one of the exit-code-only tests.
+
+### 3.2 P2 (no comparison chaining) isn't enforced — FIXED
 
 `specs/types/operators.md` P2: "`a < b < c` is disallowed", listed in the edge
 case table as a compile error.
@@ -312,8 +320,12 @@ let x: bool = a == b == c     // Typecheck OK, prints true
 let y: bool = a < b == false  // Typecheck OK, prints true
 ```
 
-The marker for this in `syntax_rejected.rk` is one of the four that never fires
-(1.2).
+**Resolved (`1d54fbd`).** The six comparison operators are non-associative in
+the parser now, so a second one is a parse error that names the chain. That
+placement also fixed §1.2's dead marker for free: `syntax_rejected.rk` goes from
+8 diagnostics to 9 with no edit, because the check no longer sits behind the
+parse errors that stopped the pipeline. Two sites in the tree wrote
+`if a < 0 != b < 0` and now parenthesize it.
 
 ### 3.3 CV14 ties-to-even is right, but the suite can't tell
 
