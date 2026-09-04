@@ -42,8 +42,12 @@ fn free_for(ctor: &str) -> Option<&'static str> {
 pub fn insert_container_drops(fns: &mut [MirFunction]) {
     let handing_over = functions_that_hand_a_container_back(fns);
     let kept = params_a_callee_keeps(fns);
+    // A snapshot, because tracing a container through a capture cell has to
+    // read the closure that captured it while the frame it belongs to is being
+    // rewritten.
+    let snapshot: Vec<MirFunction> = fns.to_vec();
     for func in fns.iter_mut() {
-        insert_for_function(func, &handing_over, &kept);
+        insert_for_function(func, &snapshot, &handing_over, &kept);
     }
 }
 
@@ -216,7 +220,7 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
             if handing.contains_key(&func.name) {
                 continue;
             }
-            let fresh = collect_fresh_containers_with(func, &handing);
+            let fresh = collect_fresh_containers_with(func, fns, &handing);
             if fresh.is_empty() {
                 continue;
             }
@@ -254,10 +258,11 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
 
 fn insert_for_function(
     func: &mut MirFunction,
+    all: &[MirFunction],
     handing_over: &HashMap<String, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
 ) {
-    let fresh = collect_fresh_containers_with(func, handing_over);
+    let fresh = collect_fresh_containers_with(func, all, handing_over);
     if fresh.is_empty() {
         return;
     }
@@ -305,6 +310,7 @@ fn insert_for_function(
 /// and hands it back.
 fn collect_fresh_containers_with(
     func: &MirFunction,
+    all: &[MirFunction],
     handing_over: &HashMap<String, &'static str>,
 ) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
@@ -327,41 +333,38 @@ fn collect_fresh_containers_with(
         return fresh;
     }
 
-    let made_here: HashSet<LocalId> = fresh.keys().copied().collect();
-
     // The same value under a new name: follow it, so the name still holding it
     // at its death is the one that gets freed.
-    loop {
-        let mut added = false;
-        for block in &func.blocks {
-            for stmt in &block.statements {
-                match &stmt.kind {
-                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
-                        if let Some(free) = fresh.get(src).copied() {
-                            if fresh.insert(*dst, free).is_none() {
-                                added = true;
-                            }
-                        }
-                    }
-                    MirStmtKind::Phi { dst, args } => {
-                        for (_, op) in args {
-                            if let MirOperand::Local(src) = op {
-                                if let Some(free) = fresh.get(src).copied() {
-                                    if fresh.insert(*dst, free).is_none() {
-                                        added = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if !added {
-            break;
-        }
+    follow_copies(func, &mut fresh);
+
+    // A container the loop body touches lives in a cell, and the frame reads it
+    // back out with a load. Asked after the copies are followed, because the
+    // value that goes *into* the cell is usually a copy of the constructor's
+    // result rather than the result itself — and then followed again, because
+    // what comes back out gets copied on in turn.
+    let through_cells = fresh_through_cells(func, all, &fresh);
+    let from_cells: HashSet<LocalId> = through_cells.iter().map(|(id, _)| *id).collect();
+    for (dst, free) in through_cells {
+        fresh.insert(dst, free);
     }
+    if !from_cells.is_empty() {
+        follow_copies(func, &mut fresh);
+    }
+
+    // Every name reached without a copy — a constructor's own destination, or a
+    // load out of a cell only this frame filled. The pruning below asks how a
+    // *copy* was reached, and has no question to ask of these.
+    let made_here: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::Call { dst: Some(dst), .. } => Some(*dst),
+            _ => None,
+        })
+        .filter(|id| fresh.contains_key(id))
+        .chain(from_cells)
+        .collect();
 
     // A name is only this frame's if *every* way of reaching it is. Following
     // a copy forwards says "one path put a fresh container here"; it doesn't
@@ -391,6 +394,211 @@ fn collect_fresh_containers_with(
 }
 
 /// Does every definition of `local` put a container this frame made into it?
+/// Carry each fresh container forward through copies and phis, to a fixpoint.
+fn follow_copies(func: &MirFunction, fresh: &mut HashMap<LocalId, &'static str>) {
+    loop {
+        let mut added = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                        if let Some(free) = fresh.get(src).copied() {
+                            if fresh.insert(*dst, free).is_none() {
+                                added = true;
+                            }
+                        }
+                    }
+                    MirStmtKind::Phi { dst, args } => {
+                        for (_, op) in args {
+                            if let MirOperand::Local(src) = op {
+                                if let Some(free) = fresh.get(src).copied() {
+                                    if fresh.insert(*dst, free).is_none() {
+                                        added = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !added {
+            return;
+        }
+    }
+}
+
+/// Containers this frame owns that it can only reach through a stack cell.
+///
+/// A local the loop body writes to isn't a local any more: `for x in seq`
+/// compiles the body to a closure, and anything it captures moves into
+/// addressable storage (`transform::addr_taken`). So a sequence terminal builds
+/// its result, stores it into a cell, and returns a *load* from that cell — and
+/// a load is somebody else's by default, which is why `to_vec` and `to_map`
+/// were freed by nobody (#1060).
+///
+/// Only where the cell can hold nothing else. One store reaches it in the whole
+/// program — this frame's, plus any closure that captured it — and that store's
+/// value is one of this frame's own. A second store is a second possible
+/// container, and calling that one this frame's would free something somebody
+/// else still holds.
+///
+/// And only for a load this frame *returns*. The question this answers is
+/// "does this frame hand the caller a container to free" — nothing else. A load
+/// the frame goes on to use itself is already handled, and calling it fresh
+/// changed answers it had no business changing: `let count = || items.len()`
+/// reads `items` out of its cell three times, and putting all three in one
+/// value group made a vector that used to be freed once stop being freed at all
+/// (t26 went from 4 leaked allocations to 6, t31 from 21 to 40).
+fn fresh_through_cells(
+    func: &MirFunction,
+    all: &[MirFunction],
+    fresh: &HashMap<LocalId, &'static str>,
+) -> Vec<(LocalId, &'static str)> {
+    // addr → what got stored there, across every offset. Offsets aren't
+    // separated: a cell holding one container is written at one offset, and a
+    // second write anywhere in it is enough to give up.
+    let mut stores: HashMap<LocalId, Vec<MirOperand>> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let MirStmtKind::Store { addr, value, .. } = &stmt.kind {
+                stores.entry(*addr).or_default().push(value.clone());
+            }
+        }
+    }
+
+    let returned: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn {
+                value: Some(MirOperand::Local(id)),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if returned.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for (cell, values) in &stores {
+        let [MirOperand::Local(src)] = values.as_slice() else { continue };
+        let Some(free) = fresh.get(src).copied() else { continue };
+        if !cell_is_read_only_in_closures(func, all, *cell) {
+            continue;
+        }
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                if let MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                } = &stmt.kind
+                {
+                    if addr == cell && returned.contains(dst) {
+                        out.push((*dst, free));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Does every closure that captured `cell` only ever read it?
+///
+/// The capture arrives in the closure as the cell's address, so a write back
+/// into it is a `Store` through whatever that address was copied into. Handing
+/// the address to another function counts as a write too — what happens on the
+/// far side isn't visible here.
+///
+/// `false` for a closure this pass can't find, which is the safe answer: a leak
+/// rather than a free of something the closure replaced.
+fn cell_is_read_only_in_closures(
+    func: &MirFunction,
+    all: &[MirFunction],
+    cell: LocalId,
+) -> bool {
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::ClosureCreate { func_name, captures, .. } = &stmt.kind else {
+                continue;
+            };
+            for cap in captures.iter().filter(|c| c.local_id == cell) {
+                let Some(callee) = all.iter().find(|f| f.name == *func_name) else {
+                    return false;
+                };
+                if !slot_is_read_only(callee, cap.offset) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Within one closure body: is the capture at `offset` only ever loaded from?
+fn slot_is_read_only(callee: &MirFunction, offset: u32) -> bool {
+    // Every name the capture's address reaches, copies included.
+    let mut addrs: HashSet<LocalId> = HashSet::new();
+    for block in &callee.blocks {
+        for stmt in &block.statements {
+            if let MirStmtKind::LoadCapture { dst, offset: o, .. } = &stmt.kind {
+                if *o == offset {
+                    addrs.insert(*dst);
+                }
+            }
+        }
+    }
+    if addrs.is_empty() {
+        return true;
+    }
+    loop {
+        let mut grew = false;
+        for block in &callee.blocks {
+            for stmt in &block.statements {
+                if let MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(MirOperand::Local(src)),
+                } = &stmt.kind
+                {
+                    if addrs.contains(src) && addrs.insert(*dst) {
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for block in &callee.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Store { addr, .. } if addrs.contains(addr) => return false,
+                MirStmtKind::ArrayStore { base, .. } if addrs.contains(base) => return false,
+                MirStmtKind::Call { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
+                    if args.iter().any(|a| {
+                        matches!(a, MirOperand::Local(id) if addrs.contains(id))
+                    }) {
+                        return false;
+                    }
+                }
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    if captures.iter().any(|c| addrs.contains(&c.local_id)) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
 fn every_def_is_fresh(
     func: &MirFunction,
     local: LocalId,
@@ -489,6 +697,19 @@ fn value_groups(
                             }
                         }
                     }
+                }
+                // Two loads from one cell are one container under two names,
+                // and each name got its own free: `let count = || items.len()`
+                // reads `items` out of its cell once per push and once for the
+                // closure, and `main` came out with two `Vec_free`s on the same
+                // pointer — "free(): invalid pointer" (#1060). The cell is the
+                // group's representative, whether or not it holds a container
+                // itself.
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                } if containers.contains_key(dst) => {
+                    union(&mut parent, *dst, *addr);
                 }
                 _ => {}
             }

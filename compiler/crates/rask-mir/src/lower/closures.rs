@@ -670,6 +670,12 @@ impl<'a> MirLowerer<'a> {
         }
         body_result?;
 
+        // Whether any `return` in the body compiled to a jump into the
+        // non-local exit. Read off what lowering emitted rather than scanned for
+        // in the source: `try`, `??` and a `return` inside a nested `match` arm
+        // all reach it, and a list of the constructs that do would go stale.
+        let body_returns = yb.any_jump_to(nonlocal_block);
+
         yb.switch_to_block(continue_block);
         yb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Constant(crate::operand::MirConst::Int(1))),
@@ -714,6 +720,17 @@ impl<'a> MirLowerer<'a> {
 
         // SEQ8: the body asked to leave the enclosing function. Test the flag
         // the yield raised and do it here, where `return` means what it says.
+        //
+        // Only when the body actually asked. Most loop bodies don't return, and
+        // emitting the test anyway left the frame with a second `Return` — of a
+        // slot nothing ever wrote — that no path could reach. It cost every
+        // sequence terminal its drop: `functions_that_hand_a_container_back`
+        // needs *every* returning path to hand back a container this frame made,
+        // and that one handed back an unwritten slot, so `to_vec` and `to_map`
+        // were freed by nobody (#1060).
+        if !body_returns {
+            return Ok(());
+        }
         let taken = self.builder.create_block();
         let done = self.builder.create_block();
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {

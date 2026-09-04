@@ -23,7 +23,7 @@
 
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
-p08_sequence.rk  # 2 allocations — adapter closures capture self, #1045
+p08_sequence.rk  # 5 allocations — adapter closures capture self, #1045
 p11_rack_link.rk  # 18 allocations
 p12_rack_link_churn.rk  # 129 allocations
 p13_rack_snapshot.rk  # 27 allocations
@@ -40,18 +40,18 @@ t19b_union_method_dispatch.rk  # 1 allocation
 t22_parameter_modes.rk  # 2 allocations
 t25_iterator_adapters.rk  # 4 allocations
 t26_closure_scoping.rk  # 2 allocations
-t26_custom_sequence.rk  # 4 allocations
+t26_custom_sequence.rk  # 6 allocations
 t27_error_narrowing.rk  # 2 allocations
 t27_own_closure_state.rk  # 4 allocations
 t29_branch_merge.rk  # 4 allocations
 t30_nested_container_take.rk  # 6 allocations — nested containers, #1047
 t31_channels.rk  # 20 allocations
-t31_sequence_adapters.rk  # 21 allocations — adapter closures capture self and f, #1045
+t31_sequence_adapters.rk  # 40 allocations — adapter closures capture self and f, #1045
 t34_vec_as_sequence.rk  # 17 allocations — the source closure captures self, #1045
-t35_returned_sequence.rk  # 40 allocations — returned sequences keep their environments, #1045
+t35_returned_sequence.rk  # 36 allocations — returned sequences keep their environments, #1045
 t36_cross_task_ownership.rk  # 18 allocations
 t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
-t37_extend_header_binding.rk  # 21 allocations — a sequence terminal's result comes back through a capture cell, #1060
+t37_extend_header_binding.rk  # 4 allocations — a container in a struct field, #1047
 t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t49_comptime.rk  # 2 allocations
