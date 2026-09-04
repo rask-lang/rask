@@ -166,20 +166,25 @@ $ rask test l3.rk
 exit=0
 ```
 
-`leak gate: 373 clean, 0 known-leaking, 0 new` is that blind spot, not a result.
-Judging the same 373 files by exit code instead — measured here, and the same
-split [#1053](https://github.com/rask-lang/rask/issues/1053) reports:
+`leak gate: <N> clean, 0 known-leaking, 0 new` is that blind spot, not a
+result — the gate reports every file clean by construction. Judging the 374
+suite files by exit code instead, measured here on the merged tree:
 
 | | files |
 |---|---|
-| leak (exit 1 with the flag, 0 without) | **193** |
-| fail either way (the 17 the differential tracks) | 17 |
-| clean | 163 |
+| leak (exit 1 with the flag, 0 without) | **199** |
+| fail either way (the 7 the differential tracks) | 7 |
+| clean | 168 |
 
-163 clean, not 373. A third branch (`claude/sequence-protocol-design-maakls`,
-whose gate reads the exit code) reports 197 clean / 170 known-leaking on the
-same suite — the same ~190 files, seen through a gate that can see them. So
-this is `main`'s state, not a regression from any branch.
+168 clean, not 374. Before merging #1057 the same sweep gave 193 / 17 / 163 —
+the ten files that PR un-broke moved out of "fails either way", and six of them
+leak. [#1053](https://github.com/rask-lang/rask/issues/1053) reports the
+pre-merge split, and a third branch
+(`claude/sequence-protocol-design-maakls`, whose gate reads the exit code)
+reports 197 clean / 170 known-leaking — the same ~190 files seen through a gate
+that can see them. So this is `main`'s state, not a regression from any
+branch, and it does not improve as bugs get fixed: fixing a file that couldn't
+run before just moves it into the leaking column.
 
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
