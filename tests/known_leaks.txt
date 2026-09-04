@@ -52,7 +52,6 @@ t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t49_comptime.rk  # 2 allocations
 t50_boxes.rk  # 4 allocations
-t51_pools.rk  # 6 allocations
 t53_format.rk  # 1 allocation
 t54_displayable.rk  # 1 allocation
 t54_strings.rk  # 8 allocations
@@ -133,7 +132,6 @@ t_named_context_resolves_by_type.rk  # 4 allocations
 t_nested_with_return.rk  # 12 allocations
 t_net_loopback.rk  # 8 allocations
 t_niche_handle_option.rk  # 18 allocations
-t_niche_option_handle.rk  # 2 allocations
 t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 157 allocations
 t_parse_error_variants.rk  # 8 allocations
