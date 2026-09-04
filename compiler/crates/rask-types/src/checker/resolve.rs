@@ -1140,9 +1140,10 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Random" => {
                 self.resolve_rng_method(&method, &args, &ret, span)
             }
-            // Atomic types (AtomicBool, AtomicI8..AtomicU64, AtomicUsize, AtomicIsize)
-            Type::UnresolvedNamed(name) if Self::is_atomic_type(name) => {
-                self.resolve_atomic_method(name, &method, &args, &ret, span)
+            // `Atomic<T>` — one type, one spelling (mem.atomics/GA1).
+            _ if self.atomic_payload(&ty).is_some() => {
+                let payload = self.atomic_payload(&ty).expect("just checked");
+                self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
             // Thread.spawn(closure) → ThreadHandle<T>
             Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
@@ -3322,8 +3323,14 @@ impl TypeChecker {
                 Some(self.resolve_map_method(type_args, method, args, ret, span))
             }
             "Random" => Some(self.resolve_rng_method(method, args, ret, span)),
-            name if Self::is_atomic_type(name) => {
-                Some(self.resolve_atomic_method(name, method, args, ret, span))
+            "Atomic" => {
+                let payload = match type_args.first() {
+                    Some(GenericArg::Type(t)) => (**t).clone(),
+                    _ => self
+                        .atomic_payload(&Type::UnresolvedNamed(type_name.to_string()))
+                        .unwrap_or_else(|| self.ctx.fresh_var()),
+                };
+                Some(self.resolve_atomic_method(payload, method, args, ret, span))
             }
             name if Self::is_simd_type(name) => {
                 Some(self.resolve_simd_method(name, method, args, ret, span))
@@ -3387,59 +3394,101 @@ impl TypeChecker {
         }
     }
 
-    /// Check whether a type name is a concrete atomic type.
-    fn is_atomic_type(name: &str) -> bool {
-        matches!(
-            name,
-            "AtomicBool"
-                | "AtomicI8"
-                | "AtomicU8"
-                | "AtomicI16"
-                | "AtomicU16"
-                | "AtomicI32"
-                | "AtomicU32"
-                | "AtomicI64"
-                | "AtomicU64"
-                | "AtomicUsize"
-                | "AtomicIsize"
-        )
-    }
-
-    /// Map atomic type name to its value type.
-    fn atomic_value_type(name: &str) -> Type {
-        match name {
-            "AtomicBool" => Type::Bool,
-            "AtomicI8" => Type::I8,
-            "AtomicU8" => Type::U8,
-            "AtomicI16" => Type::I16,
-            "AtomicU16" => Type::U16,
-            "AtomicI32" => Type::I32,
-            "AtomicU32" => Type::U32,
-            "AtomicI64" => Type::I64,
-            "AtomicU64" => Type::U64,
-            "AtomicUsize" => Type::I64, // usize = i64 on 64-bit
-            "AtomicIsize" => Type::I64, // isize = i64 on 64-bit
-            _ => Type::I64,
+    /// The payload written in `Atomic<T>`, if this is one.
+    ///
+    /// mem.atomics/GA1: `Atomic<T>` is the only spelling. The eleven
+    /// `AtomicU64`-style names the registry used to carry are gone — the rule
+    /// exists so a reader never has to wonder whether a named form and the
+    /// generic form differ.
+    fn atomic_payload(&mut self, ty: &Type) -> Option<Type> {
+        match ty {
+            Type::UnresolvedGeneric { name, args } if name == "Atomic" => match args.first() {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => Some(self.ctx.fresh_var()),
+            },
+            // `Atomic.new(0)` with no written argument — the value settles it.
+            Type::UnresolvedNamed(name) if name == "Atomic" => Some(self.ctx.fresh_var()),
+            // A static call keeps its written arguments in the name.
+            Type::UnresolvedNamed(name) if name.starts_with("Atomic<") => {
+                let inner = name.strip_prefix("Atomic<")?.strip_suffix('>')?.trim();
+                Some(crate::checker::parse_type_string(inner, &self.types).ok()?)
+            }
+            _ => None,
         }
     }
 
-    /// True for integer atomic types (not AtomicBool).
-    fn is_integer_atomic(name: &str) -> bool {
-        name != "AtomicBool"
+    /// GA2: why this payload can't go in an atomic, or `None` when it can.
+    ///
+    /// "One machine word" is the whole rule, and under Rask's layout that means
+    /// a primitive, or a struct with a single word-sized field. A two-field
+    /// struct is 16 bytes here however small its fields are written — every
+    /// field gets a word — so `Atomic<Slot>` over `{ index: i32, gen: i32 }` is
+    /// two words and the hardware has no single instruction for it.
+    fn atomic_payload_problem(&self, ty: &Type) -> Option<String> {
+        match self.resolve_named(ty) {
+            // Still open — the value that settles it decides, and rejecting on
+            // "don't know" would refuse code the checker later accepts.
+            Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            | Type::F32 | Type::F64 | Type::Bool | Type::Char => None,
+            Type::I128 | Type::U128 => Some(
+                "a 128-bit payload needs `target.has_atomic128`, which isn't wired up yet (AT7)"
+                    .to_string(),
+            ),
+            Type::Named(id) => match self.types.get(id) {
+                Some(TypeDef::Struct { fields, .. }) => match fields.len() {
+                    1 => self.atomic_payload_problem(&fields[0].1).map(|why| {
+                        format!("its one field can't go in an atomic either — {why}")
+                    }),
+                    n => Some(format!(
+                        "it is {n} fields, so {} bytes; an atomic is one machine word (GA2)",
+                        n * 8
+                    )),
+                },
+                _ => Some("only a struct of word-sized data can be a payload (GA2)".to_string()),
+            },
+            other => Some(format!(
+                "`{}` isn't something the hardware can read or write in one instruction (GA2)",
+                self.render_type(&other)
+            )),
+        }
     }
 
-    /// Resolve methods on atomic types (mem.atomics spec).
+    /// GA3: the fetch family exists where the payload can do arithmetic.
+    fn is_countable_payload(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                | Type::F32 | Type::F64
+                | Type::Var(_)
+        )
+    }
+
+    /// Resolve methods on `Atomic<T>` (mem.atomics).
     pub(super) fn resolve_atomic_method(
         &mut self,
-        type_name: &str,
+        val_ty: Type,
         method: &str,
         args: &[Type],
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let val_ty = Self::atomic_value_type(type_name);
-        let self_ty = Type::UnresolvedNamed(type_name.to_string());
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Atomic".to_string(),
+            args: vec![GenericArg::Type(Box::new(val_ty.clone()))],
+        };
         let ordering_ty = self.ordering_type();
+        // GA2 is a rule about the type, so it's reported once at the type
+        // rather than at every operation on it.
+        if let Some(reason) = self.atomic_payload_problem(&val_ty) {
+            return Err(TypeError::AtomicPayload {
+                ty: val_ty,
+                reason,
+                span,
+            });
+        }
 
         match method {
             // ── Construction ────────────────────────────────
@@ -3482,7 +3531,7 @@ impl TypeChecker {
 
             // ── Integer fetch operations ────────────────────
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if args.len() == 2 && Self::is_integer_atomic(type_name) =>
+                if args.len() == 2 && Self::is_countable_payload(&val_ty) =>
             {
                 let _ = self.unify(&args[0], &val_ty, span);
                 let _ = self.unify(&args[1], &ordering_ty, span);
@@ -3501,9 +3550,9 @@ impl TypeChecker {
                 self.unify(ret, &val_ty, span)
             }
 
-            // ── Integer-only fetch on AtomicBool → error ────
+            // GA3: adding two structs, or two bools, means nothing.
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if !Self::is_integer_atomic(type_name) =>
+                if !Self::is_countable_payload(&val_ty) =>
             {
                 Err(TypeError::NoSuchMethod {
                     ty: self_ty,

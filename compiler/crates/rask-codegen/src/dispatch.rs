@@ -1547,65 +1547,39 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
     ];
 
     // ── Atomic operations ──────────────────────────────────
-    // All integer atomics (I8..U64, Usize, Isize) share rask_atomic_int_* C functions.
-    // AtomicBool uses rask_atomic_bool_* C functions.
-    // Entries generated per type name so MIR qualified names resolve correctly.
+    // mem.atomics/GA1: `Atomic<T>` is the only spelling, so there is one set of
+    // rows. Every payload — every integer width, `bool`, a word-sized struct —
+    // is a machine word to the runtime, which is why one C implementation
+    // covers them: `_Atomic(int64_t)`. The eleven `AtomicU64`-style names the
+    // table used to carry are gone with the types.
 
-    let int_atomic_types = [
-        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
-        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
-        "AtomicUsize", "AtomicIsize",
-    ];
-
-    for ty in &int_atomic_types {
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_new", ty)), "rask_atomic_int_new", &[types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_default", ty)), "rask_atomic_int_default", &[], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_load", ty)), "rask_atomic_int_load", &[types::I64, types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_store", ty)), "rask_atomic_int_store", &[types::I64, types::I64, types::I64], None, false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_swap", ty)), "rask_atomic_int_swap", &[types::I64, types::I64, types::I64], Some(types::I64), false));
-        // CAS — Custom adaptation (appends out_ok pointer)
-        entries.push(StdlibEntry {
-            mir_name: leak_str(&format!("{}_compare_exchange", ty)),
-            c_name: "rask_atomic_int_compare_exchange",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-        });
-        entries.push(StdlibEntry {
-            mir_name: leak_str(&format!("{}_compare_exchange_weak", ty)),
-            c_name: "rask_atomic_int_compare_exchange_weak",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-        });
-        for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", ty, op)), leak_str(&format!("rask_atomic_int_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_into_inner", ty)), "rask_atomic_int_into_inner", &[types::I64], Some(types::I64), false));
+    // Custom throughout: a word-sized struct payload (GA2) arrives as an
+    // address and has to travel as the word itself.
+    let atomic = |mir_name: &'static str, c_name: &'static str, params: &'static [types::Type], ret: Option<types::Type>| StdlibEntry {
+        mir_name, c_name, params, ret_ty: ret, can_panic: false,
+        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+    };
+    entries.push(atomic("Atomic_new", "rask_atomic_int_new", &[types::I64], Some(types::I64)));
+    entries.push(StdlibEntry::simple("Atomic_default", "rask_atomic_int_default", &[], Some(types::I64), false));
+    entries.push(atomic("Atomic_load", "rask_atomic_int_load", &[types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_store", "rask_atomic_int_store", &[types::I64, types::I64, types::I64], None));
+    entries.push(atomic("Atomic_swap", "rask_atomic_int_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic(
+        "Atomic_compare_exchange", "rask_atomic_int_compare_exchange",
+        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+    ));
+    entries.push(atomic(
+        "Atomic_compare_exchange_weak", "rask_atomic_int_compare_exchange_weak",
+        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+    ));
+    for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
+        entries.push(StdlibEntry::simple(
+            leak_str(&format!("Atomic_{}", op)),
+            leak_str(&format!("rask_atomic_int_{}", op)),
+            &[types::I64, types::I64, types::I64], Some(types::I64), false,
+        ));
     }
-
-    // AtomicBool — separate C functions
-    entries.push(StdlibEntry::simple("AtomicBool_new", "rask_atomic_bool_new", &[types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_default", "rask_atomic_bool_default", &[], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_load", "rask_atomic_bool_load", &[types::I64, types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_store", "rask_atomic_bool_store", &[types::I64, types::I64, types::I64], None, false));
-    entries.push(StdlibEntry::simple("AtomicBool_swap", "rask_atomic_bool_swap", &[types::I64, types::I64, types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry {
-        mir_name: "AtomicBool_compare_exchange", c_name: "rask_atomic_bool_compare_exchange",
-        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-        ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-    });
-    entries.push(StdlibEntry {
-        mir_name: "AtomicBool_compare_exchange_weak", c_name: "rask_atomic_bool_compare_exchange_weak",
-        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-        ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-    });
-    for op in &["fetch_and", "fetch_or", "fetch_xor", "fetch_nand"] {
-        entries.push(StdlibEntry::simple(leak_str(&format!("AtomicBool_{}", op)), leak_str(&format!("rask_atomic_bool_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
-    }
-    entries.push(StdlibEntry::simple("AtomicBool_into_inner", "rask_atomic_bool_into_inner", &[types::I64], Some(types::I64), false));
+    entries.push(atomic("Atomic_into_inner", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));

@@ -222,6 +222,17 @@ enum CallAdapt {
     None,
     /// Result is void* — load the i64 value from the returned pointer
     DerefResult,
+    /// compare-exchange: the call returned the value it observed, and wrote
+    /// whether the swap happened into this slot. Build the `T or T` the
+    /// signature promises — Ok(old) when it swapped, Err(actual) when it
+    /// didn't. `PopOutParam` was standing in here and handed back the success
+    /// flag as the value, so `compare_exchange(5, 9, …)` reported that it had
+    /// found 1.
+    CasResult(StackSlot),
+    /// The call returned one machine word that IS the destination aggregate —
+    /// `Atomic<Slot>.load()` on a word-sized struct payload (mem.atomics/GA2).
+    /// Store it into the destination's own slot.
+    WordIntoAggregate,
     /// Result is void* — wrap as Option: NULL→None(tag=1), non-NULL→Some(tag=0, deref)
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
@@ -5200,6 +5211,40 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().stack_addr(types::I64, ss, 0)
                 }
+                CallAdapt::CasResult(ok_ss) => {
+                    let results = builder.inst_results(call_inst);
+                    let observed = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    let swapped = builder.ins().stack_load(types::I64, ok_ss, 0);
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        let ok_tag = builder.ins().iconst(types::I64, 0);
+                        let err_tag = builder.ins().iconst(types::I64, 1);
+                        let tag = builder.ins().select(swapped, ok_tag, err_tag);
+                        builder.ins().stack_store(tag, *dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, *dst_ss);
+                        builder.ins().stack_store(
+                            observed, *dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
+                        );
+                        slot_already_written = true;
+                    }
+                    observed
+                }
+                CallAdapt::WordIntoAggregate => {
+                    let results = builder.inst_results(call_inst);
+                    let word = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        builder.ins().stack_store(word, *ss, 0);
+                        slot_already_written = true;
+                    }
+                    word
+                }
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
                     // Copy `slot_size` bytes into the dst's own slot.
@@ -7801,6 +7846,48 @@ impl<'a> FunctionBuilder<'a> {
                     if args.len() >= 2 { args[1] = size; } else { args.push(size); }
                 }
                 CallAdapt::None
+            }
+
+            // GA2: a word-sized struct is a legal payload, and the runtime's
+            // atomic is one machine word — so the struct travels *as* that
+            // word. Codegen hands aggregates around by address, so the value
+            // has to be loaded out of its storage first; storing the pointer
+            // instead made `Atomic<Slot>` an atomic pointer to a temporary, and
+            // the load read whatever that address held (mem.atomics).
+            "Atomic_new" | "Atomic_store" | "Atomic_swap" | "Atomic_load"
+            | "Atomic_into_inner" | "Atomic_compare_exchange"
+            | "Atomic_compare_exchange_weak" => {
+                // Argument side: load the word out of an aggregate payload. The
+                // ordering arguments are plain integers and answer `false` to
+                // the aggregate question, so this can sweep every argument.
+                for i in 0..args.len().min(mir_args.len()) {
+                    let (size, is_aggregate) = Self::struct_elem_size(mir_args, i, ctx);
+                    if is_aggregate && size <= 8 {
+                        args[i] = builder.ins().load(types::I64, MemFlags::new(), args[i], 0);
+                    }
+                }
+                if matches!(
+                    func_name,
+                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak"
+                ) {
+                    // The observed value comes back through an out-param; the
+                    // call's own result is whether it succeeded.
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 8, 0,
+                    ));
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    return CallAdapt::CasResult(ss);
+                }
+                // Return side: a word going back into an aggregate destination.
+                let dst_is_aggregate = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
+                    .unwrap_or(false);
+                if dst_is_aggregate {
+                    CallAdapt::WordIntoAggregate
+                } else {
+                    CallAdapt::None
+                }
             }
 
             // Sender_send: wrap value as pointer (structs already are)

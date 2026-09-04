@@ -1087,12 +1087,18 @@ pub enum Value {
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
     Map(Arc<Mutex<MapData>>),
-    /// Atomic bool (lock-free boolean)
-    AtomicBool(Arc<std::sync::atomic::AtomicBool>),
-    /// Atomic usize (lock-free unsigned integer)
-    AtomicUsize(Arc<std::sync::atomic::AtomicUsize>),
-    /// Atomic u64 (lock-free 64-bit unsigned integer)
-    AtomicU64(Arc<std::sync::atomic::AtomicU64>),
+    /// `Atomic<T>` — one type for every payload (mem.atomics/GA1).
+    ///
+    /// A mutex rather than a lock-free word: the interpreter is the reference
+    /// for *what the answer is*, and a mutex gives every operation the
+    /// sequentially-consistent answer whatever ordering was asked for. It also
+    /// holds a payload a machine word can't — a word-sized struct is a legal
+    /// payload (GA2) and there is no `AtomicStruct` in Rust to borrow.
+    ///
+    /// There were three of these — bool, usize, u64 — each with `load` and
+    /// `store` and nothing else, which is how `swap` and `fetch_add` came back
+    /// "no method on type `Atomic<usize>`".
+    Atomic(Arc<Mutex<Value>>),
     /// Shared<T> (RwLock wrapper for concurrent read-heavy access)
     Shared(Arc<RwLock<Value>>),
     /// Mutex<T> (exclusive lock wrapper)
@@ -1380,9 +1386,7 @@ impl Value {
             Value::Receiver(_) => "Receiver",
             Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
-            Value::AtomicBool(_) => "Atomic<bool>",
-            Value::AtomicUsize(_) => "Atomic<usize>",
-            Value::AtomicU64(_) => "Atomic<u64>",
+            Value::Atomic(_) => "Atomic",
             Value::Shared(_) => "Shared",
             Value::RaskMutex(_) => "Mutex",
             Value::TcpListener(_) => "TcpListener",
@@ -1759,14 +1763,9 @@ impl fmt::Display for Value {
                 let inner = m.lock().unwrap();
                 write!(f, "Mutex({})", inner)
             }
-            Value::AtomicBool(a) => {
-                write!(f, "Atomic<bool>({})", a.load(std::sync::atomic::Ordering::Relaxed))
-            }
-            Value::AtomicUsize(a) => {
-                write!(f, "Atomic<usize>({})", a.load(std::sync::atomic::Ordering::Relaxed))
-            }
-            Value::AtomicU64(a) => {
-                write!(f, "Atomic<u64>({})", a.load(std::sync::atomic::Ordering::Relaxed))
+            Value::Atomic(a) => {
+                let inner = a.lock().unwrap();
+                write!(f, "Atomic({})", inner)
             }
             Value::TcpListener(l) => {
                 if l.lock().unwrap().is_some() {

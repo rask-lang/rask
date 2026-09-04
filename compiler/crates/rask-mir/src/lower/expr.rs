@@ -1288,6 +1288,34 @@ impl<'a> MirLowerer<'a> {
                 } else if let Some(fnval) = self.lower_fn_as_value(name) {
                     // Not a variable — a function's name used as a value.
                     Ok(fnval)
+                } else if let Some(tag) = rask_stdlib::ordering_tag(name) {
+                    // `import sync.Relaxed` brings the ordering into scope
+                    // under its bare name (structure.modules), which is how
+                    // mem.atomics writes every one of its examples. The
+                    // checker accepted it and lowering had no case for it, so
+                    // `counter.load(Relaxed)` came back "unresolved variable".
+                    //
+                    // `Ordering` is registered by the compiler rather than
+                    // declared, so there's no layout to read: the enum type
+                    // comes from the checker, and a tag at offset 0 is what
+                    // `Ordering.Relaxed` builds too.
+                    let ty = self
+                        .ctx
+                        .lookup_node_type(expr.id)
+                        .filter(|t| matches!(t, MirType::Enum(_)))
+                        .unwrap_or(MirType::I64);
+                    if matches!(ty, MirType::Enum(_)) {
+                        let result_local = self.builder.alloc_temp(ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(tag)),
+                            store_size: None,
+                        }));
+                        Ok((MirOperand::Local(result_local), ty))
+                    } else {
+                        Ok((MirOperand::Constant(MirConst::Int(tag)), MirType::I64))
+                    }
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
                 }

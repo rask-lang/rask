@@ -35,12 +35,7 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
     ("memory", &["Heap"]),
     // The atomics are codegen intrinsics. sync.rk declares `Mutex` and
     // `Shared`'s strategies, so those come off the file itself.
-    ("sync", &[
-        "Atomic", "AtomicBool",
-        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
-        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
-        "AtomicUsize", "AtomicIsize",
-    ]),
+    ("sync", &["Atomic"]),
 ];
 
 /// Names a module exports that aren't types — free functions that come into

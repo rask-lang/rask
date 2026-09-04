@@ -760,6 +760,17 @@ impl Interpreter {
                 if let Some(kind) = super::register::prelude_builtin(base_name) {
                     return Ok(Value::Builtin(kind));
                 }
+                // `import sync.Relaxed` brings the ordering into scope under
+                // its bare name, which is how mem.atomics writes its examples.
+                if rask_stdlib::ordering_tag(base_name).is_some() {
+                    return Ok(Value::Enum {
+                        name: "Ordering".to_string(),
+                        variant: base_name.to_string(),
+                        fields: vec![],
+                        variant_index: rask_stdlib::ordering_tag(base_name).unwrap_or(0) as u32,
+                        origin: None,
+                    });
+                }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 

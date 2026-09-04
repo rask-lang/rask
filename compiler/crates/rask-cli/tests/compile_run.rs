@@ -3749,6 +3749,20 @@ fn comptime_quota_annotation_raises_the_limit() {
 }
 
 #[test]
+fn atomic_payload_wider_than_a_word_is_rejected() {
+    // GA2. Every struct field gets its own word here, so two i32 fields are 16
+    // bytes — there is no single instruction behind that, and an atomic that
+    // silently took a lock would be the one thing `Atomic` promises not to be.
+    let (ok, output) = compile_only_succeeds("atomic_wide_payload.rk");
+    assert!(!ok, "a two-word payload must be rejected: {}", output);
+    assert!(
+        output.contains("one machine word"),
+        "the message has to say what the rule is: {}",
+        output
+    );
+}
+
+#[test]
 fn comptime_todo_still_compiles() {
     // `todo()` is the exception: it means "not written yet", so a program full
     // of them has to compile. The const falls back to runtime, where the same

@@ -248,17 +248,6 @@ pub const BUILTIN_TYPES: &[BuiltinTypeEntry] = &[
     from("sync", "Shared", BuiltinTypeKind::Shared),
     from("sync", "Mutex", BuiltinTypeKind::Mutex),
     from("sync", "Atomic", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicBool", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicI8", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicU8", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicI16", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicU16", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicI32", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicU32", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicI64", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicU64", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicUsize", BuiltinTypeKind::Atomic),
-    from("sync", "AtomicIsize", BuiltinTypeKind::Atomic),
 
     // These three were a second table, keyed by module in the resolver. Same
     // question, so the same table answers it.

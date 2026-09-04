@@ -1737,20 +1737,20 @@ impl Interpreter {
                 })?;
                 Ok(Value::RaskMutex(Arc::new(Mutex::new(value))))
             }
+            // GA2 decides which payloads are legal at the type; anything that
+            // got here is one.
             (TypeConstructorKind::Atomic, "new") => {
                 let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
                     got: 0,
                 })?;
-                use std::sync::atomic::{AtomicBool, AtomicUsize};
-                match value {
-                    Value::Bool(b) => Ok(Value::AtomicBool(Arc::new(AtomicBool::new(b)))),
-                    Value::Int(n, _) => Ok(Value::AtomicUsize(Arc::new(AtomicUsize::new(n as usize)))),
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "Atomic.new requires bool or int, got {}",
-                        value.type_name()
-                    ))),
-                }
+                Ok(Value::Atomic(Arc::new(Mutex::new(value))))
+            }
+            // `default()` is primitive payloads only, and 0 is what every one
+            // of them starts at — `false` included, once the checker has said
+            // the payload is a bool.
+            (TypeConstructorKind::Atomic, "default") => {
+                Ok(Value::Atomic(Arc::new(Mutex::new(Value::int(0)))))
             }
             (TypeConstructorKind::Ordering, "Relaxed") => {
                 Ok(Value::Enum {
@@ -1802,85 +1802,128 @@ impl Interpreter {
         }
     }
 
-    /// Handle AtomicBool method calls.
-    pub(crate) fn call_atomic_bool_method(
+    /// `Atomic<T>` (mem.atomics). Every operation runs under the value's own
+    /// mutex, so each is atomic and every ordering answers sequentially
+    /// consistently — the strongest the program could have asked for, which is
+    /// always a legal answer for a weaker one.
+    pub(crate) fn call_atomic_method(
         &self,
-        atomic: &Arc<std::sync::atomic::AtomicBool>,
+        atomic: &Arc<Mutex<Value>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // The ordering argument is checked but not used: it can only make the
+        // answer weaker, and this backend has no weaker answer to give.
+        let ordering_at = |i: usize| self.parse_ordering(&args, i).map(|_| ());
+
         match method {
             "load" => {
-                let ordering = self.parse_ordering(&args, 0)?;
-                let value = atomic.load(ordering);
-                Ok(Value::Bool(value))
+                ordering_at(0)?;
+                Ok(atomic.lock().unwrap().clone())
             }
             "store" => {
-                let value = self.expect_bool(&args, 0)?;
-                let ordering = self.parse_ordering(&args, 1)?;
-                atomic.store(value, ordering);
+                ordering_at(1)?;
+                let value = args.first().cloned().unwrap_or(Value::Unit);
+                *atomic.lock().unwrap() = value;
                 Ok(Value::Unit)
             }
+            "swap" => {
+                ordering_at(1)?;
+                let value = args.first().cloned().unwrap_or(Value::Unit);
+                let mut slot = atomic.lock().unwrap();
+                Ok(std::mem::replace(&mut slot, value))
+            }
+            // AT6 says the failure ordering must be no stronger than success
+            // and must not be Release or AcqRel; that's a compile-time rule.
+            "compare_exchange" | "compare_exchange_weak" => {
+                ordering_at(2)?;
+                ordering_at(3)?;
+                let expected = args.first().cloned().unwrap_or(Value::Unit);
+                let new = args.get(1).cloned().unwrap_or(Value::Unit);
+                let mut slot = atomic.lock().unwrap();
+                let current = slot.clone();
+                if Self::value_eq(&current, &expected) {
+                    *slot = new;
+                    Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![current],
+                        variant_index: 0,
+                        origin: None,
+                    })
+                } else {
+                    // `CasFailed(actual)` — what's there now, so a retry loop
+                    // has the value it needs without a second load.
+                    Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![current],
+                        variant_index: 1,
+                        origin: None,
+                    })
+                }
+            }
+            "into_inner" => Ok(atomic.lock().unwrap().clone()),
+            // AT5: the fetch family wraps on overflow and returns the OLD value.
+            _ if method.starts_with("fetch_") => {
+                ordering_at(1)?;
+                let operand = args.first().cloned().unwrap_or(Value::Unit);
+                let mut slot = atomic.lock().unwrap();
+                let old = slot.clone();
+                *slot = Self::atomic_fetch(method, &old, &operand)?;
+                Ok(old)
+            }
             _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Atomic<bool>".to_string(),
+                ty: "Atomic".to_string(),
                 method: method.to_string(),
             }),
         }
     }
 
-    /// Handle AtomicUsize method calls.
-    pub(crate) fn call_atomic_usize_method(
-        &self,
-        atomic: &Arc<std::sync::atomic::AtomicUsize>,
-        method: &str,
-        args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        match method {
-            "load" => {
-                let ordering = self.parse_ordering(&args, 0)?;
-                let value = atomic.load(ordering);
-                Ok(Value::int(value as i64))
-            }
-            "store" => {
-                let value = self.expect_int(&args, 0)?;
-                let ordering = self.parse_ordering(&args, 1)?;
-                atomic.store(value as usize, ordering);
-                Ok(Value::Unit)
-            }
-            _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Atomic<usize>".to_string(),
-                method: method.to_string(),
-            }),
+    /// The new value a `fetch_*` writes back.
+    fn atomic_fetch(method: &str, old: &Value, operand: &Value) -> Result<Value, RuntimeError> {
+        // Bool payloads get the bitwise four (GA3); everything else is integer
+        // arithmetic, wrapping.
+        if let (Value::Bool(a), Value::Bool(b)) = (old, operand) {
+            let (a, b) = (*a, *b);
+            return match method {
+                "fetch_and" => Ok(Value::Bool(a && b)),
+                "fetch_or" => Ok(Value::Bool(a || b)),
+                "fetch_xor" => Ok(Value::Bool(a != b)),
+                "fetch_nand" => Ok(Value::Bool(!(a && b))),
+                _ => Err(RuntimeError::NoSuchMethod {
+                    ty: "Atomic<bool>".to_string(),
+                    method: method.to_string(),
+                }),
+            };
         }
+        let (Value::Int(a, kind), Value::Int(b, _)) = (old, operand) else {
+            return Err(RuntimeError::TypeError(format!(
+                "`{}` needs a countable payload, found {}",
+                method,
+                old.type_name()
+            )));
+        };
+        let (a, b, kind) = (*a, *b, *kind);
+        let n = match method {
+            "fetch_add" => a.wrapping_add(b),
+            "fetch_sub" => a.wrapping_sub(b),
+            "fetch_and" => a & b,
+            "fetch_or" => a | b,
+            "fetch_xor" => a ^ b,
+            "fetch_nand" => !(a & b),
+            "fetch_max" => a.max(b),
+            "fetch_min" => a.min(b),
+            _ => {
+                return Err(RuntimeError::NoSuchMethod {
+                    ty: "Atomic".to_string(),
+                    method: method.to_string(),
+                })
+            }
+        };
+        Ok(Value::Int(n, kind))
     }
 
-    /// Handle AtomicU64 method calls.
-    pub(crate) fn call_atomic_u64_method(
-        &self,
-        atomic: &Arc<std::sync::atomic::AtomicU64>,
-        method: &str,
-        args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        match method {
-            "load" => {
-                let ordering = self.parse_ordering(&args, 0)?;
-                let value = atomic.load(ordering);
-                Ok(Value::int(value as i64))
-            }
-            "store" => {
-                let value = self.expect_int(&args, 0)?;
-                let ordering = self.parse_ordering(&args, 1)?;
-                atomic.store(value as u64, ordering);
-                Ok(Value::Unit)
-            }
-            _ => Err(RuntimeError::NoSuchMethod {
-                ty: "Atomic<u64>".to_string(),
-                method: method.to_string(),
-            }),
-        }
-    }
-
-    /// Parse an Ordering enum value from arguments.
     fn parse_ordering(
         &self,
         args: &[Value],

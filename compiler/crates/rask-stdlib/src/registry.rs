@@ -34,10 +34,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
-        "ThreadHandle" | "Sender" | "Receiver" | "Shared"
-        | "AtomicBool" | "AtomicI8" | "AtomicU8"
-        | "AtomicI16" | "AtomicU16" | "AtomicI32" | "AtomicU32"
-        | "AtomicI64" | "AtomicU64" | "AtomicUsize" | "AtomicIsize"
+        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Atomic"
         | "File" | "Metadata"
         | "TcpListener" | "TcpConnection"
         | "Instant" => StdlibLayer::Runtime,
@@ -221,14 +218,13 @@ const SIMD_METHODS: &[&str] = &[
     "get", "set",
 ];
 
-const ATOMIC_BOOL_METHODS: &[&str] = &[
-    "new", "default", "load", "store", "swap",
-    "compare_exchange", "compare_exchange_weak",
-    "fetch_and", "fetch_or", "fetch_xor", "fetch_nand",
-    "into_inner",
-];
-const ATOMIC_INT_METHODS: &[&str] = &[
-    "new", "default", "load", "store", "swap",
+/// mem.atomics: one type, so one list. Which of these a given payload actually
+/// gets is GA3's business — a `bool` has no `fetch_add` — and the checker
+/// answers that from the payload rather than from a second list here.
+const ATOMIC_METHODS: &[&str] = &[
+    // `new` and `default` are constructors — they answer on the type, not on a
+    // value, the same way `Shared`'s do, so they aren't in this list.
+    "load", "store", "swap",
     "compare_exchange", "compare_exchange_weak",
     "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
     "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
@@ -292,9 +288,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "Duration", "Instant",
     "Path", "Args",
     "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared",
-    "AtomicBool", "AtomicI8", "AtomicU8",
-    "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
-    "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
+    "Atomic",
     "f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8",
 ];
 
@@ -354,10 +348,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Sender" => SENDER_METHODS,
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,
-        "AtomicBool" => ATOMIC_BOOL_METHODS,
-        "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
-        | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicU64"
-        | "AtomicUsize" | "AtomicIsize" => ATOMIC_INT_METHODS,
+        "Atomic" => ATOMIC_METHODS,
         "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
         _ => &[],
     }
@@ -383,9 +374,7 @@ pub fn module_method_names(module: &str) -> &'static [&'static str] {
 /// Drift tests should skip these.
 pub fn is_codegen_only_type(type_name: &str) -> bool {
     matches!(type_name,
-        "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
-        | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicIsize"
-        | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
+        "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
     )
 }
 
@@ -393,19 +382,6 @@ pub fn is_codegen_only_type(type_name: &str) -> bool {
 /// Returns methods to skip for drift testing.
 pub fn codegen_only_methods(type_name: &str) -> &'static [&'static str] {
     match type_name {
-        "AtomicBool" => &[
-            "new", "default", "swap",
-            "compare_exchange", "compare_exchange_weak",
-            "fetch_and", "fetch_or", "fetch_xor", "fetch_nand",
-            "into_inner",
-        ],
-        "AtomicUsize" | "AtomicU64" => &[
-            "new", "default", "swap",
-            "compare_exchange", "compare_exchange_weak",
-            "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
-            "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
-            "into_inner",
-        ],
         _ => &[],
     }
 }

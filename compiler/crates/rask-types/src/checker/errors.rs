@@ -923,6 +923,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.atomics/GA2: `Atomic<T>` needs a payload the hardware can treat as
+    /// one word. The reason is carried so the message can say which rule the
+    /// payload broke rather than restating the rule.
+    #[error("`Atomic<{ty}>` — {reason}")]
+    AtomicPayload {
+        ty: Type,
+        reason: String,
+        span: Span,
+    },
+
     /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
     /// whose index type doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -1030,6 +1040,8 @@ impl TypeError {
                 *left = f(left);
                 *right = f(right);
             }
+
+            AtomicPayload { ty, .. } => *ty = f(ty),
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }

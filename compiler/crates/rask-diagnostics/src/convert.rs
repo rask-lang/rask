@@ -1456,6 +1456,20 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "not a Result type")
             }
 
+            AtomicPayload { ty, reason, span } => {
+                Diagnostic::error(format!("`Atomic<{}>` — {}", ty, reason))
+                    .with_code("E0384")
+                    .with_primary(*span, "payload doesn't fit an atomic")
+                    .with_why(
+                        "an atomic is one machine word the hardware reads and writes in a \
+                         single instruction; anything wider needs a lock [mem.atomics/GA2]",
+                    )
+                    .with_fix(
+                        "use `Shared<T, Mutex>` for a payload this size, or pack the fields \
+                         into one word yourself",
+                    )
+            }
+
             NotIterable { found, span } => {
                 let ty = found.to_string();
                 let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))

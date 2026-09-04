@@ -7,8 +7,9 @@
 //   3. match h.join() { T as v => ..., JoinError as e => ... } — explicit handling
 //
 import async.spawn
-import sync.AtomicI64
+import sync.Atomic
 import sync.Relaxed
+import sync.SeqCst
 import sync.Shared
 
 // Approach 1: Use ! to panic on task failure (simplest for tests)
@@ -54,27 +55,27 @@ func flight_tracker() -> i32 {
 
 // Approach 2: Propagate errors (if function can return JoinError)
 // For this version, we keep it simple and use ! since tests expect i64
+// The counter is module-level because `spawn` needs `own`, which moves what the
+// closure captures — a local atomic could only ever reach one task. A const is
+// reached by name from anywhere, and there is nothing to move.
+const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
+
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     using Multitasking {
-        // An atomic would be the lock-free way to do this, and it can't cross
-        // into a task yet: `spawn` needs `own`, which moves the capture, and
-        // `AtomicI64.clone()` has no lowering to hand a second task its own
-        // handle (#1068). A `Shared<i64>` does the same job through a lock.
-        mut counter = Shared.new(0)
+        COUNTER.store(0, SeqCst)
 
-        // A `Vec` can't hold the handles either — a `TaskHandle` is linear and
-        // a Vec drop can't consume its elements (mem.resource-types/RC1). So
-        // each task is detached and reports itself finished on a channel, and
-        // the count of reports is what we wait for.
+        // A `Vec` can't hold the handles — a `TaskHandle` is linear and a Vec
+        // drop can't consume its elements (mem.resource-types/RC1). So each
+        // task is detached and reports itself finished on a channel, and the
+        // count of reports is what we wait for.
         mut (done_tx, done_rx) = Channel<bool>.buffered(num_tasks)
         for i in 0..num_tasks {
-            let task_counter = counter.clone()
             let task_done = done_tx.clone()
             spawn(own || {
                 for j in 0..count_per_task {
-                    with task_counter.write() as v {
-                        v = v + 1
-                    }
+                    // Relaxed is enough: nothing here depends on the order of
+                    // anything but the counter itself.
+                    COUNTER.fetch_add(1, Relaxed)
                 }
                 task_done.send(true)
             }).detach()
@@ -84,7 +85,7 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
             done_rx.receive()!
         }
 
-        return counter.get()
+        return COUNTER.load(SeqCst)
     }
 }
 
