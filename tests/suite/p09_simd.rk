@@ -1,4 +1,14 @@
 // PENDING type.simd — SIMD vector types (f32x4 = Vec[f32,4]): literals, splat, lane-wise arithmetic, lane extract. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+//
+// Surveyed 2026-09-04, full findings in #1059. Short version: the checker's half
+// is there — with `import math.f32x4` the types below check clean — and nothing
+// below it is. A SIMD literal lowers to `[f64; 4]` (f64 lanes, not f32, and an
+// array rather than a vector) and the binding is a `ptr` nothing ever writes to;
+// lane indexing has no arm in MIR and falls into the Vec path; `+` desugars to a
+// Vec method the interpreter can't find. `splat[f32, 4](…)` doesn't parse at all
+// — square-bracket type application isn't in the grammar, which the spec's own
+// `Vec[T, N]` form needs too. Start at the literal: the rest has nothing to work
+// on until a SIMD value exists.
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Spec: specs/types/simd.md — f32x4 aliases Vec[f32,4]; C1 literal construction,
 // C3 splat[T,N](x) broadcast, A1 element-wise arithmetic, A3 scalar broadcast,

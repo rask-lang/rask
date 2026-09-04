@@ -6,7 +6,7 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 90 decided specs (up from 73 a week ago — a batch of stdlib specs landed: url, base64, hex, csv, terminal, digest, tls).
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). What's left is a registered backlog — 11 tracked bugs and 6 unbuilt features, each with a probe file in the suite (down from 13+7 at the last measure). See [PLAN.md](PLAN.md) for the work order.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). What's left is a registered backlog — as of 2026-09-04, no tracked bugs and seven unbuilt features, each with a probe file in the suite (was 11+6, and 13+7 the measure before). See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
@@ -77,11 +77,34 @@ it leads over finishing the smaller registered-bug backlog.
 
 ### 3. Finish the coverage backlog
 
-11 registered bugs (`tests/known_divergences.txt`) + 6 unbuilt features
-(`tests/pending_features.txt`, 3 of which are the sequence-protocol cluster
-above). Each has a probe file and an issue. Spot-checked a sample against
-their issues and code this pass — all still accurately described, nothing
-found already fixed or already built.
+The registered-bug half is done. `tests/known_divergences.txt` is empty:
+all eleven — #1022, #1000, #1021, #899, #932, #928, #1002, #974, #919, #997,
+#905 — are fixed on both backends and pruned, and the file's header records
+what each one turned out to be. #904 was the one that wasn't a bug: it needs an
+inferred parameter to *generalize*, which nothing in the pipeline does, so it
+moved to the pending list as `p11_gradual_generalization.rk`.
+
+What's left is `tests/pending_features.txt` — seven unbuilt features, each with
+a probe. Three are the sequence-protocol cluster above (#912, #920, #927) and
+`p08_sequence.rk` is the protocol itself. Of the rest:
+
+- **`p10_binary.rk`** — `@binary` is closer than it looked. Two bugs were in the
+  way and are fixed: PC2 rejected every `@binary` struct (`unknown type u16be`,
+  telling you to declare it) and monomorphization laid the fields out at
+  pointer size. The interpreter now runs the whole probe. Native generates
+  neither `build` nor `parse`, and is blocked on
+  [#1058](https://github.com/rask-lang/rask/issues/1058) — G1's signature takes
+  `[]u8`, and a `Vec<u8>` can't be passed to a declared `[]u8` parameter, except
+  to a method the compiler registered itself. That inconsistency needs settling
+  first, and there's no slices spec to settle it from.
+- **`p09_simd.rk`** — surveyed in
+  [#1059](https://github.com/rask-lang/rask/issues/1059). The checker's half is
+  built; nothing below it is. A SIMD literal lowers to `[f64; 4]` and the
+  binding is a `ptr` nothing writes to, so lane reads and lane-wise arithmetic
+  have no value to work on. `splat[T, N](…)` doesn't parse — square-bracket
+  type application isn't in the grammar, and the spec's own `Vec[T, N]` form
+  needs it too.
+- **`p11_gradual_generalization.rk`** — #904, above.
 
 ### 4. Incremental compilation
 
