@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Default and named arguments on methods (#1028).
+//
+// Defaults were filled for free functions and skipped for methods called on a
+// variable. Both spellings reach the desugar pass as an `Ident` object —
+// `Type.method()` and `value.method()` are the same shape there — and the pass
+// read every `Ident` as a type name, so `f.bump()` was checked against the full
+// arity and reported "expected 1 argument, found 0". A receiver that wasn't an
+// `Ident`, like a struct literal, worked the whole time.
+//
+// SD2 in specs/stdlib/api-design.md wants surface to grow by parameter rather
+// than by name, and most stdlib API is methods, so this is what makes the rule
+// usable there — `s.replace(from, to, limit: n)` being the case that named it.
+
+struct Foo {
+    x: i64
+}
+
+extend Foo {
+    public func bump(self, by: i64 = 1) -> i64 {
+        return self.x + by
+    }
+
+    public func tag(self, prefix: string = "[", suffix: string = "]") -> string {
+        return "{prefix}{self.x}{suffix}"
+    }
+
+    public func make(start: i64 = 7) -> Foo {
+        return Foo { x: start }
+    }
+}
+
+func free_bump(x: i64, by: i64 = 1) -> i64 {
+    return x + by
+}
+
+test "default filled on a method called through a variable" {
+    let f = Foo { x: 10 }
+    assert f.bump() == 11
+    assert f.bump(5) == 15
+}
+
+test "default filled on a method called on a literal receiver" {
+    assert Foo { x: 10 }.bump() == 11
+}
+
+test "free functions keep working" {
+    assert free_bump(10) == 11
+    assert free_bump(10, 5) == 15
+}
+
+test "a named argument names the parameter it fills" {
+    let f = Foo { x: 10 }
+    assert f.bump(by: 5) == 15
+}
+
+test "a named argument can skip an earlier optional" {
+    let f = Foo { x: 1 }
+    assert f.tag() == "[1]"
+    assert f.tag("<") == "<1]"
+    assert f.tag(suffix: ">") == "[1>"
+    assert f.tag(prefix: "(", suffix: ")") == "(1)"
+}
+
+test "a static method on the type still resolves its defaults" {
+    assert Foo.make().x == 7
+    assert Foo.make(3).x == 3
+    assert Foo.make(start: 4).x == 4
+}
