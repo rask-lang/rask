@@ -197,5 +197,5 @@ t_with_mutex_value.rk  # 4 allocations
 t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
 t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
 t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045
-t39_loop_backedge_container_free.rk  # 14 allocations — a container iterated inside a loop is no longer freed too early, and now isn't freed at all, #1071
+t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045

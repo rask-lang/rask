@@ -24,12 +24,13 @@
 // which is what the back-edge free is for — the scratch-vector case below is
 // clean under the leak gate, which is what checks that half.
 //
-// The trade, stated plainly: the source is now freed by nobody rather than
-// freed too early. The loop's copy can't be freed at the back-edge any more,
-// but it's still in the group, so the "one allocation, several surviving names"
-// rule drops the whole group and the return path doesn't free it either
-// (#1071). A leak where there was a use-after-free is the right direction and
-// not the finished answer.
+// The first version of the fix traded the use-after-free for a leak: the loop's
+// copy could no longer be freed at the back-edge, but it was still counted as a
+// surviving name, so the "one allocation, several surviving names, free none"
+// rule dropped the whole group and the return path didn't free it either. The
+// pass works out where each free would actually go *before* it prunes groups
+// now, so a name with nowhere to put one stops counting as a second free
+// (#1071).
 
 test "a plain for loop inside a while doesn't free its source" {
     mut v = Vec<i64>.new()

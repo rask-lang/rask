@@ -290,15 +290,27 @@ fn insert_for_function(
     //
     // A value that fans out like that is left alone. Leaking it is the wrong
     // answer; freeing it twice is a worse one.
+    //
+    // "Surviving" means a name that would actually get a free emitted, which is
+    // why the placement is worked out first. A name with nowhere to put one
+    // isn't a second free — it's no free. `for x in v` inside a loop copies `v`
+    // into the loop body, and that copy's only candidate site was the
+    // back-edge, which it no longer qualifies for; counting it anyway made the
+    // group look like it fanned out and `v` was freed nowhere at all (#1071).
     let groups = value_groups(func, &fresh);
+    let placed = placed_locals(func, &droppable, &groups);
     for group in &groups {
-        let survivors = group.iter().filter(|id| droppable.contains_key(id)).count();
+        let survivors = group
+            .iter()
+            .filter(|id| droppable.contains_key(id) && placed.contains(id))
+            .count();
         if survivors > 1 {
             for id in group {
                 droppable.remove(id);
             }
         }
     }
+    droppable.retain(|id, _| placed.contains(id));
 
     if droppable.is_empty() {
         return;
@@ -827,6 +839,22 @@ fn find_moved_away(
     moved
 }
 
+/// Which of `droppable` would actually get a free emitted somewhere.
+///
+/// The same walk `insert_drops` does, minus the emitting. Split out because
+/// the fan-out rule has to count names that get a free, not names that are
+/// merely eligible for one.
+fn placed_locals(
+    func: &MirFunction,
+    droppable: &HashMap<LocalId, &'static str>,
+    groups: &[HashSet<LocalId>],
+) -> HashSet<LocalId> {
+    plan_drops(func, droppable, groups)
+        .into_iter()
+        .flat_map(|(_, locals)| locals)
+        .collect()
+}
+
 /// Free before every return the container's definition dominates, and before
 /// every loop back-edge it was built inside. Same placement rules as
 /// `trait_drop.rs`, and for the same reasons — see the comments there on why
@@ -836,6 +864,24 @@ fn insert_drops(
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
 ) {
+    for (block_idx, locals) in plan_drops(func, droppable, groups) {
+        for local in locals {
+            let free = droppable[&local];
+            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(free.to_string()),
+                args: vec![MirOperand::Local(local)],
+            }));
+        }
+    }
+}
+
+/// Where each free would go: one entry per block that needs them.
+fn plan_drops(
+    func: &MirFunction,
+    droppable: &HashMap<LocalId, &'static str>,
+    groups: &[HashSet<LocalId>],
+) -> Vec<(usize, Vec<LocalId>)> {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
 
     let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
@@ -890,16 +936,7 @@ fn insert_drops(
         }
     }
 
-    for (block_idx, locals) in to_insert {
-        for local in locals {
-            let free = droppable[&local];
-            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal(free.to_string()),
-                args: vec![MirOperand::Local(local)],
-            }));
-        }
-    }
+    to_insert
 }
 
 fn backedge_drops(
