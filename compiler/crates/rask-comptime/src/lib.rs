@@ -1205,6 +1205,13 @@ impl ComptimeInterpreter {
             ExprKind::Char(c) => ComptimeValue::Char(*c),
             ExprKind::Bool(b) => ComptimeValue::Bool(*b),
 
+            // `none`. The evaluator's optional is the shape `eval_presence_if`
+            // already reads — an `Option` enum, `Some` with a payload or `None`
+            // without. Nothing produced one before, so a `comptime func`
+            // returning `T?` fell out of folding and its const ran at runtime
+            // (#1072).
+            ExprKind::None => Self::ct_none(),
+
             // Identifier
             ExprKind::Ident(name) => {
                 self.env
@@ -1516,22 +1523,23 @@ impl ComptimeInterpreter {
                 }
             }
 
+            // `a ?? b` — the payload when there is one, `b` when there isn't.
+            ExprKind::NullCoalesce { value, default } => {
+                let v = self.eval_expr(value)?;
+                match Self::ct_payload(&v) {
+                    Some(payload) => payload,
+                    None => self.eval_expr(default)?,
+                }
+            }
+
             // Other expressions not yet supported
             _ => {
                 let kind_name = match &expr.kind {
                     ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
-                    // The variant's own name, taken off the head of its Debug
-                    // rendering rather than from a hand-kept list that would
-                    // drift. `Discriminant(26)` was what this said before, in
-                    // a message a person reads.
-                    other => {
-                        let rendered = format!("{:?}", other);
-                        rendered
-                            .split(|c: char| c == '(' || c == '{' || c == ' ')
-                            .next()
-                            .unwrap_or("expression")
-                            .to_string()
-                    }
+                    // `Discriminant(26)` was what this said before, in a
+                    // message a person reads. `expr_kind_name` is exhaustive
+                    // on purpose, so a new variant can't quietly go unnamed.
+                    other => rask_ast::expr::expr_kind_name(other).to_string(),
                 };
                 return Err(ComptimeError::NotSupported(kind_name));
             }
@@ -2120,9 +2128,55 @@ impl ComptimeInterpreter {
         // `i64`, so `big() + 1` was i64 arithmetic — no overflow — and the
         // out-of-range 2147483648 went into an `i32` const with no diagnostic,
         // where CT1 says comptime overflow is a compile error (#325).
-        match func.ret_ty.as_deref().and_then(CtInt::from_name) {
+        // A `-> T?` hands back an optional, so a bare `T` is wrapped here
+        // rather than at every `return` in the body. Already-optional values
+        // (a `none`, or a result passed straight through) go as they are.
+        let ret = func.ret_ty.as_deref();
+        if ret.map(rask_ast::type_str::is_optional).unwrap_or(false) {
+            return Ok(Self::ct_some(value));
+        }
+        match ret.and_then(CtInt::from_name) {
             Some(kind) => Self::coerce_int_width(value, kind),
             None => Ok(value),
+        }
+    }
+
+    /// The absent optional.
+    fn ct_none() -> ComptimeValue {
+        ComptimeValue::Enum {
+            name: "Option".to_string(),
+            variant: "None".to_string(),
+            data: None,
+        }
+    }
+
+    /// `value` as a present optional, unless it already is one.
+    fn ct_some(value: ComptimeValue) -> ComptimeValue {
+        if let ComptimeValue::Enum { name, .. } = &value {
+            if name == "Option" {
+                return value;
+            }
+        }
+        ComptimeValue::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            data: Some(Box::new(value)),
+        }
+    }
+
+    /// What's inside a present optional or result, or `None` for an absent
+    /// one. A value that isn't a wrapper at all is its own payload — that's
+    /// what makes `x ?? y` work on something already unwrapped.
+    fn ct_payload(value: &ComptimeValue) -> Option<ComptimeValue> {
+        match value {
+            ComptimeValue::Enum { variant, data, .. } if variant == "None" => {
+                let _ = data;
+                None
+            }
+            ComptimeValue::Enum { variant, data, .. } if variant == "Some" || variant == "Ok" => {
+                Some(data.as_ref().map(|d| (**d).clone()).unwrap_or(ComptimeValue::Unit))
+            }
+            other => Some(other.clone()),
         }
     }
 
@@ -2425,6 +2479,43 @@ impl ComptimeInterpreter {
             // `const GREETING = comptime { … "{name}".to_string() }` fell out
             // of folding and ran at runtime (#1072).
             "to_string" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
+            // What string interpolation desugars to — there is no public
+            // `concat`, so this is the one way two strings join (std.strings).
+            "__concat" => match (obj, args.first()) {
+                (ComptimeValue::String(a), Some(ComptimeValue::String(b))) => {
+                    Ok(ComptimeValue::String(format!("{a}{b}")))
+                }
+                _ => Err(ComptimeError::TypeMismatch {
+                    expected: "two strings".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
+            },
+            // The checked hatches (type.overflow). They answer `T?`, which the
+            // evaluator can represent now, so overflow is the absent case
+            // rather than a comptime error — the whole point of reaching for
+            // one of these instead of `+`.
+            "checked_add" | "checked_sub" | "checked_mul" => {
+                let (a, ka) = obj.as_int().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: obj.type_name().to_string(),
+                })?;
+                let (b, _) = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .ok_or_else(|| ComptimeError::TypeMismatch {
+                        expected: "integer".to_string(),
+                        found: "non-integer argument".to_string(),
+                    })?;
+                let op = match method {
+                    "checked_add" => CtOp::Add,
+                    "checked_sub" => CtOp::Sub,
+                    _ => CtOp::Mul,
+                };
+                Ok(match ct_checked_binop(ka, op, a, b) {
+                    Ok(v) => Self::ct_some(v),
+                    Err(_) => Self::ct_none(),
+                })
+            }
             "len" => {
                 match obj {
                     ComptimeValue::String(s) => Ok(ComptimeValue::I64(s.len() as i64)),
