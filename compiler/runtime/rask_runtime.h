@@ -406,12 +406,6 @@ int      rask_canonical_decompose(uint32_t cp, uint32_t *out, int cap);
 uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
-// join over raw element storage — a fixed-size array is its own buffer and has
-// no RaskVec header to read len and elem_size out of.
-void     rask_array_join(RaskStr *out, const uint8_t *data, int64_t len,
-                         int64_t elem_size, const RaskStr *sep);
-void     rask_array_join_i64(RaskStr *out, const uint8_t *data, int64_t len,
-                             int64_t elem_size, const RaskStr *sep);
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);

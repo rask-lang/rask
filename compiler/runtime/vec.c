@@ -383,63 +383,6 @@ RaskVec *rask_vec_take_all(RaskVec *v) {
 // reference themselves, so there is nothing for the caller to free either way.
 
 // join(vec_of_strings, separator) — concatenate strings with separator.
-// join over a fixed-size array's storage.
-//
-// Not shareable with the Vec versions below, and that is the whole bug: a
-// `Vec<string>` stores each RaskStr inline, a `[string; N]` stores a *pointer*
-// to one per slot (`MirType::stored_inline_in_array` says so — a string is a
-// pointer to its 16 bytes). Handing an array to `rask_vec_join` read the
-// element slots as RaskStr values, so the pointer's own bytes came back as the
-// string's inline characters, and the length byte read 0 — an empty result that
-// turned into a segfault once more of the array was live (#1021).
-void rask_array_join(RaskStr *out, const uint8_t *data, int64_t len,
-                     int64_t elem_size, const RaskStr *sep) {
-    rask_string_new(out);
-    if (!data || len <= 0) return;
-    for (int64_t i = 0; i < len; i++) {
-        if (i > 0 && sep) {
-            RaskStr tmp;
-            rask_string_append(&tmp, out, sep);
-            *out = tmp;
-        }
-        const RaskStr *elem = *(const RaskStr *const *)(data + i * elem_size);
-        if (!elem) continue;
-        RaskStr tmp;
-        rask_string_append(&tmp, out, elem);
-        *out = tmp;
-    }
-}
-
-// Same, for an array of integers. The element width is the array's, not a
-// machine word: `[1, 2, 3]` is i32, and reading eight bytes at a four-byte
-// stride returned each pair of elements packed into one number.
-void rask_array_join_i64(RaskStr *out, const uint8_t *data, int64_t len,
-                         int64_t elem_size, const RaskStr *sep) {
-    rask_string_new(out);
-    if (!data || len <= 0) return;
-    for (int64_t i = 0; i < len; i++) {
-        if (i > 0 && sep) {
-            RaskStr tmp;
-            rask_string_append(&tmp, out, sep);
-            *out = tmp;
-        }
-        const uint8_t *p = data + i * elem_size;
-        int64_t val;
-        switch (elem_size) {
-            case 1:  val = *(const int8_t *)p; break;
-            case 2:  val = *(const int16_t *)p; break;
-            case 4:  val = *(const int32_t *)p; break;
-            default: val = *(const int64_t *)p; break;
-        }
-        RaskStr s;
-        rask_i64_to_string(&s, val);
-        RaskStr tmp;
-        rask_string_append(&tmp, out, &s);
-        rask_string_free(&s);
-        *out = tmp;
-    }
-}
-
 // join(vec_of_strings, separator) — a Vec stores its elements inline.
 void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     rask_string_new(out);
@@ -458,6 +401,11 @@ void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
 }
 
 // join(vec_of_ints, separator) — convert integers to strings and concatenate.
+//
+// The element's own width, not a machine word. Reading eight bytes at a
+// four-byte stride returned each pair of elements packed into one number: a
+// `Vec<i32>` of 1, 2, 3 joined as `8589934593,12884901890,3`, where that first
+// value is `(2<<32)|1`.
 void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     rask_string_new(out);
     if (!src || src->len == 0) return;

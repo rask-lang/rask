@@ -95,3 +95,5 @@ t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, 
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
 t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native compile)
+t_array_string_join.rk        # `join` on a `[string; N]` returns empty, or segfaults after element reads — #1021 (native run). Fix lives in PR #1057, which makes a string inline in its array slot rather than a pointer to it — that closes #1000 in the same stroke. This branch had a narrower fix and dropped it rather than conflict.
+

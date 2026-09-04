@@ -323,21 +323,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Vec_slice", "rask_vec_slice", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_chunks", "rask_vec_chunks", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        // A fixed-size array has no header, so it passes its base pointer, its
-        // length and its element size — all three compile-time constants — where
-        // a Vec passes one pointer and the runtime reads them back out (#1021).
-        StdlibEntry {
-            mir_name: "Array_join", c_name: "rask_array_join",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Array_join_i64", c_name: "rask_array_join_i64",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
         StdlibEntry {
             mir_name: "Vec_join", c_name: "rask_vec_join",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,

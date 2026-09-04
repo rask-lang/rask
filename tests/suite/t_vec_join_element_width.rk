@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `join` on a Vec of integers reads each element at the element's own width.
+//
+// It read a machine word regardless, so a `Vec<i32>` of 1, 2, 3 came back as
+// `8589934593,12884901890,3` — that first value is `(2<<32)|1`, two elements
+// read as one at a four-byte stride.
+//
+// Found while fixing #1021, and separate from it: #1021 is about an array
+// receiver having no `RaskVec` header, while this is the header being right and
+// the stride being wrong. It survives whichever way #1021 lands, which is why
+// it has a guard of its own rather than riding in that probe.
+
+test "a Vec of the default integer width joins" {
+    let v: Vec<i64> = [1, 2, 3].iter().to_vec()
+    assert v.join(",") == "1,2,3"
+}
+
+test "a Vec of i32 joins one element per element" {
+    let v: Vec<i32> = [1i32, 2i32, 3i32].iter().to_vec()
+    assert v.join(",") == "1,2,3"
+}
+
+test "a Vec of u8 joins one element per element" {
+    let v: Vec<u8> = [1u8, 2u8, 255u8].iter().to_vec()
+    assert v.join("-") == "1-2-255"
+}
+
+test "a Vec of i16 joins one element per element" {
+    let v: Vec<i16> = [100i16, 200i16].iter().to_vec()
+    assert v.join(" ") == "100 200"
+}
+
+test "negative values keep their sign at every width" {
+    let a: Vec<i32> = [-1i32, -2i32].iter().to_vec()
+    assert a.join(",") == "-1,-2"
+    let b: Vec<i16> = [-300i16].iter().to_vec()
+    assert b.join(",") == "-300"
+}
+
+test "an empty Vec joins to the empty string" {
+    let v: Vec<i64> = [].iter().to_vec()
+    assert v.join(",") == ""
+}
+
+test "strings in a Vec still join" {
+    let v: Vec<string> = ["a", "b"].iter().to_vec()
+    assert v.join("-") == "a-b"
+}

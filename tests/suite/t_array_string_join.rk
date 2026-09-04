@@ -2,11 +2,18 @@
 // #1021 — `join` on a fixed-size array of strings.
 //
 // A `Vec<string>` stores each RaskStr inline; a `[string; N]` stores a pointer
-// to one per slot (`MirType::stored_inline_in_array`). `join` went to the Vec
-// runtime either way, so on an array it read the element slots as RaskStr
-// values and got the pointer's own bytes back as inline characters — an empty
-// string in the quiet case, a segfault once a few element reads had happened
+// to one per slot (`MirType::stored_inline_in_array`). `join` goes to the Vec
+// runtime either way, so on an array it reads the element slots as RaskStr
+// values and gets the pointer's own bytes back as inline characters — an empty
+// string in the quiet case, a segfault once a few element reads have happened
 // first.
+//
+// The fix is in PR #1057, which makes a string inline in its array slot rather
+// than a pointer to it — the root of the same problem, and it closes #1000 as
+// well. This branch had a narrower one (array-specific join entry points that
+// dereference the slot) and dropped it: the two are incompatible, and merged
+// they crash, because the dereference reads an inline RaskStr's first eight
+// bytes as a pointer.
 //
 // Related but distinct from #1000, which is module-level `const` arrays — this
 // one is a plain local, and its element reads always worked.
