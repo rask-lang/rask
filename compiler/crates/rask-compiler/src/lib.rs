@@ -624,6 +624,34 @@ pub fn compile_package_with(
     finalize_compile(check_output, dep_decls, package_modules, config, transform)
 }
 
+/// Fill in the parameter types `type.gradual` let the author leave out.
+///
+/// `func greet(name) { … }` parses with an empty type string, and every pass
+/// after the checker reads that string. Empty means `void` to all of them, so
+/// the body's `"Hi, {name}"` interpolated an address instead of the string
+/// (#905). The checker already solved it; this copies the answer in, so the
+/// declaration says what the function actually takes.
+fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
+    fn fill(f: &mut rask_ast::decl::FnDecl, typed: &TypedProgram) {
+        let Some(solved) = typed.inferred_fn_params.get(&f.name) else {
+            return;
+        };
+        for p in f.params.iter_mut().filter(|p| p.ty.is_empty()) {
+            if let Some((_, ty)) = solved.iter().find(|(n, _)| *n == p.name) {
+                p.ty = format!("{}", ty);
+            }
+        }
+    }
+    for decl in decls.iter_mut() {
+        match &mut decl.kind {
+            DeclKind::Fn(f) => fill(f, typed),
+            DeclKind::Struct(s) => s.methods.iter_mut().for_each(|m| fill(m, typed)),
+            DeclKind::Enum(e) => e.methods.iter_mut().for_each(|m| fill(m, typed)),
+            _ => {}
+        }
+    }
+}
+
 /// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
 fn finalize_compile(
     check_output: PipelineOutput<CheckResult>,
@@ -638,6 +666,12 @@ fn finalize_compile(
         Some(c) => c,
         None => return PipelineOutput::fail_with_sources(diags, pkg_source_files),
     };
+
+    // --- Write inferred parameter types back into the declarations ---
+    // Everything after this point reads a parameter's type off its declaration
+    // string, and an omitted one is empty, which reads as `void`. The checker
+    // solved it; put the answer where the rest of the pipeline looks (#905).
+    write_back_inferred_params(&mut check.decls, &check.typed);
 
     // --- Hidden parameter desugaring ---
     // CC8 ambiguity surfaces here as a pipeline diagnostic; a hard error stops

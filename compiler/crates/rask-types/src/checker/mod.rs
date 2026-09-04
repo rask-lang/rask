@@ -706,6 +706,26 @@ impl TypeChecker {
             .filter(|(_, ty)| !Self::contains_type_var(ty))
             .collect();
 
+        // The same normalization, for the parameters a function didn't declare.
+        // A parameter left unresolved is dropped: "still a variable" is no
+        // better an answer than the empty declaration already gives.
+        let inferred_fn_params: HashMap<String, Vec<(String, Type)>> = self
+            .inferred_fn_types
+            .iter()
+            .map(|(name, (params, _))| {
+                let solved = params
+                    .iter()
+                    .map(|(pname, ty)| {
+                        let applied =
+                            Self::normalize_named_types(&self.ctx.apply(ty), &id_to_name);
+                        (pname.clone(), applied)
+                    })
+                    .collect::<Vec<_>>();
+                (name.clone(), solved)
+            })
+            .filter(|(_, params)| !params.iter().any(|(_, t)| Self::contains_type_var(t)))
+            .collect();
+
         let trait_coercions = self.trait_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
@@ -750,6 +770,7 @@ impl TypeChecker {
             mutate_self_fns: self.mutate_self_fns,
             channel_send_sites: self.channel_send_sites,
             inferred_fn_ret,
+            inferred_fn_params,
         };
 
         (program, errors)
