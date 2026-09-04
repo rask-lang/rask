@@ -4436,18 +4436,67 @@ impl<'a> MirLowerer<'a> {
         let MirType::Array { elem, len } = obj_ty else {
             return None;
         };
+        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size
+        // 8 and every Vec method reads a whole word per element. An array packs
+        // them at their natural stride, so handing the buffer over as-is built a
+        // Vec whose stride and readers disagreed: `[1i32, 2i32, 3i32].join(",")`
+        // answered `8589934593,12884901890,3`, where 8589934593 is `(2<<32)|1` —
+        // two elements read as one. Copy narrow scalars up to the slot width
+        // first; `lower_vec_from_array_with` widens for the same reason.
+        let (buffer, slot_size) = self.array_buffer_at_vec_stride(obj_op, elem, *len);
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_from_static".to_string()),
             args: vec![
-                obj_op.clone(),
+                buffer,
                 MirOperand::Constant(MirConst::Int(*len as i64)),
-                MirOperand::Constant(MirConst::Int(elem.size() as i64)),
+                MirOperand::Constant(MirConst::Int(slot_size as i64)),
                 MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(elem)))),
             ],
         }));
         Some((MirOperand::Local(vec_local), MirType::I64))
+    }
+
+    /// The array's elements laid out the way a Vec expects them, and the stride
+    /// that describes it.
+    ///
+    /// Anything already a word or wider is handed over as-is — the strides
+    /// agree, so there is nothing to copy. A narrower scalar is read out
+    /// element by element into a fresh array of word-sized slots; the length is
+    /// a compile-time constant, so this is a fixed sequence rather than a loop.
+    fn array_buffer_at_vec_stride(
+        &mut self,
+        obj_op: &MirOperand,
+        elem: &MirType,
+        len: u32,
+    ) -> (MirOperand, u32) {
+        let elem_size = elem.size();
+        if elem_size >= 8 || matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
+            return (obj_op.clone(), elem_size);
+        }
+        // Word-sized slots, so the buffer is `8 * len` bytes and the stores
+        // below land where the Vec's readers look.
+        let wide_ty = MirType::Array { elem: Box::new(MirType::I64), len };
+        let wide = self.builder.alloc_temp(wide_ty);
+        for i in 0..len {
+            let slot = self.builder.alloc_temp(elem.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::ArrayIndex {
+                    base: obj_op.clone(),
+                    index: MirOperand::Constant(MirConst::Int(i as i64)),
+                    elem_size,
+                },
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: wide,
+                offset: i * 8,
+                value: MirOperand::Local(slot),
+                store_size: None,
+            }));
+        }
+        (MirOperand::Local(wide), 8)
     }
 
     /// Calls where the receiver is a type or module name, not a value:
