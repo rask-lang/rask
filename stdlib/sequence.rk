@@ -131,10 +131,6 @@ extend Sequence<T> {
         }
     }
 
-    /// Flatten one level: yield every item of every inner sequence.
-    @unimplemented
-    public func flatten<U>(self) -> Sequence<U> {}
-
     /// Map each item to a sequence, then flatten one level.
     public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {
         return |yield| {
@@ -336,6 +332,16 @@ extend Sequence<string> {
             first = false
         }
         return out.build()
+    }
+}
+
+// The receiver has to say its element is itself a sequence, which the block
+// header is the only place to write. `extend Sequence<T>` would give `flatten`
+// a `T` element and nothing to flatten.
+extend Sequence<Sequence<U>> {
+    /// Flatten one level: yield every item of every inner sequence.
+    public func flatten(self) -> Sequence<U> {
+        return self.flat_map(|inner| inner)
     }
 }
 

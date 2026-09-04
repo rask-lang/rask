@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An `extend` header whose target argument is itself generic.
+//
+// `flatten` was the last eager adapter, and what stopped it was that its
+// receiver can't be spelled in an ordinary block. `extend Sequence<T>` gives
+// the method a `T` element and nothing to flatten; the receiver has to say its
+// element is itself a sequence, and the block header is the only place to
+// write that:
+//
+//     extend Sequence<Sequence<U>> {
+//         public func flatten(self) -> Sequence<U> { … }
+//     }
+//
+// The header machinery from #1046 already bound a *tuple* argument member-wise
+// — `extend Sequence<(K, V)>` gives `K` and `V` the halves of the element. This
+// is the same rule one shape wider: a generic argument binds argument-wise, so
+// `U` gets the inner sequence's element rather than the inner sequence.
+//
+// A bracket-counting bug came with it. `target_type_args` closed the header
+// with `trim_end_matches('>')`, which takes *every* trailing bracket:
+// `Vec<Vec<T>>` came back as `Vec<T` — a name nothing has, and every method on
+// it "not found". One bracket, not all of them.
+
+import sequence.Sequence
+
+func inner_a() -> Sequence<i64> {
+    return |yield| {
+        if !yield(1) {
+            return
+        }
+        if !yield(2) {
+            return
+        }
+    }
+}
+
+func inner_b() -> Sequence<i64> {
+    return |yield| {
+        if !yield(3) {
+            return
+        }
+    }
+}
+
+func nested() -> Sequence<Sequence<i64>> {
+    return |yield| {
+        if !yield(inner_a()) {
+            return
+        }
+        if !yield(inner_b()) {
+            return
+        }
+    }
+}
+
+test "a sequence of sequences flattens one level" {
+    let flat = nested().flatten()
+    assert flat.count() == 3
+    let out: Vec<i64> = nested().flatten().to_vec()
+    assert out.len() == 3
+    assert out[0] == 1
+    assert out[1] == 2
+    assert out[2] == 3
+}
+
+test "flatten is lazy like every other adapter" {
+    let flat = nested().flatten()
+    assert flat.count() == 3
+    assert flat.count() == 3
+}
+
+test "flatten composes with the other adapters" {
+    let out: Vec<i64> = nested().flatten().map(|x| x * 10).filter(|x| x > 10).to_vec()
+    assert out.len() == 2
+    assert out[0] == 20
+    assert out[1] == 30
+}
+
+// SEQ13a through a flattened chain: the break has to reach the inner source.
+test "break through a flattened chain" {
+    mut seen = 0
+    for x in nested().flatten() {
+        seen = seen + 1
+        if x == 2 {
+            break
+        }
+    }
+    assert seen == 2
+}
+
+test "a Vec of Vecs flattens too" {
+    let a: Vec<i64> = [1, 2]
+    let b: Vec<i64> = [3]
+    mut nest = Vec<Vec<i64>>.new()
+    nest.push(a)
+    nest.push(b)
+    assert nest.flatten().count() == 3
+    let out: Vec<i64> = nest.flatten().to_vec()
+    assert out.len() == 3
+    assert out[0] == 1
+    assert out[2] == 3
+}
+
+test "an empty outer flattens to nothing" {
+    mut nest = Vec<Vec<i64>>.new()
+    assert nest.flatten().count() == 0
+}
+
+test "an empty inner is skipped" {
+    let a: Vec<i64> = []
+    let b: Vec<i64> = [7]
+    mut nest = Vec<Vec<i64>>.new()
+    nest.push(a)
+    nest.push(b)
+    let out: Vec<i64> = nest.flatten().to_vec()
+    assert out.len() == 1
+    assert out[0] == 7
+}
+
+// The bracket-counting half, on a user type: a header argument that is itself
+// generic, two levels of brackets to close.
+struct Layers<T> {
+    public rows: Vec<T>
+}
+
+extend Layers<Vec<E>> {
+    public func total(self) -> usize {
+        mut n = 0
+        mut i = 0
+        while i < self.rows.len() {
+            n = n + self.rows[i].len()
+            i = i + 1
+        }
+        return n
+    }
+}
+
+test "a user header whose argument is generic" {
+    let r1: Vec<i64> = [1, 2, 3]
+    let r2: Vec<i64> = [4]
+    mut rows = Vec<Vec<i64>>.new()
+    rows.push(r1)
+    rows.push(r2)
+    // Annotated rather than `Layers<Vec<i64>> { … }`: the parser can't read a
+    // struct literal whose type argument is itself generic (#1078).
+    let l: Layers<Vec<i64>> = Layers { rows: rows }
+    assert l.total() == 4u64
+}

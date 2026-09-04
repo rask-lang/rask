@@ -233,14 +233,6 @@ extend Vec<T> {
         }
     }
 
-    /// Flatten a Vec of Vecs into a single Vec.
-    ///
-    /// The one adapter still eager. `Sequence.flatten` has no body either, and
-    /// giving this one a lazy type before there's something to forward to would
-    /// be a name with nothing behind it. Nothing in the corpus calls it.
-    @native
-    public func flatten(self) -> Vec<T> {}
-
     /// Reduce to a single value using an accumulator.
     @native
     public func fold(self, init: U, f: func(U, T) -> U) -> U {}
@@ -474,6 +466,32 @@ extend Map<K, V> {
 /// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `read`/`sum`
 /// run the plan on the current backend (the CPU baseline for now).
 public struct Wide<T> { }
+
+// The receiver has to say its element is itself a Vec, which the block header
+// is the only place to write.
+extend Vec<Vec<T>> {
+    /// Flatten one level. Lazy (type.sequence/SEQ41).
+    ///
+    /// Written out for the same reason `flat_map` is: forwarding would wrap each
+    /// inner Vec in a sequence that has to outlive the read that produced it
+    /// (#1045).
+    public func flatten(self) -> Sequence<T> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                let inner = self[i]
+                mut j = 0
+                while j < inner.len() {
+                    if !yield(inner[j]) {
+                        return
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+    }
+}
 
 extend Wide<T> {
     /// Transform each lane. Lazy — records the op, runs nothing.

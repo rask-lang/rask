@@ -460,11 +460,25 @@ pub(super) fn pattern_names(pattern: &str) -> Vec<String> {
             .flat_map(pattern_names)
             .collect();
     }
+    // `Sequence<U>` introduces `U`, the same way `(K, V)` introduces both.
+    if let Some(inner) = generic_args_of(pattern) {
+        return super::parse_type::split_type_args(inner)
+            .into_iter()
+            .flat_map(pattern_names)
+            .collect();
+    }
     if super::declarations::is_type_param_name(pattern) {
         vec![pattern.to_string()]
     } else {
         Vec::new()
     }
+}
+
+/// The argument list inside `Name<…>`, or `None` if there isn't one.
+fn generic_args_of(pattern: &str) -> Option<&str> {
+    let open = pattern.find('<')?;
+    let inner = pattern[open + 1..].trim_end().strip_suffix('>')?;
+    (!pattern[..open].trim().is_empty()).then_some(inner)
 }
 
 /// Match one target argument, as written, against the type that arrived.
@@ -478,6 +492,25 @@ fn bind_owner_pattern(pattern: &str, actual: &Type, out: &mut HashMap<String, Ty
         }
         for (p, a) in parts.iter().zip(elems.iter()) {
             bind_owner_pattern(p, a, out);
+        }
+        return;
+    }
+    // A generic in the target binds argument-wise, the same way a tuple does:
+    // `extend Sequence<Sequence<U>>` has to give `U` the *inner* sequence's
+    // element, not the inner sequence.
+    if let Some(inner) = generic_args_of(pattern) {
+        let parts = super::parse_type::split_type_args(inner);
+        let actual_args = match actual {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return,
+        };
+        if parts.len() != actual_args.len() {
+            return;
+        }
+        for (p, a) in parts.iter().zip(actual_args.iter()) {
+            if let GenericArg::Type(t) = a {
+                bind_owner_pattern(p, t, out);
+            }
         }
         return;
     }

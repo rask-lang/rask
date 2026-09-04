@@ -248,6 +248,30 @@ fn bind_pattern(
         }
         return true;
     }
+    // A generic in the target binds argument-wise against a generic that
+    // arrived, the same way a tuple does. `extend Sequence<Sequence<U>>` is how
+    // `flatten` says what it takes, and without this its `U` bound to the whole
+    // inner sequence instead of that sequence's element.
+    if let Some((head, inner)) = split_generic(pattern) {
+        let (actual_head, actual_args) = match actual {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return false,
+        };
+        if actual_head != head {
+            return false;
+        }
+        let parts = split_top_level(inner, ',');
+        if parts.len() != actual_args.len() {
+            return false;
+        }
+        for (p, a) in parts.iter().zip(actual_args.iter()) {
+            let rask_types::GenericArg::Type(t) = a else { return false };
+            if !bind_pattern(p, t, names, args) {
+                return false;
+            }
+        }
+        return true;
+    }
     // Anything else is taken as a parameter name binding to what arrived. A
     // concrete spelling in the target (`extend Holder<i64>`) would land here
     // too and bind a name nothing substitutes, which is harmless — the copy
@@ -255,6 +279,15 @@ fn bind_pattern(
     names.push(pattern.to_string());
     args.push(actual.clone());
     true
+}
+
+/// `Sequence<U>` into `("Sequence", "U")`. `None` for anything without
+/// arguments, and for a bare tuple, which `bind_pattern` handles first.
+fn split_generic(pattern: &str) -> Option<(String, &str)> {
+    let open = pattern.find('<')?;
+    let inner = pattern[open + 1..].trim_end().strip_suffix('>')?;
+    let head = pattern[..open].trim();
+    (!head.is_empty()).then(|| (head.to_string(), inner))
 }
 
 /// Replace whole-word occurrences of a type parameter name in a type string.

@@ -3068,13 +3068,29 @@ impl TypeChecker {
                 let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
             }
-            // vec.flatten() -> Vec<T>
+            // vec.flatten() -> Sequence<T>, where the receiver's element is
+            // itself a Vec. The element's element is what comes out, so it's
+            // read off the receiver rather than left to a fresh variable —
+            // nothing downstream would ever settle one.
             "flatten" if args.is_empty() => {
-                let fresh = self.ctx.fresh_var();
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
+                let inner_elem = match &self.ctx.apply(&inner_type) {
+                    Type::UnresolvedGeneric { name, args } if name == "Vec" => {
+                        match args.first() {
+                            Some(GenericArg::Type(t)) => (**t).clone(),
+                            _ => self.ctx.fresh_var(),
+                        }
+                    }
+                    Type::Generic { base, args }
+                        if self.types.type_name(*base).starts_with("Vec") =>
+                    {
+                        match args.first() {
+                            Some(GenericArg::Type(t)) => (**t).clone(),
+                            _ => self.ctx.fresh_var(),
+                        }
+                    }
+                    _ => self.ctx.fresh_var(),
                 };
+                let result_ty = sequence_of(inner_elem);
                 self.unify(ret, &result_ty, span)
             }
             // vec.fold(init, f) -> U, with f: func(U, T) -> U

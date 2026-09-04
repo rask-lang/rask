@@ -684,7 +684,10 @@ impl TypeChecker {
     /// list up one-for-one with what the type declares.
     pub(super) fn target_type_args(target_ty: &str) -> Vec<String> {
         let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
-        let inner = rest.trim_end().trim_end_matches('>');
+        // Exactly one `>`, not every trailing one: `Vec<Vec<T>>` closes the
+        // outer bracket here and the inner one belongs to the argument.
+        // `trim_end_matches` took both and left `Vec<T`, a name nothing has.
+        let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
         super::parse_type::split_type_args(inner)
             .into_iter()
             .map(|s| s.trim().to_string())
@@ -694,8 +697,8 @@ impl TypeChecker {
 
     pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
         let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
-        rest.trim_end()
-            .trim_end_matches('>')
+        let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
+        inner
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| is_type_param_name(s))

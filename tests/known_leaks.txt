@@ -204,3 +204,4 @@ t_array_string_join.rk  # 6 allocations — leaks the same 6 on main; main's `ra
 t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
 t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
 t_month_reflect_fields_value.rk  # 1 allocation — leaks the same 1 on main; main's `rask test` discarded the report
+t42_flatten_shaped_header.rk  # 36 allocations — sequence adapter closures and their captures, #1045
