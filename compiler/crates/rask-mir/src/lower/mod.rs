@@ -1923,8 +1923,11 @@ impl<'a> MirLowerer<'a> {
         }
         let arg = match name.as_str() {
             // Iterator is here because a `for` source is often one, and it
-            // carries its element type the same way.
-            "Vec" | "Pool" | "Iterator" => args.first()?,
+            // carries its element type the same way. So does `Sequence<T>` —
+            // it was simply never added, which is why `for (k, v) in self`
+            // inside `Sequence.to_map` had no element type and fell back to a
+            // word (#1046).
+            "Vec" | "Pool" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
             // `m[k]` and `m.get(k)` yield V, not K.
             "Map" => args.get(1)?,
             _ => return None,
@@ -3627,6 +3630,20 @@ impl<'a> MirLowerer<'a> {
                     if let Some(elem_str) = param_ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
                         let elem_mir = ctx.resolve_type_str(elem_str);
                         meta.elem_type = Some(elem_mir);
+                    }
+                    // A `Sequence<T>` parameter carries its element type the
+                    // same way, and this is the only place it survives
+                    // monomorphization: the instantiated copy has fresh node
+                    // ids, so the checker's record is gone, but mono did
+                    // substitute the declared string — `Sequence<(K, V)>`
+                    // arrives here as `Sequence<(i32, i32)>`. Without it
+                    // `for (k, v) in self` inside `Sequence.to_map` had no
+                    // element type and fell back to a machine word (#1046).
+                    for head in ["Sequence<", "SequenceMut<"] {
+                        if let Some(elem_str) = param_ty_str.strip_prefix(head).and_then(|s| s.strip_suffix('>')) {
+                            let elem_mir = ctx.resolve_type_str(elem_str);
+                            meta.elem_type = Some(elem_mir);
+                        }
                     }
                 }
             }

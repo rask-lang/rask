@@ -50,6 +50,7 @@ t31_sequence_adapters.rk  # 21 allocations — adapter closures capture self and
 t34_vec_as_sequence.rk  # 17 allocations — the source closure captures self, #1045
 t35_returned_sequence.rk  # 40 allocations — returned sequences keep their environments, #1045
 t36_cross_task_ownership.rk  # 18 allocations
+t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
 t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t49_comptime.rk  # 2 allocations

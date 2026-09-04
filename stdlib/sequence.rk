@@ -343,14 +343,16 @@ extend Sequence<(K, V)> {
     /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
     /// ones, exactly like repeated `insert`.
     ///
-    /// The body below is correct and runs on the interpreter. It doesn't lower:
-    /// iterating a `Sequence<(K, V)>` inside a generic method needs the element
-    /// type at lowering time, and with `K` and `V` still open MIR gives up in
-    /// `lower/stmt:for_loop_elem`. Writing the pair as one name instead of
-    /// `for (k, v) in self` moves the failure to `unresolved field 1` rather
-    /// than fixing it — the element type is what's missing, not the
-    /// destructuring. So this stays declared-only until the tuple element
-    /// resolves, which is a lowering gap rather than a missing bound (#1046).
+    /// The body below is correct and runs on the interpreter. It *lowers* now —
+    /// `for_loop_elem` had no element type for a `Sequence<T>` source, and
+    /// `Self` in an extend header was being rebuilt as `base<args…>`, which
+    /// turned `Sequence<(K, V)>` into `Sequence<i32>` and dropped `V`. Both are
+    /// fixed.
+    ///
+    /// What stops it now is a wrong answer rather than a refusal, which is
+    /// worse: the same `for (k, v) in …` loop is correct at a call site and
+    /// yields an empty map inside this method. So the body stays out until that
+    /// is understood — a wrong `to_map` is worse than a missing one (#1046).
     ///
     ///     mut out: Map<K, V> = Map<K, V>.new()
     ///     for (k, v) in self {

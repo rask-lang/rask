@@ -2249,6 +2249,12 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| matches!(binding, ForBinding::Tuple(_))
                     .then(|| self.vec_tuple_elem_type(iter_expr))
                     .flatten())
+                // The element type tracked against the binding itself. Every
+                // step above reads the checker's record, and an instantiated
+                // copy has fresh node ids, so inside a generic stdlib method
+                // none of them answer. This one comes off the declared type
+                // string, which mono *did* substitute (#1046).
+                .or_else(|| self.vec_elem_of_expr(iter_expr))
                 // Last: the source collection's own declared element type.
                 .or_else(|| self.collection_elem_of_expr(iter_expr))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:for_loop_elem"))

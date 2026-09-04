@@ -160,8 +160,17 @@ pub struct Monomorphizer<'a> {
 struct MethodOwner {
     /// Bare name — `One` out of `One<A>`.
     base: String,
-    /// Type parameter names in declaration order, bounds stripped.
+    /// Type parameter names in declaration order, bounds stripped. A tuple
+    /// argument contributes each of its members, so `Sequence<(K, V)>` says
+    /// `["K", "V"]` — the two names a call binds — rather than one name that
+    /// happens to be spelled `(K, V)`.
     params: Vec<String>,
+    /// The target as written, so the receiver's type can be rebuilt by
+    /// substituting into it. Reconstructing it as `base<args…>` is only right
+    /// when the parameters sit directly under the angle brackets:
+    /// `extend Sequence<(K, V)>` came back as `Sequence<i32>`, dropping `V`,
+    /// and the receiver then had a scalar element type where a pair was due.
+    template: String,
 }
 
 /// Split `One<A, B: Trait>` into `("One", ["A", "B"])`. `None` when the name
@@ -169,15 +178,60 @@ struct MethodOwner {
 fn parse_owner(type_name: &str) -> Option<MethodOwner> {
     let open = type_name.find('<')?;
     let inner = type_name[open + 1..].trim_end().strip_suffix('>')?;
-    let params: Vec<String> = split_top_level(inner, ',')
-        .into_iter()
-        .map(|p| p.split(':').next().unwrap_or(p).trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect();
+    let mut params: Vec<String> = Vec::new();
+    for arg in split_top_level(inner, ',') {
+        let bare = arg.split(':').next().unwrap_or(arg).trim();
+        // A tuple argument binds each of its members, not itself.
+        if let Some(members) = bare.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            for m in split_top_level(members, ',') {
+                let m = m.split(':').next().unwrap_or(m).trim();
+                if !m.is_empty() {
+                    params.push(m.to_string());
+                }
+            }
+        } else if !bare.is_empty() {
+            params.push(bare.to_string());
+        }
+    }
     if params.is_empty() {
         return None;
     }
-    Some(MethodOwner { base: type_name[..open].trim().to_string(), params })
+    Some(MethodOwner {
+        base: type_name[..open].trim().to_string(),
+        params,
+        template: type_name.trim().to_string(),
+    })
+}
+
+/// Replace whole-word occurrences of a type parameter name in a type string.
+///
+/// Whole-word so `V` doesn't rewrite the `V` inside `Value`, and so a parameter
+/// named `T` leaves `Task` alone.
+fn substitute_param_name(ty: &str, param: &str, arg: &str) -> String {
+    let mut out = String::with_capacity(ty.len());
+    let bytes = ty.as_bytes();
+    let mut i = 0usize;
+    while i < ty.len() {
+        let rest = &ty[i..];
+        let boundary_before = i == 0 || !is_ident_byte(bytes[i - 1]);
+        if boundary_before && rest.starts_with(param) {
+            let after = i + param.len();
+            let boundary_after = after >= ty.len() || !is_ident_byte(bytes[after]);
+            if boundary_after {
+                out.push_str(arg);
+                i = after;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Split on `sep` at nesting depth zero, so `Map<K, V>, T` gives two parts.
@@ -236,6 +290,7 @@ fn register_method(
             .filter(|params| !params.is_empty())
             .map(|params| MethodOwner {
                 base: base.to_string(),
+                template: format!("{}<{}>", base, params.join(", ")),
                 params: params.clone(),
             })
     });
@@ -881,8 +936,16 @@ impl<'a> Monomorphizer<'a> {
         names.extend(crate::instantiate::type_param_names(decl, &type_args[n..]));
         let spelled: Vec<String> =
             type_args[..n].iter().map(|t| format!("{}", t)).collect();
-        let self_ty = (n == owner.params.len())
-            .then(|| format!("{}<{}>", owner.base, spelled.join(", ")));
+        // Substitute into the target as written rather than rebuilding it from
+        // the base name: `extend Sequence<(K, V)>` has two parameters under one
+        // argument, and `base<args…>` flattened them into `Sequence<i32>`.
+        let self_ty = (n == owner.params.len()).then(|| {
+            let mut out = owner.template.clone();
+            for (param, arg) in owner.params.iter().zip(spelled.iter()) {
+                out = substitute_param_name(&out, param, arg);
+            }
+            out
+        });
         (names, self_ty)
     }
 

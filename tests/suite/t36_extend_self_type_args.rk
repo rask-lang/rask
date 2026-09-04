@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// `Self` in an extend header keeps the target's type arguments.
+//
+// A method's receiver is spelled `Self`, and monomorphization rewrites it to the
+// concrete type. It used to rebuild that as `base<args…>` — right when the
+// parameters sit directly under the angle brackets, wrong the moment one of them
+// is nested. `extend Sequence<(K, V)>` has two parameters under *one* argument,
+// so `Sequence<(K, V)>` with K=i64, V=i64 came back as `Sequence<i64>`: `V`
+// silently dropped, and the receiver then had a scalar element type where a pair
+// was due. Lowering gave up with "couldn't work out a type here".
+//
+// The target is substituted into as written now, so a nested parameter survives.
+//
+// This file is about the receiver's own shape, so each case puts a type
+// parameter somewhere `base<args…>` would have flattened it.
+//
+// Registered as a divergence: the two `Holder<(K, V)>` cases don't run on the
+// interpreter, which splits `Holder<(i64, string)>` into two type arguments and
+// rejects the arity (#1052). Native runs all five.
+
+import sequence.Sequence
+
+struct Pair<A, B> {
+    public first: A
+    public second: B
+}
+
+// The parameters sit directly under the brackets — the case that always worked.
+extend Pair<A, B> {
+    public func swapped(self) -> Pair<B, A> {
+        return Pair<B, A> { first: self.second, second: self.first }
+    }
+}
+
+test "a two-parameter receiver keeps both" {
+    let p = Pair<i64, string> { first: 7, second: "seven" }
+    let q = p.swapped()
+    assert q.first == "seven"
+    assert q.second == 7
+}
+
+struct Holder<T> {
+    public items: Vec<T>
+}
+
+// One parameter, nested inside a tuple. This is the shape that lost its second
+// half — the receiver's element type has to stay a pair.
+extend Holder<(K, V)> {
+    public func count_pairs(self) -> usize {
+        return self.items.len()
+    }
+}
+
+test "a tuple parameter under one argument keeps both halves" {
+    let h = Holder<(i64, string)> { items: [(1, "one"), (2, "two")] }
+    assert h.count_pairs() == 2u64
+}
+
+test "the elements of a tuple-parameter receiver read back whole" {
+    let h = Holder<(i64, string)> { items: [(1, "one"), (2, "two")] }
+    mut keys = 0
+    mut last = ""
+    for (k, v) in h.items {
+        keys = keys + k
+        last = v
+    }
+    assert keys == 3
+    assert last == "two"
+}
+
+// A sequence of pairs is the case that found this: `Sequence<(K, V)>` is what
+// `to_map` extends, and its element has to stay 16 bytes rather than collapsing
+// to the first half.
+func numbered() -> Sequence<(i64, string)> {
+    return |yield| {
+        if !yield((1, "one")) {
+            return
+        }
+        if !yield((2, "two")) {
+            return
+        }
+    }
+}
+
+test "a sequence of pairs destructures at a call site" {
+    mut keys = 0
+    mut last = ""
+    for (k, v) in numbered() {
+        keys = keys + k
+        last = v
+    }
+    assert keys == 3
+    assert last == "two"
+}
+
+test "a sequence of pairs counts" {
+    assert numbered().count() == 2u64
+}
