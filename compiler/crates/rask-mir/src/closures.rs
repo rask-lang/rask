@@ -439,30 +439,79 @@ fn find_transferred_closures(
 /// Insert ClosureDrop statements before Return terminators and loop back-edges
 /// for heap-allocated closures that aren't the return value on that path.
 fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>) {
-    // Track which block creates which heap closure
+    // Which block each owned closure arrives in — built here, made there, or
+    // handed back by a call.
+    //
+    // This used to record `ClosureCreate` destinations only, and a closure that
+    // came from a *call* — the whole point of
+    // `functions_handing_back_a_closure` — had no entry. The back-edge filter
+    // read that absence as "not made in the loop" and skipped it, so a loop
+    // calling a function that returns a closure freed exactly one environment:
+    // the one live at the return. Everything else leaked, one allocation per
+    // iteration (#1045).
     let mut closure_block: HashMap<LocalId, usize> = HashMap::new();
     for (idx, block) in func.blocks.iter().enumerate() {
         for stmt in &block.statements {
-            if let MirStmtKind::ClosureCreate { dst, .. } = &stmt.kind {
-                if heap_closures.contains(dst) {
-                    closure_block.insert(*dst, idx);
-                }
+            let dst = match &stmt.kind {
+                MirStmtKind::ClosureCreate { dst, .. } => Some(*dst),
+                MirStmtKind::Call { dst: Some(dst), .. } => Some(*dst),
+                _ => None,
+            };
+            if let Some(dst) = dst.filter(|d| heap_closures.contains(d)) {
+                closure_block.insert(dst, idx);
             }
         }
     }
 
+    // Placement is decided by dominance, the same way `container_drop` decides
+    // it, and for the same reason: a closure made on one path can't be freed on
+    // another, where it was never made.
+    //
+    // The return case used to drop *every* owned closure at *every* return,
+    // filtered only by "isn't the value being returned". That was survivable
+    // while the back-edge case couldn't see closures received from a call —
+    // one drop fired, and it happened to be the live one. Making the back-edge
+    // see them turned it into a double free: the loop body's closure was freed
+    // at the back-edge and again on the way out.
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
     let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
 
     for (block_idx, block) in func.blocks.iter().enumerate() {
+        let mut back_edge_drops = |target: &crate::BlockId, out: &mut Vec<(usize, Vec<LocalId>)>| {
+            if !dom.dominates(*target, block.id) {
+                return;
+            }
+            let to_drop: Vec<LocalId> = heap_closures
+                .iter()
+                .filter(|id| {
+                    closure_block.get(id).is_some_and(|&cidx| {
+                        let def = func.blocks[cidx].id;
+                        dom.dominates(*target, def) && dom.dominates(def, block.id)
+                    })
+                })
+                .copied()
+                .collect();
+            if !to_drop.is_empty() {
+                out.push((block_idx, to_drop));
+            }
+        };
+
         match &block.terminator.kind {
-            // Return: drop all heap closures except the return value
+            // Return: drop what this path actually made, minus the value going
+            // back to the caller.
             MirTerminatorKind::Return { value } | MirTerminatorKind::CleanupReturn { value, .. } => {
                 let returned_local = match value {
                     Some(MirOperand::Local(id)) => Some(*id),
                     _ => None,
                 };
-                let to_drop: Vec<LocalId> = heap_closures.iter()
+                let to_drop: Vec<LocalId> = heap_closures
+                    .iter()
                     .filter(|id| Some(**id) != returned_local)
+                    .filter(|id| {
+                        closure_block.get(id).is_some_and(|&cidx| {
+                            dom.dominates(func.blocks[cidx].id, block.id)
+                        })
+                    })
                     .copied()
                     .collect();
                 if !to_drop.is_empty() {
@@ -470,48 +519,12 @@ fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>
                 }
             }
 
-            // Back-edge: drop closures created in the loop body
-            MirTerminatorKind::Goto { target } => {
-                let target_idx = func.blocks.iter().position(|b| b.id == *target);
-                if let Some(tidx) = target_idx {
-                    if tidx <= block_idx {
-                        // Back-edge detected. Drop closures created between
-                        // the target and this block (i.e., in the loop body).
-                        let to_drop: Vec<LocalId> = heap_closures.iter()
-                            .filter(|id| {
-                                closure_block.get(id)
-                                    .map(|&cidx| cidx >= tidx && cidx <= block_idx)
-                                    .unwrap_or(false)
-                            })
-                            .copied()
-                            .collect();
-                        if !to_drop.is_empty() {
-                            drops_to_insert.push((block_idx, to_drop));
-                        }
-                    }
-                }
-            }
-
-            // Branch back-edge (less common but possible)
+            MirTerminatorKind::Goto { target } => back_edge_drops(target, &mut drops_to_insert),
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
-                for target in [then_block, else_block] {
-                    let target_idx = func.blocks.iter().position(|b| b.id == *target);
-                    if let Some(tidx) = target_idx {
-                        if tidx <= block_idx {
-                            let to_drop: Vec<LocalId> = heap_closures.iter()
-                                .filter(|id| {
-                                    closure_block.get(id)
-                                        .map(|&cidx| cidx >= tidx && cidx <= block_idx)
-                                        .unwrap_or(false)
-                                })
-                                .copied()
-                                .collect();
-                            if !to_drop.is_empty() {
-                                drops_to_insert.push((block_idx, to_drop));
-                            }
-                        }
-                    }
-                }
+                let mut out = Vec::new();
+                back_edge_drops(then_block, &mut out);
+                back_edge_drops(else_block, &mut out);
+                drops_to_insert.extend(out);
             }
 
             _ => {}
@@ -1256,7 +1269,7 @@ mod tests {
         //     Call(run, [_1])         ← unknown callee → escaping
         //     _2 = ClosureCall(_1)    ← local use → not transferred
         //     goto block1             ← back-edge: drop _1 here
-        //   block3: return void
+        //   block3: return void      ← and *not* here: block2 doesn't dominate it
 
         let mut fns = vec![MirFunction {
             name: "f".to_string(),
@@ -1307,11 +1320,15 @@ mod tests {
             "back-edge block should have ClosureDrop for leaked closure"
         );
 
-        // Also should have drop at return block
+        // And *not* at the return. Block 2 is the loop body; the exit path
+        // 0 → 1 → 3 never runs it, so there is nothing to free there — and on a
+        // path that did run it, the back-edge drop above already freed it. This
+        // assertion used to demand the second drop, which was a double free
+        // waiting for the back-edge case to start working (#1045).
         let exit_block = &fns[0].blocks[3];
         assert!(
-            exit_block.statements.iter().any(|s| matches!(s.kind, MirStmtKind::ClosureDrop { .. })),
-            "return block should also have ClosureDrop"
+            !exit_block.statements.iter().any(|s| matches!(s.kind, MirStmtKind::ClosureDrop { .. })),
+            "return block must not drop a closure the loop body made"
         );
     }
 }
