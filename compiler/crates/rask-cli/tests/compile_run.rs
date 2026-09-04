@@ -3707,6 +3707,56 @@ fn comptime_div_zero_is_compile_error() {
     assert!(output.contains("by zero"), "should report divide by zero: {}", output);
 }
 
+// ─── A comptime const that can't fold (#1072) ────────────────────
+//
+// `const X = comptime { … }` says the value is computed while compiling (CT2).
+// When the block panics or runs past its budget there is no value and nothing
+// to retry on, so it's a compile error — it used to run the block at startup
+// instead and say nothing, which turned a compile error into a crash in the
+// field. Overflow and divide-by-zero above were the only two that stopped the
+// build; the rest of the spec's list (CT35, CT46, CT7, CT31, CT33) didn't.
+
+#[test]
+fn comptime_panic_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_panic.rk");
+    assert!(!ok, "a comptime panic must fail compilation: {}", output);
+    assert!(
+        output.contains("seven is not allowed"),
+        "the panic's own message is the thing worth printing: {}",
+        output
+    );
+}
+
+#[test]
+fn comptime_branch_quota_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_quota.rk");
+    assert!(!ok, "running past the branch quota must fail compilation: {}", output);
+    assert!(
+        output.contains("@comptime_quota"),
+        "the message has to name the way out: {}",
+        output
+    );
+}
+
+#[test]
+fn comptime_quota_annotation_raises_the_limit() {
+    // The same 5,000-iteration loop, with `@comptime_quota(6000)` on the const.
+    // The annotation existed only in the error message until now — nothing
+    // parsed it, so the advice it gave was impossible to follow.
+    let (output, code) = compile_and_run("comptime_quota_raised.rk");
+    assert_eq!(code, 0, "should compile and run: {}", output);
+    assert_eq!(output.trim(), "12497500", "got: {}", output);
+}
+
+#[test]
+fn comptime_todo_still_compiles() {
+    // `todo()` is the exception: it means "not written yet", so a program full
+    // of them has to compile. The const falls back to runtime, where the same
+    // `todo()` panics — the tutorial lessons are written this way.
+    let (ok, output) = compile_only_succeeds("comptime_todo.rk");
+    assert!(ok, "a comptime `todo()` must not fail compilation: {}", output);
+}
+
 // ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────
 //
 // Step 1 of task 1.5 covers the interpreter (issues #289/#290/#291). Native

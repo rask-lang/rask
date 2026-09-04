@@ -1248,6 +1248,11 @@ impl<'a> Printer<'a> {
 
     fn format_const_decl(&mut self, c: &ConstDecl) {
         self.emit_indent();
+        for attr in &c.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         if c.is_pub {
             self.emit("public ");
         }

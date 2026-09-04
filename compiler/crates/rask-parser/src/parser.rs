@@ -682,7 +682,7 @@ impl Parser {
             TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
-            TokenKind::Const => self.parse_const_decl(is_pub, doc)?,
+            TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
             TokenKind::Type => self.parse_type_alias_decl(is_pub)?,
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
@@ -2198,7 +2198,7 @@ impl Parser {
     }
 
     /// Parse a top-level const declaration.
-    fn parse_const_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_const_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Const)?;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -2209,7 +2209,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let init = self.parse_expr()?;
         self.expect_terminator()?;
-        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, doc }))
+        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, attrs, doc }))
     }
 
     /// Parse type declaration:

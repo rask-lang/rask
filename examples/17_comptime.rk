@@ -36,7 +36,12 @@ const POWERS_OF_TWO = comptime {
     powers
 }
 
-// Prime numbers up to 50
+// Prime numbers up to 50.
+//
+// Trial division over 2..50 takes about 1,200 loop iterations, and the default
+// comptime budget is 1,000 (CT35). The annotation says how much room this one
+// needs; without it the fold is a compile error, not a silent move to runtime.
+@comptime_quota(5000)
 const PRIMES: Vec<i64> = comptime {
     mut primes = Vec.new()
 

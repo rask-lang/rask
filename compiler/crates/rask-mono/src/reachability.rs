@@ -731,6 +731,18 @@ impl<'a> Monomorphizer<'a> {
     /// symbol never made it into the object file: a C driver linking against it
     /// got "undefined reference", which is why struct.c-interop/EX1's export
     /// form had no working path through the compiler at all.
+    /// Every non-generic top-level function with a body, as a root. For a file
+    /// with no `main` — a test-only file — where an analysis pass still needs
+    /// layouts and call targets.
+    pub fn add_all_plain_fn_roots(&mut self) {
+        for decl in self.decls {
+            let DeclKind::Fn(f) = &decl.kind else { continue };
+            if !f.body.is_empty() && f.type_params.is_empty() {
+                self.enqueue(f.name.clone(), Vec::new());
+            }
+        }
+    }
+
     pub fn add_exported_roots(&mut self) {
         for decl in self.decls {
             let DeclKind::Fn(f) = &decl.kind else { continue };

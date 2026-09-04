@@ -367,15 +367,41 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 /// Monomorphization is what `evaluate_comptime_globals` needs and nothing else
 /// here does, so it's built and thrown away. A program with no comptime const
 /// pays for it and gets nothing; that's the price of check and run agreeing.
+fn has_comptime_let(body: &[rask_ast::stmt::Stmt], decls: &[Decl]) -> bool {
+    body.iter().any(|st| match &st.kind {
+        rask_ast::stmt::StmtKind::Let { init, .. } => is_comptime_init(init, decls),
+        _ => false,
+    })
+}
+
+/// Identity of a diagnostic for de-duplication: its code and message. Two
+/// passes reporting the same unfoldable const produce byte-identical text.
+fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
+    (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
+}
+
 fn comptime_diagnostics_for(
     decls: &[Decl],
     typed: &rask_types::TypedProgram,
     cfg: &CfgConfig,
 ) -> Vec<Diagnostic> {
-    if !decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls))) {
+    let any_comptime_init = decls.iter().any(|d| match &d.kind {
+        DeclKind::Const(c) => is_comptime_init(&c.init, decls),
+        // A function-local `let x = comptime { … }` folds the same way, and
+        // check has to see it too or its warning would only appear on the
+        // compile path — which is one backend reporting and the other not.
+        DeclKind::Fn(f) => has_comptime_let(&f.body, decls),
+        DeclKind::Test(t) => has_comptime_let(&t.body, decls),
+        _ => false,
+    });
+    if !any_comptime_init {
         return Vec::new();
     }
-    let Ok(mono) = rask_mono::monomorphize(typed, decls) else {
+    // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
+    // has no `main`, and the plain one calls that a fatal error — so check said
+    // nothing at all about the comptime consts in every test file we have,
+    // including ones that would fail to compile.
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
         return Vec::new();
@@ -721,12 +747,21 @@ fn finalize_compile(
     };
 
     // --- Evaluate comptime globals (single source of truth) ---
-    // Hard errors (overflow, divide-by-zero) become pipeline diagnostics and
-    // fail the build like any other pass — no separate handling downstream.
+    // Hard errors (a panic, the branch quota, overflow, divide-by-zero) become
+    // pipeline diagnostics and fail the build like any other pass. Warnings —
+    // a const the evaluator couldn't fold, so it runs at startup — ride along.
     let (comptime_globals, ct_diags) =
         evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
-    if !ct_diags.is_empty() {
-        diags.extend(ct_diags);
+    // Check folded these same consts a moment ago, so anything it already
+    // reported is in `diags` and would print twice. Both passes fold by
+    // design — check has to answer "does this compile" without building the
+    // program — but check gives up when there's no entry point to monomorphize
+    // from, and a test-only file has none. So drop the repeats rather than the
+    // warnings, or a `rask test` on such a file would say nothing at all.
+    let ct_failed = ct_diags.iter().any(|d| matches!(d.severity, Severity::Error));
+    let seen: Vec<(Option<String>, String)> = diags.iter().map(diag_key).collect();
+    diags.extend(ct_diags.into_iter().filter(|d| !seen.contains(&diag_key(d))));
+    if ct_failed {
         return PipelineOutput::fail_with_sources(diags, pkg_source_files);
     }
 

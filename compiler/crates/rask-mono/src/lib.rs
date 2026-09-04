@@ -527,6 +527,20 @@ pub fn monomorphize(
     monomorphize_with_packages(program, decls, std::collections::HashSet::new())
 }
 
+/// Monomorphize a program that may have no `main` — a file of `test` blocks has
+/// none, and `rask check` still has to answer whether its comptime consts fold.
+/// Every non-generic top-level function is a root instead of the entry point,
+/// so layouts and call targets exist for whatever the file defines.
+///
+/// Only for analysis. The result is not a program you can run: nothing in it
+/// says which function starts.
+pub fn monomorphize_for_analysis(
+    program: &TypedProgram,
+    decls: &[Decl],
+) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, std::collections::HashSet::new(), true)
+}
+
 /// Monomorphize with cross-package module awareness.
 ///
 /// `package_modules` contains names of imported external packages so the
@@ -536,12 +550,26 @@ pub fn monomorphize_with_packages(
     decls: &[Decl],
     package_modules: std::collections::HashSet<String>,
 ) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, package_modules, false)
+}
+
+/// `entryless` seeds every plain function as a root when there's no `main`,
+/// for the analysis entry point above.
+fn monomorphize_inner(
+    program: &TypedProgram,
+    decls: &[Decl],
+    package_modules: std::collections::HashSet<String>,
+    entryless: bool,
+) -> Result<MonoProgram, MonomorphizeError> {
     let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
     mono.set_trait_coercions(&program.trait_coercions);
 
     if !mono.add_entry("main") {
-        return Err(MonomorphizeError::NoEntryPoint);
+        if !entryless {
+            return Err(MonomorphizeError::NoEntryPoint);
+        }
+        mono.add_all_plain_fn_roots();
     }
     mono.add_module_const_roots();
     mono.add_exported_roots();

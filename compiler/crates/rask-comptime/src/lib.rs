@@ -577,7 +577,7 @@ impl ComptimeValue {
 /// Errors that can occur during comptime evaluation.
 #[derive(Debug, Error)]
 pub enum ComptimeError {
-    #[error("comptime exceeded backwards branch quota ({0}); increase with @branch_quota")]
+    #[error("comptime exceeded backwards branch quota ({0}); raise it with @comptime_quota(N) on the const")]
     BranchQuotaExceeded(usize),
 
     #[error("comptime exceeded time limit; simplify the expression or increase the limit")]
@@ -622,6 +622,13 @@ pub enum ComptimeError {
     #[error("comptime panic: {0}")]
     Panic(String),
 
+    /// `todo()` reached at comptime. Separate from `Panic` because `todo()`
+    /// means "not written yet" — a program full of them still has to compile,
+    /// which is the whole point of the placeholder. The value falls back to
+    /// runtime, where the same `todo()` panics.
+    #[error("not yet implemented at comptime: {0}")]
+    Unimplemented(String),
+
     #[error("no field `{field}` on type `{ty}`")]
     NoSuchField { ty: String, field: String },
 
@@ -648,10 +655,36 @@ pub enum ComptimeError {
 }
 
 impl ComptimeError {
-    /// Hard errors are genuine compile errors (not a reason to fall back or
-    /// skip): comptime overflow and divide-by-zero (type.overflow CT1, OV2).
+    /// Hard errors are genuine compile errors — the evaluator ran the code and
+    /// the code, or what it asked for, is the problem. There is no answer to
+    /// fall back to: `const X = comptime { … }` promises a value computed at
+    /// compile time (CT2), and running the block again at runtime would only
+    /// reach the same panic or the same limit.
+    ///
+    /// The spec's own error table says as much: quota (CT35), panic and
+    /// out-of-bounds (CT46), I/O (CT7), pools (CT31), concurrency (CT33),
+    /// memory (CT37) are all listed as compile errors.
+    ///
+    /// Everything else is the evaluator's own gap — a construct it can't model
+    /// yet — and that's soft: the const runs at runtime and the caller warns.
     pub fn is_hard(&self) -> bool {
-        matches!(self, ComptimeError::IntegerOverflow(_) | ComptimeError::DivisionByZero)
+        use ComptimeError::*;
+        matches!(
+            self,
+            IntegerOverflow(_)
+                | DivisionByZero
+                | BranchQuotaExceeded(_)
+                | TimeoutExceeded
+                | MemoryLimitExceeded
+                | StackOverflow(_)
+                | IndexOutOfBounds { .. }
+                | NonExhaustiveMatch
+                | Panic(_)
+                | IoNotAllowed
+                | PoolsNotAllowed
+                | ConcurrencyNotAllowed
+                | UnsafeNotAllowed
+        )
     }
 }
 
@@ -710,6 +743,11 @@ impl ComptimeEnv {
     /// Reset branch counter between independent comptime evaluations.
     pub fn reset_branch_count(&mut self) {
         self.branch_count = 0;
+    }
+
+    /// CT35: raise or lower the quota for the next evaluation (`@comptime_quota`).
+    pub fn set_quota(&mut self, quota: usize) {
+        self.branch_quota = quota;
     }
 
     fn push_scope(&mut self) {
@@ -1120,6 +1158,11 @@ impl ComptimeInterpreter {
     /// Reset branch counter between independent comptime evaluations.
     pub fn reset_branch_count(&mut self) {
         self.env.reset_branch_count();
+    }
+
+    /// CT35: set the backwards-branch quota for the next evaluation.
+    pub fn set_quota(&mut self, quota: usize) {
+        self.env.set_quota(quota);
     }
 
     /// Inject the `cfg` build configuration into the comptime environment.
@@ -2228,11 +2271,11 @@ impl ComptimeInterpreter {
             }
             "todo" => {
                 let msg = if let Some(ComptimeValue::String(s)) = args.first() {
-                    format!("not yet implemented: {}", s)
+                    s.clone()
                 } else {
-                    "not yet implemented".to_string()
+                    "no message".to_string()
                 };
-                Err(ComptimeError::Panic(msg))
+                Err(ComptimeError::Unimplemented(msg))
             }
             "unreachable" => {
                 let msg = if let Some(ComptimeValue::String(s)) = args.first() {

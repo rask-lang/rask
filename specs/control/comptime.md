@@ -282,6 +282,10 @@ const BAD = comptime {
 | **CT38: String size** | 1 MB | - | Prevent memory issues |
 | **CT39: Array size** | 16 MB | - | Prevent memory issues |
 
+`@comptime_quota` attaches to the const, like any other annotation — the const is
+what's being folded, and the constant's own declaration is where a reader looks to
+find out why this one is allowed to take longer.
+
 <!-- test: skip -->
 ```rask
 comptime func slow() {
@@ -294,16 +298,33 @@ comptime func slow() {
 const X = comptime slow()
 // ERROR: Comptime evaluation exceeded backwards branch quota (1,000)
 
-comptime func large_computation() -> [u8; 10000] {
-    @comptime_quota(20000)  // Allow 20,000 backwards branches
-
-    let table = [0u8; 10000]
+@comptime_quota(20000)
+const TABLE = comptime {
+    mut table = Vec.new()
     for i in 0..10000 {
-        table[i] = compute(i)
+        table.push(compute(i))
     }
-    return table
+    table.freeze()
 }
 ```
+
+### CT69: Failing to fold is a compile error
+
+A `comptime` const is a promise that the value exists before the program runs, so
+there's no runtime to retry on. Every failure in the table above — the quota, a
+panic, an index out of bounds, asking for I/O or a pool or a spawn — stops the
+build where the const is written.
+
+Two exceptions, and they're both about work that hasn't been done rather than
+work that failed:
+
+- **`todo()`** means the block isn't written yet. A program full of them still
+  has to compile; the const runs at startup instead, where the same `todo()`
+  panics.
+- **A construct the evaluator doesn't cover yet** (`Map.new` today) is the
+  compiler's gap, not the program's. The block runs at startup and the compiler
+  warns, naming what stopped it. It used to say nothing, which is how a const
+  could quietly stop being a constant.
 
 ## File Embedding
 
