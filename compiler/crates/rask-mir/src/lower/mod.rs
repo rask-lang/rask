@@ -850,6 +850,19 @@ impl<'a> MirContext<'a> {
         if let Some(found) = self.find_enum(name) {
             return Some(found);
         }
+        // IM3, the same reason `resolve_type_str` follows aliases: a transparent
+        // alias is its target, so a variant reached through it is the target's
+        // variant. Without this `Shade.Red` under `type alias Shade = Colour`
+        // found no enum, fell through to a bare constant, and the comparison
+        // that followed read that integer as an address — a segfault, not a
+        // wrong answer (#998).
+        if let Some(target) = self.type_defs.alias_target(name) {
+            if target != name {
+                if let Some(found) = self.find_enum(target) {
+                    return Some(found);
+                }
+            }
+        }
         let base = name.split('<').next()?.trim();
         if base == name {
             return None;

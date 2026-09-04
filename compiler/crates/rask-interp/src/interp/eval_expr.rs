@@ -844,7 +844,13 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                if let ExprKind::Ident(written) = &object.kind {
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` is the same type under another
+                    // spelling, and everything below keys off the spelling. One
+                    // rewrite here reaches every branch — the enum table, the
+                    // stdlib namespaces, `extend` methods — rather than each of
+                    // them learning about aliases (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — written type arguments are folded
                     // into the name and the enum table is keyed by the bare one, so
                     // the whole-name lookup missed and the variant call fell through
@@ -998,7 +1004,24 @@ impl Interpreter {
                     }
                 }
 
-                let receiver = self.eval_expr(object)?;
+                // A transparent alias over a stdlib type reaches its statics
+                // through the environment rather than the tables above —
+                // `Duration.from_millis` is a value in scope, `Zwibble` is not.
+                // Look up what the alias names (#998).
+                let receiver = match &object.kind {
+                    ExprKind::Ident(ident) => {
+                        let target = self.resolve_transparent_alias(ident);
+                        match (target != *ident)
+                            .then(|| self.env.get(&target))
+                            .flatten()
+                            .cloned()
+                        {
+                            Some(v) => v,
+                            None => self.eval_expr(object)?,
+                        }
+                    }
+                    _ => self.eval_expr(object)?,
+                };
                 let mut arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(&a.expr))
@@ -1554,7 +1577,10 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                if let ExprKind::Ident(written) = &object.kind {
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` names the same enum, so a
+                    // variant reached through it is that enum's variant (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — the parser folds written type
                     // arguments into the name, and the enum table is keyed by the
                     // bare one. Looked up whole, it missed, and the miss surfaced
