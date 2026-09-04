@@ -448,6 +448,13 @@ func write_raw(conn_fd: i64, data: string) {
     }
 }
 
+// Close a TCP connection.
+func close_raw(conn_fd: i64) {
+    unsafe {
+        rask_io_close_fd(conn_fd)
+    }
+}
+
 // ─── Client Helpers ──────────────────────────────────────────────
 
 // Parse "http://host:port/path" into (host, port, path).
@@ -691,9 +698,13 @@ extend HttpServer {
         }
         let raw = read_raw(conn as i64, 65536)
         let request = parse_http_request(raw) catch _ => {
+            // No responder is handed out on this path, so nothing downstream
+            // will ever close this connection. Close it here or the descriptor
+            // is held until the process ends.
+            close_raw(conn as i64)
             return HttpError.InvalidResponse("malformed request")
         }
-        let responder = Responder { conn_fd: conn as i64, sent: false }
+        let responder = Responder { conn_fd: conn as i64 }
         return (request, responder)
     }
     public func local_addr(self) -> string {
@@ -705,16 +716,25 @@ extend HttpServer {
     }
 }
 
+// The connection, held until exactly one response goes out on it.
+//
+// `@resource` plus `take self` on `respond` is what makes "exactly one" a
+// compile-time fact, so there's no `sent` flag to check at runtime — a second
+// response has nothing left to send it with.
 @resource
 struct Responder {
     conn_fd: i64
-    sent: bool
 }
 
 extend Responder {
     public func respond(take self, response: Response) -> void or HttpError {
         let raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
+        // `format_http_response` writes `Connection: close`, so close it. A
+        // client that believes the header waits for an EOF that never arrives
+        // — Rask's own client hung on Rask's own server — and the server holds
+        // a descriptor per request for the life of the process.
+        close_raw(self.conn_fd)
     }
 }
 

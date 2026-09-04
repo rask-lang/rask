@@ -79,6 +79,22 @@ drive() {
     done
 }
 
+# The responses say `Connection: close`. Check the server means it.
+#
+# curl reads to Content-Length and stops, so it never noticed that the socket
+# stayed open — Rask's own client, which reads until EOF because the header told
+# it to, hung forever on Rask's own server, and the server held a descriptor per
+# request for the life of the process (#1055). Reading the socket to EOF is the
+# only thing that catches it: `cat` returns when the server closes, and `timeout`
+# fails the check when it doesn't.
+closes_the_connection() {
+    timeout 5 bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/'"$PORT"' || exit 1
+        printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3
+        cat <&3 > /dev/null
+    '
+}
+
 run_backend() {
     backend="$1"
     out="$WORK/$backend.out"
@@ -106,6 +122,12 @@ run_backend() {
     fi
 
     requests | drive | normalise > "$out"
+
+    if ! closes_the_connection; then
+        echo "FAIL: $backend — server sent Connection: close and kept the socket open"
+        kill -9 "$SERVER_PID" 2>/dev/null; SERVER_PID=""
+        return 1
+    fi
 
     kill -9 "$SERVER_PID" 2>/dev/null; SERVER_PID=""
     wait "$SERVER_PID" 2>/dev/null
