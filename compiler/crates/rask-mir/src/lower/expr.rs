@@ -4214,6 +4214,26 @@ impl<'a> MirLowerer<'a> {
         if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
             return Ok(r);
         }
+        // `v.freeze()` ends a `comptime` block to say the collection it built
+        // is the constant's value. The comptime engine has already evaluated
+        // the block by the time this runs, so there is nothing to do but pass
+        // the receiver along — and the const's folded bytes are what a reader
+        // of the constant actually gets.
+        //
+        // It's declared `comptime func` with an empty body, so without this it
+        // reached codegen as a call to a `Vec_freeze` nothing emits, and every
+        // `const X = comptime { … v.freeze() }` failed to compile (#1069).
+        if method == "freeze" && args.is_empty() {
+            let on_collection = self
+                .ctx
+                .lookup_raw_type(object.id)
+                .and_then(|t| self.generic_head(t))
+                .map(|(name, _)| name == "Vec" || name == "Map")
+                .unwrap_or(false);
+            if on_collection {
+                return self.lower_expr(object);
+            }
+        }
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }

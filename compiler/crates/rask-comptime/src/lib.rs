@@ -2415,10 +2415,7 @@ impl ComptimeInterpreter {
             // reached codegen as a call to `Vec_freeze` (#1069).
             "freeze" => match obj {
                 ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
-                _ => Err(ComptimeError::TypeMismatch {
-                    expected: "Vec or Map".to_string(),
-                    found: obj.type_name().to_string(),
-                }),
+                other => Ok(other.clone()),
             },
             _ => Err(ComptimeError::NotSupported(format!("method {} on {}", method, obj.type_name()))),
         }

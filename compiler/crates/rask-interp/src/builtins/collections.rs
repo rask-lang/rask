@@ -1397,6 +1397,11 @@ impl Interpreter {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(m.lock().unwrap().contains_key(&MapKey(key))))
             }
+            // The identity, same as `Vec.freeze` — see the note there (#1069).
+            "freeze" => {
+                let cloned = m.lock().unwrap().clone();
+                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
+            }
             "keys" => {
                 let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
                     .into_iter().map(|(k, _)| k).collect();

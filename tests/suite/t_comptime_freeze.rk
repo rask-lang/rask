@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `freeze` ends a `comptime` block to say the collection it built is the
+// constant's value (#1069).
+//
+// It's declared `comptime func` with an empty body and nothing implemented it,
+// on either backend. So every `const X = comptime { … v.freeze() }` failed:
+// "no method `freeze` on type `Vec`" interpreted, "Function not found:
+// Vec_freeze" at codegen. Dropping the `.freeze()` made the same const fold
+// and work, which is what said the const machinery was fine and the method was
+// the hole.
+//
+// It's the identity. The comptime engine has already evaluated the block by
+// the time anything asks, so there is nothing left to do but hand the value
+// over — the constant's folded bytes are what a reader of it gets either way.
+// Three places had to agree: the interpreter's Vec methods, the AST comptime
+// evaluator, and MIR lowering, which was still emitting a call to a
+// `Vec_freeze` nothing declares even once the fold had succeeded.
+
+const SQUARES = comptime {
+    mut v = Vec.new()
+    for i in 0..8 {
+        v.push(i * i)
+    }
+    v.freeze()
+}
+
+const FACTORIALS = comptime {
+    mut v = Vec.new()
+    mut f: i64 = 1
+    v.push(f)
+    for i in 1..8 {
+        f = f * i as i64
+        v.push(f)
+    }
+    v.freeze()
+}
+
+const CODES = comptime {
+    mut m = Map.new()
+    m.insert("alpha", 1)
+    m.insert("bravo", 2)
+    m.freeze()
+}
+
+test "a frozen Vec reads back" {
+    assert SQUARES[0] == 0
+    assert SQUARES[3] == 9
+    assert SQUARES[7] == 49
+}
+
+test "a frozen Vec keeps its length" {
+    assert SQUARES.len() == 8
+}
+
+test "a frozen table computed with a running value" {
+    assert FACTORIALS[0] == 1
+    assert FACTORIALS[5] == 120
+    assert FACTORIALS[7] == 5040
+}
+
+test "a frozen Map reads back" {
+    assert CODES["alpha"] == 1
+    assert CODES["bravo"] == 2
+}
+
+test "a frozen collection is usable from a function" {
+    assert square_of(4) == 16
+}
+
+func square_of(n: i64) -> i64 {
+    return SQUARES[n]
+}

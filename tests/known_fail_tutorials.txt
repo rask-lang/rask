@@ -6,4 +6,3 @@
 #
 # Format: one basename, then the reason and its issue.
 
-18_comptime.rk  # every const ends in `v.freeze()`, and native lowers that as a call rather than using the folded value — #1069 (the interpreter runs it: `rask test --interp` passes all four)
