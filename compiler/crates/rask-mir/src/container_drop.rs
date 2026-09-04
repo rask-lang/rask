@@ -290,10 +290,11 @@ fn insert_for_function(
     //
     // A value that fans out like that is left alone. Leaking it is the wrong
     // answer; freeing it twice is a worse one.
-    for group in value_groups(func, &fresh) {
+    let groups = value_groups(func, &fresh);
+    for group in &groups {
         let survivors = group.iter().filter(|id| droppable.contains_key(id)).count();
         if survivors > 1 {
-            for id in &group {
+            for id in group {
                 droppable.remove(id);
             }
         }
@@ -302,7 +303,7 @@ fn insert_for_function(
     if droppable.is_empty() {
         return;
     }
-    insert_drops(func, &droppable);
+    insert_drops(func, &droppable, &groups);
 }
 
 /// Locals holding a container this frame owns, mapped to how to free it: the
@@ -830,13 +831,22 @@ fn find_moved_away(
 /// every loop back-edge it was built inside. Same placement rules as
 /// `trait_drop.rs`, and for the same reasons — see the comments there on why
 /// dominance is what decides it rather than block order.
-fn insert_drops(func: &mut MirFunction, droppable: &HashMap<LocalId, &'static str>) {
+fn insert_drops(
+    func: &mut MirFunction,
+    droppable: &HashMap<LocalId, &'static str>,
+    groups: &[HashSet<LocalId>],
+) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
 
     let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
+    // Every local's defining block, not just the droppable ones: a back-edge
+    // has to ask where the *allocation* was made, and the name holding it
+    // there is usually a copy of one defined further out.
+    let mut def_of_any: HashMap<LocalId, usize> = HashMap::new();
     for (idx, block) in func.blocks.iter().enumerate() {
         for stmt in &block.statements {
             if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
+                def_of_any.insert(dst, idx);
                 if droppable.contains_key(&dst) {
                     defined_in_block.insert(dst, idx);
                 }
@@ -863,16 +873,17 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashMap<LocalId, &'static st
                 }
             }
             MirTerminatorKind::Goto { target } => backedge_drops(
-                &mut to_insert, block_idx, block.id, *target, &func.blocks, &dom, &defined_in_block,
+                &mut to_insert, block_idx, block.id, *target, &func.blocks, &dom,
+                &defined_in_block, &def_of_any, groups,
             ),
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *then_block, &func.blocks, &dom,
-                    &defined_in_block,
+                    &defined_in_block, &def_of_any, groups,
                 );
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *else_block, &func.blocks, &dom,
-                    &defined_in_block,
+                    &defined_in_block, &def_of_any, groups,
                 );
             }
             _ => {}
@@ -899,15 +910,42 @@ fn backedge_drops(
     blocks: &[MirBlock],
     dom: &crate::analysis::dominators::DominatorTree,
     defined_in_block: &HashMap<LocalId, usize>,
+    def_of_any: &HashMap<LocalId, usize>,
+    groups: &[HashSet<LocalId>],
 ) {
     if !dom.dominates(target, source) {
         return;
     }
+    let inside = |id: &LocalId| {
+        // No defining statement means a parameter, which the frame was handed
+        // and the loop certainly didn't make.
+        def_of_any.get(id).is_some_and(|&idx| {
+            let def = blocks[idx].id;
+            dom.dominates(target, def) && dom.dominates(def, source)
+        })
+    };
     let drops: Vec<LocalId> = defined_in_block
         .iter()
         .filter(|(_, &def_idx)| {
             let def = blocks[def_idx].id;
             dom.dominates(target, def) && dom.dominates(def, source)
+        })
+        // The name is inside the loop; the allocation has to be too. `for x in v`
+        // inside a `while` copies `v` into a fresh name in the loop body, and
+        // freeing *that* freed `v` — so the second iteration walked memory that
+        // was already gone. A plain `for` over a vector, no adapter involved,
+        // segfaulted (#1061).
+        //
+        // One allocation under several names is one group, so the question is
+        // whether every name in it was made inside the loop. Any member from
+        // outside means the container predates the loop and belongs to the
+        // enclosing frame — leaving it alone leaks at worst, where freeing it
+        // is a use-after-free.
+        .filter(|(id, _)| {
+            groups
+                .iter()
+                .find(|g| g.contains(id))
+                .is_none_or(|g| g.iter().all(inside))
         })
         .map(|(&id, _)| id)
         .collect();
