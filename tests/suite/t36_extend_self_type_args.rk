@@ -97,3 +97,16 @@ test "a sequence of pairs destructures at a call site" {
 test "a sequence of pairs counts" {
     assert numbered().count() == 2u64
 }
+
+// Binding, not just spelling — noted rather than tested. `extend Holder<(K, V)>`
+// names two parameters under one type argument, and the binding used to be
+// positional: it zipped the names against the receiver's arguments one for one,
+// so `K` took the whole `(i64, string)` and `V` bound to nothing. The copy came
+// out as `$___`.
+//
+// It binds through the tuple now — `Sequence_to_map$i32_i32` where it used to be
+// `Sequence_to_map$___`. There is no passing test for it here because every
+// method that would *observe* both halves hits something further in: reading
+// `self.items` needs the struct's own `T` refined to `(K, V)`, which the checker
+// doesn't do, and a method naming `K` and `V` in its signature binds them from
+// its arguments rather than the receiver. Both are #1046.

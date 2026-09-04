@@ -349,13 +349,16 @@ extend Sequence<(K, V)> {
     ///     func collect_pairs<K, V>(s: Sequence<(K, V)>) -> Map<K, V> { … }
     ///     collect_pairs(pairs())      // 3 entries, get(2) == 20
     ///
-    /// What it can't be is a method on this block. `K` and `V` sit inside a
-    /// tuple under one type argument, and binding an extend block's parameters
-    /// is positional — it pairs `owner.params` with the receiver's arguments
-    /// one for one. That works for `extend Map<K, V>` and not here, so the copy
-    /// comes out as `Sequence_to_map$___` with nothing bound and `p.0` has no
-    /// type. Binding it needs the target matched against the receiver
-    /// structurally, not by position.
+    /// The binding is right now — the target is matched against the receiver
+    /// structurally, so `K` and `V` bind through the tuple and the copy comes
+    /// out as `Sequence_to_map$i32_i32` rather than `$___`.
+    ///
+    /// What stops it now is one layer further in: `mut out: Map<K, V> =
+    /// Map<K, V>.new()` reaches lowering with `Map<K, V>` unsubstituted, so
+    /// `out` has no type to dispatch on and `out.insert(k, v)` fails with
+    /// "method `insert` on receiver of unresolved type". Mono substitutes
+    /// declared types, and a constructor receiver written as `Map<K, V>` is an
+    /// *expression*, which it leaves alone.
     ///
     /// Measured, so the parts that *do* work are known: the loop runs three
     /// times in this block (`for p in self` counts 3), and `to_vec`, `count`

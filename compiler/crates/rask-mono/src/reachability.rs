@@ -203,6 +203,57 @@ fn parse_owner(type_name: &str) -> Option<MethodOwner> {
     })
 }
 
+impl MethodOwner {
+    /// The target's type arguments as written: `["(K, V)"]` for
+    /// `Sequence<(K, V)>`, `["K", "V"]` for `Map<K, V>`.
+    fn template_args(&self) -> Vec<String> {
+        let Some(open) = self.template.find('<') else { return Vec::new() };
+        let Some(inner) = self.template[open + 1..].trim_end().strip_suffix('>') else {
+            return Vec::new();
+        };
+        split_top_level(inner, ',')
+            .into_iter()
+            .map(|a| a.split(':').next().unwrap_or(a).trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect()
+    }
+}
+
+/// Match one of the target's arguments, as written, against the type that
+/// arrived, collecting the parameter names it binds and what each binds to.
+///
+/// Returns false when the shapes don't line up, which leaves the caller on its
+/// old positional reading rather than guessing.
+fn bind_pattern(
+    pattern: &str,
+    actual: &Type,
+    names: &mut Vec<String>,
+    args: &mut Vec<Type>,
+) -> bool {
+    let pattern = pattern.trim();
+    // A tuple in the target binds member-wise against a tuple that arrived.
+    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let Type::Tuple(elems) = actual else { return false };
+        let parts = split_top_level(members, ',');
+        if parts.len() != elems.len() {
+            return false;
+        }
+        for (p, a) in parts.iter().zip(elems.iter()) {
+            if !bind_pattern(p, a, names, args) {
+                return false;
+            }
+        }
+        return true;
+    }
+    // Anything else is taken as a parameter name binding to what arrived. A
+    // concrete spelling in the target (`extend Holder<i64>`) would land here
+    // too and bind a name nothing substitutes, which is harmless — the copy
+    // just carries an unused entry.
+    names.push(pattern.to_string());
+    args.push(actual.clone());
+    true
+}
+
 /// Replace whole-word occurrences of a type parameter name in a type string.
 ///
 /// Whole-word so `V` doesn't rewrite the `V` inside `Value`, and so a parameter
@@ -878,11 +929,11 @@ impl<'a> Monomorphizer<'a> {
             let concrete = if item.type_args.is_empty() {
                 original.clone()
             } else {
-                let (param_names, self_ty) =
+                let (param_names, bound_args, self_ty) =
                     self.instantiation_params(&item.name, original, &item.type_args);
                 let (mut cloned, origins) =
                     crate::instantiate::instantiate_function_with_params(
-                        original, &param_names, &item.type_args,
+                        original, &param_names, &bound_args,
                         &mut self.next_instantiated_id,
                     );
                 // The receiver's own layout. `self` is spelled `Self`, which
@@ -896,7 +947,7 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
                 }
-                self.carry_node_records(&origins, &item.type_args, &param_names);
+                self.carry_node_records(&origins, &bound_args, &param_names);
                 cloned
             };
 
@@ -927,26 +978,56 @@ impl<'a> Monomorphizer<'a> {
         name: &str,
         decl: &Decl,
         type_args: &[Type],
-    ) -> (Vec<String>, Option<String>) {
+    ) -> (Vec<String>, Vec<Type>, Option<String>) {
         let Some(owner) = self.method_owners.get(name) else {
-            return (crate::instantiate::type_param_names(decl, type_args), None);
+            return (
+                crate::instantiate::type_param_names(decl, type_args),
+                type_args.to_vec(),
+                None,
+            );
         };
-        let n = owner.params.len().min(type_args.len());
-        let mut names: Vec<String> = owner.params[..n].to_vec();
+
+        // How many of the arguments belong to the owner. One per *argument* of
+        // the target, not one per parameter — `extend Sequence<(K, V)>` names
+        // two parameters under a single argument, and the call site hands over
+        // the receiver's arguments, so counting parameters took `(i64, i64)`
+        // for `K` and left `V` unbound. The copy came out as
+        // `Sequence_to_map$___` with nothing substituted (#1046).
+        let owner_arity = owner.template_args().len();
+        let n = owner_arity.min(type_args.len());
+
+        // Match the target as written against what arrived, so a parameter
+        // nested in a tuple binds to the matching member.
+        let mut names: Vec<String> = Vec::new();
+        let mut args: Vec<Type> = Vec::new();
+        let mut matched = true;
+        for (pattern, actual) in owner.template_args().iter().zip(type_args[..n].iter()) {
+            if !bind_pattern(pattern, actual, &mut names, &mut args) {
+                matched = false;
+                break;
+            }
+        }
+        if !matched || names.len() != owner.params.len() {
+            // Fall back to the positional reading. Anything this doesn't
+            // understand behaves as it did before.
+            names = owner.params[..n].to_vec();
+            args = type_args[..n].to_vec();
+        }
+
         names.extend(crate::instantiate::type_param_names(decl, &type_args[n..]));
-        let spelled: Vec<String> =
-            type_args[..n].iter().map(|t| format!("{}", t)).collect();
+        args.extend_from_slice(&type_args[n..]);
+
         // Substitute into the target as written rather than rebuilding it from
-        // the base name: `extend Sequence<(K, V)>` has two parameters under one
-        // argument, and `base<args…>` flattened them into `Sequence<i32>`.
-        let self_ty = (n == owner.params.len()).then(|| {
+        // the base name: `base<args…>` flattened `Sequence<(K, V)>` into
+        // `Sequence<i32>` and dropped `V`.
+        let self_ty = (n == owner_arity).then(|| {
             let mut out = owner.template.clone();
-            for (param, arg) in owner.params.iter().zip(spelled.iter()) {
-                out = substitute_param_name(&out, param, arg);
+            for (param, arg) in owner.params.iter().zip(args.iter()) {
+                out = substitute_param_name(&out, param, &format!("{}", arg));
             }
             out
         });
-        (names, self_ty)
+        (names, args, self_ty)
     }
 
     /// A method's own type arguments, minus any that name one of the owning
