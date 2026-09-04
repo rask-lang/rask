@@ -1244,7 +1244,15 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().fcvt_from_sint(to_ty, val)
             }
         } else if from_ty.is_float() && to_ty.is_int() {
-            builder.ins().fcvt_to_sint_sat(to_ty, val)
+            // At 64 bits then cut down: Cranelift's saturating conversions
+            // lower through the 32-bit sequence for i8 and i16 and the answer
+            // only reads correctly as an i32 (#974).
+            let wide = builder.ins().fcvt_to_sint_sat(types::I64, val);
+            if to_ty.bits() < 64 {
+                builder.ins().ireduce(to_ty, wide)
+            } else {
+                wide
+            }
         } else {
             builder.ins().bitcast(to_ty, MemFlags::new(), val)
         }
@@ -1367,12 +1375,20 @@ impl<'a> FunctionBuilder<'a> {
                 let is_nan = builder.ins().fcmp(FloatCC::Unordered, val, val);
                 builder.ins().bor(same, is_nan)
             } else {
+                // The round trip goes through 64 bits even when the source is
+                // narrower. Cranelift's `fcvt_to_uint_sat` at i8 lowers to the
+                // 32-bit sequence — pivot at 128.0, fix up by 2^31 — and the
+                // result only makes sense read as an i32, so comparing its low
+                // byte against the source said `u8 200` didn't survive its own
+                // conversion (#974). The value already fits the source type, so
+                // widening it is free of consequence.
+                let wide = Self::convert_value(builder, val, src_clif, types::I64, Some(source_ty));
                 let back = if source_ty.is_unsigned() {
-                    builder.ins().fcvt_to_uint_sat(src_clif, converted)
+                    builder.ins().fcvt_to_uint_sat(types::I64, converted)
                 } else {
-                    builder.ins().fcvt_to_sint_sat(src_clif, converted)
+                    builder.ins().fcvt_to_sint_sat(types::I64, converted)
                 };
-                builder.ins().icmp(IntCC::Equal, back, val)
+                builder.ins().icmp(IntCC::Equal, back, wide)
             };
             let not_exact = builder.ins().iconst(types::I64, Self::CONVERT_NOT_EXACT);
             (converted, builder.ins().select(exact, zero, not_exact))
@@ -1386,10 +1402,21 @@ impl<'a> FunctionBuilder<'a> {
                 // `to` doesn't round — a fraction is a failure, checked below.
                 _ => val,
             };
-            let converted = if target_ty.is_unsigned() {
-                builder.ins().fcvt_to_uint_sat(tgt_clif, rounded)
+            // Same narrow-width hazard as the int→float round trip above, in
+            // the other direction: at i8 and i16 Cranelift's saturating
+            // conversions lower to the 32-bit sequence, so `200.0.to<u8>()`
+            // came back 72 and `40000.0.to<u16>()` came back 7232. Convert at
+            // 64 bits and cut the value down afterwards; `float_in_range` below
+            // is what decides whether it belonged in the target at all.
+            let wide = if target_ty.is_unsigned() {
+                builder.ins().fcvt_to_uint_sat(types::I64, rounded)
             } else {
-                builder.ins().fcvt_to_sint_sat(tgt_clif, rounded)
+                builder.ins().fcvt_to_sint_sat(types::I64, rounded)
+            };
+            let converted = if tgt_clif.bits() < 64 {
+                builder.ins().ireduce(tgt_clif, wide)
+            } else {
+                wide
             };
 
             let in_range = Self::float_in_range(builder, rounded, target_ty);

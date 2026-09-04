@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Generalizing an inferred parameter — #904. Unbuilt, not broken.
+//
+// type.gradual-constraints/IN1 says the compiler infers the most general type
+// satisfying the constraints, and IN3 says constraints coming from operators or
+// trait methods produce a *generic* signature. IN2's concrete answer is only for
+// a body whose sole information is a literal default.
+//
+// What exists today is IN2 and nothing else. An omitted parameter type becomes
+// one type variable shared by the whole program, so whatever pins it first wins:
+//
+//   func double(x) { return x * 2 }      // `2` defaults to i32, so x is i32
+//   double(1.5)                          // error: `*` between f64 and i32
+//
+//   func count(items) { return items.len() }
+//   count(ints)                          // fixes items at Vec<i32>
+//   count(strs)                          // error: expected i32, found string
+//
+// Two separate pieces are missing, and neither is a small fix:
+//
+//   Generalization. The parameter has to become a real type parameter that each
+//   call site instantiates fresh, rather than a single variable every call site
+//   unifies against. Nothing in the pipeline turns an inferred parameter into
+//   one — `pre_register_inferred_fns` mints a var and that is the whole story.
+//
+//   Reading a nominal type out of method use (GC3). The table's own answer for
+//   `count` is `<T>(items: Vec<T>) -> usize` — the parameter isn't the generic,
+//   its *element* is. Getting there means going from "something with `.len()`"
+//   to `Vec<T>` and then generalizing the argument, which is structural-to-
+//   nominal inference the checker doesn't do at all.
+//
+// The concrete half, and the explicit signature these should infer, are green in
+// `t_week_gradual_generics.rk`.
+
+func double(x) {
+    return x * 2
+}
+
+func count(items) {
+    return items.len()
+}
+
+// IN3: `*` desugars to `.mul()`, so the body's constraint is a trait method and
+// the signature should be `<T: Numeric>(x: T) -> T`.
+test "type.gradual-constraints — IN3: an operator body infers a Numeric generic" {
+    assert double(21) == 42
+    let f: f64 = 1.5
+    assert double(f) == 3.0
+}
+
+// GC3/IN1: `.len()` says nothing about the element, so the element generalizes
+// and both calls are fine.
+test "type.gradual-constraints — a method that doesn't constrain T stays generic" {
+    let ints: Vec<i32> = [1, 2, 3]
+    assert count(ints) == 3
+    let strs: Vec<string> = ["a", "b"]
+    assert count(strs) == 2
+}
+
+func main() {}

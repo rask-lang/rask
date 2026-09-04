@@ -722,11 +722,14 @@ fn optional_widen_assign_native_eq_interp() {
 }
 
 // #270: scalar `mutate` params write back through field/index projections
-// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`), while a whole
-// Copy variable stays unchanged (`modify_int(z)`). Native == interp.
+// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`). Since #899 a
+// whole Copy variable writes back too — `modify_int(mutate z)` leaves `z` at
+// 999, not 42 — because mem.parameters/PM2 says the caller keeps the value and
+// gets the write, and that never depended on the argument's size. Native ==
+// interp, before and after.
 #[test]
 fn scalar_mutate_writeback_native_eq_interp() {
-    assert_native_eq_interp("scalar_mutate_writeback.rk", "211242");
+    assert_native_eq_interp("scalar_mutate_writeback.rk", "2112999");
 }
 
 // mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
@@ -985,6 +988,37 @@ fn error_annotation_against_a_container_initializer() {
     assert!(
         out.contains("expected `i64`, found `Sender"),
         "and for the tuple-destructured Sender: {}", out,
+    );
+}
+
+#[test]
+fn error_try_in_a_function_that_returns_nothing() {
+    // Caught in review on #1057. `try` hands the error to the caller, so the
+    // enclosing function has to declare somewhere for it to go — and a function
+    // with no return type has nowhere. Only the concrete `T or E` operand
+    // leaked: written where the operand's type isn't resolved yet, this has
+    // always been reported.
+    //
+    // The cost of the leak was a new divergence. A test body is lowered as a
+    // void function too, so "does this return void?" was standing in for "is
+    // this a test?" — native panicked in ordinary helpers with a message about
+    // test blocks, while the interpreter dropped the error and carried on to
+    // exit 0. Both halves are gone: the checker rejects this, and MIR asks
+    // whether the body really is a test's.
+    let (failed, out) = compile_error_output("try_in_void_function.rk");
+    assert!(failed, "`try` with no error branch to return through must be rejected: {}", out);
+    assert!(
+        out.contains("E0316"),
+        "should be the non-propagating-context error: {}", out,
+    );
+    assert!(
+        out.contains("found `void`"),
+        "should name the return type that has nowhere to put the error: {}", out,
+    );
+    // Both sites, not just the first — `main` is the one people write.
+    assert!(
+        out.matches("E0316").count() >= 2,
+        "should report the helper and main, not stop at the first: {}", out,
     );
 }
 

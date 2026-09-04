@@ -1,24 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// The signatures gradual constraints is supposed to infer — #904.
+// The signatures gradual constraints infers today — the working half.
 //
 // type.gradual-constraints has a worked-example table: leave the types off a
 // private function and the compiler reads the body to decide the signature.
-// IN3 says operators and trait methods produce a *generic* signature; IN2 only
-// falls back to a concrete type when there is no trait-method usage at all.
+// What works is the *concrete* reading (IN2) — one body, one answer, one type.
+// The generic reading (IN1/IN3), where a body that only calls methods on a
+// parameter leaves that parameter open for each call site to pin, is not built;
+// it lives in `p11_gradual_generalization.rk` with #904.
 //
-// `func double(x) { x * 2 }` is the table's own first row, inferred as
-// `<T: Numeric>(x: T) -> T`. It isn't: `*` desugars to `.mul()`, so IN3 should
-// win, but the body's literal `2` defaults to i32 and pins the parameter with
-// it. Calling it with an f64 is a type error even when that's the only call in
-// the program. Writing the same signature out by hand works at both types, so
-// the per-instantiation literal already works — it's the inference that doesn't
-// reach it.
+// #905 lived here too and is fixed: an omitted parameter type reached MIR as a
+// void, because every pass after the checker reads the type off the declaration
+// string and an omitted one is empty. `greet` below is the witness — it printed
+// `Hi, 140732714231624` on native and `Hi, you` on the interpreter.
 
-// The table's rows, verbatim.
-func double(x) {
-    return x * 2
-}
-
+// The table's rows that the compiler answers today.
 func get_port() {
     return 8080
 }
@@ -31,7 +26,8 @@ func count(items) {
     return items.len()
 }
 
-// The signature the table says `double` gets, written out.
+// The signature the table says `double` gets, written out. This is the shape
+// inference is supposed to reach on its own; written down it works at any type.
 func double_explicit<T>(x: T) -> T where T: Numeric {
     return x * 2
 }
@@ -46,21 +42,17 @@ test "type.gradual-constraints — IN2: a bare literal body infers concrete" {
     assert get_port() == 8080
 }
 
+// #905: the inferred `string` has to survive into codegen, not just into the
+// checker — interpolating it is what reads the type back out.
 test "type.gradual-constraints — interpolation constrains the parameter to string" {
     assert greet("you") == "Hi, you"
 }
 
-test "type.gradual-constraints — a method that doesn't constrain T stays generic" {
+// One element type, so nothing has to generalize. Two of them is the pending
+// case next door.
+test "type.gradual-constraints — a method on an inferred parameter resolves" {
     let ints: Vec<i32> = [1, 2, 3]
     assert count(ints) == 3
-    let strs: Vec<string> = ["a", "b"]
-    assert count(strs) == 2
-}
-
-test "type.gradual-constraints — IN3: an operator body infers a Numeric generic" {
-    assert double(21) == 42
-    let f: f64 = 1.5
-    assert double(f) == 3.0
 }
 
 func main() {}

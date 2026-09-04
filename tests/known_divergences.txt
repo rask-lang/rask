@@ -55,18 +55,41 @@
 #  width, so an f32 target read four bytes of eight.)
 
 # --- new regression witnesses (this session) ---
-
-# Coverage sweep, 2026-08-19. Each file is a probe whose green half was split
-# out so the working surface stays gated; only the bug lives here.
-t_day_const_string_array.rk   # a module-level `const [string; N]` element reads back as garbage — #1000 (native run)
-t_month_param_modes.rk        # `mutate` on a primitive parameter drops the write — #899 (both run)
-t_month_error_union_narrowing.rk # a method on a union-narrowed error dispatches against the whole union — #1002 (native compile)
-t_month_try_in_test.rk        # `try` in a test block fails the Cranelift verifier — #932 (native compile)
-t_month_resource_loop.rk      # consuming a @resource from a `let` in a loop rejected as mutation — #928 (both check)
-t_week_parse_range.rk         # parse<T> ignores the target's range — interp keeps the value, native wraps — #919 (both run)
-t_day_unsigned_to_float.rk    # 5/6: u8/u16 `.to<f64>()` reports OutOfRange — #974 (native run). #907 (the `as` cast) is fixed.
-t_week_gradual_generics.rk    # inferred generic pinned to i32 by a body literal — #904 (both check); inferred string param reaches MIR as void — #905 (native)
-t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, so a method on it won't lower — #1022 (native compile)
+#
+# Empty. The 2026-08-19 coverage sweep's ten probes are all fixed and pruned
+# (2026-09-04), and the one entry that turned out not to be a bug moved to
+# pending_features.txt:
+#
+#   t_day_const_string_array.rk     — #1000. A string in an array was stored as a
+#     pointer to wherever the literal was built. In a normal run the const's
+#     initializer is inlined into `main`, so those pointers aimed at a live
+#     frame; in a test binary the init thunk returns first and every element
+#     pointed into dead stack. Strings live in the element slot now.
+#   t_array_string_join.rk          — #1021. An array receiver fell through to
+#     the shared `Vec` lowering, which reads a header an array hasn't got.
+#   t_month_param_modes.rk          — #899. `mutate` on a scalar wrote into a
+#     spilled copy nobody read back. Also a spec change: the edge-case row
+#     saying a Copy type is copied in contradicted PM2, and PM2 won.
+#   t_month_error_union_narrowing.rk — #1002. `r is AErr as e` bound `e` at the
+#     whole union, so a call on it switched over every member.
+#   t_month_try_in_test.rk          — #932. A test body is a void function, so
+#     `try`'s error path returned a value out of a void signature. It ends the
+#     test now, saying so.
+#   t_month_resource_loop.rk        — #928. Nothing solves types between the
+#     statements of a loop body, so "does this method mutate its receiver?" was
+#     answered by method *name*. Deferred to after solving.
+#   t_week_parse_range.rk           — #919. `parse<T>` kept the 64-bit parse when
+#     T came from inference rather than a turbofish, so no width range-checked.
+#   t_day_unsigned_to_float.rk      — #974. Cranelift's saturating conversions at
+#     i8/i16 lower through the 32-bit sequence; the round-trip check now runs at
+#     64 bits, both directions.
+#   t_week_gradual_generics.rk      — #905 fixed (an omitted parameter type
+#     reached MIR as a void). #904, generalizing an inferred parameter, is
+#     unbuilt rather than broken and is now p11_gradual_generalization.rk.
+#   t_for_tuple_binding_dispatch.rk — #1022. A `for (i, x)` binding got fresh
+#     variables tied to nothing, so the names stayed untyped forever.
+#   t_month_reflect_fields_value.rk — #997. Native refused `reflect.fields<T>()`
+#     as a value; it builds the vector now.
 
 # --- E0361: binding whose type inference left open (#620) ---
 # Empty. All 19 files that lit up when E0361 went on by default now compile.
@@ -94,6 +117,7 @@ t_for_tuple_binding_dispatch.rk # a `for (i, x)` tuple binding carries no type, 
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
-t_month_reflect_fields_value.rk # reflect.fields() as a value works on interp, comptime-for only on native — #997 (native compile)
-t_array_string_join.rk        # `join` on a `[string; N]` returns empty, or segfaults after element reads — #1021 (native run). Fix lives in PR #1057, which makes a string inline in its array slot rather than a pointer to it — that closes #1000 in the same stroke. This branch had a narrower fix and dropped it rather than conflict.
+
+# `{x:debug}` landed on this branch; native renders less than the interpreter
+# for the two shapes its runtime helper can't walk element by element.
 t_debug_container_elision.rk  # `{x:debug}` on a Vec of aggregates or a Map renders `[…]`/`{…}` natively and the contents on the interpreter — #1064 (native needs a MIR loop, blocked on #1035); the tuple case is the interpreter storing tuples as Vecs — #1063 (interp run)

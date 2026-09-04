@@ -339,9 +339,24 @@ impl TypeChecker {
                         // last of the nine dispatch fallbacks (#425).
                         let elems: Vec<Type> = match self.ctx.apply(&elem_ty) {
                             Type::Tuple(elems) if elems.len() == names.len() => elems,
-                            // Still open, or not a tuple: fresh variables, which
-                            // is what every case got before.
-                            _ => names.iter().map(|_| self.ctx.fresh_var()).collect(),
+                            // Still open: the element comes from a chain like
+                            // `.lines().enumerate()`, whose tuple only appears
+                            // once the solver runs. Fresh variables alone left
+                            // the names untyped forever, so `line.trim()` died
+                            // in lowering (#1022). Say the element IS a tuple of
+                            // these parts and let the solver fill them in.
+                            open => {
+                                let parts: Vec<Type> =
+                                    names.iter().map(|_| self.ctx.fresh_var()).collect();
+                                if matches!(open, Type::Var(_)) {
+                                    self.ctx.add_constraint(TypeConstraint::Equal(
+                                        Type::Tuple(parts.clone()),
+                                        elem_ty.clone(),
+                                        iter.span,
+                                    ));
+                                }
+                                parts
+                            }
                         };
                         for (name, ty) in names.iter().zip(elems) {
                             define(self, name.clone(), ty);

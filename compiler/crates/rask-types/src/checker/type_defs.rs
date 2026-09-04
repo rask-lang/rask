@@ -316,4 +316,11 @@ pub struct TypedProgram {
     /// can otherwise see — so without this the signature came out `void` while
     /// the body returned a value.
     pub inferred_fn_ret: HashMap<String, Type>,
+    /// Function name → the types inferred for its untyped parameters
+    /// (`func greet(name) { … }`), in declaration order and paired with the
+    /// parameter name. The declaration string is empty for those, and empty
+    /// reads as `void` everywhere downstream — which is how an inferred
+    /// `string` parameter reached MIR as a void and printed as an address
+    /// (#905). Written back into the declarations after checking.
+    pub inferred_fn_params: HashMap<String, Vec<(String, Type)>>,
 }

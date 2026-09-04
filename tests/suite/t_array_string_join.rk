@@ -1,22 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// #1021 — `join` on a fixed-size array of strings.
-//
-// A `Vec<string>` stores each RaskStr inline; a `[string; N]` stores a pointer
-// to one per slot (`MirType::stored_inline_in_array`). `join` goes to the Vec
-// runtime either way, so on an array it reads the element slots as RaskStr
-// values and gets the pointer's own bytes back as inline characters — an empty
-// string in the quiet case, a segfault once a few element reads have happened
-// first.
-//
-// The fix is in PR #1057, which makes a string inline in its array slot rather
-// than a pointer to it — the root of the same problem, and it closes #1000 as
-// well. This branch had a narrower one (array-specific join entry points that
-// dereference the slot) and dropped it: the two are incompatible, and merged
-// they crash, because the dereference reads an inline RaskStr's first eight
-// bytes as a pointer.
+// #1021 — `join` on a fixed-size array of strings. Reading elements out of the
+// same array is fine natively, and the same strings in a `Vec` join fine, so
+// it's `join`'s receiver handling that's wrong: an array base pointer where a
+// Vec header is expected. Empty result in the small case, SIGSEGV once a few
+// element reads precede it.
 //
 // Related but distinct from #1000, which is module-level `const` arrays — this
-// one is a plain local, and its element reads always worked.
+// one is a plain local, and its element reads work.
 
 test "elements of a local string array read back" {
     let arr = ["a", "b"]
@@ -35,19 +25,24 @@ test "join on the array itself" {
     assert arr.join("-") == "a-b"
 }
 
-test "join on an array of integers uses the array's element width" {
-    // `[1, 2, 3]` is i32. The integer join read eight bytes at a four-byte
-    // stride, so each pair of elements came back packed into one number.
-    let nums = [1, 2, 3]
-    assert nums.join(",") == "1,2,3"
+// An array packs scalars at their natural stride; a Vec keeps them in 8-byte
+// slots and reads a whole word per element. Handing the array's buffer over
+// unchanged made the two disagree — `[1, 2, 3]` joined as
+// `8589934593,12884901890,3`, where 8589934593 is `(2<<32)|1`: two elements
+// read as one. Flagged from #1054 while both branches were fixing #1021.
+test "join on an array of narrower-than-word elements" {
+    let ints: [i32; 3] = [1, 2, 3]
+    assert ints.join(",") == "1,2,3"
+    let small: [u8; 2] = [7, 8]
+    assert small.join("-") == "7-8"
 }
 
-test "join on an empty array is the empty string" {
+// The two ends of the loop, where an off-by-one in the copy would show.
+test "join on an empty and a single-element array" {
     let empty: [string; 0] = []
     assert empty.join("-") == ""
-}
-
-test "join on a one-element array has no separator" {
-    let one = ["ab"]
-    assert one.join("-") == "ab"
+    let one = ["solo"]
+    assert one.join("-") == "solo"
+    let one_int: [i32; 1] = [42]
+    assert one_int.join(",") == "42"
 }
