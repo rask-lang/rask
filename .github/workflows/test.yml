@@ -172,11 +172,17 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs specs/
 
-    # Same gate for the published docs. specs/ was covered and docs/ wasn't,
-    # which is how the book and landing page drifted a release behind.
+    # Same gate for the published docs, and for the language card. specs/ was
+    # covered and docs/ wasn't, which is how the book and landing page drifted
+    # a release behind; LANGUAGE_GUIDE.md sits at the repo root and was in
+    # neither, which is worse — it's the reference that travels with a prompt
+    # when a model writes Rask, and agentbench's system prompt (#1014). Its
+    # blocks carry `<!-- test: parse -->` now; without an annotation
+    # `test-specs` reads a file and finds nothing, so the step would have
+    # passed on a card full of nonsense.
     - name: Docs snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask test-specs docs/ README.md
+      run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_GUIDE.md
 
     # The playground's wasm build. Nothing here compiled for wasm32, so a
     # cfg-gated stdlib module could lose its callers' guards and only break in

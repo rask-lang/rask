@@ -6,20 +6,23 @@ Rask is a compiled systems language: value semantics, single ownership, no GC, n
 
 ## Syntax core
 
+<!-- test: parse -->
 ```rask
-let x = 42                 // permanent binding, deep: no reassign, no mutation through it
-mut counter = 0              // rebindable binding (never "let mut" — one keyword each)
-counter = counter + 1
-
 func add(a: i32, b: i32) -> i32 {
     return a + b             // functions need explicit return
 }
 
-let sign = if x > 0: "+" else: "-"    // inline block: `: expr`
-let label = match x {
-    0 => "zero",
-    n if n > 0 => "positive",           // guard arms use => like all arms
-    _ => "negative",
+func main() {
+    let x = 42               // permanent binding, deep: no reassign, no mutation through it
+    mut counter = 0          // rebindable binding (never "let mut" — one keyword each)
+    counter = counter + 1
+
+    let sign = if x > 0: "+" else: "-"    // inline block: `: expr`
+    let label = match x {
+        0 => "zero",
+        n if n > 0 => "positive",         // guard arms use => like all arms
+        _ => "negative",
+    }
 }
 ```
 
@@ -34,6 +37,7 @@ let label = match x {
 
 Everything is a value with exactly one owner (`mem.ownership`). Assignment copies types ≤16 bytes whose fields are all Copy; larger types **move**, and the source binding becomes invalid. The threshold is fixed.
 
+<!-- test: parse -->
 ```rask
 let names = Vec.from(["a", "b"])
 let other = names            // moves — names is now invalid
@@ -56,6 +60,7 @@ No references can be stored in structs, returned, or sent cross-task — this is
 - **Fixed layout** (struct fields, arrays): views last until end of block.
 - **Growable** (Vec, Map, Pool, string): access is per-expression, or a `with` block for multiple statements.
 
+<!-- test: parse -->
 ```rask
 let hp = pool[h].health          // Copy types: copy out
 pool[h].health -= damage           // in-place expression access
@@ -78,19 +83,27 @@ with pool[h] as e: e.health -= 10  // one-liner form
 
 Graphs, trees, entity systems — anything that needs stored identity — use `Pool<T>` + `Handle<T>` (a pool_id/index/generation triple, like a database primary key) instead of pointers (`mem.pools`).
 
+<!-- test: parse -->
 ```rask
-mut entities = Pool.new()
-let h = entities.insert(Entity { health: 100 })  // panics on alloc failure (no try)
-entities[h].health -= 10                           // validated: stale handle = panic
-entities.get(h)                                    // T? — non-panicking (Copy types)
-entities.remove(h)
+import memory.{Pool, Handle}
 
 struct Node { parent: Handle<Node>, children: Vec<Handle<Node>> }  // handles, not pointers
+
+func spawn_and_hurt() {
+    mut entities = Pool.new()
+    let h = entities.insert(Entity { health: 100 })  // panics on alloc failure (no try)
+    entities[h].health -= 10                         // validated: stale handle = panic
+    entities.get(h)                                  // T? — non-panicking (Copy types)
+    entities.remove(h)
+}
 ```
 
 `using` threads a pool as a hidden parameter (`mem.context-clauses`):
 
+<!-- test: parse -->
 ```rask
+import memory.{Pool, Handle}
+
 func damage(h: Handle<Player>, n: i32) using Pool<Player> {
     h.health -= n                     // auto-resolves through the context pool
 }
@@ -108,6 +121,7 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`). **There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
 
+<!-- test: parse -->
 ```rask
 let active = users.iter().filter(|u| u.active).map(|u| u.name).to_vec()
 
@@ -155,6 +169,7 @@ panics when the key is absent, so test with `contains_key` or use `get`.
 
 ## Types
 
+<!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }              // value type; fields package-visible by default
 struct User {
@@ -192,7 +207,11 @@ type alias Bytes = Vec<u8>                   // transparent alias
 
 `T?` is sugar for `T or none`; `T or E` is the builtin result sum. **There are no `Ok`/`Err`/`Some`/`None` wrappers anywhere.** Branches are picked by type (`type.errors`, `type.optionals`).
 
+<!-- test: parse -->
 ```rask
+import fs
+import io.IoError
+
 func find(id: i32) -> User? {
     if id == 0 { return none }
     return load(id)                          // bare value widens for optionals
@@ -234,6 +253,7 @@ The error-conversion rules — widening into a union, wrapping into a boundary e
 
 Conformance is **nominal — declared, not shape-matched** (`type.generics/G1`):
 
+<!-- test: parse -->
 ```rask
 trait Comparable { func compare(self, other: Self) -> Ordering }
 
@@ -257,6 +277,7 @@ duck trait Sketchy { func poke(self) }       // opt-in shape-matching — protot
 
 `@resource` types are linear: must be consumed exactly once — the compiler rejects a path where a file might not close (`mem.resource-types`, `mem.linear`).
 
+<!-- test: parse -->
 ```rask
 func process(path: string) -> Data or Error {
     let file = try fs.open(path)
@@ -277,29 +298,35 @@ Consumption must be statically definite at every exit — consuming in one branc
 
 Uncolored: no `async`/`await`; I/O pauses the task automatically. Runtimes are opt-in blocks, typically in `main` (`conc.async`):
 
+<!-- test: parse -->
 ```rask
+import net
+
 func main() -> void or Error {
     using Multitasking {                          // green-task runtime; block drains on exit
-        let listener = try TcpListener.bind("0.0.0.0:8080")
+        let listener = try net.tcp_listen("0.0.0.0:8080")
         loop {
             let conn = try listener.accept()
-            spawn(|| { handle(conn) }).detach()   // handles MUST be joined or detached
+            spawn(own || { handle(conn) }).detach()  // handles MUST be joined or detached
         }
     }
 }
 ```
 
 - `spawn(|| {})` → green task (needs `using Multitasking`); `ThreadPool.spawn` → CPU work (needs `using ThreadPool`; combine: `using Multitasking, ThreadPool`); `Thread.spawn` → raw OS thread.
+- A spawned closure that captures anything needs `own`: `spawn(own || { … })`. The task outlives the block that made it, so captures move in rather than borrow. Two tasks that both need the same `Shared` each get a `.clone()` of it.
 - `h.join()` → `T or JoinError`; `h.cancel()` requests cooperative cancellation (tasks poll `cancelled()`; I/O returns `Cancelled`); dropping a handle unconsumed is a compile error.
 - Channels transfer ownership: `mut (tx, rx) = Channel<Msg>.buffered(100)`; `try tx.send(m)`, `rx.receive()` (not `recv`), non-blocking `try_send`/`try_receive`.
 - `select { rx1 -> v: handle(v), tx <- msg: sent(), _: fallback() }` — random among ready arms; `select_priority` for ordered; `Timer.after(d)` for timeouts.
-- Shared state crosses tasks only through sync boxes — there is no shared mutable memory otherwise: `Shared<T>` (readers XOR writer: `config.read().timeout` inline, `with config.write() as c { }`), `Mutex<T>` (`queue.lock().push(x)` inline, `with mutex as q { }`), `Atomic*` for counters/flags. Locks release at expression/block end; they cannot leak out.
+- Shared state crosses tasks only through sync boxes — there is no shared mutable memory otherwise. One box, `Shared<T>`, with the synchronisation as a strategy (`mem.boxes/BX1`): `Shared<T>` is readers-XOR-writer (the default, built with `Shared.new`), `Shared<T, Mutex>` a plain lock (`Shared.mutex`), `Shared<T, Local>` no lock at all (`Shared.local`). `Cell<T>` and `Mutex<T>` are not types.
+- Access is scoped, never a guard you can store: `config.read().timeout` and `queue.write().push(x)` inline, `with config.write() as c { … }` for several statements, `get`/`set` for a Copy value. `return`, `try`, `break` and `continue` all work through a `with` block, which is why it's a block and not a closure. `Atomic*` for counters and flags. Locks release at expression or block end; they cannot leak out.
 - Closures capture by value at field granularity; a closure capturing borrowed data can't leave its scope.
 
 ## Comptime
 
 Two stages, syntactically marked (`ctrl.comptime`). Comptime code computes constants and decides what runtime code exists; any *pure* function is callable at comptime — no marking needed (CT6).
 
+<!-- test: parse -->
 ```rask
 const PRIMES = comptime {
     mut v = Vec.new()
@@ -357,5 +384,12 @@ of a `T or E` return. That covers how error types are written, but it is
 narrower than ER6, which says every enum. An enum reached as an error only
 through inference (a private function with no declared error type, or `or _`)
 still needs a hand-written `message()`.
+
+`Timer.after` and `Timer.interval` are declared but have no native entry point,
+so a program using either fails at codegen with "Function not found" (#1066).
+`os.Command` is in the same state. An `Atomic*` can't be reached from more than
+one task yet — `spawn` needs `own`, which moves it, and there's no way to hand a
+second task its own handle (#1068), so use `Shared<i64>` for a counter until
+that lands.
 
 The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Trait` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.
