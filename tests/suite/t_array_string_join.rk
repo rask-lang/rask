@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// #1021 — `join` on a fixed-size array of strings. Reading elements out of the
-// same array is fine natively, and the same strings in a `Vec` join fine, so
-// it's `join`'s receiver handling that's wrong: an array base pointer where a
-// Vec header is expected. Empty result in the small case, SIGSEGV once a few
-// element reads precede it.
+// #1021 — `join` on a fixed-size array of strings.
+//
+// A `Vec<string>` stores each RaskStr inline; a `[string; N]` stores a pointer
+// to one per slot (`MirType::stored_inline_in_array`). `join` went to the Vec
+// runtime either way, so on an array it read the element slots as RaskStr
+// values and got the pointer's own bytes back as inline characters — an empty
+// string in the quiet case, a segfault once a few element reads had happened
+// first.
 //
 // Related but distinct from #1000, which is module-level `const` arrays — this
-// one is a plain local, and its element reads work.
+// one is a plain local, and its element reads always worked.
 
 test "elements of a local string array read back" {
     let arr = ["a", "b"]
@@ -23,4 +26,21 @@ test "the same strings join fine through a Vec" {
 test "join on the array itself" {
     let arr = ["a", "b"]
     assert arr.join("-") == "a-b"
+}
+
+test "join on an array of integers uses the array's element width" {
+    // `[1, 2, 3]` is i32. The integer join read eight bytes at a four-byte
+    // stride, so each pair of elements came back packed into one number.
+    let nums = [1, 2, 3]
+    assert nums.join(",") == "1,2,3"
+}
+
+test "join on an empty array is the empty string" {
+    let empty: [string; 0] = []
+    assert empty.join("-") == ""
+}
+
+test "join on a one-element array has no separator" {
+    let one = ["ab"]
+    assert one.join("-") == "ab"
 }

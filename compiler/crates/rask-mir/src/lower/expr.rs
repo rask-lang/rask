@@ -7795,9 +7795,39 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        let MirType::Array { len, .. } = obj_ty else {
+        let MirType::Array { elem, len } = obj_ty else {
             return Ok(None);
         };
+
+        // `join(sep)` is the one array method that takes an argument and still
+        // can't share the Vec path: the loop needs data, length and element
+        // size, and an array carries none of them at runtime — they're in the
+        // type. Handing the array to `rask_vec_join` read its first element as
+        // a RaskVec header, so the length came back 0 and `["a","b"].join("-")`
+        // was the empty string; touching more of the array first made it a
+        // segfault instead (#1021).
+        if method == "join" && args.len() == 1 {
+            let (sep, _) = self.lower_expr(&args[0].expr)?;
+            let elem_size = elem.size() as i64;
+            let func = if matches!(**elem, MirType::String) {
+                "Array_join"
+            } else {
+                "Array_join_i64"
+            };
+            let dst = self.builder.alloc_temp(MirType::String);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(dst),
+                func: FunctionRef::internal(func.to_string()),
+                args: vec![
+                    obj_op.clone(),
+                    MirOperand::Constant(MirConst::Int(*len as i64)),
+                    MirOperand::Constant(MirConst::Int(elem_size)),
+                    sep,
+                ],
+            }));
+            return Ok(Some((MirOperand::Local(dst), MirType::String)));
+        }
+
         if !args.is_empty() {
             return Ok(None);
         }
