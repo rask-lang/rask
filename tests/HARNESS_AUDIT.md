@@ -132,7 +132,55 @@ Native's `check` is the one that matters: it loses the expression, both values,
 and the count. A test with three failing checks reports the same two words as a
 test with one.
 
-### 1.7 Ungated corners
+### 1.7 The leak gate greps for a line that can't reach it
+
+`leak_gate.sh` runs each suite file under `RASK_LEAK_CHECK=1` and decides by
+grepping the output for `never released`:
+
+```sh
+out="$(RASK_LEAK_CHECK=1 timeout 120 "$RASK" test "$file" 2>&1)"
+if echo "$out" | grep -q "never released"; then
+```
+
+The runtime writes that line to the **test binary's stderr**, and
+`run_test_file_native_inner` throws the child's stderr away:
+
+```rust
+let run_output = process::Command::new(&bin_str).output();
+...
+Ok(out) => {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let complete = display_test_results(&stdout, path, format, tests.len());
+    out.status.success() && complete      // out.stderr is never read
+}
+```
+
+So the gate greps output the message can never appear in, and every file counts
+clean. The exit code is the only surviving trace — one file, both ways:
+
+```
+$ RASK_LEAK_CHECK=1 rask test l3.rk    # a test that builds a StringBuilder
+1 tests, 1 passed, 0 failed (0ms)
+exit=1
+$ rask test l3.rk
+exit=0
+```
+
+`leak gate: 373 clean, 0 known-leaking, 0 new` is that blind spot, not a result.
+Judging the same 373 files by exit code instead — [#1053](https://github.com/rask-lang/rask/issues/1053),
+closed as a duplicate of work already in flight on
+`claude/sequence-protocol-design-maakls`:
+
+| | files |
+|---|---|
+| leak (exit 1 with the flag, 0 without) | 193 |
+| fail either way (the 17 the differential tracks) | 17 |
+| clean | 163 |
+
+The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
+"nothing has ever been recorded".
+
+### 1.8 Ungated corners
 
 - `tests/http_api_harness.sh` runs in **no CI job**, and if its golden is
   missing it writes one from the backend under test and passes.
@@ -270,8 +318,6 @@ Worth saying, because most of this machinery is good:
 - `COVERAGE.md` — 67 of 68 per-file counts current. Only `t_week_ranges.rk` is
   stale (doc says 14/14, it's 15/15). The "Holes left on purpose" section is
   honest about what a suite file structurally can't cover.
-- `leak_gate.sh` — no `known_leaks.txt` exists, so the gate is fully strict, and
-  it passes: 373 clean, 0 leaking. Every suite file returns every allocation.
 - `assert` requires `bool`. There is no vacuous-assert path.
 - `mem.ownership/O2` — enforced, and the diagnostic names the size and the
   threshold ("`Over` is 17 bytes (copy threshold is 16)").
