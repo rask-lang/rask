@@ -168,9 +168,20 @@ extend TcpConnection {
     @native("rask_net_read_http_request")
     public func read_http_request(self) -> Request or IoError {}
 
-    /// Write an HTTP response to the connection.
+    /// Write an HTTP response to the connection, and close it.
+    ///
+    /// Takes the connection because `format_http_response` always writes
+    /// `Connection: close` — a response that says the socket is closing has to
+    /// be sent by something that then closes it, or the client waits for an EOF
+    /// that never comes and the server keeps the descriptor (#1055). Borrowing
+    /// and closing inside would be worse: the caller still holds a
+    /// `close(take self)` of its own, and that would be a second close on a
+    /// descriptor the OS may already have handed to someone else.
+    ///
+    /// Same shape as `Responder.respond`, which is the path `HttpServer.accept`
+    /// hands out.
     @native("rask_net_write_http_response")
-    public func write_http_response(self, response: Response) -> void or IoError {}
+    public func write_http_response(take self, response: Response) -> void or IoError {}
 
     /// Close the connection.
     @native("rask_net_close")

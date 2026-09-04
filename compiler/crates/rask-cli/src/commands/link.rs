@@ -473,19 +473,25 @@ pub fn link_executable_with(
     // Always clean up the intermediate .o file
     let _ = std::fs::remove_file(obj_path);
 
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    // Both streams go back out. Capturing was for the hint below, and dropping
+    // either one silently would be the opposite of what it is for: a `cc`
+    // front-end run with `-v`, or a wrapper like ccache, writes to stdout, and
+    // that used to reach the terminal because this was `.status()`.
+    if !out.stdout.is_empty() {
+        print!("{}", String::from_utf8_lossy(&out.stdout));
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.is_empty() {
         eprint!("{}", stderr);
+    }
+
+    if !out.status.success() {
         let mut msg = format!("linker exited with status {}", out.status);
         if let Some(hint) = stale_runtime_hint(&stderr) {
             msg.push_str("\n\n");
             msg.push_str(&hint);
         }
         return Err(msg);
-    }
-    // A successful link can still have something to say (a warning).
-    if !out.stderr.is_empty() {
-        eprint!("{}", String::from_utf8_lossy(&out.stderr));
     }
 
     Ok(())

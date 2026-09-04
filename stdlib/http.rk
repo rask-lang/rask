@@ -680,6 +680,11 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Ht
     }
     let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
+    // The response says `Connection: close`, so close it — the same promise
+    // `Responder.respond` keeps. Without this a caller using the low-level
+    // `TcpConnection.write_http_response` got the #1055 bug on a second path:
+    // client hangs waiting for an EOF, descriptor held for the process's life.
+    close_raw(conn_fd)
     return 0
 }
 
