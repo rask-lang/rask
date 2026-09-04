@@ -1879,6 +1879,13 @@ impl<'a> MirLowerer<'a> {
     /// What a collection holds: the element of a `Vec`/`Pool`, the *value* of a
     /// `Map`. Indexing any of them yields this type.
     pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        // A fixed array holds its element type outright. Without this arm every
+        // element-typed dispatch decision — `join`'s string vs integer variant,
+        // `sort`'s comparator — read "not a collection" and took the integer
+        // branch, so `["a", "b"].join("-")` printed the bytes as numbers (#1021).
+        if let Type::Array { elem, .. } = ty {
+            return Some(self.ctx.type_to_mir(elem));
+        }
         let (name, args) = self.generic_head(ty)?;
         // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
         // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
@@ -5541,13 +5548,24 @@ pub(crate) struct MutateWriteback {
     map_value: Option<LocalId>,
 }
 
-/// One outstanding element borrow, waiting for its call to be emitted so the
-/// borrow can be released.
-pub(crate) struct ElemWriteback {
-    /// The collection the element was borrowed from.
-    collection: MirOperand,
-    /// Which release to call — Vec and Map keep separate borrow counts.
-    release: &'static str,
+/// Something owed to a `mutate` argument once its call has been emitted.
+pub(crate) enum ElemWriteback {
+    /// An element borrowed out of a collection, waiting to be released.
+    ReleaseBorrow {
+        /// The collection the element was borrowed from.
+        collection: MirOperand,
+        /// Which release to call — Vec and Map keep separate borrow counts.
+        release: &'static str,
+    },
+    /// A scalar variable handed over as `mutate`. Codegen keeps scalars in
+    /// registers, so the address the callee wrote through is a spilled copy —
+    /// read it back into the variable or the write is lost (#899).
+    ScalarCopyBack {
+        /// The caller's variable.
+        dst: LocalId,
+        /// The spill slot the callee wrote through.
+        addr: LocalId,
+    },
 }
 
 impl MutateWriteback {

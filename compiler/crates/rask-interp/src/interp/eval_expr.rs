@@ -439,13 +439,16 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Write a `mutate` param's final value back to its argument place. A whole
-    /// Copy scalar variable is copied in — the caller keeps the original — so
-    /// only field/index projections and aggregate values write back (this is the
-    /// `modify_int(x)` vs `swap_fields(p.x, p.y)` distinction in the spec).
+    /// Write a `mutate` param's final value back to its argument place
+    /// (mem.parameters/PM2).
+    ///
+    /// A scalar used to be exempt, on the strength of one edge-case row that
+    /// said a Copy type is copied in. PM2 itself says the caller keeps the value
+    /// and gets the write, and every other mode reading agrees, so the scalar
+    /// now writes back like everything else — `bump(mutate n)` was a silent
+    /// no-op on both backends before (#899).
     fn writeback_mutate_place(&mut self, arg: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &arg.kind {
-            ExprKind::Ident(_) if value_is_copy_scalar(&value) => Ok(()),
             ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
                 self.assign_target(arg, value)
             }

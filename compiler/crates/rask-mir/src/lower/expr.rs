@@ -784,22 +784,33 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal(borrow.to_string()),
             args: vec![coll_op.clone(), idx_op],
         }));
-        self.elem_writebacks.push(super::ElemWriteback {
+        self.elem_writebacks.push(super::ElemWriteback::ReleaseBorrow {
             collection: coll_op,
             release,
         });
         Some((MirOperand::Local(ptr), elem_ty))
     }
 
-    /// Release every element borrowed since `mark`. Called right after the call
-    /// statement, so the borrow covers exactly the call that writes through it.
+    /// Settle every `mutate` argument opened since `mark`. Called right after
+    /// the call statement, so a borrow covers exactly the call that writes
+    /// through it and a spilled scalar is read back before anything else runs.
     fn flush_elem_writebacks(&mut self, mark: usize) {
         for wb in self.elem_writebacks.split_off(mark) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal(wb.release.to_string()),
-                args: vec![wb.collection],
-            }));
+            match wb {
+                super::ElemWriteback::ReleaseBorrow { collection, release } => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(release.to_string()),
+                        args: vec![collection],
+                    }));
+                }
+                super::ElemWriteback::ScalarCopyBack { dst, addr } => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                    }));
+                }
+            }
         }
     }
 
@@ -885,6 +896,19 @@ impl<'a> MirLowerer<'a> {
             dst: addr,
             rvalue: MirRValue::Ref(tmp),
         }));
+        // A named variable is the caller's storage and PM2 says the caller sees
+        // the write. The spill above is unavoidable — a scalar lives in a
+        // register, so there is no address to hand over — so read the slot back
+        // into the variable once the call returns. Without it `bump(mutate n)`
+        // incremented a copy nobody looked at again (#899).
+        if let ExprKind::Ident(name) = &arg.kind {
+            if let Some((id, _)) = self.locals.get(name).cloned() {
+                self.elem_writebacks.push(super::ElemWriteback::ScalarCopyBack {
+                    dst: id,
+                    addr,
+                });
+            }
+        }
         Ok((MirOperand::Local(addr), MirType::Ptr))
     }
 
@@ -4385,7 +4409,45 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
+        // Anything left on an array goes to the shared `Vec` lowering, which
+        // reads a `RaskVec` header the array doesn't have. Give it a real one.
+        let (obj_op, obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
+            Some(v) => v,
+            None => (obj_op, obj_ty),
+        };
+
         self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty, wb_mark)
+    }
+
+    /// A `Vec` view over a `[T; N]` receiver, for the methods an array borrows
+    /// from `Vec`.
+    ///
+    /// An array local *is* its buffer — no header, no length word — so handing
+    /// it to `Vec_join` or `Vec_contains` made those read the first element as
+    /// a `RaskVec` and walk off whatever it spelled (#1021, and #946 before it
+    /// for `as_ptr`). Copy the elements into a real vector instead; the
+    /// container-drop pass frees it, since `rask_vec_from_static` is one of the
+    /// constructors it tracks.
+    fn array_receiver_as_vec(
+        &mut self,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+    ) -> Option<(MirOperand, MirType)> {
+        let MirType::Array { elem, len } = obj_ty else {
+            return None;
+        };
+        let vec_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(vec_local),
+            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            args: vec![
+                obj_op.clone(),
+                MirOperand::Constant(MirConst::Int(*len as i64)),
+                MirOperand::Constant(MirConst::Int(elem.size() as i64)),
+                MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(elem)))),
+            ],
+        }));
+        Some((MirOperand::Local(vec_local), MirType::I64))
     }
 
     /// Calls where the receiver is a type or module name, not a value:
