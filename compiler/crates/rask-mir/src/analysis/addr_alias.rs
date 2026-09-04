@@ -19,8 +19,13 @@ use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, M
 /// Scalar locals that hold the address of an aggregate local's storage.
 #[derive(Debug, Default)]
 pub struct AddrAliases {
-    /// Address local → the aggregate whose storage it points into.
-    root: HashMap<LocalId, LocalId>,
+    /// Address local → every aggregate its address may point into.
+    ///
+    /// More than one is normal before SSA, where `p = a as i64` in one arm and
+    /// `p = b as i64` in the other both reach the same name. Keeping only the
+    /// last one seen would leave whichever lost the race releasable while `p`
+    /// is still live, which is the bug this whole map exists to stop.
+    pointees: HashMap<LocalId, Vec<LocalId>>,
 }
 
 impl AddrAliases {
@@ -32,7 +37,7 @@ impl AddrAliases {
             .map(|l| (l.id, &l.ty))
             .collect();
 
-        let mut root: HashMap<LocalId, LocalId> = HashMap::new();
+        let mut pointees: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
 
         // An address escapes into a scalar either by casting the aggregate
         // directly or by copying an address that already exists. Copies can
@@ -48,53 +53,56 @@ impl AddrAliases {
                     if types.get(dst).is_some_and(|t| t.passed_by_address()) {
                         continue;
                     }
-                    let pointee = match rvalue {
+                    let found: Vec<LocalId> = match rvalue {
                         MirRValue::Cast { value: MirOperand::Local(src), .. } => types
                             .get(src)
                             .is_some_and(|t| t.passed_by_address())
-                            .then_some(*src),
-                        MirRValue::Ref(src) => Some(*src),
-                        MirRValue::Use(MirOperand::Local(src)) => root.get(src).copied(),
-                        _ => None,
+                            .then(|| vec![*src])
+                            .unwrap_or_default(),
+                        MirRValue::Ref(src) => vec![*src],
+                        MirRValue::Use(MirOperand::Local(src)) => {
+                            pointees.get(src).cloned().unwrap_or_default()
+                        }
+                        _ => Vec::new(),
                     };
-                    let Some(pointee) = pointee else { continue };
-                    if root.insert(*dst, pointee).is_none() {
-                        changed = true;
+                    for p in found {
+                        let entry = pointees.entry(*dst).or_default();
+                        if !entry.contains(&p) {
+                            entry.push(p);
+                            changed = true;
+                        }
                     }
                 }
             }
         }
 
-        Self { root }
+        Self { pointees }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.root.is_empty()
+        self.pointees.is_empty()
     }
 
-    /// The local whose storage `local` points into, if `local` is an address.
-    pub fn pointee(&self, local: LocalId) -> Option<LocalId> {
-        self.root.get(&local).copied()
+    /// Every local whose storage `local` may point into.
+    pub fn pointees(&self, local: LocalId) -> &[LocalId] {
+        self.pointees.get(&local).map_or(&[], |v| v.as_slice())
+    }
+
+    fn any_points_into(&self, addrs: &[LocalId], target: LocalId) -> bool {
+        !self.pointees.is_empty()
+            && addrs.iter().any(|a| self.pointees(*a).contains(&target))
     }
 
     /// True if `stmt` reads `local`, either by name or through an address of it.
     pub fn stmt_reads(&self, stmt: &MirStmt, local: LocalId) -> bool {
-        if uses::stmt_reads(stmt, local) {
-            return true;
-        }
-        !self.root.is_empty()
-            && uses::stmt_uses(stmt).iter().any(|u| self.pointee(*u) == Some(local))
+        uses::stmt_reads(stmt, local)
+            || self.any_points_into(&uses::stmt_uses(stmt), local)
     }
 
     /// True if `term` reads `local`, either by name or through an address of it.
     pub fn terminator_reads(&self, term: &MirTerminator, local: LocalId) -> bool {
-        if uses::terminator_reads(term, local) {
-            return true;
-        }
-        !self.root.is_empty()
-            && uses::terminator_uses(term)
-                .iter()
-                .any(|u| self.pointee(*u) == Some(local))
+        uses::terminator_reads(term, local)
+            || self.any_points_into(&uses::terminator_uses(term), local)
     }
 }
 
@@ -149,7 +157,7 @@ mod tests {
             vec![cast(1, 0)],
         );
         let a = AddrAliases::build(&f);
-        assert_eq!(a.pointee(LocalId(1)), Some(LocalId(0)));
+        assert_eq!(a.pointees(LocalId(1)), &[LocalId(0)]);
     }
 
     #[test]
@@ -159,7 +167,7 @@ mod tests {
             vec![cast(1, 0), copy(2, 1)],
         );
         let a = AddrAliases::build(&f);
-        assert_eq!(a.pointee(LocalId(2)), Some(LocalId(0)));
+        assert_eq!(a.pointees(LocalId(2)), &[LocalId(0)]);
     }
 
     #[test]
@@ -169,6 +177,19 @@ mod tests {
             vec![cast(1, 0)],
         );
         assert!(AddrAliases::build(&f).is_empty());
+    }
+
+    /// Before SSA the same name can be assigned an address twice. Both
+    /// strings have to stay alive — keeping only the last one seen would
+    /// release the other while the address is still in use.
+    #[test]
+    fn two_definitions_keep_both_strings() {
+        let f = func_with(
+            vec![(0, MirType::String), (1, MirType::String), (2, MirType::I64)],
+            vec![cast(2, 0), cast(2, 1)],
+        );
+        let a = AddrAliases::build(&f);
+        assert_eq!(a.pointees(LocalId(2)), &[LocalId(0), LocalId(1)]);
     }
 
     #[test]
