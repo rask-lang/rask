@@ -200,19 +200,8 @@ extend Vec<T> {
     }
 
     /// Transform each element. Lazy (type.sequence/SEQ41).
-    ///
-    /// Written out rather than `self.as_sequence().map(f)` — see `flat_map`
-    /// below and #1065.
     public func map(self, f: func(T) -> U) -> Sequence<U> {
-        return |yield| {
-            mut i = 0
-            while i < self.len() {
-                if !yield(f(self[i])) {
-                    return
-                }
-                i = i + 1
-            }
-        }
+        return self.as_sequence().map(f)
     }
 
     /// Stage this data as a Wide plan for data-parallel execution.
@@ -221,9 +210,12 @@ extend Vec<T> {
 
     /// Map then flatten results. Lazy (type.sequence/SEQ41).
     ///
-    /// Written out rather than forwarded to `Sequence.flat_map`, because
-    /// forwarding to a method that declares its own type parameter loses the
-    /// argument and the call mangles bare (#1065). Same for `map` above.
+    /// Written out rather than forwarded. `Sequence.flat_map` wants
+    /// `func(T) -> Sequence<U>` and `f` gives a `Vec<U>`, so forwarding means
+    /// `flat_map(|x| f(x).as_sequence())` — and that inner sequence has to
+    /// outlive the closure call that made the Vec it reads. It segfaults
+    /// (#1045). Changing `f`'s type instead would break every call site that
+    /// hands back a Vec, which is all of them.
     public func flat_map(self, f: func(T) -> Vec<U>) -> Sequence<U> {
         return |yield| {
             mut i = 0

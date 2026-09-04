@@ -27,7 +27,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 3 — MIR for-loop lowering for Sequence | ✓ done | `81c546d`, tuple binding after |
 | 4 — Interpreter for-loop over a Sequence | ✓ done | `0209bbb` |
 | 5 — Adapters + terminals as `extend Sequence<T>` | ✓ 14 adapters + `sum`/`product`/`join`/`min`/`max`/`to_map` | `t31`, `t37` |
-| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | ✓ `.iter()` deleted (SEQ48); `filter`/`map`/`skip`/`take`/`enumerate`/`flat_map` on a collection are lazy. `zip`/`chunks` stay eager by SEQ39; `flatten` is the one exception left | `t38` |
+| 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | ✓ `.iter()` deleted (SEQ48); `filter`/`map`/`skip`/`take`/`enumerate`/`flat_map` on a collection are lazy. `zip`/`chunks` stay eager by SEQ39; `flatten` is the one exception left | `t38`, `t40` |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
 | 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | pending | — |
@@ -175,7 +175,8 @@ closure, and `Sequence_count` jumped through it. A segfault, not a type error.
 | Method | State | Why |
 |--------|-------|-----|
 | `filter`, `skip`, `take`, `enumerate` | lazy, forwards to `self.as_sequence().<same>(…)` | nothing to say |
-| `map`, `flat_map` | lazy, body written out | forwarding to a callee that declares its own type parameter loses the argument and the call mangles bare — #1065 |
+| `map` | lazy, forwards | needed #1065 fixed first: a method call inside an instantiated copy was invisible to reachability, so `Sequence_map` was never enqueued |
+| `flat_map` | lazy, body written out | `Sequence.flat_map` wants `func(T) -> Sequence<U>` and `f` gives a `Vec<U>`, so forwarding means `flat_map(\|x\| f(x).as_sequence())` — and that inner sequence has to outlive the closure call that made the Vec it reads (#1045) |
 | `zip`, `chunks` | eager, on the collection | SEQ14/SEQ39: lockstep and position need two positions at once, and a push source can't hold one |
 | `flatten` | eager | `Sequence.flatten` has no body either; a lazy type with nothing behind it would be a name wearing no implementation. Nothing in the corpus calls it |
 

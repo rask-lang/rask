@@ -1360,13 +1360,26 @@ impl<'a> Monomorphizer<'a> {
                 // Only user-defined receivers steer reachability here. A stdlib
                 // receiver is recorded too, but its body isn't a user function
                 // to enqueue — those keep the name-based path below.
-                let dispatched = self.typed
-                    .and_then(|typed| match typed.call_targets.get(&expr.id) {
-                        Some(callee @ Callee::Method { method, .. }) => callee
+                // The instantiated map first. A node inside a copy has an id
+                // the checker never saw, so reading only `typed.call_targets`
+                // made every method call in an instantiated body invisible:
+                // nothing enqueued the callee, and codegen then asked for a
+                // symbol nobody emitted. `self.walk().map(f)` inside a generic
+                // method was "Function not found: Sequence_map" for exactly
+                // that reason — `carry_node_records` had brought the record
+                // across and nothing looked at it (#1065).
+                let dispatched = self.typed.and_then(|typed| {
+                    let callee = self
+                        .instantiated_call_targets
+                        .get(&expr.id)
+                        .or_else(|| typed.call_targets.get(&expr.id))?;
+                    match callee {
+                        Callee::Method { method, .. } => callee
                             .recv_type_id()
                             .map(|id| (id, typed.types.type_name(id), method.clone())),
                         _ => None,
-                    });
+                    }
+                });
 
                 if let Some((type_id, type_name, method_name)) = dispatched {
                     let mut qualified = format!("{}_{}", type_name, method_name);
