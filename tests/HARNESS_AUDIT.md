@@ -335,10 +335,15 @@ distinguish the two policies. The implementation does get it right — `2.5 → 
 
 Worth saying, because most of this machinery is good:
 
-- `differential.sh` — 356 green, 17 expected-red, 0 untracked, 0 unexpected-pass,
-  0 misfiled. The registry claim-check from #1005 (a red file must keep failing on
-  the same backends at the same phase) is the strongest single idea in the harness:
-  it catches a probe that stops exercising its bug, which plain red/green can't.
+- `differential.sh` — 367 green, 7 expected-red, 0 untracked, 0 unexpected-pass,
+  0 misfiled, and `known_divergences.txt` now has **zero** active entries: every
+  red file left is a pending feature, not a bug. The registry claim-check from
+  #1005 (a red file must keep failing on the same backends at the same phase) is
+  the strongest single idea in the harness — it catches a probe that stops
+  exercising its bug, which plain red/green can't. It also just proved itself
+  across #1057: `p10_binary.rk` went from `(both check)` to failing only on
+  native at compile, and the registry line was updated to match rather than
+  being left to rot as "still red".
 - `examples_gate.sh` — 34 of 36 examples gated on both backends, 2 tracked.
   Enrolment by golden presence means no example is silently outside the gate.
 - `COVERAGE.md` — 67 of 68 per-file counts current. Only `t_week_ranges.rk` is
