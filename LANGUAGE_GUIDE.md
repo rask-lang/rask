@@ -117,7 +117,7 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 ## Collections and iteration
 
-`Vec<T>`, `Map<K,V>` and `Set<T>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. `Set` is `insert`/`contains`/`remove`/`len`/`is_empty`/`clear`, where `insert` and `remove` answer `bool` — whether the set changed. Membership is `contains`, not `contains_key`: a set has no keys. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
+`Vec<T>`, `Map<K,V>` and `Set<T>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. `Set` is `insert`/`contains`/`remove`/`len`/`is_empty`/`clear`/`to_vec`, where `insert` and `remove` answer `bool` — whether the set changed. Membership is `contains`, not `contains_key`: a set has no keys. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
 
 There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol; adapter chains must terminate in the same expression and are guaranteed to fuse (`type.sequence`). **There is no `collect()`** — the terminal says what it builds: `to_vec()`, `to_map()` for a sequence of pairs, `join(sep)` for a string (`type.sequence/SEQ31`):
 

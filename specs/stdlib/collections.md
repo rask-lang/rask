@@ -29,6 +29,7 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | **C5: Membership is `contains`** | `s.contains(v)`, not `contains_key`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains_key` because there a key is one of two things you could mean |
 | **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
 | **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
+| **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so |
 
 <!-- test: skip -->
 ```rask
@@ -38,6 +39,7 @@ if seen.insert(name) {
 }
 if seen.contains(other) { … }
 seen.remove(name)
+for v in seen.to_vec() { … }
 ```
 
 `Set` has been in BI1's always-available list from the start. It resolved as a

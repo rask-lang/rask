@@ -12,8 +12,10 @@
 // The membership test is `contains` and not `contains_key`: a set has no keys,
 // and `Vec` and `string` already spell it that way.
 //
-// Iteration is in `t_set_iteration.rk` — it works on the interpreter and won't
-// lower natively, and the cause isn't the set (#1070).
+// There is no `iter()`. A stored iterator isn't a thing in Rask — an adapter
+// chain terminates in the expression that starts it — and `to_vec()` says what
+// it builds (SEQ31). The first cut declared `iter(self) -> Iterator<T>` and it
+// compiled, ran on the interpreter, and wouldn't lower natively (#1070).
 
 test "a new set is empty" {
     mut s: Set<string> = Set.new()
@@ -62,3 +64,17 @@ test "a set of integers works the same" {
     assert s.len() == 1
 }
 
+
+test "to_vec yields every value once" {
+    mut s: Set<i64> = Set.new()
+    s.insert(1)
+    s.insert(2)
+    s.insert(1)
+    let values = s.to_vec()
+    assert values.len() == 2
+    mut total = 0
+    for v in values {
+        total = total + v
+    }
+    assert total == 3
+}

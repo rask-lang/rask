@@ -532,8 +532,16 @@ extend Set<T> {
         self.entries.clear()
     }
 
-    /// Iterate over the values.
-    public func iter(self) -> Iterator<T> {
-        return self.entries.keys()
+    /// The values, as a `Vec`.
+    ///
+    /// Named for what it builds, not for what you do with it (SEQ31). There is
+    /// no `iter()` here on purpose: a stored iterator isn't a thing in Rask —
+    /// an adapter chain has to terminate in the expression that starts it —
+    /// and a method declared `-> Iterator<T>` isn't recognised by the for-loop
+    /// lowering anyway, so `for v in s.iter()` failed to compile natively
+    /// while the interpreter ran it (#1070). When the sequence protocol lands,
+    /// `Set` gets a real one like every other collection.
+    public func to_vec(self) -> Vec<T> {
+        return self.entries.keys().to_vec()
     }
 }
