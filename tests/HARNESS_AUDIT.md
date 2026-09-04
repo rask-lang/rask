@@ -5,7 +5,9 @@ specs and the compiler disagree. **Nothing here is fixed.** Each entry says what
 the spec says, what the compiler does, and what the test claims — deciding which
 of the three is wrong is a separate call.
 
-Measured on `e6bfaad` with a release build of the compiler.
+Measured on `e68e957` (main with #1057 merged) with a release build of the
+compiler. The numbers were re-taken after that merge; where a finding changed,
+the entry says so.
 
 ---
 
@@ -21,16 +23,18 @@ because they set the ceiling on how much the rest of the suite is worth.
 `// ERROR:` markers passes when one fires — or when none fire and an unrelated
 typo does.
 
-The numbers, over `tests/compile_errors/` (110 files, 392 `// ERROR` markers):
+The numbers, over `tests/compile_errors/` (111 files, 394 `// ERROR` markers):
 
 | Wiring | Files | Markers |
 |---|---|---|
-| Asserts on the message or code (`compile_error_output`) | 61 | 192 |
+| Asserts on the message or code (`compile_error_output`) | 62 | 194 |
 | Exit code only (`compile_error`) | 21 | 62 |
 | Referenced by no test at all | 28 | 138 |
 
-So **200 of 392 claimed rejections (51%) are backed by nothing stronger than
+So **200 of 394 claimed rejections (51%) are backed by nothing stronger than
 "the file didn't compile"**, and 138 of them are backed by nothing at all.
+#1057 added one file to this directory and wired it properly — the ratio held
+because the backlog it fixed was in the suite, not here.
 
 The worst individual case is `borrow_errors.rk`: 19 markers, no test runs it, and
 9 of the 12 errors it does produce are `E0322 cannot mutate — declared let` —
