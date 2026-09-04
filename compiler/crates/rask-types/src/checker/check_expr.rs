@@ -4134,12 +4134,29 @@ impl TypeChecker {
     /// ER47: bare `try` on a result needs a return with an error branch. False
     /// when it reported, so the caller stops rather than piling on.
     fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
+        // No return type at all is a `test` (or `benchmark`) block, which has no
+        // caller to propagate to: the error ends the test instead, which is what
+        // the interpreter has always done and what native does since #932.
         let Some(return_ty) = &self.current_return_type else {
             return true;
         };
         let resolved = self.ctx.apply(return_ty);
         if resolved.is_option() {
             self.errors.push(TypeError::TryErrorIntoOptional {
+                return_ty: resolved,
+                span,
+            });
+            return false;
+        }
+        // A function that returns nothing has nowhere to send the error either,
+        // and unlike a test block it isn't a place where ending the run is the
+        // right answer. This used to fall through: `func helper() { try f() }`
+        // type-checked, then native panicked with a message about test blocks
+        // and the interpreter dropped the error on the floor and carried on.
+        // The unresolved-operand path below has always reported this; the
+        // concrete-Result path is where it leaked.
+        if matches!(resolved, Type::Unit) {
+            self.errors.push(TypeError::TryInNonPropagatingContext {
                 return_ty: resolved,
                 span,
             });

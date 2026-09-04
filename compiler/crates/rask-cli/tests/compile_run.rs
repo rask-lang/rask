@@ -946,6 +946,37 @@ fn error_annotation_against_a_container_initializer() {
 }
 
 #[test]
+fn error_try_in_a_function_that_returns_nothing() {
+    // Caught in review on #1057. `try` hands the error to the caller, so the
+    // enclosing function has to declare somewhere for it to go — and a function
+    // with no return type has nowhere. Only the concrete `T or E` operand
+    // leaked: written where the operand's type isn't resolved yet, this has
+    // always been reported.
+    //
+    // The cost of the leak was a new divergence. A test body is lowered as a
+    // void function too, so "does this return void?" was standing in for "is
+    // this a test?" — native panicked in ordinary helpers with a message about
+    // test blocks, while the interpreter dropped the error and carried on to
+    // exit 0. Both halves are gone: the checker rejects this, and MIR asks
+    // whether the body really is a test's.
+    let (failed, out) = compile_error_output("try_in_void_function.rk");
+    assert!(failed, "`try` with no error branch to return through must be rejected: {}", out);
+    assert!(
+        out.contains("E0316"),
+        "should be the non-propagating-context error: {}", out,
+    );
+    assert!(
+        out.contains("found `void`"),
+        "should name the return type that has nowhere to put the error: {}", out,
+    );
+    // Both sites, not just the first — `main` is the one people write.
+    assert!(
+        out.matches("E0316").count() >= 2,
+        "should report the helper and main, not stop at the first: {}", out,
+    );
+}
+
+#[test]
 fn error_catch_void_body_blames_itself_not_a_later_use() {
     // #876: `catch e => { println(...) }` supplies a void fallback, which is
     // only legal when the value's success type is actually void. When that

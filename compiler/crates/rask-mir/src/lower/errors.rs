@@ -277,7 +277,13 @@ impl<'a> MirLowerer<'a> {
         // interpreter already ends it — as a failure naming what happened.
         // Building one anyway returned a value out of a void signature and the
         // Cranelift verifier rejected the whole function (#932).
-        if matches!(self.builder.ret_ty(), MirType::Void) {
+        //
+        // Asking whether this *is* a test body, not whether it returns void:
+        // every function without a return annotation returns void, `main`
+        // included, so the void test panicked in ordinary helpers with a
+        // message about test blocks. Those are a compile error now (E0316), and
+        // this arm is only for the one case that isn't.
+        if self.in_test_body {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("panic".to_string()),

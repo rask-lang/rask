@@ -1622,6 +1622,13 @@ pub struct MirLowerer<'a> {
     /// A `try` inside one of these blocks jumps to the handler instead of
     /// returning from the function (ER18).
     catch_frames: Vec<CatchFrame>,
+    /// This body is a `test` block's, lowered as a void function by
+    /// `extract_tests`. A `try` here has no caller to propagate to and ends the
+    /// test instead (#932). Read off the synthetic declaration's `test_body`
+    /// attribute rather than guessed from the void return type — every function
+    /// without a return annotation has one of those, `main` included, and
+    /// guessing panicked in them with a message about test blocks.
+    in_test_body: bool,
     /// ER16a: the `try` whose branch is still owed, and the chain step it
     /// attaches to. Armed by `lower_try` and discharged by `lower_expr` when it
     /// reaches that step.
@@ -3528,6 +3535,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
+            in_test_body: fn_decl.attrs.iter().any(|a| a == "test_body"),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
