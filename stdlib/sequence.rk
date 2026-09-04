@@ -343,16 +343,25 @@ extend Sequence<(K, V)> {
     /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
     /// ones, exactly like repeated `insert`.
     ///
-    /// The body below is correct and runs on the interpreter. It *lowers* now —
-    /// `for_loop_elem` had no element type for a `Sequence<T>` source, and
-    /// `Self` in an extend header was being rebuilt as `base<args…>`, which
-    /// turned `Sequence<(K, V)>` into `Sequence<i32>` and dropped `V`. Both are
-    /// fixed.
+    /// The body below is correct — it runs on the interpreter, and the identical
+    /// body as a *free* generic function is right on both backends:
     ///
-    /// What stops it now is a wrong answer rather than a refusal, which is
-    /// worse: the same `for (k, v) in …` loop is correct at a call site and
-    /// yields an empty map inside this method. So the body stays out until that
-    /// is understood — a wrong `to_map` is worse than a missing one (#1046).
+    ///     func collect_pairs<K, V>(s: Sequence<(K, V)>) -> Map<K, V> { … }
+    ///     collect_pairs(pairs())      // 3 entries, get(2) == 20
+    ///
+    /// What it can't be is a method on this block. `K` and `V` sit inside a
+    /// tuple under one type argument, and binding an extend block's parameters
+    /// is positional — it pairs `owner.params` with the receiver's arguments
+    /// one for one. That works for `extend Map<K, V>` and not here, so the copy
+    /// comes out as `Sequence_to_map$___` with nothing bound and `p.0` has no
+    /// type. Binding it needs the target matched against the receiver
+    /// structurally, not by position.
+    ///
+    /// Measured, so the parts that *do* work are known: the loop runs three
+    /// times in this block (`for p in self` counts 3), and `to_vec`, `count`
+    /// and `fold` are all correct on a `Sequence<(i64, i64)>` — they live in
+    /// `extend Sequence<T>`, where one parameter sits directly under the
+    /// bracket. It is the tuple nesting alone (#1046).
     ///
     ///     mut out: Map<K, V> = Map<K, V>.new()
     ///     for (k, v) in self {
