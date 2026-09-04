@@ -1128,10 +1128,23 @@ impl ComptimeInterpreter {
     }
 
     /// Register comptime functions from declarations.
+    /// Every function with a body, not only the `comptime func`s.
+    ///
+    /// CT6 is explicit that a call in comptime position is legal iff the
+    /// callee evaluates within CT7/CT8 — "No `comptime` marking required on
+    /// the callee". Registering only the marked ones meant an ordinary `func`
+    /// came back "undefined function in comptime context", the const fell out
+    /// of folding, and the block ran at runtime instead (#1072). The compiler's
+    /// own `ctrl.comptime/CT6 — unmarked func called only at comptime` test
+    /// passed the whole time, because the runtime answer is the same number.
+    ///
+    /// Registering one doesn't promise it evaluates. A body that does I/O or
+    /// touches something the evaluator has no answer for fails the same way it
+    /// would have; this only stops the lookup failing first.
     pub fn register_functions(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Fn(f) = &decl.kind {
-                if f.is_comptime {
+                if f.is_comptime || !f.body.is_empty() {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
             }
@@ -1507,7 +1520,18 @@ impl ComptimeInterpreter {
             _ => {
                 let kind_name = match &expr.kind {
                     ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
-                    _ => format!("{:?}", std::mem::discriminant(&expr.kind)),
+                    // The variant's own name, taken off the head of its Debug
+                    // rendering rather than from a hand-kept list that would
+                    // drift. `Discriminant(26)` was what this said before, in
+                    // a message a person reads.
+                    other => {
+                        let rendered = format!("{:?}", other);
+                        rendered
+                            .split(|c: char| c == '(' || c == '{' || c == ' ')
+                            .next()
+                            .unwrap_or("expression")
+                            .to_string()
+                    }
                 };
                 return Err(ComptimeError::NotSupported(kind_name));
             }
@@ -2397,6 +2421,10 @@ impl ComptimeInterpreter {
                 }),
             },
             // String methods
+            // A string's own `to_string` is the identity. Without it a
+            // `const GREETING = comptime { … "{name}".to_string() }` fell out
+            // of folding and ran at runtime (#1072).
+            "to_string" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
             "len" => {
                 match obj {
                     ComptimeValue::String(s) => Ok(ComptimeValue::I64(s.len() as i64)),
