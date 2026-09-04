@@ -432,6 +432,88 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     }
 }
 
+// debug(vec) — `[1, 2, 3]`, the developer-facing rendering (std.fmt/G2).
+//
+// `kind` says how to read one element, because the header only carries a width:
+// a four-byte slot is an i32, a u32 or an f32, and they print differently.
+// Strings and chars come out quoted and escaped, the same as they do inside a
+// derived struct rendering, so a `Vec<string>` reads `["a", "b"]`.
+//
+// Elements the caller can't classify never reach here — lowering renders those
+// as `[…]` rather than guessing, so there is no kind meaning "unknown".
+void rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind) {
+    RaskStr open_br, close_br, comma;
+    rask_string_from(&open_br, "[");
+    rask_string_from(&close_br, "]");
+    rask_string_from(&comma, ", ");
+
+    *out = open_br;
+    if (src) {
+        for (int64_t i = 0; i < src->len; i++) {
+            if (i > 0) {
+                RaskStr t;
+                rask_string_append(&t, out, &comma);
+                *out = t;
+            }
+            const uint8_t *p = src->data + i * src->elem_size;
+            RaskStr elem;
+            switch (kind) {
+                case RASK_DEBUG_ELEM_U64: {
+                    uint64_t val;
+                    switch (src->elem_size) {
+                        case 1:  val = *(const uint8_t *)p; break;
+                        case 2:  val = *(const uint16_t *)p; break;
+                        case 4:  val = *(const uint32_t *)p; break;
+                        default: val = *(const uint64_t *)p; break;
+                    }
+                    rask_u64_to_string(&elem, val);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_F64: {
+                    if (src->elem_size == 4) {
+                        rask_f64_to_string(&elem, (double)*(const float *)p);
+                    } else {
+                        rask_f64_to_string(&elem, *(const double *)p);
+                    }
+                    break;
+                }
+                case RASK_DEBUG_ELEM_BOOL: {
+                    rask_bool_to_string(&elem, *(const uint8_t *)p != 0);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_STRING: {
+                    rask_string_debug(&elem, (const RaskStr *)p);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_CHAR: {
+                    rask_char_debug(&elem, *(const int32_t *)p);
+                    break;
+                }
+                default: {
+                    int64_t val;
+                    switch (src->elem_size) {
+                        case 1:  val = *(const int8_t *)p; break;
+                        case 2:  val = *(const int16_t *)p; break;
+                        case 4:  val = *(const int32_t *)p; break;
+                        default: val = *(const int64_t *)p; break;
+                    }
+                    rask_i64_to_string(&elem, val);
+                    break;
+                }
+            }
+            RaskStr t;
+            rask_string_append(&t, out, &elem);
+            rask_string_free(&elem);
+            *out = t;
+        }
+    }
+    RaskStr t;
+    rask_string_append(&t, out, &close_br);
+    *out = t;
+    rask_string_free(&comma);
+    rask_string_free(&close_br);
+}
+
 // Take a reference to every string in every element. A container built by
 // copying another's elements is an owner only once it has done this.
 void rask_vec_retain_all(RaskVec *v) {

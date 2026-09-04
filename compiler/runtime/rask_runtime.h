@@ -408,6 +408,17 @@ uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+
+// How `rask_vec_debug` reads one element. The vector header only carries a
+// width, and a four-byte slot could be an i32, a u32 or an f32 — all three
+// print differently — so the caller says which.
+#define RASK_DEBUG_ELEM_I64    0
+#define RASK_DEBUG_ELEM_U64    1
+#define RASK_DEBUG_ELEM_F64    2
+#define RASK_DEBUG_ELEM_BOOL   3
+#define RASK_DEBUG_ELEM_STRING 4
+#define RASK_DEBUG_ELEM_CHAR   5
+void     rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind);
 int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
 // ─── Map ────────────────────────────────────────────────────

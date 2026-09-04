@@ -333,6 +333,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
+        // how to read one element, since the header only carries its width.
+        StdlibEntry {
+            mir_name: "vec_debug", c_name: "rask_vec_debug",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         // Vec<f64> needs the float total order — the default compares elements
         // as int64_t, which orders negatives backwards (type.operators/ORD3).

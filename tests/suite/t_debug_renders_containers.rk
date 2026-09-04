@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `{x:debug}` never prints an address.
+//
+// Making Debug free for every type (#1032) removed the check that used to stop
+// `{v:debug}` on a Vec at compile time, and lowering could only render strings,
+// chars, structs and enums. Everything else fell through to a path that handed
+// the receiver to the padder as though the pointer were text, so a Vec printed
+// as `609538720` — its buffer address, formatted as an integer. Worse inside a
+// struct, where `Holder { items: [1, 2] }` came out `Holder { items: 609538720 }`
+// while the interpreter rendered it correctly, so the two backends disagreed
+// and native's answer looked like a plausible number.
+//
+// Now every type has an arm. A container the runtime can read renders its
+// elements; one it can't renders as an elided container, `[…]` or `{…}`. Both
+// are honest, and neither is a number.
+//
+// The elided cases live in `t_debug_container_elision.rk` — native and the
+// interpreter don't agree on them yet, so they're tracked rather than asserted
+// here.
+
+struct Holder {
+    items: Vec<i64>
+    name: string
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+test "a Vec of integers renders its elements" {
+    let v: Vec<i64> = [1, 2, 3].iter().to_vec()
+    assert "{v:debug}" == "[1, 2, 3]"
+}
+
+test "element width is the element's own, not a machine word" {
+    let a: Vec<i32> = [1i32, 2i32].iter().to_vec()
+    assert "{a:debug}" == "[1, 2]"
+    let b: Vec<u8> = [1u8, 255u8].iter().to_vec()
+    assert "{b:debug}" == "[1, 255]"
+}
+
+test "a Vec of strings quotes them, the way a struct field does" {
+    let v: Vec<string> = ["a", "b"].iter().to_vec()
+    assert "{v:debug}" == "[\"a\", \"b\"]"
+}
+
+test "a Vec of bools renders as bools" {
+    let v: Vec<bool> = [true, false].iter().to_vec()
+    assert "{v:debug}" == "[true, false]"
+}
+
+test "an empty Vec is a pair of brackets" {
+    let v: Vec<i64> = [].iter().to_vec()
+    assert "{v:debug}" == "[]"
+}
+
+test "a Vec inside a struct renders, it doesn't print the buffer" {
+    let h = Holder { items: [1, 2].iter().to_vec(), name: "n" }
+    assert "{h:debug}" == "Holder {{ items: [1, 2], name: \"n\" }}"
+}
+
+test "a struct and an enum still render as before" {
+    let p = Point { x: 1, y: 2 }
+    assert "{p:debug}" == "Point {{ x: 1, y: 2 }}"
+}

@@ -7531,7 +7531,7 @@ impl<'a> MirLowerer<'a> {
                             },
                         }));
                         parts.push(self.debug_render_value(
-                            &MirOperand::Local(field), &field_ty, depth,
+                            &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
                         )?);
                     }
                     parts.push(lit(self, " }"));
@@ -7598,7 +7598,7 @@ impl<'a> MirLowerer<'a> {
                                 },
                             }));
                             parts.push(self.debug_render_value(
-                                &MirOperand::Local(field), &field_ty, depth,
+                                &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
                             )?);
                         }
                         parts.push(lit(self, ")"));
@@ -7621,11 +7621,19 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// One value inside a derived Debug: quoted for a string or char, recursive
-    /// for a nested struct or enum, plain `to_string` for everything else.
+    /// for a nested struct, enum or tuple, elementwise for a Vec, and `…` for
+    /// anything the renderer can't reach.
+    ///
+    /// `decl` is the checked type when the caller has it. A Vec is `Ptr` by the
+    /// time MIR sees it, so the element type only survives here — without it a
+    /// Vec field printed the *address* of its buffer as an integer, which is
+    /// how `Holder { items: 609538720 }` came out where the interpreter says
+    /// `Holder { items: [1, 2] }`.
     fn debug_render_value(
         &mut self,
         op: &MirOperand,
         ty: &MirType,
+        decl: Option<&rask_types::Type>,
         depth: u32,
     ) -> Result<MirOperand, LoweringError> {
         const MAX_DEPTH: u32 = 4;
@@ -7638,6 +7646,8 @@ impl<'a> MirLowerer<'a> {
             }));
             MirOperand::Local(dst)
         };
+        let elided = |_: &mut Self| MirOperand::Constant(MirConst::String("…".to_string()));
+
         match ty {
             MirType::String => Ok(call(self, "string_debug", vec![op.clone()])),
             MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
@@ -7646,25 +7656,113 @@ impl<'a> MirLowerer<'a> {
                     .lower_derived_debug(op, ty, depth + 1)?
                     .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string()))))
             }
-            MirType::Struct(_) | MirType::Enum(_) => {
-                Ok(MirOperand::Constant(MirConst::String("…".to_string())))
+            MirType::Struct(_) | MirType::Enum(_) => Ok(elided(self)),
+            MirType::Tuple(fields) if depth + 1 < MAX_DEPTH => {
+                self.debug_render_tuple(op, fields, decl, depth + 1)
             }
-            _ => {
-                // Same picker the plain rendering uses, so a `u8` field prints
-                // unsigned and an `i128` field doesn't lose its high half.
-                let func = match ty {
-                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => "i64_to_string",
-                    MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
-                    MirType::I128 => "i128_to_string",
-                    MirType::U128 => "u128_to_string",
-                    MirType::F64 => "f64_to_string",
-                    MirType::F32 => "f32_to_string",
-                    MirType::Bool => "bool_to_string",
-                    _ => "i64_to_string",
-                };
-                Ok(call(self, func, vec![op.clone()]))
+            MirType::Tuple(_) => Ok(elided(self)),
+            // A Vec, or anything else that reached MIR as a bare pointer. The
+            // element kind decides how the runtime reads a slot, and when the
+            // element isn't one of those kinds there is nothing honest to print
+            // element by element — `[…]` says that, where the old fallthrough
+            // said `609538720`.
+            MirType::Ptr => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
+                Some(kind) => Ok(call(
+                    self,
+                    "vec_debug",
+                    vec![op.clone(), MirOperand::Constant(MirConst::Int(kind))],
+                )),
+                None => {
+                    // Shape without contents, when the shape is at least known.
+                    // A Vec of structs or of Vecs needs per-element recursion
+                    // the runtime helper can't do, and a Map needs its entries
+                    // walked; both read better as an elided container than as a
+                    // bare ellipsis.
+                    let shape = match decl.and_then(|d| self.generic_head(d)) {
+                        Some((name, _)) if name == "Vec" => Some("[…]"),
+                        Some((name, _)) if name == "Map" => Some("{…}"),
+                        _ => None,
+                    };
+                    match shape {
+                        Some(text) => Ok(MirOperand::Constant(MirConst::String(text.to_string()))),
+                        None => Ok(elided(self)),
+                    }
+                }
+            },
+            MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
+                Ok(call(self, "i64_to_string", vec![op.clone()]))
             }
+            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => {
+                Ok(call(self, "u64_to_string", vec![op.clone()]))
+            }
+            MirType::I128 => Ok(call(self, "i128_to_string", vec![op.clone()])),
+            MirType::U128 => Ok(call(self, "u128_to_string", vec![op.clone()])),
+            MirType::F64 => Ok(call(self, "f64_to_string", vec![op.clone()])),
+            MirType::F32 => Ok(call(self, "f32_to_string", vec![op.clone()])),
+            MirType::Bool => Ok(call(self, "bool_to_string", vec![op.clone()])),
+            // Handles, links, slices, trait objects, function pointers, SIMD
+            // lanes. Each is a machine word or a fat pointer with no rendering
+            // of its own; printing the word was the bug, so say nothing instead.
+            _ => Ok(elided(self)),
         }
+    }
+
+    /// `(1, "x", true)` — positional, so no field names.
+    fn debug_render_tuple(
+        &mut self,
+        op: &MirOperand,
+        fields: &[MirType],
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let decl_fields = match decl {
+            Some(rask_types::Type::Tuple(ts)) if ts.len() == fields.len() => Some(ts),
+            _ => None,
+        };
+        let mut parts: Vec<MirOperand> =
+            vec![MirOperand::Constant(MirConst::String("(".to_string()))];
+        let mut offset: u32 = 0;
+        for (i, fty) in fields.iter().enumerate() {
+            if i > 0 {
+                parts.push(MirOperand::Constant(MirConst::String(", ".to_string())));
+            }
+            let size = fty.size();
+            let slot = self.builder.alloc_temp(fty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::Field {
+                    base: op.clone(),
+                    field_index: i as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(fty, size),
+                },
+            }));
+            let fdecl = decl_fields.and_then(|ts| ts.get(i));
+            parts.push(self.debug_render_value(
+                &MirOperand::Local(slot),
+                fty,
+                fdecl,
+                depth,
+            )?);
+            offset += size;
+        }
+        parts.push(MirOperand::Constant(MirConst::String(")".to_string())));
+        Ok(self.concat_all(parts))
+    }
+
+    /// The `RASK_DEBUG_ELEM_*` code for a `Vec<T>` whose element the runtime
+    /// can read on its own, or `None` when it can't — a Vec of structs, of
+    /// Vecs, of tuples. Kept next to the C `switch` it feeds.
+    fn debug_vec_elem_kind(&self, decl: &rask_types::Type) -> Option<i64> {
+        Some(match self.vec_elem_of_checker_type(decl)? {
+            MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 | MirType::I128 => 0,
+            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 | MirType::U128 => 1,
+            MirType::F64 | MirType::F32 => 2,
+            MirType::Bool => 3,
+            MirType::String => 4,
+            MirType::Char => 5,
+            _ => return None,
+        })
     }
 
     /// Concatenate a list of string operands left to right.
@@ -7752,12 +7850,6 @@ impl<'a> MirLowerer<'a> {
                 call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
             }
             SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
-            SpecType::Debug if matches!(obj_ty, MirType::String) => {
-                call(self, "string_debug", vec![obj_op.clone()])
-            }
-            SpecType::Debug if matches!(obj_ty, MirType::Char) => {
-                call(self, "char_debug", vec![obj_op.clone()])
-            }
             // std.fmt/G2: every type derives Debug. A struct or enum has no
             // `to_string` unless it opted into Displayable, and falling through
             // to one it doesn't have is what made the spec's own example fail —
@@ -7767,13 +7859,14 @@ impl<'a> MirLowerer<'a> {
             // layout, so `Point { x: 1, y: 2 }` is a concat chain of constants
             // and field renders, decided at compile time. Same shape the rest
             // of formatting already has.
-            SpecType::Debug
-                if matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_)) =>
-            {
-                match self.lower_derived_debug(obj_op, obj_ty, 0)? {
-                    Some(op) => op,
-                    None => obj_op.clone(),
-                }
+            //
+            // One arm for every type, because the check is now unconditional:
+            // routing the leftovers to `to_string` instead handed the receiver
+            // to the padder as though the pointer were text, so `{v:debug}` on
+            // a Vec printed its address.
+            SpecType::Debug => {
+                let decl = self.ctx.node_types.get(&object.id).cloned();
+                self.debug_render_value(obj_op, obj_ty, decl.as_ref(), 0)?
             }
             SpecType::Display if is_float && spec.precision.is_some() => {
                 let prec = spec.precision.unwrap() as i64;

@@ -86,9 +86,17 @@ impl Interpreter {
             int_at(0), int_at(1), int_at(2), int_at(3), fill,
         );
 
-        let display = match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
-            Value::String(s) => s.lock().unwrap().clone(),
-            other => format!("{}", other),
+        // Debug renders from the value itself and never reads `display`, so
+        // asking for `to_string` first is not just wasted work — it fails on
+        // the types Debug exists to cover. `{v:debug}` on a `Vec` died with
+        // "no method to_string on type Vec" while native printed `[1, 2]`.
+        let display = if matches!(spec.ty, rask_ast::fmt_spec::SpecType::Debug) {
+            String::new()
+        } else {
+            match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
+                Value::String(s) => s.lock().unwrap().clone(),
+                other => format!("{}", other),
+            }
         };
         let rendered = self.render_spec(&receiver, spec, display);
         Ok(Value::String(Arc::new(Mutex::new(rendered))))
