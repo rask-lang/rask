@@ -4195,6 +4195,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Which member of a union a *name* is, by position as written.
+    /// The member type and its byte offset when `ty_name` names one member of
+    /// the error union of `scrutinee_ty`. `None` for anything else — a plain
+    /// error type, or a name that isn't a member.
+    fn union_member_binding(&self, scrutinee_ty: &MirType, ty_name: &str) -> Option<(MirType, u32)> {
+        let MirType::Result { err, .. } = scrutinee_ty else {
+            return None;
+        };
+        let MirType::Union(members) = err.as_ref() else {
+            return None;
+        };
+        let bare = ty_name.rsplit('.').next().unwrap_or(ty_name);
+        let idx = self.union_member_index_by_name(err.as_ref(), bare)?;
+        let member = members.get(idx)?.clone();
+        Some((
+            member,
+            crate::types::RESULT_PAYLOAD_OFFSET + crate::types::UNION_PAYLOAD_OFFSET,
+        ))
+    }
+
     pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
         let MirType::Union(members) = union_ty else {
             return None;
@@ -4644,6 +4663,32 @@ impl<'a> MirLowerer<'a> {
                     }
                     return;
                 }
+                // `r is AErr as e` on an `i64 or (AErr | BErr)`. The test that
+                // got us here already checked the member index, so `e` is an
+                // `AErr` and nothing else — binding it at the union type made
+                // every call on it a switch over all members, which emitted a
+                // call to `BErr_tag` that doesn't exist (#1002). The member's
+                // bytes sit past the index, inside the Result's payload.
+                if let Some((member_ty, member_off)) =
+                    self.union_member_binding(scrutinee_ty, ty_name)
+                {
+                    let local = self.builder.alloc_local(name.clone(), member_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Field {
+                            base: value.clone(),
+                            field_index: 0,
+                            byte_offset: Some(member_off),
+                            access: FieldAccess::for_field(&member_ty, member_ty.size()),
+                        },
+                    }));
+                    self.locals.insert(name.clone(), (local, member_ty.clone()));
+                    if let Some(prefix) = self.mir_type_name(&member_ty) {
+                        self.meta_mut(name).type_prefix = Some(prefix);
+                    }
+                    return;
+                }
+
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
                     crate::fallback::i64_fallback("lower/mod:typepat_payload")
                 });

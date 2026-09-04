@@ -79,6 +79,17 @@ pub struct PendingMutation {
     pub span: rask_ast::Span,
 }
 
+/// A deferred `mutate self` check on a receiver whose type wasn't solved yet.
+/// See `pending_self_mutations`.
+#[derive(Debug, Clone)]
+pub struct PendingSelfMutation {
+    pub root: String,
+    pub ty: crate::types::Type,
+    pub kind: BindingKind,
+    pub method: String,
+    pub span: rask_ast::Span,
+}
+
 /// A deferred frozen-context write check. See `pending_frozen_writes`.
 #[derive(Debug, Clone)]
 pub struct PendingFrozenWrite {
@@ -261,6 +272,11 @@ pub struct TypeChecker {
     /// through a `Handle`/`Link` bound by optional narrowing is recognised for
     /// what it is instead of being reported as mutating a `let`.
     pub(super) pending_mutations: Vec<PendingMutation>,
+    /// `x.method()` where `method` looked like `mutate self` but the receiver
+    /// was still a type variable. Judged in `validate_pending_mutations`, where
+    /// the receiver has a real type to answer from instead of the union of
+    /// every stdlib method name (#928).
+    pub(super) pending_self_mutations: Vec<PendingSelfMutation>,
     /// Every use of a name that might turn out to be a `Shared`, with its type
     /// and span. Checked after constraint solving for SH7 — during the walk the
     /// type is usually still a variable, since `let c = Shared.new(0)` is solved
@@ -417,6 +433,7 @@ impl TypeChecker {
             deferred_methods: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
+            pending_self_mutations: Vec::new(),
             local_shared_uses: Vec::new(),
             staged_outside_with: Vec::new(),
             allowed_warnings: Vec::new(),
