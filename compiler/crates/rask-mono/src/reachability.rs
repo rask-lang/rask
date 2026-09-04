@@ -1397,11 +1397,55 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
 
-                    // Receiver type unknown here — enqueue every method with this
-                    // bare name and let the unused ones fall out.
-                    if let Some(qualified_names) = self.method_by_bare_name.get(method) {
-                        for qname in qualified_names.clone() {
-                            self.enqueue(qname, type_args.clone());
+                    // A stdlib receiver — `string`, `Vec`, a primitive — has no
+                    // TypeId, so the branch above passed it over. The checker
+                    // still recorded what it dispatched to, and `receiver_name`
+                    // spells those the same way mono mangles them, so the one
+                    // body is nameable.
+                    //
+                    // Widening instead is what made one interpolation reachable
+                    // from half the stdlib: every `len`, every `to_string`, and
+                    // the JSON encoder with them. That's how `Metadata_compare`
+                    // came to be generated for programs that never touch `fs`
+                    // (#1062).
+                    let narrowed = self.typed.and_then(|typed| {
+                        let Some(Callee::Method { recv, method: m }) =
+                            typed.call_targets.get(&expr.id)
+                        else {
+                            return None;
+                        };
+                        let name = rask_types::receiver_name(recv, &typed.types)?;
+                        // `{x}` reaches `to_string` or, for an error type,
+                        // `message` (std.fmt/D5) — same resolution the branch
+                        // above does.
+                        let candidates = if m == "to_string" || m == "__fmt" {
+                            vec![format!("{name}_to_string"), format!("{name}_message")]
+                        } else {
+                            vec![format!("{name}_{m}")]
+                        };
+                        candidates
+                            .into_iter()
+                            .find(|q| self.method_table.contains_key(q))
+                    });
+
+                    match narrowed {
+                        Some(qualified) => {
+                            // Only `message` standing in for `to_string` needs
+                            // recording; the plain case is the name lowering
+                            // would build anyway.
+                            if qualified != format!("{}_{}", qualified.rsplit_once('_').map(|(t, _)| t).unwrap_or(""), method) {
+                                self.call_rewrites.insert(expr.id, qualified.clone());
+                            }
+                            self.enqueue(qualified, type_args.clone());
+                        }
+                        // Receiver type unknown here — enqueue every method with
+                        // this bare name and let the unused ones fall out.
+                        None => {
+                            if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                                for qname in qualified_names.clone() {
+                                    self.enqueue(qname, type_args.clone());
+                                }
+                            }
                         }
                     }
                 }

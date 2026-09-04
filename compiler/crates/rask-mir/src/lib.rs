@@ -22,6 +22,7 @@ pub mod transform;
 mod types;
 
 pub mod hidden_params;
+pub mod layout_check;
 pub mod lower;
 mod container_drop;
 mod trait_drop;
