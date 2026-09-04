@@ -167,15 +167,19 @@ exit=0
 ```
 
 `leak gate: 373 clean, 0 known-leaking, 0 new` is that blind spot, not a result.
-Judging the same 373 files by exit code instead — [#1053](https://github.com/rask-lang/rask/issues/1053),
-closed as a duplicate of work already in flight on
-`claude/sequence-protocol-design-maakls`:
+Judging the same 373 files by exit code instead — measured here, and the same
+split [#1053](https://github.com/rask-lang/rask/issues/1053) reports:
 
 | | files |
 |---|---|
-| leak (exit 1 with the flag, 0 without) | 193 |
+| leak (exit 1 with the flag, 0 without) | **193** |
 | fail either way (the 17 the differential tracks) | 17 |
 | clean | 163 |
+
+163 clean, not 373. A third branch (`claude/sequence-protocol-design-maakls`,
+whose gate reads the exit code) reports 197 clean / 170 known-leaking on the
+same suite — the same ~190 files, seen through a gate that can see them. So
+this is `main`'s state, not a regression from any branch.
 
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
