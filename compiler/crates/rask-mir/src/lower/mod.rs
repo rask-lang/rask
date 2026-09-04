@@ -2544,6 +2544,23 @@ impl<'a> MirLowerer<'a> {
                 if src_ty == err {
                     return val;
                 }
+                // A union member is the err side too, and it is never *equal*
+                // to the union — `AErr` against `AErr | BErr` misses. It fell
+                // through and got wrapped as Ok, so `return AErr { … }` from an
+                // `i64 or (AErr | BErr)` came back to the caller as a success
+                // whose value was the error's payload bytes read as an integer
+                // (#1013). Not a crash, an answer, which is the worst thing
+                // `T or E` can do.
+                //
+                // The `try` path has always done this — `wrap_union_member` in
+                // lower/errors.rs — because propagation goes through a
+                // different producer. One shape, two producers, one of them
+                // covered.
+                if matches!(err, MirType::Union(_)) {
+                    if let Some(wrapped) = self.wrap_operand_into_union(&val, src_ty, err) {
+                        return wrapped;
+                    }
+                }
             }
         }
 
@@ -4185,6 +4202,42 @@ impl<'a> MirLowerer<'a> {
         members
             .iter()
             .position(|m| self.mir_type_name(m).as_deref() == Some(name.as_str()))
+    }
+
+    /// Put a member value into its union's `[member index][payload]` layout.
+    ///
+    /// The operand twin of `wrap_union_member`, which takes a local because the
+    /// `try` path already has one. Returns `None` when the value isn't a member
+    /// of this union, so the caller can fall through to whatever it did before.
+    fn wrap_operand_into_union(
+        &mut self,
+        val: &MirOperand,
+        src_ty: &MirType,
+        union_ty: &MirType,
+    ) -> Option<MirOperand> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        if matches!(src_ty, MirType::Union(_)) {
+            return None;
+        }
+        let index = self.union_member_index(union_ty, src_ty)?;
+        let member_size = members.get(index).map(|m| m.size()).unwrap_or(8);
+
+        let slot = self.builder.alloc_temp(union_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_MEMBER_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(index as i64)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_PAYLOAD_OFFSET,
+            value: val.clone(),
+            store_size: Some(member_size.max(8)),
+        }));
+        Some(MirOperand::Local(slot))
     }
 
     /// Which member of a union a *name* is, by position as written.

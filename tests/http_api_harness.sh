@@ -89,15 +89,39 @@ drive() {
 # fails the check when it doesn't.
 closes_the_connection() {
     timeout 5 bash -c '
-        exec 3<>/dev/tcp/127.0.0.1/'"$PORT"' || exit 1
+        exec 3<>/dev/tcp/127.0.0.1/'"$PORT"' || exit 3
         printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3
-        cat <&3 > /dev/null
+        # A reset counts as closed. The server hangs up with the request still
+        # sitting unread in its receive buffer, which is an RST rather than a
+        # FIN, and `cat` calls that an error — but "the server did not leave the
+        # socket open" is the whole question, and both answers are the same.
+        cat <&3 > /dev/null 2>&1
+        exit 0
     '
+    rc=$?
+    # 124 is the timeout: nothing ever closed. 3 is our own connect failure.
+    [ "$rc" -ne 124 ] && [ "$rc" -ne 3 ]
+}
+
+# The example binds :8080 and says so in its source, so the harness can't pick
+# a free port — but it can say which of the two things went wrong. A leftover
+# server from an interrupted run, or another copy of this harness, answers
+# /health perfectly well and then fails the golden diff for reasons that have
+# nothing to do with the code under test.
+port_is_busy() {
+    curl -s -m 1 "$BASE/health" >/dev/null 2>&1
 }
 
 run_backend() {
     backend="$1"
     out="$WORK/$backend.out"
+
+    if port_is_busy; then
+        echo "FAIL: $backend — something is already answering on :$PORT"
+        echo "    a leftover server from an interrupted run, or a second copy of"
+        echo "    this harness. The example hardcodes the port, so they collide."
+        return 1
+    fi
 
     if [ "$backend" = native ]; then
         "$RASK" compile "$SRC" -o "$WORK/server" >/dev/null 2>&1 \
