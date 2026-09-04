@@ -186,7 +186,7 @@ fn parse_args(raw_args: &[String]) -> Value {
     let options_value = {
         let mut map_entries: Vec<Value> = Vec::new();
         for (k, v) in &options {
-            map_entries.push(Value::vec(vec![
+            map_entries.push(Value::tuple(vec![
                 Value::String(Arc::new(Mutex::new(k.clone()))),
                 Value::String(Arc::new(Mutex::new(v.clone()))),
             ]));

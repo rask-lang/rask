@@ -317,7 +317,7 @@ impl Interpreter {
                                     self.env.define(names[1].clone(), val);
                                 }
                             } else {
-                                let pair = Value::vec(vec![key.clone(), val]);
+                                let pair = Value::tuple(vec![key.clone(), val]);
                                 self.define_for_binding(binding, pair);
                             }
                             let outcome = self.exec_stmts(body);
@@ -402,11 +402,11 @@ impl Interpreter {
                                     self.env.define(names[0].clone(), key);
                                     self.env.define(names[1].clone(), val);
                                 } else if names.len() == 1 {
-                                    let pair = Value::vec(vec![key, val]);
+                                    let pair = Value::tuple(vec![key, val]);
                                     self.define_for_binding(binding, pair);
                                 }
                             } else {
-                                let pair = Value::vec(vec![key, val]);
+                                let pair = Value::tuple(vec![key, val]);
                                 self.define_for_binding(binding, pair);
                             }
                             match self.exec_stmts(body) {
@@ -593,8 +593,7 @@ impl Interpreter {
             ForBinding::Single(name) => self.env.define(name.clone(), value),
             ForBinding::Tuple(names) => {
                 // Destructure tuple/array value into bindings
-                if let Value::Vec(v) = &value {
-                    let items = v.lock().unwrap();
+                if let Some(items) = value.as_tuple_elements() {
                     for (i, name) in names.iter().enumerate() {
                         let val = items.get(i).cloned().unwrap_or(Value::Unit);
                         self.env.define(name.clone(), val);

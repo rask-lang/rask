@@ -764,12 +764,17 @@ impl Interpreter {
                     self.transfer_resource_to_scope(field, new_depth);
                 }
             }
-            // A tuple is a `Vec` at runtime, and `return (request, responder)`
-            // hands the resource to the caller the same way a struct field
-            // does. Without this the callee's scope exit read it as a leak, and
-            // native — which has no runtime tracker — disagreed (#792). A real
-            // `Vec` can't hold a resource at all (mem.linear/RC1, RC3), so
-            // walking one costs nothing and finds nothing.
+            // `return (request, responder)` hands the resource to the caller
+            // the same way a struct field does. Without this the callee's scope
+            // exit read it as a leak, and native — which has no runtime tracker
+            // — disagreed (#792). A `Vec` can't hold a resource at all
+            // (mem.linear/RC1, RC3), so walking one costs nothing and finds
+            // nothing.
+            Value::Tuple(items) => {
+                for item in items.iter() {
+                    self.transfer_resource_to_scope(item, new_depth);
+                }
+            }
             Value::Vec(items) => {
                 let snapshot: Vec<Value> = items.lock().unwrap().items.clone();
                 for item in &snapshot {

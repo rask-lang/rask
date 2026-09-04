@@ -78,7 +78,7 @@ impl Interpreter {
                     "env_vars" => {
                         let vars: Vec<Value> = std::env::vars()
                             .map(|(k, v)| {
-                                Value::vec(vec![
+                                Value::tuple(vec![
                                     Value::String(Arc::new(Mutex::new(k))),
                                     Value::String(Arc::new(Mutex::new(v))),
                                 ])

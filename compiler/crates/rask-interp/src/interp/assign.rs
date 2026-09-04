@@ -58,9 +58,18 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Extract positional elements from a tuple-like value (Vec or Struct).
+    /// Extract positional elements from a tuple-like value (tuple, Vec or Struct).
     fn value_to_elements(value: Value, expected: usize) -> Result<Vec<Value>, RuntimeError> {
         match value {
+            Value::Tuple(ref items) => {
+                if items.len() != expected {
+                    return Err(RuntimeError::TypeError(format!(
+                        "tuple destructuring: expected {} elements, got {}",
+                        expected, items.len()
+                    )));
+                }
+                Ok((**items).clone())
+            }
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();
                 if vec.len() != expected {

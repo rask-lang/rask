@@ -1701,6 +1701,10 @@ impl Interpreter {
                         Ok(*inner.clone())
                     }
                     // Tuple field access: tuple.0, tuple.1, ...
+                    Value::Tuple(ref items) if field.parse::<usize>().is_ok() => {
+                        let idx = field.parse::<usize>().unwrap();
+                        Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
+                    }
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {
                         let idx = field.parse::<usize>().unwrap();
                         let vec = v.lock().unwrap();
@@ -2034,7 +2038,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::vec(values))
+                Ok(Value::tuple(values))
             }
 
             ExprKind::Match { scrutinee, arms } => {

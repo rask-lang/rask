@@ -200,6 +200,16 @@ impl Interpreter {
                 let items: Vec<String> = vec.iter().map(|v| self.debug_format(v)).collect();
                 format!("[{}]", items.join(", "))
             }
+            // Parens, and a one-element tuple keeps its comma — `(1,)` is a
+            // tuple where `(1)` is a parenthesized number.
+            Value::Tuple(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.debug_format(v)).collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
                 // A fieldless struct is `Empty {}`, not `Empty {  }` — the

@@ -7917,6 +7917,17 @@ impl<'a> MirLowerer<'a> {
                 self.debug_render_tuple(op, fields, decl, depth + 1)
             }
             MirType::Tuple(_) => Ok(elided(self)),
+            // An array's length is part of its type, so the elements unroll at
+            // compile time — no runtime helper, no loop, and it works for an
+            // element the helper can't read (a tuple, a struct). `[1, 2, 3]`
+            // used to render as a bare `…` on native and `[1, 2, 3]` on the
+            // interpreter.
+            MirType::Array { elem, len } if depth + 1 < MAX_DEPTH => {
+                self.debug_render_array(op, elem, *len, decl, depth + 1)
+            }
+            MirType::Array { .. } => {
+                Ok(MirOperand::Constant(MirConst::String("[…]".to_string())))
+            }
             // A Vec, or anything else that reached MIR as a bare pointer. The
             // element kind decides how the runtime reads a slot, and when the
             // element isn't one of those kinds there is nothing honest to print
@@ -8003,6 +8014,56 @@ impl<'a> MirLowerer<'a> {
             offset += size;
         }
         parts.push(MirOperand::Constant(MirConst::String(")".to_string())));
+        Ok(self.concat_all(parts))
+    }
+
+    /// `[1, 2, 3]` — every element rendered, up to a cap.
+    ///
+    /// A long array would otherwise unroll into as many render calls as it has
+    /// elements, so past `MAX_SHOWN` the rest is one ellipsis. That's the same
+    /// bargain a debugger makes.
+    fn debug_render_array(
+        &mut self,
+        op: &MirOperand,
+        elem: &MirType,
+        len: u32,
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        const MAX_SHOWN: u32 = 32;
+        let elem_decl = match decl {
+            Some(rask_types::Type::Array { elem, .. }) => Some(&**elem),
+            _ => None,
+        };
+        let shown = len.min(MAX_SHOWN);
+        let size = elem.size();
+        let mut parts: Vec<MirOperand> =
+            vec![MirOperand::Constant(MirConst::String("[".to_string()))];
+        for i in 0..shown {
+            if i > 0 {
+                parts.push(MirOperand::Constant(MirConst::String(", ".to_string())));
+            }
+            let slot = self.builder.alloc_temp(elem.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::Field {
+                    base: op.clone(),
+                    field_index: i,
+                    byte_offset: Some(i * size),
+                    access: FieldAccess::for_field(elem, size),
+                },
+            }));
+            parts.push(self.debug_render_value(
+                &MirOperand::Local(slot),
+                elem,
+                elem_decl,
+                depth,
+            )?);
+        }
+        if len > shown {
+            parts.push(MirOperand::Constant(MirConst::String(", …".to_string())));
+        }
+        parts.push(MirOperand::Constant(MirConst::String("]".to_string())));
         Ok(self.concat_all(parts))
     }
 

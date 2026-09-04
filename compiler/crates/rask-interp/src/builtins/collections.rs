@@ -406,7 +406,7 @@ impl Interpreter {
                     .iter()
                     .enumerate()
                     .map(|(i, item)| {
-                        Value::vec(vec![Value::int(i as i64), item.clone()])
+                        Value::tuple(vec![Value::int(i as i64), item.clone()])
                     })
                     .collect();
                 Ok(Value::vec(enumerated))
@@ -419,7 +419,7 @@ impl Interpreter {
                         .iter()
                         .zip(vec2.iter())
                         .map(|(a, b)| {
-                            Value::vec(vec![a.clone(), b.clone()])
+                            Value::tuple(vec![a.clone(), b.clone()])
                         })
                         .collect();
                     Ok(Value::vec(zipped))
@@ -1082,8 +1082,7 @@ impl Interpreter {
                 let pairs: Vec<Value> = pool.slots.iter().enumerate()
                     .filter_map(|(i, (gen, slot))| {
                         slot.as_ref().map(|val| {
-                            // Pair as a 2-element Vec (tuple representation)
-                            Value::vec(vec![
+                            Value::tuple(vec![
                                 Value::Handle { pool_id, index: i as u32, generation: *gen },
                                 val.clone(),
                             ])
@@ -1189,7 +1188,7 @@ impl Interpreter {
                 };
                 let p1 = clone_pool(&pool);
                 let p2 = clone_pool(&pool);
-                Ok(Value::vec(vec![p1, p2]))
+                Ok(Value::tuple(vec![p1, p2]))
             }
             "take_all" => {
                 let mut pool = p.lock().unwrap();
@@ -1421,7 +1420,7 @@ impl Interpreter {
             "iter" => {
                 let pairs: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
                     .into_iter()
-                    .map(|(k, v)| Value::vec(vec![k, v]))
+                    .map(|(k, v)| Value::tuple(vec![k, v]))
                     .collect();
                 Ok(Value::vec(pairs))
             }
@@ -1482,7 +1481,7 @@ impl Interpreter {
                 let pairs = map_entries_seeded(&items);
                 Ok(Value::vec(
                     pairs.into_iter().map(|(k, v)| {
-                        Value::vec(vec![k, v])
+                        Value::tuple(vec![k, v])
                     }).collect()
                 ))
             }

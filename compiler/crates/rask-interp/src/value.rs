@@ -1010,6 +1010,12 @@ pub enum Value {
     },
     /// Vec (growable array) with interior mutability
     Vec(Arc<Mutex<VecData>>),
+    /// Tuple — fixed arity, heterogeneous, immutable (type.tuples).
+    ///
+    /// A tuple used to be a `Vec` here, which meant nothing downstream could
+    /// tell the two apart: `{t:debug}` printed `[1, "x"]` where native prints
+    /// `(1, "x")`, and "is this a tuple?" had no answer at all (#1063).
+    Tuple(Arc<Vec<Value>>),
     /// Type constructor (for static method calls like Vec.new())
     TypeConstructor {
         kind: TypeConstructorKind,
@@ -1286,6 +1292,24 @@ impl Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
 
+    /// A tuple of these elements.
+    pub fn tuple(items: Vec<Value>) -> Value {
+        Value::Tuple(Arc::new(items))
+    }
+
+    /// The elements of a tuple, or of a `Vec` standing in for one.
+    ///
+    /// Tuples were `Vec` values everywhere until #1063, and a few producers
+    /// outside the interpreter still hand one over — a two-element `Vec` in
+    /// tuple position reads as a pair rather than failing.
+    pub fn as_tuple_elements(&self) -> Option<Vec<Value>> {
+        match self {
+            Value::Tuple(items) => Some((**items).clone()),
+            Value::Vec(v) => Some(v.lock().unwrap().items.clone()),
+            _ => None,
+        }
+    }
+
     /// CP3: a vector bounded at `n`, pre-allocated.
     pub fn vec_fixed(n: usize) -> Value {
         Value::Vec(Arc::new(Mutex::new(VecData::fixed(n))))
@@ -1331,6 +1355,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Range { .. } => "range",
             Value::Vec(_) => "Vec",
+            Value::Tuple(_) => "tuple",
             Value::Wide(_) => "Wide",
             Value::TypeConstructor { .. } => "type",
             Value::EnumConstructor { .. } => "enum constructor",
@@ -1438,6 +1463,9 @@ impl Value {
             Value::Vec(v) => {
                 let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
                 Value::vec(deep)
+            }
+            Value::Tuple(items) => {
+                Value::tuple(items.iter().map(|v| v.deep_clone()).collect())
             }
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
@@ -1611,6 +1639,16 @@ impl fmt::Display for Value {
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
+            }
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
             }
             Value::Wide(_) => write!(f, "<Wide plan>"),
             Value::TypeConstructor { kind, type_param } => {

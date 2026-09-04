@@ -689,8 +689,22 @@ impl ToDiagnostic for rask_types::TypeError {
                      [std.fmt/D3, D4]",
                     if *interpolated { "`{}`" } else { "`print`" },
                 ));
-                // The two cases have genuinely different fixes.
-                if ty.ends_with('?') || ty.contains(" or ") {
+                // A container or tuple can't be extended, and doesn't want to
+                // be — `{v:debug}` already renders it (std.fmt/G2).
+                let is_container = ty.starts_with('(')
+                    || ty.starts_with('[')
+                    || ["Vec", "Map", "Set", "Pool", "Rack", "Iterator"]
+                        .iter()
+                        .any(|n| ty.starts_with(n) && ty[n.len()..].starts_with('<'));
+                // The cases have genuinely different fixes.
+                if is_container {
+                    diag = diag
+                        .with_help(format!(
+                            "a `{}` has no single sensible rendering, so `{{}}` won't invent one",
+                            ty
+                        ))
+                        .with_fix("ask for the debug view: `{value:debug}`");
+                } else if ty.ends_with('?') || ty.contains(" or ") {
                     diag = diag
                         .with_help(format!(
                             "{} holds a `{}`, which may not have a value to show",

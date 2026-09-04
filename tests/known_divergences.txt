@@ -120,4 +120,4 @@
 
 # `{x:debug}` landed on this branch; native renders less than the interpreter
 # for the two shapes its runtime helper can't walk element by element.
-t_debug_container_elision.rk  # `{x:debug}` on a Vec of aggregates or a Map renders `[…]`/`{…}` natively and the contents on the interpreter — #1064 (native needs a MIR loop, blocked on #1035); the tuple case is the interpreter storing tuples as Vecs — #1063 (interp run)
+t_debug_container_elision.rk  # `{x:debug}` on a Vec of aggregates or a Map renders `[…]`/`{…}` natively and the contents on the interpreter — #1064 (native needs a MIR loop, blocked on #1035). The tuple case in this file agrees now — #1063 gave the interpreter a real tuple value (interp run)

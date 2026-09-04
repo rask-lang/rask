@@ -4971,6 +4971,18 @@ impl TypeChecker {
         if matches!(index, Type::Error) || matches!(key, Type::Var(_) | Type::Error) {
             return true;
         }
+        // A tuple key element by element, so the literal vars inside `m[(1, 2)]`
+        // adapt to the key's widths the same way a bare `m[1]` does. Comparing
+        // the two whole types instead rejected the index against its own key
+        // type — the error said `cannot index Map<(i32, i32), string> with
+        // (i32, i32)`, which reads like a compiler bug because it is one.
+        if let (Type::Tuple(ix), Type::Tuple(ky)) = (index, key) {
+            return ix.len() == ky.len()
+                && ix.iter().zip(ky.iter()).all(|(i, k)| {
+                    let (i, k) = (self.ctx.apply(i), self.ctx.apply(k));
+                    self.index_matches_key(&i, &k)
+                });
+        }
         self.types.resolve_type_names(index) == self.types.resolve_type_names(key)
     }
 

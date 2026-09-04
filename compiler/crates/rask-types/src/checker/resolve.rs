@@ -470,6 +470,16 @@ impl TypeChecker {
                 };
                 has("Displayable") || has("Error")
             }
+            // std.fmt/D3: a container has no `to_string`. `{v}` on one used to
+            // pass this gate and then print the buffer's address natively —
+            // the interpreter refused at run time with "no method to_string on
+            // type Vec", so the two backends disagreed about a program that
+            // shouldn't compile. `{v:debug}` renders it and needs nothing.
+            Type::Tuple(_) | Type::Array { .. } | Type::Slice(_) => false,
+            Type::UnresolvedGeneric { name, .. } => !matches!(
+                name.as_str(),
+                "Vec" | "Map" | "Set" | "Pool" | "Rack" | "Iterator"
+            ),
             _ => true,
         }
     }
