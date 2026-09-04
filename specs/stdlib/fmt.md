@@ -136,12 +136,12 @@ extend AppError {
 
 The verb matches the trait and the specifier — `Debug`, `{:debug}`, `debug()`.
 
-<!-- test: parse -->
+<!-- test: run | Point { x: 1, y: 2 } -->
 ```rask
 struct Point { x: f64, y: f64 }
 
 let p = Point { x: 1.0, y: 2.0 }
-println(format("{:debug}", p))    // Point { x: 1.0, y: 2.0 }
+println(format("{:debug}", p))    // Point { x: 1, y: 2 }
 ```
 
 ## println / print Interpolation

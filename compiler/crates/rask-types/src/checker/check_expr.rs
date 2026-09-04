@@ -3122,6 +3122,21 @@ impl TypeChecker {
             self.ptr_method_sites.insert(span, self.in_unsafe);
         }
 
+        // `{:debug}` asks nothing of the value — every type derives Debug
+        // (std.fmt/G2) — while `{}` goes through Displayable. Both desugar to
+        // `__fmt`, and the spec's type code is the first argument, a literal
+        // the desugar pass put there. Recorded here because the resolver sees
+        // argument *types*, where a constant 1 and a constant 0 look the same.
+        if method == "__fmt" && args.len() == 5 {
+            if let ExprKind::Int(code, _) = &args[0].expr.kind {
+                if rask_ast::fmt_spec::SpecType::from_code(*code as i64)
+                    == rask_ast::fmt_spec::SpecType::Debug
+                {
+                    self.debug_fmt_calls.insert(call_id);
+                }
+            }
+        }
+
         // What the call wrote between the angle brackets. `resolve_method` binds
         // the method's own type parameters to these instead of freshening them,
         // so `s.parse<i64>()` means i64 whether or not anything downstream would

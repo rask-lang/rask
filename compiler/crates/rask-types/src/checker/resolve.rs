@@ -627,7 +627,13 @@ impl TypeChecker {
                 });
                 return Ok(progress);
             }
-            if !self.is_displayable(&ty) {
+            // `{:debug}` is the free half of the D3 split: developer-facing
+            // output for every type, no opt-in. Only `{}` and a bare
+            // `to_string()` need Displayable.
+            let is_debug = call_node
+                .map(|n| self.debug_fmt_calls.contains(&n))
+                .unwrap_or(false);
+            if !is_debug && !self.is_displayable(&ty) {
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
                     interpolated: method == "__fmt",

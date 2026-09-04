@@ -171,6 +171,14 @@ pub struct TypeChecker {
     /// even when it did infer — `let x: f64 = "42".parse<i64>()!` type-checked
     /// and ran the float parse (#1029).
     pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
+    /// Interpolations that asked for `{:debug}`, by the `__fmt` call's NodeId.
+    ///
+    /// Every type derives Debug (std.fmt/G2), so `{:debug}` needs nothing of
+    /// its value — only `{}` goes through Displayable (D3). One gate served
+    /// both, so a plain struct was rejected for lacking a `to_string` it was
+    /// never going to need, and the suggested fix told the user to add
+    /// `Displayable` when they had asked for debug output (#1032).
+    pub(super) debug_fmt_calls: std::collections::HashSet<NodeId>,
     /// CALL6: the function each call resolves to, keyed by the call's NodeId.
     /// Free calls record here immediately; method calls record when their
     /// `HasMethod` constraint resolves.
@@ -395,6 +403,7 @@ impl TypeChecker {
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             written_method_type_args: HashMap::new(),
+            debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),

@@ -7478,6 +7478,213 @@ impl<'a> MirLowerer<'a> {
         Ok(None)
     }
 
+    /// Derived `Debug` for a struct or enum: the layout, rendered.
+    ///
+    /// `Point { x: 1, y: 2 }` for a struct, `Shape.Circle(1.5)` for an enum
+    /// variant with a payload, `Shape.Empty` for one without. Strings and chars
+    /// come out quoted, which is the whole reason `{:debug}` exists next to
+    /// `{}` (std.fmt/G2, G4).
+    ///
+    /// Compile-time expansion, not a runtime call. Nothing has to be emitted
+    /// per type and nothing has to walk a descriptor at runtime — the field
+    /// names are constants and each field's renderer is picked by its own type.
+    ///
+    /// `depth` stops a struct that contains itself through a box from expanding
+    /// forever; past the limit the nested value renders as `…`.
+    fn lower_derived_debug(
+        &mut self,
+        obj_op: &MirOperand,
+        obj_ty: &MirType,
+        depth: u32,
+    ) -> Result<Option<MirOperand>, LoweringError> {
+        const MAX_DEPTH: u32 = 4;
+
+        let lit = |this: &mut Self, text: &str| {
+            let _ = this;
+            MirOperand::Constant(MirConst::String(text.to_string()))
+        };
+
+        match obj_ty {
+            MirType::Struct(id) => {
+                let Some(layout) = self.ctx.struct_layouts.get(id.id as usize).cloned() else {
+                    return Ok(None);
+                };
+                let mut parts: Vec<MirOperand> = Vec::new();
+                if layout.fields.is_empty() {
+                    parts.push(lit(self, &format!("{} {{}}", layout.name)));
+                } else {
+                    parts.push(lit(self, &format!("{} {{ ", layout.name)));
+                    for (i, f) in layout.fields.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(lit(self, ", "));
+                        }
+                        parts.push(lit(self, &format!("{}: ", f.name)));
+                        let field_ty = self.ctx.type_to_mir(&f.ty);
+                        let field = self.builder.alloc_temp(field_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: field,
+                            rvalue: MirRValue::Field {
+                                base: obj_op.clone(),
+                                field_index: i as u32,
+                                byte_offset: Some(f.offset),
+                                access: FieldAccess::for_field(&field_ty, f.size),
+                            },
+                        }));
+                        parts.push(self.debug_render_value(
+                            &MirOperand::Local(field), &field_ty, depth,
+                        )?);
+                    }
+                    parts.push(lit(self, " }"));
+                }
+                Ok(Some(self.concat_all(parts)))
+            }
+            MirType::Enum(id) => {
+                let Some(layout) = self.ctx.enum_layouts.get(id.id as usize).cloned() else {
+                    return Ok(None);
+                };
+                // One block per variant, each building its own string, joined by
+                // a phi-free write into a shared slot — the same shape the union
+                // method dispatch uses.
+                let tag = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: tag,
+                    rvalue: MirRValue::Field {
+                        base: obj_op.clone(),
+                        field_index: 0,
+                        byte_offset: Some(layout.tag_offset),
+                        access: FieldAccess::Sized(8),
+                    },
+                }));
+                let result = self.builder.alloc_temp(MirType::String);
+                let merge = self.builder.create_block();
+                let arms: Vec<crate::BlockId> =
+                    layout.variants.iter().map(|_| self.builder.create_block()).collect();
+                let cases: Vec<(u64, crate::BlockId)> = layout
+                    .variants
+                    .iter()
+                    .zip(&arms)
+                    .map(|(v, b)| (v.tag, *b))
+                    .collect();
+                let default = arms.first().copied().unwrap_or(merge);
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                    value: MirOperand::Local(tag),
+                    cases,
+                    default,
+                }));
+
+                for (vi, variant) in layout.variants.iter().enumerate() {
+                    self.builder.switch_to_block(arms[vi]);
+                    let mut parts: Vec<MirOperand> = Vec::new();
+                    if variant.fields.is_empty() {
+                        parts.push(lit(self, &format!("{}.{}", layout.name, variant.name)));
+                    } else {
+                        parts.push(lit(
+                            self,
+                            &format!("{}.{}(", layout.name, variant.name),
+                        ));
+                        for (fi, f) in variant.fields.iter().enumerate() {
+                            if fi > 0 {
+                                parts.push(lit(self, ", "));
+                            }
+                            let field_ty = self.ctx.type_to_mir(&f.ty);
+                            let field = self.builder.alloc_temp(field_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: field,
+                                rvalue: MirRValue::Field {
+                                    base: obj_op.clone(),
+                                    field_index: fi as u32,
+                                    byte_offset: Some(variant.payload_offset + f.offset),
+                                    access: FieldAccess::for_field(&field_ty, f.size),
+                                },
+                            }));
+                            parts.push(self.debug_render_value(
+                                &MirOperand::Local(field), &field_ty, depth,
+                            )?);
+                        }
+                        parts.push(lit(self, ")"));
+                    }
+                    let text = self.concat_all(parts);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result,
+                        rvalue: MirRValue::Use(text),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                        target: merge,
+                    }));
+                }
+
+                self.builder.switch_to_block(merge);
+                Ok(Some(MirOperand::Local(result)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// One value inside a derived Debug: quoted for a string or char, recursive
+    /// for a nested struct or enum, plain `to_string` for everything else.
+    fn debug_render_value(
+        &mut self,
+        op: &MirOperand,
+        ty: &MirType,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        const MAX_DEPTH: u32 = 4;
+        let call = |this: &mut Self, name: &str, args: Vec<MirOperand>| {
+            let dst = this.builder.alloc_temp(MirType::String);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(dst),
+                func: FunctionRef::internal(name.to_string()),
+                args,
+            }));
+            MirOperand::Local(dst)
+        };
+        match ty {
+            MirType::String => Ok(call(self, "string_debug", vec![op.clone()])),
+            MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
+            MirType::Struct(_) | MirType::Enum(_) if depth + 1 < MAX_DEPTH => {
+                Ok(self
+                    .lower_derived_debug(op, ty, depth + 1)?
+                    .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string()))))
+            }
+            MirType::Struct(_) | MirType::Enum(_) => {
+                Ok(MirOperand::Constant(MirConst::String("…".to_string())))
+            }
+            _ => {
+                // Same picker the plain rendering uses, so a `u8` field prints
+                // unsigned and an `i128` field doesn't lose its high half.
+                let func = match ty {
+                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => "i64_to_string",
+                    MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
+                    MirType::I128 => "i128_to_string",
+                    MirType::U128 => "u128_to_string",
+                    MirType::F64 => "f64_to_string",
+                    MirType::F32 => "f32_to_string",
+                    MirType::Bool => "bool_to_string",
+                    _ => "i64_to_string",
+                };
+                Ok(call(self, func, vec![op.clone()]))
+            }
+        }
+    }
+
+    /// Concatenate a list of string operands left to right.
+    fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
+        let mut iter = parts.into_iter();
+        let Some(mut acc) = iter.next() else {
+            return MirOperand::Constant(MirConst::String(String::new()));
+        };
+        for part in iter {
+            let dst = self.builder.alloc_temp(MirType::String);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(dst),
+                func: FunctionRef::internal("concat".to_string()),
+                args: vec![acc, part],
+            }));
+            acc = MirOperand::Local(dst);
+        }
+        acc
+    }
+
     /// `x.__fmt(type, width, precision, align, fill)` — what desugaring makes
     /// of `{x:spec}`. The spec's already parsed, so this picks the base
     /// conversion by receiver type and then pads (std.fmt/CM5).
@@ -7550,6 +7757,23 @@ impl<'a> MirLowerer<'a> {
             }
             SpecType::Debug if matches!(obj_ty, MirType::Char) => {
                 call(self, "char_debug", vec![obj_op.clone()])
+            }
+            // std.fmt/G2: every type derives Debug. A struct or enum has no
+            // `to_string` unless it opted into Displayable, and falling through
+            // to one it doesn't have is what made the spec's own example fail —
+            // `{:debug}` was checked against Displayable and rejected (#1032).
+            //
+            // Built here rather than as a runtime call: lowering knows the
+            // layout, so `Point { x: 1, y: 2 }` is a concat chain of constants
+            // and field renders, decided at compile time. Same shape the rest
+            // of formatting already has.
+            SpecType::Debug
+                if matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_)) =>
+            {
+                match self.lower_derived_debug(obj_op, obj_ty, 0)? {
+                    Some(op) => op,
+                    None => obj_op.clone(),
+                }
             }
             SpecType::Display if is_float && spec.precision.is_some() => {
                 let prec = spec.precision.unwrap() as i64;

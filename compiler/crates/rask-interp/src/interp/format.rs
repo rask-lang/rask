@@ -168,9 +168,32 @@ impl Interpreter {
         pad(&base, spec.width, spec.effective_align(numeric), spec.fill)
     }
 
+    /// Quote a string for `{:debug}`, escaping what would otherwise make the
+    /// output unreadable — `a"b` came out as `"a"b"`, three quotes and no way
+    /// to tell which one closed it. Matches `rask_string_debug` in the runtime.
+    fn quote_debug(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                    out.push_str(&format!("\\x{:02x}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
     fn debug_format(&self, value: &Value) -> String {
         match value {
-            Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+            Value::String(s) => Self::quote_debug(&s.lock().unwrap()),
             Value::Char(c) => format!("'{}'", c),
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();
@@ -179,6 +202,11 @@ impl Interpreter {
             }
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
+                // A fieldless struct is `Empty {}`, not `Empty {  }` — the
+                // braces-with-a-space template gave two spaces around nothing.
+                if guard.fields.is_empty() {
+                    return format!("{} {{}}", guard.name);
+                }
                 let field_strs: Vec<String> = guard.fields
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
