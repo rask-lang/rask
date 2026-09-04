@@ -3552,6 +3552,7 @@ impl Parser {
                     continue;
                 }
 
+                let op_tok = self.current_kind().clone();
                 let op = self.parse_binop()?;
                 self.skip_newlines();
                 let rhs = self.parse_expr_bp(r_bp)?;
@@ -3561,6 +3562,35 @@ impl Parser {
                     kind: ExprKind::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
                     span: self.span(start, end),
                 };
+
+                // P2: comparisons don't chain. `a < b < c` reads as three
+                // related facts and means `(a < b) < c` — comparing a bool
+                // against `c`. Rask's `bool` is orderable, so when `c` is a
+                // bool that even type-checks and runs, quietly answering the
+                // wrong question; when it isn't, the error talks about types
+                // instead of about the chain. Catching it here means the
+                // message can name what was written.
+                //
+                // Only an unparenthesized chain trips this: `(a < b) == c`
+                // parses its `<` inside the group, so this loop never sees two
+                // comparisons in a row.
+                if is_comparison_tok(&op_tok) {
+                    if let Some(next) = Some(self.current_kind().clone()).filter(is_comparison_tok) {
+                        return Err(ParseError {
+                            span: self.current().span,
+                            message: format!(
+                                "comparisons don't chain — `{}` follows a comparison",
+                                tok_text(&next),
+                            ),
+                            hint: Some(format!(
+                                "say both halves: `a {} b && b {} c` — or parenthesize if you meant to compare the bool: `(a {} b) {} c`",
+                                tok_text(&op_tok), tok_text(&next),
+                                tok_text(&op_tok), tok_text(&next),
+                            )),
+                            why: Some("`a < b < c` groups as `(a < b) < c`, which compares a bool against `c` — rarely what anyone means, and `bool` is orderable so it can silently type-check [type.operators/P2]".to_string()),
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -5811,3 +5841,24 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
     })
 }
 
+/// The six operators P2 refuses to chain: ordering and equality.
+fn is_comparison_tok(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq
+            | TokenKind::EqEq | TokenKind::BangEq
+    )
+}
+
+/// How a comparison operator is spelled, for quoting it back in a diagnostic.
+fn tok_text(kind: &TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Lt => "<",
+        TokenKind::Gt => ">",
+        TokenKind::LtEq => "<=",
+        TokenKind::GtEq => ">=",
+        TokenKind::EqEq => "==",
+        TokenKind::BangEq => "!=",
+        _ => "?",
+    }
+}

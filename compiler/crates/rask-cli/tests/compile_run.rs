@@ -2569,6 +2569,36 @@ fn error_unknown_lowercase_type() {
 }
 
 #[test]
+fn error_comparison_chaining_p2() {
+    // type.operators/P2. Unenforced until the harness audit: `a == b == c`
+    // compiled and ran, because Rask's `bool` is orderable so `(a == b) == c`
+    // is a legal bool-vs-bool comparison and no later pass had a complaint.
+    // The check lives in the parser, which is also what made the long-dead
+    // marker in syntax_rejected.rk start firing — it sat below parse errors
+    // that stopped the pipeline before the checker ran.
+    let (failed, out) = compile_error_output("comparison_chaining.rk");
+    assert!(failed, "a comparison chain must be rejected: {}", out);
+
+    for op in ["`<` follows a comparison", "`==` follows a comparison",
+               "`!=` follows a comparison", "`<=` follows a comparison"] {
+        assert!(
+            out.contains(&format!("comparisons don't chain — {}", op)),
+            "should reject a chain ending in {}: {}", op, out,
+        );
+    }
+    // Five chains, five diagnostics — one per function, so none is hiding
+    // behind an earlier one.
+    assert_eq!(
+        out.matches("comparisons don't chain").count(), 5,
+        "every chain in the file should be reported: {}", out,
+    );
+    // The fix names both ways out, and the rule is cited.
+    assert!(out.contains("&& b"), "should suggest the `&&` form: {}", out);
+    assert!(out.contains("parenthesize"), "should offer the parenthesized form: {}", out);
+    assert!(out.contains("type.operators/P2"), "should cite P2: {}", out);
+}
+
+#[test]
 fn error_cast_rules() {
     // This used to check only that the file failed to compile, which any one of
     // its twelve markers satisfied — so CV1 went unenforced under a green test

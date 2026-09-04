@@ -12,7 +12,7 @@ Operators follow standard precedence. Equality and ordering are trait-based. Com
 | Rule | Description |
 |------|-------------|
 | **P1: Left-to-right** | All operators associate left-to-right unless noted |
-| **P2: No chaining comparisons** | `a < b < c` is disallowed; use `a < b && b < c` |
+| **P2: No chaining comparisons** | Two comparisons in a row are a parse error — `<` `>` `<=` `>=` `==` `!=` are non-associative. Say `a < b && b < c`, or parenthesize when the bool really is the operand: `(a < b) == flag` |
 | **P3: Newline continuation** | A line starting with an unambiguous infix or postfix operator continues the expression above it. `+` `-` `*` `<` `>` are excluded — see below |
 | **P4: Conversions bind tight** | `as` and the lossy conversion suffixes bind tighter than every binary operator, looser than unary and postfix. A cast takes one operand, never the expression around it |
 
@@ -238,6 +238,17 @@ Splitting the two questions costs nothing and answers both. The **operators** ar
 `==` stays IEEE per `EQ3`, so `NaN.compare(NaN)` is `Equal` while `NaN == NaN` is `false`. That inconsistency is inherent to IEEE, not to this rule — it's the reason `total_cmp` exists in other languages as a separate method. Rask puts it in `compare()` because `compare()` has exactly one job here: order things for a sort.
 
 **P2 (no chaining):** Chained comparisons (`a < b < c`) are ambiguous in most languages. Requiring `&&` is explicit and matches user expectation.
+
+Rask needs the rule more than most languages do, and for a reason that took a while to surface. Elsewhere `a < b < c` compares a bool against `c` and the type checker stops it — the program is wrong but nobody is fooled. Here `bool` is orderable (`false < true`, ORD2), so when the trailing operand is a bool the chain type-checks, runs, and quietly answers a different question:
+
+```
+let a = 1; let b = 1; let c = true
+let x: bool = a == b == c     // was: compiles, prints true
+```
+
+So P2 is checked in the **parser**, not the checker, and it's a non-associativity rule rather than a special case: after one comparison, another is a parse error. That placement is what lets the message name the chain instead of talking about types, and it makes the rule hold in files that never reach the checker.
+
+One idiom loses its short spelling. `if a < 0 != b < 0` — "do these differ in sign" — groups the way its author meant, because `<` binds tighter than `!=`. It's still a chain, and still needs the reader to know the precedence table to be sure, so it now says `(a < 0) != (b < 0)`.
 
 ### See Also
 
