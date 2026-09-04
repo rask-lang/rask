@@ -722,11 +722,14 @@ fn optional_widen_assign_native_eq_interp() {
 }
 
 // #270: scalar `mutate` params write back through field/index projections
-// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`), while a whole
-// Copy variable stays unchanged (`modify_int(z)`). Native == interp.
+// (`swap_fields(mutate p.x, mutate p.y)`, `boost(mutate p.x)`). Since #899 a
+// whole Copy variable writes back too — `modify_int(mutate z)` leaves `z` at
+// 999, not 42 — because mem.parameters/PM2 says the caller keeps the value and
+// gets the write, and that never depended on the argument's size. Native ==
+// interp, before and after.
 #[test]
 fn scalar_mutate_writeback_native_eq_interp() {
-    assert_native_eq_interp("scalar_mutate_writeback.rk", "211242");
+    assert_native_eq_interp("scalar_mutate_writeback.rk", "2112999");
 }
 
 // mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
