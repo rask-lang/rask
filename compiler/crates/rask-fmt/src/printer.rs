@@ -40,8 +40,20 @@ impl<'a> Printer<'a> {
     }
 
     pub fn finish(mut self) -> String {
-        // Emit any remaining comments
-        for c in self.comments.take_rest() {
+        // Comments left over after the last declaration. They get the same
+        // blank-line treatment as a comment that precedes one: separation the
+        // source had is kept, separation it didn't have isn't invented.
+        //
+        // This ran without either check, so a file ending in an explanatory
+        // block came back with that block jammed against the closing brace —
+        // and since `stdlib/` is held to `fmt --check`, a stdlib file could
+        // fail the gate for a blank line no human would call a formatting
+        // mistake (#1043).
+        let rest: Vec<comment::Comment> = self.comments.take_rest();
+        for c in rest {
+            if self.has_blank_line_before(c.span.start) {
+                self.emit_blank_line();
+            }
             self.output.push_str(&c.text);
             self.output.push('\n');
         }
