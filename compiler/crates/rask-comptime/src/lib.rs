@@ -439,6 +439,30 @@ impl ComptimeValue {
         }
     }
 
+    /// What `to_string` and an interpolation render this as — the same text
+    /// the runtime would print.
+    pub fn to_display_string(&self) -> String {
+        match self {
+            ComptimeValue::Unit => "()".to_string(),
+            ComptimeValue::Bool(b) => b.to_string(),
+            ComptimeValue::I8(v) => v.to_string(),
+            ComptimeValue::I16(v) => v.to_string(),
+            ComptimeValue::I32(v) => v.to_string(),
+            ComptimeValue::I64(v) => v.to_string(),
+            ComptimeValue::I128(v) => v.to_string(),
+            ComptimeValue::U8(v) => v.to_string(),
+            ComptimeValue::U16(v) => v.to_string(),
+            ComptimeValue::U32(v) => v.to_string(),
+            ComptimeValue::U64(v) => v.to_string(),
+            ComptimeValue::U128(v) => v.to_string(),
+            ComptimeValue::F32(v) => v.to_string(),
+            ComptimeValue::F64(v) => v.to_string(),
+            ComptimeValue::Char(c) => c.to_string(),
+            ComptimeValue::String(s) => s.clone(),
+            other => other.type_name().to_string(),
+        }
+    }
+
     /// Type prefix for method dispatch when embedded as a comptime global — the
     /// Rask type name, which is what a method call is prefixed with
     /// (`i64_to_string`, `string_to_uppercase`, `Vec_get`).
@@ -544,6 +568,13 @@ impl ComptimeValue {
                 }
                 Some(bytes)
             }
+            // The characters, not a `RaskStr`. Lowering turns them back into a
+            // string literal, which is already emitted as const data with a
+            // sentinel refcount — so a folded string const costs nothing at
+            // startup and needs no layout knowledge here. A string *element*
+            // still can't (`serialize_element` says so): a `Vec<string>` needs
+            // sixteen bytes per slot and a relocation each.
+            ComptimeValue::String(s) => Some(s.as_bytes().to_vec()),
             _ => self.serialize_element().map(|b| b.to_vec()),
         }
     }
@@ -2522,6 +2553,11 @@ impl ComptimeInterpreter {
             // `const GREETING = comptime { … "{name}".to_string() }` fell out
             // of folding and ran at runtime (#1072).
             "to_string" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
+            // Every other scalar renders the way `Display` does, which is what
+            // an interpolation asks for. Without it a comptime string with a
+            // number in it — `"banner {n}"` — fell out of folding on the
+            // rendering rather than on anything it was doing.
+            "to_string" if args.is_empty() => Ok(ComptimeValue::String(obj.to_display_string())),
             // What string interpolation desugars to — there is no public
             // `concat`, so this is the one way two strings join (std.strings).
             "__concat" => match (obj, args.first()) {

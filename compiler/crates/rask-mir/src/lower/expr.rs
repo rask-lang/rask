@@ -1253,6 +1253,21 @@ impl<'a> MirLowerer<'a> {
                     // A folded comptime value: a module-level const, or a local in
                     // this function (which is keyed by the function too — see
                     // `comptime_local_key`).
+                    //
+                    // A string is the value itself rather than an address: the
+                    // fold produced the exact characters, and a string literal
+                    // is already emitted as const data with a sentinel
+                    // refcount. Going through a data section instead would mean
+                    // teaching this path the `RaskStr` layout and a relocation
+                    // for the non-SSO case, for the same bytes (#1074).
+                    if meta.type_prefix == "string" {
+                        if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
+                            return Ok((
+                                MirOperand::Constant(MirConst::String(text)),
+                                MirType::String,
+                            ));
+                        }
+                    }
                     let global_local = self.builder.alloc_temp(MirType::Ptr);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                         dst: global_local,
