@@ -17,8 +17,9 @@
 
 # --- spec-heavy pending features ---
 p08_sequence.rk            # type.sequence function-valued iteration protocol — unimplemented (both check)
-p09_simd.rk                # type.simd f32x4 etc. vector types — unimplemented (both check)
-p10_binary.rk              # type.binary @binary parse/build (native gap; interp partial) (both check)
+p09_simd.rk                # type.simd f32x4 etc. vector types — checks, but no SIMD value is ever built below the checker, #1059 (both check)
+p10_binary.rk              # type.binary @binary — the interpreter builds and parses; native generates neither method. Blocked on #1058: G1's `[]u8` signature can't be generated as a real method while a Vec<u8> can't be passed to one (native compile)
+p11_gradual_generalization.rk # type.gradual IN1/IN3 — an inferred parameter never generalizes, so the first call site pins it, #904 (both check)
 
 # --- declared-but-unbuilt stdlib surface ---
 t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912 (both check)

@@ -1,4 +1,4 @@
-// PENDING type.binary — native codegen for @binary .build()/.parse() (works on interp; native links no Packet_build). Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// PENDING type.binary — native codegen for @binary .build()/.parse(). The interpreter implements both; native has no `Packet_build` to link. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Spec: specs/types/binary.md — @binary makes field order the wire layout (B1),
 // F2 requires be/le on multi-byte fields; G2 generates .build() -> Vec<u8> and
@@ -16,7 +16,7 @@ test "type.binary/G1 — build/parse roundtrip preserves be fields" {
     let p = Packet { magic: 0x1234, id: 0xDEADBEEF }
     let bytes = p.build()              // G2: Vec<u8>, 6 bytes
     let r = Packet.parse(bytes)        // G1: (Packet, []u8) or ParseError
-    assert r?
+    assert !(r is ParseError)
     let parsed = r!.0
     assert parsed.magic == 0x1234
     assert parsed.id == 0xDEADBEEF

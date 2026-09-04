@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `try` in a function that returns nothing
+// ERROR: `try` requires function returning Result or Option, found `void`
+//
+// `try` sends the error to the caller, so the enclosing function has to declare
+// somewhere for it to go. A function with no return type has nowhere, and the
+// checker used to let this through — but only on this path. The same mistake
+// written where the operand's type isn't resolved yet has always been reported;
+// it was the concrete `T or E` operand that leaked.
+//
+// What that cost: `rask check` passed, and then the two backends disagreed
+// about a program neither should have accepted. Native panicked with "try
+// propagated an error out of a test block" — in a program with no test in it,
+// because a test body is also lowered as a void function and the check for one
+// was really "returns nothing". The interpreter did the opposite and dropped
+// the error silently, so the program printed its last line and exited 0.
+//
+// A `test` block is the one place where `try` with no caller is allowed, and
+// there the error ends the test. That half is in
+// `tests/suite/t_month_try_in_test.rk`.
+
+enum MyError {
+    Bad
+}
+
+extend MyError with Error {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func might_fail() -> i32 or MyError {
+    return MyError.Bad
+}
+
+// ERROR: nowhere for the error to go — `helper` returns nothing.
+func helper() {
+    let x = try might_fail()
+    println("unreachable: {x}")
+}
+
+// The same in `main`, which is the one people actually write.
+func main() {
+    let y = try might_fail()
+    println("unreachable: {y}")
+}

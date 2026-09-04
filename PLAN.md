@@ -83,8 +83,21 @@ had its own hole.
   array doesn't have (#946, native). An array local is its own buffer, so its address is the
   answer. The interpreter has no raw-pointer surface at all — that half is #935.
 
-**A2. Naming and inferring generics — #913 done; #904, #905, #915, #916, #961, #968, #970
-open.**
+**A2. Naming and inferring generics — #913, #905, #915, #916, #961, #968, #970 done;
+#904 reclassified as unbuilt.**
+
+#905 was the last of the bugs here: a parameter whose type the author omitted got solved by
+the checker and then thrown away, because every pass below reads the type off the declaration
+*string* and an omitted one is empty — which reads as `void`. `func greet(name)` printed
+`Hi, 140732714231624` natively. The solved types are written back into the declarations right
+after checking now.
+
+#904 is not a bug. Its two remaining cases need an inferred parameter to *generalize* — to
+become a type parameter each call site instantiates fresh, instead of the one variable the
+whole program unifies against — and nothing in the pipeline does that. The spec's own answer
+for `count(items)` is `<T>(items: Vec<T>) -> usize`, so it also wants a nominal type read out
+of method use, which is structural-to-nominal inference the checker doesn't do at all. It
+moved to `tests/pending_features.txt` as `p11_gradual_generalization.rk`.
 
 #913 was PC1 half-built. `gradual-constraints` says the signature positions are "function
 parameters, return types, struct fields, enum payloads" — and only the function half was ever
@@ -223,12 +236,22 @@ on both backends for two unrelated reasons, and both were one missing case.
 #922 — an enum payload isn't a C4 slot, so `Node.Branch([1, 2, 3])` is rejected and the error
 has expected/found swapped — is a different defect in the same area and still open.
 
-**A5. The singles.** #899 `mutate` on a primitive parameter drops the write (and
-`mem.parameters` contradicts itself about whether it should — settle the spec first, #881).
-#903, #907, #919, #923, #924, #928, #929, #930, #931, #932, #933, #934, #935.
+**A5. The singles. Done, 2026-09-04.** #899 `mutate` on a primitive parameter dropped the
+write, and `mem.parameters` contradicted itself about whether it should: PM2's prose says the
+caller keeps the value and gets the write, one edge-case row said a Copy type is copied in.
+PM2 won — a mode that silently does nothing for `i32` and works for a one-field struct is the
+worst of both — and the row and the Copy-types section now say so. The rest of the singles are
+closed too: #903, #907, #919, #923, #924, #928, #929, #930, #931, #932, #933, #934, #935, and
+this pass's #974, #997, #1000, #1002, #1021, #1022.
 
 Exit condition per cluster: the probe file leaves `tests/known_divergences.txt` and rejoins
 the green gate.
+
+**Track A is finished.** `tests/known_divergences.txt` holds no entries as of 2026-09-04 —
+every clustered bug and every single is fixed on both backends, and the file's header records
+what each one turned out to be rather than just that it's gone. What's left of the coverage
+backlog is `tests/pending_features.txt`, which is roadmap rather than regression; see
+ROADMAP.md §3 for where each of those stands.
 
 ## Track B — #725, measured, and smaller than it looked
 

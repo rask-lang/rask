@@ -534,11 +534,24 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let param_names = rask_types::struct_type_param_names(struct_decl);
     let subst = build_subst(&param_names, type_args);
     let c_layout = has_c_layout(&struct_decl.attrs);
+    // A `@binary` struct's declared field types are wire specifiers
+    // (type.binary/F2), not type names — `u16be` says "16 bits, big-endian".
+    // The in-memory layout is the runtime type each one stands for; reading the
+    // specifier as a type name gave every field a pointer-sized slot and a
+    // warning per compile.
+    let is_binary = struct_decl.attrs.iter().any(|a| a == "binary");
 
     // Resolve types and compute sizes for all fields first
     let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool)> = struct_decl.fields.iter()
         .map(|field| {
-            let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
+            let (field_ty, from_param) = if is_binary {
+                match rask_types::binary_field_runtime_type(&field.ty) {
+                    Some(ty) => (ty, false),
+                    None => resolve_field_type(&field.ty, &subst),
+                }
+            } else {
+                resolve_field_type(&field.ty, &subst)
+            };
             let (field_size, field_align) = type_size_align(&field_ty, cache);
             (
                 field.name.clone(),

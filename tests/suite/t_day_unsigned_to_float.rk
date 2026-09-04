@@ -45,13 +45,38 @@ test "type.primitives — u8 converts to f32 as well" {
     assert (a as f32) == 200.0
 }
 
-// The explicit form takes the other code path and already gets it right, which
-// is the contrast that names the fix.
+// The explicit form takes the other code path, and it had a second bug of its
+// own: the round-trip check that decides "did this survive?" ran at the source's
+// own width, and Cranelift lowers a saturating conversion at i8 through its
+// 32-bit sequence — so `u8 200` converted to 200.0, came back 72, and was
+// reported as inexact (#974). The check runs at 64 bits now.
 test "type.primitives — the explicit conversion is correct either way" {
     let a: u8 = 200
     assert a.to<f64>()! == 200.0
     let b: u16 = 40000
     assert b.to<f64>()! == 40000.0
+    let c: u32 = 4000000000
+    assert c.to<f64>()! == 4000000000.0
+}
+
+// The same narrow-width lowering, in the other direction: `200.0.to<u8>()`
+// answered 72 and `40000.0.to<u16>()` answered 7232, both silently.
+test "type.primitives — a float converts down into a narrow integer" {
+    let x: f64 = 200.0
+    assert x.to<u8>()! == 200u8
+    let y: f64 = 40000.0
+    assert y.to<u16>()! == 40000u16
+    let z: f64 = 100.0
+    assert z.to<i8>()! == 100i8
+}
+
+// And still refuses what genuinely doesn't fit, which is the half that was
+// never broken and is easy to break while fixing the other.
+test "type.primitives — out of the target's range is still an error" {
+    let z: f64 = 300.0
+    assert !(z.to<u8>() is u8)
+    let n: f64 = -1.0
+    assert !(n.to<u8>() is u8)
 }
 
 func main() {}
