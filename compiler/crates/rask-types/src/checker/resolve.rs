@@ -1996,10 +1996,11 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        // A slice is a view and has no growth surface either, but it reaches
-        // this function as `Type::Slice` and never had the `Vec` fallback wired
-        // up, so only the fixed array needs rejecting here.
-        if matches!(array_ty, Type::Array { .. }) && Self::changes_length(method) {
+        // Neither a fixed array nor a slice has a growth surface: one has a
+        // length in its type, the other is a view into somebody else's storage.
+        if matches!(array_ty, Type::Array { .. } | Type::Slice(_))
+            && Self::changes_length(method)
+        {
             return Err(TypeError::FixedArrayGrowth {
                 method: method.to_string(),
                 array: array_ty.clone(),
@@ -2007,29 +2008,23 @@ impl TypeChecker {
             });
         }
 
-        if let Some(method_def) = rask_stdlib::lookup_method("Vec", method) {
-            let expected_params = method_def.params.len();
-            if args.len() != expected_params {
-                return Err(TypeError::ArityMismatch {
-                    expected: expected_params,
-                    found: args.len(),
-                    span,
-                });
-            }
-            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
-            return self.unify(ret, &ret_ty, span);
-        }
-
-        match method {
-            "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
-            "push" => self.unify(ret, &Type::Unit, span),
-            "pop" => {
-                let elem_ty = self.ctx.fresh_var();
-                self.unify(ret, &Type::option(elem_ty), span)
-            }
-            _ => Ok(false),
-        }
+        // An array reads like a `Vec` of its element type, so hand the whole
+        // question to the `Vec` resolver with that element as the type
+        // argument.
+        //
+        // It used to take the declared return type straight out of the stub
+        // instead, and a stub says `Iterator<T>` — with `T` the parameter name,
+        // nothing substituted. So `[1, 2, 3].iter()` produced an iterator whose
+        // element type was that dangling `T`, the closure parameter in the
+        // `.filter(|x| …)` after it had no type, and MIR gave up: "method `rem`
+        // on receiver of unresolved type". The same call on a `Vec<i64>` was
+        // always fine (#1026).
+        let elem = match array_ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            _ => self.ctx.fresh_var(),
+        };
+        let type_args = vec![GenericArg::Type(Box::new(elem))];
+        self.resolve_vec_method(&type_args, method, args, ret, span)
     }
 
     pub(super) fn resolve_file_method(

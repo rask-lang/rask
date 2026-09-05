@@ -2310,6 +2310,28 @@ impl ToDiagnostic for rask_types::TypeError {
                 diag
             }
             FixedArrayGrowth { method, array, span } => {
+                // A slice reaches here too. Rendering one through the array
+                // template printed `[[i32]; 0]` and called it a fixed array,
+                // which is two wrong things about a type the author can see.
+                if let rask_types::Type::Slice(elem) = array {
+                    return Diagnostic::error(format!(
+                        "`{}` doesn't exist on a slice",
+                        method
+                    ))
+                    .with_code("E0843")
+                    .with_primary(
+                        *span,
+                        format!("`[{}]` is a view into storage it doesn't own", elem),
+                    )
+                    .with_fix(format!(
+                        "copy it first: `mut v: Vec<{}> = s.to_vec()`, then grow `v`",
+                        elem
+                    ))
+                    .with_why(
+                        "a slice borrows somebody else's elements and has no say over how many there are — growing one would have to move the storage out from under its owner [std.collections/V1]"
+                            .to_string(),
+                    );
+                }
                 let (elem, len) = match array {
                     rask_types::Type::Array { elem, len } => (elem.to_string(), *len),
                     other => (other.to_string(), 0),

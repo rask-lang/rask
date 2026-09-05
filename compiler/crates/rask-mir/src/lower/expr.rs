@@ -2349,6 +2349,17 @@ impl<'a> MirLowerer<'a> {
                         return Ok((MirOperand::Local(result_local), MirType::String));
                     }
 
+                    // `Vec_slice` reads a `RaskVec` header, and a `[T; N]`
+                    // local is just its buffer — no header, no length word. So
+                    // `v[0..2]` on a fixed array handed the first element over
+                    // as the header: `s.len()` happened to answer 2 and every
+                    // read through the slice segfaulted. Same materialization
+                    // the array's borrowed `Vec` methods already get.
+                    let (obj_op, _obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
+                        Some(v) => v,
+                        None => (obj_op, obj_ty),
+                    };
+
                     // Vec slice: Vec_slice(v, start, end)
                     // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
