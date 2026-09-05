@@ -499,7 +499,7 @@ impl Default for ErrorCodeRegistry {
                     "let which = pick(n)          // a runtime string\nprintln(\"{b.(which)}\")       // error: not known at compile time\n// fix: name it, or fold it\nlet which = comptime { \"limit\" }\nprintln(\"{b.(which)}\")"),
                 "W0303" => ("comptime const could not be folded, so it runs at runtime", Type,
                     "The comptime evaluator doesn't cover the whole language yet, and this block reached a corner it can't model — a static method it has no implementation for, a value it can't represent. The program still works: the block is evaluated at startup instead. What's lost is the guarantee `comptime` was written for, so this is worth knowing about rather than silent. The warning names what stopped it.",
-                    "const CODES = comptime {\n    mut m = Map.new()          // warning: Map.new isn't supported at comptime\n    m.insert(\"alpha\", 1)\n    m.freeze()\n}"),
+                    "const SPRITES = comptime {\n    mut v = Vec.new()\n    v.push(load_atlas())        // warning: I/O isn't available at comptime\n    v.freeze()\n}"),
                 "W0302" => ("range step runs the wrong way, so the range is empty", Type,
                     "A positive step on a descending range, or a negative step on an ascending one, never reaches the far end — the loop body runs zero times (ctrl.ranges/SP1-SP2). That is legal and almost never intended, so it's a warning rather than an error. Match the step's sign to the range's direction, or swap the endpoints.",
                     "for i in (10..0).step(1) { … }   // warning: runs zero times\n// fix: descend\nfor i in (10..0).step(-1) { … }\n// or ascend\nfor i in (0..10).step(1) { … }"),

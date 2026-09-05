@@ -36,12 +36,8 @@ const FACTORIALS = comptime {
     v.freeze()
 }
 
-// This one doesn't actually fold: `Map.new` isn't supported at comptime, so
-// the block runs at runtime and `freeze` is handled there instead. Compiling
-// this file prints a W0303 saying so — the fallback used to be silent (#1072),
-// which is how a const could stop being a constant without anyone noticing.
-// It's here because `freeze` has to work on both paths, and this is the
-// runtime one.
+// A Map folds too now (#1075), so `freeze` on one goes through the same
+// identity as a Vec's.
 const CODES = comptime {
     mut m = Map.new()
     m.insert("alpha", 1)

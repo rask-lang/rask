@@ -46,7 +46,7 @@ Every expression has a stage: comptime (runs during compilation) or runtime (com
 | **CT55: Two stages** | Comptime code computes values and decides what runtime code exists. Runtime code is the residue left after all comptime evaluation |
 | **CT56: Comptime positions** | Comptime evaluation happens exactly at: `comptime` expressions, blocks, and variables; bodies of `comptime func`; `comptime` parameter arguments and array sizes; the iterable of `comptime for`; the condition of `comptime if`; the name in `value.(expr)` |
 | **CT57: Residual bodies** | The body of a `comptime for` and the branches of a `comptime if` in runtime position stay runtime code. Comptime control decides *which* runtime code exists (unrolls, selects) — it never evaluates that code. Calls inside these bodies are ordinary runtime calls; CT6 doesn't apply to them |
-| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, `str`, and structs, enums, or fixed arrays of these. A comptime `string` embeds as `str`. Unfrozen `Vec`/`Map` cannot cross (CT19) |
+| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, and `Vec`/`Map` of those. A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. Unfrozen `Vec`/`Map` cannot cross (CT19) |
 | **CT59: Discarded branches** | A branch discarded by a runtime-position `comptime if` is syntax-checked only — same treatment as an uninstantiated generic body (`type.generics/G2`). This is what lets platform-specific code compile on every target |
 
 <!-- test: skip -->

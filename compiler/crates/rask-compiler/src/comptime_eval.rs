@@ -135,6 +135,9 @@ pub fn evaluate_comptime_globals(
                         elem_count: val.elem_count(),
                         type_prefix: val.type_prefix().to_string(),
                         elem_type: val.elem_type_name().map(str::to_string),
+                        map_types: val
+                            .map_types()
+                            .map(|(k, v)| (k.to_string(), v.to_string())),
                     });
                 }
                 // Folded, but the value has no constant representation — a
@@ -395,7 +398,9 @@ fn try_eval_comptime_mir(
         elem_type: result.elem_type_name().map(str::to_string),
         bytes: result.serialize()?,
         // Miri hands back no strings — `MiriValue::serialize` says None for
-        // one, and the AST interpreter picks the block up instead.
+        // one, and the AST interpreter picks the block up instead. Same for a
+        // map: `MiriValue` has no map at all.
         string_relocs: Vec::new(),
+        map_types: None,
     })
 }

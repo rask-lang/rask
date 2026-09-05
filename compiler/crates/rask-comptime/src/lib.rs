@@ -351,6 +351,46 @@ pub struct SerializedConst {
     pub string_relocs: Vec<(usize, String)>,
 }
 
+/// The Rask type name of a scalar or string, spelled the way an annotation
+/// would be. `None` for anything with no constant form.
+fn scalar_type_name(v: &ComptimeValue) -> Option<&'static str> {
+    Some(match v {
+        ComptimeValue::String(_) => "string",
+        ComptimeValue::Bool(_) => "bool",
+        ComptimeValue::Char(_) => "char",
+        ComptimeValue::I8(_) => "i8",
+        ComptimeValue::I16(_) => "i16",
+        ComptimeValue::I32(_) => "i32",
+        ComptimeValue::I64(_) => "i64",
+        ComptimeValue::U8(_) => "u8",
+        ComptimeValue::U16(_) => "u16",
+        ComptimeValue::U32(_) => "u32",
+        ComptimeValue::U64(_) => "u64",
+        ComptimeValue::F32(_) => "f32",
+        ComptimeValue::F64(_) => "f64",
+        _ => return None,
+    })
+}
+
+/// Whether two comptime values are the same map key.
+///
+/// A key is a scalar or a string — the things a map can hash — so this is
+/// equality on those and "no" for anything else. Integer widths compare by
+/// value, which is what `m[1]` finding a key pushed as `1i64` needs.
+fn ct_key_eq(a: &ComptimeValue, b: &ComptimeValue) -> bool {
+    use ComptimeValue::*;
+    match (a, b) {
+        (String(x), String(y)) => x == y,
+        (Bool(x), Bool(y)) => x == y,
+        (Char(x), Char(y)) => x == y,
+        (F32(_) | F64(_), _) | (_, F32(_) | F64(_)) => false,
+        _ => match (a.as_i64(), b.as_i64()) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        },
+    }
+}
+
 /// A value that exists at compile time.
 #[derive(Debug, Clone)]
 pub enum ComptimeValue {
@@ -371,6 +411,13 @@ pub enum ComptimeValue {
     Char(char),
     String(String),
     Array(Vec<ComptimeValue>),
+    /// Entries in insertion order, not a hash table.
+    ///
+    /// The runtime's map seeds its bucket layout per process, so there is no
+    /// order for a fold to reproduce and no static table to emit. A list of
+    /// pairs is what the constant actually is: the entries, and lowering
+    /// inserts them (#1075).
+    Map(Vec<(ComptimeValue, ComptimeValue)>),
     Tuple(Vec<ComptimeValue>),
     Struct {
         name: String,
@@ -446,6 +493,7 @@ impl ComptimeValue {
             ComptimeValue::Char(_) => "char",
             ComptimeValue::String(_) => "String",
             ComptimeValue::Array(_) => "Array",
+            ComptimeValue::Map(_) => "Map",
             ComptimeValue::Tuple(_) => "Tuple",
             ComptimeValue::Struct { .. } => "Struct",
             ComptimeValue::Enum { .. } => "Enum",
@@ -487,6 +535,7 @@ impl ComptimeValue {
     pub fn type_prefix(&self) -> &'static str {
         match self {
             ComptimeValue::Array(_) => "Vec",
+            ComptimeValue::Map(_) => "Map",
             ComptimeValue::String(_) => "string",
             _ => self.type_name(),
         }
@@ -496,6 +545,7 @@ impl ComptimeValue {
     pub fn elem_count(&self) -> usize {
         match self {
             ComptimeValue::Array(elems) => elems.len(),
+            ComptimeValue::Map(entries) => entries.len(),
             _ => 0,
         }
     }
@@ -513,7 +563,7 @@ impl ComptimeValue {
         Some(match first {
             // `type_name` spells this one for error messages, not as a type.
             ComptimeValue::String(_) => "string",
-            ComptimeValue::Array(_) | ComptimeValue::Tuple(_)
+            ComptimeValue::Array(_) | ComptimeValue::Tuple(_) | ComptimeValue::Map(_)
             | ComptimeValue::Struct { .. } | ComptimeValue::Enum { .. }
             | ComptimeValue::Closure { .. } | ComptimeValue::Unit => return None,
             other => other.type_name(),
@@ -590,9 +640,43 @@ impl ComptimeValue {
             // *element* is different: it sits in a slot next to its neighbours,
             // so it has to be a real `RaskStr` (see `write_element`).
             ComptimeValue::String(s) => out.bytes.extend_from_slice(s.as_bytes()),
+            // Entries back to back, key then value, each in a slot of its own.
+            // Lowering reads them at the same offsets and inserts them into a
+            // real map: a hash table seeds its layout per process, so there is
+            // no static table to emit, only the entries to put in one (#1075).
+            ComptimeValue::Map(entries) => {
+                for (k, v) in entries {
+                    k.write_map_slot(&mut out)?;
+                    v.write_map_slot(&mut out)?;
+                }
+            }
             _ => out.bytes.extend(self.serialize_element()?),
         }
         Some(out)
+    }
+
+    /// The Rask type names of a map's keys and values, taken from the first
+    /// entry. `None` for an empty map, or one holding something with no
+    /// constant form.
+    pub fn map_types(&self) -> Option<(&'static str, &'static str)> {
+        let ComptimeValue::Map(entries) = self else { return None };
+        let (k, v) = entries.first()?;
+        Some((scalar_type_name(k)?, scalar_type_name(v)?))
+    }
+
+    /// One map slot: the value, then padding out to the next eight bytes.
+    ///
+    /// Every slot is a whole number of words, so a sixteen-byte string never
+    /// lands at a four-byte offset. Lowering computes the same offsets from the
+    /// type names in the metadata, so the two sides can't drift.
+    fn write_map_slot(&self, out: &mut SerializedConst) -> Option<()> {
+        scalar_type_name(self)?;
+        let start = out.bytes.len();
+        self.write_element(out)?;
+        let written = out.bytes.len() - start;
+        let padded = written.div_ceil(8) * 8;
+        out.bytes.resize(start + padded, 0);
+        Some(())
     }
 
     /// Append one array element to `out`.
@@ -1380,6 +1464,17 @@ impl ComptimeInterpreter {
             ExprKind::Index { object, index } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
+                // A map is keyed by whatever it's keyed by, so it reads the
+                // index as a key rather than as a position.
+                if let ComptimeValue::Map(entries) = &obj {
+                    return match entries.iter().find(|(k, _)| ct_key_eq(k, &idx)) {
+                        Some((_, v)) => Ok(ControlFlow::Normal(v.clone())),
+                        None => Err(ComptimeError::Panic(format!(
+                            "no entry for `{}` in the map",
+                            idx.to_display_string()
+                        ))),
+                    };
+                }
                 let idx_val = idx.as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
                     expected: "integer".to_string(),
                     found: idx.type_name().to_string(),
@@ -2393,6 +2488,7 @@ impl ComptimeInterpreter {
     ) -> ComptimeResult<ComptimeValue> {
         match (type_name, method) {
             ("Vec", "new") => Ok(ComptimeValue::Array(Vec::new())),
+            ("Map", "new") | ("Map", "new_string_keys") => Ok(ComptimeValue::Map(Vec::new())),
             ("Vec", "from") if args.len() == 1 => {
                 // Vec.from(array) — clone the array
                 match &args[0] {
@@ -2420,6 +2516,9 @@ impl ComptimeInterpreter {
             .ok_or_else(|| ComptimeError::UndefinedVariable(var_name.to_string()))?
             .clone();
 
+        if let ComptimeValue::Map(entries) = val {
+            return self.call_mutating_map_method(var_name, entries, method, args);
+        }
         let mut arr = match val {
             ComptimeValue::Array(arr) => arr,
             _ => return Err(ComptimeError::TypeMismatch {
@@ -2489,6 +2588,54 @@ impl ComptimeInterpreter {
 
         // Write back the modified array
         if !self.env.assign(var_name, ComptimeValue::Array(arr)) {
+            return Err(ComptimeError::UndefinedVariable(var_name.to_string()));
+        }
+        Ok(result)
+    }
+
+    /// `insert`, `remove` and `clear` on a comptime map.
+    ///
+    /// Entries stay in insertion order and a repeated key overwrites in place,
+    /// so the constant reads the way the block wrote it.
+    fn call_mutating_map_method(
+        &mut self,
+        var_name: &str,
+        mut entries: Vec<(ComptimeValue, ComptimeValue)>,
+        method: &str,
+        args: &[ComptimeValue],
+    ) -> ComptimeResult<ComptimeValue> {
+        let result = match method {
+            "insert" if args.len() == 2 => {
+                match entries.iter_mut().find(|(k, _)| ct_key_eq(k, &args[0])) {
+                    Some(slot) => {
+                        let old = std::mem::replace(&mut slot.1, args[1].clone());
+                        Self::ct_some(old)
+                    }
+                    None => {
+                        entries.push((args[0].clone(), args[1].clone()));
+                        Self::ct_none()
+                    }
+                }
+            }
+            "remove" if args.len() == 1 => {
+                match entries.iter().position(|(k, _)| ct_key_eq(k, &args[0])) {
+                    Some(i) => Self::ct_some(entries.remove(i).1),
+                    None => Self::ct_none(),
+                }
+            }
+            "clear" => {
+                entries.clear();
+                ComptimeValue::Unit
+            }
+            _ => {
+                return Err(ComptimeError::NotSupported(format!(
+                    "map method .{} with {} arguments",
+                    method,
+                    args.len()
+                )))
+            }
+        };
+        if !self.env.assign(var_name, ComptimeValue::Map(entries)) {
             return Err(ComptimeError::UndefinedVariable(var_name.to_string()));
         }
         Ok(result)
@@ -2689,11 +2836,35 @@ impl ComptimeInterpreter {
                 match obj {
                     ComptimeValue::String(s) => Ok(ComptimeValue::I64(s.len() as i64)),
                     ComptimeValue::Array(arr) => Ok(ComptimeValue::I64(arr.len() as i64)),
+                    ComptimeValue::Map(entries) => Ok(ComptimeValue::I64(entries.len() as i64)),
                     _ => Err(ComptimeError::TypeMismatch {
-                        expected: "String or Array".to_string(),
+                        expected: "String, Array or Map".to_string(),
                         found: obj.type_name().to_string(),
                     }),
                 }
+            }
+            // The read side of a comptime map. `is_empty` and `contains_key`
+            // are here rather than with the mutators because they don't write
+            // the binding back.
+            "get" | "contains_key" | "is_empty" if matches!(obj, ComptimeValue::Map(_)) => {
+                let ComptimeValue::Map(entries) = obj else { unreachable!() };
+                Ok(match method {
+                    "is_empty" => ComptimeValue::Bool(entries.is_empty()),
+                    _ => {
+                        let key = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
+                            expected: "a key".to_string(),
+                            found: "no argument".to_string(),
+                        })?;
+                        let hit = entries.iter().find(|(k, _)| ct_key_eq(k, key));
+                        match method {
+                            "contains_key" => ComptimeValue::Bool(hit.is_some()),
+                            _ => match hit {
+                                Some((_, v)) => Self::ct_some(v.clone()),
+                                None => Self::ct_none(),
+                            },
+                        }
+                    }
+                })
             }
             // `freeze` ends a `comptime` block to say the Vec it built is the
             // constant's value. Everything here is already a compile-time
@@ -2701,13 +2872,12 @@ impl ComptimeInterpreter {
             // declared `comptime func` with an empty body and nothing
             // implemented it, so every `const X = comptime { … v.freeze() }`
             // reached codegen as a call to `Vec_freeze` (#1069).
-            // A `Vec` is the only thing that reaches here: `Map.new` isn't
-            // supported at comptime, so a map-valued const never folds and its
-            // `freeze` is handled at runtime instead.
+            // A `Map` reaches here too, now that `Map.new` folds (#1075).
             "freeze" => match obj {
                 ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
+                ComptimeValue::Map(entries) => Ok(ComptimeValue::Map(entries.clone())),
                 _ => Err(ComptimeError::TypeMismatch {
-                    expected: "Vec".to_string(),
+                    expected: "Vec or Map".to_string(),
                     found: obj.type_name().to_string(),
                 }),
             },

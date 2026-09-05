@@ -211,6 +211,9 @@ pub struct ComptimeGlobalMeta {
     /// What the elements are, for a Vec/Array global. Without it, indexing one
     /// had no element type to resolve and lowering fell back to a guess.
     pub elem_type: Option<String>,
+    /// What a folded `Map`'s keys and values are. Lowering needs both to size
+    /// the slots in the blob and to build the map they go into.
+    pub map_types: Option<(String, String)>,
     /// `(byte offset, text)` for each element string too long to sit inline.
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.

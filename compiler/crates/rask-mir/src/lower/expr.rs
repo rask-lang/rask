@@ -1300,6 +1300,16 @@ impl<'a> MirLowerer<'a> {
                         }));
                         self.meta_mut(&name).type_prefix = Some("Vec".to_string());
                         Ok((MirOperand::Local(vec_local), MirType::I64))
+                    } else if meta.type_prefix == "Map" {
+                        // An empty map has no first entry to read the key and
+                        // value types off, and holds nothing that could tell
+                        // the difference, so any pair will do for one.
+                        let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
+                            ("i64".to_string(), "i64".to_string())
+                        });
+                        let entries = meta.elem_count;
+                        self.meta_mut(&name).type_prefix = Some("Map".to_string());
+                        self.build_comptime_map(global_local, entries, &k, &v)
                     } else {
                         // Scalar global: load value from the data pointer
                         let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
@@ -8198,6 +8208,152 @@ impl<'a> MirLowerer<'a> {
             dst: acc,
             rvalue: MirRValue::Use(MirOperand::Local(joined)),
         }));
+    }
+
+    /// A folded `Map` const: the entries out of the blob and into a real map.
+    ///
+    /// There is no static hash table to emit — the runtime seeds its bucket
+    /// layout per process, so the same entries land in different slots on every
+    /// run. What the constant holds is the entries, and this puts them in a map
+    /// at startup. That still saves the whole fold: no loop, no arithmetic, no
+    /// intermediate values, just N inserts of data that is already in the
+    /// binary (#1075).
+    ///
+    /// The blob is a pair per entry, key then value, each padded out to a whole
+    /// number of words so a sixteen-byte string never lands at a four-byte
+    /// offset. `rask_vec_from_static` reads it as a Vec of those pairs, which
+    /// is the same shape `Map_entries` hands back going the other way.
+    fn build_comptime_map(
+        &mut self,
+        blob: crate::LocalId,
+        entries: usize,
+        key_name: &str,
+        val_name: &str,
+    ) -> Result<TypedOperand, LoweringError> {
+        // What a slot holds: a whole `RaskStr`, or one machine word. The
+        // declared type decides what the *map* stores; this is only the blob.
+        let slot_ty = |name: &str| {
+            if name == "string" { MirType::String } else { MirType::I64 }
+        };
+        let key_slot = slot_ty(key_name);
+        let val_slot = slot_ty(val_name);
+        let pair_ty = MirType::Tuple(vec![key_slot.clone(), val_slot.clone()]);
+        let val_offset = key_slot.size();
+        let stride = val_offset + val_slot.size();
+
+        let key_ty = self.ctx.resolve_type_str(key_name);
+        let val_ty = self.ctx.resolve_type_str(val_name);
+        let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
+
+        let pairs = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(pairs),
+            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            args: vec![
+                MirOperand::Local(blob),
+                MirOperand::Constant(MirConst::Int(entries as i64)),
+                MirOperand::Constant(MirConst::Int(stride as i64)),
+                // The pairs are this loop's own and every string in them is a
+                // literal with a sentinel refcount, so there is nothing for the
+                // vector to retain or release.
+                MirOperand::Constant(MirConst::Int(crate::elem_strs::ELEM_NONE)),
+            ],
+        }));
+
+        // A string key hashes by its contents; anything else by its word.
+        let ctor = if key_name == "string" { "Map_new_string_keys" } else { "Map_new" };
+        let map = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(map),
+            func: FunctionRef::internal(ctor.to_string()),
+            args: vec![
+                MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
+                MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+                MirOperand::Constant(MirConst::Int(tag(&key_ty))),
+                MirOperand::Constant(MirConst::Int(tag(&val_ty))),
+            ],
+        }));
+
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+
+        let head = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        self.builder.switch_to_block(head);
+        let more = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: more,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(entries as i64)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(more),
+            then_block: body,
+            else_block: exit,
+        }));
+
+        self.builder.switch_to_block(body);
+        let pair = self.builder.alloc_temp(pair_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(pair),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
+        }));
+        let key_local = self.builder.alloc_temp(key_slot.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: key_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(pair),
+                field_index: 0,
+                byte_offset: Some(0),
+                access: FieldAccess::for_field(&key_slot, key_slot.size()),
+            },
+        }));
+        let val_local = self.builder.alloc_temp(val_slot.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: val_local,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(pair),
+                field_index: 1,
+                byte_offset: Some(val_offset),
+                access: FieldAccess::for_field(&val_slot, val_slot.size()),
+            },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Map_insert".to_string()),
+            args: vec![
+                MirOperand::Local(map),
+                MirOperand::Local(key_local),
+                MirOperand::Local(val_local),
+            ],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        self.builder.switch_to_block(exit);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Vec_free".to_string()),
+            args: vec![MirOperand::Local(pairs)],
+        }));
+        Ok((MirOperand::Local(map), MirType::I64))
     }
 
     /// `Map { "a": 1, "b": 2 }` — the entries, in sorted order.
