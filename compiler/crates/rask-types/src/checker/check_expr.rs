@@ -3144,6 +3144,21 @@ impl TypeChecker {
             }
         }
 
+        // `p.cast<U>()` says what the result points at, and it used to be
+        // thrown away: the result got a fresh type variable instead, so the
+        // `*p` after it had no pointee width to read at and took a whole word.
+        // `*p.cast<u8>()` on "abc" answered 6513249 — 0x636261, three bytes read
+        // as one number — while the annotated `let q: *u8 = p.cast<u8>()` was
+        // right, because the annotation supplied what the call already knew
+        // (#986). Recorded before either path runs, since both need it.
+        if method == "cast" {
+            if let Some(first) = type_args.and_then(|a| a.first()) {
+                if let Ok(target) = parse_type_string(first, &self.types) {
+                    self.ptr_cast_targets.insert(span, target);
+                }
+            }
+        }
+
         // Raw pointer methods — resolve directly instead of through HasMethod constraints
         let resolved_obj = self.ctx.apply(&obj_ty);
         if let Type::RawPtr(ref inner) = resolved_obj {
@@ -3295,7 +3310,7 @@ impl TypeChecker {
             }
         }
 
-        Some(self.raw_ptr_method_return(entry, inner))
+        Some(self.raw_ptr_method_return(entry, inner, span))
     }
 
     /// The type a pointer method hands back, given the pointee.
@@ -3303,6 +3318,7 @@ impl TypeChecker {
         &mut self,
         entry: &rask_stdlib::PtrMethod,
         inner: &Type,
+        span: Span,
     ) -> Type {
         use rask_stdlib::PtrSig;
         match entry.sig {
@@ -3311,7 +3327,12 @@ impl TypeChecker {
             PtrSig::Arith => Type::RawPtr(Box::new(inner.clone())),
             PtrSig::Predicate | PtrSig::PredicateInt | PtrSig::Comparison => Type::Bool,
             PtrSig::ToInt => Type::I64,
-            PtrSig::Cast => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            // The written `<U>` when there is one. A bare `p.cast()` still gets
+            // a variable, and the annotation on its binding settles it.
+            PtrSig::Cast => match self.ptr_cast_targets.get(&span).cloned() {
+                Some(target) => Type::RawPtr(Box::new(target)),
+                None => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            },
         }
     }
 

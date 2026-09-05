@@ -220,6 +220,13 @@ pub struct TypeChecker {
     /// solver resolves those later, long after `in_unsafe` has been unwound, so
     /// it reads the flag from here instead of from the walk.
     pub(super) ptr_method_sites: std::collections::HashMap<rask_ast::Span, bool>,
+    /// The `<U>` on a `p.cast<U>()`, by call site.
+    ///
+    /// Both halves of pointer-method checking need it — the eager path in
+    /// `check_expr` and the solver in `resolve` — and only the walk sees the
+    /// call's type arguments. Recorded here for the same reason
+    /// `ptr_method_sites` is: the solver runs later and has only the span.
+    pub(super) ptr_cast_targets: std::collections::HashMap<rask_ast::Span, Type>,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
     /// Whether we're inferring an expression in statement position (value discarded).
@@ -443,6 +450,7 @@ impl TypeChecker {
             in_unsafe: false,
             unsafe_ops: Vec::new(),
             ptr_method_sites: HashMap::new(),
+            ptr_cast_targets: HashMap::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             in_stmt_expr: false,

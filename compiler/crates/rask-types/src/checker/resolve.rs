@@ -4210,9 +4210,16 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             PtrSig::ToInt => self.unify(ret, &Type::I64, span),
+            // Same answer the eager path gives: the written `<U>` when the call
+            // had one, a fresh variable when it didn't (#986). The two paths
+            // disagreeing about a pointer method is how #696 got its "no method
+            // `offset` found for type `*u8`".
             PtrSig::Cast => {
-                let fresh = self.ctx.fresh_var();
-                self.unify(ret, &Type::RawPtr(Box::new(fresh)), span)
+                let target = match self.ptr_cast_targets.get(&span).cloned() {
+                    Some(t) => t,
+                    None => self.ctx.fresh_var(),
+                };
+                self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
     }

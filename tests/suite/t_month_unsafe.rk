@@ -171,12 +171,29 @@ test "mem.unsafe — cast retypes without moving" {
     let s = "abc"
     unsafe {
         let p = s.as_ptr()
-        // The annotation on `q` is load-bearing on native: written inline as
-        // `*p.cast<u8>()` this reads a whole word and answers 6513249 —
-        // "abc" three bytes at a time — because `cast` drops the `<u8>` the
-        // caller wrote (#986). The interpreter is right either way.
         let q: *u8 = p.cast<u8>()
         assert *q == 97
+    }
+}
+
+test "mem.unsafe — the `<U>` on a cast is what the read is wide as" {
+    // The annotation on the binding above used to be load-bearing: written
+    // inline, `*p.cast<u8>()` answered 6513249 on native — 0x636261, "abc" read
+    // three bytes at a time — because the `<u8>` never reached the type of the
+    // result, so the deref had no pointee width and took a whole word (#986).
+    //
+    // Three spellings of the same thing. The bare `p.cast()` takes its pointee
+    // from the annotation, which is the case that always worked.
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        assert *p.cast<u8>() == 97
+        let unbound = p.cast<u8>()
+        assert *unbound == 97
+        let bare: *u8 = p.cast()
+        assert *bare == 97
+        // The new width is what the step is in, too.
+        assert *p.cast<u8>().offset(1) == 98
     }
 }
 
