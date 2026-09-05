@@ -7326,3 +7326,48 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+/// An error in the user's program doesn't produce a pile of errors in the
+/// stdlib's.
+///
+/// `struct T` is rejected by PC3 — single uppercase letters are type
+/// parameters, so a concrete type with that name is unusable. That is the right
+/// error. What followed was six more, in `stdlib/num.rk`, about `Wrapping<T>`
+/// having no `wrapping_add`: the user's `T` had displaced that declaration's own
+/// type parameter. None of it is actionable, and it buried the diagnostics that
+/// were — with `struct T` present, the `?`-on-a-result error stopped being
+/// reported at all.
+#[test]
+fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
+    let out = check_output(
+        "struct T { n: i32 }\n\
+         func main() {\n\
+             let t = T { n: 1 }\n\
+             println(\"{t.n}\")\n\
+         }\n",
+    );
+    assert!(out.contains("E0357"), "PC3 is the error here:\n{out}");
+    assert!(
+        !out.contains("stdlib/"),
+        "nothing in stdlib/ is the user's to fix:\n{out}"
+    );
+
+    // And the user's other errors survive, which they didn't before.
+    let out = check_output(
+        "struct ParseError { detail: string }\n\
+         extend ParseError {\n\
+             public func message(self) -> string { return self.detail }\n\
+         }\n\
+         struct T { n: i32 }\n\
+         func might_fail() -> i32 or ParseError { return 42 }\n\
+         func main() {\n\
+             let x = might_fail()?\n\
+             println(\"{x}\")\n\
+         }\n",
+    );
+    assert!(out.contains("E0357"), "the single-letter name:\n{out}");
+    assert!(
+        out.contains("E0368"),
+        "and `?` on a result, which the stdlib cascade used to displace:\n{out}"
+    );
+}

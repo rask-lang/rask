@@ -384,6 +384,7 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
         diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
     }
 
+    drop_stdlib_cascade(&mut diags);
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -572,6 +573,7 @@ pub fn check_package(
         diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
 
+    drop_stdlib_cascade(&mut diags);
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -874,6 +876,34 @@ fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
             .with_help(format!("rename one of the two `{}` types", type_name)),
         _ => Diagnostic::error(e.to_string()),
     }
+}
+
+/// Drop diagnostics that land in stdlib source, when the user's own code has
+/// errors of its own.
+///
+/// A program that declares `struct T` is rejected by PC3 (E0357) — single
+/// uppercase letters are type parameters, so a concrete type with that name is
+/// unusable. That is the right error. What followed it was six more, in
+/// `stdlib/num.rk`, about `Wrapping<T>` having no `wrapping_add`: the user's
+/// `T` had taken the place of that declaration's own type parameter. Nothing
+/// there is actionable — the file isn't theirs, and it compiles fine on its own
+/// — so it is noise on top of the one error that matters.
+///
+/// Only when there is a user error to keep. A program whose *only* errors are
+/// in the stdlib has found a real stdlib bug, and hiding it would leave whoever
+/// is working on the stdlib with a failure and no message.
+fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
+    let user_error = diags.iter().any(|d| {
+        matches!(d.severity, Severity::Error)
+            && d.primary_span().is_some_and(|s| !rask_mono::is_stdlib_span(s))
+    });
+    if !user_error {
+        return;
+    }
+    diags.retain(|d| {
+        !matches!(d.severity, Severity::Error)
+            || d.primary_span().is_none_or(|s| !rask_mono::is_stdlib_span(s))
+    });
 }
 
 fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {

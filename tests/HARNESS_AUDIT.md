@@ -490,10 +490,16 @@ distinguish the two policies. The implementation does get it right — `2.5 → 
   now, registered with the rest, and the rule id moved to the `why`, which is
   where the rule gets said in words. A test walks the tree and fails on a
   fourth.
-- **One error degrades the next into a wrong one.** With an `E0357` (single-letter
-  type name) in the file, `?` applied to a `T or E` came out as "expected i32,
-  found bool" at the *use* site instead of `E0368`/ER12 at the `?`. Remove the
-  E0357 and the right diagnostic appears.
+- ~~**One error degrades the next into a wrong one.**~~ **Fixed.** With an
+  `E0357` (single-letter type name) in the file, the `?`-on-a-result error
+  stopped being reported. The mechanism turned out to be worse than it looked:
+  `struct T` displaces the stdlib's own type parameter, so it produced six more
+  errors in `stdlib/num.rk` about `Wrapping<T>` having no `wrapping_add` — a
+  file the user didn't write and can't fix, burying the one error they could
+  act on. Stdlib-span errors are dropped now when the user's own code has
+  errors of its own, and kept when it doesn't: a program whose *only* errors are
+  in the stdlib has found a real stdlib bug, and hiding that would leave whoever
+  works on it with a failure and no message.
 
 ---
 
