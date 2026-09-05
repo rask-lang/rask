@@ -2001,12 +2001,12 @@ impl<'a> MirLowerer<'a> {
             setup.inc_block, setup.idx,
         )?;
 
-        // The Vec the closure hands back is not freed, so one allocation per
-        // element leaks (#943). It can't simply be freed here: the closure
-        // doesn't have to have allocated it — `|k| lookup()` can hand back a
-        // Vec that outlives the call, and freeing that is a use-after-free
-        // rather than a leak fix. Doing better needs to know whether the result
-        // is owned, which this lowering has no way to ask today.
+        // This lowering emits no free for the Vec the closure hands back, and
+        // doesn't need to: the drop pass reaches it and frees it once per
+        // element, inside the loop. It could not be freed from here anyway —
+        // the closure doesn't have to have allocated it, and `|k| lookup()`
+        // handing back a Vec that outlives the call would make the free a
+        // use-after-free rather than a leak fix (#943).
         let (sub_op, _) = self.inline_closure_body(closure, elem_op, elem_ty)?;
         let sub_vec = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
