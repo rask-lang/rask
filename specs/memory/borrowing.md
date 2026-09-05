@@ -245,15 +245,6 @@ func main() {
 }
 ```
 
-> The three `with pool[…]` rejection blocks below are `skip`, not
-> `compile-fail`. `rask check` rejects all three at the ownership pass with
-> E0808 — the rules are enforced. The spec-test runner can't see that: it drives
-> the front end directly instead of going through `rask_compiler`, so it has no
-> stdlib and the blocks die at *typecheck* on `Pool` before the rule is reached.
-> They were `compile-fail` with no stage until now, which the old harness scored
-> as a pass, so this reads as a loss and isn't one — the same blocks were
-> verifying nothing before, they just didn't say so.
-
 **Pool exception (W2a–W2d):** Pool handles survive reallocation (`mem.pools/PL9`). The compiler exploits this — `insert` and `remove(other)` are allowed inside `with pool[h]` blocks. After each structural mutation, the compiler re-resolves the binding by re-validating the handle (~1ns generation check).
 
 <!-- test: skip -->
@@ -271,7 +262,7 @@ with pool[h] as entity {
 
 Removing the bound handle or clearing the pool remain compile errors:
 
-<!-- test: skip -->
+<!-- test: compile-fail: ownership -->
 ```rask
 import memory.Pool
 import memory.Handle
@@ -288,7 +279,7 @@ func main() {
 }
 ```
 
-<!-- test: skip -->
+<!-- test: compile-fail: ownership -->
 ```rask
 import memory.Pool
 import memory.Handle

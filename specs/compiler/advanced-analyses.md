@@ -36,24 +36,30 @@ Track handle validity states through control flow to catch stale handle access a
 | **TS7: Local analysis** | Typestate tracking is intraprocedural; function parameters default to Unknown |
 | **TS8: Error on Invalid access** | Accessing a handle in Invalid state is a compile error |
 
-<!-- test: skip -->
+<!-- test: compile-fail: unbuilt -->
 ```rask
-func bad_example() using Pool<Player> {
-    let h = pool.insert(player)  // h: Fresh
-    pool.remove(h)                     // h: Invalid
-    pool[h].health -= 10               // ERROR [comp.advanced/TS8]: h is Invalid
+import memory.Pool
+import memory.Handle
+
+struct Player { health: i64 }
+
+func bad_example() {
+    mut pool = Pool<Player>.new()
+    let h = pool.insert(Player { health: 100 })  // h: Fresh
+    pool.remove(h)                               // h: Invalid
+    pool[h].health -= 10                         // ERROR [comp.advanced/TS8]: h is Invalid
 }
 ```
 
-> **None of the TS rules below are implemented.** Checked against `rask check`
-> with a self-contained program: a handle used after `pool.remove(h)` compiles
-> clean, directly and through a must-alias. The three rejection blocks in this
-> section are `skip` — they were `compile-fail` with no stage, which the old
-> harness scored as a pass because the fragments name a `pool` that doesn't
-> exist, so they failed at *resolve* and never reached TS8. Marking them
-> `unbuilt` would be the honest record, but this runner drives the front end
-> directly and has no stdlib, so a self-contained `Pool` block dies at typecheck
-> before the analysis would run either way.
+> **None of the TS rules below are implemented.** The two rejection blocks in
+> this section are marked `unbuilt`: they compile today, and the harness holds
+> them to that, so the day TS8 lands the annotation is what fails and asks to be
+> corrected.
+>
+> They were `compile-fail` with no stage, which the old harness scored as a pass
+> — the fragments named a `pool` that doesn't exist, so they failed at *resolve*
+> and never reached TS8. Written out as programs the analysis could actually run
+> on, they compile clean, directly and through a must-alias.
 >
 > This matters beyond the section: `mem.ownership` promises use-after-free
 > through a stale handle is "caught at the access, never silent", and TS8 is
@@ -81,13 +87,19 @@ func bad_example() using Pool<Player> {
 | **MA4: Reassignment breaks alias** | `h = new_value` removes h from its alias set |
 | **MA5: Local scope only** | Alias tracking within function scope; cross-function aliasing conservatively Unknown |
 
-<!-- test: skip -->
+<!-- test: compile-fail: unbuilt -->
 ```rask
-func alias_example() using Pool<Player> {
-    let h1 = pool.insert(player)  // h1: Fresh, aliases: {}
-    let h2 = h1                       // h2: Fresh, aliases: {h1}
-    pool.remove(h1)                     // h1: Invalid, h2: Invalid (via alias)
-    pool[h2].health -= 10               // ERROR [comp.advanced/TS8]: h2 is Invalid
+import memory.Pool
+import memory.Handle
+
+struct Player { health: i64 }
+
+func alias_example() {
+    mut pool = Pool<Player>.new()
+    let h1 = pool.insert(Player { health: 100 })  // h1: Fresh, aliases: {}
+    let h2 = h1                                   // h2: Fresh, aliases: {h1}
+    pool.remove(h1)                               // h1 Invalid, h2 too (via alias)
+    pool[h2].health -= 10                         // ERROR [comp.advanced/TS8]
 }
 ```
 

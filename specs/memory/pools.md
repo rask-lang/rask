@@ -136,7 +136,7 @@ with pool[h] as entity {
 }
 ```
 
-<!-- test: skip -->
+<!-- test: compile-fail: ownership -->
 ```rask
 import memory.Pool
 import memory.Handle

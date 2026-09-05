@@ -252,12 +252,12 @@ run before just moves it into the leaking column.
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
 
-### 1.9 The spec-test runner isn't running the same compiler
+### 1.9 The spec-test runner isn't running the same compiler — FIXED
 
-`run_compile_fail_test` and its `compile` sibling drive the front end directly —
+`run_compile_fail_test` and its `compile` sibling drove the front end directly —
 lexer, parser, desugar, resolve, typecheck, ownership — rather than going
-through `rask_compiler` the way `rask check` does. So they have no stdlib, and a
-block dies wherever the missing stdlib takes it rather than where its rule is.
+through `rask_compiler` the way `rask check` does. So they had no stdlib, and a
+block died wherever the missing stdlib took it rather than where its rule is.
 
 The same program, both ways:
 
@@ -268,13 +268,21 @@ error[E0808]: cannot remove `pool` inside `with` block     # ownership pass, the
 spec-test runner: fails at typecheck — `Pool` is unknown
 ```
 
-Six blocks are `skip` for this reason (three `with pool[…]` rejections whose
+Six blocks were `skip` for this reason (three `with pool[…]` rejections whose
 rule *is* enforced, three typestate ones whose rule isn't). Marking them by
-stage would record the runner's limit as if it were the language's.
+stage would have recorded the runner's limit as if it were the language's.
 
-The fix is to route both expectations through the same entry point the CLI
-uses. Until then `compile` and `compile-fail` blocks can only test rules
-reachable without the stdlib.
+**The fix.** The runner's front end now calls `resolve_with_stdlib_and_cfg` and
+`typecheck_with_stdlib_lenient` — the same two the pipeline calls — so `Pool`,
+`Vec` and `File` exist and a block reaches the pass its rule lives in. It stays
+staged rather than calling `check_file`: that accumulates every pass's
+diagnostics into one list, and a `compile-fail` block names the pass that has to
+do the rejecting.
+
+Five of the six blocks came off `skip`. Three verify at `ownership` now; the two
+typestate ones are `compile-fail: unbuilt` — they compile, the harness holds
+them to that, and the day TS8 lands the annotation is what fails. 195 → 200
+executed spec blocks.
 
 ### 1.8 Ungated corners
 
