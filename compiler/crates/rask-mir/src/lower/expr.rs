@@ -1415,14 +1415,22 @@ impl<'a> MirLowerer<'a> {
                         };
                         return Ok((boxed, result_ty));
                     }
+                    // A float pointee reads as a float. `rask_ptr_read` hands
+                    // back an `int64_t`, so the bits arrived intact and got
+                    // printed as an integer — `*q` on a `*f64` holding 2.5 said
+                    // 4612811918334231000 (#1091). A struct pointee still takes
+                    // the arm below it.
+                    UnaryOp::Deref if self.float_pointee(operand).is_some() => {
+                        let want = self.float_pointee(operand).expect("just checked");
+                        return Ok(self.emit_float_load(operand_op, want));
+                    }
                     // `*p` on a raw pointer reads exactly the pointee's width.
                     // Plain MIR Deref always took a full word, so `*p` on a
                     // `*u8` handed back four bytes of whatever followed —
                     // "hello" read as 1869376613 instead of the byte 101 —
                     // while `p.read()` next to it was right, because only the
                     // method path passed the pointee size (#696). Both go
-                    // through the same call now. Floats and struct pointees
-                    // keep the old path: RawPtr_read hands back an integer.
+                    // through the same call now.
                     UnaryOp::Deref if self.integral_pointee_size(operand).is_some() => {
                         let elem_size = self.integral_pointee_size(operand).unwrap();
                         let result_local = self.builder.alloc_temp(MirType::I64);
@@ -6737,6 +6745,44 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// A float behind a raw pointer, and how wide the program wants it.
+    ///
+    /// The load itself is always a whole word: every float slot is eight bytes
+    /// (`Vec<f32>` widens on the way in), so an `f32` reads as an `f64` and
+    /// narrows after. Reading it as an integer is what made `*q` on a `*f64`
+    /// print 4612811918334231000 instead of 2.5.
+    fn float_pointee(&self, expr: &Expr) -> Option<MirType> {
+        match self.ctx.lookup_raw_type(expr.id)? {
+            rask_types::Type::RawPtr(inner) => match inner.as_ref() {
+                rask_types::Type::F64 => Some(MirType::F64),
+                rask_types::Type::F32 => Some(MirType::F32),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Load a float through a raw pointer: one word, narrowed if it's an `f32`.
+    fn emit_float_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        let word = self.builder.alloc_temp(MirType::F64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: word,
+            rvalue: MirRValue::Deref(ptr),
+        }));
+        if want == MirType::F32 {
+            let narrowed = self.builder.alloc_temp(MirType::F32);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: narrowed,
+                rvalue: MirRValue::Cast {
+                    value: MirOperand::Local(word),
+                    target_ty: MirType::F32,
+                },
+            }));
+            return (MirOperand::Local(narrowed), MirType::F32);
+        }
+        (MirOperand::Local(word), MirType::F64)
+    }
+
     /// Raw-pointer methods (`.read()`, `.write()`, `.add()`, `.cast()`, ...)
     /// dispatched to `RawPtr_*` C functions. Skips smart-pointer types.
     fn try_lower_raw_ptr_method(
@@ -6766,6 +6812,35 @@ impl<'a> MirLowerer<'a> {
             if method == "cast" {
                 // Cast is a no-op at runtime — pointer value unchanged
                 return Ok(Some((obj_op.clone(), MirType::Ptr)));
+            }
+            // `p.read()` / `p.write(v)` on a float go through the same typed
+            // load and store `*p` does — the C helpers move an `int64_t`, which
+            // is the wrong register class for a float (#1091).
+            if let Some(want) = self.float_pointee(object) {
+                if method == "read" && args.is_empty() {
+                    return Ok(Some(self.emit_float_load(obj_op.clone(), want)));
+                }
+                if method == "write" && args.len() == 1 {
+                    let (val, _) = self.lower_expr(&args[0].expr)?;
+                    let addr = match obj_op {
+                        MirOperand::Local(id) => *id,
+                        other => {
+                            let tmp = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Use(other.clone()),
+                            }));
+                            tmp
+                        }
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr,
+                        offset: 0,
+                        value: val,
+                        store_size: None,
+                    }));
+                    return Ok(Some((MirOperand::Constant(MirConst::Int(0)), MirType::Void)));
+                }
             }
             let ptr_method = entry
                 .filter(|e| e.c_symbol.is_some())
