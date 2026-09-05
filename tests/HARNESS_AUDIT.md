@@ -99,6 +99,25 @@ The blocks are fragments — `pool`, `vec`, `player`, `get_point` are undefined 
 so resolve rejects them before any analysis runs. Nothing in the tree tells us
 whether typestate analysis exists at all.
 
+**Resolved: the stage is required now.** `<!-- test: compile-fail -->` alone is
+rejected; it has to say which pass does the rejecting
+(`lex|parse|resolve|typecheck|ownership`), or `unbuilt` when the rule is
+specified and the check isn't written. Same idea as the registry claim-check in
+`differential.sh`: a red result is only honest while it is red for the stated
+reason. Writing the blocks out to reach their rule turned up two things the
+green ticks were hiding:
+
+- **`mem.borrowing`'s block-scoped borrow rule isn't enforced.** Written in full,
+  `let x = { let p = get_point(); p.x }` compiles clean. Recorded as
+  `compile-fail: unbuilt`, so it flips loudly if the check ever lands.
+- **`comp.advanced`'s handle typestate (TS8) isn't enforced.** A handle used
+  after `pool.remove(h)` compiles clean, directly and through a must-alias.
+  `mem.ownership` promises use-after-free through a stale handle is "caught at
+  the access, never silent"; TS8 is where that would be caught.
+
+W2/W2c/W2d *are* enforced (E0808 at the ownership pass), verified against the
+real compiler — see 1.9 for why the spec runner still can't see it.
+
 ### 1.4 Only 8 spec code blocks in the whole tree are executed
 
 `specs/` holds 1115 ` ```rask ` blocks. Unannotated blocks are skipped by
@@ -202,6 +221,30 @@ run before just moves it into the leaking column.
 
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
+
+### 1.9 The spec-test runner isn't running the same compiler
+
+`run_compile_fail_test` and its `compile` sibling drive the front end directly —
+lexer, parser, desugar, resolve, typecheck, ownership — rather than going
+through `rask_compiler` the way `rask check` does. So they have no stdlib, and a
+block dies wherever the missing stdlib takes it rather than where its rule is.
+
+The same program, both ways:
+
+```
+$ rask check bare.rk
+error[E0808]: cannot remove `pool` inside `with` block     # ownership pass, the rule
+
+spec-test runner: fails at typecheck — `Pool` is unknown
+```
+
+Six blocks are `skip` for this reason (three `with pool[…]` rejections whose
+rule *is* enforced, three typestate ones whose rule isn't). Marking them by
+stage would record the runner's limit as if it were the language's.
+
+The fix is to route both expectations through the same entry point the CLI
+uses. Until then `compile` and `compile-fail` blocks can only test rules
+reachable without the stdlib.
 
 ### 1.8 Ungated corners
 

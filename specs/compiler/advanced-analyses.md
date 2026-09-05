@@ -36,7 +36,7 @@ Track handle validity states through control flow to catch stale handle access a
 | **TS7: Local analysis** | Typestate tracking is intraprocedural; function parameters default to Unknown |
 | **TS8: Error on Invalid access** | Accessing a handle in Invalid state is a compile error |
 
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
 func bad_example() using Pool<Player> {
     let h = pool.insert(player)  // h: Fresh
@@ -44,6 +44,20 @@ func bad_example() using Pool<Player> {
     pool[h].health -= 10               // ERROR [comp.advanced/TS8]: h is Invalid
 }
 ```
+
+> **None of the TS rules below are implemented.** Checked against `rask check`
+> with a self-contained program: a handle used after `pool.remove(h)` compiles
+> clean, directly and through a must-alias. The three rejection blocks in this
+> section are `skip` — they were `compile-fail` with no stage, which the old
+> harness scored as a pass because the fragments name a `pool` that doesn't
+> exist, so they failed at *resolve* and never reached TS8. Marking them
+> `unbuilt` would be the honest record, but this runner drives the front end
+> directly and has no stdlib, so a self-contained `Pool` block dies at typecheck
+> before the analysis would run either way.
+>
+> This matters beyond the section: `mem.ownership` promises use-after-free
+> through a stale handle is "caught at the access, never silent", and TS8 is
+> where that gets caught.
 
 ### State Transitions
 
@@ -67,7 +81,7 @@ func bad_example() using Pool<Player> {
 | **MA4: Reassignment breaks alias** | `h = new_value` removes h from its alias set |
 | **MA5: Local scope only** | Alias tracking within function scope; cross-function aliasing conservatively Unknown |
 
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
 func alias_example() using Pool<Player> {
     let h1 = pool.insert(player)  // h1: Fresh, aliases: {}
@@ -169,7 +183,7 @@ Formalize Rask's `using Pool<T>` context clauses as a lightweight effect system 
 | **EF5: Frozen iteration** | In frozen contexts, the compiler may eliminate generation checks during iteration (see `comp.gen-coalesce/FZ1`). `h.field` auto-resolution uses standard generation checks |
 | **EF6: Effect polymorphism** | Functions can be effect-polymorphic: work with both frozen and mutable pools |
 
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
 // Frozen context — structural mutations forbidden
 func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {

@@ -136,10 +136,19 @@ with pool[h] as entity {
 }
 ```
 
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
-with pool[h] as entity {
-    pool.remove(h)    // ERROR: removing the bound element (W2c)
+import memory.Pool
+import memory.Handle
+
+struct Entity { health: i64 }
+
+func main() {
+    mut pool = Pool<Entity>.new()
+    let h = pool.insert(Entity { health: 100 })
+    with pool[h] as entity {
+        pool.remove(h)    // ERROR: removing the bound element (W2c)
+    }
 }
 ```
 
