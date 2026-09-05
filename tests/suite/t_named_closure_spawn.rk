@@ -13,9 +13,13 @@
 // are followed to a fixpoint now, so a chain of them resolves to the one
 // `ClosureCreate` at the root.
 //
-// KNOWN GAP: a *named* closure whose result doesn't fit a word still crashes —
-// the boxing wrapper is built only for a closure written inline at the spawn.
-// See #1094. Every return type here is a scalar for that reason.
+// A result too wide for the task's one word is the second half (#1094). A task
+// hands back one word, so a wider result travels in a box the runtime owns —
+// and that wrapper is built while the closure is lowered, which for a named one
+// happens at its binding, before the `spawn` that reveals why it matters. The
+// function's body is scanned for `spawn(<name>)` up front so the binding knows.
+// Without it, `spawn` got a stack address where a box was expected and the
+// program died on the free.
 
 test "a named closure, spawned" {
     using Multitasking {
@@ -55,4 +59,46 @@ test "several named closures in one block" {
 test "a closure that never escapes still gets the stack" {
     let local = || { return 3 }
     assert local() == 3
+}
+
+struct Report {
+    lines: i64
+    name: string
+}
+
+test "a named closure whose result is wider than a word" {
+    using Multitasking {
+        let g = own || { return "text from a task" }
+        let t = spawn(g)
+        assert (t.join() catch _ => "?") == "text from a task"
+    }
+}
+
+test "and one whose result is a struct" {
+    using Multitasking {
+        let h = own || { return Report { lines: 3, name: "r" } }
+        let t = spawn(h)
+        let r = t.join() catch _ => Report { lines: 0, name: "?" }
+        assert r.lines == 3
+        assert r.name == "r"
+    }
+}
+
+// The inline form decides the same thing from the call rather than from a scan,
+// so both paths have to reach it — and a scalar must still not be boxed.
+test "the inline form boxes a wide result too" {
+    using Multitasking {
+        let t = spawn(|| { return "inline and wide" })
+        assert (t.join() catch _ => "?") == "inline and wide"
+        let n = spawn(|| { return 7i64 })
+        assert (n.join() catch _ => 0i64) == 7i64
+    }
+}
+
+test "a named scalar closure is still unboxed" {
+    using Multitasking {
+        let s = own || { return 42i64 }
+        let t = spawn(s)
+        assert (t.join() catch _ => 0i64) == 42i64
+    }
 }

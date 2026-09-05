@@ -1758,6 +1758,14 @@ impl<'a> MirLowerer<'a> {
                     arg_mir_types.push(mir_ty);
                 }
                 if spawns_closure {
+                    // `spawn(g)` on a name: the closure was lowered at its
+                    // binding, which is where the boxing decision was made and
+                    // recorded (#1094).
+                    if let Some(ExprKind::Ident(n)) = args.first().map(|a| &a.expr.kind) {
+                        if let Some(boxed) = self.spawn_boxed_bindings.get(n) {
+                            spawn_boxes_result = *boxed;
+                        }
+                    }
                     arg_operands.push(MirOperand::Constant(
                         crate::operand::MirConst::Int(i64::from(spawn_boxes_result)),
                     ));
@@ -5186,7 +5194,15 @@ impl<'a> MirLowerer<'a> {
                             }
                             if spawns_closure {
                                 // Same handover as the free-function `spawn`:
-                                // the runtime frees the box when no join comes.
+                                // the runtime frees the box when no join comes,
+                                // and a name was lowered at its binding (#1094).
+                                if let Some(ExprKind::Ident(n)) =
+                                    args.first().map(|a| &a.expr.kind)
+                                {
+                                    if let Some(boxed) = self.spawn_boxed_bindings.get(n) {
+                                        method_spawn_boxes = *boxed;
+                                    }
+                                }
                                 arg_operands.push(MirOperand::Constant(
                                     crate::operand::MirConst::Int(i64::from(method_spawn_boxes)),
                                 ));

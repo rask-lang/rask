@@ -1443,7 +1443,23 @@ impl<'a> MirLowerer<'a> {
         // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
         // point where "the value in this local is a heap box" is knowable (#739).
         let init_may_be_box = self.expr_yields_owned_box(init);
-        let (init_op, inferred_ty) = self.lower_expr(init)?;
+        // A closure this function later hands to `spawn` is lowered as one, here
+        // — the wrapper that boxes a result too wide for the task's one word is
+        // built while the closure is lowered, and the `spawn` comes later (#1094).
+        let spawned = is_closure && self.spawned_closure_names.contains(name);
+        let (init_op, inferred_ty) = if spawned {
+            let ExprKind::Closure { params, ret_ty, body, is_own } = &init.kind else {
+                unreachable!("checked by `is_closure` above")
+            };
+            let lowered = self.lower_closure_expecting(
+                params, ret_ty.as_deref(), body, *is_own || spawned, &[],
+                Some(init.id), true,
+            )?;
+            self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
+            lowered
+        } else {
+            self.lower_expr(init)?
+        };
 
         // `let p = own Big { … }` takes over the box rather than copying out of
         // it. A struct-typed destination copies its bytes on assignment, which is
