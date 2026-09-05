@@ -130,6 +130,12 @@ pub struct OwnershipChecker<'a> {
     /// say — two `Rack<Node>` parameters give links of the same type — so the
     /// origin is carried from wherever the link was derived.
     link_rack_root: HashMap<String, String>,
+    /// A container that has had a link put into it, and which rack that link
+    /// came from. E0379 walks *expressions* to find a link leaving, and a
+    /// container is neither a link nor built where the link went in — `v.push(n)`
+    /// several statements before `return v` (#941). The rack rides on the
+    /// container name instead, so the same escape test covers it.
+    container_link_rack: HashMap<String, String>,
     /// Rack bindings this body may write nodes through: `mut` locals, and
     /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
     /// a permission of its own, so this is what a node write is checked against.
@@ -207,6 +213,7 @@ impl<'a> OwnershipChecker<'a> {
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
             link_rack_root: HashMap::new(),
+            container_link_rack: HashMap::new(),
             writable_racks: HashSet::new(),
             link_params: HashSet::new(),
             writable_links: HashSet::new(),
@@ -496,6 +503,7 @@ impl<'a> OwnershipChecker<'a> {
         self.exit_reported.clear();
         self.deleting_params.clear();
         self.link_rack_root.clear();
+        self.container_link_rack.clear();
         self.writable_racks.clear();
         self.link_params.clear();
         self.writable_links.clear();
@@ -1368,6 +1376,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
+                self.note_link_into_container(object, args);
                 // #296/PM3: consume arguments bound to `take` parameters of user
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
@@ -2325,6 +2334,48 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// A link handed to a container keeps the container alive no longer than its
+    /// rack. `v.push(n)`, `m.insert(k, n)`, `v[i] = n` — anything that puts a
+    /// link somewhere the container outlives the statement.
+    fn note_link_into_container(&mut self, object: &Expr, args: &[rask_ast::expr::CallArg]) {
+        let Some(root) = Self::extract_root_and_fields(object).0 else { return };
+        for arg in args {
+            if let Some(rack) = self.link_bearing_root(&arg.expr) {
+                self.container_link_rack.insert(root.clone(), rack);
+                return;
+            }
+        }
+    }
+
+    /// The rack behind a value that is, or contains, a link. Walks the literal
+    /// forms the same way the escape check does, so `[n]` and `(n, 7)` count.
+    fn link_bearing_root(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                elems.iter().find_map(|e| self.link_bearing_root(e))
+            }
+            ExprKind::StructLit { fields, spread, .. } => fields
+                .iter()
+                .find_map(|f| self.link_bearing_root(&f.value))
+                .or_else(|| spread.as_ref().and_then(|sp| self.link_bearing_root(sp))),
+            ExprKind::Ident(name) => self
+                .container_link_rack
+                .get(name)
+                .cloned()
+                .or_else(|| self.link_carrying_expr_root(expr)),
+            _ => self.link_carrying_expr_root(expr),
+        }
+    }
+
+    /// The rack behind an expression whose *own* type is a link.
+    fn link_carrying_expr_root(&self, expr: &Expr) -> Option<String> {
+        let ty = self.program.node_types.get(&expr.id)?;
+        if !self.is_link_type(ty) {
+            return None;
+        }
+        self.link_root_of_expr(expr)
+    }
+
     /// Whether this expression is reached from a link this body may write through.
     fn expr_root_is_writable_link(&self, expr: &Expr) -> bool {
         match &expr.kind {
@@ -2438,11 +2489,25 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => {}
         }
-        let Some(ty) = self.program.node_types.get(&expr.id) else { return };
-        if !self.is_link_type(ty) {
-            return;
-        }
-        let Some(rack) = self.link_root_of_expr(expr) else { return };
+        // A container that had a link put into it escapes with the link inside
+        // it. Asked first, because the container's own type isn't a link and the
+        // walk below would stop at that (#941).
+        let via_container = match &expr.kind {
+            ExprKind::Ident(name) => self.container_link_rack.get(name).cloned(),
+            _ => None,
+        };
+        let carried = via_container.is_some();
+        let rack = match via_container {
+            Some(rack) => rack,
+            None => {
+                let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+                if !self.is_link_type(ty) {
+                    return;
+                }
+                let Some(rack) = self.link_root_of_expr(expr) else { return };
+                rack
+            }
+        };
         // A parameter rack outlives this body, so nothing can escape it here.
         if self.param_type_strings.contains_key(&rack) {
             return;
@@ -2463,7 +2528,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => rack.clone(),
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via },
+            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via, carried },
             span,
         });
     }

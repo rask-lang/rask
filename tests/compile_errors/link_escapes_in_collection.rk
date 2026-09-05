@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a link can't leave its rack inside a container either
+// ERROR: `v` holds links that would outlive the rack they point into
+//
+// E0379 stopped a link leaving through a return, an assignment to a
+// longer-lived name, or an aggregate literal — but not inside a collection
+// (#941). `s` dies at the return and every link in `v` dangles.
+//
+// The check walks *expressions* to find a link leaving, and `return v` is
+// neither a link nor the place the link went in: that was `v.push(n)`, several
+// statements earlier. The rack rides on the container name now, so the same
+// escape test covers it.
+//
+// The interpreter can't demonstrate the dangle — its nodes are refcounted in
+// the host, so the reads succeed and print. Native is where it bit.
+//
+// The legal shapes are in `tests/suite/t_link_in_collection.rk`.
+
+import memory.Rack
+import memory.Link
+
+struct Node {
+    value: i64
+}
+
+func smuggle() -> Vec<Link<Node>> {
+    mut s: Rack<Node> = Rack.new()
+    let n = s.insert(Node { value: 5 })
+    mut v: Vec<Link<Node>> = Vec.new()
+    v.push(n)
+    return v
+}
+
+func main() {
+    let v = smuggle()
+    println("{v.len()}")
+}

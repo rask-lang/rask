@@ -2780,22 +2780,30 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
-            LinkOutlivesRack { link, rack, via } => {
+            LinkOutlivesRack { link, rack, via, carried } => {
+                let holds = if *carried { "holds links into" } else { "lives in" };
                 let (primary, fix) = match via {
                     rask_ownership::LinkEscape::Return => (
                         format!(
-                            "`{}` lives in `{}`, and `{}` dies when this function returns",
-                            link, rack, rack
+                            "`{}` {} `{}`, and `{}` dies when this function returns",
+                            link, holds, rack, rack
                         ),
-                        format!(
-                            "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
-                            rack
-                        ),
+                        if *carried {
+                            format!(
+                                "return the nodes' data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Vec<Link<…>>`",
+                                rack
+                            )
+                        } else {
+                            format!(
+                                "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
+                                rack
+                            )
+                        },
                     ),
                     rask_ownership::LinkEscape::Assignment { target } => (
                         format!(
-                            "`{}` outlives `{}`, and the node `{}` points at dies with it",
-                            target, rack, link
+                            "`{}` outlives `{}`, and the node{} `{}` points at dies with it",
+                            target, rack, if *carried { "s" } else { "" }, link
                         ),
                         format!(
                             "move `{}` out to where `{}` lives, or copy the fields you need out of the node before the scope ends",
@@ -2803,7 +2811,12 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         ),
                     ),
                 };
-                Diagnostic::error(format!("`{}` would outlive the rack it points into", link))
+                let headline = if *carried {
+                    format!("`{}` holds links that would outlive the rack they point into", link)
+                } else {
+                    format!("`{}` would outlive the rack it points into", link)
+                };
+                Diagnostic::error(headline)
                     .with_code("E0379")
                     .with_primary(self.span, primary)
                     .with_fix(fix)

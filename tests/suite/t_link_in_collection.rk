@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Links held in a container, in the two shapes that are fine: the rack is a
+// parameter, so it outlives the call; or the container never leaves the scope
+// the rack lives in.
+//
+// Returning a container of links into a *local* rack is the one that dangles,
+// and it used to type-check (#941) — `tests/compile_errors/
+// link_escapes_in_collection.rk` holds that.
+
+import memory.Rack
+import memory.Link
+
+struct Node {
+    value: i64
+}
+
+// The rack belongs to the caller, so the links outlive this body.
+func collect_into(mutate s: Rack<Node>) -> Vec<Link<Node>> {
+    mut v: Vec<Link<Node>> = Vec.new()
+    v.push(s.insert(Node { value: 1 }))
+    v.push(s.insert(Node { value: 2 }))
+    return v
+}
+
+test "a container of links into a caller's rack" {
+    mut s: Rack<Node> = Rack.new()
+    let v = collect_into(mutate s)
+    assert v.len() == 2
+    assert v[0].value == 1
+    assert v[1].value == 2
+}
+
+test "a container that stays inside the rack's scope" {
+    mut s: Rack<Node> = Rack.new()
+    mut v: Vec<Link<Node>> = Vec.new()
+    v.push(s.insert(Node { value: 5 }))
+    v.push(s.insert(Node { value: 7 }))
+    mut total = 0
+    for l in v {
+        total = total + l.value
+    }
+    assert total == 12
+}
+
+test "the rack's own listing is a container of links too" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(Node { value: 3 })
+    assert s.nodes().len() == 1
+    assert a.value == 3
+}

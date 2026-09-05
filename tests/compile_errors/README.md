@@ -108,6 +108,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
 | [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |
 | [context_unnamed_structural.rk](context_unnamed_structural.rk) | Unnamed context used as binding |
+| [link_escapes_in_collection.rk](link_escapes_in_collection.rk) | A `Vec<Link<T>>` returned out of the scope that owns its rack (E0379, #941) — the expression walk saw neither a link nor the push that put one in |
 | [package_state_unsynchronized.rk](package_state_unsynchronized.rk) | Writing a bare `const Vec`/`const Map` (E0856, structure.modules/PS2, #944) — a data race out of safe code that lost updates and corrupted the heap |
 | [inline_sync_unchained.rk](inline_sync_unchained.rk) | An inline `.read()` used as an operand rather than chained (E0339, conc.sync/R5, #958) — it printed 49 natively and 42 on the interpreter for a box holding 41 |
 | [catch_binding_type.rk](catch_binding_type.rk) | The value `catch e =>` binds, checked against an annotation (E0308, #950) — it used to satisfy any type, which is how `grep_clone` lost every error message it printed |
