@@ -974,7 +974,7 @@ impl<'a> MirContext<'a> {
                         // is present, so the frame that writes one and the frame
                         // that reads it have to agree, and this path reading the
                         // written order while the checker read a sorted one is
-                        // how `AErr`'s slot came back as a `BErr` (#1102).
+                        // how `AErr`'s slot came back as a `BErr` (#1103).
                         parts.sort_by(|a, b| a.trim().cmp(b.trim()));
                         return MirType::Union(
                             parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()

@@ -202,7 +202,7 @@ impl Type {
     /// `Named(id)` after, and those print differently, so a union built from a
     /// signature string and one built from resolved types could order the same
     /// two members opposite ways. The reader then read `AErr`'s slot as `BErr`
-    /// (#1102).
+    /// (#1103).
     pub fn union_named(types: Vec<Type>, name_of: impl Fn(TypeId) -> Option<String>) -> Type {
         let mut flat = Vec::new();
         for ty in types {
