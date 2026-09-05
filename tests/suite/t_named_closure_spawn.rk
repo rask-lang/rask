@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure bound to a name and spawned afterwards. `free(): invalid pointer`,
+// natively, for any return type (#1008):
+//
+//     let f = own || { return 5 }
+//     let b = spawn(f)
+//
+// `ClosureCreate` writes one local and the escape analysis matched on exactly
+// that one. A closure used by name reaches its use through a copy — `_12 =
+// closure(…)` then `_13 = _12` — so `spawn(_13)` was invisible, the closure was
+// downgraded to a stack allocation, and `spawn` freed a stack address. Copies
+// are followed to a fixpoint now, so a chain of them resolves to the one
+// `ClosureCreate` at the root.
+//
+// KNOWN GAP: a *named* closure whose result doesn't fit a word still crashes —
+// the boxing wrapper is built only for a closure written inline at the spawn.
+// See #1094. Every return type here is a scalar for that reason.
+
+test "a named closure, spawned" {
+    using Multitasking {
+        let f = own || { return 5 }
+        let b = spawn(f)
+        assert (b.join() catch _ => -1) == 5
+    }
+}
+
+test "through a chain of copies" {
+    using Multitasking {
+        let g = own || { return 7 }
+        let h = g
+        let t = spawn(h)
+        assert (t.join() catch _ => -1) == 7
+    }
+}
+
+test "the inline form still works" {
+    using Multitasking {
+        let c = spawn(|| { return 9 })
+        assert (c.join() catch _ => -1) == 9
+    }
+}
+
+test "several named closures in one block" {
+    using Multitasking {
+        let a = own || { return 1 }
+        let b = own || { return 2 }
+        let ha = spawn(a)
+        let hb = spawn(b)
+        let sum = (ha.join() catch _ => 0) + (hb.join() catch _ => 0)
+        assert sum == 3
+    }
+}
+
+test "a closure that never escapes still gets the stack" {
+    let local = || { return 3 }
+    assert local() == 3
+}

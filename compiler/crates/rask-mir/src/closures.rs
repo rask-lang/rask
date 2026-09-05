@@ -137,12 +137,55 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
 ///
 /// A closure passed to a known callee whose corresponding parameter doesn't
 /// escape is NOT escaping — the callee merely borrows it.
+/// Every local that names a closure, mapped to the closure it names.
+///
+/// `ClosureCreate` writes one local, and the analyses below matched on exactly
+/// that one. A closure bound to a name and used later reaches its use through a
+/// copy — `let f = own || …` lowers to `_12 = closure(…)` then `_13 = _12`, and
+/// `spawn(_13)` was invisible to the escape check. The closure was downgraded to
+/// a stack allocation and `spawn` then freed a stack address: `free(): invalid
+/// pointer` (#1008).
+///
+/// Copies are followed to a fixpoint, so a chain of them resolves to the one
+/// `ClosureCreate` at the root.
+fn closure_alias_roots(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+) -> HashMap<LocalId, LocalId> {
+    let mut roots: HashMap<LocalId, LocalId> = closure_locals.keys().map(|id| (*id, *id)).collect();
+    // A copy can precede its source in block order once SSA has renamed things,
+    // so go round until nothing new is learned.
+    loop {
+        let mut grew = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } =
+                    &stmt.kind
+                {
+                    if roots.contains_key(dst) {
+                        continue;
+                    }
+                    if let Some(root) = roots.get(src).copied() {
+                        roots.insert(*dst, root);
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    roots
+}
+
 fn find_escaping_closures(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
     callee_escapes: &HashMap<String, Vec<bool>>,
 ) -> HashSet<LocalId> {
     let mut escaping = HashSet::new();
+    let roots = closure_alias_roots(func, closure_locals);
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -150,22 +193,22 @@ fn find_escaping_closures(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if closure_locals.contains_key(&id) {
+                            if let Some(&root) = roots.get(&id) {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    escaping.insert(id);
+                                    escaping.insert(root);
                                 }
                             }
                         }
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
-                    if closure_locals.contains_key(id) {
-                        escaping.insert(*id);
+                    if let Some(&root) = roots.get(id) {
+                        escaping.insert(root);
                     }
                 }
                 _ => {}
@@ -175,8 +218,8 @@ fn find_escaping_closures(
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                if closure_locals.contains_key(id) {
-                    escaping.insert(*id);
+                if let Some(&root) = roots.get(id) {
+                    escaping.insert(root);
                 }
             }
             _ => {}
@@ -201,6 +244,7 @@ fn find_transferred_closures(
 ) -> HashSet<LocalId> {
     let mut passed_or_stored = HashSet::new();
     let mut used_locally = HashSet::new();
+    let roots = closure_alias_roots(func, closure_locals);
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -208,27 +252,27 @@ fn find_transferred_closures(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if closure_locals.contains_key(&id) {
+                            if let Some(&root) = roots.get(&id) {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    passed_or_stored.insert(id);
+                                    passed_or_stored.insert(root);
                                 }
                             }
                         }
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
-                    if closure_locals.contains_key(id) {
-                        passed_or_stored.insert(*id);
+                    if let Some(&root) = roots.get(id) {
+                        passed_or_stored.insert(root);
                     }
                 }
                 MirStmtKind::ClosureCall { closure, .. } => {
-                    if closure_locals.contains_key(closure) {
-                        used_locally.insert(*closure);
+                    if let Some(&root) = roots.get(closure) {
+                        used_locally.insert(root);
                     }
                 }
                 _ => {}
