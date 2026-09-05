@@ -4046,6 +4046,29 @@ fn panic_ensure_scalar_snapshot_runs() {
     }
 }
 
+/// #1011: an ensure reading a scalar the function writes *again* runs on unwind,
+/// and reads the value at the moment of the panic.
+///
+/// The `let` case above is exact by construction — the value never changes, so a
+/// snapshot taken when the ensure was scheduled is the live one. A `mut` has no
+/// such guarantee, and native used to leave the ensure inline-only rather than
+/// print a stale number, which meant it didn't run on a panic at all.
+///
+/// A name like that gets a one-word stack cell now, so there is an address for
+/// the hook to capture. The float is here because a cell is eight bytes whatever
+/// it holds, and the load has to come back in the right register class.
+#[test]
+fn panic_ensure_reassigned_scalar_reads_the_live_value() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_scalar_cell.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body\nn=42 total=1.25\n",
+            "{}: the cleanup reads the values as they were when it panicked", mode,
+        );
+    }
+}
+
 #[test]
 fn try_inside_ensure_is_rejected() {
     // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to

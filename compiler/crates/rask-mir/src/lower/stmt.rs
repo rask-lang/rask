@@ -532,9 +532,12 @@ impl<'a> MirLowerer<'a> {
                         // #270: a scalar `mutate` param's local is a pointer — the
                         // store must use the *scalar* size, not the pointer's, or it
                         // clobbers the adjacent field (e.g. `swap_fields(p.x, p.y)`).
-                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone());
-                        let store_through_ptr = is_mutate_param
-                            && (scalar_mutate.is_some() || mutate_param_by_pointer(&dst_ty));
+                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_through_ptr.clone());
+                        // A cell is an address whether or not it came from a
+                        // parameter, so the scalar case doesn't need the
+                        // `mutate` half of the test any more (#1011).
+                        let store_through_ptr = scalar_mutate.is_some()
+                            || (is_mutate_param && mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
                             let store_size = match (&scalar_mutate, &dst_ty) {
                                 (Some(sty), _) => Some(sty.size()),
@@ -1392,6 +1395,47 @@ impl<'a> MirLowerer<'a> {
             }
         }
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
+        // A `mut` scalar that an `ensure` reads and this function writes again
+        // gets a cell of its own (#1011).
+        //
+        // An ensure's cleanup runs from a hook during unwind, and the hook can
+        // only reach what it captured. An aggregate is already an address, so
+        // capturing it by reference shows the cleanup whatever the function did
+        // before it panicked. A scalar has no address — its value lives in an
+        // SSA variable — so all a hook could hold is a snapshot from where the
+        // ensure was scheduled, which for a name the function writes again is a
+        // stale number. The ensure stayed inline-only rather than print one, and
+        // then didn't run at all on a panic.
+        //
+        // So give it an address: a one-word stack slot, with reads loading
+        // through it and writes storing through it, exactly the way a scalar
+        // `mutate` parameter already works. Only for the names that need it —
+        // read by an ensure *and* written afterwards — because a plain SSA local
+        // is cheaper everywhere else.
+        let wants_cell = self.ensure_read_names.contains(name)
+            && self.reassigned_names.contains(name)
+            && !Self::is_ref_capturable(&var_ty);
+        if wants_cell {
+            let cell = self.builder.alloc_local(
+                name.to_string(),
+                MirType::Array { elem: Box::new(MirType::I64), len: 1 },
+            );
+            // Registered as an address, which is what makes the ensure hook
+            // capture the cell by reference rather than snapshot its contents.
+            self.locals.insert(name.to_string(), (cell, MirType::Ptr));
+            self.meta_mut(name).scalar_through_ptr = Some(var_ty.clone());
+            let init_op = self.coerce_into_wrapper(
+                rask_ast::coercion::CoercionSite::AnnotatedBinding,
+                init_op, &inferred_ty, &var_ty,
+            );
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: cell,
+                offset: 0,
+                value: init_op,
+                store_size: Some(var_ty.size()),
+            }));
+            return Ok(());
+        }
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
         // An annotated binding is a coercion site like any other: `let b: T?? = t`

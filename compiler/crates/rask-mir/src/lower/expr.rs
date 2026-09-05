@@ -974,7 +974,7 @@ impl<'a> MirLowerer<'a> {
         // Chained: the arg is itself a by-pointer scalar mutate param — pass the
         // pointer straight through rather than loading + re-spilling it.
         if let ExprKind::Ident(name) = &arg.kind {
-            if self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone()).is_some() {
+            if self.meta(name).and_then(|m| m.scalar_through_ptr.clone()).is_some() {
                 if let Some((id, _)) = self.locals.get(name).cloned() {
                     return Ok((MirOperand::Local(id), MirType::Ptr));
                 }
@@ -1195,7 +1195,7 @@ impl<'a> MirLowerer<'a> {
                 self.materialize_module_const(name)?;
                 // #270: a scalar `mutate` param is a pointer — a bare read loads
                 // the scalar through it (writes store through it; see stmt.rs).
-                if let Some(sty) = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone()) {
+                if let Some(sty) = self.meta(name).and_then(|m| m.scalar_through_ptr.clone()) {
                     if let Some((id, _)) = self.locals.get(name).cloned() {
                         let tmp = self.builder.alloc_temp(sty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
