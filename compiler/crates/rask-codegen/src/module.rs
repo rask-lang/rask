@@ -744,31 +744,6 @@ impl CodeGenerator {
             self.func_ids.insert("rask_test_run".to_string(), id);
         }
 
-        // assert_eq failure reporters — the comparison is generated inline, so
-        // these only format. One per operand shape (i64/char/f64/str/none).
-        for (internal, symbol, value_ty) in [
-            ("assert_eq_fail_i64", "rask_assert_eq_fail_i64", Some(types::I64)),
-            ("assert_eq_fail_bool", "rask_assert_eq_fail_bool", Some(types::I64)),
-            ("assert_eq_fail_char", "rask_assert_eq_fail_char", Some(types::I64)),
-            ("assert_eq_fail_f64", "rask_assert_eq_fail_f64", Some(types::F64)),
-            ("assert_eq_fail_f32", "rask_assert_eq_fail_f32", Some(types::F32)),
-            ("assert_eq_fail_str", "rask_assert_eq_fail_str", Some(types::I64)),
-            ("assert_eq_fail", "rask_assert_eq_fail", None),
-        ] {
-            let mut sig = self.module.make_signature();
-            if let Some(ty) = value_ty {
-                sig.params.push(AbiParam::new(ty)); // got
-                sig.params.push(AbiParam::new(ty)); // expected
-            }
-            sig.params.push(AbiParam::new(types::I64)); // file ptr
-            sig.params.push(AbiParam::new(types::I32)); // line
-            sig.params.push(AbiParam::new(types::I32)); // col
-            let id = self.module
-                .declare_function(symbol, Linkage::Import, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert(internal.to_string(), id);
-        }
-
         // rask_test_skip(reason: ptr) -> noreturn (unwinds via panic)
         {
             let mut sig = self.module.make_signature();

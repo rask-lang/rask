@@ -29,7 +29,7 @@ test "mem.pools — a Pool in a local binds a Handle" {
     for h in pool {
         handles.push(h)
     }
-    assert_eq(handles.len(), 2)
+    assert handles.len() == 2
 }
 
 test "mem.pools — a Pool behind a field binds a Handle too" {
@@ -41,7 +41,7 @@ test "mem.pools — a Pool behind a field binds a Handle too" {
     for h in state.entities {
         handles.push(h)
     }
-    assert_eq(handles.len(), 2)
+    assert handles.len() == 2
 }
 
 test "mem.pools — collect handles, then remove by handle" {
@@ -58,7 +58,7 @@ test "mem.pools — collect handles, then remove by handle" {
             to_remove.push(h)
         }
     }
-    assert_eq(to_remove.len(), 2)
+    assert to_remove.len() == 2
 
     for h in to_remove {
         state.entities.remove(h)
@@ -68,7 +68,7 @@ test "mem.pools — collect handles, then remove by handle" {
     for h in state.entities {
         left = left + 1
     }
-    assert_eq(left, 1)
+    assert left == 1
 }
 
 test "mem.pools — indexing still yields the element, not the handle" {
@@ -77,7 +77,7 @@ test "mem.pools — indexing still yields the element, not the handle" {
 
     // Same container, the other relation: `pool[h]` is the element.
     let e: Entity = state.entities[h]
-    assert_eq(e.id, 42)
+    assert e.id == 42
     assert(e.active)
 }
 
@@ -90,5 +90,5 @@ test "stdlib.collections — a Vec behind a field still binds its element" {
     for t in state.tags {
         joined = "{joined}{t};"
     }
-    assert_eq(joined, "alpha;beta;")
+    assert joined == "alpha;beta;"
 }

@@ -82,17 +82,17 @@ func all_three(x: any Deafening) -> string {
 
 test "supertrait — the sub-trait's own method still dispatches" {
     let h = Horn { id: 1 }
-    assert_eq(sub_method(h as any Shouty), "BEEP1")
+    assert sub_method(h as any Shouty) == "BEEP1"
 }
 
 test "supertrait — the inherited method dispatches too" {
     let h = Horn { id: 2 }
-    assert_eq(super_method(h as any Shouty), "beep2")
+    assert super_method(h as any Shouty) == "beep2"
 }
 
 test "supertrait — two levels up and a second parent" {
     let s = Siren { id: 3 }
-    assert_eq(all_three(s as any Deafening), "wail3/WAIL3/11/120")
+    assert all_three(s as any Deafening) == "wail3/WAIL3/11/120"
 }
 
 // A sub-trait object in a collection: every element dispatches through the same
@@ -105,7 +105,7 @@ test "supertrait — through a Vec of sub-trait objects" {
     for x in xs {
         out.push("{x.say()}:{x.shout()}")
     }
-    assert_eq(out.join(","), "beep4:BEEP4,wail5:WAIL5")
+    assert out.join(",") == "beep4:BEEP4,wail5:WAIL5"
 }
 
 // A value declared as the parent's object still works — nothing about the
@@ -113,7 +113,7 @@ test "supertrait — through a Vec of sub-trait objects" {
 test "supertrait — the parent's own object is unchanged" {
     let h = Horn { id: 6 }
     let p = h as any Speak
-    assert_eq(p.say(), "beep6")
+    assert p.say() == "beep6"
 }
 
 func main() {}

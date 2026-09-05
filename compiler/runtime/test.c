@@ -46,9 +46,6 @@ void rask_test_expect_fail(void) {
     rask_test_expects_fail = 1;
 }
 
-// assert_eq lives in runtime.c with the other assert reporters — the
-// comparison is generated code, so only the failure formatting is here.
-
 // Thread-local check failure tracking.
 //
 // `check` exists to collect several failures in one run (std.testing/A2), so

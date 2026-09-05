@@ -25,28 +25,28 @@ const total = Shared.mutex(10)
 
 test "a scalar read comes out of the block" {
     let n = with counter.write() as c { c.hits }
-    assert_eq(n, 3)
+    assert n == 3
 }
 
 test "a word-sized payload comes out of the block" {
     let n = with total.write() as t { t + 5 }
-    assert_eq(n, 15)
+    assert n == 15
 }
 
 test "a struct literal comes out of the block" {
     let s = with counter.write() as c { Counter { hits: c.hits, misses: c.misses } }
-    assert_eq(s.hits, 3)
-    assert_eq(s.misses, 4)
+    assert s.hits == 3
+    assert s.misses == 4
 }
 
 test "an aggregate returned by a method comes out of the block" {
     let s = with counter.write() as c { c.snapshot() }
-    assert_eq(s.hits, 3)
-    assert_eq(s.misses, 4)
+    assert s.hits == 3
+    assert s.misses == 4
 }
 
 test "a statement-position with still runs its body" {
     with counter.write() as c {
-        assert_eq(c.hits, 3)
+        assert c.hits == 3
     }
 }

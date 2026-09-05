@@ -631,7 +631,7 @@ Tests are first-class blocks. No test framework needed.
 ```rask
 test "user creation" {
     let user = User.new("alice", "alice@example.com")
-    assert_eq(user.name, "alice")
+    assert user.name == "alice"
     assert user.is_valid()
 }
 
@@ -641,7 +641,7 @@ test "file cleanup" {
 
     try file.write_text("hello")
     let content = try fs.read_text("/tmp/test.txt")
-    assert_eq(content, "hello")
+    assert content == "hello"
 }
 ```
 

@@ -46,7 +46,7 @@ test "match scrutinee — an uppercase const" {
         49 => { out = "limit" }
         _ => { out = "other" }
     }
-    assert_eq(out, "limit")
+    assert out == "limit"
 }
 
 test "match scrutinee — a string const" {
@@ -55,7 +55,7 @@ test "match scrutinee — a string const" {
         "bo" => { out = "hit" }
         _ => { out = "miss" }
     }
-    assert_eq(out, "hit")
+    assert out == "hit"
 }
 
 test "match scrutinee — an enum const" {
@@ -64,7 +64,7 @@ test "match scrutinee — an enum const" {
         Colour.Red => { out = "red" }
         Colour.Green => { out = "green" }
     }
-    assert_eq(out, "red")
+    assert out == "red"
 }
 
 // A lowercase local always worked; it must keep working.
@@ -75,7 +75,7 @@ test "match scrutinee — a lowercase local" {
         49 => { out = "limit" }
         _ => { out = "other" }
     }
-    assert_eq(out, "limit")
+    assert out == "limit"
 }
 
 // The parenthesised form was the workaround and stays valid.
@@ -85,7 +85,7 @@ test "match scrutinee — parenthesised" {
         49 => { out = "limit" }
         _ => { out = "other" }
     }
-    assert_eq(out, "limit")
+    assert out == "limit"
 }
 
 // A struct literal as the scrutinee needs its parens — the `{` would otherwise
@@ -96,7 +96,7 @@ test "match scrutinee — a parenthesised struct literal" {
         0 => { out = "zero" }
         _ => { out = "other" }
     }
-    assert_eq(out, "zero")
+    assert out == "zero"
 }
 
 // A field, a call and an index in scrutinee position — each ends in something
@@ -104,7 +104,7 @@ test "match scrutinee — a parenthesised struct literal" {
 // same parse.
 test "match scrutinee — field, call and index" {
     let p = Point { x: 0, y: 3 }
-    assert_eq(p.quadrant(), "axis")
+    assert p.quadrant() == "axis"
 
     let v: Vec<i64> = [49, 1]
     mut out = ""
@@ -112,7 +112,7 @@ test "match scrutinee — field, call and index" {
         49 => { out = "limit" }
         _ => { out = "other" }
     }
-    assert_eq(out, "limit")
+    assert out == "limit"
 }
 
 func main() {}

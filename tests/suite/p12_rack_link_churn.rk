@@ -47,16 +47,16 @@ test "an entry popped before the delete leaves the survivors alone" {
 
     // The fixup visits the list, finds nothing pointing at b, and must not
     // disturb a's entry.
-    assert_eq(h.list.len(), 1)
+    assert h.list.len() == 1
     if h.list.get(0)? as first {
-        assert_eq(first.id, 1)
+        assert first.id == 1
     } else {
         assert false
     }
 
     // The still-listed node does get dropped.
     h.rack.delete(a)
-    assert_eq(h.list.len(), 0)
+    assert h.list.len() == 0
 }
 
 test "the same target twice in one list loses both entries" {
@@ -64,12 +64,12 @@ test "the same target twice in one list loses both entries" {
     let c = h.rack.insert(Node { id: 3, peer: none })
     h.list.push(c)
     h.list.push(c)
-    assert_eq(h.list.len(), 2)
+    assert h.list.len() == 2
 
     h.rack.delete(c)
 
     // One backlink per (list, target) pair, but it has to drop *every* match.
-    assert_eq(h.list.len(), 0)
+    assert h.list.len() == 0
 }
 
 test "one target in two lists is fixed in both" {
@@ -80,8 +80,8 @@ test "one target in two lists is fixed in both" {
 
     h.rack.delete(d)
 
-    assert_eq(h.list.len(), 0)
-    assert_eq(h.other.len(), 0)
+    assert h.list.len() == 0
+    assert h.other.len() == 0
 }
 
 test "a cleared list before the delete is harmless" {
@@ -92,7 +92,7 @@ test "a cleared list before the delete is harmless" {
 
     h.rack.delete(e)
 
-    assert_eq(h.list.len(), 0)
+    assert h.list.len() == 0
 }
 
 test "a list replaced by filter has its new entries registered" {
@@ -106,10 +106,10 @@ test "a list replaced by filter has its new entries registered" {
     // never recorded by the pushes that filled the old one — the assignment has
     // to register them.
     h.other = h.other.filter(|n| n.id != 6)
-    assert_eq(h.other.len(), 1)
+    assert h.other.len() == 1
 
     h.rack.delete(g)
-    assert_eq(h.other.len(), 0)
+    assert h.other.len() == 0
 }
 
 test "an edge two containers deep is still found" {
@@ -122,7 +122,7 @@ test "an edge two containers deep is still found" {
     h.rack.delete(i1)
 
     if h.nested.get(0)? as first {
-        assert_eq(first.len(), 0)
+        assert first.len() == 0
     } else {
         assert false
     }
@@ -132,13 +132,13 @@ test "an index drops the deleted node's entry" {
     mut h = fresh()
     let k = h.rack.insert(Node { id: 9, peer: none })
     h.index.insert("k", k)
-    assert_eq(h.index.len(), 1)
+    assert h.index.len() == 1
 
     h.rack.delete(k)
 
     // The database's index-maintenance move: the entry goes, it doesn't become
     // a `none` value under a live key.
-    assert_eq(h.index.len(), 0)
+    assert h.index.len() == 0
     if h.index.get("k")? as _v {
         assert false
     }
@@ -154,13 +154,13 @@ test "overwriting an index key unlinks only the displaced target" {
     // k1 is no longer in the index, so its delete must not disturb the entry
     // k2 now holds under that key.
     h.rack.delete(k1)
-    assert_eq(h.index.len(), 1)
+    assert h.index.len() == 1
     if h.index.get("slot")? as v {
-        assert_eq(v.id, 10)
+        assert v.id == 10
     } else {
         assert false
     }
 
     h.rack.delete(k2)
-    assert_eq(h.index.len(), 0)
+    assert h.index.len() == 0
 }

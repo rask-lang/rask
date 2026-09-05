@@ -145,39 +145,39 @@ func count_unindexed() -> i64 {
 }
 
 test "has finds attached annotations" {
-    assert_eq(count_indexed(), 2)
+    assert count_indexed() == 2
 }
 
 test "has distinguishes annotations on the same field" {
-    assert_eq(count_secret(), 1)
+    assert count_secret() == 1
 }
 
 test "has is false without attachments" {
-    assert_eq(count_plain(), 0)
+    assert count_plain() == 0
 }
 
 test "has composes with field.name" {
-    assert_eq(indexed_names(), "title,token,")
+    assert indexed_names() == "title,token,"
 }
 
 test "get reads written and defaulted integer fields" {
-    assert_eq(total_weight(), 5)
+    assert total_weight() == 5
 }
 
 test "get reads written and defaulted string fields" {
-    assert_eq(labels(), "headline,none,")
+    assert labels() == "headline,none,"
 }
 
 test "get reads float fields" {
-    assert_eq(total_factor(), 3.0)
+    assert total_factor() == 3.0
 }
 
 test "get reads bool fields" {
-    assert_eq(count_on(), 1)
+    assert count_on() == 1
 }
 
 test "a negated guard folds as well" {
-    assert_eq(count_unindexed(), 1)
+    assert count_unindexed() == 1
 }
 
 // Two annotations on one field, read independently.
@@ -228,14 +228,14 @@ func total<T>() -> i64 {
 }
 
 test "two annotations on one field, read independently" {
-    assert_eq(tagged_pairs(), "key=4/both;")
+    assert tagged_pairs() == "key=4/both;"
 }
 
 test "and/or fold like the negation does" {
-    assert_eq(combined(), 102)
+    assert combined() == 102
 }
 
 test "annotations read through a generic function" {
-    assert_eq(total<Doc>(), 5)
-    assert_eq(total<Tagged>(), 5)
+    assert total<Doc>() == 5
+    assert total<Tagged>() == 5
 }

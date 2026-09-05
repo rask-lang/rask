@@ -174,51 +174,51 @@ func show(r: string or StoreError) -> string {
 }
 
 test "ctrl.control-flow/LP1 — a bare `return` ends every loop form" {
-    assert_eq(from_while(3), 10)
-    assert_eq(from_for_vec(nums()), 7)
-    assert_eq(from_for_range(3), 20)
-    assert_eq(from_for_stepped_range(4), 30)
-    assert_eq(from_for_chain(nums()), 14)
-    assert_eq(from_loop(), 40)
-    assert_eq(from_while_is(), 59)
+    assert from_while(3) == 10
+    assert from_for_vec(nums()) == 7
+    assert from_for_range(3) == 20
+    assert from_for_stepped_range(4) == 30
+    assert from_for_chain(nums()) == 14
+    assert from_loop() == 40
+    assert from_while_is() == 59
 }
 
 test "ctrl.control-flow/LP1 — over a Map too" {
     mut m: Map<string, i64> = Map.new()
     m.insert("a", 99)
-    assert_eq(from_for_map(m), 99)
+    assert from_for_map(m) == 99
 }
 
 test "ctrl.control-flow/LP1 — a `return` after other body statements" {
-    assert_eq(after_statements(nums()), 15)
+    assert after_statements(nums()) == 15
 }
 
 test "type.errors/ER16b — `try … ?? continue` finds the hit past a miss" {
     mut items: Vec<Item> = Vec.new()
     items.push(Item { n: 0 })     // absent -> continue
     items.push(Item { n: 3 })     // present -> "v3"
-    assert_eq(show(first_hit(items)), "v3")
+    assert show(first_hit(items)) == "v3"
 }
 
 test "type.errors/ER16b — an error still propagates, absences still skip" {
     mut broken: Vec<Item> = Vec.new()
     broken.push(Item { n: 0 })
     broken.push(Item { n: -1 })
-    assert_eq(show(first_hit(broken)), "err:broken")
+    assert show(first_hit(broken)) == "err:broken"
 
     mut empty: Vec<Item> = Vec.new()
     empty.push(Item { n: 0 })
-    assert_eq(show(first_hit(empty)), "MISS")
+    assert show(first_hit(empty)) == "MISS"
 }
 
 test "ctrl.control-flow/LP3 — break and continue are unaffected" {
-    assert_eq(with_break(nums()), 7)
+    assert with_break(nums()) == 7
     mut mixed: Vec<i64> = Vec.new()
     mixed.push(3)
     mixed.push(-1)
     mixed.push(4)
-    assert_eq(with_continue(mixed), 7)
-    assert_eq(conditional(nums()), 7)
+    assert with_continue(mixed) == 7
+    assert conditional(nums()) == 7
 }
 
 func main() {

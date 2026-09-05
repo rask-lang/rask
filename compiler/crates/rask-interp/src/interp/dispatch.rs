@@ -261,36 +261,6 @@ impl Interpreter {
                     Ok(args.into_iter().next().unwrap())
                 }
             }
-            BuiltinKind::AssertEq => {
-                if args.len() < 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                let got = &args[0];
-                let expected = &args[1];
-                if Self::value_eq(got, expected) {
-                    Ok(Value::Unit)
-                } else {
-                    // Native quotes string operands here (rask_assert_eq_fail_str)
-                    // and the interpreter didn't, so the same failing assert_eq
-                    // read differently on the two backends. Quotes are what make
-                    // a trailing space or an empty string visible, so native's
-                    // is the one to match.
-                    let show = |v: &Value| match v {
-                        Value::String(_) => format!("\"{}\"", v),
-                        _ => format!("{}", v),
-                    };
-                    let got_str = show(got);
-                    let expected_str = show(expected);
-                    let msg = if args.len() > 2 {
-                        format!("{}", args[2])
-                    } else {
-                        "assert_eq failed".to_string()
-                    };
-                    Err(RuntimeError::AssertionFailed(
-                        format!("{}\n  got:      {}\n  expected: {}", msg, got_str, expected_str)
-                    ))
-                }
-            }
             BuiltinKind::Skip => {
                 let reason = args
                     .first()

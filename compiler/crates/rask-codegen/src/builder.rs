@@ -4710,42 +4710,6 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, zero);
                 }
             }
-        } else if func.name.starts_with("assert_eq_fail") {
-            // assert_eq failure: args = [got, expected] (empty for aggregates).
-            // MIR already emitted the comparison and branched here.
-            let value_args: Vec<Value> = match func.name.as_str() {
-                "assert_eq_fail_str" => vec![
-                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?,
-                    Self::lower_operand_as_cstr(builder, &args[1], ctx)?,
-                ],
-                "assert_eq_fail_f64" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?,
-                ],
-                // f32 stays f32: see assert_fail_cmp_f32.
-                "assert_eq_fail_f32" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F32), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F32), ctx)?,
-                ],
-                "assert_eq_fail" => Vec::new(),
-                _ => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?,
-                ],
-            };
-            if let Some(file_str) = ctx.source_file {
-                if let (Some(func_ref), Some(gv)) = (
-                    ctx.func_refs.get(func.name.as_str()),
-                    ctx.string_globals.get(file_str),
-                ) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    let mut call_args = value_args;
-                    call_args.extend_from_slice(&[file_ptr, line_val, col_val]);
-                    builder.ins().call(*func_ref, &call_args);
-                }
-            }
         } else if func.name == "panic_unwrap" {
             // MIR already handled branching; this is the panic path. The single
             // argument says which mistake it was — an absent optional or a

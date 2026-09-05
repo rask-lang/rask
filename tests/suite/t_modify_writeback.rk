@@ -31,8 +31,8 @@ test "modify — a scalar element keeps the closure's value" {
         x = x + 100
         return x
     })
-    assert_eq(r ?? -1, 101)
-    assert_eq(v.join(","), "101,2,3")
+    assert r ?? -1 == 101
+    assert v.join(",") == "101,2,3"
 }
 
 test "modify — an untouched element is left alone" {
@@ -40,8 +40,8 @@ test "modify — an untouched element is left alone" {
     let r = v.modify(1, |mutate x: i64| {
         return x * 2
     })
-    assert_eq(r ?? -1, 4)
-    assert_eq(v.join(","), "1,2,3")
+    assert r ?? -1 == 4
+    assert v.join(",") == "1,2,3"
 }
 
 test "modify — out of range is none, and changes nothing" {
@@ -51,7 +51,7 @@ test "modify — out of range is none, and changes nothing" {
         return x
     })
     assert r is none
-    assert_eq(v.join(","), "1,2,3")
+    assert v.join(",") == "1,2,3"
 }
 
 struct Counter {
@@ -64,10 +64,10 @@ test "modify — a struct element keeps a field write" {
         c.hits = c.hits + 10
         return c.hits
     })
-    assert_eq(r ?? -1, 12)
-    assert_eq(cs[1].hits, 12)
+    assert r ?? -1 == 12
+    assert cs[1].hits == 12
     // The other element is untouched.
-    assert_eq(cs[0].hits, 1)
+    assert cs[0].hits == 1
 }
 
 test "modify — read is the same call without the write-back" {
@@ -75,7 +75,7 @@ test "modify — read is the same call without the write-back" {
     let r = v.read(1, |x| {
         return x * 2
     })
-    assert_eq(r ?? -1, 4)
+    assert r ?? -1 == 4
     let missing = v.read(9, |x| {
         return x * 2
     })
@@ -89,8 +89,8 @@ test "modify — a Map value keeps the closure's value" {
         n = n + 5
         return n
     })
-    assert_eq(r ?? -1, 6)
-    assert_eq(m.get("a") ?? -1, 6)
+    assert r ?? -1 == 6
+    assert m.get("a") ?? -1 == 6
 
     let absent = m.modify("nope", |mutate n: i64| {
         n = 99
@@ -115,9 +115,9 @@ test "modify — modify_with_default accumulates across calls" {
         n = n + 1
         return n
     })
-    assert_eq(first, 1)
-    assert_eq(second, 2)
-    assert_eq(counts.get("x") ?? -1, 2)
+    assert first == 1
+    assert second == 2
+    assert counts.get("x") ?? -1 == 2
 }
 
 test "modify — modify_with_default on a struct value" {
@@ -128,10 +128,10 @@ test "modify — modify_with_default on a struct value" {
         c.hits = c.hits + 1
         return c.hits
     })
-    assert_eq(r, 1)
+    assert r == 1
     let stored = users.get("u")
     if stored is Counter as c {
-        assert_eq(c.hits, 1)
+        assert c.hits == 1
     } else {
         assert false
     }

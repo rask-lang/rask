@@ -4484,12 +4484,13 @@ test "default argument fills in" {
     );
 }
 
-// ─── assert_eq compares values, not addresses ───────────────
+// ─── a comparison in an `assert` ────────────────────────────
 //
-// Native lowering handed both sides to a runtime function typed (i64, i64):
-// two strings arrived as their addresses and never matched, and a float or a
-// char didn't fit the signature at all, so Cranelift rejected the whole test
-// function. The interpreter had it right all along.
+// `assert_eq` used to live here (std.testing/A4). Its lowering handed both
+// sides to a runtime function typed (i64, i64): two strings arrived as their
+// addresses and never matched, and a float or a char didn't fit the signature
+// at all, so Cranelift rejected the whole test function. The rule is gone and
+// `assert a == b` carries what it was for, so these test that instead.
 
 fn rask_test_output(args: &[&str]) -> (bool, String) {
     let rask = rask_binary();
@@ -4508,43 +4509,76 @@ fn rask_test_output(args: &[&str]) -> (bool, String) {
 }
 
 #[test]
-fn assert_eq_compares_by_value_on_both_backends() {
-    let path = fixture("assert_eq_types.rk");
+fn assert_compares_by_value_on_both_backends() {
+    let path = fixture("assert_compares_by_value.rk");
     let path = path.to_str().unwrap();
 
     for args in [vec![path], vec!["--interp", path]] {
         let (ok, combined) = rask_test_output(&args);
         assert!(
             ok && combined.contains("8 passed"),
-            "assert_eq must compare by value ({:?}): {}", args, combined,
+            "`==` must compare by value ({:?}): {}", args, combined,
         );
     }
 }
 
+/// A failed comparison reads the same on both backends, whatever the operands.
+///
+/// The two disagreed on everything without a one-line rendering. Native prints
+/// the *address* of an aggregate, so a struct comparison came out as
+/// `140737253693408 == 140737253693424`; the interpreter has the whole value
+/// and printed `Point { x: 1, y: 2 }`. Both were "right" and they were not the
+/// same line, which is the one thing the two backends may not be — and no suite
+/// file asserted a *failing* comparison, so nothing compared them.
+///
+/// Native can't do better: a struct opts into `Displayable` (std.fmt/D3) and
+/// most don't, so there is nothing to render. The message stands alone for
+/// those, on both sides.
 #[test]
-fn assert_eq_failure_reports_got_and_expected() {
-    let dir = std::env::temp_dir().join(format!("rask_assert_eq_diff_{}", next_tmp_id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("mismatch.rk");
-    std::fs::write(&file, r#"
-func main() { println("x") }
+fn a_failed_comparison_reads_the_same_on_both_backends() {
+    let cases: &[(&str, &str)] = &[
+        ("ints", "assert 2 + 2 == 5"),
+        ("strings", "assert \"got\" == \"want\""),
+        ("chars", "assert 'a' == 'b'"),
+        ("floats", "assert 1.5 == 2.5"),
+        ("optionals", "assert maybe(1) == maybe(2)"),
+        ("structs", "assert Point { x: 1, y: 2 } == Point { x: 1, y: 3 }"),
+        ("tuples", "assert (1, 2) == (1, 3)"),
+    ];
 
-test "strings differ" {
-    let a = "hei"
-    assert_eq(a, "hallo")
-}
-"#).unwrap();
+    for (name, assertion) in cases {
+        let src = format!(
+            "struct Point {{ x: i64, y: i64 }}\n\
+             func maybe(n: i64) -> i64? {{\n    if n > 1 {{ return n }}\n    return none\n}}\n\
+             func main() {{ println(\"x\") }}\n\
+             test \"t\" {{ {assertion} }}\n"
+        );
+        let dir = std::env::temp_dir().join(format!("rask_cmp_msg_{}", next_tmp_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cmp.rk");
+        std::fs::write(&file, &src).unwrap();
+        let path = file.to_str().unwrap();
 
-    let (ok, combined) = rask_test_output(&[file.to_str().unwrap()]);
-    let _ = std::fs::remove_dir_all(&dir);
+        let (native_ok, native) = rask_test_output(&[path]);
+        let (interp_ok, interp) = rask_test_output(&["--interp", path]);
+        let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(!ok, "a mismatched assert_eq must fail the test: {}", combined);
-    assert!(
-        combined.contains("got:") && combined.contains("hei")
-            && combined.contains("expected:") && combined.contains("hallo"),
-        "failure must name both values: {}", combined,
-    );
+        assert!(!native_ok && !interp_ok, "{name}: the assertion has to fail");
+        let strip = |s: &str| {
+            s.lines()
+                .filter(|l| l.contains("assertion failed"))
+                .map(|l| l.trim().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            strip(&native), strip(&interp),
+            "{name}: the two backends print different failure lines\n             native:\n{native}\ninterp:\n{interp}"
+        );
+        assert!(
+            !strip(&native).is_empty(),
+            "{name}: no failure line at all:\n{native}"
+        );
+    }
 }
 
 // ─── Regression: issues #566, #569 ──────────────────────────

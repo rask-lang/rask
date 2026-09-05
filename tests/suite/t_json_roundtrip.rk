@@ -36,8 +36,8 @@ func point() -> Point {
 }
 
 test "std.json — encode_pretty indents, encode doesn't" {
-    assert_eq(json.encode(point()), "{{\"x\":1,\"y\":2}}")
-    assert_eq(json.encode_pretty(point()), "{{\n  \"x\": 1,\n  \"y\": 2\n}}")
+    assert json.encode(point()) == "{{\"x\":1,\"y\":2}}"
+    assert json.encode_pretty(point()) == "{{\n  \"x\": 1,\n  \"y\": 2\n}}"
 }
 
 test "std.json — pretty nests, and leaves an empty container inline" {
@@ -50,14 +50,14 @@ test "std.json — pretty nests, and leaves an empty container inline" {
         ok: true,
     }
     let expected = "{{\n  \"name\": \"a,b:c\",\n  \"tags\": [\n    \"x\"\n  ],\n  \"point\": {{\n    \"x\": 1,\n    \"y\": 2\n  }},\n  \"empty\": [],\n  \"score\": 2.5,\n  \"ok\": true\n}}"
-    assert_eq(json.encode_pretty(d), expected)
+    assert json.encode_pretty(d) == expected
 }
 
 test "std.json — a Vec encodes pretty too" {
     let v: Vec<i64> = [1, 2]
-    assert_eq(json.encode_pretty(v), "[\n  1,\n  2\n]")
+    assert json.encode_pretty(v) == "[\n  1,\n  2\n]"
     let e: Vec<i64> = []
-    assert_eq(json.encode_pretty(e), "[]")
+    assert json.encode_pretty(e) == "[]"
 }
 
 // The separators inside a string must not be indented on.
@@ -83,30 +83,27 @@ test "std.json — non-ASCII survives a round trip" {
     let enc = json.encode(t)
     let back = json.decode<Text>(enc)
     if back is Text as v {
-        assert_eq(v.s, "é 😀 ü — ½")
+        assert v.s == "é 😀 ü — ½"
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.json — a `\\u` surrogate pair is one character" {
     let lit = json.decode<Text>("{{\"s\": \"\\u00e9\\ud83d\\ude00\"}}")
     if lit is Text as v {
-        assert_eq(v.s, "é😀")
+        assert v.s == "é😀"
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.json — an integer encodes exactly, however large" {
     let big = Point { x: 9007199254740993, y: 0 - 9007199254740993 }
-    assert_eq(json.encode(big), "{{\"x\":9007199254740993,\"y\":-9007199254740993}}")
+    assert json.encode(big) == "{{\"x\":9007199254740993,\"y\":-9007199254740993}}"
 
     let biggest = Point { x: 9223372036854775807, y: 0 - 9223372036854775807 }
-    assert_eq(
-        json.encode(biggest),
-        "{{\"x\":9223372036854775807,\"y\":-9223372036854775807}}",
-    )
+    assert json.encode(biggest) == "{{\"x\":9223372036854775807,\"y\":-9223372036854775807}}"
 }
 
 func why(s: string) -> string {
@@ -119,14 +116,11 @@ func why(s: string) -> string {
 }
 
 test "std.json — a failed decode says the same thing on both backends" {
-    assert_eq(why("nope"), "parse error: unexpected character 'n' at byte 0")
-    assert_eq(why("[1]"), "type error: the value should be an object, found an array")
-    assert_eq(why("{{1: 2}}"), "parse error: expected '\"', found '1' at byte 1")
-    assert_eq(why("{{\"x\": 1}}"), "missing field: field \"y\" not found in the JSON object")
-    assert_eq(
-        why("{{\"x\": \"one\", \"y\": 2}}"),
-        "type error: field x should be an integer, found a string",
-    )
+    assert why("nope") == "parse error: unexpected character 'n' at byte 0"
+    assert why("[1]") == "type error: the value should be an object, found an array"
+    assert why("{{1: 2}}") == "parse error: expected '\"', found '1' at byte 1"
+    assert why("{{\"x\": 1}}") == "missing field: field \"y\" not found in the JSON object"
+    assert why("{{\"x\": \"one\", \"y\": 2}}") == "type error: field x should be an integer, found a string"
 }
 
 func main() {}

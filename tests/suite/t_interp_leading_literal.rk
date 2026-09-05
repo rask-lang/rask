@@ -18,25 +18,25 @@ func take_two(a: string, b: string) -> string {
 }
 
 test "interpolation — a leading literal with a method call" {
-    assert_eq("{"lit".len()}", "3")
-    assert_eq("[{"  pad  ".trim()}]", "[pad]")
-    assert_eq("{"AB".to_lowercase()}", "ab")
+    assert "{"lit".len()}" == "3"
+    assert "[{"  pad  ".trim()}]" == "[pad]"
+    assert "{"AB".to_lowercase()}" == "ab"
 }
 
 test "interpolation — a leading literal in an operator expression" {
-    assert_eq("{"a" < "b"}", "true")
-    assert_eq("{"b" < "a"}", "false")
-    assert_eq("{"a" == "a"}", "true")
+    assert "{"a" < "b"}" == "true"
+    assert "{"b" < "a"}" == "false"
+    assert "{"a" == "a"}" == "true"
 }
 
 test "interpolation — a leading literal that parses" {
-    assert_eq("{"42".parse<i64>() catch _ => -1}", "42")
-    assert_eq("{"nope".parse<i64>() catch _ => -1}", "-1")
+    assert ("{"42".parse<i64>() catch _ => -1}") == "42"
+    assert ("{"nope".parse<i64>() catch _ => -1}") == "-1"
 }
 
 // A literal that isn't first has always worked; it must keep working.
 test "interpolation — a literal argument later in the expression" {
-    assert_eq("{take_two("x", "y")}", "xy")
+    assert "{take_two("x", "y")}" == "xy"
 }
 
 // #506's shape: a quoted key followed by a colon is not an interpolation. It
@@ -44,15 +44,15 @@ test "interpolation — a literal argument later in the expression" {
 // written `{{`, and that's what a JSON body has to use.
 test "interpolation — a brace-quote-colon body is not an expression" {
     let pair = "{{\"k\": 1}}"
-    assert_eq(pair.len(), 8)
+    assert pair.len() == 8
     assert(pair.starts_with("{"))
     assert(pair.ends_with("}"))
     assert(pair.contains(": 1"))
 }
 
 test "interpolation — an empty placeholder and a lone brace are unchanged" {
-    assert_eq("{}".len(), 2)
-    assert_eq("{".len(), 1)
+    assert "{}".len() == 2
+    assert "{".len() == 1
 }
 
 func main() {}

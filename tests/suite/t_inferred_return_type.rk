@@ -33,17 +33,17 @@ const derived = from_int + 1
 func no_value(mutate seen: Vec<i64>) { seen.push(1) }
 
 test "an unannotated int return works" {
-    assert_eq(plain_int(), 41)
+    assert plain_int() == 41
 }
 
 test "unannotated returns keep their real type" {
-    assert_eq(text(), "hi")
-    assert_eq(floating(), 2.5)
+    assert text() == "hi"
+    assert floating() == 2.5
     assert truthy()
 }
 
 test "an aggregate return survives" {
-    assert_eq(aggregate().n, 7)
+    assert aggregate().n == 7
 }
 
 test "an enum return survives" {
@@ -51,18 +51,18 @@ test "an enum return survives" {
 }
 
 test "a module const can call an unannotated function" {
-    assert_eq(from_int, 41)
-    assert_eq(derived, 42)
-    assert_eq(from_late, 5)
+    assert from_int == 41
+    assert derived == 42
+    assert from_late == 5
 }
 
 test "a function with no return value stays void" {
     mut seen = Vec<i64>.new()
     no_value(mutate seen)
-    assert_eq(seen.len(), 1)
+    assert seen.len() == 1
 }
 
 test "the inferred type is usable in arithmetic" {
     let doubled = plain_int() * 2
-    assert_eq(doubled, 82)
+    assert doubled == 82
 }

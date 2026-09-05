@@ -78,12 +78,12 @@ test "type.primitives — the ASCII predicates stop at 127" {
 }
 
 test "type.primitives — ASCII case conversion leaves everything else alone" {
-    assert_eq('A'.to_ascii_lowercase(), 'a')
-    assert_eq('a'.to_ascii_uppercase(), 'A')
-    assert_eq('7'.to_ascii_lowercase(), '7')
+    assert 'A'.to_ascii_lowercase() == 'a'
+    assert 'a'.to_ascii_uppercase() == 'A'
+    assert '7'.to_ascii_lowercase() == '7'
     // The Unicode form maps it; the ASCII form doesn't.
-    assert_eq('ö'.to_ascii_uppercase(), 'ö')
-    assert_eq('ö'.to_uppercase(), 'Ö')
+    assert 'ö'.to_ascii_uppercase() == 'ö'
+    assert 'ö'.to_uppercase() == 'Ö'
 }
 
 func main() {}

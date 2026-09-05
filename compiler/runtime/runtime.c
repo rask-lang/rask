@@ -327,7 +327,7 @@ void rask_check_fail_cmp_str(const RaskStr *left, const RaskStr *right,
 // differ past the 6th printed as the same number — "assertion failed: 1 == 1"
 // for 1.000000001 vs 1.000000002, which reads like the assert machinery is
 // broken rather than like a failing test (#898). Use the same formatter
-// `println` and `assert_eq` already use: shortest round-trip, never exponent
+// `println` already uses: shortest round-trip, never exponent
 // form. What matters is that a reader comparing this message against a
 // `println` of the same value sees one number, not two.
 static void fmt_cmp_f64(char *buf, size_t n, const char *what,
@@ -386,78 +386,6 @@ void rask_check_fail_cmp_f32(float left, float right,
     fmt_cmp_f32(buf, sizeof(buf), "check failed", left, right, op);
     (void)file; (void)line; (void)col;
     rask_check_fail(buf);
-}
-
-// assert_eq reports got/expected rather than left/right (testing A4): the
-// first argument is what the code produced, the second what the test wants.
-// The comparison itself happens in generated code — these only format.
-static _Noreturn void assert_eq_fail_fmt(const char *got, const char *expected,
-                                         const char *file, int32_t line, int32_t col) {
-    char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      %s\n  expected: %s", got, expected);
-    rask_panic_at(file, line, col, buf);
-}
-
-void rask_assert_eq_fail_i64(int64_t got, int64_t expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[32], e[32];
-    snprintf(g, sizeof(g), "%lld", (long long)got);
-    snprintf(e, sizeof(e), "%lld", (long long)expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
-                              const char *file, int32_t line, int32_t col) {
-    assert_eq_fail_fmt(got ? "true" : "false", expected ? "true" : "false",
-                       file, line, col);
-}
-
-void rask_assert_eq_fail_char(int64_t got, int64_t expected,
-                              const char *file, int32_t line, int32_t col) {
-    RaskStr gs, es;
-    rask_char_to_string(&gs, (int32_t)got);
-    rask_char_to_string(&es, (int32_t)expected);
-    char g[16], e[16];
-    snprintf(g, sizeof(g), "'%s'", rask_string_ptr(&gs));
-    snprintf(e, sizeof(e), "'%s'", rask_string_ptr(&es));
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_f64(double got, double expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
-    rask_fmt_double(g, sizeof(g), got);
-    rask_fmt_double(e, sizeof(e), expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-// See rask_assert_fail_cmp_f32: the round-trip has to be checked at the
-// operand's own width, or an f32 reports its exact binary expansion.
-void rask_assert_eq_fail_f32(float got, float expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
-    rask_fmt_float(g, sizeof(g), got);
-    rask_fmt_float(e, sizeof(e), expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
-                             const char *file, int32_t line, int32_t col) {
-    char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      \"%.*s\"\n  expected: \"%.*s\"",
-             got ? (int)rask_string_len(got) : 6,
-             got ? rask_string_ptr(got) : "(null)",
-             expected ? (int)rask_string_len(expected) : 6,
-             expected ? rask_string_ptr(expected) : "(null)");
-    rask_panic_at(file, line, col, buf);
-}
-
-// Aggregates (structs, enums, tuples) compare fine but have no one-line
-// rendering here, so the message names the failure without a value diff.
-void rask_assert_eq_fail(const char *file, int32_t line, int32_t col) {
-    rask_panic_at(file, line, col, "assert_eq failed: values differ");
 }
 
 // ─── I/O primitives ──────────────────────────────────────────────

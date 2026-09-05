@@ -38,7 +38,21 @@ func config_defaults_are_valid() -> bool {
 | **A1: assert** | `assert expr` — test stops immediately on failure |
 | **A2: check** | `check expr` — test continues, marked failed |
 | **A3: Messages** | Both accept optional message: `assert expr, "message"` |
-| **A4: Rich comparison** | `assert_eq(got, expected)` and `assert_ne(got, unexpected)` pretty-print a diff on failure and stop the test; `check_eq`/`check_ne` are the continuing forms. First argument is what the code produced, second is what the test expects |
+| **A5: Operands in the message** | A failed comparison names both sides — `assertion failed: 2 == 3 (left: 2, right: 3)` — for anything with a one-line rendering. A struct or an optional has none (`std.fmt/D3`: types opt into `Displayable`), so the message stands alone rather than printing an address |
+
+There is no `assert_eq`. A comparison is `==`, and `assert` reports the operands
+itself:
+
+```
+assert count == 3
+// assertion failed: 2 == 3 (left: 2, right: 3)
+```
+
+`assert_eq(got, expected)` was A4 until it was deleted. Two positional arguments
+that mean different things, told apart only by remembering which is which, is
+the kind of API this stdlib is supposed to avoid (`std.stdlib/api-design`) — and
+the only thing it added over `==` was the failure message, which `assert` now
+carries.
 
 ```rask
 test "multiple checks" {

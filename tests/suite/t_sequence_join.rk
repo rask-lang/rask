@@ -16,12 +16,12 @@
 
 test "sequence join — split with no adapter" {
     let s = "a, b, c"
-    assert_eq(s.split(", ").join("|"), "a|b|c")
+    assert s.split(", ").join("|") == "a|b|c"
 }
 
 test "sequence join — the other string splitters" {
-    assert_eq("x y z".split_whitespace().join("+"), "x+y+z")
-    assert_eq("l1\nl2".lines().join("/"), "l1/l2")
+    assert "x y z".split_whitespace().join("+") == "x+y+z"
+    assert "l1\nl2".lines().join("/") == "l1/l2"
 }
 
 // The case the gate was protecting. A Vec answers `join` itself, and for a
@@ -31,37 +31,37 @@ test "sequence join — a Vec keeps answering for itself" {
     mut ns: Vec<i64> = Vec.new()
     ns.push(1)
     ns.push(2)
-    assert_eq(ns.join(", "), "1, 2")
+    assert ns.join(", ") == "1, 2"
 
     let ss: Vec<string> = ["a", "b"]
-    assert_eq(ss.join("-"), "a-b")
+    assert ss.join("-") == "a-b"
 }
 
 test "sequence join — a chain with adapters still fuses" {
     let ss: Vec<string> = ["a", "b"]
-    assert_eq(ss.iter().map(|x| {
+    assert ss.iter().map(|x| {
         return x.to_uppercase()
-    }).join(","), "A,B")
+    }).join(",") == "A,B"
 
     mut ns: Vec<i64> = Vec.new()
     ns.push(1)
     ns.push(2)
     ns.push(3)
-    assert_eq(ns.iter().filter(|x| {
+    assert ns.iter().filter(|x| {
         return x > 1
     }).map(|x| {
         return "n{x}"
-    }).join(","), "n2,n3")
+    }).join(",") == "n2,n3"
 }
 
 test "sequence join — the long way round agrees" {
     let s = "a, b, c"
-    assert_eq(s.split(", ").to_vec().join("|"), s.split(", ").join("|"))
+    assert s.split(", ").to_vec().join("|") == s.split(", ").join("|")
 }
 
 test "sequence join — an empty separator and a single element" {
-    assert_eq("abc".split(", ").join("|"), "abc")
-    assert_eq("a, b".split(", ").join(""), "ab")
+    assert "abc".split(", ").join("|") == "abc"
+    assert "a, b".split(", ").join("") == "ab"
 }
 
 func main() {}

@@ -88,42 +88,42 @@ func colour_note(c: Colour) -> string {
 }
 
 test "binding guard — the guard reads the binding" {
-    assert_eq(bucket(-1), "neg")
-    assert_eq(bucket(0), "zero")
-    assert_eq(bucket(5), "small")
-    assert_eq(bucket(50), "big")
+    assert bucket(-1) == "neg"
+    assert bucket(0) == "zero"
+    assert bucket(5) == "small"
+    assert bucket(50) == "big"
 }
 
 // The failure that hid behind arm order: the guarded arm comes first and the arm
 // below it is a literal, so a failed guard must not run that body.
 test "binding guard — a failed guard skips a non-matching arm" {
-    assert_eq(bucket(9), "small")
-    assert_eq(bucket(10), "big")
-    assert_eq(bucket(-100), "neg")
+    assert bucket(9) == "small"
+    assert bucket(10) == "big"
+    assert bucket(-100) == "neg"
 }
 
 test "binding guard — the body reads the binding too" {
-    assert_eq(describe(0), "zero")
-    assert_eq(describe(-3), "neg 3")
-    assert_eq(describe(7), "pos 7")
+    assert describe(0) == "zero"
+    assert describe(-3) == "neg 3"
+    assert describe(7) == "pos 7"
 }
 
 test "binding guard — a guard on a literal pattern" {
-    assert_eq(exactly(5), "five")
-    assert_eq(exactly(1), "other")
+    assert exactly(5) == "five"
+    assert exactly(1) == "other"
 }
 
 test "binding guard — over a char" {
-    assert_eq(kind('+'), "plus")
-    assert_eq(kind('7'), "digit")
-    assert_eq(kind(' '), "space")
-    assert_eq(kind('z'), "other")
+    assert kind('+') == "plus"
+    assert kind('7') == "digit"
+    assert kind(' ') == "space"
+    assert kind('z') == "other"
 }
 
 test "binding guard — over an enum" {
-    assert_eq(colour_note(Colour.Green), "green")
-    assert_eq(colour_note(Colour.Red), "red")
-    assert_eq(colour_note(Colour.Blue), "rest")
+    assert colour_note(Colour.Green) == "green"
+    assert colour_note(Colour.Red) == "red"
+    assert colour_note(Colour.Blue) == "rest"
 }
 
 func main() {}

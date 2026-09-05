@@ -37,7 +37,7 @@ test "a fresh node's absent edge is absent, not an address" {
     if n.owner? as _h {
         assert false
     }
-    assert_eq(n.id, 1)
+    assert n.id == 1
 }
 
 // The two niches sitting in one struct is what catches a shared sentinel: give
@@ -52,12 +52,12 @@ test "the two niches keep their own none side by side" {
     let b = rack.insert(Node { id: 2, peer: a, owner: none })
 
     if b.peer? as p {
-        assert_eq(p.id, 1)
+        assert p.id == 1
     } else {
         assert false
     }
     if a.owner? as h {
-        assert_eq(pool[h].hp, 9)
+        assert pool[h].hp == 9
     } else {
         assert false
     }
@@ -79,13 +79,13 @@ test "clearing an edge to none leaves the node reachable" {
     if b.peer? as _p {
         assert false
     }
-    assert_eq(rack.len(), 2)
+    assert rack.len() == 2
 
     // The target survives losing its last incoming edge — a rack is not
     // reference counted (RK5).
     rack.delete(b)
-    assert_eq(rack.len(), 1)
-    assert_eq(a.id, 1)
+    assert rack.len() == 1
+    assert a.id == 1
 }
 
 // A container of *nodes carrying* edges, which is the shape programs write.
@@ -105,7 +105,7 @@ test "a none inside a struct in a container stays none" {
     }
     if v.get(1)? as second {
         if second.at? as p {
-            assert_eq(p.id, 1)
+            assert p.id == 1
         } else {
             assert false
         }
@@ -125,10 +125,10 @@ test "a Vec of optional links keeps its slots apart" {
     v.push(a)
     v.push(none)
 
-    assert_eq(v.len(), 2)
+    assert v.len() == 2
     if v.get(0)? as slot {
         if slot? as live {
-            assert_eq(live.id, 1)
+            assert live.id == 1
         } else {
             assert false           // a filled slot read as empty
         }

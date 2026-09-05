@@ -22,20 +22,20 @@ func classify(s: string) -> string {
 }
 
 test "std.strings — a parse failure names its own variant" {
-    assert_eq(classify("42"), "ok 42")
+    assert classify("42") == "ok 42"
     // Empty.
-    assert_eq(classify(""), "err no digits found")
+    assert classify("") == "err no digits found"
     // Invalid — this came back as `no digits found` on native.
-    assert_eq(classify("abc"), "err non-numeric character")
-    assert_eq(classify("12x"), "err non-numeric character")
+    assert classify("abc") == "err non-numeric character"
+    assert classify("12x") == "err non-numeric character"
     // OutOfRange: it looked like a number and didn't fit.
-    assert_eq(classify("99999999999999999999"), "err value out of range")
+    assert classify("99999999999999999999") == "err value out of range"
 }
 
 test "std.strings — whitespace is trimmed before the classification" {
-    assert_eq(classify("  7  "), "ok 7")
+    assert classify("  7  ") == "ok 7"
     // Trimmed to nothing, so it's Empty rather than Invalid.
-    assert_eq(classify("   "), "err no digits found")
+    assert classify("   ") == "err no digits found"
 }
 
 // Several in a row is what turned the wrong variant into a crash: the first
@@ -50,10 +50,7 @@ func all_three() -> string {
 }
 
 test "std.strings — a run of failures each report their own" {
-    assert_eq(
-        all_three(),
-        "err no digits found;err non-numeric character;err value out of range;ok 5;",
-    )
+    assert all_three() == "err no digits found;err non-numeric character;err value out of range;ok 5;"
 }
 
 // A float parse goes through the same status path.
@@ -67,9 +64,9 @@ func classify_float(s: string) -> string {
 }
 
 test "std.strings — parse<f64> reports its variant too" {
-    assert_eq(classify_float("2.5"), "ok 2.5")
-    assert_eq(classify_float(""), "err no digits found")
-    assert_eq(classify_float("zz"), "err non-numeric character")
+    assert classify_float("2.5") == "ok 2.5"
+    assert classify_float("") == "err no digits found"
+    assert classify_float("zz") == "err non-numeric character"
 }
 
 func main() {}

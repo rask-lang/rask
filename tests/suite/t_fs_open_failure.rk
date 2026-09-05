@@ -48,24 +48,18 @@ func create_result(path: string) -> string {
 }
 
 test "std.fs — opening a file that isn't there is an error" {
-    assert_eq(
-        open_result("/tmp/rask_t_fs_open_definitely_missing.txt"),
-        "not found: No such file or directory (os error 2)",
-    )
+    assert open_result("/tmp/rask_t_fs_open_definitely_missing.txt") == "not found: No such file or directory (os error 2)"
 }
 
 test "std.fs — creating under a directory that isn't there is an error" {
-    assert_eq(
-        create_result("/tmp/rask_t_fs_open_no_such_dir/f.txt"),
-        "not found: No such file or directory (os error 2)",
-    )
+    assert create_result("/tmp/rask_t_fs_open_no_such_dir/f.txt") == "not found: No such file or directory (os error 2)"
 }
 
 test "std.fs — the success path still works" {
     let path = "/tmp/rask_t_fs_open_ok.txt"
     let _ = fs.remove_file(path)
-    assert_eq(create_result(path), "created")
-    assert_eq(open_result(path), "read [hello]")
+    assert create_result(path) == "created"
+    assert open_result(path) == "read [hello]"
     let _ = fs.remove_file(path)
     assert(!fs.exists(path))
 }

@@ -13,28 +13,28 @@ import os
 
 test "std.os — setting, reading and removing a variable" {
     os.set_env("RASK_TEST_ENV_A", "one")
-    assert_eq(os.env("RASK_TEST_ENV_A") ?? "-", "one")
-    assert_eq(os.env_or("RASK_TEST_ENV_A", "fallback"), "one")
+    assert os.env("RASK_TEST_ENV_A") ?? "-" == "one"
+    assert os.env_or("RASK_TEST_ENV_A", "fallback") == "one"
 
     // Setting again replaces.
     os.set_env("RASK_TEST_ENV_A", "two")
-    assert_eq(os.env("RASK_TEST_ENV_A") ?? "-", "two")
+    assert os.env("RASK_TEST_ENV_A") ?? "-" == "two"
 
     os.remove_env("RASK_TEST_ENV_A")
     assert(os.env("RASK_TEST_ENV_A") is none)
-    assert_eq(os.env_or("RASK_TEST_ENV_A", "fallback"), "fallback")
+    assert os.env_or("RASK_TEST_ENV_A", "fallback") == "fallback"
 }
 
 test "std.os — an empty value is set, not unset" {
     os.set_env("RASK_TEST_ENV_EMPTY", "")
-    assert_eq(os.env("RASK_TEST_ENV_EMPTY") ?? "-", "")
+    assert os.env("RASK_TEST_ENV_EMPTY") ?? "-" == ""
     assert(!(os.env("RASK_TEST_ENV_EMPTY") is none))
     os.remove_env("RASK_TEST_ENV_EMPTY")
 }
 
 test "std.os — a name that was never set" {
     assert(os.env("RASK_TEST_ENV_NEVER_SET_XYZ") is none)
-    assert_eq(os.env_or("RASK_TEST_ENV_NEVER_SET_XYZ", "fb"), "fb")
+    assert os.env_or("RASK_TEST_ENV_NEVER_SET_XYZ", "fb") == "fb"
     // Removing one that isn't there is a no-op, not a failure.
     os.remove_env("RASK_TEST_ENV_NEVER_SET_XYZ")
     assert(os.env("RASK_TEST_ENV_NEVER_SET_XYZ") is none)
@@ -46,10 +46,10 @@ test "std.os — env_vars sees what set_env wrote" {
     for pair in os.env_vars() {
         if pair.0 == "RASK_TEST_ENV_LISTED" {
             found = found + 1
-            assert_eq(pair.1, "here")
+            assert pair.1 == "here"
         }
     }
-    assert_eq(found, 1)
+    assert found == 1
     os.remove_env("RASK_TEST_ENV_LISTED")
 }
 

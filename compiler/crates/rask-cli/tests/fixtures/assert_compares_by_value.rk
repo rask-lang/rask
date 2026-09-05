@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// assert_eq compares by value on every type, on both backends (testing A4).
+// `assert a == b` compares by value on every type, on both backends.
+//
+// This was `assert_eq`'s fixture. That spelling is gone (std.testing/A4 was
+// deleted), and the property it pinned belongs to `==` anyway.
 
 struct Point {
     public x: i32
@@ -9,50 +12,50 @@ struct Point {
 enum Color { Red, Green }
 
 func main() {
-    println("assert_eq_types")
+    println("assert_compares_by_value")
 }
 
 test "strings compare by content" {
     let a = "hei"
     let b = "hei"
-    assert_eq(a, b)
-    assert_eq(a, "hei")
+    assert a == b
+    assert a == "hei"
 }
 
 test "a heap string past the small-string limit" {
     let a = "en ganske lang streng som ikke passer i sso-bufferen"
     let b = "en ganske lang streng som ikke passer i sso-bufferen"
-    assert_eq(a, b)
+    assert a == b
 }
 
 test "floats" {
-    assert_eq(1.5, 1.5)
+    assert 1.5 == 1.5
     let f: f32 = 2.25
-    assert_eq(f, 2.25)
+    assert f == 2.25
 }
 
 test "chars" {
-    assert_eq('a', 'a')
+    assert 'a' == 'a'
 }
 
 test "bools" {
-    assert_eq(true, true)
-    assert_eq(false, false)
+    assert true == true
+    assert false == false
 }
 
 test "narrow integers" {
     let n: u16 = 8080
-    assert_eq(n, 8080)
+    assert n == 8080
     let m: i32 = -7
-    assert_eq(m, -7)
+    assert m == -7
 }
 
 test "structs" {
     let a = Point { x: 1, y: 2 }
     let b = Point { x: 1, y: 2 }
-    assert_eq(a, b)
+    assert a == b
 }
 
 test "enums" {
-    assert_eq(Color.Red, Color.Red)
+    assert Color.Red == Color.Red
 }

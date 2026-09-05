@@ -81,7 +81,35 @@ fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType) -> CmpFailHelper {
     if matches!(left_ty, MirType::I128) || matches!(right_ty, MirType::I128) {
         return CmpFailHelper::Typed("i128", MirType::I128);
     }
+    // An aggregate compares correctly — codegen emits a real field-by-field Eq
+    // — but there is nothing to print. It is passed by address, so the `i64`
+    // fallback below rendered the two *addresses*:
+    //
+    //   assertion failed: 140737253693408 == 140737253693424
+    //
+    // which says nothing and reads as though the comparison itself were by
+    // address. There is no rendering to reach for either: a struct opts into
+    // `Displayable` (std.fmt/D3) and most don't. So the message stands on its
+    // own, which is what `assert_eq` did for the same case.
+    if is_aggregate(left_ty) || is_aggregate(right_ty) {
+        return CmpFailHelper::NoOperands;
+    }
     CmpFailHelper::Typed("i64", MirType::I64)
+}
+
+/// A value with no one-line rendering: passed by address, and its contents are
+/// a layout rather than a number.
+fn is_aggregate(ty: &MirType) -> bool {
+    matches!(
+        ty,
+        MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Tuple(_)
+            | MirType::Array { .. }
+            | MirType::Slice(_)
+            | MirType::Link(_)
+            | MirType::Result { .. }
+    )
 }
 
 fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str)> {
@@ -1595,110 +1623,6 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(result_local), MirType::I64));
                 }
 
-                // assert_eq(got, expected) — compare, report got/expected on failure.
-                //
-                // This used to hand both sides to a runtime function typed
-                // (i64, i64). Two strings arrived as their addresses and never
-                // matched; a float or a char didn't even fit the signature, so
-                // Cranelift rejected the whole test function. Compare the same
-                // way `assert a == b` does and pick the reporter by type.
-                if func_name == "assert_eq" {
-                    let got_op = arg_operands.first().cloned()
-                        .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                    let expected_op = arg_operands.get(1).cloned()
-                        .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                    let got_ty = arg_mir_types.first().cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:957"));
-                    let expected_ty = arg_mir_types.get(1).cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:958"));
-
-                    let is_string = matches!(got_ty, MirType::String)
-                        || matches!(expected_ty, MirType::String);
-                    let is_float = got_ty.is_float() || expected_ty.is_float();
-                    let is_char = matches!(got_ty, MirType::Char)
-                        && matches!(expected_ty, MirType::Char);
-                    let is_bool = matches!(got_ty, MirType::Bool)
-                        && matches!(expected_ty, MirType::Bool);
-
-                    // Strings need the runtime's content compare; every other
-                    // type has a MIR-level Eq that codegen already knows how
-                    // to emit, aggregates included.
-                    let cond_local = self.builder.alloc_temp(MirType::Bool);
-                    if is_string {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(cond_local),
-                            func: FunctionRef::internal("string_eq".to_string()),
-                            args: vec![got_op.clone(), expected_op.clone()],
-                        }));
-                    } else {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: cond_local,
-                            rvalue: MirRValue::BinaryOp {
-                                op: crate::operand::BinOp::Eq,
-                                left: got_op.clone(),
-                                right: expected_op.clone(),
-                            },
-                        }));
-                    }
-
-                    let ok_block = self.builder.create_block();
-                    let fail_block = self.builder.create_block();
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                        cond: MirOperand::Local(cond_local),
-                        then_block: ok_block,
-                        else_block: fail_block,
-                    }));
-
-                    self.builder.switch_to_block(fail_block);
-                    let scalar = matches!(got_ty,
-                        MirType::Bool
-                        | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-                        | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-                        | MirType::Ptr | MirType::Handle);
-                    let (fail_fn, fail_args) = if is_string {
-                        ("assert_eq_fail_str", vec![got_op, expected_op])
-                    } else if is_float {
-                        // f32 reports at its own width — widening to double
-                        // round-trips against the wrong one and spells out the
-                        // f32's exact binary value instead of `1.1`.
-                        let both_f32 = matches!(got_ty, MirType::F32)
-                            && matches!(expected_ty, MirType::F32);
-                        let want = if both_f32 { MirType::F32 } else { MirType::F64 };
-                        let name = if both_f32 {
-                            "assert_eq_fail_f32"
-                        } else {
-                            "assert_eq_fail_f64"
-                        };
-                        (name, vec![
-                            self.widen_for_assert_helper(got_op, &got_ty, &want),
-                            self.widen_for_assert_helper(expected_op, &expected_ty, &want),
-                        ])
-                    } else if is_bool || is_char || scalar {
-                        let want = MirType::I64;
-                        let name = if is_bool {
-                            "assert_eq_fail_bool"
-                        } else if is_char {
-                            "assert_eq_fail_char"
-                        } else {
-                            "assert_eq_fail_i64"
-                        };
-                        (name, vec![
-                            self.widen_for_assert_helper(got_op, &got_ty, &want),
-                            self.widen_for_assert_helper(expected_op, &expected_ty, &want),
-                        ])
-                    } else {
-                        // Structs, enums, tuples — compared correctly above,
-                        // but there's no one-line rendering for the message.
-                        ("assert_eq_fail", Vec::new())
-                    };
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: None,
-                        func: FunctionRef::internal(fail_fn.to_string()),
-                        args: fail_args,
-                    }));
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-
-                    self.builder.switch_to_block(ok_block);
-                    return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
-                }
 
                 // skip("reason") — set skip flag then unwind via rask_test_skip
                 if func_name == "skip" {

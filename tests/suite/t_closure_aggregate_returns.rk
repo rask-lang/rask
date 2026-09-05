@@ -66,80 +66,80 @@ func sum_pair(f: func() -> Big) -> i64 {
 test "a string result survives being used as an operand" {
     let c = "hi"
     let f = || { return c }
-    assert_eq(f(), "hi")
-    assert_eq(f().len(), 2)
+    assert f() == "hi"
+    assert f().len() == 2
     let got = f()
-    assert_eq(got, "hi")
+    assert got == "hi"
 }
 
 test "a string result survives two uses in one expression" {
     let c = "ab"
     let f = || { return c }
-    assert_eq(f().len() + f().len(), 4)
+    assert f().len() + f().len() == 4
 }
 
 // A word-sized struct comes back as the value itself, not as an address.
 test "a one-word struct survives" {
     let s = Small { a: 42 }
     let f = || { return s }
-    assert_eq(f().a, 42)
+    assert f().a == 42
     let got = f()
-    assert_eq(got.a, 42)
+    assert got.a == 42
 }
 
 test "a struct narrower than a word survives" {
     let p = Pair8 { a: 1, b: 2 }
     let f = || { return p }
-    assert_eq(f().a, 1)
-    assert_eq(f().b, 2)
+    assert f().a == 1
+    assert f().b == 2
     let got = f()
-    assert_eq(got.a, 1)
-    assert_eq(got.b, 2)
+    assert got.a == 1
+    assert got.b == 2
 }
 
 // Exactly a word, but two fields rather than one.
 test "a two-field word-sized struct survives" {
     let p = Pair32 { a: 3, b: 4 }
     let f = || { return p }
-    assert_eq(f().a, 3)
-    assert_eq(f().b, 4)
+    assert f().a == 3
+    assert f().b == 4
     let got = f()
-    assert_eq(got.a + got.b, 7)
+    assert got.a + got.b == 7
 }
 
 test "a struct wider than a word survives" {
     let b = Big { a: 1, b: 2, c: 3 }
     let f = || { return b }
-    assert_eq(f().a, 1)
-    assert_eq(f().c, 3)
+    assert f().a == 1
+    assert f().c == 3
     let got = f()
-    assert_eq(got.a + got.b + got.c, 6)
+    assert got.a + got.b + got.c == 6
 }
 
 test "a struct with a string field survives" {
     let m = Mixed { n: 7, s: "seven" }
     let f = || { return m }
-    assert_eq(f().n, 7)
-    assert_eq(f().s, "seven")
+    assert f().n == 7
+    assert f().s == "seven"
     let got = f()
-    assert_eq(got.s, "seven")
+    assert got.s == "seven"
 }
 
 test "a fieldless enum survives" {
     let c = Colour.Green
     let f = || { return c }
-    assert_eq(colour_name(f()), "green")
+    assert colour_name(f()) == "green"
     let got = f()
-    assert_eq(colour_name(got), "green")
+    assert colour_name(got) == "green"
 }
 
 test "an enum with a payload survives" {
     let s = Shape.Rect(3, 4)
     let f = || { return s }
     match f() {
-        Shape.Dot => { assert_eq(1, 0) }
-        Shape.Circle(r) => { assert_eq(r, 0) }
-        Shape.Rect(w, h) => { assert_eq(w * h, 12) }
+        Shape.Dot => { assert 1 == 0 }
+        Shape.Circle(r) => { assert r == 0 }
+        Shape.Rect(w, h) => { assert w * h == 12 }
     }
 }
 
@@ -147,20 +147,20 @@ test "an enum with a payload survives" {
 test "a closure called through a parameter returns an aggregate" {
     let b = Big { a: 4, b: 5, c: 6 }
     let f = own || { return b }
-    assert_eq(sum_pair(f), 15)
+    assert sum_pair(f) == 15
 }
 
 // Scalars kept the old path — check they still work.
 test "scalar results are unaffected" {
     let n = 99
     let f = || { return n }
-    assert_eq(f(), 99)
+    assert f() == 99
 
     let d = 2.5
     let g = || { return d }
-    assert_eq(g(), 2.5)
+    assert g() == 2.5
 
     let b = true
     let h = || { return b }
-    assert_eq(h(), true)
+    assert h() == true
 }

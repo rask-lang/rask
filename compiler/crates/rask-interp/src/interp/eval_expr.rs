@@ -227,6 +227,14 @@ fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> Str
     if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
         return format!("{}: \"{}\" {} \"{}\"", prefix, left, op, right);
     }
+    // Anything native has no rendering for gets none here either. It compares
+    // an aggregate by address, so printing the operands there gave two pointer
+    // values; the interpreter has the whole struct and would have printed
+    // `Point { x: 1, y: 2 }`. Both are "correct" and they are not the same
+    // line, which is the one thing the two backends may not be.
+    if !renders_as_operand(left) || !renders_as_operand(right) {
+        return prefix.to_string();
+    }
     if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
         return format!(
             "{}: '{}' {} '{}' (left: '{}', right: '{}')",
@@ -234,6 +242,24 @@ fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> Str
         );
     }
     format!("{}: {} {} {} (left: {}, right: {})", prefix, left, op, right, left, right)
+}
+
+/// Has a one-line rendering both backends agree on.
+///
+/// The list is the MIR side's `classify_cmp_fail` read from the other end: it
+/// has a typed reporter for exactly these, and falls through to a message with
+/// no operands for everything else — optionals, structs, enums, tuples, arrays.
+fn renders_as_operand(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Bool(_)
+            | Value::Int(..)
+            | Value::Int128(_)
+            | Value::Uint128(_)
+            | Value::Float(..)
+            | Value::Char(_)
+            | Value::String(_)
+    )
 }
 
 fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: &str) -> String {

@@ -37,7 +37,7 @@ test "a link write through a mutate parameter reaches the caller" {
     attach(mutate h, n)
 
     if h.root? as r {
-        assert_eq(r.value, 7)
+        assert r.value == 7
     } else {
         assert false
     }
@@ -53,9 +53,9 @@ test "a link write still reaches the caller when the callee also stores" {
     let n = rack.insert(Node { value: 9, next: none })
     fill(mutate m, n)
 
-    assert_eq(m.count, 42)
+    assert m.count == 42
     if m.root? as r {
-        assert_eq(r.value, 9)
+        assert r.value == 9
     } else {
         assert false
     }
@@ -93,8 +93,8 @@ test "a list built through mutate parameters is traversable" {
         count = count + 1
         cur = node.next
     }
-    assert_eq(count, 3)
-    assert_eq(seen, 6)
+    assert count == 3
+    assert seen == 6
 }
 
 // Prepends, so the newest node is the root — one link write on the node and one

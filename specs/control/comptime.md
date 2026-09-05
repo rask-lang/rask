@@ -711,9 +711,9 @@ func factorial(n: u32) -> u32 {
 // Runtime tests (can use debugger!)
 @test
 func test_factorial() {
-    assert_eq(factorial(0), 1)
-    assert_eq(factorial(5), 120)
-    assert_eq(factorial(10), 3628800)
+    assert factorial(0) == 1
+    assert factorial(5) == 120
+    assert factorial(10) == 3628800
 }
 
 // Same function at comptime (CT6)

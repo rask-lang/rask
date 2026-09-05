@@ -145,16 +145,16 @@ func show(r: string or StoreError) -> string {
 
 test "type.errors/ER16b — `try … ?? continue` skips absences, finds the hit" {
     // items are n=0 (absent), n=3, n=4 — so the first hit is past a skip.
-    assert_eq(show(build().first_hit()), "v3")
-    assert_eq(show(broken_bag().first_hit()), "err:broken")
-    assert_eq(show(empty_bag().first_hit()), "MISS")
+    assert show(build().first_hit()) == "v3"
+    assert show(broken_bag().first_hit()) == "err:broken"
+    assert show(empty_bag().first_hit()) == "MISS"
 }
 
 test "type.errors/ER14a — the same result dropped to an optional (#634)" {
     // This is what the file avoided spelling out while `catch _ => none` on a
     // `T? or E` still gained a layer.
     if build().first_hit_optional()? as v {
-        assert_eq(v, "v3")
+        assert v == "v3"
     } else {
         assert false
     }

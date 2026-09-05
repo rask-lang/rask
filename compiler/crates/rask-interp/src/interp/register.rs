@@ -295,8 +295,6 @@ impl Interpreter {
         self.env
             .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
         self.env
-            .define("assert_eq".to_string(), Value::Builtin(BuiltinKind::AssertEq));
-        self.env
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env
             .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
