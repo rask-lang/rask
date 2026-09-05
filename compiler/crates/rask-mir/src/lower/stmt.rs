@@ -489,6 +489,26 @@ impl<'a> MirLowerer<'a> {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
                     None => (val_op, val_ty),
                 };
+                // The container this place *held* is about to be nobody's, and
+                // its records name it by address on every target it points at.
+                // Drop them before the store — a target deleted later would
+                // otherwise walk a record for storage the program has finished
+                // with (#983). Read the place first, so this is the old value.
+                if matches!(&target.kind, ExprKind::Field { .. } | ExprKind::Ident(_)) {
+                    if let Some(func) = self
+                        .ctx
+                        .lookup_raw_type(target.id)
+                        .cloned()
+                        .and_then(|t| self.ctx.container_link_forget(&t))
+                    {
+                        let (old_op, _) = self.lower_expr(target)?;
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal(func.to_string()),
+                            args: vec![old_op],
+                        }));
+                    }
+                }
                 // A container of links that arrived whole — a `filter` result,
                 // say — carries edges nothing recorded. Register them here; the
                 // records dedupe per (container, target), so this is free where

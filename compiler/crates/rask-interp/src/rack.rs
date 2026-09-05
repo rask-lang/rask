@@ -38,12 +38,19 @@ pub static EDGES_FIXED: AtomicUsize = AtomicUsize::new(0);
 pub static HOLDERS_VISITED: AtomicUsize = AtomicUsize::new(0);
 pub static DELETES: AtomicUsize = AtomicUsize::new(0);
 
+/// Has this program made a rack at all?
+///
+/// Native only arms its `atexit` printer when one is created, so a program with
+/// no rack says nothing there while the interpreter printed `0/0/0`. Same
+/// question, same answer.
+pub static RACKS_MADE: AtomicUsize = AtomicUsize::new(0);
+
 pub fn stats_enabled() -> bool {
     std::env::var("RASK_RACK_STATS").is_ok()
 }
 
 pub fn print_stats() {
-    if !stats_enabled() {
+    if !stats_enabled() || RACKS_MADE.load(Ordering::Relaxed) == 0 {
         return;
     }
     eprintln!(
@@ -126,6 +133,22 @@ pub fn register_field(
         }
     }
 
+    // A container replaced wholesale takes its records with it. The old `Vec`
+    // named *itself* in every target's incoming list, and nothing dropped those
+    // when the field stopped holding it — so `old.children =
+    // old.children.filter(…)` left a record for a vector nobody holds any more.
+    // The next delete of one of those targets walked it, found a dead weak
+    // reference, and counted a visit that fixed nothing (#983).
+    //
+    // Only containers: a struct value is shared by `Arc` here, so the one being
+    // replaced may still be reachable elsewhere and its edges are not ours to
+    // drop.
+    if let Some(old) = old {
+        if !std::ptr::eq(old as *const Value, value as *const Value) {
+            forget_container_edges(old, 0);
+        }
+    }
+
     if let Some((rack_id, target)) = any_link(value) {
         if let Some(rack) = crate::value::rack_by_id(rack_id) {
             rack.lock().unwrap().register_backlink(
@@ -136,6 +159,51 @@ pub fn register_field(
         return;
     }
     register_nested(value, 0);
+}
+
+/// Drop the records a container held, when the container itself is being
+/// replaced. Descends through options and nested containers; stops at a struct,
+/// whose data may still be reachable through another name.
+fn forget_container_edges(value: &Value, depth: usize) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    match value {
+        Value::Vec(vec) => {
+            let slot = BacklinkKey { holder: Arc::as_ptr(vec) as usize, field: None };
+            let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
+            for it in &items {
+                match any_link(it) {
+                    Some((rack_id, target)) => {
+                        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+                            rack.lock().unwrap().unregister_backlink(&target, &slot);
+                        }
+                    }
+                    None => forget_container_edges(it, depth + 1),
+                }
+            }
+        }
+        Value::Map(map) => {
+            let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
+            let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
+            for it in &items {
+                match any_link(it) {
+                    Some((rack_id, target)) => {
+                        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+                            rack.lock().unwrap().unregister_backlink(&target, &slot);
+                        }
+                    }
+                    None => forget_container_edges(it, depth + 1),
+                }
+            }
+        }
+        Value::Enum { fields, .. } => {
+            for f in fields {
+                forget_container_edges(f, depth + 1);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Record an edge pushed onto or written into an edge list.
@@ -225,6 +293,78 @@ pub fn register_nested(value: &Value, depth: usize) {
         Value::Enum { fields, .. } => {
             for f in fields {
                 register_nested(f, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Drop every edge the dying node itself holds, so its targets stop naming it.
+///
+/// The mirror of `register_nested`, and the counterpart of native's
+/// `forget_own_edges`. A node's own fields point *out*; those records live on
+/// the targets' incoming lists, keyed by this node. Leaving them there means a
+/// later delete of one of those targets walks a record naming a node that no
+/// longer exists — one wasted visit per stale record, and they accumulate for
+/// the life of the rack.
+///
+/// It showed up as a counter disagreement first: `l1_list_links.rk` reported
+/// `edges_fixed=1 holders_visited=1` on the interpreter and `0/0` natively,
+/// because a removed node's `prev` was still recorded on the node it had
+/// pointed at (#983).
+fn forget_own_edges(value: &Value, depth: usize) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    match value {
+        Value::Struct(s) => {
+            let fields: Vec<(String, Value)> = {
+                let guard = s.lock().unwrap();
+                guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            };
+            for (name, v) in &fields {
+                if let Some((rack_id, target)) = any_link(v) {
+                    let slot = BacklinkKey {
+                        holder: Arc::as_ptr(s) as usize,
+                        field: Some(name.clone()),
+                    };
+                    if let Some(rack) = crate::value::rack_by_id(rack_id) {
+                        rack.lock().unwrap().unregister_backlink(&target, &slot);
+                    }
+                    continue;
+                }
+                forget_own_edges(v, depth + 1);
+            }
+        }
+        Value::Vec(vec) => {
+            let slot = BacklinkKey { holder: Arc::as_ptr(vec) as usize, field: None };
+            let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
+            for it in &items {
+                if let Some((rack_id, target)) = any_link(it) {
+                    if let Some(rack) = crate::value::rack_by_id(rack_id) {
+                        rack.lock().unwrap().unregister_backlink(&target, &slot);
+                    }
+                    continue;
+                }
+                forget_own_edges(it, depth + 1);
+            }
+        }
+        Value::Map(map) => {
+            let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
+            let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
+            for it in &items {
+                if let Some((rack_id, target)) = any_link(it) {
+                    if let Some(rack) = crate::value::rack_by_id(rack_id) {
+                        rack.lock().unwrap().unregister_backlink(&target, &slot);
+                    }
+                    continue;
+                }
+                forget_own_edges(it, depth + 1);
+            }
+        }
+        Value::Enum { fields, .. } => {
+            for f in fields {
+                forget_own_edges(f, depth + 1);
             }
         }
         _ => {}
@@ -347,6 +487,11 @@ pub fn delete_node(
         let holders = guard.take_incoming(node);
         (guard.rack_id, holders)
     };
+
+    // The dying node's own edges go before its incoming ones are walked: its
+    // targets must stop naming it, or a later delete of one of them walks a
+    // record for a node that no longer exists.
+    forget_own_edges(&Value::Struct(Arc::clone(node)), 0);
 
     DELETES.fetch_add(1, Ordering::Relaxed);
     HOLDERS_VISITED.fetch_add(holders.len(), Ordering::Relaxed);

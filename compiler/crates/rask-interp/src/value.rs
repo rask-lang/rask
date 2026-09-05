@@ -424,6 +424,7 @@ static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<RackData>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn register_rack(rack: &Arc<Mutex<RackData>>) {
+    crate::rack::RACKS_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let id = rack.lock().unwrap().rack_id;
     let mut reg = STORE_REGISTRY.lock().unwrap();
     reg.retain(|_, w| w.strong_count() > 0);

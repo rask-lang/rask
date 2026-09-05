@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A rack's backlink records must not outlive the holder that made them. Two
+// ways they did (#983):
+//
+//   1. A deleted node's *own* edges. Its fields point out, and those records
+//      live on the targets. Native dropped them; the interpreter didn't, so a
+//      later delete of one of those targets walked a record naming a node that
+//      no longer existed.
+//
+//   2. A container replaced wholesale. `n.children = n.children.filter(…)`
+//      builds a fresh vector, and the old one's records name it by address on
+//      every target it pointed at. Neither end dropped those, so a later delete
+//      read the length of a vector the program had finished with.
+//
+// Nothing observable goes wrong in a small program — the fixup re-checks that
+// the slot really names the dying node before rewriting it, so a stale record
+// costs a wasted visit rather than a wrong answer. It shows up in
+// `RASK_RACK_STATS=1`, which is why the counters exist, and it is a read
+// through dead storage waiting to happen.
+
+import memory.Link
+import memory.Rack
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+    prev: Link<Node>?
+    kids: Vec<Link<Node>>
+}
+
+struct List {
+    nodes: Rack<Node>
+    head: Link<Node>?
+    tail: Link<Node>?
+}
+
+func push_back(mutate list: List, value: i32) -> Link<Node> {
+    let n = list.nodes.insert(Node {
+        value: value, next: none, prev: list.tail, kids: Vec.new(),
+    })
+    if list.tail? as t {
+        t.next = n
+    } else {
+        list.head = n
+    }
+    list.tail = n
+    return n
+}
+
+func remove(mutate list: List, take n: Link<Node>) {
+    if n.prev? as p { p.next = n.next } else { list.head = n.next }
+    if n.next? as x { x.prev = n.prev } else { list.tail = n.prev }
+    list.nodes.delete(n)
+}
+
+func length(list: List) -> i32 {
+    mut count = 0
+    mut cur = list.head
+    while cur? as n {
+        count = count + 1
+        cur = n.next
+    }
+    return count
+}
+
+test "a spliced-out node leaves nothing behind for the next delete" {
+    mut list = List { nodes: Rack.new(), head: none, tail: none }
+    let n1 = push_back(mutate list, 1)
+    let n2 = push_back(mutate list, 2)
+    let n3 = push_back(mutate list, 3)
+    let n4 = push_back(mutate list, 4)
+
+    remove(mutate list, n2)
+    remove(mutate list, n1)
+    remove(mutate list, n4)
+
+    assert length(list) == 1
+    assert list.nodes.len() == 1
+    if list.head? as h {
+        assert h.value == 3
+    } else {
+        assert false, "node 3 should still be the head"
+    }
+    let _ = n3
+}
+
+test "a replaced container's entries stop naming it" {
+    mut s: Rack<Node> = Rack.new()
+    let parent = s.insert(Node { value: 0, next: none, prev: none, kids: Vec.new() })
+    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
+    let b = s.insert(Node { value: 2, next: none, prev: none, kids: Vec.new() })
+    parent.kids.push(a)
+    parent.kids.push(b)
+    assert parent.kids.len() == 2
+
+    // A fresh vector: the old one's records are the ones that used to linger.
+    parent.kids = parent.kids.filter(|c| c.value != 1)
+    assert parent.kids.len() == 1
+
+    // Deleting the node the *old* vector still holds must not touch it.
+    s.delete(a)
+    assert parent.kids.len() == 1
+    assert parent.kids[0].value == 2
+
+    s.delete(b)
+    assert parent.kids.len() == 0
+    assert s.len() == 1
+}
+
+test "the delete still fixes a live container entry" {
+    mut s: Rack<Node> = Rack.new()
+    let parent = s.insert(Node { value: 0, next: none, prev: none, kids: Vec.new() })
+    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
+    parent.kids.push(a)
+    assert parent.kids.len() == 1
+    s.delete(a)
+    assert parent.kids.len() == 0
+}
+
+test "and a live field edge" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
+    let b = s.insert(Node { value: 2, next: none, prev: none, kids: Vec.new() })
+    a.next = b
+    assert !(a.next is none)
+    s.delete(b)
+    assert a.next is none
+}

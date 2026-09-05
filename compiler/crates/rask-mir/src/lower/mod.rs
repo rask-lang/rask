@@ -1114,6 +1114,22 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// The counterpart: what to call on the container a place *held*, when that
+    /// place is about to hold a different one.
+    ///
+    /// A container's records name it by address and live on the targets, which
+    /// have no way to hear that nobody holds the container any more. So
+    /// `old.children = old.children.filter(…)` left records for the vector it
+    /// replaced, and a later delete of one of those targets walked a record for
+    /// storage the program had finished with (#983).
+    pub(crate) fn container_link_forget(&self, ty: &Type) -> Option<&'static str> {
+        match self.container_link_registration(ty)? {
+            "Link_register_vec" => Some("Link_forget_vec"),
+            "Link_register_map" => Some("Link_forget_map"),
+            _ => None,
+        }
+    }
+
     /// Does this struct have a field that can hold an edge — a `Link<T>`, or a
     /// `Vec`/`Map` of them? Same question codegen asks to build the descriptor;
     /// asked here to decide whether the call is worth emitting at all.

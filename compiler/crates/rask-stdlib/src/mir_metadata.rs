@@ -357,6 +357,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_register_element", Internal::FreshFromReceiver),
     ("Link_register_vec", Internal::FreshFromReceiver),
     ("Link_register_entry", Internal::FreshFromReceiver),
+    // The other half: drop the records of a container a place has stopped
+    // holding. Same shape — it reads the container and owns nothing.
+    ("Link_forget_vec", Internal::FreshFromReceiver),
+    ("Link_forget_map", Internal::FreshFromReceiver),
 
     // ── Consume the receiver ────────────────────────────────────
     // The frees this pipeline emits for itself. They take the container and it

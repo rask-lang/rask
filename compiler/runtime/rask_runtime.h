@@ -581,6 +581,8 @@ void      rask_link_set(void **slot, void *target);
 // re-splices in O(1) — no scan of the old target's incoming list.
 void      rask_link_set_node(void *payload, int64_t offset, void *target);
 void      rask_link_forget(void **slot);
+void      rask_link_forget_vec(RaskVec *v);
+void      rask_link_forget_map(RaskMap *m);
 // A link stored in a container. The record names the container, not a position:
 // pushes, removals and rehashing all move entries around.
 void      rask_link_register_element(RaskVec *v, void *target);

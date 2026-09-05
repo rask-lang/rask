@@ -341,12 +341,31 @@ void rask_link_register_map(RaskMap *m) {
     rask_vec_free(vals);
 }
 
+static void forget_vec_edges(RaskVec *v);
+static void forget_map_edges(RaskMap *m);
+
 // Forget whatever edge `slot` holds, without writing it. Emitted where a holder
 // dies while its target is still live — the rack must not keep the address of
 // storage that is going away.
 void rask_link_forget(void **slot) {
     void *old = *slot;
     if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
+}
+
+// The container half of the same thing: a field holding a `Vec`/`Map` of links
+// is overwritten, so the container it held is about to be nobody's. Its records
+// name it by address and live on the targets, which have no way to find out
+// that the holder is gone — so a later delete of one of those targets walks a
+// record for a vector the program has finished with, and reads its length
+// through a pointer nothing keeps alive any more (#983).
+//
+// Emitted at the assignment, against the *old* value, right before the store.
+void rask_link_forget_vec(RaskVec *v) {
+    forget_vec_edges(v);
+}
+
+void rask_link_forget_map(RaskMap *m) {
+    forget_map_edges(m);
 }
 
 // ─── Descriptor walks ──────────────────────────────────────────────────────

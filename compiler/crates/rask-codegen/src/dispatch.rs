@@ -956,6 +956,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
+        StdlibEntry::simple("Link_forget_vec", "rask_link_forget_vec", &[types::I64], None, false),
+        StdlibEntry::simple("Link_forget_map", "rask_link_forget_map", &[types::I64], None, false),
 
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
