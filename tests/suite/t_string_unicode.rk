@@ -21,14 +21,14 @@ const nbsp = "\u{00A0}"
 const ideographic = "\u{3000}"
 
 test "std.strings — trimming knows Unicode whitespace" {
-    assert_eq("{nbsp}hi{nbsp}".trim(), "hi")
-    assert_eq("{ideographic}hi{ideographic}".trim(), "hi")
-    assert_eq("\u{2003}hi".trim_start(), "hi")
-    assert_eq("hi\u{2003}".trim_end(), "hi")
+    assert "{nbsp}hi{nbsp}".trim() == "hi"
+    assert "{ideographic}hi{ideographic}".trim() == "hi"
+    assert "\u{2003}hi".trim_start() == "hi"
+    assert "hi\u{2003}".trim_end() == "hi"
     // Still ASCII-correct.
-    assert_eq("  hi\t\n".trim(), "hi")
-    assert_eq("".trim(), "")
-    assert_eq("hi".trim(), "hi")
+    assert "  hi\t\n".trim() == "hi"
+    assert "".trim() == ""
+    assert "hi".trim() == "hi"
 }
 
 test "std.strings — splitting on whitespace knows Unicode whitespace" {
@@ -38,8 +38,8 @@ test "std.strings — splitting on whitespace knows Unicode whitespace" {
         joined = "{joined}[{w.to_string()}]"
         n = n + 1
     }
-    assert_eq(n, 3)
-    assert_eq(joined, "[a][b][c]")
+    assert n == 3
+    assert joined == "[a][b][c]"
 }
 
 test "std.strings — a char knows whether it's whitespace" {
@@ -53,17 +53,17 @@ test "std.strings — a char knows whether it's whitespace" {
 }
 
 test "std.strings — reverse works on graphemes" {
-    assert_eq("Wörld".reverse(), "dlröW")
-    assert_eq("abc".reverse(), "cba")
-    assert_eq("".reverse(), "")
-    assert_eq("é".reverse(), "é")
+    assert "Wörld".reverse() == "dlröW"
+    assert "abc".reverse() == "cba"
+    assert "".reverse() == ""
+    assert "é".reverse() == "é"
     // Reversing twice is the identity, which byte-reversal also satisfies —
     // the point is that one reversal is still valid text.
-    assert_eq("Wörld".reverse().reverse(), "Wörld")
+    assert "Wörld".reverse().reverse() == "Wörld"
 
     // A combining mark stays on the character it belongs to. Scalar reversal
     // leaves the accent looking for a letter (std.strings/U2).
-    assert_eq("cafe\u{0301}".reverse(), "\u{0065}\u{0301}fac")
+    assert "cafe\u{0301}".reverse() == "\u{0065}\u{0301}fac"
 }
 
 // The trimmed region's byte range is `s.trim().span()` (std.strings) — which
@@ -76,13 +76,13 @@ test "std.strings — char_indices pairs a byte offset with a scalar" {
     for (i, c) in "hé!".char_indices() {
         out = "{out}{i}:{c} "
     }
-    assert_eq(out, "0:h 1:é 3:! ")
+    assert out == "0:h 1:é 3:! "
 
     mut count = 0
     for (_, _) in "".char_indices() {
         count = count + 1
     }
-    assert_eq(count, 0)
+    assert count == 0
 }
 
 func main() {}

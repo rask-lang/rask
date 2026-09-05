@@ -25,10 +25,10 @@ func p(s: string) -> Path {
 
 test "std.path — a module-qualified constructor compiles" {
     let a = path.Path.from("/a/b.txt")
-    assert_eq(a.as_string(), "/a/b.txt")
+    assert a.as_string() == "/a/b.txt"
     // The unqualified form was always fine; both spell the same thing.
     let b = Path.from("/a/b.txt")
-    assert_eq(b.as_string(), a.as_string())
+    assert b.as_string() == a.as_string()
 }
 
 test "std.path — absolute and relative" {
@@ -41,46 +41,46 @@ test "std.path — absolute and relative" {
 
 test "std.path — the pieces of a path" {
     let f = p("/a/b/c.txt")
-    assert_eq(f.file_name() ?? "-", "c.txt")
-    assert_eq(f.extension() ?? "-", "txt")
-    assert_eq(f.stem() ?? "-", "c")
+    assert f.file_name() ?? "-" == "c.txt"
+    assert f.extension() ?? "-" == "txt"
+    assert f.stem() ?? "-" == "c"
     assert(f.has_extension())
 
     let noext = p("/a/README")
-    assert_eq(noext.extension() ?? "-", "-")
-    assert_eq(noext.stem() ?? "-", "README")
+    assert noext.extension() ?? "-" == "-"
+    assert noext.stem() ?? "-" == "README"
     assert(!noext.has_extension())
 
     // A leading dot is the whole name, not an extension.
     let dotfile = p("/a/.bashrc")
-    assert_eq(dotfile.extension() ?? "-", "-")
-    assert_eq(dotfile.stem() ?? "-", ".bashrc")
+    assert dotfile.extension() ?? "-" == "-"
+    assert dotfile.stem() ?? "-" == ".bashrc"
 }
 
 test "std.path — parent" {
     let f = p("/a/b/c.txt")
     let up = f.parent()
     if up is Path as v {
-        assert_eq(v.as_string(), "/a/b")
+        assert v.as_string() == "/a/b"
     } else {
-        assert_eq("parent was none", "")
+        assert "parent was none" == ""
     }
     // The root has no parent.
     assert(p("/").parent() is none)
 }
 
 test "std.path — building a new path" {
-    assert_eq((p("/a") / "b").as_string(), "/a/b")
-    assert_eq(p("/a/b.txt").with_extension("md").as_string(), "/a/b.md")
-    assert_eq(p("/a/b.txt").with_file_name("z.md").as_string(), "/a/z.md")
+    assert (p("/a") / "b").as_string() == "/a/b"
+    assert p("/a/b.txt").with_extension("md").as_string() == "/a/b.md"
+    assert p("/a/b.txt").with_file_name("z.md").as_string() == "/a/z.md"
 }
 
 test "std.path — components are strings, not their bytes" {
-    assert_eq(p("/a/b/c").components().join(","), "a,b,c")
+    assert p("/a/b/c").components().join(",") == "a,b,c"
     // A trailing separator adds no empty component.
-    assert_eq(p("/a/b/").components().join(","), "a,b")
-    assert_eq(p("a/b").components().join(","), "a,b")
-    assert_eq(p("/").components().len(), 0)
+    assert p("/a/b/").components().join(",") == "a,b"
+    assert p("a/b").components().join(",") == "a,b"
+    assert p("/").components().len() == 0
 }
 
 func main() {}

@@ -233,41 +233,41 @@ func show(r: string or IoError) -> string {
 }
 
 test "type.optionals/OPT19 — a scalar payload binds per iteration" {
-    assert_eq(sum_positions(4), 6)
-    assert_eq(sum_positions(0), 0)
+    assert sum_positions(4) == 6
+    assert sum_positions(0) == 0
 }
 
 test "type.optionals/OPT19 — aggregate payloads survive the bind" {
-    assert_eq(join_lines(), "[alpha][beta]")
-    assert_eq(total_word_len(), 9)
+    assert join_lines() == "[alpha][beta]"
+    assert total_word_len() == 9
 }
 
 test "type.optionals/OPT19 — draining a Vec through pop()" {
-    assert_eq(drain_sum(), 6)
+    assert drain_sum() == 6
 }
 
 test "type.errors/ER16 — `(try read())? as line` reads to end, then propagates" {
-    assert_eq(show(read_all(false)), "<alpha><beta>")
-    assert_eq(show(read_all(true)), "err:closed")
+    assert show(read_all(false)) == "<alpha><beta>"
+    assert show(read_all(true)) == "err:closed"
 }
 
 test "ctrl.control-flow — labels, break and continue in the bound loop" {
-    assert_eq(first_over(5, 3), 3)
-    assert_eq(first_over(2, 9), -1)
+    assert first_over(5, 3) == 3
+    assert first_over(2, 9) == -1
 }
 
 test "type.optionals/OPT19 — nested loops keep both bindings live" {
-    assert_eq(nested(2), 22)
+    assert nested(2) == 22
 }
 
 test "type.optionals/OPT19 — the binder may shadow, and needs no name at all" {
-    assert_eq(shadowed(4), 6)
-    assert_eq(count_until_absent(3), 3)
+    assert shadowed(4) == 6
+    assert count_until_absent(3) == 3
 }
 
 test "ctrl.control-flow — a `return` out of the bound body returns" {
-    assert_eq(first_position(2), 100)
-    assert_eq(first_position(0), -1)
+    assert first_position(2) == 100
+    assert first_position(0) == -1
 }
 
 func main() {

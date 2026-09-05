@@ -32,25 +32,13 @@ struct Task {
 }
 
 test "std.encoding — a unit variant is its own name" {
-    assert_eq(
-        json.encode(Task { name: "a", status: Status.Pending }),
-        "{{\"name\":\"a\",\"status\":\"Pending\"}}",
-    )
-    assert_eq(
-        json.encode(Task { name: "b", status: Status.Active }),
-        "{{\"name\":\"b\",\"status\":\"Active\"}}",
-    )
-    assert_eq(
-        json.encode(Task { name: "c", status: Status.Done }),
-        "{{\"name\":\"c\",\"status\":\"Done\"}}",
-    )
+    assert json.encode(Task { name: "a", status: Status.Pending }) == "{{\"name\":\"a\",\"status\":\"Pending\"}}"
+    assert json.encode(Task { name: "b", status: Status.Active }) == "{{\"name\":\"b\",\"status\":\"Active\"}}"
+    assert json.encode(Task { name: "c", status: Status.Done }) == "{{\"name\":\"c\",\"status\":\"Done\"}}"
 }
 
 test "std.encoding — pretty printing an enum field" {
-    assert_eq(
-        json.encode_pretty(Task { name: "a", status: Status.Done }),
-        "{{\n  \"name\": \"a\",\n  \"status\": \"Done\"\n}}",
-    )
+    assert json.encode_pretty(Task { name: "a", status: Status.Done }) == "{{\n  \"name\": \"a\",\n  \"status\": \"Done\"\n}}"
 }
 
 // An enum that also has payload variants: the unit ones still work, because
@@ -65,7 +53,7 @@ struct Holder {
 }
 
 test "std.encoding — a unit variant works even with payload siblings" {
-    assert_eq(json.encode(Holder { s: Shape.Point }), "{{\"s\":\"Point\"}}")
+    assert json.encode(Holder { s: Shape.Point }) == "{{\"s\":\"Point\"}}"
 }
 
 // A bare enum value, not nested in a struct field. Native had no enum case in
@@ -74,13 +62,13 @@ test "std.encoding — a unit variant works even with payload siblings" {
 // stack slot as a number, silently, with no panic to catch it (found writing
 // this fix; same family as the struct-field case #854 itself is about).
 test "std.encoding — a bare enum value encodes the same as a field" {
-    assert_eq(json.encode(Shape.Point), "\"Point\"")
-    assert_eq(json.encode(Shape.Circle { radius: 4.0 }), "{{\"Circle\":{{\"radius\":4}}}}")
+    assert json.encode(Shape.Point) == "\"Point\""
+    assert json.encode(Shape.Circle { radius: 4.0 }) == "{{\"Circle\":{{\"radius\":4}}}}"
 }
 
 test "std.encoding/E22 — a struct-shaped payload nests under the variant name" {
-    assert_eq(json.encode(Holder { s: Shape.Circle { radius: 1.5 } }), "{{\"s\":{{\"Circle\":{{\"radius\":1.5}}}}}}")
-    assert_eq(json.encode(Shape.Circle { radius: 2.5 }), "{{\"Circle\":{{\"radius\":2.5}}}}")
+    assert json.encode(Holder { s: Shape.Circle { radius: 1.5 } }) == "{{\"s\":{{\"Circle\":{{\"radius\":1.5}}}}}}"
+    assert json.encode(Shape.Circle { radius: 2.5 }) == "{{\"Circle\":{{\"radius\":2.5}}}}"
 }
 
 enum Number {
@@ -89,8 +77,8 @@ enum Number {
 }
 
 test "std.encoding/E23 — a single unnamed payload goes in directly" {
-    assert_eq(json.encode(Number.Whole(7)), "{{\"Whole\":7}}")
-    assert_eq(json.encode(Number.Fraction(0.5)), "{{\"Fraction\":0.5}}")
+    assert json.encode(Number.Whole(7)) == "{{\"Whole\":7}}"
+    assert json.encode(Number.Fraction(0.5)) == "{{\"Fraction\":0.5}}"
 }
 
 // A tuple-style variant whose one field is written *with* a name
@@ -103,7 +91,7 @@ enum Message {
 }
 
 test "std.encoding/E22 — a named single field in a tuple variant still nests" {
-    assert_eq(json.encode(Message.Wrapped(5)), "{{\"Wrapped\":{{\"value\":5}}}}")
+    assert json.encode(Message.Wrapped(5)) == "{{\"Wrapped\":{{\"value\":5}}}}"
 }
 
 @tag("type")
@@ -115,18 +103,18 @@ enum Event {
 }
 
 test "std.encoding/E24 — @tag flattens the tag into the same object" {
-    assert_eq(json.encode(Event.Click { x: 10, y: 20 }), "{{\"type\":\"Click\",\"x\":10,\"y\":20}}")
+    assert json.encode(Event.Click { x: 10, y: 20 }) == "{{\"type\":\"Click\",\"x\":10,\"y\":20}}"
 }
 
 test "std.encoding/E25 — @rename overrides a variant's serialized name" {
-    assert_eq(json.encode(Event.KeyPress { code: 65 }), "{{\"type\":\"key_press\",\"code\":65}}")
+    assert json.encode(Event.KeyPress { code: 65 }) == "{{\"type\":\"key_press\",\"code\":65}}"
 }
 
 @tag("kind")
 enum Signal { Ready  Done }
 
 test "std.encoding/E24 — a unit variant under @tag is still an object" {
-    assert_eq(json.encode(Signal.Ready), "{{\"kind\":\"Ready\"}}")
+    assert json.encode(Signal.Ready) == "{{\"kind\":\"Ready\"}}"
 }
 
 func main() {}

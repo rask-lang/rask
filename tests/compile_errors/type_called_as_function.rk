@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: a struct or enum name used as a constructor call (E0345)
+// Rejects: a struct or enum name used as a constructor call (E0345)
 // Only nominal types (`type Name = Underlying`) have `Name(value)` (T7).
 // Structs are built field by field — there are no tuple structs (S1).
 

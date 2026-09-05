@@ -48,12 +48,12 @@ struct Point {
 test "mutate element — a Vec element is written back" {
     mut arr: Vec<i64> = [1, 2, 3]
     bump(mutate arr[0])
-    assert_eq(arr[0], 101)
+    assert arr[0] == 101
     // Only that element.
-    assert_eq(arr[1], 2)
-    assert_eq(arr[2], 3)
+    assert arr[1] == 2
+    assert arr[2] == 3
     bump(mutate arr[2])
-    assert_eq(arr.join(","), "101,2,103")
+    assert arr.join(",") == "101,2,103"
 }
 
 test "mutate element — a Map value is written back" {
@@ -61,8 +61,8 @@ test "mutate element — a Map value is written back" {
     m.insert("k", 1)
     m.insert("j", 5)
     bump(mutate m["k"])
-    assert_eq(m.get("k") ?? -1, 101)
-    assert_eq(m.get("j") ?? -1, 5)
+    assert m.get("k") ?? -1 == 101
+    assert m.get("j") ?? -1 == 5
 }
 
 // The element's width decides the store width. A full-word store into a narrow
@@ -70,13 +70,13 @@ test "mutate element — a Map value is written back" {
 test "mutate element — narrower and floating element types" {
     mut a: Vec<i32> = [1, 2]
     bump32(mutate a[0])
-    assert_eq(a[0], 101)
-    assert_eq(a[1], 2)
+    assert a[0] == 101
+    assert a[1] == 2
 
     mut f: Vec<f64> = [1.0, 2.0]
     bumpf(mutate f[1])
-    assert_eq(f[0], 1.0)
-    assert_eq(f[1], 2.5)
+    assert f[0] == 1.0
+    assert f[1] == 2.5
 
     mut b: Vec<bool> = [false, false]
     flip(mutate b[1])
@@ -88,15 +88,15 @@ test "mutate element — narrower and floating element types" {
 test "mutate element — a struct field still writes back" {
     mut p = Point { x: 1, y: 2 }
     bump(mutate p.x)
-    assert_eq(p.x, 101)
-    assert_eq(p.y, 2)
+    assert p.x == 101
+    assert p.y == 2
 }
 
 // mem.parameters/PM2: the caller sees the write here as well (#899).
 test "mutate element — a plain local writes back too" {
     mut n = 1
     bump(mutate n)
-    assert_eq(n, 101)
+    assert n == 101
 }
 
 func main() {}

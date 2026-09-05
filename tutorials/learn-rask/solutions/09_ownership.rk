@@ -36,7 +36,7 @@ func mean(data: Vec<f64>) -> f64 {
     for v in data {
         total = total + v
     }
-    return total / data.len() as f64
+    return total / data.len().round<f64>()
 }
 
 func std_dev(data: Vec<f64>) -> f64 {
@@ -46,7 +46,7 @@ func std_dev(data: Vec<f64>) -> f64 {
         let diff = v - m
         sum_sq = sum_sq + diff * diff
     }
-    return sqrt(sum_sq / data.len() as f64)
+    return sqrt(sum_sq / data.len().round<f64>())
 }
 
 func altitudes_above(log: Vec<i32>, threshold: i32) -> Vec<i32> {

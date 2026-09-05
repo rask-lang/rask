@@ -184,6 +184,7 @@ t_subprocess.rk  # 24 allocations
 t_supertrait_dispatch.rk  # 4 allocations
 t_sync_box_payloads.rk  # 14 allocations
 t_test_const_init.rk  # 4 allocations
+t_test_isolation.rk  # 2 allocations — a module-level Shared box, #1099
 t_text_units.rk  # 9 allocations
 t_trait_object_in_field_container.rk  # 24 allocations
 t_trait_object_optional_payload.rk  # 6 allocations

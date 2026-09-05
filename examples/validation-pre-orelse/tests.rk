@@ -11,7 +11,7 @@ test "priority order follows variant order" {
 }
 
 test "priority parses known labels and rejects the rest" {
-    assert_eq(Priority.from_label("high")!, Priority.High)
+    assert Priority.from_label("high")! == Priority.High
     let bad = Priority.from_label("epic")
     assert bad is ValidationError
 }
@@ -28,7 +28,7 @@ test "email equality is case-insensitive (custom Equal)" {
     let b = EmailAddress { raw: "bo@example.io" }
     assert a == b
     // OC1: the redeclared Hashable must agree with the override.
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
 }
 
 test "ids are distinct values, stepped through .value" {
@@ -36,14 +36,14 @@ test "ids are distinct values, stepped through .value" {
     // nominal-type constructor (T7), and structs have no tuple form (S1).
     let a = TaskId { value: 1 }
     let b = a.next()
-    assert_eq(b.value, 2)
+    assert b.value == 2
     assert a != b
 }
 
 test "config carries its defaults" {
     let c = Config.new()
-    assert_eq(c.port, 8080)
-    assert_eq(c.host, "0.0.0.0")
+    assert c.port == 8080
+    assert c.host == "0.0.0.0"
     assert c.request_log
 }
 
@@ -62,8 +62,8 @@ test "validation catches an empty title" {
 
 test "percentile handles the empty and single-sample cases" {
     mut empty = Vec.new()
-    assert_eq(percentile(empty, 50), 0.0)
+    assert percentile(empty, 50) == 0.0
 
     mut one = Vec.from([42.0])
-    assert_eq(percentile(one, 95), 42.0)
+    assert percentile(one, 95) == 42.0
 }

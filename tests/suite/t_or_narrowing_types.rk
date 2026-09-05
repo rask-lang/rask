@@ -50,7 +50,7 @@ func an_error() -> Duration or Failed {
 test "or-narrowing — a Duration payload is a Duration" {
     let d = a_duration()
     if d is Duration as span {
-        assert_eq(span.as_millis(), 250)
+        assert span.as_millis() == 250
     } else as e {
         assert(false)
     }
@@ -68,7 +68,7 @@ test "or-narrowing — an Instant payload is an Instant" {
 test "or-narrowing — a 128-bit payload is an i128" {
     let n = a_wide_int()
     if n is i128 as v {
-        assert_eq(v, 170141183460469231731687303715884105727)
+        assert v == 170141183460469231731687303715884105727
     } else as e {
         assert(false)
     }
@@ -79,14 +79,14 @@ test "or-narrowing — the error branch still wins when it should" {
     if d is Duration as span {
         assert(false)
     } else as e {
-        assert_eq(e.message(), "nope")
+        assert e.message() == "nope"
     }
 }
 
 test "or-narrowing — an optional payload of a box type" {
     let maybe: Duration? = Duration.seconds(2)
     if maybe is Duration as span {
-        assert_eq(span.as_seconds(), 2)
+        assert span.as_seconds() == 2
     } else {
         assert(false)
     }

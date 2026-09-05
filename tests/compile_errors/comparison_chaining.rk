@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: comparisons don't chain (type.operators/P2).
+//
+// `a < b < c` groups as `(a < b) < c` — it compares a bool against `c`. In most
+// languages that's a type error and the reader gets told something. In Rask
+// `bool` is orderable (`false < true`), so when the trailing operand is a bool
+// the whole thing type-checks, runs, and answers the wrong question in silence.
+//
+// The harness audit found this unenforced: `let x: bool = a == b == c` compiled
+// and printed `true`. The marker for it lived in `syntax_rejected.rk`, below
+// four parse errors that stopped the pipeline before the checker ever ran, so
+// nothing ever noticed. It lives here now, in a file whose errors all come from
+// the same pass.
+//
+// The way to say it is `&&`, or parentheses when you really do mean to compare
+// the bool.
+
+// --- ordering chain, integer trailing operand ---
+// ERROR: comparisons don't chain — `<` follows a comparison [E0100]
+func ordering_chain() {
+    let a = 1
+    let b = 2
+    let c = 3
+    let x: bool = a < b < c
+}
+
+// --- equality chain with a bool trailing operand: the silent one ---
+// This is the shape that used to compile and run. `(a == b) == c` is a legal
+// bool-vs-bool comparison, so no later pass had anything to complain about.
+// ERROR: comparisons don't chain — `==` follows a comparison [E0100]
+func equality_chain_that_used_to_compile() {
+    let a = 1
+    let b = 1
+    let c = true
+    let x: bool = a == b == c
+}
+
+// --- mixed ordering then equality, bool trailing operand ---
+// ERROR: comparisons don't chain — `==` follows a comparison [E0100]
+func mixed_chain() {
+    let a = 1
+    let b = 2
+    let d = false
+    let y: bool = a < b == d
+}
+
+// --- the sign-difference idiom ---
+// `if a < 0 != b < 0` reads as "do these differ in sign" and today groups the
+// way its author meant, because `<` binds tighter than `!=`. It's still a chain,
+// and still the shape P2 exists to stop the reader guessing at. Two sites in the
+// tree wrote it; both now say `(a < 0) != (b < 0)`.
+// ERROR: comparisons don't chain — `!=` follows a comparison [E0100]
+func sign_difference() {
+    let a: i64 = -1
+    let b: i64 = 1
+    let differ: bool = a < 0 != b < 0
+}
+
+// --- three in a row ---
+// ERROR: comparisons don't chain — `<=` follows a comparison [E0100]
+func three_in_a_row() {
+    let a = 1
+    let b = 2
+    let c = 3
+    let d = 4
+    let x: bool = a <= b <= c <= d
+}

@@ -415,10 +415,29 @@ fn main() {
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
-            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
-            let sequential = cmd_args.contains(&"--sequential");
-            let seed = extract_flag_value(&cmd_args, "--seed");
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed"]);
+            // These three were accepted and did nothing — `--verbose` had
+            // nothing to add (every test name is printed already), and the
+            // other two are switches for features that aren't built. A flag
+            // that lies is worse than one that isn't there, and silently
+            // ignoring it is worse still: `--seed 5` would have left `5` to be
+            // read as the file. They come back with T7 and T8.
+            for dead in ["--verbose", "--sequential", "--seed"] {
+                if cmd_args.contains(&dead) {
+                    let why = match dead {
+                        "--verbose" => "every test name is printed already",
+                        "--sequential" => "tests run sequentially; parallel execution isn't built (std.testing/T7)",
+                        _ => "random test ordering isn't built (std.testing/T8)",
+                    };
+                    eprintln!(
+                        "{}: `rask test` has no `{}` — {}",
+                        output::error_label(),
+                        dead,
+                        why,
+                    );
+                    process::exit(1);
+                }
+            }
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -426,7 +445,6 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let test_opts = commands::run::TestOptions { verbose, sequential, seed };
             let interp = cmd_args.contains(&"--interp");
             // Native is what `test` already does, so `--native` reads as a
             // deliberate choice and changes nothing. Anyone reaching for it is
@@ -456,7 +474,7 @@ fn main() {
                     commands::run::cmd_test_files_native(file, filter, format);
                 }
             } else {
-                commands::run::cmd_test_native_with_opts(file, filter, format, &test_opts);
+                commands::run::cmd_test_native(file, filter, format);
             }
         }
         "benchmark" | "bench" => {

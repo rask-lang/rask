@@ -472,6 +472,52 @@ impl PartialEq for ComptimeValue {
     }
 }
 
+/// Comparison methods desugaring produces. `ne` never appears — `a != b`
+/// becomes `!a.eq(b)`.
+fn is_comparison_method(method: &str) -> bool {
+    matches!(method, "eq" | "lt" | "gt" | "le" | "ge")
+}
+
+/// Render a value for an assert label. Strings and chars are quoted so an
+/// empty string or a stray space is visible; everything else prints plainly.
+fn show(v: &ComptimeValue) -> String {
+    match v {
+        ComptimeValue::Unit => "()".to_string(),
+        ComptimeValue::Bool(b) => b.to_string(),
+        ComptimeValue::I8(n) => n.to_string(),
+        ComptimeValue::I16(n) => n.to_string(),
+        ComptimeValue::I32(n) => n.to_string(),
+        ComptimeValue::I64(n) => n.to_string(),
+        ComptimeValue::I128(n) => n.to_string(),
+        ComptimeValue::U8(n) => n.to_string(),
+        ComptimeValue::U16(n) => n.to_string(),
+        ComptimeValue::U32(n) => n.to_string(),
+        ComptimeValue::U64(n) => n.to_string(),
+        ComptimeValue::U128(n) => n.to_string(),
+        ComptimeValue::F32(n) => n.to_string(),
+        ComptimeValue::F64(n) => n.to_string(),
+        ComptimeValue::Char(c) => format!("'{c}'"),
+        ComptimeValue::String(t) => format!("\"{t}\""),
+        ComptimeValue::Array(items) | ComptimeValue::Tuple(items) => {
+            let inner: Vec<String> = items.iter().map(show).collect();
+            match v {
+                ComptimeValue::Tuple(_) => format!("({})", inner.join(", ")),
+                _ => format!("[{}]", inner.join(", ")),
+            }
+        }
+        ComptimeValue::Map(entries) => {
+            let inner: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", show(k), show(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        ComptimeValue::Struct { name, .. } => format!("{name} {{ … }}"),
+        ComptimeValue::Enum { name, variant, .. } => format!("{name}.{variant}"),
+        ComptimeValue::Closure { .. } => "<closure>".to_string(),
+    }
+}
+
 impl ComptimeValue {
     /// Get the type name for error messages.
     pub fn type_name(&self) -> &'static str {
@@ -810,6 +856,12 @@ pub enum ComptimeError {
 
     #[error("comptime stack overflow (depth {0}); reduce recursion or increase limit")]
     StackOverflow(usize),
+
+    /// A `comptime test`'s `assert`/`check` was false. `span` points at the
+    /// assert; `label` is what the caret says under it ("left: 2, right: 3"),
+    /// empty when the condition isn't a comparison and there's nothing to show.
+    #[error("{kind} failed")]
+    AssertionFailed { kind: &'static str, label: String, span: rask_ast::Span },
 }
 
 impl ComptimeError {
@@ -831,6 +883,7 @@ impl ComptimeError {
             self,
             IntegerOverflow(_)
                 | DivisionByZero
+                | AssertionFailed { .. }
                 | BranchQuotaExceeded(_)
                 | TimeoutExceeded
                 | MemoryLimitExceeded
@@ -1644,6 +1697,27 @@ impl ComptimeInterpreter {
                 }
             }
 
+            // `assert` / `check` in a `comptime test` (std.testing/T11). Outside
+            // one they can't be reached: nothing else asks this evaluator to run
+            // a statement whose only effect is to fail.
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                let kind = match &expr.kind {
+                    ExprKind::Assert { .. } => "assert",
+                    _ => "check",
+                };
+                if self.eval_expr(condition)?.as_bool() == Some(true) {
+                    ComptimeValue::Unit
+                } else {
+                    let mut label = self.describe_failed_condition(condition);
+                    if let Some(m) = message {
+                        if let Ok(ComptimeValue::String(text)) = self.eval_expr(m) {
+                            label = if label.is_empty() { text } else { format!("{label} — {text}") };
+                        }
+                    }
+                    return Err(ComptimeError::AssertionFailed { kind, label, span: expr.span });
+                }
+            }
+
             // Spawn - not allowed
             ExprKind::Spawn { .. } => {
                 return Err(ComptimeError::ConcurrencyNotAllowed);
@@ -1744,20 +1818,61 @@ impl ComptimeInterpreter {
                 }
             }
 
-            // Other expressions not yet supported
+            // Other expressions not yet supported. Naming the form matters —
+            // this used to report `Discriminant(23)`, which tells a reader
+            // nothing about which line to change. `expr_kind_name` is
+            // exhaustive on purpose, so a new variant can't go unnamed.
             _ => {
                 let kind_name = match &expr.kind {
                     ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
-                    // `Discriminant(26)` was what this said before, in a
-                    // message a person reads. `expr_kind_name` is exhaustive
-                    // on purpose, so a new variant can't quietly go unnamed.
-                    other => rask_ast::expr::expr_kind_name(other).to_string(),
+                    other => format!("`{}`", rask_ast::expr::expr_kind_name(other)),
                 };
                 return Err(ComptimeError::NotSupported(kind_name));
             }
         };
 
         Ok(ControlFlow::Normal(value))
+    }
+
+    /// What the caret under a failed `assert` says: `left: 2, right: 3`. The
+    /// diagnostic already prints the source line, so the operator and operands
+    /// aren't repeated — unlike the runtime message, which has no source to
+    /// show. Desugaring has turned `a == b` into `a.eq(b)` and `a != b` into
+    /// `!a.eq(b)`, so both operands are still there to re-evaluate. Anything
+    /// that isn't a comparison gets no label.
+    fn describe_failed_condition(&mut self, condition: &Expr) -> String {
+        let operands = match &condition.kind {
+            ExprKind::MethodCall { object, method, args, .. }
+                if args.len() == 1 && is_comparison_method(method) =>
+            {
+                Some((object.as_ref(), &args[0].expr))
+            }
+            ExprKind::Unary { op: UnaryOp::Not, operand } => match &operand.kind {
+                ExprKind::MethodCall { object, method, args, .. }
+                    if method == "eq" && args.len() == 1 =>
+                {
+                    Some((object.as_ref(), &args[0].expr))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((left, right)) = operands else {
+            return String::new();
+        };
+        match (self.eval_expr(left), self.eval_expr(right)) {
+            (Ok(l), Ok(r)) => format!("left: {}, right: {}", show(&l), show(&r)),
+            _ => String::new(),
+        }
+    }
+
+    /// Run a `comptime test` body (std.testing/T11) in its own scope. The value
+    /// is thrown away — a test either falls off the end or fails.
+    pub fn eval_test_block(&mut self, stmts: &[Stmt]) -> ComptimeResult<()> {
+        self.env.push_scope();
+        let result = self.eval_block(stmts);
+        self.env.pop_scope();
+        result.map(|_| ())
     }
 
     /// Evaluate a block of statements and return the final value.

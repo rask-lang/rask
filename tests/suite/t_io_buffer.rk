@@ -25,26 +25,26 @@ import io.Buffer
 
 test "std.io — write then read gives back what went in" {
     mut b = Buffer.new()
-    assert_eq(b.len(), 0)
+    assert b.len() == 0
 
     let hi: Vec<u8> = [104, 105]
     let n = b.write(hi)
     if n is i64 as k {
-        assert_eq(k, 2)
+        assert k == 2
     } else as e {
         assert false
     }
-    assert_eq(b.len(), 2)
+    assert b.len() == 2
 
     let w = b.write_text(" there")
     w catch e => {
         assert false
     }
-    assert_eq(b.len(), 8)
+    assert b.len() == 8
 
     let t = b.read_text()
     if t is string as s {
-        assert_eq(s, "hi there")
+        assert s == "hi there"
     } else as e {
         assert false
     }
@@ -55,13 +55,13 @@ test "std.io — a second read finds nothing left" {
     let _ = b.write_text("once")
     let first = b.read_text()
     if first is string as s {
-        assert_eq(s, "once")
+        assert s == "once"
     } else as e {
         assert false
     }
     let second = b.read_text()
     if second is string as s {
-        assert_eq(s.len(), 0)
+        assert s.len() == 0
     } else as e {
         assert false
     }
@@ -70,12 +70,12 @@ test "std.io — a second read finds nothing left" {
 test "std.io — Buffer.from starts at position zero" {
     let abc: Vec<u8> = [65, 66, 67]
     mut b = Buffer.from(abc)
-    assert_eq(b.len(), 3)
+    assert b.len() == 3
     let bytes = b.read_bytes()
     if bytes is Vec<u8> as v {
-        assert_eq(v.len(), 3)
-        assert_eq(v[0], 65)
-        assert_eq(v[2], 67)
+        assert v.len() == 3
+        assert v[0] == 65
+        assert v[2] == 67
     } else as e {
         assert false
     }
@@ -90,25 +90,25 @@ test "std.io — read fills the caller's buffer a chunk at a time" {
 
     let first = b.read(mutate dst)
     if first is i64 as k {
-        assert_eq(k, 2)
+        assert k == 2
     } else as e {
         assert false
     }
-    assert_eq(dst[0], 49)
-    assert_eq(dst[1], 50)
+    assert dst[0] == 49
+    assert dst[1] == 50
 
     let second = b.read(mutate dst)
     if second is i64 as k {
-        assert_eq(k, 2)
+        assert k == 2
     } else as e {
         assert false
     }
-    assert_eq(dst[0], 51)
-    assert_eq(dst[1], 52)
+    assert dst[0] == 51
+    assert dst[1] == 52
 
     let third = b.read(mutate dst)
     if third is i64 as k {
-        assert_eq(k, 0)
+        assert k == 0
     } else as e {
         assert false
     }
@@ -116,16 +116,16 @@ test "std.io — read fills the caller's buffer a chunk at a time" {
 
 test "std.io — an empty buffer reads as empty, not as an error" {
     mut b = Buffer.new()
-    assert_eq(b.len(), 0)
+    assert b.len() == 0
     let t = b.read_text()
     if t is string as s {
-        assert_eq(s.len(), 0)
+        assert s.len() == 0
     } else as e {
         assert false
     }
     let bytes = b.read_bytes()
     if bytes is Vec<u8> as v {
-        assert_eq(v.len(), 0)
+        assert v.len() == 0
     } else as e {
         assert false
     }
@@ -136,8 +136,8 @@ test "std.io — to_bytes ignores the read position" {
     mut b = Buffer.new()
     let _ = b.write_text("abc")
     let _ = b.read_text()
-    assert_eq(b.to_bytes().len(), 3)
-    assert_eq(b.len(), 3)
+    assert b.to_bytes().len() == 3
+    assert b.len() == 3
 }
 
 test "std.io — non-ASCII text survives the round trip" {
@@ -145,7 +145,7 @@ test "std.io — non-ASCII text survives the round trip" {
     let _ = b.write_text("héllo →")
     let t = b.read_text()
     if t is string as s {
-        assert_eq(s, "héllo →")
+        assert s == "héllo →"
     } else as e {
         assert false
     }
@@ -171,15 +171,15 @@ test "std.io — copy moves every byte from reader to writer" {
 
     let n = io.copy(src, dst)
     if n is i64 as k {
-        assert_eq(k, 3)
+        assert k == 3
     } else as e {
         assert false
     }
-    assert_eq(dst.len(), 3)
+    assert dst.len() == 3
 
     let out = dst.read_text()
     if out is string as s {
-        assert_eq(s, "xyz")
+        assert s == "xyz"
     } else as e {
         assert false
     }
@@ -190,11 +190,11 @@ test "std.io — copying an empty reader copies nothing" {
     mut dst = Buffer.new()
     let n = io.copy(src, dst)
     if n is i64 as k {
-        assert_eq(k, 0)
+        assert k == 0
     } else as e {
         assert false
     }
-    assert_eq(dst.len(), 0)
+    assert dst.len() == 0
 }
 
 func main() {}

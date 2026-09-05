@@ -192,6 +192,76 @@ fn miri_code(e: &rask_miri::MiriError) -> (&'static str, &'static str) {
     }
 }
 
+/// Run every `comptime test` in the program (std.testing/T11).
+///
+/// A `comptime test` is supposed to run during compilation, with a failure
+/// reported as a compile error. Nothing ran them: `is_comptime` was parsed and
+/// then ignored, so they were collected by the test runner and executed at run
+/// time like any other test — `rask check` on a failing one exited 0.
+///
+/// Every way a test body can fail to finish is an error here, not just a false
+/// `assert`. That's what makes the two edge cases in the spec fall out: a test
+/// that opens a file or reaches `spawn` can't run at compile time, so saying so
+/// is the whole answer.
+pub fn evaluate_comptime_tests(decls: &[Decl], cfg: Option<&CfgConfig>) -> Vec<Diagnostic> {
+    let tests: Vec<(&rask_ast::decl::TestDecl, Span)> = decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Test(t) if t.is_comptime => Some((t, d.span)),
+            _ => None,
+        })
+        .collect();
+    if tests.is_empty() {
+        return Vec::new();
+    }
+
+    let mut interp = rask_comptime::ComptimeInterpreter::new();
+    if let Some(c) = cfg {
+        interp.inject_cfg(c);
+    }
+    interp.register_functions(decls);
+
+    let mut diags = Vec::new();
+    for (test, span) in tests {
+        interp.reset_branch_count();
+        let Err(err) = interp.eval_test_block(&test.body) else {
+            continue;
+        };
+        diags.push(comptime_test_diagnostic(&test.name, err, span));
+    }
+    diags
+}
+
+fn comptime_test_diagnostic(
+    name: &str,
+    err: rask_comptime::ComptimeError,
+    test_span: Span,
+) -> Diagnostic {
+    use rask_comptime::ComptimeError;
+
+    if let ComptimeError::AssertionFailed { kind, label, span } = &err {
+        let label = if label.is_empty() { "this was false".to_string() } else { label.clone() };
+        return Diagnostic::error(format!("comptime test \"{name}\" failed"))
+            .with_code("E0848")
+            .with_primary(*span, label)
+            .with_why(format!(
+                "a `comptime test` runs during compilation, so a failing `{kind}` \
+                 is a compile error rather than a red line in the test report \
+                 [std.testing/T11]"
+            ));
+    }
+
+    Diagnostic::error(format!("comptime test \"{name}\" can't run at compile time"))
+        .with_code("E0848")
+        .with_primary(test_span, err.to_string())
+        .with_why(
+            "a `comptime test` is evaluated by the compiler, which has no files, \
+             no sockets and no scheduler — only the comptime subset. Drop the \
+             `comptime` and let it run as an ordinary test [std.testing/T11]"
+                .to_string(),
+        )
+}
+
 /// Build a diagnostic for a hard comptime error at `span`.
 fn comptime_diagnostic(message: &str, (code, why): (&str, &str), span: Span) -> Diagnostic {
     Diagnostic::error(message.to_string())

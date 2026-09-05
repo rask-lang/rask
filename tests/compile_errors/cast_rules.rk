@@ -10,6 +10,45 @@ func narrow() {
     let x: i8 = big as i8
 }
 
+// --- CV1: int→float where the float can't hold every source value ---
+// An `as` promises nothing was lost. An f64 keeps every integer up to 2^53 and
+// an f32 up to 2^24, so the source has to fit under that — i8/i16/i32/u8/u16/u32
+// into an f64, i8/i16/u8/u16 into an f32. Anything wider names `.round<T>()`.
+//
+// Nothing tested this rule until the harness audit found it unenforced: every
+// int→float `as` was accepted, including the `i64 as f32` the spec calls out by
+// name. `1_000_000_001 as f32` came back as 1000000000, silently.
+// ERROR: cannot convert `i64` to `f64` with `as` [E0817]
+func i64_to_f64() {
+    let n: i64 = 1
+    let f: f64 = n as f64
+}
+
+// ERROR: cannot convert `i64` to `f32` with `as` [E0817]
+func i64_to_f32() {
+    let n: i64 = 1
+    let f: f32 = n as f32
+}
+
+// ERROR: cannot convert `u64` to `f64` with `as` [E0817]
+func u64_to_f64() {
+    let n: u64 = 1
+    let f: f64 = n as f64
+}
+
+// An i32 fits an f64 and not an f32 — the same source, legal one size up.
+// ERROR: cannot convert `i32` to `f32` with `as` [E0817]
+func i32_to_f32() {
+    let n: i32 = 1
+    let f: f32 = n as f32
+}
+
+// ERROR: cannot convert `u32` to `f32` with `as` [E0817]
+func u32_to_f32() {
+    let n: u32 = 1
+    let f: f32 = n as f32
+}
+
 // --- CV3: same-width sign reinterpretation via `as` ---
 // ERROR: cannot reinterpret sign converting `i32` to `u32` with `as` [E0817]
 func sign_reinterpret() {

@@ -260,47 +260,94 @@ void rask_assert_fail_msg_at(const char *msg, const char *file,
     rask_panic_at(file, line, col, msg ? msg : "assertion failed");
 }
 
+// `assert` and `check` ask the same question and differ only in what happens
+// after the answer — one unwinds, the other records and carries on. So the
+// message is built once per operand kind and the two entry points below each
+// formatter decide where it goes. Native `check` used to skip all of this and
+// report the bare words "check failed", which said nothing about which check or
+// what the values were, while the interpreter reported both.
+static void fmt_cmp_i64(char *buf, size_t n, const char *what,
+                        int64_t left, int64_t right, const char *op) {
+    snprintf(buf, n, "%s: %lld %s %lld (left: %lld, right: %lld)",
+             what, (long long)left, op ? op : "?",
+             (long long)right, (long long)left, (long long)right);
+}
+
 void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %lld %s %lld (left: %lld, right: %lld)",
-             (long long)left, op ? op : "?",
-             (long long)right, (long long)left, (long long)right);
+    fmt_cmp_i64(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_i64(int64_t left, int64_t right,
+                             const char *op, const char *file,
+                             int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_i64(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
+}
+
+// Bools reach here as scalars too, and `1 == 0` for `true == false` is the same
+// mistake as the char one below: the number is the representation, not the
+// value the reader wrote. The interpreter has always printed `true`/`false`,
+// so this is also what makes a failed bool comparison read the same on both
+// backends.
+static void fmt_cmp_bool(char *buf, size_t n, const char *what,
+                         int64_t left, int64_t right, const char *op) {
+    const char *l = left ? "true" : "false";
+    const char *r = right ? "true" : "false";
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, l, op ? op : "?", r, l, r);
+}
+
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_bool(buf, sizeof(buf), "assertion failed", left, right, op);
+    rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_bool(int64_t left, int64_t right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_bool(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // Chars reach here as scalars, same as integers — but reporting `120 == 121`
 // for `'x' == 'y'` tells the reader nothing. Print the characters.
-void rask_assert_fail_cmp_char(int64_t left, int64_t right,
-                               const char *op, const char *file,
-                               int32_t line, int32_t col) {
+static void fmt_cmp_char(char *buf, size_t n, const char *what,
+                         int64_t left, int64_t right, const char *op) {
     RaskStr ls, rs;
     rask_char_to_string(&ls, (int32_t)left);
     rask_char_to_string(&rs, (int32_t)right);
     const char *lbuf = rask_string_ptr(&ls);
     const char *rbuf = rask_string_ptr(&rs);
+    snprintf(buf, n, "%s: '%s' %s '%s' (left: '%s', right: '%s')",
+             what, lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+}
+
+void rask_assert_fail_cmp_char(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: '%s' %s '%s' (left: '%s', right: '%s')",
-             lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+    fmt_cmp_char(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
 }
 
-// A bool reported through the i64 helper printed `1 == 0`, where the
-// interpreter — the reference — says `true == false` (#994). Same shape as the
-// char helper: the operand arrives widened, and this decides how to spell it.
-void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+void rask_check_fail_cmp_char(int64_t left, int64_t right,
                                const char *op, const char *file,
                                int32_t line, int32_t col) {
-    const char *l = left ? "true" : "false";
-    const char *r = right ? "true" : "false";
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %s %s %s (left: %s, right: %s)",
-             l, op ? op : "?", r, l, r);
-    rask_panic_at(file, line, col, buf);
+    fmt_cmp_char(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // The two string operands arrive as `RaskStr *`, not as C strings. Read as
@@ -308,42 +355,69 @@ void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
 // string *are* the characters, because those live inline, and for anything
 // past the inline cap are a pointer. So a long string's assertion message came
 // out as four bytes of garbage while a short one looked perfect (#848).
+static void fmt_cmp_str(char *buf, size_t n, const char *what,
+                        const RaskStr *left, const RaskStr *right, const char *op) {
+    // Quoted, because an empty string and a trailing space are invisible
+    // otherwise (#848). No `(left:, right:)` half: the quotes already show
+    // both, and the interpreter's renderer stops here too — the two printing
+    // the same text is the point (#994).
+    snprintf(buf, n, "%s: \"%.*s\" %s \"%.*s\"",
+             what,
+             left ? (int)rask_string_len(left) : 6,
+             left ? rask_string_ptr(left) : "(null)",
+             op ? op : "?",
+             right ? (int)rask_string_len(right) : 6,
+             right ? rask_string_ptr(right) : "(null)");
+}
+
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
-    // Quoted, because an empty string and a trailing space are invisible
-    // otherwise (#848), and with the `(left:, right:)` half every other type's
-    // message carries — a string was the one shape where the two backends
-    // printed different text for the same failure (#994).
-    int llen = left ? (int)rask_string_len(left) : 6;
-    const char *lptr = left ? rask_string_ptr(left) : "(null)";
-    int rlen = right ? (int)rask_string_len(right) : 6;
-    const char *rptr = right ? rask_string_ptr(right) : "(null)";
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: \"%.*s\" %s \"%.*s\" (left: \"%.*s\", right: \"%.*s\")",
-             llen, lptr, op ? op : "?", rlen, rptr, llen, lptr, rlen, rptr);
+    fmt_cmp_str(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_str(const RaskStr *left, const RaskStr *right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_str(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // `%g` here rounded both operands to 6 significant digits, so two floats that
 // differ past the 6th printed as the same number — "assertion failed: 1 == 1"
 // for 1.000000001 vs 1.000000002, which reads like the assert machinery is
 // broken rather than like a failing test (#898). Use the same formatter
-// `println` and `assert_eq` already use: shortest round-trip, never exponent
+// `println` already uses: shortest round-trip, never exponent
 // form. What matters is that a reader comparing this message against a
 // `println` of the same value sees one number, not two.
-void rask_assert_fail_cmp_f64(double left, double right,
-                              const char *op, const char *file,
-                              int32_t line, int32_t col) {
+static void fmt_cmp_f64(char *buf, size_t n, const char *what,
+                        double left, double right, const char *op) {
     char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
     rask_fmt_double(l, sizeof(l), left);
     rask_fmt_double(r, sizeof(r), right);
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, l, op ? op : "?", r, l, r);
+}
+
+void rask_assert_fail_cmp_f64(double left, double right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %s %s %s (left: %s, right: %s)",
-             l, op ? op : "?", r, l, r);
+    fmt_cmp_f64(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_f64(double left, double right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_f64(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // f32 operands get their own helper because the shortest round-trip depends on
@@ -352,89 +426,30 @@ void rask_assert_fail_cmp_f64(double left, double right,
 // 1.100000023841858 — which is why `println` has had a separate f32 formatter
 // all along. Reaching the f64 helper, an f32 assert printed a number no `println`
 // of the same value would ever show.
-void rask_assert_fail_cmp_f32(float left, float right,
-                              const char *op, const char *file,
-                              int32_t line, int32_t col) {
+static void fmt_cmp_f32(char *buf, size_t n, const char *what,
+                        float left, float right, const char *op) {
     char l[RASK_F64_BUF_SIZE], r[RASK_F64_BUF_SIZE];
     rask_fmt_float(l, sizeof(l), left);
     rask_fmt_float(r, sizeof(r), right);
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, l, op ? op : "?", r, l, r);
+}
+
+void rask_assert_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %s %s %s (left: %s, right: %s)",
-             l, op ? op : "?", r, l, r);
+    fmt_cmp_f32(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
 }
 
-// assert_eq reports got/expected rather than left/right (testing A4): the
-// first argument is what the code produced, the second what the test wants.
-// The comparison itself happens in generated code — these only format.
-static _Noreturn void assert_eq_fail_fmt(const char *got, const char *expected,
-                                         const char *file, int32_t line, int32_t col) {
+void rask_check_fail_cmp_f32(float left, float right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      %s\n  expected: %s", got, expected);
-    rask_panic_at(file, line, col, buf);
-}
-
-void rask_assert_eq_fail_i64(int64_t got, int64_t expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[32], e[32];
-    snprintf(g, sizeof(g), "%lld", (long long)got);
-    snprintf(e, sizeof(e), "%lld", (long long)expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_bool(int64_t got, int64_t expected,
-                              const char *file, int32_t line, int32_t col) {
-    assert_eq_fail_fmt(got ? "true" : "false", expected ? "true" : "false",
-                       file, line, col);
-}
-
-void rask_assert_eq_fail_char(int64_t got, int64_t expected,
-                              const char *file, int32_t line, int32_t col) {
-    RaskStr gs, es;
-    rask_char_to_string(&gs, (int32_t)got);
-    rask_char_to_string(&es, (int32_t)expected);
-    char g[16], e[16];
-    snprintf(g, sizeof(g), "'%s'", rask_string_ptr(&gs));
-    snprintf(e, sizeof(e), "'%s'", rask_string_ptr(&es));
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_f64(double got, double expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
-    rask_fmt_double(g, sizeof(g), got);
-    rask_fmt_double(e, sizeof(e), expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-// See rask_assert_fail_cmp_f32: the round-trip has to be checked at the
-// operand's own width, or an f32 reports its exact binary expansion.
-void rask_assert_eq_fail_f32(float got, float expected,
-                             const char *file, int32_t line, int32_t col) {
-    char g[RASK_F64_BUF_SIZE], e[RASK_F64_BUF_SIZE];
-    rask_fmt_float(g, sizeof(g), got);
-    rask_fmt_float(e, sizeof(e), expected);
-    assert_eq_fail_fmt(g, e, file, line, col);
-}
-
-void rask_assert_eq_fail_str(const RaskStr *got, const RaskStr *expected,
-                             const char *file, int32_t line, int32_t col) {
-    char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assert_eq failed\n  got:      \"%.*s\"\n  expected: \"%.*s\"",
-             got ? (int)rask_string_len(got) : 6,
-             got ? rask_string_ptr(got) : "(null)",
-             expected ? (int)rask_string_len(expected) : 6,
-             expected ? rask_string_ptr(expected) : "(null)");
-    rask_panic_at(file, line, col, buf);
-}
-
-// Aggregates (structs, enums, tuples) compare fine but have no one-line
-// rendering here, so the message names the failure without a value diff.
-void rask_assert_eq_fail(const char *file, int32_t line, int32_t col) {
-    rask_panic_at(file, line, col, "assert_eq failed: values differ");
+    fmt_cmp_f32(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // ─── I/O primitives ──────────────────────────────────────────────

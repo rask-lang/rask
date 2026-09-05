@@ -46,7 +46,7 @@ func read_hardware_sensor(sensor_id: i64, tick: i64) -> f64 {
     }
 
     let noise = (tick * 7 + sensor_id * 13) % 100 - 50
-    return ((base + noise) as f64) / 100.0
+    return (base + noise).round<f64>() / 100.0
 }
 
 // ============================================================================
@@ -190,7 +190,7 @@ extend ProcessorState {
             hum_sum += self.humidity_history.get(i)!
         }
 
-        let n = self.history_count as f64
+        let n = self.history_count.round<f64>()
         self.temp_avg = temp_sum / n
         self.pressure_avg = pres_sum / n
         self.humidity_avg = hum_sum / n

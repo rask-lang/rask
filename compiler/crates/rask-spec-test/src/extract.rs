@@ -16,8 +16,16 @@ use std::path::PathBuf;
 pub enum Expectation {
     /// Must compile without errors (lex + parse + future type check)
     Compile,
-    /// Must fail to compile at some stage
-    CompileFail,
+    /// Must fail to compile, at the named stage.
+    ///
+    /// The stage is required. Without it the check was "failed somewhere",
+    /// which a fragment satisfies by naming symbols that don't exist — 8 of the
+    /// 12 `compile-fail` blocks in `specs/` passed at *resolve*, i.e. because
+    /// `pool` and `player` were undefined, not because the rule under test
+    /// fired. Each reported a green tick and verified nothing. Naming the stage
+    /// is the same idea as the registry claim-check in `differential.sh`: a red
+    /// result is only honest while it is red for the stated reason.
+    CompileFail(FailStage),
     /// Must parse successfully (skip type checking)
     Parse,
     /// Must fail to parse
@@ -31,6 +39,54 @@ pub enum Expectation {
     Run(String),
     /// Run through interpreter only — escape hatch for unimplemented codegen
     RunInterpOnly(String),
+    /// A `<!-- test: … -->` comment naming something that isn't an annotation.
+    ///
+    /// Unknown spellings used to return `None`, which is how the extractor says
+    /// "not a test annotation" — so a typo'd marker was indistinguishable from
+    /// ordinary prose and the block went untested in silence. Four blocks in
+    /// `specs/compiler/advanced-analyses.md` sat on `<!-- test: pass -->` that
+    /// way. Carrying the bad spelling through as a test that fails is what makes
+    /// it say so.
+    Invalid(String),
+}
+
+/// Where a `compile-fail` block is expected to be rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailStage {
+    Lex,
+    Parse,
+    Resolve,
+    Typecheck,
+    Ownership,
+    /// The rule is specified and not implemented: the block compiles today and
+    /// shouldn't. Expected to "fail" by being accepted, and flips loudly when
+    /// the check lands — the `pending_features.txt` idea, for a spec block.
+    Unbuilt,
+}
+
+impl FailStage {
+    pub fn parse(s: &str) -> Option<FailStage> {
+        Some(match s {
+            "lex" => FailStage::Lex,
+            "parse" => FailStage::Parse,
+            "resolve" => FailStage::Resolve,
+            "typecheck" => FailStage::Typecheck,
+            "ownership" => FailStage::Ownership,
+            "unbuilt" => FailStage::Unbuilt,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FailStage::Lex => "lex",
+            FailStage::Parse => "parse",
+            FailStage::Resolve => "resolve",
+            FailStage::Typecheck => "typecheck",
+            FailStage::Ownership => "ownership",
+            FailStage::Unbuilt => "unbuilt",
+        }
+    }
 }
 
 /// A single test case extracted from a spec file.
@@ -126,14 +182,27 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
             }
         }
 
+        if let Some(rest) = test_spec.strip_prefix("compile-fail") {
+            let rest = rest.trim();
+            let staged = rest.strip_prefix(':').map(str::trim).unwrap_or("");
+            return Some(match FailStage::parse(staged) {
+                Some(stage) => (Expectation::CompileFail(stage), 1),
+                // Bare `compile-fail`, or a stage nobody recognises. Both are
+                // the same mistake: the block claims a rejection without saying
+                // which pass does the rejecting.
+                None => (Expectation::Invalid(format!("compile-fail: {}", staged)), 1),
+            });
+        }
+
         let expectation = match test_spec {
             "compile" => Expectation::Compile,
-            "compile-fail" => Expectation::CompileFail,
             "parse" => Expectation::Parse,
             "parse-fail" => Expectation::ParseFail,
             "skip" => Expectation::Skip,
             "pending" => Expectation::Pending,
-            _ => return None,
+            // Reached only once the comment has already said `test:`, so this is
+            // a marker someone meant, not prose that happens to look like one.
+            other => Expectation::Invalid(other.to_string()),
         };
         return Some((expectation, 1));
     }
@@ -149,7 +218,7 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
     let interp_only = match test_spec {
         "run" => false,
         "run-interp" => true,
-        _ => return None,
+        other => return Some((Expectation::Invalid(other.to_string()), 1)),
     };
 
     // Collect expected output until -->
@@ -212,7 +281,25 @@ mod tests {
     #[test]
     fn test_parse_annotation_single_line() {
         assert_eq!(parse_single("<!-- test: compile -->"), Some(Expectation::Compile));
-        assert_eq!(parse_single("<!-- test: compile-fail -->"), Some(Expectation::CompileFail));
+        // Bare `compile-fail` is the mistake the stage exists to catch: it
+        // reads as "rejected somewhere", which a fragment satisfies by naming
+        // undefined symbols.
+        assert_eq!(
+            parse_single("<!-- test: compile-fail -->"),
+            Some(Expectation::Invalid("compile-fail: ".to_string())),
+        );
+        assert_eq!(
+            parse_single("<!-- test: compile-fail: typecheck -->"),
+            Some(Expectation::CompileFail(FailStage::Typecheck)),
+        );
+        assert_eq!(
+            parse_single("<!-- test: compile-fail: unbuilt -->"),
+            Some(Expectation::CompileFail(FailStage::Unbuilt)),
+        );
+        assert_eq!(
+            parse_single("<!-- test: compile-fail: nonsense -->"),
+            Some(Expectation::Invalid("compile-fail: nonsense".to_string())),
+        );
         assert_eq!(parse_single("<!-- test: parse -->"), Some(Expectation::Parse));
         assert_eq!(parse_single("<!-- test: skip -->"), Some(Expectation::Skip));
         assert_eq!(parse_single("not a comment"), None);
@@ -254,7 +341,7 @@ func add(a: i32, b: i32) -> i32 { a + b }
 
 More text.
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: typecheck -->
 ```rask
 let x: i32 = "bad"
 ```
@@ -270,7 +357,7 @@ let x: i32 = "bad"
         assert_eq!(tests.len(), 2);
         assert_eq!(tests[0].expectation, Expectation::Compile);
         assert!(tests[0].code.contains("func add"));
-        assert_eq!(tests[1].expectation, Expectation::CompileFail);
+        assert_eq!(tests[1].expectation, Expectation::CompileFail(FailStage::Typecheck));
     }
 
     #[test]

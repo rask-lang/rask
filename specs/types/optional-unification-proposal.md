@@ -87,7 +87,7 @@ Error-handling on the inside, optionality on the outside. The `?`-family works o
 
 `T??` is `(T or none) or none`. The union duplicate-variant rule rejects this — no special case needed. OPT4 deletes.
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: parse -->
 ```rask
 let x: User?? = ...   // ERROR: duplicate variant `none` in union
 ```

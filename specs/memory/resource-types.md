@@ -70,7 +70,7 @@ func process() -> void or Error {
 ```
 
 **Forgetting to consume (L1):**
-<!-- test: compile-fail -->
+<!-- test: compile-fail: ownership -->
 ```rask
 @resource
 struct DbConn {
@@ -100,7 +100,7 @@ func bad() -> void or Error {
 ```
 
 **Double consumption (L2):**
-<!-- test: compile-fail -->
+<!-- test: compile-fail: ownership -->
 ```rask
 @resource
 struct DbConn {

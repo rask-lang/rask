@@ -107,7 +107,10 @@ Annotations:
 - `<!-- test: parse -->` — Must parse successfully
 - `<!-- test: parse-fail -->` — Must fail to parse
 - `<!-- test: compile -->` — Must type-check
-- `<!-- test: compile-fail -->` — Must fail type-check
+- `<!-- test: compile-fail: <stage> -->` — Must be rejected by that pass:
+  `lex`, `parse`, `resolve`, `typecheck`, `ownership`, or `unbuilt` when the rule
+  is specified and the check isn't written yet. The stage is required: without
+  one, "fails somewhere" is satisfied by a fragment naming undefined symbols
 - `<!-- test: run | expected -->` — Run via interpreter + native, verify output matches
 - `<!-- test: run-interp | expected -->` — Interpreter only (escape hatch for unimplemented codegen)
 - `<!-- test: skip -->` — Don't test

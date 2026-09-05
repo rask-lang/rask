@@ -46,14 +46,14 @@ func parse_it(s: string) -> i32 or ParseError {
 }
 
 test "a fieldless stdlib variant constructs and matches" {
-    assert_eq(describe_method(Method.Get), "get")
-    assert_eq(describe_method(Method.Post), "post")
-    assert_eq(describe_method(Method.Patch), "other")
+    assert describe_method(Method.Get) == "get"
+    assert describe_method(Method.Post) == "post"
+    assert describe_method(Method.Patch) == "other"
 }
 
 test "a stdlib variant with a payload carries it" {
-    assert_eq(describe_io(IoError.NotFound("/tmp/x")), "nf:/tmp/x")
-    assert_eq(describe_io(IoError.BrokenPipe), "pipe")
+    assert describe_io(IoError.NotFound("/tmp/x")) == "nf:/tmp/x"
+    assert describe_io(IoError.BrokenPipe) == "pipe"
 }
 
 test "stdlib variants compare by tag" {
@@ -85,7 +85,7 @@ test "a type name shared with a stdlib variant still matches by payload type" {
 test "Option and Result keep their built-in behaviour" {
     let some: i64? = 7
     if some? as s {
-        assert_eq(s, 7)
+        assert s == 7
     } else {
         assert false
     }

@@ -4,6 +4,14 @@
 // Each section tests a specific syntax rule from SYNTAX.md.
 // The compiler should reject all of these with helpful error messages.
 
+// Every error here comes from the parser, and a parse error stops the pipeline
+// before any later pass runs. So a marker for a rule the *checker* enforces can
+// never fire in this file, however true it is — three of them sat here for a
+// long time answering nothing (harness audit 1.2). They live in files of their
+// own now: `?` for propagation in rust_error_propagation.rk, `let`
+// reassignment in let_reassign.rk, a missing return in missing_return.rk, and
+// chained comparison in comparison_chaining.rk.
+
 // --- Rust-ism: `pub` instead of `public` ---
 // ERROR: unknown keyword 'pub', did you mean 'public'?
 pub struct BadVisibility { x: i32 }
@@ -42,13 +50,6 @@ func test_turbofish() {
     let v = Vec::<i32>.new()
 }
 
-// --- Rust-ism: `?` for error propagation ---
-// ERROR: unexpected '?', use 'try' for error propagation
-func test_question_mark() -> i32 or string {
-    let x = might_fail()?
-    return x
-}
-
 // --- Rust-ism: `&` reference syntax ---
 // ERROR: Rask uses parameter modes, not reference syntax
 func test_ref(x: &i32) -> i32 {
@@ -59,19 +60,6 @@ func test_ref(x: &i32) -> i32 {
 // Match arms should use commas as separators (per SYNTAX.md examples).
 // Newlines also work as terminators, but missing both is ambiguous.
 
-// --- let reassignment (SYNTAX.md) ---
-// ERROR: cannot reassign 'let' binding
-func test_let_reassign() {
-    let x = 42
-    x = 43
-}
-
-// --- missing return in non-unit function ---
-// ERROR: function 'bad_return' must return i32
-func bad_return() -> i32 {
-    let x = 42
-}
-
 // --- comparison chaining (P2) ---
 // ERROR: comparison operators cannot be chained
 func test_chained_comparison() {
@@ -79,7 +67,3 @@ func test_chained_comparison() {
 }
 
 struct Point { x: i32, y: i32 }
-
-func might_fail() -> i32 or string {
-    return 42
-}

@@ -79,7 +79,7 @@ test "std.net — a listener binds loopback on a real port" {
 test "std.net — text goes across intact" {
     let got = echo_once("hello over tcp")
     if got is string as s {
-        assert_eq(s, "hello over tcp")
+        assert s == "hello over tcp"
     } else {
         assert false
     }
@@ -96,11 +96,11 @@ test "std.net — every byte arrives, not every eighth" {
     }
     let got = echo_bytes(payload)
     if got is Vec<u8> as v {
-        assert_eq(v.len(), 300)
-        assert_eq(v[0], 97)
-        assert_eq(v[25], 122)
-        assert_eq(v[26], 97)
-        assert_eq(v[299], 97 + 13)
+        assert v.len() == 300
+        assert v[0] == 97
+        assert v[25] == 122
+        assert v[26] == 97
+        assert v[299] == 97 + 13
     } else {
         assert false
     }
@@ -109,7 +109,7 @@ test "std.net — every byte arrives, not every eighth" {
 test "std.net — non-ASCII survives the round trip" {
     let got = echo_once("héllo →")
     if got is string as s {
-        assert_eq(s, "héllo →")
+        assert s == "héllo →"
     } else {
         assert false
     }
@@ -118,7 +118,7 @@ test "std.net — non-ASCII survives the round trip" {
 test "std.net — an empty payload reads as empty" {
     let got = echo_once("")
     if got is string as s {
-        assert_eq(s.len(), 0)
+        assert s.len() == 0
     } else {
         assert false
     }
@@ -141,21 +141,21 @@ test "std.net — a malformed address is refused, not guessed at" {
     if no_colon is TcpListener as l {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid socket address")
+        assert e.message() == "invalid socket address"
     }
 
     let no_host = net.tcp_listen(":8080")
     if no_host is TcpListener as l {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid socket address")
+        assert e.message() == "invalid socket address"
     }
 
     let no_port = net.tcp_connect("127.0.0.1")
     if no_port is TcpConnection as c {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid socket address")
+        assert e.message() == "invalid socket address"
     }
 
     // 99999 & 0xFFFF is 34463 — native bound that and reported success.
@@ -166,20 +166,20 @@ test "std.net — a port outside 0..65535 is refused" {
     if empty is TcpConnection as c {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid port value")
+        assert e.message() == "invalid port value"
     }
 
     let words = net.tcp_connect("127.0.0.1:notanumber")
     if words is TcpConnection as c {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid port value")
+        assert e.message() == "invalid port value"
     }
     let too_big = net.tcp_listen("127.0.0.1:99999")
     if too_big is TcpListener as l {
         assert false
     } else as e {
-        assert_eq(e.message(), "invalid port value")
+        assert e.message() == "invalid port value"
     }
 }
 
@@ -190,7 +190,7 @@ test "std.net — a name that resolves to nothing says so" {
     if u is TcpConnection as c {
         assert false
     } else as e {
-        assert_eq(e.message(), "could not resolve no-such-host.invalid:80")
+        assert e.message() == "could not resolve no-such-host.invalid:80"
     }
 }
 

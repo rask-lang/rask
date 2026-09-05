@@ -29,19 +29,19 @@ extend Counter {
 
 test "mem.ownership — a `let` string can call its non-mutating methods" {
     let s = "abc"
-    assert_eq(s.reverse(), "cba")
-    assert_eq(s.repeat(2), "abcabc")
-    assert_eq(s.replace("a", "z"), "zbc")
-    assert_eq(s.to_uppercase(), "ABC")
+    assert s.reverse() == "cba"
+    assert s.repeat(2) == "abcabc"
+    assert s.replace("a", "z") == "zbc"
+    assert s.to_uppercase() == "ABC"
 }
 
 test "mem.ownership — the same for the other primitives" {
     let n: i64 = 0 - 5
-    assert_eq(n.abs(), 5)
+    assert n.abs() == 5
     let c = 'x'
-    assert_eq(c.to_uppercase(), 'X')
+    assert c.to_uppercase() == 'X'
     let f: f64 = 2.4
-    assert_eq(f.round(), 2.0)
+    assert f.round() == 2.0
     let b = true
     assert(!(b == false))
 }
@@ -51,11 +51,11 @@ test "mem.ownership — a real `mutate self` on a `mut` binding still works" {
     mut c = Counter { n: 0 }
     c.bump()
     c.bump()
-    assert_eq(c.read(), 2)
+    assert c.read() == 2
 
     mut v: Vec<i64> = [3, 1, 2]
     v.reverse()
-    assert_eq(v[0], 2)
+    assert v[0] == 2
 }
 
 func main() {}

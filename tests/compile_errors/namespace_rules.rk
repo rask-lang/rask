@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: the four namespace rules of struct.modules — #977
-// ERROR: is not in scope
-// ERROR: is already in scope
-// ERROR: is a built-in
+// Rejects: is not in scope
+// Rejects: is already in scope
+// Rejects: is a built-in
 //
 // All four were specified and none were enforced, so each of these lines used to
 // type-check clean:

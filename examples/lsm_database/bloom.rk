@@ -44,7 +44,7 @@ extend BloomFilter {
         for b in self.bits {
             if b { set_bits += 1 }
         }
-        let ratio = (set_bits as f64) / (BLOOM_BITS as f64)
+        let ratio = set_bits.round<f64>() / BLOOM_BITS.round<f64>()
         return ratio * ratio * ratio
     }
 }

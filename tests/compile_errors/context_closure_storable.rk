@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR [mem.context/CC10]: a storable closure (bound to `cb`) can't inherit the
+// Rejects: [mem.context/CC10]: a storable closure (bound to `cb`) can't inherit the
 // enclosing function's ambient Pool<Player>. It must take the pool as an
 // explicit parameter instead.
 import memory.Handle

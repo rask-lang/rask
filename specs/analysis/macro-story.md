@@ -52,6 +52,11 @@ shape the language already has (`@rename("x")` takes an argument, `@no_serialize
 is a bare marker), so there is no new vocabulary to learn.
 
 <!-- test: skip -->
+(`assert_eq` here is what a *user* would write with the feature. The stdlib
+doesn't have one — a comparison is `==`, and `assert` reports both operands —
+which is the shape of the argument: this is a library itch, and the language
+only has to make scratching it possible.)
+
 ```rask
 func assert_eq<T: Equal + Debug>(a: T, b: T,
     @call_text(a) a_text: string,

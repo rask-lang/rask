@@ -27,15 +27,15 @@
 test "vec enumerate — standalone, off the collection" {
     let base: Vec<i64> = [3, 1, 2]
     let pairs = base.enumerate()
-    assert_eq(pairs.count(), 3)
+    assert pairs.count() == 3
     mut indices = 0
     mut values = 0
     for p in pairs {
         indices = indices + p.0.wrap<i64>()
         values = values + p.1
     }
-    assert_eq(indices, 3)
-    assert_eq(values, 6)
+    assert indices == 3
+    assert values == 6
 }
 
 test "vec enumerate — through iter() still works" {
@@ -44,7 +44,7 @@ test "vec enumerate — through iter() still works" {
     for p in base.enumerate() {
         seen = "{seen}{p.0}:{p.1} "
     }
-    assert_eq(seen, "0:10 1:20 ")
+    assert seen == "0:10 1:20 "
 }
 
 // #887: `U` (the second Vec's element type) never resolved anywhere, so the
@@ -54,27 +54,27 @@ test "vec zip — pairs elements, U resolved from the other Vec" {
     let nums: Vec<i64> = [1, 2, 3]
     let words: Vec<string> = ["one", "two", "three"]
     let pairs: Vec<(i64, string)> = nums.zip(words)
-    assert_eq(pairs.len(), 3)
-    assert_eq(pairs[0].0, 1)
-    assert_eq(pairs[0].1, "one")
-    assert_eq(pairs[2].1, "three")
+    assert pairs.len() == 3
+    assert pairs[0].0 == 1
+    assert pairs[0].1 == "one"
+    assert pairs[2].1 == "three"
 }
 
 test "vec zip — stops at the shorter side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20]
     let short: Vec<(i64, i64)> = a.zip(b)
-    assert_eq(short.len(), 2)
+    assert short.len() == 2
 
     let c: Vec<i64> = [1, 2]
     let d: Vec<i64> = [10, 20, 30, 40]
     let long: Vec<(i64, i64)> = c.zip(d)
-    assert_eq(long.len(), 2)
+    assert long.len() == 2
 
     let e: Vec<i64> = []
     let f: Vec<i64> = [1, 2]
     let empty: Vec<(i64, i64)> = e.zip(f)
-    assert_eq(empty.len(), 0)
+    assert empty.len() == 0
 }
 
 // A review on #969 caught this: native indexed `other` by the loop's raw
@@ -86,22 +86,22 @@ test "vec zip — filter before it doesn't skew the other side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20, 30]
     let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).to_vec().zip(b)
-    assert_eq(pairs.len(), 2)
-    assert_eq(pairs[0].0, 2)
-    assert_eq(pairs[0].1, 10)
-    assert_eq(pairs[1].0, 4)
-    assert_eq(pairs[1].1, 20)
+    assert pairs.len() == 2
+    assert pairs[0].0 == 2
+    assert pairs[0].1 == 10
+    assert pairs[1].0 == 4
+    assert pairs[1].1 == 20
 }
 
 test "vec zip — skip before it doesn't skew the other side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20, 30]
     let pairs: Vec<(i64, i64)> = a.skip(2).to_vec().zip(b)
-    assert_eq(pairs.len(), 3)
-    assert_eq(pairs[0].0, 3)
-    assert_eq(pairs[0].1, 10)
-    assert_eq(pairs[2].0, 5)
-    assert_eq(pairs[2].1, 30)
+    assert pairs.len() == 3
+    assert pairs[0].0 == 3
+    assert pairs[0].1 == 10
+    assert pairs[2].0 == 5
+    assert pairs[2].1 == 30
 }
 
 // #953 made a Vec reached through a field a fused-loop source too, so this
@@ -114,21 +114,21 @@ struct Row {
 test "vec zip — both sides reached through a struct field" {
     let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
     let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
-    assert_eq(pairs.len(), 2)
-    assert_eq(pairs[0].0, 1)
-    assert_eq(pairs[0].1, "a")
-    assert_eq(pairs[1].0, 2)
-    assert_eq(pairs[1].1, "b")
+    assert pairs.len() == 2
+    assert pairs[0].0 == 1
+    assert pairs[0].1 == "a"
+    assert pairs[1].0 == 2
+    assert pairs[1].1 == "b"
 }
 
 test "vec zip — a filter on a field receiver still doesn't skew the other side" {
     let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
     let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).to_vec().zip(r.names)
-    assert_eq(pairs.len(), 2)
-    assert_eq(pairs[0].0, 1)
-    assert_eq(pairs[0].1, "a")
-    assert_eq(pairs[1].0, 3)
-    assert_eq(pairs[1].1, "b")
+    assert pairs.len() == 2
+    assert pairs[0].0 == 1
+    assert pairs[0].1 == "a"
+    assert pairs[1].0 == 3
+    assert pairs[1].1 == "b"
 }
 
 test "map insert_if_missing — fills a gap and leaves a value alone" {
@@ -136,14 +136,14 @@ test "map insert_if_missing — fills a gap and leaves a value alone" {
     m.insert_if_missing("a", || {
         return 9
     })
-    assert_eq(m.get("a") ?? -1, 9)
+    assert (m.get("a") ?? -1) == 9
 
     // Present already: the closure's value is not used.
     m.insert_if_missing("a", || {
         return 100
     })
-    assert_eq(m.get("a") ?? -1, 9)
-    assert_eq(m.len(), 1)
+    assert (m.get("a") ?? -1) == 9
+    assert m.len() == 1
 }
 
 // A value type wider than a word is what caught the substitution half of #887:
@@ -154,38 +154,38 @@ test "map insert_if_missing — a string value survives the closure" {
     ms.insert_if_missing("k", || {
         return "hello there"
     })
-    assert_eq(ms.get("k") ?? "?", "hello there")
+    assert (ms.get("k") ?? "?") == "hello there"
 
     mut mi: Map<i64, string> = Map.new()
     mi.insert_if_missing(5, || {
         return "five"
     })
-    assert_eq(mi.get(5) ?? "?", "five")
+    assert (mi.get(5) ?? "?") == "five"
 }
 
 // #888: an empty separator matches at every boundary.
 test "split — an empty separator gives every boundary" {
     let parts = "ab".split("").to_vec()
-    assert_eq(parts.len(), 4)
-    assert_eq(parts.join("|"), "|a|b|")
+    assert parts.len() == 4
+    assert parts.join("|") == "|a|b|"
 
     // One character: a boundary each side.
-    assert_eq("a".split("").to_vec().len(), 3)
+    assert "a".split("").to_vec().len() == 3
     // Nothing at all: the two ends are the same boundary, counted twice.
-    assert_eq("".split("").to_vec().len(), 2)
+    assert "".split("").to_vec().len() == 2
 }
 
 test "split — an empty separator walks characters, not bytes" {
-    assert_eq("héllo".split("").join("|"), "|h|é|l|l|o|")
+    assert "héllo".split("").join("|") == "|h|é|l|l|o|"
 }
 
 // The non-empty separators always agreed; they're here so a change to the empty
 // case can't quietly move them.
 test "split — a real separator is unchanged" {
-    assert_eq("a,,b".split(",").to_vec().len(), 3)
-    assert_eq("a,,b".split(",").join("|"), "a||b")
-    assert_eq(",a,".split(",").join("|"), "|a|")
-    assert_eq("".split(",").to_vec().len(), 1)
+    assert "a,,b".split(",").to_vec().len() == 3
+    assert "a,,b".split(",").join("|") == "a||b"
+    assert ",a,".split(",").join("|") == "|a|"
+    assert "".split(",").to_vec().len() == 1
 }
 
 func main() {}

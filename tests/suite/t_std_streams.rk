@@ -57,7 +57,7 @@ test "std.io — write answers the byte count" {
     let empty: Vec<u8> = []
     let n = out.write(empty)
     if n is i64 as k {
-        assert_eq(k, 0)
+        assert k == 0
     } else as e {
         assert false
     }
@@ -83,7 +83,7 @@ test "std.io — reading into an empty buffer is zero, not an error" {
     mut buf: Vec<u8> = []
     let n = inp.read(mutate buf)
     if n is i64 as k {
-        assert_eq(k, 0)
+        assert k == 0
     } else as e {
         assert false
     }

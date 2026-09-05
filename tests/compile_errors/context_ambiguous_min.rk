@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR [mem.context/CC8]: two Pool<Player> in scope at the call site — the
+// Rejects: [mem.context/CC8]: two Pool<Player> in scope at the call site — the
 // compiler can't pick which one satisfies damage's context.
 //
 // Minimal repro using explicit `players[h]` indexing in the callee, so the only

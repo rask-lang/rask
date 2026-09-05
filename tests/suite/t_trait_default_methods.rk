@@ -50,26 +50,26 @@ extend Rude with Greet {
 }
 
 test "trait default — the conformer inherits the body" {
-    assert_eq(Plain { who: "bo" }.hello(), "hello bo")
+    assert Plain { who: "bo" }.hello() == "hello bo"
 }
 
 test "trait default — an override wins" {
-    assert_eq(Rude { who: "bo" }.hello(), "oi bo")
+    assert Rude { who: "bo" }.hello() == "oi bo"
 }
 
 // Two conformers of the same trait get their own copy, each resolving
 // `self.name()` against its own type. Sharing one body — or one set of NodeIds —
 // would make the second overwrite the first.
 test "trait default — two conformers keep their own answers" {
-    assert_eq(Plain { who: "a" }.hello(), "hello a")
-    assert_eq(Rude { who: "a" }.hello(), "oi a")
+    assert Plain { who: "a" }.hello() == "hello a"
+    assert Rude { who: "a" }.hello() == "oi a"
 }
 
 test "trait default — through a trait object" {
     let p = Plain { who: "x" } as any Greet
-    assert_eq(p.hello(), "hello x")
+    assert p.hello() == "hello x"
     let r = Rude { who: "y" } as any Greet
-    assert_eq(r.hello(), "oi y")
+    assert r.hello() == "oi y"
 }
 
 // A default calling another default, and one taking a parameter.
@@ -132,33 +132,33 @@ extend Wrap<T> with Base {
 
 test "trait default — one default calls another" {
     let a = Alpha { n: 4 }
-    assert_eq(a.doubled(), 8)
-    assert_eq(a.quadrupled(), 16)
+    assert a.doubled() == 8
+    assert a.quadrupled() == 16
 }
 
 test "trait default — a default takes parameters" {
-    assert_eq(Alpha { n: 4 }.scaled(10), 40)
+    assert Alpha { n: 4 }.scaled(10) == 40
 }
 
 test "trait default — inherited through a super-trait" {
     let a = Alpha { n: 3 }
-    assert_eq(a.doubled(), 6)
-    assert_eq(a.tag(), "sub3")
+    assert a.doubled() == 6
+    assert a.tag() == "sub3"
 }
 
 // The chained default calls the *override*, not the body it was written next to.
 test "trait default — a chained default sees the override" {
     let c = Counter { n: 2 }
-    assert_eq(c.doubled(), 6)
-    assert_eq(c.quadrupled(), 12)
+    assert c.doubled() == 6
+    assert c.quadrupled() == 12
 }
 
 test "trait default — on a generic type" {
     let w: Wrap<string> = Wrap { value: "x" }
-    assert_eq(w.doubled(), 10)
-    assert_eq(w.quadrupled(), 20)
+    assert w.doubled() == 10
+    assert w.quadrupled() == 20
     let n: Wrap<i64> = Wrap { value: 1 }
-    assert_eq(n.scaled(3), 15)
+    assert n.scaled(3) == 15
 }
 
 func main() {}

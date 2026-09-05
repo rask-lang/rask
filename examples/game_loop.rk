@@ -208,7 +208,7 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
         // Spawn enemy at right edge with random y. range() returns i64, which
         // widens to f32 losslessly here — f32()/f64() both return f64 (stdlib
         // convention), and there's no `as` conversion that narrows f64 to f32.
-        let y = state.rng.range(50, 550) as f32
+        let y = state.rng.range(50, 550).round<f32>()
         let _ = state.spawn_enemy(850.0f32, y)
         return 0.0f32  // Reset timer
     } else {

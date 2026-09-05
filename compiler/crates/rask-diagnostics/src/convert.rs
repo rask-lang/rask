@@ -2176,6 +2176,11 @@ impl ToDiagnostic for rask_types::TypeError {
                         "`as` only permits lossless widening — narrowing a float loses precision [type.primitives/CV4]",
                         None,
                     ),
+                    C::IntToFloat => (
+                        format!("cannot convert `{}` to `{}` with `as`", source, target),
+                        "an `as` cast promises nothing was lost, and this one can lose precision: past its mantissa a float lands on multiples of 2, then 4, then 128 [type.primitives/CV1]",
+                        Some(format!("x.round<{n}>()   // nearest representable, ties to even", n = n)),
+                    ),
                     C::IntToChar => (
                         format!("cannot convert `{}` to `char` with `as`", source),
                         "not every integer is a valid Unicode scalar value [type.primitives/CH5]",
@@ -2818,7 +2823,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "`{}` was consumed and never put back",
                     name
                 ))
-                .with_code("E0849")
+                .with_code("E0860")
                 .with_primary(self.span, format!("`{}` is still empty when this returns", name))
                 .with_secondary(*consumed_at, format!("`{}` was consumed here", name))
                 .with_help(format!(
@@ -2945,7 +2950,10 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     name
                 ))
                 .with_code("E0805")
-                .with_primary(self.span, "resource goes out of scope here")
+                .with_primary(
+                    self.span,
+                    format!("scope ends after this, and `{}` is still owed", name),
+                )
                 .with_help(format!(
                     "consume the resource inside `{}`, then `discard {}` — or hold it \
                      somewhere the compiler can name, like a plain field",
@@ -2968,7 +2976,14 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     name
                 ))
                 .with_code("E0805")
-                .with_primary(self.span, "resource goes out of scope here")
+                // The span is the block's last statement, which is where the
+                // scope ends — not always where the resource is. On an `if`
+                // that consumes on one branch only, "resource goes out of scope
+                // here" pointed at the `if` and read as nonsense.
+                .with_primary(
+                    self.span,
+                    format!("scope ends after this, and `{}` is still owed", name),
+                )
                 .with_help(format!(
                     "call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup",
                     name
@@ -3046,7 +3061,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot {} in frozen context `{}`",
                     operation, context_ty
                 ))
-                .with_code("E0848")
+                .with_code("E0859")
                 .with_primary(self.span, format!("{} not allowed in frozen context", operation))
                 .with_help("remove `frozen` from the context clause, or remove the mutation")
                 .with_why("frozen contexts guarantee no structural mutations — this enables safe iteration without generation checks")
@@ -3087,7 +3102,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot clear `{}` inside `with` block",
                     collection
                 ))
-                .with_code("E0850")
+                .with_code("E0861")
                 .with_primary(self.span, "clear invalidates all elements")
                 .with_secondary(*binding_span, "element borrowed here")
                 .with_help("move the clear outside the with block")
@@ -3121,7 +3136,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "closure `{}` captures scoped borrow and cannot escape",
                     name
                 ))
-                .with_code("E0851")
+                .with_code("E0862")
                 .with_primary(self.span, "closure would outlive its captured borrow")
                 .with_fix("prefix the closure with `own` to move captures instead of borrowing them")
                 .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")

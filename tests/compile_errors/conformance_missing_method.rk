@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: declared `extend T with Trait` but the type lacks the trait's method
+// Rejects: declared `extend T with Trait` but the type lacks the trait's method
 // Expected: typecheck error E0333 at the extend — `Dog` does not implement `Greeter`
 
 trait Greeter {

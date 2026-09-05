@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: non-exhaustive match — missing Green and Blue
+// Rejects: non-exhaustive match — missing Green and Blue
 // Expected: typecheck error for incomplete pattern coverage
 // BUG: currently passes type check — exhaustiveness not enforced
 

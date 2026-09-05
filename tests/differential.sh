@@ -75,6 +75,14 @@ reg_label() {
 # then phase, in the note. First match wins; a line naming two issues leads with
 # the one describing the file's overall state.
 #
+# `output` is the fourth phase, for the divergence the other three can't
+# describe: both backends exit 0 and print different things. The vocabulary
+# assumed a red file always has a backend that *failed*, so a file whose only
+# symptom is disagreeing output could be registered but never held to its claim
+# — it read as MISFILED whatever the note said. `(interp output)` names the
+# backend that is wrong; `(both output)` is not a thing, since agreeing on the
+# wrong answer isn't a divergence.
+#
 # Prose in parentheses (`(interp keeps the value, native wraps)`) deliberately
 # doesn't match. It makes no checkable claim, and reading one out of it would be
 # inventing the claim rather than checking it — so such a line counts as
@@ -82,7 +90,7 @@ reg_label() {
 reg_claim() {
     awk -v want="$1" '
         NF && $1 !~ /^#/ && $1 == want {
-            if (match($0, /\((native|interp|both) +(check|compile|run)\)/)) {
+            if (match($0, /\((native|interp|both) +(check|compile|run|output)\)/)) {
                 print substr($0, RSTART + 1, RLENGTH - 2)
             }
             exit
@@ -216,8 +224,11 @@ for f in "$SUITE_DIR"/*.rk; do
             [ "$iphase" = "$nphase" ] || observed="interp=$iphase native=$nphase"
         elif [ "$ncode" -ne 0 ]; then
             observed="native $nphase"
-        else
+        elif [ "$icode" -ne 0 ]; then
             observed="interp $iphase"
+        else
+            # Both exited 0 and the file is still red, so the outputs differ.
+            observed="<backend> output"
         fi
 
         why=""
@@ -226,13 +237,21 @@ for f in "$SUITE_DIR"/*.rk; do
         else
             case "$want_side" in
                 native)
-                    if [ "$icode" -ne 0 ]; then
+                    if [ "$want_phase" = output ]; then
+                        if [ "$icode" -ne 0 ] || [ "$ncode" -ne 0 ]; then
+                            why="registered ($claim) but a backend fails outright now ($observed)"
+                        fi
+                    elif [ "$icode" -ne 0 ]; then
                         why="registered ($claim) but the interpreter fails too, at $iphase"
                     elif [ "$nphase" != "$want_phase" ]; then
                         why="registered ($claim) but native now fails at $nphase"
                     fi ;;
                 interp)
-                    if [ "$ncode" -ne 0 ]; then
+                    if [ "$want_phase" = output ]; then
+                        if [ "$icode" -ne 0 ] || [ "$ncode" -ne 0 ]; then
+                            why="registered ($claim) but a backend fails outright now ($observed)"
+                        fi
+                    elif [ "$ncode" -ne 0 ]; then
                         why="registered ($claim) but native fails too, at $nphase"
                     elif [ "$iphase" != "$want_phase" ]; then
                         why="registered ($claim) but the interpreter now fails at $iphase"

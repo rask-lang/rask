@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: bare `with shared as v` — the lock has to be named (conc.sync/R4)
+// Rejects: bare `with shared as v` — the lock has to be named (conc.sync/R4)
 // Expected: typecheck error E0839 — `with config as c` doesn't say which lock
 //
 // Nothing enforced this. The interpreter got as far as a runtime error whose

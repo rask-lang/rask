@@ -55,7 +55,7 @@ func closes_both() -> i64 {
 }
 
 test "mem.linear/L1 — two resource fields, both paid" {
-    assert_eq(closes_both(), 3)
+    assert closes_both() == 3
 }
 
 // One resource field, and the holder is still readable after paying it. This is
@@ -68,7 +68,7 @@ func closes_the_one_field() -> string {
 }
 
 test "mem.linear/L1 — a wrapper stays readable after its resource is closed" {
-    assert_eq(closes_the_one_field(), "w3")
+    assert closes_the_one_field() == "w3"
 }
 
 func closes_through_a_nested_path() -> i64 {
@@ -77,7 +77,7 @@ func closes_through_a_nested_path() -> i64 {
 }
 
 test "mem.linear/L1 — a nested field path discharges the field it names" {
-    assert_eq(closes_through_a_nested_path(), 4)
+    assert closes_through_a_nested_path() == 4
 }
 
 // Handing the whole holder away pays every field with it — and the callee's own
@@ -92,7 +92,7 @@ func hands_it_over() -> i64 {
 }
 
 test "mem.linear/L1 — moving the holder moves every debt with it" {
-    assert_eq(hands_it_over(), 3)
+    assert hands_it_over() == 3
 }
 
 // L1 again, from the other end: a `@resource` is never Copy, whatever its size.
@@ -109,7 +109,7 @@ func hands_over_a_bare_resource() -> i64 {
 }
 
 test "mem.linear/L1 — a small @resource is still not Copy" {
-    assert_eq(hands_over_a_bare_resource(), 9)
+    assert hands_over_a_bare_resource() == 9
 }
 
 func main() {}

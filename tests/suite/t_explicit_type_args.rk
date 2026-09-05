@@ -57,28 +57,28 @@ func both<T, U>(value: U) -> string {
 }
 
 test "a written type argument reaches a no-argument call" {
-    assert_eq(type_name<Doc>(), "Doc")
+    assert type_name<Doc>() == "Doc"
 }
 
 test "the same function answers for a different written type" {
-    assert_eq(type_name<Point>(), "Point")
+    assert type_name<Point>() == "Point"
 }
 
 test "reflect.fields sees the written type" {
-    assert_eq(field_count<Doc>(), 2)
-    assert_eq(field_count<Point>(), 3)
+    assert field_count<Doc>() == 2
+    assert field_count<Point>() == 3
 }
 
 test "field names come from the written type" {
-    assert_eq(field_names<Doc>(), "title,body,")
+    assert field_names<Doc>() == "title,body,"
 }
 
 test "an inferred type argument still works" {
     let p = Point { x: 1, y: 2, z: 3 }
-    assert_eq(inferred_name(p), "Point")
+    assert inferred_name(p) == "Point"
 }
 
 test "written and inferred together" {
     let d = Doc { title: "t", body: "b" }
-    assert_eq(both<Point>(d), "Point/Doc")
+    assert both<Point>(d) == "Point/Doc"
 }

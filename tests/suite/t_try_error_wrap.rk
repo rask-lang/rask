@@ -142,8 +142,8 @@ func describe_top(r: string or TopError) -> string {
 }
 
 test "free-function error lands in its variant" {
-    assert_eq(describe_api(fetch("a")), "got alpha")
-    assert_eq(describe_api(fetch("z")), "err: not found: z")
+    assert describe_api(fetch("a")) == "got alpha"
+    assert describe_api(fetch("z")) == "err: not found: z"
 }
 
 // Which variant of the boundary enum a result actually holds.
@@ -159,28 +159,28 @@ func variant_of(r: string or ApiError) -> string {
 }
 
 test "the wrapped value is the boundary variant, not the source" {
-    assert_eq(variant_of(fetch("z")), "Store:not found: z")
-    assert_eq(variant_of(accept(Dto { title: "" })), "Validation")
-    assert_eq(variant_of(explicit("z")), "BadRequest")
+    assert variant_of(fetch("z")) == "Store:not found: z"
+    assert variant_of(accept(Dto { title: "" })) == "Validation"
+    assert variant_of(explicit("z")) == "BadRequest"
 }
 
 test "method-call source resolves before the wrap is decided" {
-    assert_eq(describe_api(accept(Dto { title: "write it up" })), "accepted write it up")
-    assert_eq(describe_api(accept(Dto { title: "" })), "err: title must not be empty")
+    assert describe_api(accept(Dto { title: "write it up" })) == "accepted write it up"
+    assert describe_api(accept(Dto { title: "" })) == "err: title must not be empty"
 }
 
 test "each hop wraps once" {
-    assert_eq(describe_top(serve("a")), "served got alpha")
-    assert_eq(describe_top(serve("z")), "err: api: not found: z")
+    assert describe_top(serve("a")) == "served got alpha"
+    assert describe_top(serve("z")) == "err: api: not found: z"
 }
 
 test "the wrap carries onto generic instantiations" {
-    assert_eq(describe_api(tagged(1, "a")), "1:alpha")
-    assert_eq(variant_of(tagged("x", "z")), "Store:not found: z")
+    assert describe_api(tagged(1, "a")) == "1:alpha"
+    assert variant_of(tagged("x", "z")) == "Store:not found: z"
 }
 
 test "an explicit else still wins" {
-    assert_eq(describe_api(explicit("z")), "err: bad request: not found: z")
+    assert describe_api(explicit("z")) == "err: bad request: not found: z"
 }
 
 func describe_store(r: string or StoreError) -> string {
@@ -191,8 +191,8 @@ func describe_store(r: string or StoreError) -> string {
 }
 
 test "same type in and out stays plain" {
-    assert_eq(describe_store(passthrough("a")), "alpha")
-    assert_eq(describe_store(passthrough("z")), "err: not found: z")
+    assert describe_store(passthrough("a")) == "alpha"
+    assert describe_store(passthrough("z")) == "err: not found: z"
 }
 
 func main() {

@@ -50,7 +50,7 @@ test "a link is the node's address, so writes through it are shared" {
     // node lives in the rack, it is not copied into it.
     if b.peer? as through { through.hits += 5 }
     a.hits += 1
-    assert_eq(a.hits, 6)
+    assert a.hits == 6
 }
 
 test "link equality is node identity" {
@@ -74,7 +74,7 @@ test "a root edge — a link beside the rack — is fixed too" {
     let n = w.rack.insert(Node { id: 7, hits: 0, peer: none })
     w.focus = n
     if w.focus? as f {
-        assert_eq(f.id, 7)
+        assert f.id == 7
     } else {
         assert false
     }
@@ -102,7 +102,7 @@ test "re-pointing an edge forgets its old target" {
     // alone rather than nulling it.
     s.delete(first)
     if holder.peer? as p {
-        assert_eq(p.id, 2)
+        assert p.id == 2
     } else {
         assert false
     }
@@ -130,7 +130,7 @@ test "a node inserted with edges already in its fields is registered" {
 test "iteration and the structural ops" {
     mut s: Rack<Node> = Rack.new()
     assert s.is_empty()
-    assert_eq(s.len(), 0)
+    assert s.len() == 0
 
     let a = s.insert(Node { id: 1, hits: 0, peer: none })
     let b = s.insert(Node { id: 2, hits: 0, peer: none })
@@ -138,7 +138,7 @@ test "iteration and the structural ops" {
 
     mut sum = 0
     for n in s.nodes() { sum += n.id }
-    assert_eq(sum, 6)
+    assert sum == 6
     assert s.contains(a)
     assert s.contains(c)
 
@@ -150,8 +150,8 @@ test "iteration and the structural ops" {
     s.delete(b)
     mut after = 0
     for n in s.nodes() { after += n.id }
-    assert_eq(after, 4)
-    assert_eq(s.len(), 2)
+    assert after == 4
+    assert s.len() == 2
 
     // `clear` kills every name for a node in this rack from here on. `a` and
     // `c` are finished with above, so there is nothing to move and no scope to
@@ -192,10 +192,10 @@ test "inserting never moves a node, so a link stays valid across growth" {
         i += 1
     }
 
-    assert_eq(s.len(), 2001)
-    assert_eq(first.id, 1)
+    assert s.len() == 2001
+    assert first.id == 1
     first.hits += 3
-    assert_eq(first.hits, 3)
+    assert first.hits == 3
 }
 
 test "a delete in one rack leaves another rack's edges alone" {
@@ -210,8 +210,8 @@ test "a delete in one rack leaves another rack's edges alone" {
     l.peer = r
     right.delete(r)
 
-    assert_eq(left.len(), 1)
-    assert_eq(right.len(), 0)
+    assert left.len() == 1
+    assert right.len() == 0
     if l.peer? as _p {
         assert false
     }

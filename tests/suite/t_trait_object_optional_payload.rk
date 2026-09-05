@@ -35,7 +35,7 @@ test "a trait object survives a Vec.get optional binding" {
     v.push(Square { side: 3.0 })
     let g = v.get(0)
     if g? as s {
-        assert_eq(s.area(), 9.0)
+        assert s.area() == 9.0
     } else {
         assert(false)
     }
@@ -46,7 +46,7 @@ test "a trait object survives a Map.get optional binding" {
     m.insert("square", Square { side: 4.0 })
     let g = m.get("square")
     if g? as s {
-        assert_eq(s.area(), 16.0)
+        assert s.area() == 16.0
     } else {
         assert(false)
     }
@@ -55,9 +55,9 @@ test "a trait object survives a Map.get optional binding" {
 test "the non-optional reads still agree" {
     mut v: Vec<any Shape> = Vec.new()
     v.push(Square { side: 2.0 })
-    assert_eq(v[0].area(), 4.0)
+    assert v[0].area() == 4.0
     for s in v {
-        assert_eq(s.area(), 4.0)
+        assert s.area() == 4.0
     }
 }
 
@@ -79,14 +79,14 @@ test "two concrete types dispatch to their own bodies" {
 
     let a = v.get(0)
     if a? as s {
-        assert_eq(s.area(), 3.14159)
+        assert s.area() == 3.14159
     } else {
         assert(false)
     }
 
     let b = v.get(1)
     if b? as s {
-        assert_eq(s.area(), 9.0)
+        assert s.area() == 9.0
     } else {
         assert(false)
     }

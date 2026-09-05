@@ -12,7 +12,7 @@ Built-in test framework with `test` blocks, `@test` functions, assertions, paral
 |------|-------------|
 | **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds |
 | **T2: @test functions** | `@test` on a function makes it both a test and a callable function |
-| **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files |
+| **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files. `foo_test.rk` beside `foo.rk` is that module's companion and compiles with it, package or no package |
 | **T4: Private access** | Inline and same-package `*_test.rk` tests can access private members; external test files see `public` only |
 
 ```rask
@@ -38,7 +38,21 @@ func config_defaults_are_valid() -> bool {
 | **A1: assert** | `assert expr` — test stops immediately on failure |
 | **A2: check** | `check expr` — test continues, marked failed |
 | **A3: Messages** | Both accept optional message: `assert expr, "message"` |
-| **A4: Rich comparison** | `assert_eq(got, expected)` and `assert_ne(got, unexpected)` pretty-print a diff on failure and stop the test; `check_eq`/`check_ne` are the continuing forms. First argument is what the code produced, second is what the test expects |
+| **A5: Operands in the message** | A failed comparison names both sides — `assertion failed: 2 == 3 (left: 2, right: 3)` — for anything with a one-line rendering. A struct or an optional has none (`std.fmt/D3`: types opt into `Displayable`), so the message stands alone rather than printing an address |
+
+There is no `assert_eq`. A comparison is `==`, and `assert` reports the operands
+itself:
+
+```
+assert count == 3
+// assertion failed: 2 == 3 (left: 2, right: 3)
+```
+
+`assert_eq(got, expected)` was A4 until it was deleted. Two positional arguments
+that mean different things, told apart only by remembering which is which, is
+the kind of API this stdlib is supposed to avoid (`std.stdlib/api-design`) — and
+the only thing it added over `==` was the failure message, which `assert` now
+carries.
 
 ```rask
 test "multiple checks" {
@@ -66,23 +80,36 @@ test "add cases" {
 
 | Rule | Description |
 |------|-------------|
-| **T6: Isolation** | Each test runs in isolation with no shared state |
-| **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential` |
-| **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X` |
+| **T6: Isolation** | Each test gets its own locals and its own failure. One test's `assert` failing doesn't stop the next, and nothing a test binds is visible to another. Process-global state is not reset between tests: a module-level `Shared` written by one is read by the next, the same way it would be by any other code in the process |
+| **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential`. *Not built — tests run sequentially, and `--sequential` isn't a flag until it means something* |
+| **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X`. *Not built, same as T7* |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |
-| **T10: No `try` in a test body** | A test block has no error branch to propagate to, so bare `try` is a `type.errors/ER47` compile error like anywhere else. Fallible setup is `catch`, and the handler says why — an assertion that swallows the error reports "assertion failed" and nothing else |
+| **T20: `try` propagates to the runner** | A test block is the error branch: `try` on a failing step ends that test as a failure, naming it and reporting the error, and later tests still run. Fallible setup needs no handler — use `catch` when you want to *test* the failure rather than be stopped by it |
 
 <!-- test: skip -->
 ```rask
 test "file processing" {
-    let file = fs.open("test.txt") catch e => {
-        assert false, "open failed: {e.message()}"
-        return
-    }
+    let file = try fs.open("test.txt")
     ensure file.close()
     assert file.read() == "expected"
 }
 ```
+
+A `try` that does propagate reads like any other failed test:
+
+```
+✗ file processing
+    main.rk:2: try propagated an error out of a test block
+✓ the next test still runs
+```
+
+This rule used to say the opposite — bare `try` was an `ER47` compile error,
+on the grounds that a test block had nowhere to propagate to, so the failure
+would be uninformative ("an assertion that swallows the error reports
+'assertion failed' and nothing else"). [#1057](https://github.com/rask-lang/rask/pull/1057)
+gave it somewhere to go and made the message say what happened, which retired
+the argument. The `catch` spelling above cost four lines per fallible step and
+a hand-written message at each one.
 
 ## Concurrency in Tests
 
@@ -90,7 +117,7 @@ Tests are application code. `conc.async/C6` says application code opens the runt
 
 | Rule | Description |
 |------|-------------|
-| **T17: Tests open their own runtime** | A test whose body reaches `spawn` (directly or transitively) contains a `using Multitasking { }` block. Forgetting it is the standard `conc.async/CC2` compile error at the call site, naming the function that spawns — the ceremony is one line, and the error teaches it |
+| **T17: Tests open their own runtime** | A test whose body reaches `spawn` (directly or transitively) contains a `using Multitasking { }` block. Forgetting it is the standard compile error: `conc.async/CC2` at the call, naming the function that spawns, or `CC1` at the `spawn` itself when the test body spawns directly — a test block is a root, so there is no caller to blame. The ceremony is one line, and the error teaches it |
 | **T18: Runner respects C1** | At most one runtime per process (`conc.async/C1`), so the runner never executes two runtime-holding tests concurrently in-process: tests containing a `using Multitasking` block are serialized with respect to each other, while runtime-free tests keep running in parallel around them (T7). The runner knows which tests qualify lexically — no new analysis |
 | **T19: Drain bounds the test** | Block exit waits for the test's tasks (`conc.async/C4`), so a leaked or hung task fails *that* test by timeout, under that test's name — it can't pollute later tests. Same rule for `using ThreadPool` |
 
@@ -109,28 +136,35 @@ test "concurrent fetch joins all workers" {
 
 ## Subtests
 
-| Rule | Description |
-|------|-------------|
-| **T10: Nested blocks** | `test` blocks nest for grouping. Output: `PASS: parent > child` |
+There are none. `test` blocks don't nest — a `test` inside a `test` is a parse
+error, and grouping is what the name is for: `test "parser — numbers"` and
+`test "parser — invalid"` sort together, filter together under `-f parser`, and
+each fails on its own.
 
-```rask
-test "parser" {
-    test "numbers" {
-        check parse("42")! == 42
-    }
-    test "invalid" {
-        check parse("abc") == none
-    }
-}
-```
+T10 said they nested and printed `PASS: parent > child`. Nothing ever built it,
+nothing in the tree wanted it, and it would need its own reporting, its own
+filtering and its own answer to what a failed parent means for its children —
+for grouping a naming convention already gives.
 
 ## Comptime Tests
 
 | Rule | Description |
 |------|-------------|
 | **T11: Comptime** | `comptime test` runs during compilation; failure is a compile error |
+| **T11a: Not run twice** | A `comptime test` doesn't reach either backend's runner. It ran at compile time; `rask test` reports the result it already has |
 
+Everything the body needs has to be reachable from the comptime subset
+(`ctrl.comptime/CT6`–`CT8`). A test that can't be evaluated there is the same
+compile error as one that fails — the compiler has no files, no sockets and no
+scheduler to lend it.
+
+<!-- test: compile -->
 ```rask
+comptime func factorial(n: i64) -> i64 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
 comptime test "factorial" {
     assert factorial(5) == 120
 }
@@ -210,9 +244,8 @@ test "schedule" {
 rask test              # all tests
 rask test math         # module filter
 rask test -f "parser"  # pattern filter
-rask test --sequential # force sequential
-rask test --seed X     # reproducible run
-rask test --verbose    # show all names
+rask test --interp     # run on the interpreter instead of compiling
+rask test --json       # machine-readable output
 rask benchmark         # all benchmarks
 rask benchmark -f "vec"    # filter benchmarks
 rask benchmark --json      # machine-readable output
@@ -244,12 +277,12 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 |------|----------|------|
 | `test` block in release build | Stripped entirely | T1 |
 | `@test` function in release build | Function compiled; not invoked by runner | T2 |
-| Nested `test` inside `@test` function | Allowed | T10 |
+| Nested `test` inside a `test` or `@test` function | Parse error — see Subtests |
 | `check` failure in table loop | All iterations run; test marked failed | A2 |
 | `assert` failure in table loop | Test stops at failing iteration | A1 |
 | `comptime test` uses I/O | Compile error (comptime subset only) | T11 |
 | `benchmark` in debug build | Stripped | B1 |
-| `spawn` in a test with no `using Multitasking` block | Compile error at the call site (`conc.async/CC2`) | T17 |
+| `spawn` in a test with no `using Multitasking` block | Compile error — `conc.async/CC1` at the `spawn`, or `CC2` at the call when it's a helper that spawns | T17 |
 | Two runtime-holding tests under parallel execution | Serialized by the runner — never concurrent in-process | T18 |
 | Detached task still running at test's block exit | Block exit waits; hang is reported as that test's timeout | T19 |
 | `comptime test` reaches `spawn` | Compile error (comptime subset has no concurrency) | T11 |

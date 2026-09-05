@@ -95,9 +95,9 @@ test "every field written in one block persists" {
     s.finish(h)
     assert s.is_done(h)
     assert s.is_high(h)
-    assert_eq(s.weight_of(h), 42)
+    assert s.weight_of(h) == 42
     // the heap-backed write always worked — check it didn't regress
-    assert_eq(s.tag_count(h), 1)
+    assert s.tag_count(h) == 1
 }
 
 test "the write is visible inside the block too" {
@@ -105,9 +105,9 @@ test "the write is visible inside the block too" {
     let h = s.add()
     with s.tasks[h] as t {
         t.weight = 7
-        assert_eq(t.weight, 7)
+        assert t.weight == 7
     }
-    assert_eq(s.weight_of(h), 7)
+    assert s.weight_of(h) == 7
 }
 
 test "a pool reached by a plain name still works" {
@@ -121,13 +121,13 @@ test "a pool reached by a plain name still works" {
     })
     with pool[h] as t { t.weight = 5 }
     let w = with pool[h] as t { t.weight }
-    assert_eq(w, 5)
+    assert w == 5
 }
 
 test "a vec write through a struct field persists past the block" {
     mut b = Bag.new()
     b.bump()
-    assert_eq(b.first(), 99)
+    assert b.first() == 99
 }
 
 test "a vec reached by a plain name still works" {
@@ -135,5 +135,5 @@ test "a vec reached by a plain name still works" {
     v.push(Item { n: 1 })
     with v[0] as it { it.n = 77 }
     let got = with v[0] as it { it.n }
-    assert_eq(got, 77)
+    assert got == 77
 }

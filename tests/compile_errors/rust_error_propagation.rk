@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: Rust's `?` used for error propagation (type.errors/ER12, E0368).
+//
+// Rask spells propagation `try`. `?` is the presence test — "is there a value
+// here" — and a `T or E` can't answer it, because a failure isn't an absence:
+// a miss carries nothing, an error carries something you shouldn't step over.
+//
+// The marker for this used to live in `syntax_rejected.rk`, below eight parse
+// errors that stop the pipeline before the checker runs, so nothing ever
+// reached it (harness audit 1.2). Here the file parses and every error below
+// comes from the same pass.
+
+struct ParseError {
+    detail: string
+}
+
+extend ParseError {
+    public func message(self) -> string {
+        return self.detail
+    }
+}
+
+func might_fail() -> i32 or ParseError {
+    return 42
+}
+
+// --- `?` on a result ---
+func propagate_with_question_mark() -> i32 or ParseError {
+    // ERROR: `?` on `i32 or ParseError` — this is a result, not an optional [E0368]
+    let x = might_fail()?
+    return x
+}
+
+// --- and on the way into a method chain ---
+func chained() -> i32 or ParseError {
+    // ERROR: `?` on `i32 or ParseError` — this is a result, not an optional [E0368]
+    let n = might_fail()? + 1
+    return n
+}

@@ -79,9 +79,9 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
 
                 for i in 0..iters {
                     state = (a * state + c) % m
-                    let x = state as f64 / m as f64
+                    let x = state.round<f64>() / m.round<f64>()
                     state = (a * state + c) % m
-                    let y = state as f64 / m as f64
+                    let y = state.round<f64>() / m.round<f64>()
                     if x * x + y * y <= 1.0 {
                         inside = inside + 1
                     }
@@ -97,7 +97,7 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
             total_inside = total_inside + rx.receive()!
         }
 
-        return 4.0 * total_inside as f64 / total as f64
+        return 4.0 * total_inside.round<f64>() / total.round<f64>()
     }
 }
 

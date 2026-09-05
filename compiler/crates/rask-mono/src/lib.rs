@@ -14,7 +14,8 @@ mod reachability;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
-    compute_enum_layout, compute_struct_layout, compute_union_layout, ordering_layout, type_size_align,
+    compute_enum_layout, compute_struct_layout, compute_union_layout, is_stdlib_span,
+    ordering_layout, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};

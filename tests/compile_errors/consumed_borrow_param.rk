@@ -41,7 +41,7 @@ func relay_own(b: Bag) -> usize {
 // `mutate` is an exclusive borrow, so consuming IS allowed — but something has to
 // be put back, or the caller keeps a binding that moved out from under it.
 func drain(mutate b: Bag) -> usize {
-    return eat(b)               // ERROR: E0849 — nothing replaces `b`
+    return eat(b)               // ERROR: E0860 — nothing replaces `b`
 }
 
 // A resource behind `mutate` can't be given away even with a replacement put
@@ -57,8 +57,9 @@ func churn(mutate c: Conn) -> i32 {
 // An early return is an exit. The replacement below it never runs on this path,
 // so the caller gets its binding back empty.
 func early(mutate b: Bag, cond: bool) -> usize {
+    // ERROR: `b` is given away here and not replaced before the early return [PM2]
     let n = eat(b)
-    if cond { return n }        // ERROR: E0849 — `b` is empty here
+    if cond { return n }
     b = Bag { items: Vec.new() }
     return n
 }

@@ -237,34 +237,81 @@ pub fn check_file(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckRe
     check_single(path, config)
 }
 
-/// Check a single .rk file (no package context).
-fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            let d = Diagnostic::error(format!("reading {}: {}", path, e));
-            return PipelineOutput::fail(vec![d]);
-        }
+/// The files a single-file command compiles as one unit.
+///
+/// `foo_test.rk` beside `foo.rk` is a companion test file (std.testing/T3): the
+/// two are the same module, so the tests see its private members (T4). Compiled
+/// alone the companion sees nothing at all — every name in it is `E0200
+/// undefined symbol`, which is what the convention promised not to happen.
+///
+/// Only for loose files. Inside a package the whole package already compiles
+/// together, and `foo.rk` on its own is one file as it always was.
+fn companion_group(path: &Path) -> Vec<PathBuf> {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return vec![path.to_path_buf()];
     };
+    let Some(base) = stem.strip_suffix("_test") else {
+        return vec![path.to_path_buf()];
+    };
+    let module = path.with_file_name(format!("{base}.rk"));
+    if module.is_file() {
+        // The module first, so its diagnostics come before the test file's.
+        vec![module, path.to_path_buf()]
+    } else {
+        vec![path.to_path_buf()]
+    }
+}
 
+/// Check one .rk file, plus its `_test.rk` companion if it has one.
+fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    check_sources(&companion_group(Path::new(path)), config)
+}
+
+/// Check a set of .rk files as one compilation unit (no package context).
+///
+/// Each file gets its own `file_id` so diagnostics render against the right
+/// source, and node ids chain across them so combining the declarations can't
+/// produce two nodes with the same id — the same rules `rask-resolve`'s package
+/// loader follows, for the same reasons.
+fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<CheckResult> {
     let mut diags = Vec::new();
+    let mut source_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut decls: Vec<Decl> = Vec::new();
+    let mut next_id: u32 = 0;
 
-    // --- Lex ---
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-    for e in &lex_result.errors {
-        diags.push(e.to_diagnostic());
+    for (idx, path) in paths.iter().enumerate() {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                let d = Diagnostic::error(format!("reading {}: {}", path.display(), e));
+                return PipelineOutput::fail(vec![d]);
+            }
+        };
+        let file_id = idx as u16;
+
+        // --- Lex ---
+        let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
+        let lex_result = lexer.tokenize();
+        for e in &lex_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+
+        // --- Parse (continue even with lex errors — parser handles partial tokens) ---
+        let mut parser =
+            rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id);
+        let parse_result = parser.parse();
+        next_id = parser.next_node_id();
+        for e in &parse_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+        source_files.push((path.clone(), source));
+        if !parse_result.is_ok() {
+            return PipelineOutput::fail_with_sources(diags, source_files);
+        }
+        decls.extend(parse_result.decls);
     }
 
-    // --- Parse (continue even with lex errors — parser handles partial tokens) ---
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-    for e in &parse_result.errors {
-        diags.push(e.to_diagnostic());
-    }
-    if !parse_result.is_ok() {
-        return PipelineOutput::fail(diags);
-    }
+    let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
     // --- Comptime cfg elimination (CC1) ---
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
@@ -294,7 +341,7 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
             for e in &errors {
                 diags.push(e.to_diagnostic());
             }
-            return PipelineOutput::fail(diags);
+            return PipelineOutput::fail_with_sources(diags, source_files);
         }
     };
 
@@ -332,26 +379,28 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 
     let package_names = collect_builtin_imports(&parse_result.decls);
 
-    // --- Comptime folds (CT1) ---
+    // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
     }
 
+    drop_stdlib_cascade(&mut diags);
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        return PipelineOutput::fail(diags);
+        return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
-    PipelineOutput::ok(
+    PipelineOutput::ok_with_sources(
         CheckResult {
             typed,
             decls: parse_result.decls,
             package_names,
-            source_files: vec![(PathBuf::from(path), source)],
+            source_files: source_files.clone(),
             effects,
             effect_warnings,
             frozen_diagnostics,
         },
         diags,
+        source_files,
     )
 }
 
@@ -385,6 +434,10 @@ fn comptime_diagnostics_for(
     typed: &rask_types::TypedProgram,
     cfg: &CfgConfig,
 ) -> Vec<Diagnostic> {
+    // T11 tests need neither typecheck output nor monomorphization — the AST
+    // interpreter runs them straight off the decls.
+    let mut diags = evaluate_comptime_tests(decls, Some(cfg));
+
     let any_comptime_init = decls.iter().any(|d| match &d.kind {
         DeclKind::Const(c) => is_comptime_init(&c.init, decls),
         // A function-local `let x = comptime { … }` folds the same way, and
@@ -395,7 +448,7 @@ fn comptime_diagnostics_for(
         _ => false,
     });
     if !any_comptime_init {
-        return Vec::new();
+        return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
     // has no `main`, and the plain one calls that a fatal error — so check said
@@ -404,9 +457,10 @@ fn comptime_diagnostics_for(
     let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
-        return Vec::new();
+        return diags;
     };
-    evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1
+    diags.extend(evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1);
+    diags
 }
 
 /// Check a multi-file package.
@@ -540,11 +594,12 @@ pub fn check_package(
         diags.push(ensure_order_to_diagnostic(&w));
     }
 
-    // --- Comptime folds (CT1) ---
+    // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
 
+    drop_stdlib_cascade(&mut diags);
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -750,6 +805,12 @@ fn finalize_compile(
     // Hard errors (a panic, the branch quota, overflow, divide-by-zero) become
     // pipeline diagnostics and fail the build like any other pass. Warnings —
     // a const the evaluator couldn't fold, so it runs at startup — ride along.
+    //
+    // Comptime *tests* are not run here: `check_sources` / `check_package`
+    // already ran them, and every path into this function comes through one of
+    // those. Running them again was free only in the sense that a comptime test
+    // has no side effects — it still interpreted every body twice on `rask run`
+    // and `rask build`.
     let (comptime_globals, ct_diags) =
         evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
     // Check folded these same consts a moment ago, so anything it already
@@ -784,7 +845,7 @@ fn finalize_compile(
 
 // The comptime-global evaluator lives in `comptime_eval` — the single source
 // of truth used by both the pipeline (below) and the CLI's test/bench paths.
-pub use crate::comptime_eval::evaluate_comptime_globals;
+pub use crate::comptime_eval::{evaluate_comptime_globals, evaluate_comptime_tests};
 
 pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;
@@ -857,18 +918,48 @@ fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
     }
 }
 
+/// Drop diagnostics that land in stdlib source, when the user's own code has
+/// errors of its own.
+///
+/// A program that declares `struct T` is rejected by PC3 (E0357) — single
+/// uppercase letters are type parameters, so a concrete type with that name is
+/// unusable. That is the right error. What followed it was six more, in
+/// `stdlib/num.rk`, about `Wrapping<T>` having no `wrapping_add`: the user's
+/// `T` had taken the place of that declaration's own type parameter. Nothing
+/// there is actionable — the file isn't theirs, and it compiles fine on its own
+/// — so it is noise on top of the one error that matters.
+///
+/// Only when there is a user error to keep. A program whose *only* errors are
+/// in the stdlib has found a real stdlib bug, and hiding it would leave whoever
+/// is working on the stdlib with a failure and no message.
+fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
+    let user_error = diags.iter().any(|d| {
+        matches!(d.severity, Severity::Error)
+            && d.primary_span().is_some_and(|s| !rask_mono::is_stdlib_span(s))
+    });
+    if !user_error {
+        return;
+    }
+    diags.retain(|d| {
+        !matches!(d.severity, Severity::Error)
+            || d.primary_span().is_none_or(|s| !rask_mono::is_stdlib_span(s))
+    });
+}
+
 fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
-    let diag = if w.is_error {
+    let mut diag = if w.is_error {
         Diagnostic::error(&w.message)
     } else {
         Diagnostic::warning(&w.message)
     };
-    let label = if w.is_error {
-        format!("`{}` reaches spawn here", w.callee_name)
-    } else {
-        format!("`{}` has IO effect", w.callee_name)
-    };
-    diag.with_code(w.code).with_primary(w.span, label)
+    diag = diag.with_code(w.code).with_primary(w.span, &w.label);
+    if let Some(fix) = &w.fix {
+        diag = diag.with_fix(fix);
+    }
+    if let Some(why) = &w.why {
+        diag = diag.with_why(why);
+    }
+    diag
 }
 
 /// EO1: `ensure` runs LIFO, so a dependency registered *after* its dependent is

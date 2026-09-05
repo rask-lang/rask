@@ -38,60 +38,60 @@ struct Wide {
 test "std.encoding — a declared default fills a missing key" {
     let r = json.decode<Rec>("{{\"name\": \"bo\"}}")
     if r is Rec as v {
-        assert_eq(v.name, "bo")
-        assert_eq(v.tag, "fallback")
-        assert_eq(v.secret, 99)
+        assert v.name == "bo"
+        assert v.tag == "fallback"
+        assert v.secret == 99
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.encoding — every literal kind a default can be" {
     let r = json.decode<Wide>("{{\"name\": \"bo\"}}")
     if r is Wide as v {
-        assert_eq(v.n, 42)
-        assert_eq(v.neg, -7)
-        assert_eq(v.f, 2.5)
+        assert v.n == 42
+        assert v.neg == -7
+        assert v.f == 2.5
         assert(v.b)
-        assert_eq(v.s, "hi")
+        assert v.s == "hi"
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.encoding — `@default` still wins over the declared one" {
     let r = json.decode<Wide>("{{\"name\": \"bo\"}}")
     if r is Wide as v {
-        assert_eq(v.overridden, 9)
+        assert v.overridden == 9
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.encoding — a value in the input still wins over the default" {
     let r = json.decode<Wide>("{{\"name\": \"bo\", \"n\": 1, \"s\": \"z\", \"overridden\": 3}}")
     if r is Wide as v {
-        assert_eq(v.n, 1)
-        assert_eq(v.s, "z")
-        assert_eq(v.overridden, 3)
+        assert v.n == 1
+        assert v.s == "z"
+        assert v.overridden == 3
         // Untouched fields keep their defaults.
-        assert_eq(v.f, 2.5)
+        assert v.f == 2.5
     } else as e {
-        assert_eq("decode failed: {e}", "")
+        assert "decode failed: {e}" == ""
     }
 }
 
 test "std.encoding — a `@no_serialize` field stays off the wire" {
     let r = Rec { name: "bo", secret: 1, tag: "t" }
-    assert_eq(json.encode(r), "{{\"name\":\"bo\",\"tag\":\"t\"}}")
+    assert json.encode(r) == "{{\"name\":\"bo\",\"tag\":\"t\"}}"
 }
 
 // Construction is the other half of the same rule and was never broken —
 // here so a change to one is checked against the other.
 test "type.structs — a declared default fills an omitted field at construction" {
     let r = Rec { name: "x" }
-    assert_eq(r.secret, 99)
-    assert_eq(r.tag, "fallback")
+    assert r.secret == 99
+    assert r.tag == "fallback"
 }
 
 func main() {}

@@ -123,7 +123,7 @@ extend Averager {
         for i in 0..self.count {
             sum += self.samples.get(i)!
         }
-        return sum / (self.count as f64)
+        return sum / self.count.round<f64>()
     }
 }
 
