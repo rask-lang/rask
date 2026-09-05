@@ -3,7 +3,7 @@
 # Every `// ERROR` line in that directory claims the compiler rejects the code
 # below it. `compile_error()` only ever checked that the file failed *somewhere*,
 # so a marker whose rule had never been implemented — or had stopped firing —
-# looked exactly like one that worked. 17 of 332 turned out to answer nothing.
+# looked exactly like one that worked. 13 of 328 turned out to answer nothing.
 #
 # The gate now anchors each marker to a line: a marker must be followed by a
 # diagnostic before the next marker. The counts below are the ones still
@@ -13,9 +13,17 @@
 #
 # A count going UP needs a reason in the commit, and there is only one good one:
 # a diagnostic that was answering the marker by accident has been removed, so a
-# claim nobody was checking becomes visible. Three files went up that way when
-# fixtures that had forgotten `mut` on their own locals stopped reporting
-# `E0322 cannot mutate — declared let` over the rule they meant to test.
+# claim nobody was checking becomes visible. That has happened twice — fixtures
+# that had forgotten `mut` on their own locals, reporting `E0322 cannot mutate —
+# declared let` over the rules they meant to test; and a helper in
+# `match_errors.rk` that leaked its own `take` parameter, whose E0805 was
+# standing in for a non-exhaustive-match claim two functions above it.
+#
+# That last one is this check's blind spot: it asks whether *a* diagnostic lands
+# under the marker, not whether it is the right one. Only 65 of the markers name
+# a code, so that is as far as it can go on its own. Keeping one rejection per
+# section, with the marker on the line the compiler points at, is what keeps the
+# blind spot small.
 #
 # Two ways off this list. Either the rule is real and the marker should fire, in
 # which case the compiler needs the check (that is the interesting case — see
@@ -31,5 +39,5 @@ context_ambiguous.rk                     1
 context_missing.rk                       1
 context_unavailable.rk                   1
 context_unnamed_structural.rk            1
-match_errors.rk                          5
+match_errors.rk                          1
 type_errors.rk                           1
