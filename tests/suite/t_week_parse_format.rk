@@ -91,10 +91,9 @@ test "std.fmt — numbers into text through interpolation" {
 
 test "std.fmt — to_string" {
     assert 42.to_string() == "42"
-    // Bound first: `rask fmt` strips the parens from `(-7).to_string()` and
-    // `-7.to_string()` then parses as `-(7.to_string())` — #921.
-    let neg = -7
-    assert neg.to_string() == "-7"
+    // The parens are load-bearing: `-7.to_string()` parses as
+    // `-(7.to_string())`, and `rask fmt` used to strip them (#921).
+    assert (-7).to_string() == "-7"
     assert true.to_string() == "true"
     let f: f64 = 0.5
     assert f.to_string() == "0.5"

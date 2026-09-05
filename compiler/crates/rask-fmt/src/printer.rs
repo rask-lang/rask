@@ -2658,13 +2658,28 @@ impl<'a> Printer<'a> {
     /// `time.Instant.now() - start.as_nanos()` — a different call on a different
     /// receiver (#805).
     fn format_postfix_receiver(&mut self, object: &Expr) {
-        if Self::binds_tighter_than_postfix(&object.kind) {
+        if Self::binds_tighter_than_postfix(&object.kind)
+            && !Self::is_negative_literal(&object.kind)
+        {
             self.format_expr(object);
             return;
         }
         self.emit("(");
         self.format_expr(object);
         self.emit(")");
+    }
+
+    /// A negative literal is one AST node and two tokens, and `.` binds tighter
+    /// than the minus. Printing `(-7).to_string()` as `-7.to_string()` reads back
+    /// as `-(7.to_string())` — negating a string — so the parentheses carry the
+    /// whole meaning (#921). Only in a receiver position: everywhere else the
+    /// minus is already where it belongs.
+    fn is_negative_literal(kind: &ExprKind) -> bool {
+        match kind {
+            ExprKind::Int(n, _) => *n < 0,
+            ExprKind::Float(f, _) => *f < 0.0,
+            _ => false,
+        }
     }
 
     /// Primary and postfix forms, which can carry a `.` directly. Anything else

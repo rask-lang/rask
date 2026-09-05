@@ -4807,12 +4807,19 @@ impl Parser {
             self.expect(&TokenKind::FatArrow)?;
             self.skip_newlines();
 
+            // The arm body's own start, not the `match` keyword's. Every arm
+            // used to be spanned from `match`, so anything reading the body's
+            // source text got the whole expression: the formatter's "did the
+            // source have braces?" test never saw a `{`, and it unwrapped a
+            // braced arm whose statement was a `for` into an arm body that
+            // doesn't parse (#925).
+            let body_start = self.current().span.start;
             let body = if self.check(&TokenKind::LBrace) {
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(body_start, end) }
             } else {
-                self.parse_inline_block(start)?
+                self.parse_inline_block(body_start)?
             };
 
             arms.push(MatchArm { pattern, guard, body: Box::new(body) });
