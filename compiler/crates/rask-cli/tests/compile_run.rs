@@ -4400,6 +4400,25 @@ fn a_real_allow_name_still_compiles() {
     assert!(built, "every listed @allow name must type-check:\n{output}");
 }
 
+/// #936: the ownership checker's size table had no arm for `i128`/`u128`, so
+/// both counted as 8 bytes and a struct holding one never crossed the 16-byte
+/// Copy threshold. #1092 rides along: the same move used to be reported twice,
+/// once by the expression walk and once by the assignment.
+#[test]
+fn a_wide_scalar_field_counts_its_real_width() {
+    let (failed, output) = compile_error_output("wide_scalar_copy_threshold.rk");
+    assert!(failed, "24 bytes is over the threshold and has to move:\n{output}");
+    assert_eq!(
+        output.matches("E0800").count(),
+        1,
+        "one move, one error:\n{output}"
+    );
+    assert!(
+        output.contains("24 bytes"),
+        "the note has to name the real size:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).

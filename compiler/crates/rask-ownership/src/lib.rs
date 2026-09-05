@@ -2836,28 +2836,14 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                                 return;
                             }
-                            BindingState::Moved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
-                                return;
-                            }
-                            BindingState::MaybeMoved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMaybeMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
+                            // Already reported. Every caller walks this same
+                            // expression with `check_expr` first, and its `Ident`
+                            // arm reports the use — at the name rather than at
+                            // the whole statement, which is the better underline.
+                            // Reporting again here gave one `let z = x` two
+                            // identical E0800s at two spans (#1092). There is
+                            // still nothing to move.
+                            BindingState::Moved { .. } | BindingState::MaybeMoved { .. } => {
                                 return;
                             }
                             BindingState::Discarded { at } => {
@@ -3286,6 +3272,11 @@ impl<'a> OwnershipChecker<'a> {
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
             Type::I64 | Type::U64 | Type::F64 => 8,
+            // Two words, and the only scalar that is. Falling through to the
+            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
+            // instead of 24, so it sat on the Copy threshold instead of over it
+            // and two bindings aliased one value with nothing said (#936).
+            Type::I128 | Type::U128 => 16,
             Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
             Type::Array { elem, len } => self.type_size(elem) * len,
             ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte
