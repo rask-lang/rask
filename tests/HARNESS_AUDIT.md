@@ -354,7 +354,9 @@ server.
 | **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
 | ~~**T17**~~ | `spawn` with no `using Multitasking` is a compile error | ~~type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block"~~ — **fixed**: CC1 was keyed off the qualified `async.spawn` spelling, so bare `spawn(|| { … })` was never checked, and the CC2 walk never entered `test` blocks. Both now fire (`E0352`/`E0353`) |
 | ~~**T3/T4**~~ | tests may live in `*_test.rk`; same-package tests see private members | ~~each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`~~ — **fixed**: it worked inside a package all along, which is why nothing noticed; loose files were compiled one at a time. `foo_test.rk` now compiles with `foo.rk` either way, covered by `tests/fixtures/companion_tests/` |
-| **T6/T18/T19** | isolation; runtime-holding tests serialised; drain bounds the test | untested (T18 is moot while everything is sequential) |
+| **T6** | isolation; no shared state | tests share the process, so a module-level `Shared` written by one test is read by the next. That is what every framework does — a global is global — but T6's wording promises more than that |
+| **T18** | runtime-holding tests serialised | moot while everything is sequential (T7) |
+| ~~**T19**~~ | drain bounds the test | ~~untested~~ — **tested now, and it diverges.** Native waits at block exit; the interpreter doesn't, and inside a `test` block the task's output is lost outright rather than arriving late, which is exactly the case T19 exists to make visible. [#1093](https://github.com/rask-lang/rask/issues/1093), with `t_block_exit_drains_tasks.rk` as the repro |
 | ~~CLI `--verbose`~~ | show all names | ~~field never read~~ — **flag removed.** Every test name is printed already, so there was nothing for it to add. `--sequential` went with it: it is T7's switch, and T7 isn't built |
 
 Working as specified: A1 (assert stops), A2 (check continues), A3 (messages),

@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `using Multitasking` block waits for its tasks before it exits
+// (conc.async/C4, std.testing/T19).
+//
+// That is what makes a leaked or hung task fail *the test that spawned it*,
+// under that test's name, instead of surfacing somewhere later or not at all.
+// Native gets it right. The interpreter's `shutdown()` drops the sender and
+// joins the pool threads, but the task's output lands after the block exits —
+// on `rask run --interp` the two lines come out in the wrong order, and inside
+// a `test` block the task's output never arrives at all.
+//
+// Nothing in the suite exercised block exit against a task slow enough to
+// notice, so the differential harness had nothing to compare.
+
+func work() -> i64 {
+    mut i: i64 = 0
+    mut total: i64 = 0
+    while i < 3000000 {
+        total = total + i
+        i = i + 1
+    }
+    println("task done")
+    return total
+}
+
+test "block exit waits for a detached task" {
+    using Multitasking {
+        let h = spawn(|| { return work() })
+        h.detach()
+    }
+    println("block exited")
+}
