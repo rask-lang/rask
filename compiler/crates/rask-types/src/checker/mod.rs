@@ -45,6 +45,10 @@ pub enum BindingKind {
     Mut,
     /// `let x` — deep-immutable local binding
     Let,
+    /// A module-level `const`. One instance for the whole program, reachable
+    /// from every task, so PS2 puts package-level mutable state behind a sync
+    /// box rather than allowing a bare one to be written.
+    ModuleConst,
     /// Default parameter (read-only; use `mutate` to allow mutation)
     Param,
     /// `with expr as v` — read-only with-binding (use `as mut v` to mutate)
@@ -102,6 +106,7 @@ impl BindingKind {
         matches!(
             self,
             BindingKind::Let
+                | BindingKind::ModuleConst
                 | BindingKind::Param
                 | BindingKind::WithRead
                 | BindingKind::Bound(_)

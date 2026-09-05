@@ -815,6 +815,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// PS2: package-level mutable state goes behind a sync box. A bare `const`
+    /// collection is one instance every task can reach, so writing to it from
+    /// two of them is a data race out of safe code.
+    #[error("`{name}` is package-level state — writing to it needs a sync box")]
+    MutatePackageState {
+        name: String,
+        ty: String,
+        span: Span,
+    },
+
     /// `@allow(name)` where nothing answers to `name` — a typo, or a rule id
     /// that doesn't exist. Silence here is indistinguishable from a warning
     /// correctly suppressed, so it's an error.
@@ -1199,6 +1209,7 @@ impl TypeError {
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
             | UnknownAllowName { .. }
+            | MutatePackageState { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

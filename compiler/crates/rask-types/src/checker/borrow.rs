@@ -152,6 +152,13 @@ impl TypeChecker {
         }
     }
 
+    /// Define a module-level `const`. One instance for the whole program.
+    pub(super) fn define_local_module_const(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, (ty, super::BindingKind::ModuleConst));
+        }
+    }
+
     /// Define a read-only with-binding (`with expr as v`). Same deep
     /// immutability as `let`, but errors point at `as mut v` instead.
     pub(super) fn define_local_with_read(&mut self, name: String, ty: Type) {

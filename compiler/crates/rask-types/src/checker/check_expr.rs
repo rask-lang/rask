@@ -3156,6 +3156,18 @@ impl TypeChecker {
                             span: object.span,
                         });
                     }
+                    // PS2: package-level state behind a sync box is the
+                    // sanctioned shape; a bare one is the data race.
+                    Some(super::BindingKind::ModuleConst)
+                        if !self.is_sync_box(&self.resolve_named(&self.ctx.apply(&recv_ty))) =>
+                    {
+                        let ty = self.render_type(&self.resolve_named(&self.ctx.apply(&recv_ty)));
+                        self.errors.push(TypeError::MutatePackageState {
+                            name: var_name.clone(),
+                            ty,
+                            span: object.span,
+                        });
+                    }
                     Some(super::BindingKind::WithRead) => {
                         self.errors.push(TypeError::MutateWithBinding {
                             name: var_name.clone(),
@@ -5012,11 +5024,21 @@ impl TypeChecker {
             if !self.method_mutates_self_ty(&ty, &pm.method) {
                 continue;
             }
+            // PS2: a module-level `const` holding a sync box is package state
+            // done right — the lock is what makes the write safe — so only a
+            // bare one is an error.
+            if matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&ty) {
+                continue;
+            }
             let name = pm.root;
             let span = pm.span;
             match pm.kind {
                 super::BindingKind::Let => {
                     self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::ModuleConst => {
+                    let ty = self.render_type(&ty);
+                    self.errors.push(TypeError::MutatePackageState { name, ty, span })
                 }
                 super::BindingKind::WithRead => {
                     self.errors.push(TypeError::MutateWithBinding { name, span })
@@ -5030,6 +5052,22 @@ impl TypeChecker {
                 _ => {}
             }
         }
+    }
+
+    /// PS2's sanctioned wrappers: the ones that carry their own synchronization,
+    /// so a module-level `const` holding one is package state done right rather
+    /// than package state got at. `Shared` covers `Shared.mutex` too — the
+    /// strategy is a type argument, not a different type (mem.boxes/BX2).
+    fn is_sync_box(&self, ty: &Type) -> bool {
+        let name = match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self.types.type_name(*id),
+            Type::UnresolvedNamed(n) => n.clone(),
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            _ => return false,
+        };
+        let base = name.split('<').next().unwrap_or(&name);
+        base.starts_with("Atomic")
+            || matches!(base, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
     }
 
     pub(super) fn validate_pending_mutations(&mut self) {
@@ -5049,11 +5087,18 @@ impl TypeChecker {
             if matches!(ty, Type::Var(_) | Type::Error) {
                 continue;
             }
+            if matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&ty) {
+                continue;
+            }
             let name = pm.root;
             let span = pm.span;
             match pm.kind {
                 super::BindingKind::Let => {
                     self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::ModuleConst => {
+                    let ty = self.render_type(&ty);
+                    self.errors.push(TypeError::MutatePackageState { name, ty, span })
                 }
                 super::BindingKind::WithRead => {
                     self.errors.push(TypeError::MutateWithBinding { name, span })

@@ -4468,6 +4468,25 @@ fn an_unchained_inline_sync_read_is_rejected() {
     );
 }
 
+/// #944: PS2 puts package-level mutable state behind a sync box, and nothing
+/// checked it. A bare `const Vec` took mutating methods from any number of
+/// tasks: five runs of the hammer program gave 9855, 7298, two
+/// `realloc(): invalid old size`, and 7729 — a data race out of safe code.
+#[test]
+fn bare_package_state_cannot_be_written() {
+    let (failed, output) = compile_error_output("package_state_unsynchronized.rk");
+    assert!(failed, "an unsynchronized const collection must be rejected:\n{output}");
+    assert_eq!(
+        output.matches("E0856").count(),
+        2,
+        "both the Vec and the Map are writes:\n{output}"
+    );
+    assert!(
+        output.contains("Shared.new"),
+        "the sanctioned shape is the fix and has to be named:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).

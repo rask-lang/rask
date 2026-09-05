@@ -555,7 +555,7 @@ impl TypeChecker {
 
     /// A type as the user wrote it. `Type`'s own Display can't name a
     /// registered type — it prints `<type#7>`.
-    fn render_type(&self, ty: &Type) -> String {
+    pub(super) fn render_type(&self, ty: &Type) -> String {
         match ty {
             Type::Result { ok, err } if **err == Type::None => {
                 format!("{}?", self.render_type(ok))

@@ -2039,6 +2039,21 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(*why)
             }
 
+            MutatePackageState { name, ty, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is package-level state — writing to it needs a sync box",
+                    name,
+                ))
+                    .with_code("E0856")
+                    .with_primary(*span, format!("this writes to a bare `const {}`", ty))
+                    .with_fix(format!(
+                        "hold it in a sync box — `const {n} = Shared.new(…)` — and write through `with {n}.write() as v {{ … }}`",
+                        n = name,
+                    ))
+                    .with_help("a module-level `const` is one instance for the whole program, so every task reaches the same value. `Shared.new(…)` gives it a read-write lock, `Shared.mutex(…)` an exclusive one, and `Atomic` covers a single word. There is no `mut` at package level to reach for instead [structure.modules/PS3]")
+                    .with_why("two tasks writing an unsynchronized collection is a data race, and it doesn't announce itself — a `Vec` hammered from two threads loses updates and corrupts the heap. Data races being impossible by construction is the safety property this rule holds up [structure.modules/PS2]")
+            }
+
             UnknownAllowName { name, suggestion, span } => {
                 let diag = Diagnostic::error(format!("`@allow({})` names nothing", name))
                     .with_code("E0855")

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// PS2's sanctioned shapes for package-level state, and that a read-only `const`
+// is still free. Writing to a *bare* one is rejected now (#944) — it used to be
+// a data race reachable from safe code, and the rejection lives in
+// `tests/compile_errors/package_state_unsynchronized.rk`.
+
+import sync.Shared
+
+const LIMIT: i64 = 10
+const NAMES: Vec<string> = ["ada", "grace"]
+
+const COUNTS = Shared.new(Vec.new())
+const REGISTRY = Shared.mutex(Map.new())
+
+test "a read-only const is untouched by the rule" {
+    assert LIMIT == 10
+    assert NAMES.len() == 2
+    assert NAMES[0] == "ada"
+}
+
+test "a Shared const takes writes through its lock" {
+    with COUNTS.write() as v {
+        v.push(1)
+        v.push(2)
+    }
+    with COUNTS.read() as v {
+        assert v.len() >= 2
+    }
+}
+
+test "and so does the exclusive strategy" {
+    with REGISTRY.write() as m {
+        m.insert("a", 1)
+    }
+    with REGISTRY.read() as m {
+        assert m["a"] == 1
+    }
+}
