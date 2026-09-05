@@ -80,7 +80,7 @@ test "add cases" {
 
 | Rule | Description |
 |------|-------------|
-| **T6: Isolation** | Each test runs in isolation with no shared state |
+| **T6: Isolation** | Each test gets its own locals and its own failure. One test's `assert` failing doesn't stop the next, and nothing a test binds is visible to another. Process-global state is not reset between tests: a module-level `Shared` written by one is read by the next, the same way it would be by any other code in the process |
 | **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential`. *Not built — tests run sequentially, and `--sequential` isn't a flag until it means something* |
 | **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X`. *Not built, same as T7* |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |

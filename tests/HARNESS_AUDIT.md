@@ -9,12 +9,16 @@ Most of it has since been decided and fixed on this branch; each entry says so
 in place, and keeps the original finding above the fix so the reasoning stays
 readable. What's left needs a call that isn't the compiler's to make:
 
-- **A4** — `assert_eq(got, expected)`: two positional arguments distinguished
-  only by remembering which is which. Keep, rename, or delete in favour of
-  `assert` growing a better failure message?
-- **T10 (nested)** — `test` inside a `@test` function, reported as
-  `PASS: parent > child`. Nothing in the tree uses it and it's a parse error
-  today. Build it, or delete the rule?
+- ~~**A4**~~ — **deleted.** `assert_eq` is gone from the language and its 1203
+  call sites are `assert a == b`. Two positional arguments that mean different
+  things, told apart only by remembering which is which, is what the stdlib's
+  own design rules exist to prevent; the only thing it added over `==` was the
+  failure message, and `assert` carries that.
+- ~~**T10 (nested)**~~ — **deleted.** Nested `test` blocks were a parse error,
+  nothing used them, and grouping is what a name already does.
+- ~~**T6**~~ — **reworded.** "No shared state" promised more than any runner
+  gives; what holds is per-test locals and per-test failure, with process
+  globals shared as they are everywhere else.
 - **T14/T15** — doc-comment code blocks extracted and run. Deferred.
 - **T7** — parallel test execution, wanted but not now.
 
@@ -345,10 +349,10 @@ server.
 
 | Rule | Spec says | Runner does |
 |---|---|---|
-| **A4** | `assert_eq`, `assert_ne`, `check_eq`, `check_ne` | only `assert_eq` exists; the other three are `E0200 undefined symbol` |
+| ~~**A4**~~ | `assert_eq`, `assert_ne`, `check_eq`, `check_ne` | ~~only `assert_eq` exists; the other three are `E0200 undefined symbol`~~ — **rule deleted.** Four names promised, one built. The one that was built is gone too: 1203 call sites are `assert a == b`, and the failure message it carried is `assert`'s now (**A5**) |
 | **T7** | parallel by default, `--sequential` opts out | always sequential; the flag is accepted and the field is never read |
 | ~~**T8**~~ | `--seed X` reproduces a run | ~~prints "accepted but random ordering not yet implemented"~~ — **flag removed.** It did nothing, and silently ate its own argument once the note was the only thing distinguishing it. It comes back with the feature |
-| **T10** (nested) | `test` blocks nest, output `PASS: parent > child` | parse error: "Expected expression, found 'test'" |
+| ~~**T10** (nested)~~ | `test` blocks nest, output `PASS: parent > child` | ~~parse error: "Expected expression, found 'test'"~~ — **rule deleted.** It would need its own reporting, its own filtering and an answer to what a failed parent means for its children, for grouping that `test "parser — numbers"` already gives |
 | ~~**T10** (no `try`)~~ | ~~bare `try` in a test body is an `ER47` compile error~~ | **rule deleted** — replaced by **T20**, which says the test block is the error branch (see below) |
 | ~~**T11**~~ | `comptime test` runs during compilation, failure is a compile error | ~~`rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test`~~ — **fixed**: the comptime pass runs them, a failure is `E0848`, and the result is reported once instead of being re-run by the backend |
 | **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
