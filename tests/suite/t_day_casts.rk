@@ -89,6 +89,24 @@ test "float to int rounding on negatives" {
 
 // `to<T>()` is exact-only and returns `T or ConvertError` — a failure, not an
 // absence — so `catch` is what handles it, never `??`.
+// CV14 says ties go to even, and `3.5 -> 4` / `-3.5 -> -4` above don't show
+// that: round-half-away-from-zero gives the same two answers. These are the
+// halves where the two policies disagree — the implementation was right and
+// nothing in the tree said so.
+test "a tie rounds to even, not away from zero" {
+    assert 0.5.round<i32>()! == 0      // away-from-zero would give 1
+    assert 1.5.round<i32>()! == 2
+    assert 2.5.round<i32>()! == 2      // away-from-zero would give 3
+    assert 3.5.round<i32>()! == 4
+    assert 4.5.round<i32>()! == 4      // away-from-zero would give 5
+}
+
+test "a negative tie rounds to even too" {
+    assert (-0.5).round<i32>()! == 0   // away-from-zero would give -1
+    assert (-1.5).round<i32>()! == -2
+    assert (-2.5).round<i32>()! == -2  // away-from-zero would give -3
+}
+
 test "to is exact-only and fails on a fraction" {
     let exact: f64 = 8.0
     assert exact.to<i32>()! == 8

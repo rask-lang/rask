@@ -465,12 +465,14 @@ placement also fixed §1.2's dead marker for free: `syntax_rejected.rk` goes fro
 parse errors that stopped the pipeline. Two sites in the tree wrote
 `if a < 0 != b < 0` and now parenthesize it.
 
-### 3.3 CV14 ties-to-even is right, but the suite can't tell
+### 3.3 CV14 ties-to-even is right, but the suite can't tell — FIXED
 
-`t_day_casts.rk` tests `3.5.round<i32>()! == 4` and `(-3.5).round<i32>()! == -4`.
-Both are also what round-half-away-from-zero gives, so the assertions don't
-distinguish the two policies. The implementation does get it right — `2.5 → 2`,
-`4.5 → 4` — but that's verified by nothing in the tree.
+`t_day_casts.rk` tested `3.5.round<i32>()! == 4` and `(-3.5).round<i32>()! == -4`.
+Both are also what round-half-away-from-zero gives, so the assertions didn't
+distinguish the two policies. The implementation gets it right, and now the
+suite says so: `0.5 → 0`, `2.5 → 2`, `4.5 → 4`, `-0.5 → 0`, `-2.5 → -2` — the
+halves where the two policies disagree, with the away-from-zero answer written
+beside each. Both backends agree.
 
 ---
 
