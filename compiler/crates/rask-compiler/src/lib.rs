@@ -778,9 +778,14 @@ fn finalize_compile(
     // --- Evaluate comptime globals (single source of truth) ---
     // Hard errors (overflow, divide-by-zero) become pipeline diagnostics and
     // fail the build like any other pass — no separate handling downstream.
-    let (comptime_globals, mut ct_diags) =
+    //
+    // Comptime *tests* are not run here: `check_sources` / `check_package`
+    // already ran them, and every path into this function comes through one of
+    // those. Running them again was free only in the sense that a comptime test
+    // has no side effects — it still interpreted every body twice on `rask run`
+    // and `rask build`.
+    let (comptime_globals, ct_diags) =
         evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
-    ct_diags.extend(evaluate_comptime_tests(&check.decls, Some(&config.cfg)));
     if !ct_diags.is_empty() {
         diags.extend(ct_diags);
         return PipelineOutput::fail_with_sources(diags, pkg_source_files);
