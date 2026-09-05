@@ -11,7 +11,12 @@
 # grep, so every file read as clean. Forwarding that stderr is what made these
 # visible; none of them are new (#1048).
 #
-# What's left, after wiring Rack and Pool into the drop pass:
+# A passing `assert` on a heap string took 33 files off this list at once. The
+# release was emitted on the branch that prints the strings and aborts, so the
+# path that continues never ran one — every passing string assert leaked a
+# buffer, and asserts are everywhere in a test suite (#1049).
+#
+# What's left, after that and after wiring Rack and Pool into the drop pass:
 #   - a container moved into a struct field, or nested inside another
 #     container, is never freed (#1047) — the biggest remaining share
 #   - freeing a closure block doesn't release what it captured (#1045)
@@ -36,7 +41,6 @@ p20_closure_mutable_capture.rk  # 4 allocations
 t09_vec.rk  # 2 allocations
 t14_ownership.rk  # 2 allocations
 t19_result_operators.rk  # 1 allocation
-t19b_union_method_dispatch.rk  # 1 allocation
 t22_parameter_modes.rk  # 2 allocations
 t25_iterator_adapters.rk  # 4 allocations
 t26_closure_scoping.rk  # 2 allocations
@@ -55,10 +59,7 @@ t37_extend_header_binding.rk  # 4 allocations — a container in a struct field,
 t38_lazy_collection_adapters.rk  # 46 allocations — SEQ41 routes a collection's adapters through the sequence path, and an adapter closure's captures are never released, #1045
 t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
-t49_comptime.rk  # 2 allocations
 t50_boxes.rk  # 4 allocations
-t53_format.rk  # 1 allocation
-t54_displayable.rk  # 1 allocation
 t54_strings.rk  # 8 allocations
 t57_spawn.rk  # 24 allocations
 t62_trait_object_positions.rk  # 3 allocations
@@ -66,14 +67,11 @@ t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
 t_any_error_boxing.rk  # 5 allocations
 t_assert_side_effects.rk  # 12 allocations
-t_assert_string_message.rk  # 4 allocations
 t_bare_lock_value.rk  # 21 allocations
 t_binding_types.rk  # 4 allocations
 t_borrow_param_consume.rk  # 7 allocations
 t_box_replace_payload.rk  # 9 allocations
 t_card_method_surface.rk  # 9 allocations
-t_catch_drop_flat_shape.rk  # 1 allocation
-t_catch_void_body_open_type.rk  # 1 allocation
 t_channel_aggregates.rk  # 21 allocations
 t_channel_try_receive.rk  # 20 allocations
 t_closure_diverging_return.rk  # 2 allocations
@@ -87,28 +85,19 @@ t_day_const.rk  # 1 allocation
 t_day_map.rk  # 8 allocations
 t_day_strings.rk  # 7 allocations
 t_day_vec.rk  # 4 allocations
-t_decode_defaults.rk  # 1 allocation
 t_element_type_resolution.rk  # 26 allocations
-t_enum_small_payload.rk  # 1 allocation
-t_f32_arithmetic_width.rk  # 1 allocation
-t_float_formatting.rk  # 1 allocation
 t_float_payloads.rk  # 4 allocations
-t_float_width.rk  # 5 allocations
 t_for_mutate_early_exit.rk  # 2 allocations
 t_fs_open_failure.rk  # 4 allocations
 t_generic_clone_any_t.rk  # 8 allocations
-t_generic_forwarding.rk  # 1 allocation
 t_generic_index_clone.rk  # 4 allocations
 t_generic_method_return.rk  # 4 allocations
-t_i128_arithmetic.rk  # 12 allocations
 t_implicit_widening.rk  # 2 allocations
 t_index_through_field.rk  # 64 allocations
-t_int_literal_range.rk  # 6 allocations
 t_io_buffer.rk  # 71 allocations
 t_iterate_field_collection.rk  # 29 allocations
 t_json_decode.rk  # 69 allocations
 t_json_encode_shapes.rk  # 17 allocations
-t_json_enum.rk  # 12 allocations
 t_json_field_annotations.rk  # 1 allocation
 t_json_roundtrip.rk  # 15 allocations
 t_local_box_payload.rk  # 19 allocations
@@ -120,17 +109,14 @@ t_month_borrowing.rk  # 13 allocations
 t_month_boxes.rk  # 26 allocations
 t_month_concurrency.rk  # 61 allocations
 t_month_ensure_block_scope.rk  # 22 allocations
-t_month_i128.rk  # 1 allocation
 t_month_io.rk  # 7 allocations
 t_month_json.rk  # 6 allocations
 t_month_ownership.rk  # 2 allocations
 t_month_panic_observed.rk  # 15 allocations
 t_month_qualified_module_types.rk  # 16 allocations
-t_month_reflect_field_strings.rk  # 3 allocations
 t_month_resource_ensure.rk  # 10 allocations
 t_month_staged.rk  # 4 allocations
 t_month_stdlib_modules.rk  # 14 allocations
-t_mutate_element_writeback.rk  # 1 allocation
 t_mutex_guard_exits.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
 t_named_context_resolves_by_type.rk  # 4 allocations
@@ -139,15 +125,10 @@ t_net_loopback.rk  # 8 allocations
 t_niche_handle_option.rk  # 18 allocations
 t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 157 allocations
-t_parse_error_variants.rk  # 8 allocations
-t_parse_widths.rk  # 12 allocations
 t_path_module.rk  # 11 allocations
-t_pattern_payload_types.rk  # 2 allocations
 t_pool_iter_handles.rk  # 20 allocations
 t_random_seeded.rk  # 13 allocations
-t_range_adapters.rk  # 8 allocations
 t_range_element_type.rk  # 2 allocations
-t_reflect_type_facts.rk  # 1 allocation
 t_runtime_handle_out_of_result.rk  # 1 allocation
 t_select.rk  # 74 allocations
 t_sequence_join.rk  # 25 allocations
@@ -160,7 +141,6 @@ t_string_builder_mutate.rk  # 3 allocations
 t_string_clone_width.rk  # 2 allocations
 t_string_field_and_enum_clone.rk  # 6 allocations
 t_string_from_utf8.rk  # 29 allocations
-t_string_hash.rk  # 2 allocations
 t_string_rc_escapes.rk  # 10 allocations
 t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 4 allocations
@@ -170,18 +150,12 @@ t_test_const_init.rk  # 4 allocations
 t_text_units.rk  # 9 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_try_coalesce_diverge.rk  # 2 allocations
-t_try_error_wrap.rk  # 9 allocations
 t_try_payload_type.rk  # 6 allocations
-t_tuple_match_payloads.rk  # 2 allocations
-t_u64_literals.rk  # 4 allocations
 t_vec_elem_from_call.rk  # 2 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 16 allocations
 t_vec_position_reduce.rk  # 6 allocations
-t_void_result_ok.rk  # 2 allocations
 t_week_closures.rk  # 20 allocations
-t_week_enums.rk  # 1 allocation
-t_week_generic_param_shadowing.rk  # 1 allocation
 t_week_generics.rk  # 4 allocations
 t_week_imports.rk  # 2 allocations
 t_week_nested_data.rk  # 51 allocations
@@ -200,8 +174,6 @@ t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1
 t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
 t41_closure_environment_drop.rk  # 212 allocations — a closure made on one branch has no point where freeing it is safe, and a chain's intermediate environments belong to the one that captured them, #1045
-t_array_string_join.rk  # 6 allocations — leaks the same 6 on main; main's `rask test` discarded the report
 t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
 t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
-t_month_reflect_fields_value.rk  # 1 allocation — leaks the same 1 on main; main's `rask test` discarded the report
 t42_flatten_shaped_header.rk  # 36 allocations — sequence adapter closures and their captures, #1045

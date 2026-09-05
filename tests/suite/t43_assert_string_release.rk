@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Who releases the string an `assert` compared.
+//
+// `assert s == t` lowers to a branch: one side returns, the other prints both
+// strings and aborts. The RC pass places a release after a local's last use,
+// and the last use of `s` is in the block that *prints* it — the one that ends
+// in `unreachable`. So the release was emitted where the process is already
+// gone, and the branch that actually continues got none. One allocation leaked
+// per passing assert (#1049).
+//
+//     bb0:
+//         _4 = i64_to_string(_3)
+//         _5 = string_eq(_4, "…")
+//         if _5 then bb1 else bb2
+//     bb1:
+//         return                          <- nothing released here
+//     bb2:
+//         assert_fail_cmp_str(_4, "…", "==")
+//         rc_dec(_4)                      <- dead code; the block aborts
+//         unreachable
+//
+// The release was never in doubt — the pass had already decided one was owed
+// when it put that `rc_dec` in `bb2`. What was wrong is which path discharges
+// it. When the only thing keeping a local alive past a block is a successor
+// that aborts, the release now goes at the top of the successors that don't.
+//
+// Three things had to line up, which is why it hid:
+//
+//   - the string must be longer than 15 bytes, or it sits inline and there is
+//     nothing to leak;
+//   - it must be a string comparison — an integer one doesn't reach
+//     `assert_fail_cmp_str`;
+//   - the leak gate had to be able to see stderr at all (#1048).
+//
+// An earlier attempt released whenever a local was live-out of every
+// predecessor and dead on entry. That fires on shapes where no release exists
+// anywhere, and "liveness says dead" isn't "the data is dead" once ownership
+// has moved into an aggregate — it segfaulted `l3_scene_handles.rk` 4 runs in
+// 10. This rule adds no obligation that wasn't already placed, and that
+// prototype is 0 in 10 with a poisoned stack.
+
+func long_label(n: i64) -> string {
+    return "a label long enough to need the heap {n}"
+}
+
+// The original repro: 19 digits, one past the inline limit.
+test "a passing assert on a long string releases it" {
+    let n: i64 = 1234567890123456789
+    assert n.to_string() == "1234567890123456789"
+}
+
+// One under the limit, which was always clean. Here so a fix that changed the
+// short path would show up.
+test "a short string is inline and needs no release" {
+    let n: i64 = 12345678901234
+    assert n.to_string() == "12345678901234"
+}
+
+// The leak was per-assert, so a loop is where it added up.
+test "many passing asserts in a loop" {
+    mut i = 0
+    while i < 200 {
+        assert long_label(i) == "a label long enough to need the heap {i}"
+        i = i + 1
+    }
+    assert i == 200
+}
+
+// A release on the success edge must not touch a string the caller still holds.
+test "the compared string is still good afterwards" {
+    let s = long_label(7)
+    assert s == "a label long enough to need the heap 7"
+    assert s.len() > 15u64
+    assert s == "a label long enough to need the heap 7"
+}
+
+// Both sides heap-allocated rather than one side a literal.
+test "two computed strings" {
+    let a = long_label(3)
+    let b = long_label(3)
+    assert a == b
+    assert a.len() == b.len()
+}
+
+// `!=` takes the other branch to the abort block; same placement question.
+test "a passing not-equal assert" {
+    assert long_label(1) != long_label(2)
+}
+
+// Nested inside a conditional, so the assert's own branch isn't the only one.
+test "an assert inside a branch" {
+    mut hits = 0
+    mut i = 0
+    while i < 10 {
+        if i % 2 == 0 {
+            assert long_label(i) == "a label long enough to need the heap {i}"
+            hits = hits + 1
+        }
+        i = i + 1
+    }
+    assert hits == 5
+}
+
+// A string that outlives the assert by being stored in a container. The
+// release goes on the success edge; the vector's copy has its own reference.
+test "a compared string that also went into a vec" {
+    mut names = Vec<string>.new()
+    mut i = 0
+    while i < 5 {
+        let s = long_label(i)
+        assert s == "a label long enough to need the heap {i}"
+        names.push(s)
+        i = i + 1
+    }
+    assert names.len() == 5
+    assert names[0] == "a label long enough to need the heap 0"
+    assert names[4] == "a label long enough to need the heap 4"
+}
+
+// A struct field holding the same string, which is the ownership-moved shape
+// the reverted attempt got wrong.
+struct Named {
+    public label: string
+}
+
+test "a compared string that moved into a struct field" {
+    mut total = 0u64
+    mut i = 0
+    while i < 20 {
+        let s = long_label(i)
+        assert s == "a label long enough to need the heap {i}"
+        let n = Named { label: s }
+        total = total + n.label.len()
+        i = i + 1
+    }
+    assert total > 700u64
+}
