@@ -36,6 +36,15 @@ pub struct Parser {
     /// their signatures. Real source can't — the call would parse as the
     /// keyword form — so only stub parsing sets this.
     allow_keyword_fn_names: bool,
+    /// Every `struct` name this file declares, whatever its case.
+    ///
+    /// A struct literal is otherwise recognised by the name being capitalised,
+    /// which is the right default — `x { … }` in expression position is
+    /// ambiguous with a block, and a lowercase name is usually a variable. But
+    /// it left a *declared* lowercase struct with no way to construct it at all,
+    /// and `cstring` is one the spec names in lowercase (#949). Collected in one
+    /// token scan before parsing, so declaration order doesn't matter.
+    declared_structs: std::collections::HashSet<String>,
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
@@ -54,7 +63,22 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new() }
+        let declared_structs = Self::scan_declared_structs(&tokens);
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, loop_labels: Vec::new() }
+    }
+
+    /// Names following the `struct` keyword. One pass, before anything is
+    /// parsed, so a literal can name a struct declared further down the file.
+    fn scan_declared_structs(tokens: &[Token]) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        for pair in tokens.windows(2) {
+            if matches!(pair[0].kind, TokenKind::Struct) {
+                if let TokenKind::Ident(name) = &pair[1].kind {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        names
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -3698,7 +3722,9 @@ impl Parser {
 
                 let end = self.tokens[self.pos - 1].span.end;
 
-                if Self::is_type_name(&full_name) && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                let names_a_struct = Self::is_type_name(&full_name)
+                    || self.declared_structs.contains(&full_name);
+                if names_a_struct && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
                     self.parse_struct_literal(full_name, start)
                 } else {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(full_name), span: self.span(start, end) })
