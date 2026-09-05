@@ -19,7 +19,7 @@ The `own` prefix is the explicit opt-in to move-capture. Without it, closures bo
 
 | Mode | Non-Copy captures | Copy captures | Can escape scope? |
 |------|-------------------|---------------|-------------------|
-| `\|x\| expr` | Borrowed (source stays valid) | Borrowed | No |
+| `\|x\| expr` | Borrowed (source stays valid) | Borrowed | Only as far as its borrow lives (MC3) |
 | `own \|x\| expr` | Moved (source consumed) | Copied | Yes |
 
 ```rask
@@ -54,8 +54,30 @@ func make_filter(tags: Vec<string>) -> |Entry| -> bool {
 }
 ```
 
-Without `own`, the closure can't escape (the compiler rejects it at the store/return point).
-This matches the existing scope-limited closure rules (SL1-SL2).
+Without `own`, a closure can still escape — it just can't outlive what it borrowed (MC3).
+Returning one *through a binding* is where SL2 fires:
+
+```rask
+let f = || process(tags)
+return f     // error[E0813]: closure `f` captures scoped borrow and cannot escape
+```
+
+Returning the literal directly is fine, and the whole sequence protocol is built on it:
+
+```rask
+public func in_order(self) -> Sequence<i32> {
+    return |emit| { walk(self.root, emit) }    // SEQ36 — the slot says what this is
+}
+```
+
+The difference isn't the keyword, it's whether the borrow outlives the closure. `self` here
+outlives the call; a local `tags` does not. `type.sequence/SEQ26` says the same thing from the
+other side: a sequence capturing a block-scoped borrow is limited to that borrow's scope.
+
+I had this written as a flat "scope-limited closures cannot escape", which is what SL1-SL2 were
+originally drafted against. That was never what the compiler did, and it contradicted the escape
+analysis described further down this page — escaping is exactly the case that gets a heap
+environment. The rule is the lifetime, not the prefix.
 
 ## Closure parameters
 
