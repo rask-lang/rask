@@ -1481,40 +1481,15 @@ fn base_type_name(name: &str) -> &str {
 }
 
 /// Map binary operators to method names (if they should be desugared).
+/// The map itself lives in `rask_ast` — the checker reads it too, to tell a
+/// desugared operator apart from a real method call.
 fn binary_op_method(op: BinOp) -> Option<&'static str> {
-    match op {
-        // Arithmetic
-        BinOp::Add => Some("add"),
-        BinOp::Sub => Some("sub"),
-        BinOp::Mul => Some("mul"),
-        BinOp::Div => Some("div"),
-        BinOp::Mod => Some("rem"),
-        // Comparison
-        BinOp::Eq => Some("eq"),
-        BinOp::Ne => Some("eq"), // Handled specially: !a.eq(b)
-        BinOp::Lt => Some("lt"),
-        BinOp::Gt => Some("gt"),
-        BinOp::Le => Some("le"),
-        BinOp::Ge => Some("ge"),
-        // Bitwise
-        BinOp::BitAnd => Some("bit_and"),
-        BinOp::BitOr => Some("bit_or"),
-        BinOp::BitXor => Some("bit_xor"),
-        BinOp::Shl => Some("shl"),
-        BinOp::Shr => Some("shr"),
-        // Logical - keep as binary (short-circuiting)
-        BinOp::And | BinOp::Or => None,
-    }
+    rask_ast::expr::binary_op_method(op)
 }
 
 /// Map unary operators to method names (if they should be desugared).
 fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
-    match op {
-        UnaryOp::Neg => Some("neg"),
-        UnaryOp::BitNot => Some("bit_not"),
-        // Logical not, reference, deref, and own remain as unary operators
-        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => None,
-    }
+    rask_ast::expr::unary_op_method(op)
 }
 
 /// Shift all spans in an expression tree by `offset` bytes.

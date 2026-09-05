@@ -498,6 +498,62 @@ pub enum Pattern {
 /// need to say *what kind* of expression something was without carrying the
 /// tree around.
 ///
+/// The method a binary operator desugars to, or `None` for the two that stay
+/// operators (`&&` and `||` short-circuit).
+///
+/// Lives here rather than in the desugar pass because the checker has to
+/// recognise the result: after desugaring, `a + b` and `a.field` are both
+/// method calls, and only one of them is chaining (`conc.sync/R5`).
+pub fn binary_op_method(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("add"),
+        BinOp::Sub => Some("sub"),
+        BinOp::Mul => Some("mul"),
+        BinOp::Div => Some("div"),
+        BinOp::Mod => Some("rem"),
+        BinOp::Eq => Some("eq"),
+        // `!=` becomes `!a.eq(b)`, so it shares `eq`.
+        BinOp::Ne => Some("eq"),
+        BinOp::Lt => Some("lt"),
+        BinOp::Gt => Some("gt"),
+        BinOp::Le => Some("le"),
+        BinOp::Ge => Some("ge"),
+        BinOp::BitAnd => Some("bit_and"),
+        BinOp::BitOr => Some("bit_or"),
+        BinOp::BitXor => Some("bit_xor"),
+        BinOp::Shl => Some("shl"),
+        BinOp::Shr => Some("shr"),
+        BinOp::And | BinOp::Or => None,
+    }
+}
+
+/// The method a unary operator desugars to, or `None` for the ones that stay
+/// operators.
+pub fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
+    match op {
+        UnaryOp::Neg => Some("neg"),
+        UnaryOp::BitNot => Some("bit_not"),
+        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => None,
+    }
+}
+
+/// Is this method name one an operator desugars to? Derived from the two maps
+/// above, so a new operator can't be forgotten here.
+pub fn is_operator_method(name: &str) -> bool {
+    const BINOPS: &[BinOp] = &[
+        BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod,
+        BinOp::Eq, BinOp::Ne, BinOp::Lt, BinOp::Gt, BinOp::Le, BinOp::Ge,
+        BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::Shl, BinOp::Shr,
+        BinOp::And, BinOp::Or,
+    ];
+    const UNOPS: &[UnaryOp] = &[
+        UnaryOp::Neg, UnaryOp::BitNot, UnaryOp::Not,
+        UnaryOp::Ref, UnaryOp::Deref, UnaryOp::Heap,
+    ];
+    BINOPS.iter().any(|op| binary_op_method(*op) == Some(name))
+        || UNOPS.iter().any(|op| unary_op_method(*op) == Some(name))
+}
+
 /// Exhaustive on purpose: a new `ExprKind` variant won't compile until it's
 /// named here, so the reports built on this can't quietly stop covering a form.
 pub fn expr_kind_name(kind: &ExprKind) -> &'static str {

@@ -650,12 +650,68 @@ impl TypeChecker {
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.
     /// Only `const x = shared.read().field` (Copy out) is allowed.
     fn check_sync_access_in_binding(&mut self, init: &Expr) {
-        if let Some((ty_name, method, span)) = self.is_sync_access(init) {
-            self.errors.push(TypeError::BareSyncAccess {
-                ty: ty_name,
-                method,
-                span,
-            });
+        self.check_unchained_sync(init, false);
+    }
+
+    /// R5/MX3: an inline `.read()`/`.write()`/`.lock()` is scoped to the chain
+    /// it starts, so one with nothing chained onto it is an error — wherever it
+    /// sits, not only when it's the whole initializer.
+    ///
+    /// `let a = cfg.read() + 1` slipped past, because only the initializer as a
+    /// whole was asked and that's a `+`. Native then dispatched to the
+    /// closure-taking runtime entry point with the element size where the
+    /// closure belongs, built a function pointer out of the integer 8 and
+    /// called it: `cfg.read() + 1` on a `Shared.new(41)` printed 49 natively
+    /// and 42 on the interpreter (#958). Copying the value out is `cfg.get()`.
+    fn check_unchained_sync(&mut self, expr: &Expr, chained: bool) {
+        if !chained {
+            if let Some((ty_name, method, span)) = self.is_sync_access(expr) {
+                self.errors.push(TypeError::BareSyncAccess {
+                    ty: ty_name,
+                    method,
+                    span,
+                });
+                return;
+            }
+        }
+        match &expr.kind {
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                self.check_unchained_sync(object, true);
+            }
+            // A method call chains — unless it's an operator. Desugaring turns
+            // `cfg.read() + 1` into `cfg.read().add(1)`, which is why an
+            // operand position looked like a chain and slipped through.
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let chains = !rask_ast::expr::is_operator_method(method);
+                self.check_unchained_sync(object, chains);
+                for a in args {
+                    self.check_unchained_sync(&a.expr, false);
+                }
+            }
+            ExprKind::Index { object, index } => {
+                self.check_unchained_sync(object, true);
+                self.check_unchained_sync(index, false);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.check_unchained_sync(left, false);
+                self.check_unchained_sync(right, false);
+            }
+            ExprKind::Unary { operand, .. } => self.check_unchained_sync(operand, false),
+            ExprKind::Call { func, args } => {
+                self.check_unchained_sync(func, false);
+                for a in args {
+                    self.check_unchained_sync(&a.expr, false);
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.check_unchained_sync(e, false);
+                }
+            }
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
+                self.check_unchained_sync(inner, false);
+            }
+            _ => {}
         }
     }
 

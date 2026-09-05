@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an inline `.read()` with nothing chained onto it
+// ERROR: standalone `.read()` on `Shared` has nothing chained onto it
+//
+// R5 scopes an inline access to the chain it starts, so `cfg.read()` with
+// nothing after it takes a lock, releases it, and hands back a value that was
+// only valid while it was held.
+//
+// A bare `let x = cfg.read()` was already rejected; an *operand* wasn't (#958),
+// because desugaring turns `cfg.read() + 1` into `cfg.read().add(1)` and that
+// looked like a chain. Native then dispatched to the closure-taking runtime
+// entry point with the element size sitting where the closure belongs, built a
+// function pointer out of the integer 8 and called it: `Shared.new(41)` printed
+// 49 natively and 42 on the interpreter.
+//
+// The working spellings are in `tests/suite/t_shared_inline_access.rk`.
+
+import sync.Shared
+
+func main() {
+    let cfg = Shared.new(41)
+    let a = cfg.read() + 1
+    println("{a}")
+}

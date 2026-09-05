@@ -4452,6 +4452,22 @@ fn a_catch_binding_has_a_type() {
     );
 }
 
+/// #958: `cfg.read() + 1` slipped past R5 because desugaring makes it
+/// `cfg.read().add(1)`, which looked like a chain. Native then called the
+/// closure-taking runtime entry point with an element size where the closure
+/// belongs — a function pointer built out of the integer 8 — and printed 49 for
+/// a box holding 41 while the interpreter printed 42.
+#[test]
+fn an_unchained_inline_sync_read_is_rejected() {
+    let (failed, output) = compile_error_output("inline_sync_unchained.rk");
+    assert!(failed, "an operand position is not a chain:\n{output}");
+    assert!(output.contains("E0339"), "expected E0339, got:\n{output}");
+    assert!(
+        output.contains("get()"),
+        "copying the value out is the fix and has to be named:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).

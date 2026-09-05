@@ -1900,14 +1900,19 @@ impl ToDiagnostic for rask_types::TypeError {
 
 
             BareSyncAccess { ty, method, span } => {
+                let recv = ty.to_lowercase();
                 Diagnostic::error(format!(
-                    "standalone `.{}()` on `{}` must be chained with field access",
+                    "standalone `.{}()` on `{}` has nothing chained onto it",
                     method, ty,
                 ))
                     .with_code("E0339")
-                    .with_primary(*span, format!("`.{}()` without field chain", method))
-                    .with_help(format!("use `{}.{}().field` for inline access, or `with {}.{}() as v {{ }}` for multi-statement access", ty.to_lowercase(), method, ty.to_lowercase(), method))
-                    .with_why(format!("sync inline access is expression-scoped — the lock is held only for the chain [mem.borrowing/E5]"))
+                    .with_primary(*span, format!("the lock this takes is released at the end of `.{}()`", method))
+                    .with_fix(format!("`{}.get()` to copy the value out, or `{}.{}().field` to read one field", recv, recv, method))
+                    .with_help(format!(
+                        "three forms, by what you need: `{recv}.get()` copies the whole value out (Copy types),                          `{recv}.{method}().field` reads or writes one field under the lock, and                          `with {recv}.{method}() as v {{ … }}` holds it across several statements.",
+                        recv = recv, method = method,
+                    ))
+                    .with_why("inline access is scoped to the chain it starts (conc.sync/R5), so a `.read()` with nothing chained takes a lock, releases it, and hands back a value that was only valid while it was held")
             }
             MixedDiscriminants { enum_name, span } => {
                 Diagnostic::error(format!("enum `{}` mixes explicit and auto-indexed discriminants", enum_name))
