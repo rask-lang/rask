@@ -131,12 +131,12 @@ test "std.io — an empty buffer reads as empty, not as an error" {
     }
 }
 
-// as_bytes is everything written, not just what's left to read.
-test "std.io — as_bytes ignores the read position" {
+// to_bytes is everything written, not just what's left to read.
+test "std.io — to_bytes ignores the read position" {
     mut b = Buffer.new()
     let _ = b.write_text("abc")
     let _ = b.read_text()
-    assert_eq(b.as_bytes().len(), 3)
+    assert_eq(b.to_bytes().len(), 3)
     assert_eq(b.len(), 3)
 }
 

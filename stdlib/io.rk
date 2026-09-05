@@ -427,10 +427,11 @@ extend Buffer {
 
     /// Every byte written, from the start — not just what's left to read.
     ///
-    /// A copy, not a view. A borrowed slice into a struct field isn't
+    /// A copy, not a view, so `to_` rather than `as_`: the name says the cost
+    /// (`canonical-patterns`). A borrowed slice into a struct field isn't
     /// something Rask can express yet (#492), and a copy that says so beats a
     /// name that promises otherwise.
-    public func as_bytes(self) -> Vec<u8> {
+    public func to_bytes(self) -> Vec<u8> {
         return self.data.clone()
     }
 

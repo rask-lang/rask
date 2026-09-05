@@ -103,6 +103,45 @@ mod tests {
             "should flag snake_case enum name");
     }
 
+    // ─── naming/as ──────────────────────────────────────────
+
+    #[test]
+    fn as_prefix_allows_a_raw_pointer() {
+        // The old test asked whether the return type started with `&`. No Rask
+        // type string ever does, so every `as_ptr` in the stdlib was reported
+        // as possibly allocating (#993). A pointer cast is as cheap as it gets.
+        let report = lint_default(
+            "struct Buf { }\nextend Buf {\n    func as_ptr(self) -> *u8 { return 0 }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "a raw pointer is a cheap cast");
+    }
+
+    #[test]
+    fn as_prefix_allows_an_optional_over_a_primitive() {
+        let report = lint_default(
+            "struct J { }\nextend J {\n    func as_bool(self) -> bool? { return none }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "the absence flag costs nothing");
+    }
+
+    #[test]
+    fn as_prefix_allows_handing_back_a_field() {
+        // The type is a container, but nothing is built — the value already
+        // holds it. That's what a view is.
+        let report = lint_default(
+            "struct H { items: Vec<i64> }\nextend H {\n    func as_items(self) -> Vec<i64> { return self.items }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "returning a field builds nothing");
+    }
+
+    #[test]
+    fn as_prefix_flags_a_clone() {
+        let report = lint_default(
+            "struct H { items: Vec<i64> }\nextend H {\n    func as_items(self) -> Vec<i64> { return self.items.clone() }\n}"
+        );
+        assert!(has_rule(&report, "naming/as"), "a clone allocates — that's `to_`");
+    }
+
     // ─── naming/is prefix ───────────────────────────────────
 
     #[test]

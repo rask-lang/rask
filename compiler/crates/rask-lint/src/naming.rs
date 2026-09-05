@@ -6,6 +6,8 @@
 
 use rask_ast::decl::*;
 use rask_ast::type_str;
+use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::types::*;
 use crate::util;
@@ -167,13 +169,22 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     diags
 }
 
-/// naming/as: `as_*` should return a reference or primitive (cheap view).
+/// naming/as: `as_*` hands back something the value already has, without
+/// allocating (`canonical-patterns`).
+///
+/// Two things say so, and either is enough. The **type**: a primitive, a raw
+/// pointer, a slice, or a `string`/`StringView` — a string is a sixteen-byte
+/// value plus a refcount bump, which is what `std.strings/V1` calls a view.
+/// Or the **body**: every `return` hands back a name, a field, or `none`,
+/// constructing nothing. That second test is what lets `as_array` hand back the
+/// `Vec` its enum payload already holds while `as_bytes`, which calls
+/// `.clone()`, still fails.
+///
+/// The old test asked whether the return type started with `&`. No Rask type
+/// string ever does — that is a Rust reference sigil — so the clause was dead
+/// and every `as_ptr` in the stdlib was reported as possibly allocating (#993).
 pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-    let cheap_types = [
-        "bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-        "f32", "f64", "char", "usize", "isize",
-    ];
     for ctx in collect_methods(decls) {
         if is_rule_suppressed(ctx.method, "naming/as") {
             continue;
@@ -182,10 +193,7 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            // Heuristic: references start with & or [], primitives are in the list
-            let is_cheap = ret.starts_with('&')
-                || ret.starts_with("[]")
-                || cheap_types.contains(&ret.as_str());
+            let is_cheap = cheap_view_type(ret) || returns_without_building(&ctx.method.body);
             if !is_cheap {
                 diags.push(make_diagnostic(
                     "naming/as",
@@ -203,6 +211,86 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
         }
     }
     diags
+}
+
+/// A type that can be handed back without allocating.
+fn cheap_view_type(ret: &str) -> bool {
+    const CHEAP: &[&str] = &[
+        "bool", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64",
+        "u128", "f32", "f64", "char", "usize", "isize", "string", "StringView",
+        "Span", "()",
+    ];
+    // An optional over a cheap thing is still cheap — the flag costs nothing.
+    let bare = ret.trim().trim_end_matches('?').trim();
+    // `*T` is a cast, `[]T` a view: both as cheap as it gets.
+    bare.starts_with('*') || bare.starts_with("[]") || CHEAP.contains(&bare)
+}
+
+/// Whether every `return` in the body hands back something that already exists
+/// — a name, a field path, `self`, or `none`. A call, a method call or a
+/// literal builds something, and building is where the allocation is.
+///
+/// An empty body (a `@native` or `@unimplemented` declaration) has no returns
+/// to look at, so it decides nothing and the type test stands alone.
+fn returns_without_building(body: &[Stmt]) -> bool {
+    let mut saw_return = false;
+    let mut all_plain = true;
+    walk_returns(body, &mut |e| {
+        saw_return = true;
+        if !hands_back_existing(e) {
+            all_plain = false;
+        }
+    });
+    saw_return && all_plain
+}
+
+fn hands_back_existing(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) | ExprKind::None => true,
+        ExprKind::Field { object, .. } => hands_back_existing(object),
+        _ => false,
+    }
+}
+
+/// Every `return` expression in a body.
+///
+/// An `if` or a `match` is an expression in Rask, so a return inside one is
+/// reached through the statement that holds it rather than through a statement
+/// kind of its own.
+fn walk_returns(body: &[Stmt], f: &mut impl FnMut(&Expr)) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(Some(e)) => f(e),
+            StmtKind::Expr(e) => walk_returns_in_expr(e, f),
+            StmtKind::While { body, .. } | StmtKind::Loop { body, .. } => walk_returns(body, f),
+            StmtKind::For { body, .. } => walk_returns(body, f),
+            _ => {}
+        }
+    }
+}
+
+fn walk_returns_in_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    match &expr.kind {
+        ExprKind::Block(stmts) => walk_returns(stmts, f),
+        ExprKind::If { then_branch, else_branch, .. } => {
+            walk_returns_in_expr(then_branch, f);
+            if let Some(eb) = else_branch {
+                walk_returns_in_expr(eb, f);
+            }
+        }
+        ExprKind::IfLet { then_branch, else_branch, .. } => {
+            walk_returns_in_expr(then_branch, f);
+            if let Some(eb) = else_branch {
+                walk_returns_in_expr(eb, f);
+            }
+        }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                walk_returns_in_expr(&arm.body, f);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// naming/to: `to_*` should return a different type than Self.
