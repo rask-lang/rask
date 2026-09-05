@@ -75,7 +75,8 @@ the count went 49 → 52 because removing the noise made the real gaps
 visible, then back to 49 as `syntax_rejected.rk`'s three unreachable markers
 moved to files that reach them.
 
-The 13 split two ways. Either the rule is real and unimplemented — that's the
+All 13 that remain are filed — #1088 (five `mem.borrowing` rules), #1089 (four
+pool-context rules), #1090 (three smaller ones). The 13 split two ways. Either the rule is real and unimplemented — that's the
 interesting case, and it's how 1.3 found `mem.borrowing`'s block-scoped rule and
 `comp.advanced`'s handle typestate — or the marker sits below a parse error that
 stops the pipeline before its pass ever runs, which is 1.2.

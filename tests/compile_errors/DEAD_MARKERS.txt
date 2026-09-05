@@ -31,6 +31,12 @@
 # should go, usually because it sits below a parse error that stops the pipeline
 # before the checker ever runs (see audit 1.2).
 #
+# Everything left here is the first kind, and filed:
+#   #1088  the five mem.borrowing rules (borrow_errors.rk)
+#   #1089  the four pool-context rules (context_*.rk)
+#   #1090  break-with-value from `while`, a non-exhaustive `match` expression,
+#          and the two `value.(comptime …)` failures
+#
 # Format: <file> <count of dead markers>
 
 borrow_errors.rk                         5
