@@ -375,6 +375,38 @@ RaskVec *rask_pool_values(const RaskPool *p) {
     return v;
 }
 
+// (handle, element) pairs, one per live slot — the two walks above interleaved.
+//
+// The pair is laid out the way codegen lays out a tuple: the packed handle at
+// offset 0, the element at the next 8-byte boundary past it, which for an
+// 8-byte handle is 8. `rask_map_entries` builds its pairs the same way.
+//
+// No string map, for the same reason `rask_pool_values` has none: a pool never
+// took one, so it doesn't know whether its element owns a string. That gap is
+// the pool's, not this walk's.
+RaskVec *rask_pool_entries(const RaskPool *p) {
+    int64_t elem = p ? p->elem_size : 8;
+    int64_t stride = (8 + elem + 7) & ~(int64_t)7;
+    RaskVec *v = rask_vec_with_capacity(stride, p ? p->len : 0, NULL, 0);
+    if (!p) return v;
+    char *pair = (char *)rask_alloc(stride);
+    for (int64_t i = 0; i < p->cap; i++) {
+        char *slot = slot_at(p, i);
+        if (slot_next(slot) != SLOT_OCCUPIED) continue;
+        memset(pair, 0, (size_t)stride);
+        RaskHandle h;
+        h.pool_id = p->pool_id;
+        h.index = (uint32_t)i;
+        h.generation = slot_gen(slot);
+        int64_t packed = handle_pack(h);
+        memcpy(pair, &packed, sizeof packed);
+        memcpy(pair + 8, slot_data(slot), (size_t)elem);
+        rask_vec_push(v, pair);
+    }
+    rask_free(pair);
+    return v;
+}
+
 RaskVec *rask_pool_drain(RaskPool *p) {
     RaskVec *v = rask_vec_new(p ? p->elem_size : 8, NULL, 0);
     if (!p) return v;

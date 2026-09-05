@@ -129,14 +129,7 @@ impl TypeChecker {
         // `@allow(name)` on the function suppresses that warning inside it.
         let old_allowed = std::mem::replace(
             &mut self.allowed_warnings,
-            f.attrs
-                .iter()
-                .filter_map(|a| {
-                    a.strip_prefix("allow(")
-                        .and_then(|r| r.strip_suffix(')'))
-                        .map(str::to_string)
-                })
-                .collect(),
+            super::declarations::allowed_from(&f.attrs),
         );
 
         // ER20: Save outer accumulation state and detect if we should accumulate

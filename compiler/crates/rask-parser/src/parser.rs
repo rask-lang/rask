@@ -684,8 +684,8 @@ impl Parser {
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
             TokenKind::Type => self.parse_type_alias_decl(is_pub)?,
-            TokenKind::Test => self.parse_test_decl(is_comptime)?,
-            TokenKind::Benchmark => self.parse_benchmark_decl()?,
+            TokenKind::Test => self.parse_test_decl(is_comptime, attrs)?,
+            TokenKind::Benchmark => self.parse_benchmark_decl(attrs)?,
             TokenKind::Extern => {
                 let mut members = self.parse_extern_decls(doc)?;
                 let (first, first_span) = members.remove(0);
@@ -2261,21 +2261,21 @@ impl Parser {
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
-    fn parse_test_decl(&mut self, is_comptime: bool) -> Result<DeclKind, ParseError> {
+    fn parse_test_decl(&mut self, is_comptime: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Test)?;
         let name = self.expect_string()?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
-        Ok(DeclKind::Test(TestDecl { name, body, is_comptime }))
+        Ok(DeclKind::Test(TestDecl { name, body, is_comptime, attrs }))
     }
 
     /// Parse a benchmark block: `benchmark "name" { body }`
-    fn parse_benchmark_decl(&mut self) -> Result<DeclKind, ParseError> {
+    fn parse_benchmark_decl(&mut self, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Benchmark)?;
         let name = self.expect_string()?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
-        Ok(DeclKind::Benchmark(BenchmarkDecl { name, body }))
+        Ok(DeclKind::Benchmark(BenchmarkDecl { name, body, attrs }))
     }
 
     /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.

@@ -110,6 +110,9 @@ pub struct TestDecl {
     pub name: String,
     pub body: Vec<Stmt>,
     pub is_comptime: bool,
+    /// `@allow(name)` and friends, same as `FnDecl::attrs`. A test body is
+    /// where a warning most often fires on purpose.
+    pub attrs: Vec<String>,
 }
 
 /// A benchmark block declaration.
@@ -117,6 +120,7 @@ pub struct TestDecl {
 pub struct BenchmarkDecl {
     pub name: String,
     pub body: Vec<Stmt>,
+    pub attrs: Vec<String>,
 }
 
 /// An external function declaration.

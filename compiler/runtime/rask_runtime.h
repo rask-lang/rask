@@ -519,6 +519,7 @@ int64_t     rask_pool_remove_out(RaskPool *p, int64_t packed, void *out);
 int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 RaskVec    *rask_pool_handles_packed(const RaskPool *p);
 RaskVec    *rask_pool_values(const RaskPool *p);
+RaskVec    *rask_pool_entries(const RaskPool *p);
 RaskVec    *rask_pool_drain(RaskPool *p);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})

@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Pool.entries()` returns each live handle with its element (#1082).
+//
+// It was declared `@native` with no symbol and nothing implemented it, so a
+// call type-checked, ran on the interpreter, and died at codegen with
+// "Function not found: Pool_entries". Its two neighbours, `handles()` and
+// `values()`, were both there — this is those two walks interleaved.
+//
+// The pair is laid out the way codegen lays out a tuple: the packed handle at
+// offset 0, the element at the next 8-byte boundary past it. `Map.entries()`
+// builds its pairs the same way.
+
+import memory.Pool
+import memory.Handle
+
+struct Item {
+    id: i64
+    weight: i64
+}
+
+test "each live slot comes back as its handle and its element" {
+    mut p = Pool<i64>.new()
+    let h = p.insert(7)
+    let es: Vec<(Handle<i64>, i64)> = p.entries()
+    assert es.len() == 1
+    assert es[0].1 == 7
+    // The handle is the one the pool answers to, not a fresh number.
+    assert p[es[0].0] == 7
+}
+
+test "a removed slot isn't an entry" {
+    mut p = Pool<i64>.new()
+    let a = p.insert(1)
+    let b = p.insert(2)
+    let c = p.insert(3)
+    p.remove(b)
+    let es: Vec<(Handle<i64>, i64)> = p.entries()
+    assert es.len() == 2
+    mut total = 0
+    for e in es.iter() {
+        total = total + e.1
+    }
+    assert total == 4
+}
+
+test "a struct element comes back whole" {
+    mut p = Pool<Item>.new()
+    let h = p.insert(Item { id: 3, weight: 40 })
+    let es: Vec<(Handle<Item>, Item)> = p.entries()
+    assert es.len() == 1
+    assert es[0].1.id == 3
+    assert es[0].1.weight == 40
+}
+
+test "an empty pool has no entries" {
+    mut p = Pool<i64>.new()
+    let es: Vec<(Handle<i64>, i64)> = p.entries()
+    assert es.len() == 0
+}

@@ -1306,6 +1306,12 @@ impl TypeChecker {
                 self.check_view_at_binding(&c.name, &c.init, decl.span);
             }
             DeclKind::Test(t) => {
+                // `@allow(name)` on the block, same as on a function. A test
+                // body is where a default-on warning most often fires on
+                // purpose — writing the shape a warning is about is most of
+                // what a suite file does (#1010).
+                let old_allowed =
+                    std::mem::replace(&mut self.allowed_warnings, allowed_from(&t.attrs));
                 for stmt in &t.body {
                     self.check_stmt(stmt);
                     // Solve as we go, same as check_fn — a later statement
@@ -1314,12 +1320,16 @@ impl TypeChecker {
                     // or it stays an unbound type var forever (#390).
                     self.solve_constraints();
                 }
+                self.allowed_warnings = old_allowed;
             }
             DeclKind::Benchmark(b) => {
+                let old_allowed =
+                    std::mem::replace(&mut self.allowed_warnings, allowed_from(&b.attrs));
                 for stmt in &b.body {
                     self.check_stmt(stmt);
                     self.solve_constraints();
                 }
+                self.allowed_warnings = old_allowed;
             }
             DeclKind::Import(imp) => {
                 // Register module name as local for field/method resolution.
@@ -1704,4 +1714,13 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
         }
         _ => {}
     }
+}
+
+/// The warning names an `@allow(...)` list suppresses.
+pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|a| a.strip_prefix("allow(").and_then(|r| r.strip_suffix(')')))
+        .map(str::to_string)
+        .collect()
 }

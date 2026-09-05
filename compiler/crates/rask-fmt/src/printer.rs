@@ -1268,6 +1268,11 @@ impl<'a> Printer<'a> {
 
     fn format_test_decl(&mut self, t: &TestDecl) {
         self.emit_indent();
+        for attr in &t.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         if t.is_comptime {
             self.emit("comptime ");
         }
@@ -1285,6 +1290,11 @@ impl<'a> Printer<'a> {
 
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
+        for attr in &b.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         self.emit("benchmark \"");
         self.emit(&escape_string_literal(&b.name));
         self.emit("\" {");

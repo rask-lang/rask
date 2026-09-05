@@ -1343,7 +1343,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         box_name, binding,
                     ))
                     .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
-                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function if partial state is harmless here [tool.warnings/W9]")
+                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
             }
 
             StagedOutsideWith { name, span } => {

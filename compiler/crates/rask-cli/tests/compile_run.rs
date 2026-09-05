@@ -4292,9 +4292,10 @@ fn plain_write_keeps_the_partial_update_on_panic() {
 fn torn_lock_update_warns_once_and_only_where_it_should() {
     // W9 (tool.warnings, W0907): two fields of a locked value written in one
     // `with` block without staging. A warning, not an error — the program still
-    // builds and runs. The fixture has four blocks of the same shape and exactly
-    // one may warn: `@allow` says the tear is harmless, `Local` has nobody to
-    // observe one (and `staged()` is refused there, ST3a), and staging is the fix.
+    // builds and runs. The fixture has five blocks of the same shape and exactly
+    // one may warn: `@allow` says the tear is harmless — on a function and on a
+    // `test` block (#1010) — `Local` has nobody to observe one (and `staged()`
+    // is refused there, ST3a), and staging is the fix.
     let (built, build_output) = compile_only_succeeds("torn_lock_update.rk");
     assert!(built, "W9 is a warning — the program must still build:\n{}", build_output);
 
