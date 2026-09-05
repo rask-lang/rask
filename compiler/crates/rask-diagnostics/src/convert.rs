@@ -3083,7 +3083,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
 
             RuntimeError::IntegerOverflow(msg) => {
                 Diagnostic::error(msg)
-                    .with_code("R0010")
+                    .with_code("R0018")
                     .with_primary(self.span, "arithmetic overflowed here")
                     .with_why("default arithmetic panics on overflow in all builds (type.overflow/OV1)")
                     .with_help("use `Wrapping<T>` from `num` for intentional wrapping, or widen the type")
@@ -3241,7 +3241,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
 
             RuntimeError::ForcedError(msg) => {
                 Diagnostic::error(format!("! on a value that was an error: {}", msg))
-                    .with_code("R0016")
+                    .with_code("R0019")
                     .with_primary(self.span, format!("this call returned `{}`", msg))
                     .with_help("`try` propagates the error, `catch e =>` handles it here")
                     .with_fix("replace `r!` with `try r`")

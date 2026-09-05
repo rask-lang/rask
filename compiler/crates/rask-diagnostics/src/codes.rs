@@ -28,6 +28,10 @@ pub enum ErrorCategory {
     Type,
     Trait,
     Ownership,
+    /// The `R00xx` namespace: something that went wrong while the program ran,
+    /// not while it was compiled. A reader looking one up off a panic has the
+    /// same question as one reading a compile error off a build (#992).
+    Runtime,
 }
 
 impl std::fmt::Display for ErrorCategory {
@@ -35,6 +39,7 @@ impl std::fmt::Display for ErrorCategory {
         match self {
             ErrorCategory::Syntax => write!(f, "Syntax"),
             ErrorCategory::Resolution => write!(f, "Resolution"),
+            ErrorCategory::Runtime => write!(f, "Runtime"),
             ErrorCategory::Type => write!(f, "Type"),
             ErrorCategory::Trait => write!(f, "Trait"),
             ErrorCategory::Ownership => write!(f, "Ownership"),
@@ -626,6 +631,69 @@ impl Default for ErrorCodeRegistry {
                 "E0810" => ("a captured resource isn't consumed on every path", Ownership,
                     "A resource captured by a closure or a task is that body's to finish with, and \"exactly once\" has to hold on every path through it — including the ones that return early or raise.\n\n`ensure` at the top of the body is the usual answer: it runs at every exit, including a panic.",
                     "spawn(own || {\n    if bad { return }        // error: `conn` not consumed here\n    conn.close()\n})\n// fix: one exit for all paths\nspawn(own || { ensure conn.close(); … })"),
+                "R0001" => ("division by zero", Runtime,
+                    "Integer division and remainder by zero have no answer, so the program stops rather than continuing with a number nobody chose. Check the divisor first, or use a form that hands back an absence.\n\nThe same check at compile time reports this code too: a `comptime` block that divides by zero fails the fold with it.",
+                    "let avg = total / count      // panics when `count` is 0\n// fix: decide what zero means here\nlet avg = if count == 0 { 0 } else { total / count }"),
+                "R0002" => ("index out of bounds", Runtime,
+                    "Every index into a Vec, an array or a string is range-checked at the access (std.collections/V1). A negative or too-large index panics — there is no wraparound and no negative-from-end indexing, because both turn a bug into a different value rather than into a stop.\n\n`get` is the form that answers `T?` instead of panicking.",
+                    "let x = xs[i]                // panics when `i >= xs.len()`\n// fix: ask instead of assume\nlet x = xs.get(i) ?? default"),
+                "R0003" => ("variable not found at run time", Runtime,
+                    "The interpreter reached a name that isn't bound. This is almost always a compiler bug rather than a program one — an undefined name is E0341 at check time — so it usually means a lowering or scoping path let something through.",
+                    "// no user-level fix: report it with the program that produced it"),
+                "R0004" => ("function not found at run time", Runtime,
+                    "A call reached a function the interpreter doesn't have. Check the spelling and the import, but if the name is a stdlib one this usually means the backend hasn't implemented it — a declaration marked `@unimplemented`, or one whose native symbol only exists on the other backend.",
+                    "os.signals()                 // this backend has no implementation\n// fix: run it natively, or use a built alternative"),
+                "R0005" => ("type error at run time", Runtime,
+                    "A value turned out not to be the shape the operation needed. Most of these are caught at check time, so one arriving here usually means a type the checker left open — an inference variable that reached the interpreter as a guess.\n\nAn annotation on the binding is the usual fix, and worth reporting either way.",
+                    "let xs = Vec.new()           // element type never settles\n// fix: say what it holds\nlet xs: Vec<i64> = Vec.new()"),
+                "R0006" => ("wrong number of arguments", Runtime,
+                    "A call reached the interpreter with an argument count the function doesn't take. Arity is checked at compile time (E0310), so this usually means a call built by the compiler itself — a desugaring or a generated method.",
+                    "// no user-level fix: report it with the program that produced it"),
+                "R0007" => ("no such method at run time", Runtime,
+                    "The receiver has no method by this name. Method resolution happens at check time (E0313), so reaching here means the receiver's type was still open when it was checked — the call was deferred and the type it settled on has no such method.",
+                    "let v = load()               // return type never settles\nv.push(1)                    // no `push` on what it became\n// fix: annotate the binding"),
+                "R0008" => ("no such field at run time", Runtime,
+                    "The value has no field by this name. Like R0007, this is the deferred half of a check that normally happens at compile time (E0312).",
+                    "// annotate the binding whose type stayed open"),
+                "R0009" => ("a closed resource was used", Runtime,
+                    "A `@resource` is consumed exactly once, and the operations on it stop working after that. The compiler proves this for a value it can follow (E0807), so one arriving here got past it — usually through a container, a closure capture, or a dynamic path.",
+                    "file.close()\nfile.write(\"x\")              // the handle is spent\n// fix: order the uses, or reopen"),
+                "R0010" => ("panic", Runtime,
+                    "Something called `panic(…)`, or a check the runtime performs failed and reported itself as one. The task unwinds: every `ensure` on the way out runs, locks release without poisoning, and the process exits 101 (ctrl.panic).\n\nThe message is the program's own, so what to do about it depends on what raised it.",
+                    "panic(\"unreachable state: {tag}\")"),
+                "R0011" => ("no arm matched", Runtime,
+                    "A `match` reached a value none of its arms cover. Exhaustiveness is checked at compile time (E0340), so this means the scrutinee held something the checker didn't know it could — usually an integer-backed enum decoded from outside the program.",
+                    "match tag_from_wire() {\n    Ok => …\n    Err => …                 // and the wire said 7\n}\n// fix: cover the rest\n_ => return DecodeError.UnknownTag"),
+                "R0012" => ("more than one entry point", Runtime,
+                    "A program has exactly one place to start. Both a `func main()` and an `@entry` function, or two `@entry` functions, leave nothing to pick between.",
+                    "func main() { … }\n@entry func start() { … }    // two entry points\n// fix: keep one"),
+                "R0013" => ("no entry point", Runtime,
+                    "Nothing in the program says where to start. Add `func main()`, or mark a function `@entry`.\n\nA library doesn't need one — this is only an error for something being run.",
+                    "// fix: give it a start\nfunc main() { … }"),
+                "R0014" => ("assertion failed", Runtime,
+                    "An `assert` found its condition false. The message shows both operands where the assertion was a comparison, so the two values are in front of you rather than one line up.\n\nAsserts are on in every build: an invariant worth writing down is worth checking where it matters.",
+                    "assert total == expected\n// assertion failed: 41 == 42 (left: 41, right: 42)"),
+                "R0015" => ("check failed", Runtime,
+                    "A `check` found its condition false. Unlike `assert`, a failed `check` records the failure and lets the test carry on, so one run reports every one it finds instead of stopping at the first.",
+                    "check a == 1\ncheck b == 2                 // both are reported"),
+                "R0016" => ("`!` on a value that was absent", Runtime,
+                    "`!` takes the payload of a `T?` and panics when there isn't one (type.optionals/OPT13). That's the point of the spelling — it's the short way to say \"I know this is here\", and it's loud when you were wrong.\n\n`??` substitutes a value instead, and `x is T as v` tests for one first.",
+                    "let user = find(id)!         // panics when there's no such user\n// fix: say what happens when it's absent\nlet user = find(id) ?? guest()"),
+                "R0017" => ("runtime error", Runtime,
+                    "A runtime failure with no more specific code — the message carries what happened. If it reads like a compile error, it is one that reached the interpreter instead of the checker, and is worth reporting.",
+                    "// no fixed shape: read the message"),
+                "R0018" => ("arithmetic overflowed", Runtime,
+                    "Arithmetic panics on overflow in every build, release included (type.overflow/OV1). A number that doesn't fit is a bug, and the alternatives — wrapping silently, or being undefined — both turn it into a wrong answer somewhere else.\n\nWhere wrapping *is* the intent, `Wrapping<T>` from `num` says so. Where it might not fit, `checked_add` and its siblings answer `T?`.\n\nThe same check at compile time reports this code too: a `comptime` block that overflows fails the fold with it.",
+                    "let n = a + b                // panics when it doesn't fit\n// fix: say which\nlet n = a.checked_add(b) ?? i64.MAX"),
+                "R0019" => ("`!` on a value that was an error", Runtime,
+                    "`!` takes the ok payload of a `T or E` and panics on the error branch, using the error's own `message()` (type.errors/ER15). So the panic says what went wrong rather than just that something did.\n\n`try` sends the error to the caller instead, and `catch e =>` handles it here.",
+                    "let cfg = load(path)!        // panics with the error's message\n// fix: propagate or handle\nlet cfg = try load(path)"),
+                "R0022" => ("main returned an error", Runtime,
+                    "`main` can return `T or E`, and an error out of it is a failed run: the message is printed and the process exits 1 (struct.targets/EX4). That's the whole mechanism — there is no separate exit-code plumbing to write.",
+                    "func main() -> () or IoError {\n    try run()\n}\n// an error here prints its message and exits 1"),
+                "R0023" => ("recursion too deep", Runtime,
+                    "The interpreter spends one host stack frame per Rask call and those frames are large, so it moves onto a fresh stack every few hundred calls rather than overflowing. That chain is capped — around a gigabyte of live stack — so a recursion that never terminates stops here with a message instead of taking the machine down.\n\nCheck the base case if this was meant to terminate. Otherwise rewrite it as a loop, or run it natively with `rask run`, which has no such limit.",
+                    "func depth(n: i64) -> i64 { return depth(n + 1) }   // never terminates\n// fix: give it a base case"),
                 "W0301" => ("`discard` on a Copy type frees nothing", Type,
                     "`discard` exists to end a value\'s life before its scope does — to release the memory it owns at a point you choose rather than at the closing brace. A Copy type owns no memory, so there is nothing to release and the statement reads as a cost it doesn\'t pay (mem.ownership/D2).\n\nIt does still put the name out of use, which is D1 and holds for every type. If that was the point, a comment says so more clearly than a `discard` that looks like cleanup.",
                     "let n = 7\ndiscard n            // warning: frees nothing\n// fix: drop the line\nlet n = 7"),
@@ -709,11 +777,13 @@ mod registry_audit {
                 rest = &rest[i + "with_code(\"".len()..];
                 if let Some(end) = rest.find('"') {
                     let code = &rest[..end];
-                    // Compile-time codes only. `RuntimeDiagnostic` emits its own
-                    // R00xx namespace, which this registry has never covered —
-                    // `rask explain R0001` says the code doesn't exist (#992);
-                    // scanning them here would only report that gap 19 times.
-                    if code.starts_with('E') || code.starts_with('W') {
+                    // Runtime codes too. `RuntimeDiagnostic` has its own R00xx
+                    // namespace and the registry never covered it, so `rask
+                    // explain R0001` said the code didn't exist — the same
+                    // wrong answer a shared code gives, arrived at by a
+                    // different route (#992). A reader looking a code up off a
+                    // panic has the question a compile error's reader has.
+                    if matches!(code.as_bytes()[0], b'E' | b'W' | b'R') {
                         out.push((code.to_string(), arm.clone(), n + 1));
                     }
                 }
@@ -733,7 +803,7 @@ mod registry_audit {
                 let code = &rest[..end];
                 if rest[end + 1..].trim_start().starts_with("=>")
                     && code.len() == 5
-                    && matches!(code.as_bytes()[0], b'E' | b'W')
+                    && matches!(code.as_bytes()[0], b'E' | b'W' | b'R')
                     && code[1..].bytes().all(|b| b.is_ascii_digit())
                 {
                     Some(code.to_string())

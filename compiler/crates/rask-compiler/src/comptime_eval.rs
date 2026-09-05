@@ -177,7 +177,7 @@ fn comptime_code(e: &rask_comptime::ComptimeError) -> (&'static str, &'static st
     use rask_comptime::ComptimeError as C;
     match e {
         C::DivisionByZero => ("R0001", "division by zero is undefined"),
-        C::IntegerOverflow(_) => ("R0010", "comptime overflow is a compile error (type.overflow/CT1)"),
+        C::IntegerOverflow(_) => ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"),
         _ => ("E0383", "a `comptime` const is computed while compiling, so there is no runtime to retry on (ctrl.comptime/CT2)"),
     }
 }
@@ -187,7 +187,7 @@ fn miri_code(e: &rask_miri::MiriError) -> (&'static str, &'static str) {
     use rask_miri::MiriError as M;
     match e {
         M::DivisionByZero => ("R0001", "division by zero is undefined"),
-        M::IntegerOverflow(_) => ("R0010", "comptime overflow is a compile error (type.overflow/CT1)"),
+        M::IntegerOverflow(_) => ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"),
         _ => ("E0383", "a `comptime` const is computed while compiling, so there is no runtime to retry on (ctrl.comptime/CT2)"),
     }
 }
