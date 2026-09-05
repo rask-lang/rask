@@ -4495,7 +4495,11 @@ fn bare_package_state_cannot_be_written() {
 fn a_link_cannot_escape_inside_a_collection() {
     let (failed, output) = compile_error_output("link_escapes_in_collection.rk");
     assert!(failed, "the links in `v` dangle at the return:\n{output}");
-    assert!(output.contains("E0379"), "expected E0379, got:\n{output}");
+    assert_eq!(
+        output.matches("E0379").count(),
+        2,
+        "the push and the literal are both escapes:\n{output}"
+    );
     assert!(
         output.contains("holds links"),
         "a container isn't a link, and the message has to say which it is:\n{output}"

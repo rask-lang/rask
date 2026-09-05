@@ -31,7 +31,15 @@ func smuggle() -> Vec<Link<Node>> {
     return v
 }
 
+// A literal carrying a link is the same escape with fewer statements.
+func from_literal() -> Vec<Link<Node>> {
+    mut s: Rack<Node> = Rack.new()
+    let n = s.insert(Node { value: 1 })
+    let v: Vec<Link<Node>> = [n]
+    return v
+}
+
 func main() {
     let v = smuggle()
-    println("{v.len()}")
+    println("{v.len()} {from_literal().len()}")
 }

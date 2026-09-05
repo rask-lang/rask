@@ -43,6 +43,33 @@ test "a container that stays inside the rack's scope" {
     assert total == 12
 }
 
+// The tag says which rack a container's links came from, and it's recomputed
+// at every binding rather than accumulated: a name that held links and then
+// holds something else points at nothing.
+func rebound() -> Vec<Link<Node>> {
+    mut s: Rack<Node> = Rack.new()
+    mut v: Vec<Link<Node>> = Vec.new()
+    v.push(s.insert(Node { value: 1 }))
+    v = Vec.new()
+    return v
+}
+
+func cleared() -> Vec<Link<Node>> {
+    mut s: Rack<Node> = Rack.new()
+    mut v: Vec<Link<Node>> = Vec.new()
+    v.push(s.insert(Node { value: 1 }))
+    v.clear()
+    return v
+}
+
+test "rebinding the container drops the links with the old one" {
+    assert rebound().len() == 0
+}
+
+test "and so does emptying it" {
+    assert cleared().len() == 0
+}
+
 test "the rack's own listing is a container of links too" {
     mut s: Rack<Node> = Rack.new()
     let a = s.insert(Node { value: 3 })

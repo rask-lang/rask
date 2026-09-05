@@ -999,6 +999,16 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
+                        // Rebinding replaces what the name holds, links included:
+                        // `v = Vec.new()` after a `v.push(n)` points at nothing.
+                        match self.link_bearing_root(value) {
+                            Some(rack) => {
+                                self.container_link_rack.insert(target_name.clone(), rack);
+                            }
+                            None => {
+                                self.container_link_rack.remove(target_name);
+                            }
+                        }
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
                         // Putting a resource into a binding gives it the
                         // obligation, whether or not it had one before. This is
@@ -1376,7 +1386,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
-                self.note_link_into_container(object, args);
+                self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters of user
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
@@ -2305,9 +2315,21 @@ impl<'a> OwnershipChecker<'a> {
     /// iteration binding or a call result may be a second name for a node some
     /// other local also names, and a delete of either invalidates both.
     fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
+        // A container binding takes its links from whatever it is bound to, and
+        // loses them when it's bound to something else. Recomputed rather than
+        // accumulated, so `v = Vec.new()` after a `v.push(n)` starts clean.
         if !self.is_link_type(ty) {
+            match self.link_bearing_root(init) {
+                Some(rack) => {
+                    self.container_link_rack.insert(name.to_string(), rack);
+                }
+                None => {
+                    self.container_link_rack.remove(name);
+                }
+            }
             return;
         }
+        self.container_link_rack.remove(name);
         let from_insert = matches!(
             &init.kind,
             ExprKind::MethodCall { object, method, .. }
@@ -2337,8 +2359,19 @@ impl<'a> OwnershipChecker<'a> {
     /// A link handed to a container keeps the container alive no longer than its
     /// rack. `v.push(n)`, `m.insert(k, n)`, `v[i] = n` — anything that puts a
     /// link somewhere the container outlives the statement.
-    fn note_link_into_container(&mut self, object: &Expr, args: &[rask_ast::expr::CallArg]) {
+    fn note_link_into_container(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[rask_ast::expr::CallArg],
+    ) {
         let Some(root) = Self::extract_root_and_fields(object).0 else { return };
+        // `clear` throws the links away with everything else, so what's left
+        // points at nothing and outlives nothing.
+        if method == "clear" && args.is_empty() {
+            self.container_link_rack.remove(&root);
+            return;
+        }
         for arg in args {
             if let Some(rack) = self.link_bearing_root(&arg.expr) {
                 self.container_link_rack.insert(root.clone(), rack);
