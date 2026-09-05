@@ -2338,10 +2338,9 @@ impl<'a> MirLowerer<'a> {
         less
     }
 
-    /// `v.sort_by_key(f)` — in place. Not stable: the spec allows `sort` and
-    /// `sort_by_key` to use the platform sort since two elements with equal
-    /// keys but different other fields are indistinguishable from the
-    /// guarantee's point of view (only `sort_by` promises stability).
+    /// `v.sort_by_key(f)` — in place, and stable (SO1). Two elements whose keys
+    /// tie can differ in every other field, so their order is observable — the
+    /// argument that lets `sort` use the platform sort doesn't reach here.
     ///
     /// Extracts each element's key once into a parallel `keys` Vec, then
     /// selection-sorts on `keys`, swapping the same pair in both `vec` and
