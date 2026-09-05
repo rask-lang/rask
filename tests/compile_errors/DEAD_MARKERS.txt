@@ -3,7 +3,7 @@
 # Every `// ERROR` line in that directory claims the compiler rejects the code
 # below it. `compile_error()` only ever checked that the file failed *somewhere*,
 # so a marker whose rule had never been implemented — or had stopped firing —
-# looked exactly like one that worked. 52 of 363 turned out to answer nothing.
+# looked exactly like one that worked. 49 of 362 turned out to answer nothing.
 #
 # The gate now anchors each marker to a line: a marker must be followed by a
 # diagnostic before the next marker. The counts below are the ones still
@@ -40,5 +40,4 @@ linear_containers.rk                     1
 match_errors.rk                          5
 ownership_errors.rk                      8
 sl2_closure_escape.rk                    1
-syntax_rejected.rk                       3
 type_errors.rk                           2

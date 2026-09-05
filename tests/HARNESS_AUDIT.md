@@ -59,7 +59,7 @@ Two cleanups the anchoring needed. A run of consecutive `// ERROR` lines now
 counts as one marker (several lines often describe one rejection), and 43 files
 had a header comment that opened `// ERROR:` to summarise the file — those say
 `// Rejects:` now, so they don't demand a diagnostic on line 2. That leaves
-**363 real markers, of which 52 answer nothing**, listed per file in
+**362 real markers, of which 49 answer nothing**, listed per file in
 `tests/compile_errors/DEAD_MARKERS.txt`. The count may only go down: a new dead
 marker fails, and so does a count that's too high, so a fix can't be left
 unrecorded.
@@ -71,9 +71,11 @@ two different things, so a diagnostic whose secondary label sits above its
 primary pointed at the secondary. And three fixtures had forgotten `mut` on
 their own locals, so `E0322 cannot mutate — declared let` was answering markers
 about ownership and context rules that produce nothing at all. Both are fixed;
-the count went 49 → 52 because removing the noise made the real gaps visible.
+the count went 49 → 52 because removing the noise made the real gaps
+visible, then back to 49 as `syntax_rejected.rk`'s three unreachable markers
+moved to files that reach them.
 
-The 52 split two ways. Either the rule is real and unimplemented — that's the
+The 49 split two ways. Either the rule is real and unimplemented — that's the
 interesting case, and it's how 1.3 found `mem.borrowing`'s block-scoped rule and
 `comp.advanced`'s handle typestate — or the marker sits below a parse error that
 stops the pipeline before its pass ever runs, which is 1.2.

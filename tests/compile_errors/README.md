@@ -21,8 +21,9 @@ go down.
 
 | File | What it tests |
 |------|--------------|
-| [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `?`), `const` in a body, let reassignment, missing return, chained comparison |
+| [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `&`), `const` in a body. Parser errors only — a rule the checker enforces can never fire here, so those markers moved to files of their own |
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
+| [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 
 ### Type System
 
