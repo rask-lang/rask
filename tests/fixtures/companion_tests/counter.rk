@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The module half of the T3/T4 companion-file pair. `bump` and `Counter.step`
+// are private — nothing marks them public — so the only way the test file
+// beside this one can reach them is if the two compile as one unit.
+
+struct Counter {
+    value: i64
+}
+
+extend Counter {
+    func step(mutate self) {
+        self.value = bump(self.value)
+    }
+}
+
+func bump(n: i64) -> i64 {
+    return n + 1
+}
+
+public func counted_from(start: i64, times: i64) -> i64 {
+    mut c = Counter { value: start }
+    mut i = 0
+    while i < times {
+        c.step()
+        i = i + 1
+    }
+    return c.value
+}

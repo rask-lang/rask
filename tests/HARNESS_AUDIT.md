@@ -285,7 +285,7 @@ reachable without the stdlib.
 | ~~**T11**~~ | `comptime test` runs during compilation, failure is a compile error | ~~`rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test`~~ — **fixed**: the comptime pass runs them, a failure is `E0848`, and the result is reported once instead of being re-run by the backend |
 | **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
 | ~~**T17**~~ | `spawn` with no `using Multitasking` is a compile error | ~~type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block"~~ — **fixed**: CC1 was keyed off the qualified `async.spawn` spelling, so bare `spawn(|| { … })` was never checked, and the CC2 walk never entered `test` blocks. Both now fire (`E0352`/`E0353`) |
-| **T3/T4** | tests may live in `*_test.rk`; same-package tests see private members | each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`. Zero coverage in the repo |
+| ~~**T3/T4**~~ | tests may live in `*_test.rk`; same-package tests see private members | ~~each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`~~ — **fixed**: it worked inside a package all along, which is why nothing noticed; loose files were compiled one at a time. `foo_test.rk` now compiles with `foo.rk` either way, covered by `tests/fixtures/companion_tests/` |
 | **T6/T18/T19** | isolation; runtime-holding tests serialised; drain bounds the test | untested (T18 is moot while everything is sequential) |
 | CLI `--verbose` | show all names | field never read |
 

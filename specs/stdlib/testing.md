@@ -12,7 +12,7 @@ Built-in test framework with `test` blocks, `@test` functions, assertions, paral
 |------|-------------|
 | **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds |
 | **T2: @test functions** | `@test` on a function makes it both a test and a callable function |
-| **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files |
+| **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files. `foo_test.rk` beside `foo.rk` is that module's companion and compiles with it, package or no package |
 | **T4: Private access** | Inline and same-package `*_test.rk` tests can access private members; external test files see `public` only |
 
 ```rask

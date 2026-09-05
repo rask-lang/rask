@@ -7107,3 +7107,62 @@ fn error_spawn_needs_multitasking_scope() {
          spawn and leave the scope to its caller:\n{out}"
     );
 }
+
+/// A `*_test.rk` file compiles with the module beside it, so it sees that
+/// module's private members (std.testing/T3, T4).
+///
+/// Loose files were compiled one at a time, so a companion test file saw
+/// nothing at all — every name in it was `E0200 undefined symbol`. It worked
+/// inside a package, where the whole package compiles together, which is why
+/// nothing noticed.
+#[test]
+fn companion_test_file_sees_the_module_it_tests() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("companion_tests");
+    let test_file = dir.join("counter_test.rk");
+
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&test_file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{args:?} should pass:\n{combined}");
+        assert!(
+            combined.contains("3 tests, 3 passed"),
+            "{args:?}: a private function, a private method and the public \
+             surface:\n{combined}"
+        );
+    }
+
+    // Walking the directory must not run the module's own tests twice — the
+    // companion already pulled it in.
+    let out = Command::new(rask_binary())
+        .arg("test")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test on the directory");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "directory run should pass:\n{combined}");
+    assert!(
+        combined.contains("(1 files)"),
+        "counter.rk is compiled as part of counter_test.rk, not again on its \
+         own:\n{combined}"
+    );
+}

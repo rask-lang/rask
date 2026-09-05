@@ -565,6 +565,23 @@ fn run_test_file_native_inner(
     }
 }
 
+/// Drop `foo.rk` when `foo_test.rk` sits beside it.
+///
+/// The companion file compiles the two together (std.testing/T3), so running
+/// `foo.rk` on its own as well would run any inline tests it has twice — once
+/// alone and once as part of the pair.
+fn without_companion_modules(files: Vec<String>) -> Vec<String> {
+    let paired: std::collections::HashSet<String> = files
+        .iter()
+        .filter_map(|f| {
+            let path = std::path::Path::new(f);
+            let base = path.file_stem()?.to_str()?.strip_suffix("_test")?;
+            Some(path.with_file_name(format!("{base}.rk")).to_string_lossy().into_owned())
+        })
+        .collect();
+    files.into_iter().filter(|f| !paired.contains(f)).collect()
+}
+
 /// Run tests for every `.rk` file in a directory independently.
 ///
 /// Each file is type-checked and compiled in isolation, so identically-named
@@ -573,7 +590,7 @@ fn run_test_file_native_inner(
 /// than a single multi-file package. Exits 1 if any file fails.
 pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) {
     let dir_path = std::path::Path::new(dir);
-    let files = crate::collect_rk_files(dir_path);
+    let files = without_companion_modules(crate::collect_rk_files(dir_path));
 
     if files.is_empty() {
         if format == Format::Human {

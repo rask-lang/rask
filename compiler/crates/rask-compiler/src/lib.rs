@@ -237,34 +237,81 @@ pub fn check_file(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckRe
     check_single(path, config)
 }
 
-/// Check a single .rk file (no package context).
-fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            let d = Diagnostic::error(format!("reading {}: {}", path, e));
-            return PipelineOutput::fail(vec![d]);
-        }
+/// The files a single-file command compiles as one unit.
+///
+/// `foo_test.rk` beside `foo.rk` is a companion test file (std.testing/T3): the
+/// two are the same module, so the tests see its private members (T4). Compiled
+/// alone the companion sees nothing at all — every name in it is `E0200
+/// undefined symbol`, which is what the convention promised not to happen.
+///
+/// Only for loose files. Inside a package the whole package already compiles
+/// together, and `foo.rk` on its own is one file as it always was.
+fn companion_group(path: &Path) -> Vec<PathBuf> {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return vec![path.to_path_buf()];
     };
+    let Some(base) = stem.strip_suffix("_test") else {
+        return vec![path.to_path_buf()];
+    };
+    let module = path.with_file_name(format!("{base}.rk"));
+    if module.is_file() {
+        // The module first, so its diagnostics come before the test file's.
+        vec![module, path.to_path_buf()]
+    } else {
+        vec![path.to_path_buf()]
+    }
+}
 
+/// Check one .rk file, plus its `_test.rk` companion if it has one.
+fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    check_sources(&companion_group(Path::new(path)), config)
+}
+
+/// Check a set of .rk files as one compilation unit (no package context).
+///
+/// Each file gets its own `file_id` so diagnostics render against the right
+/// source, and node ids chain across them so combining the declarations can't
+/// produce two nodes with the same id — the same rules `rask-resolve`'s package
+/// loader follows, for the same reasons.
+fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<CheckResult> {
     let mut diags = Vec::new();
+    let mut source_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut decls: Vec<Decl> = Vec::new();
+    let mut next_id: u32 = 0;
 
-    // --- Lex ---
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-    for e in &lex_result.errors {
-        diags.push(e.to_diagnostic());
+    for (idx, path) in paths.iter().enumerate() {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                let d = Diagnostic::error(format!("reading {}: {}", path.display(), e));
+                return PipelineOutput::fail(vec![d]);
+            }
+        };
+        let file_id = idx as u16;
+
+        // --- Lex ---
+        let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
+        let lex_result = lexer.tokenize();
+        for e in &lex_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+
+        // --- Parse (continue even with lex errors — parser handles partial tokens) ---
+        let mut parser =
+            rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id);
+        let parse_result = parser.parse();
+        next_id = parser.next_node_id();
+        for e in &parse_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+        source_files.push((path.clone(), source));
+        if !parse_result.is_ok() {
+            return PipelineOutput::fail_with_sources(diags, source_files);
+        }
+        decls.extend(parse_result.decls);
     }
 
-    // --- Parse (continue even with lex errors — parser handles partial tokens) ---
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-    for e in &parse_result.errors {
-        diags.push(e.to_diagnostic());
-    }
-    if !parse_result.is_ok() {
-        return PipelineOutput::fail(diags);
-    }
+    let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
     // --- Comptime cfg elimination (CC1) ---
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
@@ -294,7 +341,7 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
             for e in &errors {
                 diags.push(e.to_diagnostic());
             }
-            return PipelineOutput::fail(diags);
+            return PipelineOutput::fail_with_sources(diags, source_files);
         }
     };
 
@@ -338,20 +385,21 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
     }
 
     if diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        return PipelineOutput::fail(diags);
+        return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
-    PipelineOutput::ok(
+    PipelineOutput::ok_with_sources(
         CheckResult {
             typed,
             decls: parse_result.decls,
             package_names,
-            source_files: vec![(PathBuf::from(path), source)],
+            source_files: source_files.clone(),
             effects,
             effect_warnings,
             frozen_diagnostics,
         },
         diags,
+        source_files,
     )
 }
 
