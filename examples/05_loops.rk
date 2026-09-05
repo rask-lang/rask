@@ -13,7 +13,7 @@ func main() {
     let fruits = Vec.from(["apple", "banana", "cherry"])
 
     print("Fruits:\n")
-    for fruit in fruits.iter() {
+    for fruit in fruits {
         print("- ")
         print(fruit)
         print("\n")

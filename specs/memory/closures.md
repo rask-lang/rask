@@ -19,7 +19,7 @@ The `own` prefix is the explicit opt-in to move-capture. Without it, closures bo
 
 | Mode | Non-Copy captures | Copy captures | Can escape scope? |
 |------|-------------------|---------------|-------------------|
-| `\|x\| expr` | Borrowed (source stays valid) | Copied | No |
+| `\|x\| expr` | Borrowed (source stays valid) | Borrowed | Only as far as its borrow lives (MC3) |
 | `own \|x\| expr` | Moved (source consumed) | Copied | Yes |
 
 ```rask
@@ -34,7 +34,14 @@ let f = own |entry: Entry| -> bool { return tags.contains(entry.tag) }
 print(tags.len())  // ERROR: tags moved into closure
 ```
 
-No inference, no context-dependence. The `own` prefix is visible at the use site.
+A scope-limited closure borrows a Copy capture rather than copying it. That's
+what makes MC1's inference mean anything: `mut total = 0; let add = |x| { total
+= total + x }` has to reach the caller's `total`, and an `i32` is Copy. Copy
+decides what happens when a value *escapes* — which is why `own` copies it —
+not whether a borrow is a borrow.
+
+What isn't inferred is the mode. The `own` prefix is visible at the use site,
+and it's the only thing that changes which of these two rows applies.
 
 ## When to use own
 
@@ -47,8 +54,30 @@ func make_filter(tags: Vec<string>) -> |Entry| -> bool {
 }
 ```
 
-Without `own`, the closure can't escape (the compiler rejects it at the store/return point).
-This matches the existing scope-limited closure rules (SL1-SL2).
+Without `own`, a closure can still escape — it just can't outlive what it borrowed (MC3).
+Returning one *through a binding* is where SL2 fires:
+
+```rask
+let f = || process(tags)
+return f     // error[E0813]: closure `f` captures scoped borrow and cannot escape
+```
+
+Returning the literal directly is fine, and the whole sequence protocol is built on it:
+
+```rask
+public func in_order(self) -> Sequence<i32> {
+    return |emit| { walk(self.root, emit) }    // SEQ36 — the slot says what this is
+}
+```
+
+The difference isn't the keyword, it's whether the borrow outlives the closure. `self` here
+outlives the call; a local `tags` does not. `type.sequence/SEQ26` says the same thing from the
+other side: a sequence capturing a block-scoped borrow is limited to that borrow's scope.
+
+I had this written as a flat "scope-limited closures cannot escape", which is what SL1-SL2 were
+originally drafted against. That was never what the compiler did, and it contradicted the escape
+analysis described further down this page — escaping is exactly the case that gets a heap
+environment. The rule is the lifetime, not the prefix.
 
 ## Closure parameters
 
@@ -57,8 +86,8 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | Rule | Description |
 |------|-------------|
 | **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
-| **CP2: Mutable parameter with explicit type** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. Explicit type required to distinguish from mutable-capture syntax |
-| **CP3: No untyped mutable parameter** | `\|mutate x\|` without a type is always mutable-capture syntax, never a parameter |
+| **CP2: Mutable parameter** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. The type is required for the same reason a public function's is — this parameter writes back to the caller, so the shape it writes gets named |
+| **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
 | **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
 
 ```rask
@@ -84,108 +113,45 @@ let parse = |s| {
 
 ## Mutable capture
 
-Closures can borrow mutable locals with explicit `mutate` in the capture list. Works the same
-for both scope-limited and owned closures, though owned closures with mutable captures are
-unusual (mutate implies the closure needs a live reference, which conflicts with escaping).
+A closure that writes an enclosing local mutably borrows it. Nobody writes that down — it's
+inferred from the body, exactly as a read capture already is.
 
 | Rule | Description |
 |------|-------------|
-| **MC1: Explicit annotation** | `mutate var` in closure capture list declares mutable borrow |
+| **MC1: Inferred from use** | A closure's captures are inferred: read the variable and it's borrowed, write it and it's borrowed mutably. There is no capture list and no `mutate` annotation on a capture |
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
 | **MC3: Scope-limited** | Closure can't outlive the captured variable |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
-
 ```rask
-mut count = 0
-let inc = |mutate count| { count += 1 }
-inc()
-inc()
-// count == 2
-
-// Iterator example
 mut total = 0
-items.for_each(|item, mutate total| { total += item.value })
-print(total)  // sees accumulated value
+let add = |x| { total = total + x }   // `total` captured mutably, inferred
+add(5)
+add(3)
+// total == 8
 ```
 
-Without `mutate`, a captured variable is borrowed (scope-limited) or moved (own). Mutation
-inside the closure stays inside:
+**Why inferred, when `ensure`, `take` and `mutate`-on-a-parameter are all explicit.** Those three
+are visible because each one costs something or changes what the caller may do afterwards: `take`
+kills the variable, a `mutate` parameter writes back through the call, `ensure` schedules code.
+A mutable *borrow* capture does none of that. It's one pointer in an environment that's
+stack-allocated when the closure doesn't escape — no allocation, no move, no clone, nothing the
+caller has to know.
 
-```rask
-mut count = 0
-let inc = || { count += 1 }  // borrows count read-only; mutation not visible
-inc()
-// count is still 0
-```
+What it does buy is a safety guarantee (MC2, MC3), and that guarantee is mechanical: the compiler
+enforces it whether or not you wrote a word. Principle 5 says where that kind of fact belongs —
+"track effects, **captures**, and modes as metadata surfaced via tooling (IDE ghosts, lints)
+instead of type-system constraints". An annotation the compiler doesn't need is an experience of
+safety, and the goal is for safety to be a property instead.
 
-**Multiple closures can't share a mutable capture:**
+The split that matters is already in this spec, one section up: read captures are inferred, and
+`own` — the one that moves or clones — is a visible prefix. Requiring `mutate` on a capture was
+the odd rule out, not the pattern.
 
-```rask
-mut x = 0
-let a = |mutate x| { x += 1 }
-let b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
-```
-
-Use `Shared<T>` for shared mutable state across multiple closures.
-
-## Scope-limited closures (non-own)
-
-All non-`own` closures are scope-limited. They cannot escape the scope where their borrows live.
-
-| Rule | Description |
-|------|-------------|
-| **SL1: Scope inheritance** | Closure is limited to the scope of its outermost captured variable |
-| **SL2: No escape** | Cannot return, store in struct, or send cross-task |
-
-```rask
-let tags = get_tags()
-let f = || process(tags)   // f inherits tags' scope
-f()                           // OK: called in same scope
-return f                      // ERROR: cannot escape scope
-```
-
-```rask
-// ERROR: closure outlives the binding it captures
-mut outer_closure
-{
-    let tags = get_tags()
-    outer_closure = || process(tags)  // ERROR: outer_closure outlives tags
-}
-```
-
-**Fix: use own and move the value in:**
-
-```rask
-let tags = get_tags()
-let f = own || process(tags)  // tags moved into closure
-return f                         // OK: self-contained
-```
-
-## Generic propagation
-
-Functions don't need to declare whether they store or consume closures. The constraint propagates
-through generics, and violations surface where storage is attempted.
-
-| Rule | Description |
-|------|-------------|
-| **GP1: Constraint propagation** | Scope constraints propagate through generic type parameters when the compiler generates specialized code |
-
-```rask
-func run_twice<F: Fn()>(f: F) {
-    f()
-    f()
-}  // F dropped, never stored — works with scope-limited closures
-
-func store_callback<F: Fn()>(f: F) {
-    let holder = Holder { callback: f }  // ERROR if F is scope-limited
-}
-
-let tags = get_tags()
-let greet = || print(tags)   // scope-limited
-
-run_twice(greet)               // OK: run_twice doesn't store F
-store_callback(greet)          // ERROR: store_callback tries to store F
-```
+**The desugar needs nothing special.** `for x in seq { total = total + x }` lowers to
+`seq(|x| { total = total + x; return true })`. `total` is captured mutably by inference, like any
+other closure. There is no capture list to emit, no mixed capture-and-parameter bracket to
+design, and no exemption for compiler-generated code — an earlier draft invented one (an "MC5")
+and it is not needed once captures are inferred.
 
 ## spawn
 
@@ -272,9 +238,24 @@ FIX: Use Shared<T> for shared mutable state:
 marked consumed by the ownership checker.
 
 Non-`own` closures borrow. The ownership checker records a shared borrow on each captured
-variable; the source stays valid. At the MIR level, the closure environment currently holds
-copies of the values (the borrow is enforced by scope-limiting, not by pointer indirection).
-True reference-based capture is a planned optimization.
+variable; the source stays valid.
+
+The environment slot is what makes the difference concrete, and there are three shapes of it:
+
+| Capture | Slot holds | A write inside the body lands on |
+|---|---|---|
+| Non-`own` | The variable's address (8 bytes) | The creating frame's variable |
+| `own` | The variable itself | The environment — so it survives to the next call |
+| `spawn` | A copy | The task's own state, by construction |
+
+The `own` row is the one that's easy to get wrong. Loading the value out at the top of the call
+and working on the loaded copy reads correctly and throws every write away, so a counter closure
+answers 1 however many times you call it. The environment *is* the variable's home once `own`
+moved it there, so the body works through the slot's address for its whole life.
+
+The block itself is owned like any other value: whoever is holding it when their
+frame ends frees it. What that free doesn't yet do is release the captures inside
+— an `own` closure holding a `Vec` frees the block and leaks the Vec (#1045).
 
 ### Closure block layout
 
@@ -287,13 +268,20 @@ implicit first argument to the closure function.
 
 ### Heap vs. stack
 
-`own` closures start as heap-allocated. A per-function pass downgrades non-escaping ones to
-stack allocation. Non-`own` closures are always stack-allocated (they can't escape by contract).
+Heap exactly when the closure outlives the frame that built it — returned, stored through a
+pointer, or handed to something that keeps it. Everything else is a stack slot.
 
-| Closure kind | Initial allocation | Can be downgraded? |
+`own` is not the question, and treating it as one is what made a returned scope-limited closure
+read a popped frame. A scope-limited closure *can* escape, by being returned; the escape analysis
+decides, not the keyword.
+
+| Escapes its frame? | Allocation | Freed by |
 |---|---|---|
-| `own` | Heap | Yes, if provably non-escaping |
-| Non-`own` (scope-limited) | Stack | N/A — never heap |
+| No | Stack slot | The frame, on the way out |
+| Yes | Heap, behind a size header | Whichever frame is still holding it when it ends |
+
+The size header is there because the frame that frees a closure usually isn't the one that built
+it: `let tick = counter()` hands the caller a block whose capture layout only `counter` knew.
 
 ---
 
@@ -318,7 +306,7 @@ task takes ownership of its captures. Extending `own` to all closures unifies th
 | Iterator adapter | `items.filter(\|i\| condition)` (borrows, scope-limited) |
 | Simple callback | `\|x\| x * 2` (pure, no captures) |
 | Callback with context | `own \|event\| process(context, event)` (moves context) |
-| Mutating a local | `\|mutate count\| count += 1` (mutable capture) |
+| Mutating a local | `\|x\| count += x` — the mutable capture is inferred (MC1) |
 | Shared mutable state (multiple closures) | `Shared<T>` |
 | Callback stored for later | `own \|...\|` — capture owned values |
 

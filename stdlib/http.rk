@@ -97,9 +97,6 @@ extend Headers {
     public func len(self) -> usize {
         return self.entries.len()
     }
-    public func iter(self) -> Iterator<(string, string)> {
-        return self.entries.iter()
-    }
 }
 
 struct Request {
@@ -502,7 +499,7 @@ func format_http_request(req: Request, host: string) -> string {
     out.push("\r\n")
 
     // User headers
-    for (name, value) in req.headers.entries.iter() {
+    for (name, value) in req.headers.entries {
         out.push(name)
         out.push(": ")
         out.push(value)
@@ -622,7 +619,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 
     // Build and send request
     mut req = Request.new(method, path)
-    for (name, value) in extra_headers.entries.iter() {
+    for (name, value) in extra_headers.entries {
         req = req.with_header(name, value)
     }
     if body.len() > 0 {

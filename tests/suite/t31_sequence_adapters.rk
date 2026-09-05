@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The adapters and terminals that can be written in Rask.
+//
+// Spec: specs/types/sequence-protocol.md
+//   SEQ13a  every adapter honours a `false` from the yield
+//   SEQ26   an adapter borrows its source and lives no longer
+//   SEQ37   building a chain runs nothing; a terminal drives it
+//
+// Each adapter is a closure over `self` that re-yields — so the whole surface
+// is written in the protocol it defines, not beside it. What's missing from
+// this file is the group `stdlib/sequence.rk` calls compiler-enforced: `sum`,
+// `product`, `min`, `max` and `join` need a numeric, ordered or string bound on
+// the element, Rask has no bound to name for those, and `total = total + x` on
+// a generic `T` is "method not found" (#1046).
+
+import sequence.Sequence
+
+func upto(n: i32) -> Sequence<i32> {
+    return |yield| {
+        mut i = 1
+        while i <= n {
+            if !yield(i) { return }
+            i = i + 1
+        }
+    }
+}
+
+func words() -> Sequence<i32> {
+    return |yield| {
+        if !yield(10) { return }
+        if !yield(20) { return }
+        if !yield(30) { return }
+    }
+}
+
+test "type.sequence/SEQ37 — map yields f applied to each item" {
+    let out: Vec<i32> = upto(4).map(|x| { return x * 10 }).to_vec()
+    assert out.len() == 4
+    assert out[0] == 10
+    assert out[3] == 40
+}
+
+test "type.sequence/SEQ37 — filter yields only what the predicate accepts" {
+    let out: Vec<i32> = upto(6).filter(|x| { return x % 2 == 0 }).to_vec()
+    assert out.len() == 3
+    assert out[0] == 2
+    assert out[2] == 6
+}
+
+test "type.sequence/SEQ13a — take stops the source at n" {
+    let out: Vec<i32> = upto(100).take(3).to_vec()
+    assert out.len() == 3
+    assert out[2] == 3
+}
+
+test "type.sequence/SEQ37 — skip drops the first n" {
+    let out: Vec<i32> = upto(5).skip(3).to_vec()
+    assert out.len() == 2
+    assert out[0] == 4
+}
+
+test "type.sequence/SEQ13a — take_while stops at the first failure" {
+    let out: Vec<i32> = upto(9).take_while(|x| { return x < 4 }).to_vec()
+    assert out.len() == 3
+    assert out[2] == 3
+}
+
+test "type.sequence/SEQ37 — skip_while resumes after the first failure" {
+    let out: Vec<i32> = upto(6).skip_while(|x| { return x < 4 }).to_vec()
+    assert out.len() == 3
+    assert out[0] == 4
+}
+
+test "type.sequence/SEQ37 — chain runs one source then the other" {
+    let out: Vec<i32> = upto(2).chain(words()).to_vec()
+    assert out.len() == 5
+    assert out[0] == 1
+    assert out[2] == 10
+    assert out[4] == 30
+}
+
+test "type.sequence/SEQ37 — enumerate pairs each item with its position" {
+    mut weighted = 0
+    for (i, x) in upto(4).enumerate() {
+        weighted = weighted + i.wrap<i32>() * x
+    }
+    // 0*1 + 1*2 + 2*3 + 3*4
+    assert weighted == 20
+}
+
+test "type.sequence/SEQ37 — flat_map flattens one level" {
+    let out: Vec<i32> = upto(3).flat_map(|x| { return upto(x) }).to_vec()
+    // 1 | 1 2 | 1 2 3
+    assert out.len() == 6
+    assert out[0] == 1
+    assert out[5] == 3
+}
+
+test "type.sequence/SEQ37 — fold reduces with a starting value" {
+    assert upto(4).fold(0, |acc, x| { return acc + x }) == 10
+    assert upto(4).fold(100, |acc, x| { return acc + x }) == 110
+}
+
+test "type.sequence/SEQ37 — count says how many items came through" {
+    assert upto(7).count() == 7
+    assert upto(7).filter(|x| { return x > 5 }).count() == 2
+}
+
+test "type.sequence/SEQ13a — any stops at the first item that satisfies" {
+    assert upto(9).any(|x| { return x == 3 })
+    assert !upto(3).any(|x| { return x > 10 })
+}
+
+test "type.sequence/SEQ13a — all stops at the first that doesn't" {
+    assert upto(4).all(|x| { return x > 0 })
+    assert !upto(4).all(|x| { return x > 2 })
+}
+
+test "type.sequence/SEQ13a — find returns the first match and stops" {
+    if upto(9).find(|x| { return x > 4 })? as hit {
+        assert hit == 5
+    } else {
+        assert false
+    }
+    if upto(3).find(|x| { return x > 99 })? as _miss {
+        assert false
+    }
+}
+
+test "type.sequence/SEQ37 — for_each runs the function per item" {
+    mut total = 0
+    upto(4).for_each(|x| { total = total + x })
+    assert total == 10
+}
+
+test "type.sequence/SEQ26 — a chain of three composes left to right" {
+    let out: Vec<i32> = upto(10)
+        .filter(|x| { return x % 2 == 0 })
+        .map(|x| { return x * x })
+        .take(3)
+        .to_vec()
+    assert out.len() == 3
+    assert out[0] == 4
+    assert out[1] == 16
+    assert out[2] == 36
+}
+
+// SEQ28-SEQ33: `min` and `max` on a sequence.
+//
+// These were declared-only, and not for want of a bound — `T: Comparable` is
+// all the body needs. Giving them a body used to steal the bare name from the
+// free `min(a, b)` in `builtins.rk`, because a method and a free function share
+// one name table and whichever file loads later wins: `min(5.0, 3.0)` started
+// resolving to the method and reported "expected 1 argument, found 2".
+// `Vec.min` never had the problem only because `collections.rk` already loaded
+// first. `sequence.rk` loads before builtins now, so both spellings work.
+test "type.sequence/SEQ28 — min over a sequence" {
+    assert (upto(5).min() ?? 999) == 1
+    assert (upto(1).min() ?? 999) == 1
+}
+
+test "type.sequence/SEQ28 — max over a sequence" {
+    assert (upto(5).max() ?? 999) == 5
+    assert (upto(1).max() ?? 999) == 1
+}
+
+test "min and max over an empty sequence answer none" {
+    assert (upto(0).min() ?? 999) == 999
+    assert (upto(0).max() ?? 999) == 999
+}
+
+test "min and max after an adapter" {
+    assert (upto(6).filter(|x| { return x > 3 }).min() ?? 999) == 4
+    assert (upto(6).filter(|x| { return x > 3 }).max() ?? 999) == 6
+    assert (upto(4).map(|x| { return x * 10 }).min() ?? 999) == 10
+}
+
+// The free functions the method used to shadow.
+test "the free min and max still resolve" {
+    assert min(2, 7) == 2
+    assert max(2, 7) == 7
+    assert min(5.0, 3.0) == 3.0
+}

@@ -157,6 +157,10 @@ fn lower_to_mir(
         return Err(errors);
     }
 
+    // A captured scalar has to live in memory before SSA runs, or SSA builds
+    // phis over a variable whose real home is a stack slot (#1038).
+    rask_mir::transform::addr_taken::run_all(&mut mir_functions);
+
     // SSA construction: convert to pruned SSA form for optimization passes.
     for func in &mut mir_functions {
         rask_mir::transform::ssa::construct(func);

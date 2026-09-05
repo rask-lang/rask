@@ -20,11 +20,11 @@ func main() {
     users.push(User { id: 3, name: "carol" })
 
     // SEQ28
-    let names = users.iter().map(|u| u.name).to_vec()
+    let names = users.map(|u| u.name).to_vec()
     println("to_vec: {names.len()} {names[0]} {names[2]}")
 
     // SEQ29
-    let by_id = users.iter().map(|u| (u.id, u.name)).to_map()
+    let by_id = users.map(|u| (u.id, u.name)).to_map()
     println("to_map: {by_id.len()}")
     if by_id.get(1) is string as n {
         println("  1 -> {n}")
@@ -34,17 +34,17 @@ func main() {
     }
 
     // SEQ29: later keys overwrite earlier ones, like repeated insert.
-    let collide = users.iter().map(|u| (0, u.name)).to_map()
+    let collide = users.map(|u| (0, u.name)).to_map()
     println("collide: {collide.len()}")
     if collide.get(0) is string as n {
         println("  0 -> {n}")
     }
 
     // SEQ30
-    let joined = users.iter().map(|u| u.name).join(", ")
+    let joined = users.map(|u| u.name).join(", ")
     println("join: {joined}")
 
     // A filter ahead of the terminal, so the fused loop has an adapter to skip.
-    let some = users.iter().filter(|u| u.id > 1).map(|u| (u.id, u.name)).to_map()
+    let some = users.filter(|u| u.id > 1).map(|u| (u.id, u.name)).to_map()
     println("filtered to_map: {some.len()}")
 }

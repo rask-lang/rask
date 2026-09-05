@@ -117,3 +117,14 @@
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+# --- interp lag: a lazy chain's `mutate` writeback ---
+#
+# `counting_source(mutate calls).filter(…)` then `.sum()`. Native reports
+# calls == 1, the interpreter 0, and native is right. The interpreter writes a
+# `mutate` parameter back at the *call boundary* — but a Sequence is lazy, so
+# nothing has run when `counting_source` returns, and the write-back snapshots 0
+# and puts 0 back over the increment the closure makes later. Five of the six
+# tests in the file pass on both; this is the one that needs a lazy value's
+# writeback deferred to when the value is actually driven.
+p08_sequence.rk  # sequence — #1046 (interp run)
+

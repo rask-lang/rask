@@ -34,7 +34,7 @@ func add_child(mutate scene: Scene, parent: Link<SceneNode>, name: string) -> Li
 // assignment, and it is not implemented here.
 func reparent(mutate scene: Scene, n: Link<SceneNode>, new_parent: Link<SceneNode>) {
     if n.parent? as old {
-        old.children = old.children.filter(|c| c != n)
+        old.children = old.children.filter(|c| c != n).to_vec()
     }
     new_parent.children.push(n)
     n.parent = new_parent

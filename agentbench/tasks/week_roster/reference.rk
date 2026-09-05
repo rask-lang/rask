@@ -8,7 +8,7 @@ func by_age(people: Vec<Person>) -> Vec<Person> {
 }
 
 func names_in(people: Vec<Person>, city: string) -> Vec<string> {
-    return people.filter(|p| p.city == city).map(|p| p.name)
+    return people.filter(|p| p.city == city).map(|p| p.name).to_vec()
 }
 
 func average_age(people: Vec<Person>) -> f64 {

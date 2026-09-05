@@ -27,8 +27,8 @@ func main() {
     // Collections are accessed only for the expression
     let numbers = Vec.from([1, 2, 3, 4, 5])
 
-    // Access during .iter() call, ends after expression
-    let sum = numbers.iter().fold(0, |acc, x| acc + x)
+    // Access lasts for the fold call, ends after the expression
+    let sum = numbers.fold(0, |acc, x| acc + x)
 
     // Can use numbers again immediately
     print("Sum: ")
@@ -40,8 +40,8 @@ func main() {
     print("\n\n")
 
     // Multiple borrows in sequence
-    let first = numbers.iter().find(|x| x > 0)
-    let last = numbers.iter().find(|x| x == 5)
+    let first = numbers.find(|x| x > 0)
+    let last = numbers.find(|x| x == 5)
 
     if first? as n {
         print("First: ")
@@ -94,7 +94,7 @@ func main() {
     let users = Vec.from([User { name: "Charlie", age: 40 }, User { name: "Diana", age: 28 }, User { name: "Eve", age: 32 }])
 
     print("All users:\n")
-    for user in users.iter() {
+    for user in users {
         print_user(user)  // Each user is accessed during iteration
     }
 
@@ -130,14 +130,14 @@ func main() {
 
     // Both are independent now
     print("Original: ")
-    for n in original.iter() {
+    for n in original {
         print(n)
         print(" ")
     }
     print("\n")
 
     print("Copy: ")
-    for n in copy.iter() {
+    for n in copy {
         print(n)
         print(" ")
     }
@@ -146,7 +146,7 @@ func main() {
     // Pattern: inline access in expression, use immediately
     let data = Vec.from([5, 2, 8, 1, 9])
 
-    let max_of = data.iter().fold(0, |acc, x| {
+    let max_of = data.fold(0, |acc, x| {
         if x > acc {
             return x
         }

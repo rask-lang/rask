@@ -10,78 +10,78 @@ func main() {
 
     // Basic iteration
     print("All numbers: ")
-    for n in numbers.iter() {
+    for n in numbers {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Map - transform each element
-    let doubled: Vec<i64> = numbers.iter().map(|n| n * 2).to_vec()
+    let doubled: Vec<i64> = numbers.map(|n| n * 2).to_vec()
 
     print("Doubled: ")
-    for n in doubled.iter() {
+    for n in doubled {
         print(n)
         print(" ")
     }
     print("\n")
 
-    let squared: Vec<i64> = numbers.iter().map(|n| n * n).to_vec()
+    let squared: Vec<i64> = numbers.map(|n| n * n).to_vec()
 
     print("Squared: ")
-    for n in squared.iter() {
+    for n in squared {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Filter - keep only elements that match predicate
-    let evens = numbers.iter().filter(|n| n % 2 == 0).to_vec()
+    let evens = numbers.filter(|n| n % 2 == 0).to_vec()
 
     print("Even numbers: ")
-    for n in evens.iter() {
+    for n in evens {
         print(n)
         print(" ")
     }
     print("\n")
 
-    let large = numbers.iter().filter(|n| n > 5).to_vec()
+    let large = numbers.filter(|n| n > 5).to_vec()
 
     print("Numbers > 5: ")
-    for n in large.iter() {
+    for n in large {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Chain multiple operations
-    let result: Vec<i64> = numbers.iter()
+    let result: Vec<i64> = numbers
         .filter(|n| n % 2 == 0)  // Keep evens
         .map(|n| n * n)           // Square them
         .to_vec()
 
     print("Even numbers squared: ")
-    for n in result.iter() {
+    for n in result {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Skip and take
-    let middle = numbers.iter()
+    let middle = numbers
         .skip(3)    // Skip first 3
         .take(4)    // Take next 4
         .to_vec()
 
     print("Middle section (skip 3, take 4): ")
-    for n in middle.iter() {
+    for n in middle {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Complex chain
-    let complex: Vec<i64> = numbers.iter()
+    let complex: Vec<i64> = numbers
         .skip(1)                  // Skip first element
         .filter(|n| n < 8)        // Keep elements < 8
         .map(|n| n * 3)           // Triple them
@@ -89,27 +89,27 @@ func main() {
         .to_vec()
 
     print("Complex chain result: ")
-    for n in complex.iter() {
+    for n in complex {
         print(n)
         print(" ")
     }
     print("\n\n")
 
     // Fold - reduce to a single value
-    let sum = numbers.iter().fold(0, |acc, n| acc + n)
+    let sum = numbers.fold(0, |acc, n| acc + n)
 
     print("Sum of all numbers: ")
     print(sum)
     print("\n")
 
-    let product = numbers.iter().take(5).fold(1, |acc, n| acc * n)
+    let product = numbers.take(5).fold(1, |acc, n| acc * n)
 
     print("Product of first 5: ")
     print(product)
     print("\n\n")
 
     // Find - get first element matching predicate
-    let first_large = numbers.iter().find(|n| n > 7)
+    let first_large = numbers.find(|n| n > 7)
 
     if first_large? as n {
         print("First number > 7: ")
@@ -120,7 +120,7 @@ func main() {
     }
 
     // Any/all predicates
-    let has_even = numbers.iter().any(|n| n % 2 == 0)
+    let has_even = numbers.any(|n| n % 2 == 0)
 
     print("Has even numbers: ")
     if has_even {
@@ -129,7 +129,7 @@ func main() {
         print("no\n")
     }
 
-    let all_positive = numbers.iter().all(|n| n > 0)
+    let all_positive = numbers.all(|n| n > 0)
 
     print("All positive: ")
     if all_positive {
@@ -143,19 +143,19 @@ func main() {
     // Working with strings
     let words = Vec.from(["hello", "world", "rask", "language"])
 
-    let uppercase: Vec<string> = words.iter().map(|s| s.to_uppercase()).to_vec()
+    let uppercase: Vec<string> = words.map(|s| s.to_uppercase()).to_vec()
 
     print("Uppercase words: ")
-    for word in uppercase.iter() {
+    for word in uppercase {
         print(word)
         print(" ")
     }
     print("\n")
 
-    let long_words = words.iter().filter(|s| s.len() > 4).to_vec()
+    let long_words = words.filter(|s| s.len() > 4).to_vec()
 
     print("Words longer than 4 chars: ")
-    for word in long_words.iter() {
+    for word in long_words {
         print(word)
         print(" ")
     }

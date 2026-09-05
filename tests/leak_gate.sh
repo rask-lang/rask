@@ -42,20 +42,38 @@ known_leak() {
 green=0
 leaked=0
 expected=0
+broken=0
 fixed=()
 failures=()
+unran=()
+
+# `rask test` exits 97 when the leak checker found something, 1 when a test
+# failed, 0 when neither. The verdict is that code, not the wording of the
+# report: this gate used to grep the output for "never released" and read every
+# file as clean, because `rask test` was capturing the binary's stderr and
+# dropping it, so the line never arrived (#1048). A gate that depends on prose
+# reaching it is a gate that can go quiet without anyone noticing.
+LEAK_EXIT=97
 
 for file in "$SUITE"/*.rk; do
   name="$(basename "$file")"
-  out="$(RASK_LEAK_CHECK=1 timeout 120 "$RASK" test "$file" 2>&1)"
-  if echo "$out" | grep -q "never released"; then
+  out="$(RASK_LEAK_CHECK=1 timeout 120 "$RASK" test "$file" 2>&1)"; rc=$?
+  if [ "$rc" -eq "$LEAK_EXIT" ]; then
     detail="$(echo "$out" | grep 'never released' | head -1)"
+    [ -n "$detail" ] || detail="exit $rc"
     if known_leak "$name"; then
       expected=$((expected + 1))
     else
       leaked=$((leaked + 1))
       failures+=("$name — $detail")
     fi
+  elif [ "$rc" -ne 0 ]; then
+    # Didn't leak, didn't pass. The differential harness owns test failures, so
+    # this doesn't fail the gate — but a file that never ran is a file whose
+    # leaks nobody measured, and counting it as clean is how a gate quietly
+    # shrinks.
+    broken=$((broken + 1))
+    unran+=("$name (exit $rc)")
   else
     green=$((green + 1))
     if known_leak "$name"; then
@@ -71,8 +89,11 @@ done
 for f in "${fixed[@]:-}"; do
   [ -n "$f" ] && echo "NO LONGER LEAKS (delete its line from known_leaks.txt): $f"
 done
+for f in "${unran[@]:-}"; do
+  [ -n "$f" ] && echo "NOT MEASURED (failed before the leak check): $f"
+done
 echo "──────────────────────────────────────────────────"
-echo "leak gate: $green clean, $expected known-leaking, $leaked new"
+echo "leak gate: $green clean, $expected known-leaking, $leaked new, $broken not measured"
 
 if [ "$leaked" -gt 0 ] || [ "${#fixed[@]}" -gt 0 ]; then
   exit 1

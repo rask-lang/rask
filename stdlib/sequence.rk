@@ -1,9 +1,358 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 // Sequence<T>: push iteration protocol (see specs/types/sequence-protocol.md).
-// A Sequence is a function that takes a yield closure and calls it per item.
-// Returning `false` from the yield closure stops iteration early.
+//
+// A Sequence wraps a function that takes a yield closure and calls it once per
+// item. Returning `false` from the yield stops the traversal — every source and
+// every adapter must honour that (SEQ13a), because `break`, `.take(n)`, the
+// short-circuit terminals and non-local `return` all ride on it.
+//
+// Nominal, not a type alias: `extend` attaches methods to a name, and an alias
+// has dissolved into its function type before method resolution runs (SEQ1). A
+// closure of the right shape still fills a Sequence-typed slot with no
+// constructor (SEQ36).
+//
+// A yield lends its item for the length of one call (SEQ34). The one exception
+// is a terminal consuming a value the chain owns — nothing can observe that item
+// afterwards, so it moves rather than copies (SEQ47). Draining a collection is
+// `take_all()`, which returns a Vec (SEQ35).
 
-public type alias Sequence<T> = func(func(T) -> bool)
-// SequenceMut<T> = func(|mutate T| -> bool) — pending type parser support for
-// `mutate` in closure-type parameter position.
+/// A push-iteration source: calls its yield closure once per item.
+public struct Sequence<T> { }
+
+/// Yields a mutable borrow per item. Same protocol, `mutate` yield parameter.
+///
+/// No adapters, and that's deliberate (SEQ45). `filter` on a mutable sequence
+/// would work; `map` cannot — it produces new values, and there is nothing to
+/// hand back a mutable borrow *of*, so writing through one would write to a
+/// temporary that dies when the yield returns. That leaves a half-surface
+/// where the adapters that survive are the ones nobody reaches for first,
+/// which is worse than none. `for mutate x in seq` is the whole job; anything
+/// that needs more — reordering, removal, two positions — is index work.
+public struct SequenceMut<T> { }
+
+// ---------------------------------------------------------------------------
+// Adapters — each returns a new Sequence composed over `self`. Lazy: building
+// one runs nothing (SEQ37). Each borrows `self`, so an adapter chain lives as
+// long as its source does and no longer (SEQ26).
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> {
+    /// Yield only the items `pred` accepts.
+    public func filter(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if pred(x) {
+                    if !yield(x) { return }
+                }
+            }
+        }
+    }
+
+    /// Yield `f` applied to each item.
+    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {
+        return |yield| {
+            for x in self {
+                if !yield(f(x)) { return }
+            }
+        }
+    }
+
+    /// Yield at most the first `n` items, then stop.
+    public func take(self, n: usize) -> Sequence<T> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if i >= n { return }
+                if !yield(x) { return }
+                i = i + 1
+            }
+        }
+    }
+
+    /// Skip the first `n` items, yield the rest.
+    public func skip(self, n: usize) -> Sequence<T> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if i >= n {
+                    if !yield(x) { return }
+                }
+                i = i + 1
+            }
+        }
+    }
+
+    /// Yield items until `pred` first fails, then stop.
+    public func take_while(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if !pred(x) { return }
+                if !yield(x) { return }
+            }
+        }
+    }
+
+    /// Skip while `pred` holds, yield everything after the first failure.
+    public func skip_while(self, pred: func(T) -> bool) -> Sequence<T> {
+        return |yield| {
+            mut skipping = true
+            for x in self {
+                if skipping {
+                    if pred(x) { continue }
+                    skipping = false
+                }
+                if !yield(x) { return }
+            }
+        }
+    }
+
+    /// Yield this sequence's items, then `other`'s.
+    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+        return |yield| {
+            for x in self {
+                if !yield(x) { return }
+            }
+            for y in other {
+                if !yield(y) { return }
+            }
+        }
+    }
+
+    /// Pair each item with its position. The tuple carries a borrow and lives
+    /// for one yield call — a yield parameter is not storage (SEQ44).
+    public func enumerate(self) -> Sequence<(usize, T)> {
+        return |yield| {
+            mut i: usize = 0
+            for x in self {
+                if !yield((i, x)) { return }
+                i = i + 1
+            }
+        }
+    }
+
+    /// Map each item to a sequence, then flatten one level.
+    public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {
+        return |yield| {
+            for x in self {
+                for inner in f(x) {
+                    if !yield(inner) { return }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminals — drive the chain and produce a value. Short-circuiting ones stop
+// the source by returning `false` from their yield.
+//
+// Bounds are compiler-enforced rather than written: `sum` needs a numeric
+// element, `min`/`max` an ordered one, `to_vec` a Copy or chain-owned one. As
+// `Vec.sum` and `Vec.min` today — the stdlib has no Numeric or Cloneable trait
+// to name, and inventing one only for these signatures would be a trait nobody
+// implements.
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> {
+    /// Collect into a Vec. Copies a Copy element, moves one the chain owns.
+    ///
+    /// Never deep-clones on your behalf (SEQ47). A chain that only lends
+    /// non-Copy items has nothing it may give away, and asking for a Vec of
+    /// them is a compile error pointing at the clone you meant to write:
+    /// `map` is the ownership boundary, so `.map(|u| u.clone()).to_vec()`
+    /// clones exactly once, at the call site that asked for it.
+    public func to_vec(self) -> Vec<T> {
+        mut out: Vec<T> = Vec<T>.new()
+        for x in self {
+            out.push(x)
+        }
+        return out
+    }
+
+    /// Reduce with a starting value.
+    public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {
+        mut acc = init
+        for x in self {
+            acc = f(acc, x)
+        }
+        return acc
+    }
+
+    /// Reduce without one. `none` on an empty sequence.
+    @unimplemented
+    public func reduce(self, f: func(T, T) -> T) -> T? {}
+
+    /// How many items the sequence yields.
+    public func count(self) -> usize {
+        mut n: usize = 0
+        for _x in self {
+            n = n + 1
+        }
+        return n
+    }
+
+    /// Smallest by comparator.
+    @unimplemented
+    public func min_by(self, cmp: func(T, T) -> i32) -> T? {}
+
+    /// Largest by comparator.
+    @unimplemented
+    public func max_by(self, cmp: func(T, T) -> i32) -> T? {}
+
+    /// Smallest by extracted key.
+    @unimplemented
+    public func min_by_key<K>(self, key: func(T) -> K) -> T? {}
+
+    /// Largest by extracted key.
+    @unimplemented
+    public func max_by_key<K>(self, key: func(T) -> K) -> T? {}
+
+    /// True if any item satisfies `pred`. Stops at the first that does.
+    public func any(self, pred: func(T) -> bool) -> bool {
+        for x in self {
+            if pred(x) { return true }
+        }
+        return false
+    }
+
+    /// True if every item satisfies `pred`. Stops at the first that doesn't.
+    public func all(self, pred: func(T) -> bool) -> bool {
+        for x in self {
+            if !pred(x) { return false }
+        }
+        return true
+    }
+
+    /// The first item satisfying `pred`, or `none`. Stops there.
+    public func find(self, pred: func(T) -> bool) -> T? {
+        for x in self {
+            if pred(x) { return x }
+        }
+        return none
+    }
+
+    /// Run `f` for each item. The loop form reads better — this is for passing
+    /// a function that already exists.
+    public func for_each(self, f: func(T)) -> void {
+        for x in self {
+            f(x)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminals that need something of the element (type.generics/OP1, CC3).
+//
+// `sum` needs `+` and a zero, `min` needs `<`. A generic `T` has neither, so
+// these state the bound and the body is then ordinary Rask — `total + x`
+// resolves through `Numeric` like any other bounded generic call. One `where`
+// per block is CC3, which is why there are two of them.
+//
+// The comment that used to sit above these said the stdlib "has no Numeric or
+// Cloneable trait to name". It has both; the line predated them.
+// ---------------------------------------------------------------------------
+
+extend Sequence<T> where T: Numeric {
+    /// Add every item. Zero on an empty sequence.
+    public func sum(self) -> T {
+        mut total: T = 0
+        for x in self {
+            total = total + x
+        }
+        return total
+    }
+
+    /// Multiply every item. One on an empty sequence.
+    public func product(self) -> T {
+        mut total: T = 1
+        for x in self {
+            total = total * x
+        }
+        return total
+    }
+}
+
+extend Sequence<T> where T: Comparable {
+    /// Smallest item, or `none` if empty.
+    ///
+    /// These were declared-only for a while, and not for want of a bound —
+    /// `T: Comparable` is all the body needs. Giving them a body used to steal
+    /// the bare name from the free `min(a, b)` in `builtins.rk`, because a
+    /// method and a free function share one name table and whichever loads
+    /// later wins: `min(5.0, 3.0)` started resolving here and reported
+    /// "expected 1 argument, found 2". `Vec.min` never had the problem only
+    /// because `collections.rk` already loaded first. `sequence.rk` loads
+    /// before builtins now, so both spellings work (#1046).
+    public func min(self) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if x < b {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
+
+    /// Largest item, or `none` if empty.
+    public func max(self) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if x > b {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terminals that need the element to be a particular *shape* rather than to
+// satisfy a trait. A concrete instantiation says it directly.
+// ---------------------------------------------------------------------------
+
+extend Sequence<string> {
+    /// Concatenate a sequence of strings with `sep` between them.
+    public func join(self, sep: string) -> string {
+        mut out = StringBuilder.new()
+        mut first = true
+        for x in self {
+            if !first {
+                out.push(sep)
+            }
+            out.push(x)
+            first = false
+        }
+        return out.build()
+    }
+}
+
+// The receiver has to say its element is itself a sequence, which the block
+// header is the only place to write. `extend Sequence<T>` would give `flatten`
+// a `T` element and nothing to flatten.
+extend Sequence<Sequence<U>> {
+    /// Flatten one level: yield every item of every inner sequence.
+    public func flatten(self) -> Sequence<U> {
+        return self.flat_map(|inner| inner)
+    }
+}
+
+extend Sequence<(K, V)> {
+    /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
+    /// ones, exactly like repeated `insert`.
+    public func to_map(self) -> Map<K, V> {
+        mut out: Map<K, V> = Map<K, V>.new()
+        for (k, v) in self {
+            out.insert(k, v)
+        }
+        return out
+    }
+}

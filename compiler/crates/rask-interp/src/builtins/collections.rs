@@ -174,13 +174,6 @@ impl Interpreter {
             }
             "is_empty" => Ok(Value::Bool(v.lock().unwrap().is_empty())),
             "clear" => { v.lock().unwrap().clear(); Ok(Value::Unit) }
-            "iter" => {
-                let state = IteratorState::Vec {
-                    items: Arc::clone(v),
-                    index: 0,
-                };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
-            }
             "skip" => {
                 let n = self.expect_int(&args, 0)? as usize;
                 let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();
@@ -281,6 +274,27 @@ impl Interpreter {
             "clone" | "to_vec" => {
                 let cloned = v.lock().unwrap().clone();
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
+            }
+            // SEQ29: a Vec of pairs becomes a Map, later keys overwriting
+            // earlier ones — the same as repeated `insert`. Reachable on the
+            // collection because a chain's head is the collection itself.
+            "to_map" => {
+                let mut map = crate::value::MapData::new();
+                for item in v.lock().unwrap().items.iter() {
+                    let pair = match item {
+                        Value::Vec(inner) => inner.lock().unwrap().items.clone(),
+                        _ => return Err(RuntimeError::TypeError(
+                            "to_map needs a Vec of (key, value) pairs".to_string(),
+                        )),
+                    };
+                    if pair.len() != 2 {
+                        return Err(RuntimeError::TypeError(
+                            "to_map needs a Vec of (key, value) pairs".to_string(),
+                        ));
+                    }
+                    map.insert(crate::value::MapKey(pair[0].clone()), pair[1].clone());
+                }
+                Ok(Value::Map(Arc::new(Mutex::new(map))))
             }
             "set" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -1016,6 +1030,18 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(handles))
             }
+            // The same slot walk as `handles`, handing back the elements
+            // instead of the handles. `rask_pool_values` builds a plain Vec
+            // too, whatever the `Iterator<T>` in the declaration says.
+            "values" => {
+                let pool = p.lock().unwrap();
+                let items: Vec<Value> = pool
+                    .slots
+                    .iter()
+                    .filter_map(|(_gen, slot)| slot.clone())
+                    .collect();
+                Ok(Value::vec(items))
+            }
             "clone" => {
                 let pool = p.lock().unwrap();
                 // Create a new pool with a new ID (old handles won't work with clone)
@@ -1406,13 +1432,6 @@ impl Interpreter {
             "clear" => {
                 m.lock().unwrap().clear();
                 Ok(Value::Unit)
-            }
-            "iter" => {
-                let pairs: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
-                    .into_iter()
-                    .map(|(k, v)| Value::vec(vec![k, v]))
-                    .collect();
-                Ok(Value::vec(pairs))
             }
             "clone" => {
                 let cloned: MapData = m.lock().unwrap().clone();

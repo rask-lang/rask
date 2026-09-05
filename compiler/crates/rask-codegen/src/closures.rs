@@ -42,7 +42,11 @@ pub struct CaptureInfo {
     pub size: u32,
     /// True when the capture holds aggregate data (String, Struct, etc.)
     /// that must be deep-copied from the pointer rather than stored as-is.
+    /// Meaningless for a by-ref capture, which stores a pointer either way.
     pub is_aggregate: bool,
+    /// The slot holds the variable's address rather than a copy of it — a
+    /// scope-limited closure borrows what it captures (#1038).
+    pub by_ref: bool,
 }
 
 impl ClosureEnvLayout {
@@ -55,7 +59,13 @@ impl ClosureEnvLayout {
 
     /// Add a captured variable to the environment layout.
     /// Returns the offset where the variable will be stored (relative to env start).
-    pub fn add_capture(&mut self, local_id: LocalId, size: u32, is_aggregate: bool) -> u32 {
+    pub fn add_capture(
+        &mut self,
+        local_id: LocalId,
+        size: u32,
+        is_aggregate: bool,
+        by_ref: bool,
+    ) -> u32 {
         // Align to 8 bytes
         let offset = (self.size + 7) & !7;
         self.captures.push(CaptureInfo {
@@ -63,16 +73,18 @@ impl ClosureEnvLayout {
             offset,
             size,
             is_aggregate,
+            by_ref,
         });
         self.size = offset + size;
         offset
     }
 }
 
-/// Heap-allocate a closure: `[func_ptr | captures...]`.
+/// Heap-allocate a closure: `[func_ptr | captures...]`, behind a size header.
 ///
-/// Calls `rask_alloc(8 + env_size)` and stores func_ptr + captures.
-/// Used for escaping closures (returned, stored, sent to spawn).
+/// Calls `rask_closure_alloc(8 + env_size)`, which puts the block's size in
+/// front of what it hands back so the free can account for the bytes. Used for
+/// escaping closures (returned, stored, sent to spawn).
 pub fn allocate_closure_heap(
     builder: &mut FunctionBuilder,
     func_ptr: Value,
@@ -133,7 +145,15 @@ fn store_closure_data(
         let val = builder.use_var(*var);
         let store_offset = CLOSURE_ENV_OFFSET as i32 + capture.offset as i32;
 
-        if capture.is_aggregate {
+        if capture.by_ref {
+            // Borrow: the variable already holds the address of its storage —
+            // a stack slot for an aggregate or an address-taken scalar, the
+            // caller's own pointer for a by-ref parameter. Store that, and the
+            // body's loads and stores land on the enclosing variable.
+            builder
+                .ins()
+                .store(MemFlags::new(), val, closure_ptr, store_offset);
+        } else if capture.is_aggregate {
             // Aggregate: val is a pointer to data on the parent's stack.
             // Deep-copy the data into the closure environment so it survives
             // after the parent's stack slot is reused (e.g., in a loop).
@@ -193,7 +213,7 @@ pub fn call_closure(
     builder.ins().call_indirect(sig_ref, func_ptr, &all_args)
 }
 
-/// Free a heap-allocated closure.
+/// Free a heap-allocated closure, header and all.
 pub fn free_closure(
     builder: &mut FunctionBuilder,
     closure_ptr: Value,

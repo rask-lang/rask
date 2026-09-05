@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// What an `extend` header's type parameters bind to.
+//
+// A block header can name the receiver's parameters differently from the
+// declaration, and can name *more* of them than the declaration has:
+//
+//     struct Sequence<T>          // one parameter
+//     extend Sequence<(K, V)>     // two names, under that one parameter
+//
+// `K` and `V` belong to the receiver — they're the halves of its element type —
+// but nothing recorded that. Three places each rebuilt the receiver from the
+// declaration's own names and dropped the header:
+//
+//   - The method's signature counted them as its *own* type parameters, so each
+//     took a fresh inference variable per call with nothing to bind it.
+//     `to_map(self) -> Map<K, V>` came back "type is still open"; the variant
+//     naming only `K` did too.
+//   - `Self` came out as `Sequence<T>`, so `self`'s element type was `T` — a
+//     name no call in such a block ever binds. The instantiated copy dropped the
+//     record, and `for (k, v) in self` fell through to the index-based loop and
+//     walked a closure as if it were a Vec: no inserts, then a crash.
+//   - Monomorphization zipped the header's names against the receiver's
+//     arguments one for one, so `K` took the whole `(i64, i64)` and `V` bound to
+//     nothing.
+//
+// The header is carried through all three now, and a parameter nested in a tuple
+// binds against the matching member (#1046).
+
+import sequence.Sequence
+
+func pairs() -> Sequence<(i64, i64)> {
+    return |yield| {
+        if !yield((1, 10)) { return }
+        if !yield((2, 20)) { return }
+        if !yield((3, 30)) { return }
+    }
+}
+
+test "to_map collects a sequence of pairs" {
+    let m = pairs().to_map()
+    assert m.len() == 3
+    assert m.get(1)! == 10
+    assert m.get(2)! == 20
+    assert m.get(3)! == 30
+}
+
+test "to_map keeps the later value for a repeated key" {
+    let dup: Sequence<(i64, i64)> = |yield| {
+        if !yield((1, 10)) { return }
+        if !yield((1, 99)) { return }
+    }
+    let m = dup.to_map()
+    assert m.len() == 1
+    assert m.get(1)! == 99
+}
+
+test "to_map with halves of different types" {
+    let s: Sequence<(string, i64)> = |yield| {
+        if !yield(("a", 1)) { return }
+        if !yield(("b", 2)) { return }
+    }
+    let m = s.to_map()
+    assert m.len() == 2
+    assert m.get("b")! == 2
+}
+
+test "an empty sequence gives an empty map" {
+    let s: Sequence<(i64, i64)> = |yield| {}
+    let m = s.to_map()
+    assert m.len() == 0
+}
+
+// The half that proved the two routes disagreed. `to_map` names both `K` and
+// `V` in its return type, so inference had somewhere to get them and it came out
+// bound; a method naming only one had nothing to bind that one from and came out
+// `$_`. Both names come off the receiver now, so how many of them the signature
+// mentions doesn't matter.
+//
+// On a wrapper of its own rather than on `Sequence` itself: a user block that
+// adds to a stdlib family mints a `Sequence_*` symbol nothing accounts for, and
+// the drop pass then treats it as owning everything it touches.
+//
+// It also pins the other half — reading `self.items` needs the *struct's* own
+// `T` refined to `(K, V)`, which is the same substitution from the other side.
+struct Pairs<T> {
+    public items: Vec<T>
+}
+
+extend Pairs<(K, V)> {
+    public func keys_only(self) -> Vec<K> {
+        mut out = Vec<K>.new()
+        for (k, v) in self.items {
+            out.push(k)
+        }
+        return out
+    }
+}
+
+test "a method naming one of two header parameters still binds it" {
+    let p = Pairs<(i64, i64)> { items: [(1, 10), (2, 20), (3, 30)] }
+    let ks = p.keys_only()
+    assert ks.len() == 3
+    assert ks[0] == 1
+    assert ks[2] == 3
+}
+
+// A header that renames what the declaration calls its parameter. Same family:
+// the name in the header is the receiver's, however the struct spells it.
+struct Ring<T> {
+    public items: Vec<T>
+}
+
+extend Ring<U> {
+    public func doubled_count(self) -> usize {
+        return self.items.len() * 2
+    }
+
+    public func first_item(self) -> U {
+        return self.items[0]
+    }
+}
+
+test "a header may rename the declaration's parameter" {
+    let r = Ring<i64> { items: [7, 8] }
+    assert r.doubled_count() == 4u64
+    assert r.first_item() == 7
+}
+
+// A static method has no receiver value to read the instantiation off. It used
+// to be guessed back out of the call's result type, guarded by a base-name
+// check; the receiver itself carries it now — the type name gets a fresh
+// variable per declared parameter, and the constructor's own signature binds it.
+struct Cell<T> {
+    public value: T
+}
+
+extend Cell<T> {
+    public func hold(value: T) -> Cell<T> {
+        return Cell { value }
+    }
+
+    public func read(self) -> T {
+        return self.value
+    }
+}
+
+test "a static method on a generic type sees its instantiation" {
+    let s = Cell.hold("held")
+    assert s.read() == "held"
+    let n = Cell.hold(41)
+    assert n.read() == 41
+}
+
+test "a float argument keeps its register class" {
+    let f = Cell.hold(2.5)
+    assert f.read() == 2.5
+}

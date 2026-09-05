@@ -945,6 +945,9 @@ pub enum IndexErrorKind {
     ExpectedHandle(Type),
     /// A range was used to slice a container that isn't sliceable (Map, Pool).
     NotSliceable,
+    /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
+    /// so there is no position to read.
+    NotPositioned,
 }
 
 /// Where a trait requirement came from — drives the advice.

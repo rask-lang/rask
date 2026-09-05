@@ -125,6 +125,18 @@ Try to use readable keywords, not symbols or abbreviations.
 | Struct | `struct` | `struct` | `type...struct` |
 | Visibility | `public` | `pub` | Capitalization |
 
+**Operators are the exception.** The rule is about *keywords* — the words that
+introduce a declaration or a control structure. Operators stay symbols: `!` for
+negation, `&&` and `||` for boolean and/or, and no word-spelled aliases for any
+of them. There is no `not`, no `and`, no `or` operator (`or` is taken, and it
+means something else entirely — the error type in `T or E`).
+
+I went back and forth on `not` and landed on `!`. `if not ready` does read
+better in isolation, but negation shows up inside larger expressions far more
+often than on its own, and there `!ready && connected` beats
+`not ready && connected` — the word is long enough to look like an operand.
+Keeping one spelling also means one precedence to know.
+
 ### 5. Expression-Oriented
 Everything that can be an expression is one. Blocks in expression context produce values implicitly; function bodies require explicit `return`.
 

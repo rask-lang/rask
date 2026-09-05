@@ -1,22 +1,37 @@
-// PENDING type.sequence — function-valued Sequence<T> + for-loop desugar to yield-closure call. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// PENDING type.sequence — Sequence<T> push protocol + for-loop desugar to a yield-closure call. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Spec: specs/types/sequence-protocol.md — SEQ1 defines Sequence<T> as a
-// function type taking a yield closure; SEQ6 desugars `for x in seq_expr` to a
-// yield-closure call; SEQ3/SEQ7: yield returns true to continue, false to stop.
+// Spec: specs/types/sequence-protocol.md
+//   SEQ1  Sequence<T> is a nominal type wrapping func(yield: |T| -> bool)
+//   SEQ3  yield returns true to continue, false to stop; sources must honour it
+//   SEQ6  `for x in seq_expr` desugars to a yield-closure call
+//   SEQ7  break -> `return false`, continue -> `return true`
+//   SEQ8  `return` in a for-body exits the enclosing function
+//   SEQ36 a closure literal fills a Sequence-typed slot with no constructor
+//   SEQ37 building a chain runs nothing
+//   SEQ40 the desugared body captures what it writes by ordinary inference
+//   SEQ47 to_vec copies Copy elements and moves chain-owned ones, never clones
+//
+// Sequence<T> comes from the stdlib (stdlib/sequence.rk) — this file must not
+// declare its own, and a `type alias` here would be the old design (SEQ1).
+// Naming it in a signature takes an import (SEQ46); iterating one does not.
 
-// SEQ1: the sequence protocol is a plain function type alias, not a trait.
-type alias Sequence<T> = func(yield: |T| -> bool)
+import sequence.Sequence
 
-// A user sequence: closure captures nothing, yields 1,2,3, honoring SEQ3.
+// A user sequence. SEQ36: the return type says what the closure is, so there
+// is no constructor call. SEQ3: each yield's answer is honoured.
 func count_to_three() -> Sequence<i32> {
     return |yield| {
-        if not yield(1) { return }
-        if not yield(2) { return }
-        if not yield(3) { return }
+        if !yield(1) { return }
+        if !yield(2) { return }
+        if !yield(3) { return }
     }
 }
 
-// --- SEQ6: for-loop over a Sequence value sums the yielded items ---
+// --- SEQ6 + SEQ40: the accumulating body, which is the common shape ---
+// `sum` is a local of this test, captured mutably by the desugared closure.
+// MC1 infers that from the body — no annotation, no capture list, nothing the
+// desugar does differently from a hand-written closure. Blocked on #1038,
+// where the write currently compiles and vanishes on both backends.
 
 test "type.sequence/SEQ6 — for over a Sequence sums yielded values" {
     mut sum = 0
@@ -26,7 +41,7 @@ test "type.sequence/SEQ6 — for over a Sequence sums yielded values" {
     assert sum == 6
 }
 
-// --- SEQ7: break inside the for-body translates to `return false` (stop) ---
+// --- SEQ7: break translates to `return false`, and the source stops ---
 
 test "type.sequence/SEQ7 — break stops the sequence after two items" {
     mut count = 0
@@ -35,6 +50,66 @@ test "type.sequence/SEQ7 — break stops the sequence after two items" {
         if x == 2 { break }
     }
     assert count == 2
+}
+
+// --- SEQ7: continue translates to `return true` ---
+
+test "type.sequence/SEQ7 — continue skips an item without stopping" {
+    mut sum = 0
+    for x in count_to_three() {
+        if x == 2 { continue }
+        sum = sum + x
+    }
+    assert sum == 4
+}
+
+// --- SEQ8: `return` in a for-body leaves the enclosing function ---
+// Not the yield closure. The closure writes the value to a slot in this
+// frame, flags it, and returns false; the frame returns on seeing the flag.
+
+func first_over(limit: i32) -> i32 {
+    for x in count_to_three() {
+        if x > limit { return x }
+    }
+    return -1
+}
+
+test "type.sequence/SEQ8 — return in a for-body exits the enclosing function" {
+    assert first_over(1) == 2
+    assert first_over(9) == -1
+}
+
+// --- SEQ37: building a chain runs nothing ---
+// The source bumps a counter as it walks. Binding the chain must leave it at
+// zero; only the terminal drives it.
+
+func counting_source(mutate calls: i32) -> Sequence<i32> {
+    return |yield| {
+        calls = calls + 1
+        if !yield(1) { return }
+        if !yield(2) { return }
+    }
+}
+
+test "type.sequence/SEQ37 — a chain is lazy until a terminal drives it" {
+    mut calls = 0
+    let chain = counting_source(mutate calls).filter(|x| x > 0)
+    assert calls == 0
+
+    let total: i32 = chain.sum()
+    assert calls == 1
+    assert total == 3
+}
+
+// --- SEQ3 + SEQ13a: take(n) short-circuits back through the adapter ---
+// `.take(1)` returns false from its yield after one item, filter must pass
+// that false up, and the source must stop on it.
+
+test "type.sequence/SEQ13a — take stops the source through an adapter" {
+    let got: Vec<i32> = count_to_three().filter(|x| x > 0).take(2).to_vec()
+    assert got.len() == 2
+    assert got[0] == 1
+    assert got[1] == 2
 }
 
 func main() {}

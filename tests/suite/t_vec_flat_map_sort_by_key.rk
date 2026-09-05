@@ -26,7 +26,7 @@ test "std.collections — flat_map maps then flattens" {
         pair.push(x)
         pair.push(x * 2)
         return pair
-    })
+    }).to_vec()
     assert_eq(doubled.len(), 6)
     assert_eq(doubled[0], 1)
     assert_eq(doubled[1], 2)
@@ -42,7 +42,7 @@ test "std.collections — flat_map on an empty Vec is empty" {
         mut r: Vec<i64> = []
         r.push(x)
         return r
-    })
+    }).to_vec()
     assert_eq(out.len(), 0)
 }
 
@@ -54,7 +54,7 @@ test "std.collections — flat_map can drop elements entirely" {
             r.push(x)
         }
         return r
-    })
+    }).to_vec()
     assert_eq(evens.len(), 2)
     assert_eq(evens[0], 2)
     assert_eq(evens[1], 4)
@@ -71,7 +71,7 @@ test "std.collections — flat_map works on struct elements" {
         out.push(r.clone())
         out.push(r)
         return out
-    })
+    }).to_vec()
     assert_eq(doubled.len(), 4)
     assert_eq(doubled[0].name, "a")
     assert_eq(doubled[1].name, "a")
@@ -114,7 +114,7 @@ test "std.collections — sort_by_key on an empty or single-element Vec is a no-
 // native failed to compile a form the interpreter runs.
 test "std.collections — flat_map takes a braceless closure body" {
     let v: Vec<i64> = [1, 2]
-    let out: Vec<i64> = v.flat_map(|x| pair_of(x))
+    let out: Vec<i64> = v.flat_map(|x| pair_of(x)).to_vec()
     assert_eq(out.len(), 4)
     assert_eq(out[0], 1)
     assert_eq(out[1], 10)
@@ -127,7 +127,7 @@ test "std.collections — flat_map takes a block ending in a trailing expression
     let out: Vec<i64> = v.flat_map(|x| {
         let doubled = x * 2
         pair_of(doubled)
-    })
+    }).to_vec()
     assert_eq(out.len(), 2)
     assert_eq(out[0], 6)
     assert_eq(out[1], 60)

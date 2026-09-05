@@ -884,7 +884,27 @@ impl<'a> MirLowerer<'a> {
                 return Ok((addr, MirType::Ptr));
             }
         }
-        // Whole Copy var / other scalar expr: spill a copy and pass its address.
+        // A whole variable: point at the variable itself.
+        //
+        // This used to spill a copy and pass the copy's address, so the callee's
+        // store landed somewhere nobody read — `func bump(mutate c: i32) { c = c
+        // + 1 }` left the caller's `n` alone while the identical one-field
+        // struct wrapping it wrote back fine (#899). `Ref` on a scalar keeps the
+        // variable in memory now (`transform::addr_taken`), which is what makes
+        // pointing at it possible at all.
+        if let ExprKind::Ident(name) = &arg.kind {
+            if let Some((id, _)) = self.locals.get(name).cloned() {
+                let addr = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: addr,
+                    rvalue: MirRValue::Ref(id),
+                }));
+                return Ok((MirOperand::Local(addr), MirType::Ptr));
+            }
+        }
+        // Anything else is a temporary with no storage of its own to point at —
+        // spill it and pass that address, so the callee still has somewhere to
+        // write even though nothing reads it back.
         let (val, _) = self.lower_expr(arg)?;
         let tmp = self.builder.alloc_temp(sty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

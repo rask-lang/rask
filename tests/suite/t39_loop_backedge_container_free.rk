@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Iterating a container inside a loop, and who owns the copy the loop makes.
+//
+// `for x in v` doesn't read `v` directly — lowering copies it into a fresh name
+// for the index loop. `container_drop` frees at loop back-edges as well as at
+// returns, and it decided by asking where the *name* was defined: inside the
+// loop, so free it there. The name was; the allocation wasn't. So a plain
+// `for x in v` inside a `while` freed `v` on the first iteration and the second
+// one walked memory that was already gone (#1061).
+//
+//     while r < 3 {
+//         for x in v { sum = sum + x }    // frees v at the back-edge
+//         r = r + 1
+//     }
+//
+// No adapter, no closure, no generics — just a vector iterated twice. Native
+// segfaulted; the interpreter was right.
+//
+// One allocation under several names is one value group, so the question is
+// whether *every* name in the group was made inside the loop. Any member from
+// outside means the container predates the loop and belongs to the enclosing
+// frame. A container genuinely built in the loop body still gets freed there,
+// which is what the back-edge free is for — the scratch-vector case below is
+// clean under the leak gate, which is what checks that half.
+//
+// The first version of the fix traded the use-after-free for a leak: the loop's
+// copy could no longer be freed at the back-edge, but it was still counted as a
+// surviving name, so the "one allocation, several surviving names, free none"
+// rule dropped the whole group and the return path didn't free it either. The
+// pass works out where each free would actually go *before* it prunes groups
+// now, so a name with nowhere to put one stops counting as a second free
+// (#1071).
+
+test "a plain for loop inside a while doesn't free its source" {
+    mut v = Vec<i64>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    mut total = 0
+    mut r = 0
+    while r < 3 {
+        mut sum = 0
+        for x in v {
+            sum = sum + x
+        }
+        total = total + sum
+        r = r + 1
+    }
+    assert total == 18
+    assert v.len() == 3
+}
+
+// A literal-initialized vector, in case the constructor's shape mattered.
+test "the same over a vector built from a literal" {
+    let v: Vec<i64> = [4, 5]
+    mut total = 0
+    mut r = 0
+    while r < 4 {
+        for x in v {
+            total = total + x
+        }
+        r = r + 1
+    }
+    assert total == 36
+}
+
+// Nested loops over the same source: the inner back-edge and the outer one both
+// see the copy.
+test "nested loops over one vector" {
+    let v: Vec<i64> = [1, 2, 3]
+    mut pairs = 0
+    for a in v {
+        for b in v {
+            pairs = pairs + 1
+        }
+    }
+    assert pairs == 9
+}
+
+// A fused chain in a loop body. The chain materializes a fresh vector each
+// iteration — that one *is* the iteration's and has to keep being freed — while
+// the source it reads is the frame's.
+test "a fused chain in a loop keeps its source" {
+    mut v = Vec<i64>.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    mut total = 0
+    mut r = 0
+    while r < 3 {
+        let odd: Vec<i64> = v.filter(|x| x % 2 == 1).to_vec()
+        mut i = 0
+        while i < odd.len() {
+            total = total + odd[i]
+            i = i + 1
+        }
+        r = r + 1
+    }
+    assert total == 12
+    assert v.len() == 3
+}
+
+// A container built inside the loop and nothing else: still freed at the
+// back-edge. On its own this shape is clean — measured, because it is the half
+// that would break if the new rule were "never free at a back-edge".
+test "a vector built in the loop body is the iteration's" {
+    mut total = 0
+    mut r = 0
+    while r < 50 {
+        mut scratch = Vec<i64>.new()
+        scratch.push(r)
+        scratch.push(r * 2)
+        total = total + scratch.len()
+        r = r + 1
+    }
+    assert total == 100u64
+}
+
+test "a map iterated inside a loop" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    mut total = 0
+    mut r = 0
+    while r < 3 {
+        for (k, val) in m {
+            total = total + val
+        }
+        r = r + 1
+    }
+    assert total == 9
+    assert m.len() == 2
+}
+
+// A vector reached through a struct field, which is a different name again.
+struct Bag {
+    public items: Vec<i64>
+}
+
+test "a vector in a field, iterated inside a loop" {
+    let b = Bag { items: [2, 3] }
+    mut total = 0
+    mut r = 0
+    while r < 3 {
+        for x in b.items {
+            total = total + x
+        }
+        r = r + 1
+    }
+    assert total == 15
+}

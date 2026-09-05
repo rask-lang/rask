@@ -193,6 +193,9 @@ struct CodegenCtx<'a> {
     panicking_fns: &'a HashSet<String>,
     internal_fns: &'a HashSet<String>,
     stack_slot_map: &'a HashMap<LocalId, (StackSlot, u32)>,
+    /// Locals that hold an address rather than a value — see
+    /// `rask_mir::transform::addr_taken`.
+    addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
     block_map: &'a HashMap<BlockId, Block>,
     build_mode: BuildMode,
     source_file: Option<&'a str>,
@@ -374,10 +377,34 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Build the Cranelift IR from MIR.
     pub fn build(&mut self) -> CodegenResult<()> {
+        // A scalar whose address a closure environment holds lives in memory,
+        // not in an SSA value — `transform::addr_taken` has already rewritten
+        // its reads to loads and its writes to stores, so all that is left here
+        // is to give it the storage those refer to. `analyze` is the same
+        // function the rewrite used, so the two cannot disagree about which
+        // locals hold a value and which hold an address (#1038).
+        let addr_taken = rask_mir::transform::addr_taken::analyze(self.mir_fn);
+        // A by-ref capture the rewrite never prepared has no correct lowering —
+        // the environment would hold the scalar's value while the closure body
+        // loads through it as a pointer. Say so here rather than emit it.
+        if let Some(id) = rask_mir::transform::addr_taken::unprepared_capture(self.mir_fn) {
+            return Err(CodegenError::UnsupportedFeature(format!(
+                "closure in `{}` captures {:?} by reference, but that local is \
+                 still written as a value — `transform::addr_taken` did not see \
+                 this `ClosureCreate`, so a pass moved it here after the rewrite",
+                self.mir_fn.name, id,
+            )));
+        }
+
         // Pre-compute stack allocation sizes before builder borrows self.func.
         // Entries: (local_id, byte size) for each aggregate local.
-        let stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
+        let mut stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
             .filter(|l| !l.is_param)
+            // A borrowed local's storage is the frame that built the closure,
+            // so it gets no slot here. Leaving it one puts a slot address in
+            // `stack_slot_map` while the variable points at the caller's data,
+            // and each site reads whichever of the two it happens to consult.
+            .filter(|l| !addr_taken.borrowed.contains(&l.id))
             .filter_map(|l| {
                 let size = Self::resolve_type_alloc_size(
                     &l.ty, self.struct_layouts, self.enum_layouts,
@@ -385,6 +412,15 @@ impl<'a> FunctionBuilder<'a> {
                 size.filter(|&s| s > 0).map(|s| (l.id, s))
             })
             .collect();
+        // An owned address-taken scalar needs a slot of its own — that is the
+        // storage the rewritten loads and stores refer to. `params` is a subset
+        // of `locals`, so iterating only `locals` covers both without listing
+        // a parameter twice.
+        for local in self.mir_fn.locals.iter() {
+            if addr_taken.owned.contains(&local.id) {
+                stack_allocs.push((local.id, local.ty.size().max(8)));
+            }
+        }
 
         // Collect cleanup-only blocks (appear in CleanupReturn chains)
         // and their transitive sub-blocks (handler/done blocks reachable
@@ -476,7 +512,13 @@ impl<'a> FunctionBuilder<'a> {
         // Declare all variables (locals)
         for (idx, local) in self.mir_fn.locals.iter().enumerate() {
             let var = Variable::new(idx);
-            let ty = mir_to_cranelift_type(&local.ty)?;
+            // An address-taken scalar's variable holds the address of its slot,
+            // not the value — same convention an aggregate local already uses.
+            let ty = if addr_taken.contains(local.id) {
+                types::I64
+            } else {
+                mir_to_cranelift_type(&local.ty)?
+            };
             builder.declare_var(var, ty);
             self.var_map.insert(local.id, var);
         }
@@ -486,18 +528,19 @@ impl<'a> FunctionBuilder<'a> {
             .ok_or_else(|| CodegenError::UnsupportedFeature("Entry block not found".to_string()))?;
         builder.switch_to_block(*entry_block);
 
-        // Append parameters to entry block and bind to variables
+        // Append parameters to the entry block. Binding them is a separate step
+        // below: an address-taken parameter has to be stored into its slot, and
+        // the slot doesn't exist until the loop after this one has run.
+        let mut incoming: Vec<(LocalId, Value)> = Vec::with_capacity(self.mir_fn.params.len());
         for param in &self.mir_fn.params {
             let param_ty = mir_to_cranelift_type(&param.ty)?;
             let block_param = builder.append_block_param(*entry_block, param_ty);
-            let var = self.var_map.get(&param.id)
-                .ok_or_else(|| CodegenError::UnsupportedFeature("Parameter variable not found".to_string()))?;
-            builder.def_var(*var, block_param);
+            incoming.push((param.id, block_param));
         }
 
-        // Allocate stack slots for aggregate locals (structs, enums, arrays).
-        // These types are represented as pointers (i64) — the variable holds
-        // the address of the stack-allocated storage.
+        // Allocate stack slots for aggregate locals (structs, enums, arrays)
+        // and for address-taken scalars. These are represented as pointers
+        // (i64) — the variable holds the address of the storage.
         for (local_id, size) in &stack_allocs {
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -508,6 +551,22 @@ impl<'a> FunctionBuilder<'a> {
             let addr = builder.ins().stack_addr(types::I64, ss, 0);
             let var = self.var_map[local_id];
             builder.def_var(var, addr);
+        }
+
+        // Bind parameters.
+        for (param_id, block_param) in incoming {
+            let var = *self.var_map.get(&param_id)
+                .ok_or_else(|| CodegenError::UnsupportedFeature("Parameter variable not found".to_string()))?;
+            if let Some((ss, _)) = self.stack_slot_map.get(&param_id) {
+                if addr_taken.owned.contains(&param_id) {
+                    // The variable holds the slot address, so the argument goes
+                    // *into* the slot — `func f(n: i32) { let c = || { n = 1 } }`
+                    // has to start from the value the caller passed.
+                    builder.ins().stack_store(block_param, *ss, 0);
+                    continue;
+                }
+            }
+            builder.def_var(var, block_param);
         }
 
         // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
@@ -538,6 +597,7 @@ impl<'a> FunctionBuilder<'a> {
             panicking_fns: self.panicking_fns,
             internal_fns: self.internal_fns,
             stack_slot_map: &self.stack_slot_map,
+            addr_taken: &addr_taken,
             block_map: &self.block_map,
             build_mode: self.build_mode,
             source_file: self.mir_fn.source_file.as_deref(),
@@ -1027,7 +1087,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
-            MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
+            MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture env_ptr not found".to_string()
@@ -1041,13 +1101,23 @@ impl<'a> FunctionBuilder<'a> {
                         "LoadCapture destination variable not found".to_string()
                     ))?;
 
-                if *by_ref {
-                    // Ensure-hook capture: the env slot holds an 8-byte pointer to
-                    // the original value. Point the local's variable straight at it
-                    // (for aggregates the variable already IS the address), so
-                    // cleanup runs against the live resource rather than a copy.
+                if *access == rask_mir::CaptureAccess::Borrowed {
+                    // The env slot holds an 8-byte pointer to the original
+                    // value. Point the local's variable straight at it (for
+                    // aggregates the variable already IS the address), so a
+                    // write inside the closure lands on the creating frame's
+                    // variable and an ensure hook runs against the live
+                    // resource rather than a copy.
                     let val = crate::closures::load_capture(builder, env_val, *offset, types::I64);
                     builder.def_var(*var, val);
+                } else if *access == rask_mir::CaptureAccess::Owned {
+                    // The slot *is* the variable. Hand the body the slot's
+                    // address so reads and writes both land in the environment
+                    // and survive to the next call — `addr_taken` has already
+                    // turned a scalar's reads into loads and its writes into
+                    // stores through this pointer.
+                    let addr = builder.ins().iadd_imm(env_val, *offset as i64);
+                    builder.def_var(*var, addr);
                 } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst) {
                     // Aggregate types (String, Struct, etc.) were deep-copied into
                     // the closure environment. Copy into the local stack slot and
@@ -1069,8 +1139,8 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureDrop closure variable not found".to_string()
                     ))?);
-                let free_ref = ctx.func_refs.get("rask_free")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                let free_ref = ctx.func_refs.get("rask_closure_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_free".to_string()))?;
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
@@ -2064,8 +2134,9 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().load(tag_cranelift_ty, flags, ptr_val, tag_offset))
             }
 
-            // Address-of: return the pointer that the local already holds (for aggregates)
-            // or spill a scalar to a stack slot and return its address.
+            // Address-of: return the pointer that the local already holds (for aggregates
+            // and address-taken scalars) or spill a scalar to a stack slot and return
+            // its address.
             MirRValue::Ref(local_id) => {
                 let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
@@ -2080,7 +2151,11 @@ impl<'a> FunctionBuilder<'a> {
                          | MirType::Result { .. } | MirType::Union(_))
                 );
 
-                if is_aggregate {
+                // A scalar that lives in a slot is addressed the same way. The
+                // spill below is a *copy*, so handing back its address is only
+                // right for a local nothing writes through — which is why a
+                // captured scalar's writes used to vanish (#1038).
+                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address
@@ -2245,9 +2320,22 @@ impl<'a> FunctionBuilder<'a> {
         // land at PAYLOAD_OFFSET of the Option slot, not just the
         // pointer in the first 8 bytes — otherwise field reads
         // through the Option's payload return garbage.
+        // A borrowed aggregate's variable points into the frame that built the
+        // closure, so every write has to go through that pointer. Replacing the
+        // variable would only retarget this frame's copy of it, which is how
+        // `mut best: T? = none` written from inside a closure stayed `none` and
+        // took `find`, `reduce`, `min_by` and `max_by` with it (#1038).
+        let borrowed_addr: Option<Value> = if ctx.addr_taken.borrowed.contains(dst)
+            && dst_local.ty.passed_by_address()
+        {
+            ctx.var_map.get(dst).map(|v| builder.use_var(*v))
+        } else {
+            None
+        };
+
         let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
             && !needs_copy
-            && ctx.stack_slot_map.contains_key(dst);
+            && (ctx.stack_slot_map.contains_key(dst) || borrowed_addr.is_some());
         // If the source is an aggregate and dst is Option<aggregate>,
         // we need full-aggregate wrap (tag + memcpy payload), not the
         // scalar wrap.
@@ -2303,11 +2391,19 @@ impl<'a> FunctionBuilder<'a> {
         if needs_copy {
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
                 Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
-            } else if matches!(&dst_local.ty,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
+            } else if borrowed_addr.is_some()
+                || matches!(&dst_local.ty,
+                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_))
             {
-                // Dst variable holds an external pointer (mutate-param) —
-                // copy bytes through it instead of overwriting the pointer.
+                // Dst variable holds an external pointer — a `mutate` param, or
+                // an aggregate a closure captured by reference. Copy the bytes
+                // through it; assigning the variable would replace the pointer
+                // and the write would land nowhere the caller looks.
+                //
+                // The type list alone wasn't enough once captures started
+                // borrowing (#1038): `mut best: T? = none` written from inside
+                // a closure is an `Option`, which isn't on it, so `find`,
+                // `reduce`, `min_by` and `max_by` all answered `none`.
                 let size = Self::resolve_type_alloc_size(
                     &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
                 ).unwrap_or(0);
@@ -2328,16 +2424,44 @@ impl<'a> FunctionBuilder<'a> {
             }
         } else if wrap_as_some_aggregate {
             // Some(aggregate): tag + payload bytes copied at PAYLOAD_OFFSET.
-            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
             let inner_size = if let MirType::Option(inner) = &dst_local.ty {
                 Self::resolve_type_alloc_size(
                     inner.as_ref(), ctx.struct_layouts, ctx.enum_layouts,
                 ).unwrap_or(inner.size())
             } else { 0 };
-            Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+            match (ctx.stack_slot_map.get(dst), borrowed_addr) {
+                (Some((dst_ss, _)), _) => {
+                    Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+                }
+                (None, Some(addr)) => {
+                    let tag = builder.ins().iconst(types::I64, 0);
+                    builder.ins().store(MemFlags::new(), tag, addr, crate::layouts::TAG_OFFSET);
+                    Self::copy_bytes(
+                        builder, val, 0, addr, crate::layouts::PAYLOAD_OFFSET, inner_size,
+                    );
+                }
+                (None, None) => {}
+            }
         } else if wrap_as_some {
-            let (dst_ss, _) = ctx.stack_slot_map.get(dst).unwrap();
-            Self::build_some(builder, *dst_ss, val);
+            match (ctx.stack_slot_map.get(dst), borrowed_addr) {
+                (Some((dst_ss, _)), _) => Self::build_some(builder, *dst_ss, val),
+                (None, Some(addr)) => {
+                    let tag = builder.ins().iconst(types::I64, 0);
+                    builder.ins().store(MemFlags::new(), tag, addr, crate::layouts::TAG_OFFSET);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), val, addr, crate::layouts::PAYLOAD_OFFSET);
+                }
+                (None, None) => {}
+            }
+        } else if let Some(addr) = borrowed_addr {
+            // Aggregate to aggregate through the pointer — an `Option` assigned
+            // from another `Option`, say. `def_var` here would swap this
+            // frame's pointer and leave the borrowed storage untouched.
+            let size = Self::resolve_type_alloc_size(
+                &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
+            ).unwrap_or(dst_local.ty.size());
+            Self::copy_bytes(builder, val, 0, addr, 0, size);
         } else {
             let var = ctx.var_map.get(dst)
                 .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -2732,7 +2856,13 @@ impl<'a> FunctionBuilder<'a> {
         let mut env_layout = crate::closures::ClosureEnvLayout::new();
         for c in captures {
             let local = ctx.locals.iter().find(|l| l.id == c.local_id);
-            let (real_size, is_aggregate) = if let Some(l) = local {
+            let (real_size, is_aggregate) = if c.by_ref {
+                // An address is a word whatever it points at, and MIR laid the
+                // env out on that basis. Re-deriving a real aggregate size here
+                // would put the next capture at a different offset than the
+                // `LoadCapture` that reads it.
+                (8, false)
+            } else if let Some(l) = local {
                 if let Some(alloc_size) = Self::resolve_type_alloc_size(
                     &l.ty, ctx.struct_layouts, ctx.enum_layouts,
                 ) {
@@ -2743,7 +2873,7 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 (c.size, false)
             };
-            env_layout.add_capture(c.local_id, real_size, is_aggregate);
+            env_layout.add_capture(c.local_id, real_size, is_aggregate, c.by_ref);
         }
 
         // Get function pointer for the closure function
@@ -2752,9 +2882,11 @@ impl<'a> FunctionBuilder<'a> {
         let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
         let closure_ptr = if *heap {
-            // Escaping closure: heap-allocate via rask_alloc
-            let alloc_ref = ctx.func_refs.get("rask_alloc")
-                .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+            // Escaping closure: heap-allocate behind a size header, so
+            // whoever frees it can account for the bytes without knowing the
+            // capture layout.
+            let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
+                .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
             crate::closures::allocate_closure_heap(
                 builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
             )?
@@ -6044,6 +6176,19 @@ impl<'a> FunctionBuilder<'a> {
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Option<Value>> {
+        // A borrowed aggregate has no slot here — its storage is the frame that
+        // built the closure — so the load goes through whatever address the
+        // variable holds. Without this `|| { return s }` on a word-sized struct
+        // returned the pointer and the caller read it as the value.
+        if let Some((addr, size)) = Self::borrowed_aggregate_return(builder, value, ctx) {
+            if size <= 8 && !matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                return Ok(Some(builder.ins().load(types::I64, MemFlags::new(), addr, 0)));
+            }
+            // Wider than a word, or a component that needs wrapping: hand back
+            // the address and let the caller copy, exactly as the slot path does.
+            return Ok(Some(addr));
+        }
+
         if let Some(stack_info) = Self::return_stack_info(value, ctx.stack_slot_map) {
             // For small aggregate return values (≤8 bytes) in stack slots:
             //   - If the function return type is Result/Option, the small value
@@ -6228,6 +6373,25 @@ impl<'a> FunctionBuilder<'a> {
             None => builder.ins().return_(&[]),
         };
         Ok(())
+    }
+
+    /// The address and size of a returned aggregate whose storage this frame
+    /// doesn't own — a by-ref closure capture. `None` for anything else.
+    fn borrowed_aggregate_return(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> Option<(Value, u32)> {
+        let Some(MirOperand::Local(id)) = value else { return None };
+        if !ctx.addr_taken.borrowed.contains(id) {
+            return None;
+        }
+        let local = ctx.locals.iter().find(|l| l.id == *id)?;
+        let size = Self::resolve_type_alloc_size(
+            &local.ty, ctx.struct_layouts, ctx.enum_layouts,
+        )?;
+        let var = ctx.var_map.get(id)?;
+        Some((builder.use_var(*var), size))
     }
 
     /// Check if a return value comes from a stack-allocated aggregate local.
