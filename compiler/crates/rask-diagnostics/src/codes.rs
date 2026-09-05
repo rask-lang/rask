@@ -626,6 +626,9 @@ impl Default for ErrorCodeRegistry {
                 "E0810" => ("a captured resource isn't consumed on every path", Ownership,
                     "A resource captured by a closure or a task is that body's to finish with, and \"exactly once\" has to hold on every path through it — including the ones that return early or raise.\n\n`ensure` at the top of the body is the usual answer: it runs at every exit, including a panic.",
                     "spawn(own || {\n    if bad { return }        // error: `conn` not consumed here\n    conn.close()\n})\n// fix: one exit for all paths\nspawn(own || { ensure conn.close(); … })"),
+                "W0301" => ("`discard` on a Copy type frees nothing", Type,
+                    "`discard` exists to end a value\'s life before its scope does — to release the memory it owns at a point you choose rather than at the closing brace. A Copy type owns no memory, so there is nothing to release and the statement reads as a cost it doesn\'t pay (mem.ownership/D2).\n\nIt does still put the name out of use, which is D1 and holds for every type. If that was the point, a comment says so more clearly than a `discard` that looks like cleanup.",
+                    "let n = 7\ndiscard n            // warning: frees nothing\n// fix: drop the line\nlet n = 7"),
                 "W0303" => ("comptime const could not be folded, so it runs at runtime", Type,
                     "The comptime evaluator doesn't cover the whole language yet, and this block reached a corner it can't model — a static method it has no implementation for, a value it can't represent. The program still works: the block is evaluated at startup instead. What's lost is the guarantee `comptime` was written for, so this is worth knowing about rather than silent. The warning names what stopped it.",
                     "const SPRITES = comptime {\n    mut v = Vec.new()\n    v.push(load_atlas())        // warning: I/O isn't available at comptime\n    v.freeze()\n}"),
@@ -785,13 +788,12 @@ mod registry_audit {
     ///    Saying "unknown code" is the honest answer until they're renumbered.
     ///  - Match arms that are declared and formatted but never constructed.
     ///    Unreachable today, so there is no error to explain (#992).
-    const UNEXPLAINED: &[&str] = &[
-        // Never constructed. Nothing can reach these, so there is no error to
-        // explain — wire them up or delete them (#992).
-        "E0326", // MissingMutateAnnotation — superseded by E0373
-        "E0338", // MessageCoverageMissing
-        "W0301", // DiscardCopyType
-    ];
+    /// Empty, and it should stay that way: every code a program can produce can
+    /// be looked up. The three that used to sit here were arms nobody could
+    /// reach — two deleted (`MissingMutateAnnotation`, superseded by E0373, and
+    /// `MessageCoverageMissing`, whose rule ER38 the derived `message()` covers)
+    /// and one wired up (`DiscardCopyType`, mem.ownership/D2).
+    const UNEXPLAINED: &[&str] = &[];
 
     #[test]
     fn every_emitted_code_can_be_explained() {

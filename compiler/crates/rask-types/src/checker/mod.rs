@@ -327,6 +327,10 @@ pub struct TypeChecker {
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
     pub(super) pending_int_literals: Vec<(i128, bool, Type, rask_ast::Span)>,
+    /// D2: `discard` on a Copy type, checked after literal defaulting.
+    /// `let n = 7` is an unsolved integer var while the body is walked, so
+    /// asking at the statement missed the commonest spelling of the case.
+    pub(super) pending_discards: Vec<(String, Type, rask_ast::Span)>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
@@ -459,6 +463,7 @@ impl TypeChecker {
             multitasking_depth: 0,
             pending_casts: Vec::new(),
             pending_int_literals: Vec::new(),
+            pending_discards: Vec::new(),
             deferred_methods: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
@@ -604,6 +609,10 @@ impl TypeChecker {
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
+
+        // D2: `discard` on a Copy type frees nothing. Asked here because an
+        // unsuffixed literal has a type only after defaulting.
+        self.validate_pending_discards();
 
         // ER14a: a void-bodied `catch` whose scrutinee's success type was still
         // open when it ran — check it against whatever that type settled to

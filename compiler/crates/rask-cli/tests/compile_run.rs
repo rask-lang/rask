@@ -4288,6 +4288,29 @@ fn plain_write_keeps_the_partial_update_on_panic() {
     }
 }
 
+/// mem.ownership/D2: `discard` on a Copy type frees nothing.
+///
+/// The variant, the message and the code W0301 were all written and nothing
+/// ever constructed them — a dead error path holding a live number (#992).
+///
+/// The check waits for literal defaulting: `let n = 7` is an open type
+/// variable while the body is walked, and that is the commonest spelling of
+/// the case, so asking at the statement would have missed it.
+#[test]
+fn discard_on_a_copy_type_warns() {
+    let (checked, output) = check_fixture("discard_copy.rk");
+    assert!(checked, "D2 is a warning — the program still type-checks:\n{output}");
+    assert_eq!(
+        output.matches("W0301").count(),
+        3,
+        "the three primitives warn and the two owners don't:\n{output}"
+    );
+    assert!(
+        output.contains("`i32` is a Copy type"),
+        "an unsuffixed literal still has a type by the time this runs:\n{output}"
+    );
+}
+
 #[test]
 fn torn_lock_update_warns_once_and_only_where_it_should() {
     // W9 (tool.warnings, W0907): two fields of a locked value written in one

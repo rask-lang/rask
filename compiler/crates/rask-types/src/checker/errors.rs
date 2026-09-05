@@ -386,12 +386,6 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
-    #[error("parameter `{param_name}` requires `mutate` annotation at call site")]
-    MissingMutateAnnotation {
-        param_name: String,
-        param_index: usize,
-        span: Span,
-    },
     #[error("parameter `{param_name}` requires `own` annotation at call site")]
     MissingOwnAnnotation {
         param_name: String,
@@ -677,13 +671,6 @@ pub enum TypeError {
         step_direction: String,
     },
 
-    /// ER26: @message variant missing coverage
-    #[error("@message variant `{variant}` has no message template and cannot auto-delegate")]
-    MessageCoverageMissing {
-        variant: String,
-        enum_name: String,
-        span: Span,
-    },
 
     /// E5/R5/MX3: standalone sync access without chaining
     #[error("standalone `.{method}()` on `{ty}` must be chained — use `.{method}().field` or `with` block")]
@@ -1170,7 +1157,6 @@ impl TypeError {
             | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
-            | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }
@@ -1199,7 +1185,6 @@ impl TypeError {
             | UseAfterDiscard { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
-            | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }

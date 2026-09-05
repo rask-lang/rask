@@ -503,9 +503,15 @@ impl TypeChecker {
                             span: stmt.span,
                         });
                     }
-                    // D2: Copy types — accepted but semantically a no-op.
-                    // Warning emitted by the lint pass, not the type checker,
-                    // because D2 is advisory, not a blocking error.
+                    // D2: `discard` on a Copy type. The binding still goes
+                    // away — that's D1, and it's the same for every type — but
+                    // the freeing half, which is the reason to write `discard`
+                    // rather than let the scope end, does nothing here. A
+                    // warning rather than an error: the program is correct,
+                    // it just says it's doing something it isn't.
+                    else {
+                        self.pending_discards.push((name.clone(), resolved, stmt.span));
+                    }
                     self.span_types.insert((name_span.start, name_span.end, name_span.file_id), ty);
                     // D1: Invalidate the binding
                     self.discarded_bindings.insert(name.clone(), stmt.span);
@@ -569,6 +575,16 @@ impl TypeChecker {
                         self.bind_tuple_patterns(sub_pats, &var, is_const, span);
                     }
                 }
+            }
+        }
+    }
+
+    /// D2, once every literal has settled on a type.
+    pub(super) fn validate_pending_discards(&mut self) {
+        for (name, ty, span) in std::mem::take(&mut self.pending_discards) {
+            let ty = self.ctx.apply(&ty);
+            if self.is_copy_type(&ty) {
+                self.errors.push(TypeError::DiscardCopyType { name, ty, span });
             }
         }
     }

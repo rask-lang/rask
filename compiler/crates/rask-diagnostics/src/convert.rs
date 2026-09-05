@@ -1401,14 +1401,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("guard patterns bind variables in the outer scope — the 'else' path must exit to ensure the binding is always valid")
             }
 
-            MissingMutateAnnotation { param_name, param_index: _, span } => {
-                Diagnostic::error(format!("parameter `{}` requires `mutate` annotation at call site", param_name))
-                    .with_code("E0326")
-                    .with_primary(*span, format!("add `mutate` before this argument"))
-                    .with_help(format!("call with `mutate {}`", param_name))
-                    .with_fix(format!("add `mutate` annotation"))
-                    .with_why("mutable parameters require explicit annotation at call site for clarity")
-            }
 
             MissingOwnAnnotation { param_name, param_index: _, span } => {
                 Diagnostic::error(format!("parameter `{}` requires `own` annotation at call site", param_name))
@@ -1855,13 +1847,13 @@ impl ToDiagnostic for rask_types::TypeError {
 
             DiscardCopyType { name, ty, span } => {
                 Diagnostic::warning(format!(
-                    "`discard {}` on Copy type `{}` has no effect",
+                    "`discard {}` frees nothing — `{}` is a Copy type",
                     name, ty
                 ))
                 .with_code("W0301")
-                .with_primary(*span, "Copy types are trivially cleaned up")
-                .with_help(format!("remove `discard {}` — Copy types don't need explicit cleanup", name))
-                .with_why("Copy types (primitives, small values) are cleaned up automatically — `discard` is only meaningful for heap-allocated or move-only types")
+                .with_primary(*span, "there is no allocation here to release")
+                .with_fix(format!("remove `discard {}`", name))
+                .with_why("`discard` exists to end a value's life before its scope does, which only means something when the value owns memory. A Copy type owns none, so the statement reads as a cost it doesn't pay. It does still put the name out of use, so if that was the point, say so with a comment [mem.ownership/D1, D2]")
             }
 
             DiscardResourceType { name, ty, span } => {
@@ -1906,16 +1898,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a positive step on a descending range (or negative step on ascending range) produces zero iterations [ctrl.ranges/SP1-SP2]")
             }
 
-            MessageCoverageMissing { variant, enum_name, span } => {
-                Diagnostic::error(format!(
-                    "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
-                    variant, enum_name
-                ))
-                    .with_code("E0338")
-                    .with_primary(*span, "variant needs @message(\"...\") annotation")
-                    .with_help("add @message(\"template\") to this variant, or change the payload to an error type")
-                    .with_why("every variant in a @message enum must have an explicit template or a single Error payload that auto-delegates [type.errors/ER26]")
-            }
 
             BareSyncAccess { ty, method, span } => {
                 Diagnostic::error(format!(
