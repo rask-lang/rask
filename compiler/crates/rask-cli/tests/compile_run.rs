@@ -7239,3 +7239,36 @@ func main() {
         "the first bytes of each string were freed before the write read them"
     );
 }
+
+/// `assert` and `check` name `bool` as what they need, not as what you wrote.
+///
+/// The two constraints had their arguments the wrong way round — expected type
+/// second instead of first, unlike every other site — so `assert opt()` said
+/// "expected `i32?`, found `bool`": the code's own type presented as the
+/// requirement, and `assert`'s requirement as the mistake. `assert 1` read
+/// correctly by luck, because an unsolved literal is filled in from the other
+/// side and lands in the second slot anyway.
+#[test]
+fn assert_says_which_side_wanted_a_bool() {
+    let cases = [
+        ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
+        ("func main() { assert \"nonempty\" }", "found `string`"),
+        ("func main() { assert 1 }", "found `i64`"),
+        ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
+    ];
+    for (src, found) in cases {
+        let out = check_output(src);
+        assert!(
+            out.contains("expected `bool`"),
+            "`bool` is what assert needs, so it is the expected side:\n{out}"
+        );
+        assert!(out.contains(found), "should name what it got ({found}):\n{out}");
+    }
+
+    // The message argument had the same inversion.
+    let out = check_output("func main() { assert 1 == 1, 42 }");
+    assert!(
+        out.contains("expected `string`") && out.contains("found `i64`"),
+        "the message has to be a string, and 42 isn't one:\n{out}"
+    );
+}

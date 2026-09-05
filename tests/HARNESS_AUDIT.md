@@ -476,10 +476,13 @@ distinguish the two policies. The implementation does get it right — `2.5 → 
 
 ## Part 4 — Diagnostic bugs noticed on the way
 
-- **`assert` type error has its roles backwards.** `assert opt()` where `opt()`
-  returns `i32?` says "expected `i32?`, found `bool`". The bool is what `assert`
-  wants; the `i32?` is what it got. Same inversion on `assert "nonempty"`.
-  `assert 1` gets it right.
+- ~~**`assert` type error has its roles backwards.**~~ **Fixed.** `assert opt()`
+  where `opt()` returns `i32?` said "expected `i32?`, found `bool`" — the code's
+  own type presented as the requirement, and `assert`'s requirement as the
+  mistake. The two constraints had their arguments the wrong way round, unlike
+  every other site in the checker; `assert 1` read correctly by luck, because an
+  unsolved literal is filled in from the other side. The message argument had
+  the same inversion (`assert x, 42` blamed `string`).
 - **Two error-code schemes in one compiler.** Most diagnostics are `E0817`-style;
   the context ones are `error[mem.context/CC8]`. Anything grepping for `^error\[E`
   misses the second family.

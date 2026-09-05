@@ -2107,17 +2107,24 @@ impl TypeChecker {
             }
 
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                // Expected type first, found second — every other site in this
+                // file does that, and these two had it the other way round. So
+                // `assert opt()` reported "expected `i32?`, found `bool`",
+                // naming what the code wrote as the requirement and what
+                // `assert` requires as the mistake. `assert 1` read correctly
+                // only because an unsolved literal is filled in from the other
+                // side, which put the concrete type in the second slot by luck.
                 let cond_ty = self.infer_expr(condition);
                 self.ctx.add_constraint(TypeConstraint::Equal(
-                    cond_ty,
                     Type::Bool,
+                    cond_ty,
                     condition.span,
                 ));
                 if let Some(msg) = message {
                     let msg_ty = self.infer_expr(msg);
                     self.ctx.add_constraint(TypeConstraint::Equal(
-                        msg_ty,
                         Type::String,
+                        msg_ty,
                         msg.span,
                     ));
                 }
