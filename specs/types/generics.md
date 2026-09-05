@@ -319,7 +319,7 @@ The compiler auto-derives Comparable where all fields implement Comparable — l
 | **CO1: Auto-derive** | Primitives, structs with all Comparable fields, enums (variant order, then payload): auto-derived |
 | **CO2: Override** | `extend Type with Comparable { ... }` overrides the auto-derived version |
 | **CO3: Lexicographic** | Fields compared in declaration order — first field is most significant |
-| **CO4: Float exclusion** | `f32`/`f64` are NOT Comparable (NaN breaks totality); see `type.operators/ORD3` |
+| **CO4: Floats included** | `f32`/`f64` are Comparable. `compare()` is a total order so `sort`, `min`, `max` and every `T: Comparable` helper work on them; the operators `<`, `>`, `<=`, `>=` stay IEEE, so a comparison against `NaN` is `false`. See `type.operators/ORD3` |
 
 ```rask
 trait Comparable: Equal {

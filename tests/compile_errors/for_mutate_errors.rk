@@ -12,7 +12,6 @@ func test_structural_mutation() {
 }
 
 // LP16: passing for-mutate item to take parameter
-// ERROR: cannot take item out of collection
 
 func consume(take s: string) {
     println(s)

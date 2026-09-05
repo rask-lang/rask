@@ -79,7 +79,7 @@ go down.
 | [linear_containers.rk](linear_containers.rk) | Vec/Map can't hold linear elements (RC1/RC3): annotation, push, param, return, field, transitive, nested, optional, alias, Map value/key (E0820) |
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
-| [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
+| [borrow_stored.rk](borrow_stored.rk) | `string[..]` written as a type — a slice expression has no type spelling, because the storable form is `StringView`, which refcounts the source buffer rather than borrowing it. Parser-level only; the S3 rejection for keeping a slice past its statement is in borrow_errors.rk |
 | [mutate_marker_required.rk](mutate_marker_required.rk) | An argument to a `mutate` parameter with no `mutate` marker (PM4/PM5, E0373) — a Copy argument and a field path are no exception; a method receiver is exempt; the marker on a non-`mutate` parameter is E0328 (#530) |
 | [mutate_through_binding.rk](mutate_through_binding.rk) | Writing through a name a test or a pattern introduced (E0372, #788) — `if x? as v`, a `mutate` argument, a plain `for` element, a match-arm payload, `while x? as v`. `for mutate` and write-back through the original stay legal |
 | [mutate_param_left_empty.rk](mutate_param_left_empty.rk) | A `mutate` parameter consumed and not replaced (PM2, E0836, #815) — outright and on one path only; consume-and-replace stays legal, and `take` is how a function says it keeps the value |
@@ -100,7 +100,7 @@ go down.
 
 | File | What it tests |
 |------|--------------|
-| [closure_errors.rk](closure_errors.rk) | Double mutable capture, scope-limited escape, mutate params on closures |
+| [closure_errors.rk](closure_errors.rk) | What the parser rejects around closures: `\|mutate x\|` capture syntax (unimplemented, #1087 — the message used to suggest `\|mutate x: T\|`, which compiles and means something else) and a closure type in a signature. MC2 and SL2 can't be reached until those exist |
 
 ### Other
 
