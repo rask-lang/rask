@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a `with` guard escaping its block
-// ERROR: the with guard `g` can't leave its block
+// Rejects: the with guard `g` can't leave its block
 //
 // mem.boxes ("Why scoped access, not guards"): a box hands out access to its
 // payload for the with block's duration, not a value of its own. Returning

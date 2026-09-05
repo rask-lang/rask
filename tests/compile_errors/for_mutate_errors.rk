@@ -1,5 +1,5 @@
 // LP14: structural mutation during `for mutate`
-// ERROR: cannot push during mutable iteration
+// Rejects: cannot push during mutable iteration
 
 func test_structural_mutation() {
     mut items = Vec.new<string>()

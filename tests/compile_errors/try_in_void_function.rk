@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: `try` in a function that returns nothing
-// ERROR: `try` requires function returning Result or Option, found `void`
+// Rejects: `try` requires function returning Result or Option, found `void`
 //
 // `try` sends the error to the caller, so the enclosing function has to declare
 // somewhere for it to go. A function with no return type has nowhere, and the

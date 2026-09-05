@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: structural match without a declared conformance (nominal flip, G1/#283)
+// Rejects: structural match without a declared conformance (nominal flip, G1/#283)
 // Expected: typecheck error E0333 — `Dog` does not implement `Greeter`
 
 trait Greeter {

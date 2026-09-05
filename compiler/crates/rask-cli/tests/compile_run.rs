@@ -6805,3 +6805,189 @@ fn nothing_leaks_at_exit() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+// ─── The compile_errors/ marker gate ─────────────────────────
+
+/// A file's `// ERROR` markers, one entry per marker, holding the line each
+/// one is anchored to. A run of consecutive comment-only markers is one
+/// marker: several lines often describe a single rejection.
+fn marker_anchors(source: &str) -> Vec<usize> {
+    let mut anchors = Vec::new();
+    let mut in_standalone_run = false;
+    for (idx, raw) in source.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        let standalone = trimmed.starts_with("//");
+        let is_marker = if standalone {
+            trimmed.starts_with("// ERROR")
+        } else {
+            // Trailing marker on a line of code: `x = y  // ERROR: ...`
+            raw.split("//")
+                .skip(1)
+                .any(|c| c.trim_start().starts_with("ERROR"))
+        };
+        if !is_marker {
+            in_standalone_run = false;
+            continue;
+        }
+        if standalone && in_standalone_run {
+            continue;
+        }
+        anchors.push(idx + 1);
+        in_standalone_run = standalone;
+    }
+    anchors
+}
+
+/// Line numbers `rask check` pointed at, from the `--> file.rk:LINE:COL` line
+/// of each diagnostic.
+fn diagnostic_lines(output: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = output
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("--> "))
+        .filter_map(|loc| {
+            let mut parts = loc.rsplitn(3, ':');
+            parts.next()?; // column
+            parts.next()?.parse().ok()
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+fn compile_errors_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("compile_errors")
+}
+
+/// `<file> <count>` lines, `#` comments ignored.
+fn read_dead_marker_registry(dir: &Path) -> std::collections::BTreeMap<String, usize> {
+    let text = std::fs::read_to_string(dir.join("DEAD_MARKERS.txt"))
+        .expect("tests/compile_errors/DEAD_MARKERS.txt is missing");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let (name, count) = l
+                .rsplit_once(char::is_whitespace)
+                .unwrap_or_else(|| panic!("DEAD_MARKERS.txt: expected `<file> <count>`, got `{l}`"));
+            let count = count
+                .parse()
+                .unwrap_or_else(|_| panic!("DEAD_MARKERS.txt: `{count}` is not a number"));
+            (name.trim().to_string(), count)
+        })
+        .collect()
+}
+
+/// Every `// ERROR` marker must have a diagnostic under it.
+///
+/// `compile_error()` only ever asked whether a file failed *somewhere*, so a
+/// file with twelve markers passed on the strength of one parse error at the
+/// top — the other eleven rules could be unimplemented and nothing would say
+/// so. Three of the language's rules turned out to be exactly that (audit 1.1,
+/// 1.3). This test anchors each marker to a line instead: the compiler must
+/// point at something between this marker and the next one.
+///
+/// It walks the directory, so a new fixture is covered the moment it lands —
+/// 28 files had no test calling them at all.
+///
+/// Markers still unanswered are listed in DEAD_MARKERS.txt with a count per
+/// file. That count may only go down: a new dead marker fails the test, and so
+/// does a count that's too high, so a fix can't be quietly left unrecorded.
+#[test]
+fn every_compile_error_marker_is_answered_by_a_diagnostic() {
+    let dir = compile_errors_dir();
+    let rask = rask_binary();
+    let registry = read_dead_marker_registry(&dir);
+
+    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("cannot read tests/compile_errors")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rk"))
+        .collect();
+    fixtures.sort();
+    assert!(
+        fixtures.len() > 100,
+        "only {} fixtures found — is the path right?",
+        fixtures.len()
+    );
+
+    let mut new_dead = Vec::new();
+    let mut stale_registry = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for path in &fixtures {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let source = std::fs::read_to_string(path).unwrap();
+        let anchors = marker_anchors(&source);
+        if anchors.is_empty() {
+            continue;
+        }
+        seen.insert(name.clone());
+
+        let out = Command::new(&rask)
+            .arg("check")
+            .arg(path)
+            .output()
+            .expect("failed to run rask check");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let diagnostics = diagnostic_lines(&combined);
+
+        let mut dead = Vec::new();
+        for (i, &anchor) in anchors.iter().enumerate() {
+            let next = anchors.get(i + 1).copied().unwrap_or(usize::MAX);
+            let answered = diagnostics.iter().any(|&d| d >= anchor && d < next);
+            if !answered {
+                dead.push(anchor);
+            }
+        }
+
+        let allowed = registry.get(&name).copied().unwrap_or(0);
+        if dead.len() > allowed {
+            new_dead.push(format!(
+                "  {name}: {} markers unanswered, DEAD_MARKERS.txt allows {allowed}\n    \
+                 unanswered at lines {:?}",
+                dead.len(),
+                dead
+            ));
+        } else if dead.len() < allowed {
+            stale_registry.push(format!(
+                "  {name}: {} markers unanswered, DEAD_MARKERS.txt still says {allowed}",
+                dead.len()
+            ));
+        }
+    }
+
+    let mut problems = String::new();
+    if !new_dead.is_empty() {
+        problems.push_str(
+            "\nMarkers with no diagnostic under them. Either the rule stopped firing, or\n\
+             the marker sits below something that halts the pipeline before its pass runs:\n",
+        );
+        problems.push_str(&new_dead.join("\n"));
+        problems.push('\n');
+    }
+    if !stale_registry.is_empty() {
+        problems.push_str(
+            "\nFixed markers still listed as dead. Lower the count in\n\
+             tests/compile_errors/DEAD_MARKERS.txt:\n",
+        );
+        problems.push_str(&stale_registry.join("\n"));
+        problems.push('\n');
+    }
+    let unknown: Vec<&String> = registry.keys().filter(|k| !seen.contains(*k)).collect();
+    if !unknown.is_empty() {
+        problems.push_str(&format!(
+            "\nDEAD_MARKERS.txt lists files that are gone or have no markers: {unknown:?}\n"
+        ));
+    }
+    assert!(problems.is_empty(), "{problems}");
+}

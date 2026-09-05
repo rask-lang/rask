@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: several messages about the wrapper shapes, all naming the type
-// ERROR: no method `ok` on `i64 or IoError`
+// Rejects: no method `ok` on `i64 or IoError`
 //
 // #646: the error side of a `T or E` printed as an internal id (`i64 or
 // <type#77>`) rather than the name the author wrote. Not one message — whatever

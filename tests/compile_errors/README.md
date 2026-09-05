@@ -2,7 +2,18 @@
 
 This directory contains code that **should not compile**. Each file demonstrates specific safety guarantees enforced by the Rask compiler.
 
-Each `// ERROR:` comment indicates the expected error. If the compiler accepts any of these, that's a bug in the compiler — the spec says it should be rejected.
+Each `// ERROR:` comment claims the compiler rejects the code below it. If the
+compiler accepts it, that's a compiler bug — the spec says it should be rejected.
+
+**Markers are anchored to a line.** The check is: between one marker and the
+next, at least one diagnostic must point at a line in that span. So put the
+marker directly above (or on the end of) the line that should be rejected. A run
+of consecutive `// ERROR` lines counts as one marker — several lines often
+describe a single rejection.
+
+Markers no diagnostic answers yet are listed in
+[DEAD_MARKERS.txt](DEAD_MARKERS.txt) with a per-file count. That count may only
+go down.
 
 ## Files
 
@@ -113,7 +124,11 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 ## Running Tests
 
 ```bash
-rask test-specs tests/compile_errors/
+cd compiler
+cargo test --release -p rask-cli --test compile_run every_compile_error_marker
 ```
 
-Each file includes `// ERROR:` comments indicating expected error patterns. If the compiler accepts any of these files, it's a compiler bug — the spec requires rejection.
+That test walks this directory, so a new fixture is covered the moment it lands
+— no registration step. Individual files also have their own tests in
+`compiler/crates/rask-cli/tests/compile_run.rs` that assert the *wording* of the
+diagnostic, which the marker gate doesn't look at.

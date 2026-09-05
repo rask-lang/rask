@@ -21,12 +21,12 @@ the entry says so.
 These are holes in the checking machinery, not in any one test. They're first
 because they set the ceiling on how much the rest of the suite is worth.
 
-### 1.1 A compile-error test passes if the file fails for *any* reason
+### 1.1 A compile-error test passes if the file fails for *any* reason — FIXED
 
-`compile_error(name)` in `compiler/crates/rask-cli/tests/compile_run.rs` runs
-`rask check` and checks the exit code is non-zero. That's it. A file with twelve
-`// ERROR:` markers passes when one fires — or when none fire and an unrelated
-typo does.
+`compile_error(name)` in `compiler/crates/rask-cli/tests/compile_run.rs` ran
+`rask check` and checked the exit code was non-zero. That's it. A file with
+twelve `// ERROR:` markers passed when one fired — or when none fired and an
+unrelated typo did.
 
 The numbers, over `tests/compile_errors/` (111 files, 394 `// ERROR` markers):
 
@@ -36,20 +36,38 @@ The numbers, over `tests/compile_errors/` (111 files, 394 `// ERROR` markers):
 | Exit code only (`compile_error`) | 21 | 62 |
 | Referenced by no test at all | 28 | 138 |
 
-So **200 of 394 claimed rejections (51%) are backed by nothing stronger than
-"the file didn't compile"**, and 138 of them are backed by nothing at all.
-#1057 added one file to this directory and wired it properly — the ratio held
-because the backlog it fixed was in the suite, not here.
+So **200 of 394 claimed rejections (51%) were backed by nothing stronger than
+"the file didn't compile"**, and 138 of them by nothing at all.
 
-The worst individual case is `borrow_errors.rk`: 19 markers, no test runs it, and
+The worst individual case is `borrow_errors.rk`: 19 markers, no test ran it, and
 9 of the 12 errors it does produce are `E0322 cannot mutate — declared let` —
-the file forgot `mut` on its own locals. Six of its eleven claimed borrow rules
-(move out of a borrowed parameter, move a non-Copy field out of borrowed self,
-escaping borrow, overlapping borrows, non-Copy copy out of a collection, return
-from `ensure`) produce no diagnostic at all.
+the file forgot `mut` on its own locals. Eleven of its claimed borrow rules
+produce no diagnostic at all.
 
-`context_missing.rk` is the clean-cut case: 2 markers, **0 errors — it compiles**
-— and no test runs it.
+`context_missing.rk` is the clean-cut case: a marker, **0 errors — it compiles**
+— and no test ran it.
+
+**The fix.** Only 65 of the 394 markers carry an error code, so matching codes
+was never going to work. The check is a line instead:
+`every_compile_error_marker_is_answered_by_a_diagnostic` walks the directory,
+runs `rask check` on each file, and requires a diagnostic pointing somewhere
+between each marker and the next one. Walking the directory is what closes the
+28-file hole — a fixture is covered the moment it lands, with no registration
+step.
+
+Two cleanups the anchoring needed. A run of consecutive `// ERROR` lines now
+counts as one marker (several lines often describe one rejection), and 43 files
+had a header comment that opened `// ERROR:` to summarise the file — those say
+`// Rejects:` now, so they don't demand a diagnostic on line 2. That leaves
+**358 real markers, of which 49 answer nothing**, listed per file in
+`tests/compile_errors/DEAD_MARKERS.txt`. The count may only go down: a new dead
+marker fails, and so does a count that's too high, so a fix can't be left
+unrecorded.
+
+The 49 split two ways. Either the rule is real and unimplemented — that's the
+interesting case, and it's how 1.3 found `mem.borrowing`'s block-scoped rule and
+`comp.advanced`'s handle typestate — or the marker sits below a parse error that
+stops the pipeline before its pass ever runs, which is 1.2.
 
 ### 1.2 A parse error hides every later marker in the same file
 

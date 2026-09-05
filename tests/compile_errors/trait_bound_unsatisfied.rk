@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: passing a type that doesn't implement the bound's trait (#314)
+// Rejects: passing a type that doesn't implement the bound's trait (#314)
 // Expected: typecheck error E0333 — `Fish` does not implement `Greeter`
 
 trait Greeter {
