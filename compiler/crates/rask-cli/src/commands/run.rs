@@ -309,6 +309,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     match run_output {
         Ok(out) => {
+            forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
             if !out.status.success() || !complete {
@@ -320,6 +321,22 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             process::exit(1);
         }
     }
+}
+
+/// Pass the test binary's own stderr through.
+///
+/// `.output()` captures both streams and only stdout was read, so anything the
+/// binary said on stderr was collected and dropped: a leak report, a panic
+/// message, a runtime warning. `tests/leak_gate.sh` decides by grepping this
+/// output for the leak report, so with stderr going nowhere every file read as
+/// clean and the gate had never checked anything (#1048).
+fn forward_test_stderr(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(bytes);
+    let _ = std::io::stderr().flush();
 }
 
 /// Compile a .rk file's tests natively and run them.
@@ -496,6 +513,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
 
     match run_output {
         Ok(out) => {
+            forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
             out.status.success() && complete
