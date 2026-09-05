@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What test isolation means, and what it doesn't (std.testing/T6).
+//
+// T6 read "each test runs in isolation with no shared state", which promises
+// more than any test runner gives: tests share the process, so a module-level
+// box written by one is read by the next. That is the right behaviour — a
+// global is global, and resetting one between tests would be a surprise of its
+// own — but the wording had to say so, and nothing pinned either half.
+//
+// The half that is real: each test gets its own locals, and one test's failure
+// doesn't stop the next.
+
+import sync.Shared
+
+const counter = Shared.new(0)
+
+func bump() -> i64 {
+    with counter.write() as c {
+        c = c + 1
+    }
+    with counter.read() as c {
+        return c
+    }
+}
+
+test "a — locals are this test's own" {
+    mut local = 1
+    local = local + 1
+    assert local == 2
+    assert bump() == 1
+}
+
+test "b — its own locals again, with the same name" {
+    mut local = 1
+    local = local + 1
+    assert local == 2
+}
+
+// Runs after "a", so the box it wrote is the box read here. Process-global
+// state is not reset between tests, and this is the line that says so.
+test "c — a module-level box carries across tests" {
+    with counter.read() as c {
+        assert c == 1
+    }
+    assert bump() == 2
+}

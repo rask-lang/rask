@@ -163,7 +163,7 @@ The split between the two fallbacks is the point, not an accident. A fallback is
 | Rule | Description |
 |------|-------------|
 | **ER14: Handle the error** | `r catch <binder> => <expr>` yields the success payload, or evaluates the body with the error bound (lazily — only on failure). The binder is `e` (any name) or `_`; it is **never optional**, and there is no `r catch v`. The body is a **value or any divergence** — `return`, `break`, `continue`, `panic(…)` — legal because visible: the exit is written where it happens. Results only |
-| **ER47: The shape rule** | What bare `try` propagates must fit the enclosing return: `try r` needs an error branch that accepts `E`, `try x` needs a `T?` return. On a flat `T? or E` **operand** — where both branches could leave — bare `try` is a compile error naming both escapes; write the composite `try f() ?? …` (ER16b) or handle the shapes explicitly |
+| **ER47: The shape rule** | What bare `try` propagates must fit the enclosing return: `try r` needs an error branch that accepts `E`, `try x` needs a `T?` return. On a flat `T? or E` **operand** — where both branches could leave — bare `try` is a compile error naming both escapes; write the composite `try f() ?? …` (ER16b) or handle the shapes explicitly. One enclosing scope isn't a function: a `test` block takes either shape and turns it into that test's failure (`std.testing/T20`) |
 | **ER45a: A diverging right side needs parens in a comma list** | Inside an argument list, struct literal, or collection literal, a diverging `??` or `catch` must be parenthesised: `f((g() catch _ => return E), other)`. Bare, it's a compile error asking for them. A value right side needs nothing — no exit to locate |
 
 <!-- test: skip -->
@@ -607,6 +607,7 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `try x` on a `T?` in a `T or E`-returning function | ER47 | Compile error — `none` doesn't fit an error branch. Use `x ?? return <error>` |
 | `try r` on a `T or E` in a `T?`-returning function | ER47 | Compile error — the error has nowhere to go. Use `r catch _ => return none` (drops the detail, acknowledged) |
 | `try f()` where `f` returns `T? or E` (flat) | ER47 | Compile error naming both escapes. Write `try f() ?? <…>` (ER16b) or handle explicitly |
+| `try` in a `test` block | `std.testing/T20` | Legal — the block is the error branch. Propagating fails that test by name and reports the error |
 | `try f() ?? v` on a flat `T? or E` | ER16b | Legal, no parens — `(try f()) ?? v`; error propagates, absence gets `v` |
 | `x ?? return MyError` | OPT11 | Legal anywhere `return MyError` is — normal return rules apply |
 | `r catch _ => return none` in a `T?`-returning function | ER14 | Legal — drops the error detail, acknowledged |

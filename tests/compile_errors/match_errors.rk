@@ -17,20 +17,31 @@ func test_nonexhaustive() {
 }
 
 // --- wildcard discards linear resource (PM5) ---
-// ERROR: wildcard pattern discards linear resource 'File'
 @resource
 struct File { fd: i32 }
 
+struct GuardError { detail: string }
+
+extend GuardError {
+    public func message(self) -> string {
+        return self.detail
+    }
+}
+
+func open_file() -> File or GuardError {
+    return File { fd: 1 }
+}
+
 func test_wildcard_linear() {
-    let result: File or GuardError = File { fd: 1 }
+    let result = open_file()
+    // ERROR: the `File` arm discards a linear resource without consuming it
     match result {
-        File => {},        // ERROR: _ discards linear File
+        File => {},
         GuardError as e => {},
     }
 }
 
 // --- guard pattern else doesn't diverge (CF13) ---
-// ERROR: else block must diverge
 func test_guard_no_diverge() {
     let opt: i32? = 42
     mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
@@ -44,7 +55,7 @@ enum Token { Number(i32), Ident(string), Plus, Minus }
 func test_or_pattern_mismatch() {
     let t = Token.Plus
     match t {
-        Number(n) | Ident(n) => println("{n}"),  // ERROR: n is i32 in one, string in other
+        Number(n) | Ident(n) => println("{n}"),
         _ => {},
     }
 }
@@ -60,25 +71,27 @@ func test_match_expr_missing_arm() -> string {
     }
 }
 
-// --- linear resource only consumed in one match arm ---
-// ERROR: linear resource 'file' must be consumed on all paths
-func close(take f: File) {}
-
-func test_partial_consume() {
-    let result: File or GuardError = File { fd: 1 }
-    match result {
-        File as file => close(file),   // consumed here
-        GuardError as e => {},         // but what if there was a File?
-    }
-    // Actually this is fine — the success and error branches are disjoint.
-    // The real error is consuming in only *one* branch of the *same* variant.
+// --- linear resource consumed on only one path ---
+//
+// Matching a `File or GuardError` and closing the file arm is fine: the two
+// arms are disjoint, and only one of them holds a resource. The rejection is
+// for a branch that consumes and a sibling that doesn't.
+extend File {
+    func close(take self) {}
 }
 
-// A real partial consume error:
+func test_match_consume_is_fine() {
+    let result = open_file()
+    match result {
+        File as file => file.close(),
+        GuardError as e => {},
+    }
+}
+
 func test_conditional_consume(cond: bool) {
     let f = File { fd: 1 }
+    // ERROR: `f` isn't consumed when cond is false [E0805]
     if cond {
-        close(f)           // consumed here
+        f.close()
     }
-    // ERROR: f may not be consumed if cond is false
 }

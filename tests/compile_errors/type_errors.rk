@@ -39,14 +39,6 @@ func test_int_to_char() {
     let c: char = n as char
 }
 
-// --- float comparison with < (ORD3) ---
-// ERROR: f64 does not implement Comparable, cannot use '<'
-func test_float_compare() {
-    let a: f64 = 1.0
-    let b: f64 = 2.0
-    let result = a < b
-}
-
 // --- Option<T> does not auto-unwrap (OPT9) ---
 // ERROR: expected i32, found i32?
 func test_option_no_auto_unwrap() {

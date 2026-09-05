@@ -14,7 +14,7 @@ func route(req: Request) -> Response {
     let t0 = time.Instant.now()
     let resp = route_inner(req)
     let dt = t0.elapsed()
-    record_request(resp.status, dt.as_millis() as f64)
+    record_request(resp.status, dt.as_millis().round<f64>())
     return resp
 }
 

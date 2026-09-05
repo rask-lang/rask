@@ -53,19 +53,19 @@ func window_of(s: Slot9) -> time.Duration {
 
 test "a module import reaches its types through the module" {
     let d: time.Duration = time.Duration.from_millis(250)
-    assert_eq(d.as_millis(), 250)
+    assert d.as_millis() == 250
 }
 
 test "the qualified name works in a field and a return type" {
     let s = Slot9 { window: time.Duration.from_millis(40), how: Method.Store }
-    assert_eq(window_of(s).as_millis(), 40)
+    assert window_of(s).as_millis() == 40
 }
 
 test "a program may name a type after one the imported module exports" {
     let m = Method.Fetch
     match m {
-        Method.Fetch => assert_eq(1, 1)
-        Method.Store => assert_eq(1, 0)
+        Method.Fetch => assert 1 == 1
+        Method.Store => assert 1 == 0
     }
 }
 
@@ -73,8 +73,8 @@ test "the qualified type survives a generic" {
     mut v: Vec<time.Duration> = Vec.new()
     v.push(time.Duration.from_millis(5))
     v.push(time.Duration.from_millis(15))
-    assert_eq(v.len(), 2)
-    assert_eq(v[1].as_millis(), 15)
+    assert v.len() == 2
+    assert v[1].as_millis() == 15
 }
 
 test "a qualified field gets the real layout, not a pointer's" {
@@ -82,9 +82,9 @@ test "a qualified field gets the real layout, not a pointer's" {
         result: http.Response.new(207, "body-here"),
         sentinel: 424242,
     }
-    assert_eq(f.result.status, 207)
-    assert_eq(f.result.body, "body-here")
-    assert_eq(f.sentinel, 424242)
+    assert f.result.status == 207
+    assert f.result.body == "body-here"
+    assert f.sentinel == 424242
 }
 
 test "an aliased module import gets the real layout too" {
@@ -92,15 +92,15 @@ test "an aliased module import gets the real layout too" {
         result: h.Response.new(409, "conflict"),
         sentinel: 191919,
     }
-    assert_eq(f.result.status, 409)
-    assert_eq(f.result.body, "conflict")
-    assert_eq(f.sentinel, 191919)
+    assert f.result.status == 409
+    assert f.result.body == "conflict"
+    assert f.sentinel == 191919
 }
 
 test "both spellings of the same module name one type" {
     let viaModule: http.Response = http.Response.new(200, "a")
     let viaAlias: h.Response = h.Response.new(200, "a")
-    assert_eq(viaModule.status, viaAlias.status)
+    assert viaModule.status == viaAlias.status
 }
 
 func main() {

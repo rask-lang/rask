@@ -41,17 +41,17 @@ func main() {}
 
 test "a borrowed parameter can be read" {
     let bag = fresh(7)
-    assert_eq(peek(bag), 1)
-    assert_eq(peek(bag), 1)        // still the caller's
+    assert peek(bag) == 1
+    assert peek(bag) == 1        // still the caller's
 }
 
 test "a mutate parameter can be consumed if it is replaced" {
     mut bag = fresh(7)
-    assert_eq(swap_out(mutate bag), 1)
-    assert_eq(peek(bag), 0)        // the replacement is what's left
+    assert swap_out(mutate bag) == 1
+    assert peek(bag) == 0        // the replacement is what's left
 }
 
 test "a take parameter owns what it was given" {
     let bag = fresh(7)
-    assert_eq(own_it(bag), 1)
+    assert own_it(bag) == 1
 }

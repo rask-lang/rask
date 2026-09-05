@@ -31,7 +31,7 @@ func bump(c: Shared<i32, Local>) -> i32 {
 test "the binding is the value, not the box" {
     let c = Shared.local(42)
     with c.write() as v {
-        assert_eq(v, 42)
+        assert v == 42
     }
 }
 
@@ -40,13 +40,13 @@ test "writes through the binding land in the cell" {
     with c.write() as v {
         v = v + 5
     }
-    assert_eq(c.get(), 47)
+    assert c.get() == 47
 }
 
 test "the block is an expression" {
     let c = Shared.local(21)
     let doubled: i64 = with c.write() as v { v * 2 }
-    assert_eq(doubled, 42)
+    assert doubled == 42
 }
 
 test "a struct payload reads and writes through the binding" {
@@ -56,8 +56,8 @@ test "a struct payload reads and writes through the binding" {
         st.mode = 3
     }
     with s.write() as st {
-        assert_eq(st.count, 11)
-        assert_eq(st.mode, 3)
+        assert st.count == 11
+        assert st.mode == 3
     }
 }
 
@@ -70,32 +70,32 @@ test "Shared<T, S> works in type position" {
         h = h + 1
     }
     with app.hits.write() as h {
-        assert_eq(h, 1)
+        assert h == 1
     }
     with app.state.write() as st {
         st.count = 99
     }
     with app.state.write() as st {
-        assert_eq(st.count, 99)
+        assert st.count == 99
     }
 }
 
 test "an early exit still writes back on the way out" {
     let c = Shared.local(47)
-    assert_eq(bump(c), 147)
+    assert bump(c) == 147
     with c.write() as v {
-        assert_eq(v, 147)
+        assert v == 147
     }
 }
 
 test "get, set and replace work through a let binding" {
     let counter = Shared.local(0)
-    assert_eq(counter.get(), 0)
+    assert counter.get() == 0
     counter.set(42)
-    assert_eq(counter.get(), 42)
+    assert counter.get() == 42
     let old = counter.replace(7)
-    assert_eq(old, 42)
-    assert_eq(counter.get(), 7)
+    assert old == 42
+    assert counter.get() == 7
 }
 
 test "the mutex path shares this lowering and still agrees" {
@@ -104,6 +104,6 @@ test "the mutex path shares this lowering and still agrees" {
         v = v + 1
     }
     with m.write() as v {
-        assert_eq(v, 101)
+        assert v == 101
     }
 }

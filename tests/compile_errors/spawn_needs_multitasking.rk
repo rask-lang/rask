@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `spawn` with no `using Multitasking { }` scope
+// (conc.async/CC1 and CC2, E0352/E0353, std.testing/T17).
+//
+// `spawn` submits the task to the runtime that the block installs. Without one
+// there is nowhere to submit it, so the program panicked on its first task
+// instead of failing to compile.
+//
+// CC1 was written but keyed off `BuiltinFunctionKind::Spawn`, which is only
+// ever minted for the qualified `async.spawn` spelling — so the form everyone
+// writes, a bare `spawn(|| { … })`, was never checked at all. CC2 (the
+// transitive case) worked, but the walk never visited `test` blocks, so a test
+// body was exempt from both.
+//
+// The error lands where the block belongs, which is not always the `spawn`. A
+// function that spawns and leaves the scope to its caller is legitimate —
+// `http.serve` spawns per connection — so only a function nothing calls (the
+// entry point, a `test` block, a `@test` function) is blamed at the `spawn`
+// itself. Everything else is reported at its call sites.
+
+// A library function that spawns: no error here. Its callers are the ones who
+// have to open a scope.
+func launch_worker() {
+    let h = spawn(|| { return 1 })
+    h.detach()
+}
+
+// --- CC1: the entry point spawns with nothing installed ---
+func main() {
+    // ERROR: `spawn` needs a `using Multitasking { }` scope [E0352]
+    let h = spawn(|| { return 1 })
+    h.detach()
+}
+
+// --- CC2: calling something that reaches spawn, outside any scope ---
+test "calls a function that spawns" {
+    // ERROR: calling `launch_worker` needs a `using Multitasking { }` scope [E0353]
+    launch_worker()
+}
+
+// --- CC1 inside a test body: T17, the same rule with no caller to blame ---
+test "spawns directly" {
+    // ERROR: `spawn` needs a `using Multitasking { }` scope [E0352]
+    let h = spawn(|| { return 2 })
+    h.detach()
+}
+
+// --- the scope is one line, and it's all that's asked for ---
+test "opens the scope, so this is fine" {
+    using Multitasking {
+        let h = spawn(|| { return 3 })
+        h.detach()
+    }
+}

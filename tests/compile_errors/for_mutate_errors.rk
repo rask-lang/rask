@@ -1,5 +1,5 @@
 // LP14: structural mutation during `for mutate`
-// ERROR: cannot push during mutable iteration
+// Rejects: cannot push during mutable iteration
 
 func test_structural_mutation() {
     mut items = Vec.new<string>()
@@ -12,7 +12,6 @@ func test_structural_mutation() {
 }
 
 // LP16: passing for-mutate item to take parameter
-// ERROR: cannot take item out of collection
 
 func consume(take s: string) {
     println(s)

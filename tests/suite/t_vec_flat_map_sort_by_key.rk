@@ -27,13 +27,13 @@ test "std.collections — flat_map maps then flattens" {
         pair.push(x * 2)
         return pair
     }).to_vec()
-    assert_eq(doubled.len(), 6)
-    assert_eq(doubled[0], 1)
-    assert_eq(doubled[1], 2)
-    assert_eq(doubled[2], 2)
-    assert_eq(doubled[3], 4)
-    assert_eq(doubled[4], 3)
-    assert_eq(doubled[5], 6)
+    assert doubled.len() == 6
+    assert doubled[0] == 1
+    assert doubled[1] == 2
+    assert doubled[2] == 2
+    assert doubled[3] == 4
+    assert doubled[4] == 3
+    assert doubled[5] == 6
 }
 
 test "std.collections — flat_map on an empty Vec is empty" {
@@ -43,7 +43,7 @@ test "std.collections — flat_map on an empty Vec is empty" {
         r.push(x)
         return r
     }).to_vec()
-    assert_eq(out.len(), 0)
+    assert out.len() == 0
 }
 
 test "std.collections — flat_map can drop elements entirely" {
@@ -55,9 +55,9 @@ test "std.collections — flat_map can drop elements entirely" {
         }
         return r
     }).to_vec()
-    assert_eq(evens.len(), 2)
-    assert_eq(evens[0], 2)
-    assert_eq(evens[1], 4)
+    assert evens.len() == 2
+    assert evens[0] == 2
+    assert evens[1] == 4
 }
 
 test "std.collections — flat_map works on struct elements" {
@@ -72,20 +72,20 @@ test "std.collections — flat_map works on struct elements" {
         out.push(r)
         return out
     }).to_vec()
-    assert_eq(doubled.len(), 4)
-    assert_eq(doubled[0].name, "a")
-    assert_eq(doubled[1].name, "a")
-    assert_eq(doubled[2].name, "b")
-    assert_eq(doubled[3].name, "b")
+    assert doubled.len() == 4
+    assert doubled[0].name == "a"
+    assert doubled[1].name == "a"
+    assert doubled[2].name == "b"
+    assert doubled[3].name == "b"
 }
 
 test "std.collections — sort_by_key sorts by extracted numeric key" {
     mut s: Vec<i64> = [3, 1, 4, 1, 5, 9, 2, 6]
     s.sort_by_key(|x| { return -x })
-    assert_eq(s[0], 9)
-    assert_eq(s[1], 6)
-    assert_eq(s[2], 5)
-    assert_eq(s[7], 1)
+    assert s[0] == 9
+    assert s[1] == 6
+    assert s[2] == 5
+    assert s[7] == 1
 }
 
 test "std.collections — sort_by_key sorts by extracted string key" {
@@ -94,19 +94,19 @@ test "std.collections — sort_by_key sorts by extracted string key" {
     names.push(Ranked { name: "alice", score: 1 })
     names.push(Ranked { name: "bob", score: 2 })
     names.sort_by_key(|r| { return r.name })
-    assert_eq(names[0].name, "alice")
-    assert_eq(names[1].name, "bob")
-    assert_eq(names[2].name, "charlie")
+    assert names[0].name == "alice"
+    assert names[1].name == "bob"
+    assert names[2].name == "charlie"
 }
 
 test "std.collections — sort_by_key on an empty or single-element Vec is a no-op" {
     mut e: Vec<i64> = []
     e.sort_by_key(|x| { return x })
-    assert_eq(e.len(), 0)
+    assert e.len() == 0
 
     mut one: Vec<i64> = [5]
     one.sort_by_key(|x| { return -x })
-    assert_eq(one[0], 5)
+    assert one[0] == 5
 }
 
 // A closure body doesn't have to be a braced block with a `return`. Reading the
@@ -115,11 +115,11 @@ test "std.collections — sort_by_key on an empty or single-element Vec is a no-
 test "std.collections — flat_map takes a braceless closure body" {
     let v: Vec<i64> = [1, 2]
     let out: Vec<i64> = v.flat_map(|x| pair_of(x)).to_vec()
-    assert_eq(out.len(), 4)
-    assert_eq(out[0], 1)
-    assert_eq(out[1], 10)
-    assert_eq(out[2], 2)
-    assert_eq(out[3], 20)
+    assert out.len() == 4
+    assert out[0] == 1
+    assert out[1] == 10
+    assert out[2] == 2
+    assert out[3] == 20
 }
 
 test "std.collections — flat_map takes a block ending in a trailing expression" {
@@ -128,9 +128,9 @@ test "std.collections — flat_map takes a block ending in a trailing expression
         let doubled = x * 2
         pair_of(doubled)
     }).to_vec()
-    assert_eq(out.len(), 2)
-    assert_eq(out[0], 6)
-    assert_eq(out[1], 60)
+    assert out.len() == 2
+    assert out[0] == 6
+    assert out[1] == 60
 }
 
 // SO1: equal keys keep their original relative order. The interpreter sorts
@@ -143,11 +143,11 @@ test "std.collections — sort_by_key is stable on tied keys" {
     v.push(Tagged { key: 5, tag: "d" })
     v.push(Tagged { key: 1, tag: "e" })
     v.sort_by_key(|t| { return t.key })
-    assert_eq(v[0].tag, "e")
-    assert_eq(v[1].tag, "c")
-    assert_eq(v[2].tag, "a")
-    assert_eq(v[3].tag, "b")
-    assert_eq(v[4].tag, "d")
+    assert v[0].tag == "e"
+    assert v[1].tag == "c"
+    assert v[2].tag == "a"
+    assert v[3].tag == "b"
+    assert v[4].tag == "d"
 }
 
 test "std.collections — sort_by_key leaves an already-sorted Vec alone" {
@@ -156,9 +156,9 @@ test "std.collections — sort_by_key leaves an already-sorted Vec alone" {
     v.push(Tagged { key: 1, tag: "y" })
     v.push(Tagged { key: 2, tag: "z" })
     v.sort_by_key(|t| { return t.key })
-    assert_eq(v[0].tag, "x")
-    assert_eq(v[1].tag, "y")
-    assert_eq(v[2].tag, "z")
+    assert v[0].tag == "x"
+    assert v[1].tag == "y"
+    assert v[2].tag == "z"
 }
 
 func main() {}

@@ -6,7 +6,7 @@
 //! differential testing surfaces codegen/MIR bugs: if the interpreter produces
 //! correct output but the native binary doesn't, the bug is in the backend.
 
-use crate::extract::{Expectation, SpecTest};
+use crate::extract::{Expectation, FailStage, SpecTest};
 use std::path::PathBuf;
 
 /// Result of running a single spec test.
@@ -50,13 +50,33 @@ pub fn run_test(test: SpecTest) -> TestResult {
 pub fn run_test_with_config(test: SpecTest, config: &RunConfig) -> TestResult {
     match test.expectation.clone() {
         Expectation::Compile => run_compile_test(test),
-        Expectation::CompileFail => run_compile_fail_test(test),
+        Expectation::CompileFail(stage) => run_compile_fail_test(test, stage),
         Expectation::Parse => run_parse_test(test),
         Expectation::ParseFail => run_parse_fail_test(test),
         Expectation::Skip => TestResult {
             test,
             passed: true,
             message: "skipped".to_string(),
+            native_result: None,
+        },
+        Expectation::Invalid(spec) => TestResult {
+            test,
+            passed: false,
+            message: if spec.starts_with("compile-fail") {
+                format!(
+                    "`<!-- test: {spec} -->` needs the pass that does the rejecting: \
+                     `compile-fail: lex|parse|resolve|typecheck|ownership`, or \
+                     `compile-fail: unbuilt` when the rule is specified and the check \
+                     isn't written yet. Without one, \"fails somewhere\" is satisfied by \
+                     a fragment naming symbols that don't exist",
+                )
+            } else {
+                format!(
+                    "`<!-- test: {spec} -->` is not an annotation — the block is untested. \
+                     Use one of: compile, compile-fail: <stage>, parse, parse-fail, skip, \
+                     pending, `run | expected`, `run-interp | expected`",
+                )
+            },
             native_result: None,
         },
         Expectation::Pending => run_pending_test(test),
@@ -99,149 +119,129 @@ fn run_pending_test(test: SpecTest) -> TestResult {
     }
 }
 
-/// Test that code compiles successfully (lex + parse + resolve + typecheck).
+/// Test that code compiles successfully.
 fn run_compile_test(test: SpecTest) -> TestResult {
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(&test.code).tokenize();
-    if !lex_result.is_ok() {
-        return TestResult {
+    match check_front_end(&test.code) {
+        Ok(()) => TestResult {
+            test,
+            passed: true,
+            message: "compiled".to_string(),
+            native_result: None,
+        },
+        Err((stage, detail)) => TestResult {
             test,
             passed: false,
-            message: format!("lex failed: {:?}", lex_result.errors),
+            message: format!("{} failed: {}", stage.name(), detail),
             native_result: None,
-        };
-    }
-
-    // Parse
-    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-    if !parse_result.is_ok() {
-        return TestResult {
-            test,
-            passed: false,
-            message: format!("parse failed: {:?}", parse_result.errors),
-            native_result: None,
-        };
-    }
-
-    // Desugar
-    rask_desugar::desugar(&mut parse_result.decls);
-
-    // Resolve
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
-        Ok(r) => r,
-        Err(errors) => {
-            return TestResult {
-                test,
-                passed: false,
-                message: format!("resolve failed: {:?}", errors),
-                native_result: None,
-            };
-        }
-    };
-
-    // Type check
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            return TestResult {
-                test,
-                passed: false,
-                message: format!("type check failed: {:?}", errors),
-                native_result: None,
-            };
-        }
-    };
-
-    // Ownership check
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        return TestResult {
-            test,
-            passed: false,
-            message: format!("ownership check failed: {:?}", ownership_result.errors),
-            native_result: None,
-        };
-    }
-
-    TestResult {
-        test,
-        passed: true,
-        message: "compiled".to_string(),
-        native_result: None,
+        },
     }
 }
 
 /// Test that code fails to compile at some stage.
-fn run_compile_fail_test(test: SpecTest) -> TestResult {
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(&test.code).tokenize();
-    if !lex_result.is_ok() {
-        return TestResult {
-            test,
-            passed: true,
-            message: "failed at lex (expected)".to_string(),
-            native_result: None,
+fn run_compile_fail_test(test: SpecTest, want: FailStage) -> TestResult {
+    let got = first_failing_stage(&test.code);
+
+    // `unbuilt` inverts the test: the rule is specified, the check isn't
+    // written, so being accepted is the expected state and a rejection is the
+    // news. Same shape as an entry in `tests/pending_features.txt`.
+    if want == FailStage::Unbuilt {
+        return match got {
+            None => TestResult {
+                test,
+                passed: true,
+                message: "unbuilt — compiles today, as recorded".to_string(),
+                native_result: None,
+            },
+            Some(stage) => TestResult {
+                test,
+                passed: false,
+                message: format!(
+                    "marked `compile-fail: unbuilt` but it is rejected now, at {} — \
+                     the check landed, so name the stage",
+                    stage.name(),
+                ),
+                native_result: None,
+            },
         };
     }
 
-    // Parse
+    match got {
+        Some(stage) if stage == want => TestResult {
+            test,
+            passed: true,
+            message: format!("failed at {} (expected)", stage.name()),
+            native_result: None,
+        },
+        Some(stage) => TestResult {
+            test,
+            passed: false,
+            message: format!(
+                "expected the {} pass to reject this, but {} did — a block that \
+                 fails earlier than its rule isn't testing the rule",
+                want.name(), stage.name(),
+            ),
+            native_result: None,
+        },
+        None => TestResult {
+            test,
+            passed: false,
+            message: format!("expected rejection at {}, but it compiled", want.name()),
+            native_result: None,
+        },
+    }
+}
+
+/// Run the front end and report the first pass that rejects the code.
+fn first_failing_stage(code: &str) -> Option<FailStage> {
+    check_front_end(code).err().map(|(stage, _)| stage)
+}
+
+/// Lex, parse, desugar, resolve, typecheck, ownership — with the stdlib, the
+/// way `rask check` runs them.
+///
+/// The stdlib is the whole point. Without it these blocks died wherever the
+/// missing `Pool`, `Vec` or `File` took them rather than where their own rule
+/// is: `with pool[h] as e { pool.remove(h) }` is an ownership rejection, and
+/// the runner reported "unknown type `Pool`" from the typechecker. Six spec
+/// blocks were marked `skip` for that, which recorded the runner's limit as if
+/// it were the language's.
+///
+/// It stays staged rather than calling `rask_compiler::check_file`: that
+/// accumulates every pass's diagnostics into one list, and `compile-fail`
+/// blocks name the pass that has to do the rejecting.
+fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
+    let lex_result = rask_lexer::Lexer::new(code).tokenize();
+    if !lex_result.is_ok() {
+        return Err((FailStage::Lex, format!("{:?}", lex_result.errors)));
+    }
     let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
     if !parse_result.is_ok() {
-        return TestResult {
-            test,
-            passed: true,
-            message: "failed at parse (expected)".to_string(),
-            native_result: None,
-        };
+        return Err((FailStage::Parse, format!("{:?}", parse_result.errors)));
     }
-
-    // Desugar
     rask_desugar::desugar(&mut parse_result.decls);
 
-    // Resolve
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+    let resolved = match rask_resolve::resolve_with_stdlib_and_cfg(
+        &parse_result.decls,
+        &stdlib_bodies,
+        std::collections::HashMap::new(),
+    ) {
         Ok(r) => r,
-        Err(_) => {
-            return TestResult {
-                test,
-                passed: true,
-                message: "failed at resolve (expected)".to_string(),
-                native_result: None,
-            };
-        }
+        Err(errors) => return Err((FailStage::Resolve, format!("{:?}", errors))),
     };
 
-    // Type check
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(_) => {
-            return TestResult {
-                test,
-                passed: true,
-                message: "failed at typecheck (expected)".to_string(),
-                native_result: None,
-            };
-        }
-    };
-
-    // Ownership check
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        return TestResult {
-            test,
-            passed: true,
-            message: "failed at ownership check (expected)".to_string(),
-            native_result: None,
-        };
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (typed, type_errors) =
+        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+    if !type_errors.is_empty() {
+        return Err((FailStage::Typecheck, format!("{:?}", type_errors)));
     }
 
-    // All stages passed — expected failure didn't happen
-    TestResult {
-        test,
-        passed: false,
-        message: "expected compile failure, but compiled successfully".to_string(),
-        native_result: None,
+    let ownership = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership.is_ok() {
+        return Err((FailStage::Ownership, format!("{:?}", ownership.errors)));
     }
+    Ok(())
 }
 
 /// Test that code parses successfully (lex + parse only).

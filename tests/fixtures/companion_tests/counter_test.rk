@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The test half of the pair (std.testing/T3, T4).
+//
+// Compiled on its own, every name here is `E0200 undefined symbol` — which is
+// what a companion test file used to get, since each loose file was compiled
+// alone. `counter.rk` is loaded with this one now, so a private function and a
+// private method are both in scope.
+
+test "a private free function is in scope" {
+    assert bump(41) == 42
+}
+
+test "a private method is in scope" {
+    mut c = Counter { value: 0 }
+    c.step()
+    c.step()
+    assert c.value == 2
+}
+
+test "and the public surface, as before" {
+    assert counted_from(10, 3) == 13
+}

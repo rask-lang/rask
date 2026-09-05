@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a failed `assert` and a failed `check` say, per operand shape.
+//
+// The differential harness compares the two backends byte for byte, but only
+// over output a *passing* run produces — so the failure text itself had never
+// been compared, and three shapes disagreed:
+//
+//   - two bools: native printed `1 == 0`, the interpreter `true == false`.
+//     Bool fell through to the integer helper, which is the one type where the
+//     representation and the value read differently.
+//   - an aggregate: native printed the two *addresses*, the interpreter the
+//     whole struct. Native can't render one (a struct opts into `Displayable`,
+//     std.fmt/D3), so both leave the operands out now.
+//   - `check cond, "msg"`: native lost the `file:line:` an `assert` with a
+//     message gets, so a failing check read like an ordinary `print`.
+//
+// A test can't assert on its own failure text — it would have to fail — so this
+// file pins the *passing* side of every shape and leaves the message to
+// `a_failed_comparison_reads_the_same_on_both_backends` in compile_run.rs,
+// which runs both backends and diffs them.
+
+struct Point { x: i64, y: i64 }
+
+func maybe(n: i64) -> i64? {
+    if n > 1 {
+        return n
+    }
+    return none
+}
+
+test "std.testing — bools compare as values" {
+    let a = true
+    let b = true
+    assert a == b
+    check a == b
+    assert !(a == false)
+}
+
+test "std.testing — chars, floats and strings" {
+    assert 'x' == 'x'
+    assert 1.5 == 1.5
+    assert "hei" == "hei"
+    check "hei" == "hei"
+}
+
+test "std.testing — aggregates compare by value" {
+    assert Point { x: 1, y: 2 } == Point { x: 1, y: 2 }
+    assert (1, "a") == (1, "a")
+    assert maybe(2) == maybe(2)
+}
+
+test "std.testing — a message is accepted by both forms" {
+    assert 1 == 1, "assert takes one"
+    check 1 == 1, "so does check"
+}

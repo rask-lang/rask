@@ -36,8 +36,9 @@ func vec_annotation() -> void {
 
 // Route: inferred element via push (no annotation)
 func vec_push() -> void {
+    // ERROR [RC1]: element unifies to `File` through the push below
     mut files = Vec.new()
-    files.push(File.open())              // ERROR [RC1]: element unifies to `File`
+    files.push(File.open())
     return
 }
 

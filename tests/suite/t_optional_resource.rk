@@ -44,11 +44,11 @@ func closed_through_the_binding(n: i64) -> i64 {
 }
 
 test "mem.linear/L1 — consuming the payload discharges the optional" {
-    assert_eq(closed_through_the_binding(7), 7)
+    assert closed_through_the_binding(7) == 7
 }
 
 test "mem.linear/L1 — an absent optional has nothing to consume" {
-    assert_eq(closed_through_the_binding(0), 0)
+    assert closed_through_the_binding(0) == 0
 }
 
 // A `none` start that gets filled: the obligation appears with the value.
@@ -62,7 +62,7 @@ func filled_then_closed() -> i64 {
 }
 
 test "mem.linear/L1 — a none binding filled later is consumed later" {
-    assert_eq(filled_then_closed(), 11)
+    assert filled_then_closed() == 11
 }
 
 // Never filled — the binding holds nothing all the way to scope exit.
@@ -75,7 +75,7 @@ func never_filled() -> i64 {
 }
 
 test "mem.linear/L1 — a none binding that stays none is fine" {
-    assert_eq(never_filled(), -1)
+    assert never_filled() == -1
 }
 
 // L2: handing it back is consuming it — the caller takes the obligation.
@@ -86,7 +86,7 @@ func hands_it_back(n: i64) -> Conn? {
 
 test "mem.linear/L2 — returning an optional resource passes the obligation on" {
     if hands_it_back(3)? as conn {
-        assert_eq(conn.close(), 3)
+        assert conn.close() == 3
     }
 }
 
@@ -111,7 +111,7 @@ extend Holder {
 
 test "mem.linear/L1 — an optional resource field travels with its holder" {
     let h = Holder { link: Conn { id: 5 } }
-    assert_eq(h.release(), 5)
+    assert h.release() == 5
 }
 
 func main() {}

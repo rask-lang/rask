@@ -1,0 +1,610 @@
+# Test harness audit — 2026-09-04
+
+A review of what the test harness actually verifies, and where the tests, the
+specs and the compiler disagree. Each entry says what the spec says, what the
+compiler does, and what the test claims — deciding which of the three is wrong
+is a separate call.
+
+Most of it has since been decided and fixed on this branch; each entry says so
+in place, and keeps the original finding above the fix so the reasoning stays
+readable. What's left needs a call that isn't the compiler's to make:
+
+- ~~**A4**~~ — **deleted.** `assert_eq` is gone from the language and its 1203
+  call sites are `assert a == b`. Two positional arguments that mean different
+  things, told apart only by remembering which is which, is what the stdlib's
+  own design rules exist to prevent; the only thing it added over `==` was the
+  failure message, and `assert` carries that.
+- ~~**T10 (nested)**~~ — **deleted.** Nested `test` blocks were a parse error,
+  nothing used them, and grouping is what a name already does.
+- ~~**T6**~~ — **reworded.** "No shared state" promised more than any runner
+  gives; what holds is per-test locals and per-test failure, with process
+  globals shared as they are everywhere else.
+- **T14/T15** — doc-comment code blocks extracted and run. Deferred.
+- **T7** — parallel test execution, wanted but not now.
+
+One entry is fixed on another branch and deliberately not duplicated here: 1.7,
+the leak gate, is #1042's.
+
+Measured on `e68e957` (main with #1057 merged) with a release build of the
+compiler. The numbers were re-taken after that merge; where a finding changed,
+the entry says so.
+
+---
+
+## Part 1 — What the harness can't see
+
+These are holes in the checking machinery, not in any one test. They're first
+because they set the ceiling on how much the rest of the suite is worth.
+
+### 1.1 A compile-error test passes if the file fails for *any* reason — FIXED
+
+`compile_error(name)` in `compiler/crates/rask-cli/tests/compile_run.rs` ran
+`rask check` and checked the exit code was non-zero. That's it. A file with
+twelve `// ERROR:` markers passed when one fired — or when none fired and an
+unrelated typo did.
+
+The numbers, over `tests/compile_errors/` (111 files, 394 `// ERROR` markers):
+
+| Wiring | Files | Markers |
+|---|---|---|
+| Asserts on the message or code (`compile_error_output`) | 62 | 194 |
+| Exit code only (`compile_error`) | 21 | 62 |
+| Referenced by no test at all | 28 | 138 |
+
+So **200 of 394 claimed rejections (51%) were backed by nothing stronger than
+"the file didn't compile"**, and 138 of them by nothing at all.
+
+The worst individual case is `borrow_errors.rk`: 19 markers, no test ran it, and
+9 of the 12 errors it does produce are `E0322 cannot mutate — declared let` —
+the file forgot `mut` on its own locals. Eleven of its claimed borrow rules
+produce no diagnostic at all.
+
+`context_missing.rk` is the clean-cut case: a marker, **0 errors — it compiles**
+— and no test ran it.
+
+**The fix.** Only 65 of the 394 markers carry an error code, so matching codes
+was never going to work. The check is a line instead:
+`every_compile_error_marker_is_answered_by_a_diagnostic` walks the directory,
+runs `rask check` on each file, and requires a diagnostic pointing somewhere
+between each marker and the next one. Walking the directory is what closes the
+28-file hole — a fixture is covered the moment it lands, with no registration
+step.
+
+Two cleanups the anchoring needed. A run of consecutive `// ERROR` lines now
+counts as one marker (several lines often describe one rejection), and 43 files
+had a header comment that opened `// ERROR:` to summarise the file — those say
+`// Rejects:` now, so they don't demand a diagnostic on line 2. That leaves
+**328 real markers, of which 13 answer nothing**, listed per file in
+`tests/compile_errors/DEAD_MARKERS.txt`. The count may only go down: a new dead
+marker fails, and so does a count that's too high, so a fix can't be left
+unrecorded.
+
+Two things came out of turning it on. Four markers were only ever "answered"
+by the `--> file:line:col` header landing on the wrong line: it took the line
+from the first *rendered* line and the column from the first label, which are
+two different things, so a diagnostic whose secondary label sits above its
+primary pointed at the secondary. And three fixtures had forgotten `mut` on
+their own locals, so `E0322 cannot mutate — declared let` was answering markers
+about ownership and context rules that produce nothing at all. Both are fixed;
+the count went 49 → 52 because removing the noise made the real gaps
+visible, then back to 49 as `syntax_rejected.rk`'s three unreachable markers
+moved to files that reach them.
+
+All 13 that remain are filed — #1088 (five `mem.borrowing` rules), #1089 (four
+pool-context rules), #1090 (three smaller ones). The 13 split two ways. Either the rule is real and unimplemented — that's the
+interesting case, and it's how 1.3 found `mem.borrowing`'s block-scoped rule and
+`comp.advanced`'s handle typestate — or the marker sits below a parse error that
+stops the pipeline before its pass ever runs, which is 1.2.
+
+### 1.2 A parse error hides every later marker in the same file
+
+`syntax_rejected.rk` has 12 markers and produces 9 diagnostics — it was 8 until
+P2 moved into the parser. The three that still never fire are *semantic* checks
+sitting below parse errors, so the pipeline stops before the checker ever sees
+them:
+
+| Line | Claim | What happens |
+|---|---|---|
+| 48 | `?` for propagation is rejected | never reached |
+| 66 | `let` reassignment | never reached |
+| 71 | missing return | never reached |
+| 78 | comparison chaining | ~~never reached~~ — fires since `1d54fbd`, because P2 is a parse error now and reaches the same pass as the rest |
+
+That is the whole shape of this finding, incidentally: nothing about the marker
+changed, only which pass its rule runs in. A checker rule in a file that fails
+at parse is a rule nobody is testing.
+
+Three more fire with a different message than the marker claims: `impl` gets
+"Expected ';' or newline after statement" rather than "did you mean 'extend'";
+turbofish gets a generic "unexpected `::`"; `&i32` gets "reference types are not
+yet implemented" (planned) where the marker says "Rask uses parameter modes, not
+reference syntax" (rejected by design).
+
+### 1.3 A `compile-fail` spec block passes on a failure at any stage
+
+`run_compile_fail_test` walks lex → parse → resolve → typecheck → ownership and
+returns pass at the first failure, whatever it is. Of the 12 `compile-fail`
+blocks in `specs/`, **8 pass at *resolve*** — meaning they fail because the
+snippet names symbols that don't exist, not because the rule under test fired.
+
+Every one of these reports ✓ today and verifies nothing:
+
+| Spec | Rule it claims to demonstrate |
+|---|---|
+| `compiler/advanced-analyses.md:41` | TS8 — access through an Invalid handle |
+| `compiler/advanced-analyses.md:72` | TS8 through a must-alias |
+| `compiler/advanced-analyses.md:174` | flow-sensitive narrowing |
+| `memory/borrowing.md:85` | a borrow outliving its block |
+| `memory/borrowing.md:225` | W2 — structural mutation inside `with` |
+| `memory/borrowing.md:250` | W2c — removing the bound handle |
+| `memory/borrowing.md:258` | W2d — clearing the pool |
+| `memory/pools.md:141` | (pool rule) |
+
+The blocks are fragments — `pool`, `vec`, `player`, `get_point` are undefined —
+so resolve rejects them before any analysis runs. Nothing in the tree tells us
+whether typestate analysis exists at all.
+
+**Resolved: the stage is required now.** `<!-- test: compile-fail -->` alone is
+rejected; it has to say which pass does the rejecting
+(`lex|parse|resolve|typecheck|ownership`), or `unbuilt` when the rule is
+specified and the check isn't written. Same idea as the registry claim-check in
+`differential.sh`: a red result is only honest while it is red for the stated
+reason. Writing the blocks out to reach their rule turned up two things the
+green ticks were hiding:
+
+- **`mem.borrowing`'s block-scoped borrow rule isn't enforced.** Written in full,
+  `let x = { let p = get_point(); p.x }` compiles clean. Recorded as
+  `compile-fail: unbuilt`, so it flips loudly if the check ever lands.
+- **`comp.advanced`'s handle typestate (TS8) isn't enforced.** A handle used
+  after `pool.remove(h)` compiles clean, directly and through a must-alias.
+  `mem.ownership` promises use-after-free through a stale handle is "caught at
+  the access, never silent"; TS8 is where that would be caught.
+
+W2/W2c/W2d *are* enforced (E0808 at the ownership pass), verified against the
+real compiler — see 1.9 for why the spec runner still can't see it.
+
+### 1.4 Only 8 spec code blocks in the whole tree are executed
+
+`specs/` holds 1115 ` ```rask ` blocks. Unannotated blocks are skipped by
+design, so:
+
+| Annotation | Blocks | What it proves |
+|---|---|---|
+| none | ~332 | nothing |
+| `skip` | 579 | nothing |
+| `parse` | ~181 | it parses |
+| `compile` | ~14 | it type-checks |
+| `run \| expected` | 8 | it produces the documented output |
+| `compile-fail` | 12 | it fails somewhere (see 1.3) |
+
+Four blocks in `specs/compiler/advanced-analyses.md` carry
+`<!-- test: pass -->`, which isn't a valid annotation. `parse_annotation_multi`
+returns `None` for anything it doesn't recognise, so the block is dropped
+silently — no warning, exit 0. Somebody wrote those four thinking they were
+gating something.
+
+### 1.5 "No tests found" is a pass
+
+`run_test_file_native_inner` prints "No tests found." and returns success; the
+interpreter path has no failures to report and also exits 0. `differential.sh`
+calls a file green when both backends exit 0 with identical output — which an
+empty file satisfies. No suite file is in that state right now, but nothing
+detects it if one drifts there.
+
+### 1.6 The two backends print different failure text — FIXED
+
+Same failure, different words:
+
+```
+interp:  assertion failed: 1 == 2 (left: 1, right: 2)
+native:  a1.rk:4: assertion failed: 1 == 2 (left: 1, right: 2)
+
+interp:  check failed: 1 == 2 (left: 1, right: 2); check failed: 3 == 4 (left: 3, right: 4)
+native:  check failed
+
+interp:  got:      got            (assert_eq on strings)
+native:  got:      "got"
+```
+
+Native's `check` was the one that mattered: it lost the expression, both values,
+and the count. A test with three failing checks reported the same two words as a
+test with one.
+
+The reason none of this was caught is that the differential harness compares the
+two backends over the output a *passing* run produces. Failure text is what a
+test prints when it doesn't get that far, so it had never been compared at all.
+
+All of it agrees now, and `a_failed_comparison_reads_the_same_on_both_backends`
+in `compile_run.rs` runs both backends on a deliberately failing file and diffs
+them, so the next divergence is a test failure rather than a discovery. Four
+shapes had to move:
+
+- **`check` lost everything.** Native printed the literal words `check failed`.
+  It accumulates the built message now, joined with `; `, same as the
+  interpreter.
+- **`assert` named the wrong side.** Fixed with the `assert_eq` removal (**A5**).
+- **Two bools printed as `1 == 0`.** Bool fell through to the integer reporter,
+  which is right for every scalar except the one where the representation and
+  the value read differently. `assert a == b` on two bools now says
+  `true == false` on both backends.
+- **`check cond, "msg"` lost its location.** Native passed the message straight
+  through, so a failing check read like an ordinary `print` — no `file:line:`,
+  which `assert cond, "msg"` has always had. It goes through
+  `rask_check_fail_msg_at` now.
+
+Two shapes were checked and left alone. An aggregate (`assert a == b` on two
+structs) prints no operands on either backend — native can't render one, since a
+struct opts into `Displayable` (std.fmt/D3), and printing two addresses is worse
+than printing nothing. And a failing `assert` *outside* a test block still reads
+differently: the interpreter frames it as a diagnostic and doubles the
+`assertion failed:` prefix. That's [#1098](https://github.com/rask-lang/rask/issues/1098) —
+the `test` path is what the harness compares, so nothing is silently wrong,
+but the wording is.
+
+`t_assert_check_message_shapes.rk` pins the passing side of every shape above.
+
+### 1.7 The leak gate greps for a line that can't reach it — FIXED (on #1042, merged)
+
+`leak_gate.sh` runs each suite file under `RASK_LEAK_CHECK=1` and decides by
+grepping the output for `never released`:
+
+```sh
+out="$(RASK_LEAK_CHECK=1 timeout 120 "$RASK" test "$file" 2>&1)"
+if echo "$out" | grep -q "never released"; then
+```
+
+The runtime writes that line to the **test binary's stderr**, and
+`run_test_file_native_inner` throws the child's stderr away:
+
+```rust
+let run_output = process::Command::new(&bin_str).output();
+...
+Ok(out) => {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let complete = display_test_results(&stdout, path, format, tests.len());
+    out.status.success() && complete      // out.stderr is never read
+}
+```
+
+So the gate greps output the message can never appear in, and every file counts
+clean. The exit code is the only surviving trace — one file, both ways:
+
+```
+$ RASK_LEAK_CHECK=1 rask test l3.rk    # a test that builds a StringBuilder
+1 tests, 1 passed, 0 failed (0ms)
+exit=1
+$ rask test l3.rk
+exit=0
+```
+
+`leak gate: <N> clean, 0 known-leaking, 0 new` was that blind spot, not a
+result — the gate reported every file clean by construction. Reading the exit
+code instead, which is what it does now:
+
+```
+leak gate: 240 clean, 151 known-leaking, 0 new, 7 not measured
+```
+
+240 clean, not 398. The 7 "not measured" are files that fail before the leak
+check ever runs, which the differential already tracks — a file that never ran
+is a file whose leaks nobody measured, and counting it clean is how a gate
+quietly shrinks.
+
+An earlier sweep here, done by hand before the fix landed, gave 199 leaking /
+168 clean on a smaller tree, and
+[#1053](https://github.com/rask-lang/rask/issues/1053) reports 193 / 163 from
+before #1057. The number moves with every bug fixed and every file added; the
+point is the order of magnitude, and that it was reported as zero.
+
+`tests/known_leaks.txt` didn't exist, which read as "nothing leaks" and meant
+"nothing has ever been recorded". It has 151 lines now.
+
+**Not fixed here — fixed on #1042, which has since merged.** Both halves were
+already built on `claude/sequence-protocol-design-maakls`
+([#1042](https://github.com/rask-lang/rask/pull/1042)): `forward_test_stderr`
+and `test_exit_code` pass the binary's stderr through and let 97 survive,
+`leak_gate.sh` reads the exit code, and `known_leaks.txt` carries the files that
+leak. #1053 was closed on that basis, and building it a second time here would
+have been two registries of the same ~190 files to reconcile at merge. Both
+arrived on this branch when main was merged in, so the number the gate reports
+now is a measurement rather than a blind spot.
+
+### 1.9 The spec-test runner isn't running the same compiler — FIXED
+
+`run_compile_fail_test` and its `compile` sibling drove the front end directly —
+lexer, parser, desugar, resolve, typecheck, ownership — rather than going
+through `rask_compiler` the way `rask check` does. So they had no stdlib, and a
+block died wherever the missing stdlib took it rather than where its rule is.
+
+The same program, both ways:
+
+```
+$ rask check bare.rk
+error[E0808]: cannot remove `pool` inside `with` block     # ownership pass, the rule
+
+spec-test runner: fails at typecheck — `Pool` is unknown
+```
+
+Six blocks were `skip` for this reason (three `with pool[…]` rejections whose
+rule *is* enforced, three typestate ones whose rule isn't). Marking them by
+stage would have recorded the runner's limit as if it were the language's.
+
+**The fix.** The runner's front end now calls `resolve_with_stdlib_and_cfg` and
+`typecheck_with_stdlib_lenient` — the same two the pipeline calls — so `Pool`,
+`Vec` and `File` exist and a block reaches the pass its rule lives in. It stays
+staged rather than calling `check_file`: that accumulates every pass's
+diagnostics into one list, and a `compile-fail` block names the pass that has to
+do the rejecting.
+
+Five of the six blocks came off `skip`. Three verify at `ownership` now; the two
+typestate ones are `compile-fail: unbuilt` — they compile, the harness holds
+them to that, and the day TS8 lands the annotation is what fails. 195 → 200
+executed spec blocks.
+
+### 1.8 Ungated corners — FIXED
+
+- ~~`tests/http_api_harness.sh` runs in **no CI job**, and if its golden is
+  missing it writes one from the backend under test and passes.~~ Both fixed:
+  it's a CI step now, and a missing golden fails instead of being written —
+  `--bless` writes it deliberately. **Turning it on found a use-after-free that
+  was corrupting every response the native server sent** (below).
+- `tests/matrix/run.sh` exits 0 always — documented as a survey, not a gate.
+- ~~Companion `*_test.rk` files (T3/T4) exist nowhere in the repo.~~ Added, as
+  `tests/fixtures/companion_tests/`.
+
+**What the ungated harness was hiding.** With it in CI, native fails and interp
+passes. The server's replies start with eight bytes of garbage where `HTTP/1.1`
+should be:
+
+```
+b'\xae\xc1\xe7\x0f)sd\x83 200 OK\r\nContent-Length: 2\r\n\r\nok'
+```
+
+The garbage is a pointer, different every run, and valgrind names it: the
+buffer is freed before `write` reads it, and the allocator's free-list link
+lands in the first eight bytes. `write_raw` in `stdlib/http.rk` takes the
+address of a string with `data as i64`, and the RC pass read that cast as the
+string's last use — nothing after it names the string, only the integer holding
+its address — so it released there:
+
+```
+_6 = _5 as i64
+rc_dec(_5)                        <- freed here
+_7 = rask_io_write_string(1, _6)  <- read here
+```
+
+Fixed by holding the reference to the end of the block when the last use is a
+cast to an integer. A `rask-cli` test covers the shape; the harness covers the
+server.
+
+---
+
+## Part 2 — `std.testing` spec vs the runner
+
+| Rule | Spec says | Runner does |
+|---|---|---|
+| ~~**A4**~~ | `assert_eq`, `assert_ne`, `check_eq`, `check_ne` | ~~only `assert_eq` exists; the other three are `E0200 undefined symbol`~~ — **rule deleted.** Four names promised, one built. The one that was built is gone too: 1203 call sites are `assert a == b`, and the failure message it carried is `assert`'s now (**A5**) |
+| **T7** | parallel by default, `--sequential` opts out | always sequential; the flag is accepted and the field is never read |
+| ~~**T8**~~ | `--seed X` reproduces a run | ~~prints "accepted but random ordering not yet implemented"~~ — **flag removed.** It did nothing, and silently ate its own argument once the note was the only thing distinguishing it. It comes back with the feature |
+| ~~**T10** (nested)~~ | `test` blocks nest, output `PASS: parent > child` | ~~parse error: "Expected expression, found 'test'"~~ — **rule deleted.** It would need its own reporting, its own filtering and an answer to what a failed parent means for its children, for grouping that `test "parser — numbers"` already gives |
+| ~~**T10** (no `try`)~~ | ~~bare `try` in a test body is an `ER47` compile error~~ | **rule deleted** — replaced by **T20**, which says the test block is the error branch (see below) |
+| ~~**T11**~~ | `comptime test` runs during compilation, failure is a compile error | ~~`rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test`~~ — **fixed**: the comptime pass runs them, a failure is `E0848`, and the result is reported once instead of being re-run by the backend |
+| **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
+| ~~**T17**~~ | `spawn` with no `using Multitasking` is a compile error | ~~type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block"~~ — **fixed**: CC1 was keyed off the qualified `async.spawn` spelling, so bare `spawn(|| { … })` was never checked, and the CC2 walk never entered `test` blocks. Both now fire (`E0352`/`E0353`) |
+| ~~**T3/T4**~~ | tests may live in `*_test.rk`; same-package tests see private members | ~~each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`~~ — **fixed**: it worked inside a package all along, which is why nothing noticed; loose files were compiled one at a time. `foo_test.rk` now compiles with `foo.rk` either way, covered by `tests/fixtures/companion_tests/` |
+| **T6** | isolation; no shared state | tests share the process, so a module-level `Shared` written by one test is read by the next. That is what every framework does — a global is global — but T6's wording promises more than that |
+| **T18** | runtime-holding tests serialised | moot while everything is sequential (T7) |
+| ~~**T19**~~ | drain bounds the test | ~~untested~~ — **tested now, and it diverges.** Native waits at block exit; the interpreter doesn't, and inside a `test` block the task's output is lost outright rather than arriving late, which is exactly the case T19 exists to make visible. [#1093](https://github.com/rask-lang/rask/issues/1093), with `t_block_exit_drains_tasks.rk` as the repro |
+| ~~CLI `--verbose`~~ | show all names | ~~field never read~~ — **flag removed.** Every test name is printed already, so there was nothing for it to add. `--sequential` went with it: it is T7's switch, and T7 isn't built |
+
+Working as specified: A1 (assert stops), A2 (check continues), A3 (messages),
+T2 (`@test` functions), T12 (`skip`), T13 (`expect_fail`, both directions),
+B1/B2 (benchmarks, with real statistics).
+
+**T10's `try` rule is the one place the implementation is ahead of the spec.**
+#1057 (`aaabcf3`) made `try` in a void-returning function an `E0316` and stopped
+MIR guessing at test bodies from their return type, so what used to be a
+three-way split — spec says error, interp passed silently, native failed the
+Cranelift verifier (#932) — is now a coherent feature:
+
+```
+$ rask test t10d.rk          # a test whose `try` propagates an error
+  ✗ try that actually propagates an error out of a test body
+      try propagated an error out of a test block
+  ✓ later test still runs
+2 tests, 1 passed, 1 failed
+```
+
+Both backends agree, the happy path works, and the failure names the test. The
+spec's argument for banning `try` was that a test block has nowhere to
+propagate to, so the failure would be uninformative — "an assertion that
+swallows the error reports 'assertion failed' and nothing else". The
+implementation gave it somewhere to go and made the message say what happened,
+which retires the rationale.
+
+**Resolved: the rule was deleted.** `std.testing/T20` now says a test block is
+the error branch, with the `catch` ceremony it replaced shown for contrast —
+four lines and a hand-written message per fallible step. `type.errors/ER47`
+gained the cross-reference, since "what `try` propagates must fit the enclosing
+return" needs to name the one enclosing scope that isn't a function. The error
+path is pinned in `compile_run.rs` rather than the suite, because a failing test
+fails the file; `t_month_try_in_test.rk` keeps the success half and lost a header
+that argued for the deleted rule.
+
+Deleting it also fixed a spec bug for free: `T10` was used twice.
+
+**Spec bug (fixed):** `T10` was used twice — once for "no `try` in a test body"
+and once for nested blocks. Deleting the first left the ID to the second.
+
+---
+
+## Part 3 — Where a test asserts something the spec forbids
+
+### 3.1 CV1's int→float table isn't enforced, and a test bakes that in — FIXED
+
+`specs/types/primitives.md` restricts `as` to conversions where every source
+value survives:
+
+| Target | Sources `as` allows |
+|---|---|
+| `f64` | `i8` `i16` `i32` `u8` `u16` `u32` |
+| `f32` | `i8` `i16` `u8` `u16` |
+
+and spells out the reason: "`i64 as f32` is a compile error. Past 2^24 an `f32`
+can only land on multiples of 128, so a billion-scale count comes back wrong by
+hundreds — the same silent precision loss the overflow rules exist to prevent,
+riding the one operator that promises the opposite."
+
+All four of these compile and run clean on both backends:
+
+```rask
+let a: i64 = -1000;  a as f64      // not in the f64 list
+let b: i64 = 3;      b as f32      // spec calls this out by name
+let c: u64 = 3;      c as f64      // not in the f64 list
+let d: i32 = 3;      d as f32      // not in the f32 list
+```
+
+And `tests/suite/t_day_casts.rk` **asserts the first one works**:
+
+```rask
+test "int to float where nothing can be lost" {
+    let d: i64 = -1000
+    assert (d as f64) == -1000.0
+}
+```
+
+in a file whose own header says the opposite — "int→float names one too, because
+past 2^53 an i64 doesn't survive an f64." `cast_rules.rk` covers CV2, CV3, CV4,
+CH5 and BL3; CV1 has no compile-error test at all.
+
+**Resolved (`03817ec`), spec kept as written.** The check was one line:
+`(Prim::Int { .. }, Prim::Float { .. }) => true`. It now tests the target's
+mantissa — 24 bits for an f32, 53 for an f64 — which reproduces the spec's two
+source lists without a second copy of them to keep in step. 8 example sites and
+6 suite files moved to `.round<f64>()`; `t_day_casts.rk` lost the assertion that
+contradicted the spec. `cast_rules.rk` gained five CV1 cases and stopped being
+one of the exit-code-only tests.
+
+### 3.2 P2 (no comparison chaining) isn't enforced — FIXED
+
+`specs/types/operators.md` P2: "`a < b < c` is disallowed", listed in the edge
+case table as a compile error.
+
+Nothing implements the rule. `a < b < c` is rejected only as a fallout type
+mismatch, with a message that doesn't mention chaining:
+
+```
+error[E0308]: mismatched types
+  6 |     let x: bool = a < b < c
+    |                   ^^^^^^^^^ expected `bool`, found `i64`
+```
+
+plus a spurious `E0361 couldn't work out the type of x` on the same line.
+
+And when both halves happen to type-check, the chain compiles and runs:
+
+```rask
+let a = 1; let b = 1; let c = true
+let x: bool = a == b == c     // Typecheck OK, prints true
+let y: bool = a < b == false  // Typecheck OK, prints true
+```
+
+**Resolved (`1d54fbd`).** The six comparison operators are non-associative in
+the parser now, so a second one is a parse error that names the chain. That
+placement also fixed §1.2's dead marker for free: `syntax_rejected.rk` goes from
+8 diagnostics to 9 with no edit, because the check no longer sits behind the
+parse errors that stopped the pipeline. Two sites in the tree wrote
+`if a < 0 != b < 0` and now parenthesize it.
+
+### 3.3 CV14 ties-to-even is right, but the suite can't tell — FIXED
+
+`t_day_casts.rk` tested `3.5.round<i32>()! == 4` and `(-3.5).round<i32>()! == -4`.
+Both are also what round-half-away-from-zero gives, so the assertions didn't
+distinguish the two policies. The implementation gets it right, and now the
+suite says so: `0.5 → 0`, `2.5 → 2`, `4.5 → 4`, `-0.5 → 0`, `-2.5 → -2` — the
+halves where the two policies disagree, with the away-from-zero answer written
+beside each. Both backends agree.
+
+---
+
+## Part 4 — Diagnostic bugs noticed on the way
+
+- ~~**`assert` type error has its roles backwards.**~~ **Fixed.** `assert opt()`
+  where `opt()` returns `i32?` said "expected `i32?`, found `bool`" — the code's
+  own type presented as the requirement, and `assert`'s requirement as the
+  mistake. The two constraints had their arguments the wrong way round, unlike
+  every other site in the checker; `assert 1` read correctly by luck, because an
+  unsolved literal is filled in from the other side. The message argument had
+  the same inversion (`assert x, 42` blamed `string`).
+- ~~**Two error-code schemes in one compiler.**~~ **Fixed.** Three diagnostics
+  carried a spec rule id where the code goes — `mem.context/CC8`, `CC10`,
+  `comp.advanced/TS8` — so anything grepping for `E0` missed a family, and
+  `rask explain mem.context/CC8` was never going to answer. They are E0849–E0851
+  now, registered with the rest, and the rule id moved to the `why`, which is
+  where the rule gets said in words. A test walks the tree and fails on a
+  fourth.
+- ~~**One error degrades the next into a wrong one.**~~ **Fixed.** With an
+  `E0357` (single-letter type name) in the file, the `?`-on-a-result error
+  stopped being reported. The mechanism turned out to be worse than it looked:
+  `struct T` displaces the stdlib's own type parameter, so it produced six more
+  errors in `stdlib/num.rk` about `Wrapping<T>` having no `wrapping_add` — a
+  file the user didn't write and can't fix, burying the one error they could
+  act on. Stdlib-span errors are dropped now when the user's own code has
+  errors of its own, and kept when it doesn't: a program whose *only* errors are
+  in the stdlib has found a real stdlib bug, and hiding that would leave whoever
+  works on it with a failure and no message.
+
+---
+
+## Part 5 — What holds up
+
+Worth saying, because most of this machinery is good:
+
+- `differential.sh` — 367 green, 7 expected-red, 0 untracked, 0 unexpected-pass,
+  0 misfiled, and `known_divergences.txt` now has **zero** active entries: every
+  red file left is a pending feature, not a bug. The registry claim-check from
+  #1005 (a red file must keep failing on the same backends at the same phase) is
+  the strongest single idea in the harness — it catches a probe that stops
+  exercising its bug, which plain red/green can't. It also just proved itself
+  across #1057: `p10_binary.rk` went from `(both check)` to failing only on
+  native at compile, and the registry line was updated to match rather than
+  being left to rot as "still red".
+- `examples_gate.sh` — 34 of 36 examples gated on both backends, 2 tracked.
+  Enrolment by golden presence means no example is silently outside the gate.
+- `COVERAGE.md` — 67 of 68 per-file counts current. Only `t_week_ranges.rk` is
+  stale (doc says 14/14, it's 15/15). The "Holes left on purpose" section is
+  honest about what a suite file structurally can't cover.
+- `assert` requires `bool`. There is no vacuous-assert path.
+- `mem.ownership/O2` — enforced, and the diagnostic names the size and the
+  threshold ("`Over` is 17 bytes (copy threshold is 16)").
+- `type.strings/S5` — a mid-codepoint slice panics with a message that names
+  `char_indices()` as the way out.
+- Map iteration order is genuinely randomised per process, as `determinism/D7`
+  requires. The suite's map tests are all order-independent (counts and sums).
+
+---
+
+## Open question behind every entry
+
+For each line above, one of three things is true, and this audit deliberately
+doesn't pick:
+
+1. the spec is right and the compiler is behind (CV1, P2, T11, T14, CC2 look
+   like this),
+2. the spec described something we no longer want (T7 parallel-by-default costs
+   determinism the harness depends on; nested `test` blocks may not be worth it),
+3. the test is wrong (`t_day_casts.rk` asserting `i64 as f64`, and every
+   `compile-fail` block that passes at resolve).
+
+Working through them, the split came out roughly even, and the third case was
+the most common by a distance — a test that had never verified what it claimed.
+The two that turned out to be case 2, where the spec described something we
+don't want, are the ones still open at the top of this file.
+
+One pattern ran through nearly every entry: **the check was looking somewhere
+the evidence couldn't be.** `compile_error()` satisfied by any non-zero exit.
+`compile-fail` satisfied by a resolve error. `leak_gate.sh` grepping stdout for
+a message written to stderr. A marker anchored to a line the diagnostic doesn't
+point at. The HTTP harness in no CI job at all. None of these were wrong about
+the thing they measured; they measured the wrong thing, and reported green for
+it.

@@ -3552,6 +3552,7 @@ impl Parser {
                     continue;
                 }
 
+                let op_tok = self.current_kind().clone();
                 let op = self.parse_binop()?;
                 self.skip_newlines();
                 let rhs = self.parse_expr_bp(r_bp)?;
@@ -3561,6 +3562,35 @@ impl Parser {
                     kind: ExprKind::Binary { op, left: Box::new(lhs), right: Box::new(rhs) },
                     span: self.span(start, end),
                 };
+
+                // P2: comparisons don't chain. `a < b < c` reads as three
+                // related facts and means `(a < b) < c` — comparing a bool
+                // against `c`. Rask's `bool` is orderable, so when `c` is a
+                // bool that even type-checks and runs, quietly answering the
+                // wrong question; when it isn't, the error talks about types
+                // instead of about the chain. Catching it here means the
+                // message can name what was written.
+                //
+                // Only an unparenthesized chain trips this: `(a < b) == c`
+                // parses its `<` inside the group, so this loop never sees two
+                // comparisons in a row.
+                if is_comparison_tok(&op_tok) {
+                    if let Some(next) = Some(self.current_kind().clone()).filter(is_comparison_tok) {
+                        return Err(ParseError {
+                            span: self.current().span,
+                            message: format!(
+                                "comparisons don't chain — `{}` follows a comparison",
+                                tok_text(&next),
+                            ),
+                            hint: Some(format!(
+                                "say both halves: `a {} b && b {} c` — or parenthesize if you meant to compare the bool: `(a {} b) {} c`",
+                                tok_text(&op_tok), tok_text(&next),
+                                tok_text(&op_tok), tok_text(&next),
+                            )),
+                            why: Some("`a < b < c` groups as `(a < b) < c`, which compares a bool against `c` — rarely what anyone means, and `bool` is orderable so it can silently type-check [type.operators/P2]".to_string()),
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -4232,14 +4262,25 @@ impl Parser {
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
             } else if is_mutate {
+                // CP3 says the untyped form is a mutable capture, and nothing
+                // implements those yet. The old message asked for a type, which
+                // turns it into the parameter form — a different thing that
+                // writes to an argument instead of the enclosing variable, and
+                // compiles without saying so.
                 return Err(ParseError {
                     span: mutate_span,
-                    message: format!(
-                        "closure parameter '{}' with 'mutate' requires an explicit type",
+                    message: format!("capturing `{}` by `mutate` isn't implemented yet", name),
+                    hint: Some(format!(
+                        "pass it instead — `func bump(mutate {}: T) {{ … }}` — or hold the \
+                         state in a `Shared` box and write through that inside the closure",
                         name
-                    ),
-                    hint: Some(format!("write it as |mutate {}: T|", name)),
-                    why: None,
+                    )),
+                    why: Some(format!(
+                        "`|mutate {}|` is capture syntax, not a parameter (mem.closures/CP3): \
+                         `{}` is the enclosing variable and the closure writes through to it. \
+                         The typed form `|mutate {}: T|` is the parameter, and that one works",
+                        name, name, name
+                    )),
                 });
             } else {
                 None
@@ -5795,3 +5836,24 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
     })
 }
 
+/// The six operators P2 refuses to chain: ordering and equality.
+fn is_comparison_tok(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq
+            | TokenKind::EqEq | TokenKind::BangEq
+    )
+}
+
+/// How a comparison operator is spelled, for quoting it back in a diagnostic.
+fn tok_text(kind: &TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Lt => "<",
+        TokenKind::Gt => ">",
+        TokenKind::LtEq => "<=",
+        TokenKind::GtEq => ">=",
+        TokenKind::EqEq => "==",
+        TokenKind::BangEq => "!=",
+        _ => "?",
+    }
+}

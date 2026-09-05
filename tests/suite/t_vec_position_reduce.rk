@@ -11,37 +11,34 @@
 
 test "std.collections — position finds the index of the first match" {
     let s: Vec<i64> = [5, 3, 9, 1]
-    assert_eq(s.position(|x| { return x == 9 }) ?? 99, 2)
-    assert_eq(s.position(|x| { return x == 5 }) ?? 99, 0)
-    assert_eq(s.position(|x| { return x == 1 }) ?? 99, 3)
+    assert s.position(|x| { return x == 9 }) ?? 99 == 2
+    assert s.position(|x| { return x == 5 }) ?? 99 == 0
+    assert s.position(|x| { return x == 1 }) ?? 99 == 3
     // No match is `none`.
-    assert_eq(s.position(|x| { return x == 77 }) ?? 99, 99)
+    assert s.position(|x| { return x == 77 }) ?? 99 == 99
 }
 
 test "std.collections — position on an empty Vec is none" {
     let e: Vec<i64> = []
-    assert_eq(e.position(|x| { return x == 1 }) ?? 99, 99)
+    assert e.position(|x| { return x == 1 }) ?? 99 == 99
 }
 
 test "std.collections — position works on a non-scalar element" {
     let strs: Vec<string> = ["a", "bb", "c"]
-    assert_eq(strs.position(|x| { return x.len() == 2 }) ?? 99, 1)
-    assert_eq(strs.position(|x| { return x == "c" }) ?? 99, 2)
+    assert strs.position(|x| { return x.len() == 2 }) ?? 99 == 1
+    assert strs.position(|x| { return x == "c" }) ?? 99 == 2
 }
 
 test "std.collections — reduce folds from the first element" {
     let s: Vec<i64> = [5, 3, 9, 1]
-    assert_eq(s.reduce(|a, b| { return a + b }) ?? 0 - 1, 18)
-    assert_eq(
-        s.reduce(|a, b| {
+    assert s.reduce(|a, b| { return a + b }) ?? 0 - 1 == 18
+    assert s.reduce(|a, b| {
             if a > b {
                 return a
             } else {
                 return b
             }
-        }) ?? 0 - 1,
-        9,
-    )
+        }) ?? 0 - 1 == 9
 }
 
 test "std.collections — reduce has no answer for an empty Vec" {
@@ -51,7 +48,7 @@ test "std.collections — reduce has no answer for an empty Vec" {
 
 test "std.collections — reduce on one element is that element" {
     let one: Vec<i64> = [7]
-    assert_eq(one.reduce(|a, b| { return a + b }) ?? 0 - 1, 7)
+    assert one.reduce(|a, b| { return a + b }) ?? 0 - 1 == 7
 }
 
 func main() {}

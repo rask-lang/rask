@@ -267,27 +267,6 @@ impl Interpreter {
                     Ok(args.into_iter().next().unwrap())
                 }
             }
-            BuiltinKind::AssertEq => {
-                if args.len() < 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                let got = &args[0];
-                let expected = &args[1];
-                if Self::value_eq(got, expected) {
-                    Ok(Value::Unit)
-                } else {
-                    let got_str = format!("{}", got);
-                    let expected_str = format!("{}", expected);
-                    let msg = if args.len() > 2 {
-                        format!("{}", args[2])
-                    } else {
-                        "assert_eq failed".to_string()
-                    };
-                    Err(RuntimeError::AssertionFailed(
-                        format!("{}\n  got:      {}\n  expected: {}", msg, got_str, expected_str)
-                    ))
-                }
-            }
             BuiltinKind::Skip => {
                 let reason = args
                     .first()

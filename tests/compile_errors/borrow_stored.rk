@@ -1,55 +1,34 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: Cannot store a borrow in a struct
-// ERROR: borrow cannot escape scope
+// Rejects: `string[..]` written as a type
 //
-// References (string slices, struct field borrows) are block-scoped only.
-// They cannot be stored in structs or returned from functions (S3, B3).
+// The slice expression `s[0..5]` is a borrow into `s`'s buffer and lives for
+// one statement (B3, S3). There is no type spelling for it, because the thing
+// you'd want to store isn't a borrow at all: `StringView` shares the source's
+// buffer and holds a refcount on it, so it can go in a struct and outlive the
+// statement without dangling (std.strings/V1).
 //
-// Note: `string` is owned and Copy — storing it in a struct is fine.
-// String *slices* (`s[0..5]`) are temporary borrows and cannot be stored.
+// So `input: string[..]` is a syntax error, not a borrow-escape error, and this
+// file can only test the parser. Keeping the value past its statement — the
+// actual S3 rejection — is in borrow_errors.rk, where the checker gets to run.
 
-// COMPILE ERROR: storing a string slice in a struct
+// ERROR: `string[..]` is not a type — a slice expression has no type spelling
 struct Parser {
-    input: string[..]    // ERROR: cannot store a borrow in a struct
+    input: string[..]
     position: usize
 }
 
-// Why this is an error:
+// The way to write it:
+//
+//   import string.StringView
+//
+//   struct Parser {
+//       input: StringView
+//       position: usize
+//   }
 //
 //   func make_parser(s: string) -> Parser {
-//       Parser { input: s[0..5], position: 0 }  // slice is temporary
+//       return Parser { input: s[0..5].view(), position: 0 }
 //   }
-//   let p = make_parser("hello world")
-//   p.input  // Use-after-free: the borrow has no owner
 //
-// Rask prevents this by making borrows block-scoped (S3).
-
-// Also an error: storing a slice result without converting to owned
-func bad_parse(line: string) -> string {
-    let key = line[0..5]     // OK: block-scoped slice
-    return key                 // ERROR: cannot return a borrow (S3)
-}
-
-// THE FIX: Use owned data
-
-// Option 1: Store owned string
-struct ParserOwned {
-    input: string       // string is owned and Copy — perfectly fine
-    position: usize
-}
-
-// Option 2: Convert slices to owned before storing/returning
-func good_parse(line: string) -> string {
-    let key = line[0..5].to_string()    // convert to owned string
-    return key                             // OK: owned value
-}
-
-// Option 3: Use block-scoped borrows locally, convert at boundaries
-func parse_header(line: string) -> Option<(string, string)> {
-    let colon = try line.find(':')
-    let key = line[0..colon].trim().to_string()        // borrow -> owned
-    let value = line[colon+1..].trim().to_string()     // borrow -> owned
-    return (key, value)
-}
-
-func main() {}
+// `.view()` is where the refcount is taken, which is why the storable form
+// needs a call and the borrow doesn't.

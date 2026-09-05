@@ -20,28 +20,62 @@ use crate::{EffectMap, EffectWarning};
 pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = effects.values().any(|e| e.async_);
-    let mut ctx = WarnContext { effects, program_is_concurrent, in_thread_pool: false, in_loop: false, in_multitasking: false };
+    let mut ctx = WarnContext {
+        effects,
+        program_is_concurrent,
+        in_thread_pool: false,
+        in_loop: false,
+        in_multitasking: false,
+        in_root: false,
+    };
 
     for decl in decls {
         match &decl.kind {
-            DeclKind::Fn(f) => ctx.check_fn(f, &mut warnings),
+            DeclKind::Fn(f) => ctx.check_fn(f, is_root_fn(f), &mut warnings),
             DeclKind::Struct(s) => {
-                for m in &s.methods { ctx.check_fn(m, &mut warnings); }
+                for m in &s.methods { ctx.check_fn(m, false, &mut warnings); }
             }
             DeclKind::Enum(e) => {
-                for m in &e.methods { ctx.check_fn(m, &mut warnings); }
+                for m in &e.methods { ctx.check_fn(m, false, &mut warnings); }
             }
             DeclKind::Impl(i) => {
-                for m in &i.methods { ctx.check_fn(m, &mut warnings); }
+                for m in &i.methods { ctx.check_fn(m, false, &mut warnings); }
             }
             DeclKind::Trait(t) => {
-                for m in &t.methods { ctx.check_fn(m, &mut warnings); }
+                for m in &t.methods { ctx.check_fn(m, false, &mut warnings); }
+            }
+            // A `test` block is a root like `main` is: nothing calls it, so
+            // there is no caller for CC2 to blame, and the block it needs has to
+            // be written inside it (std.testing/T17). Until these were walked,
+            // no test body was checked at all.
+            DeclKind::Test(t) => {
+                ctx.in_thread_pool = false;
+                ctx.in_loop = false;
+                ctx.in_multitasking = false;
+                ctx.in_root = true;
+                ctx.check_stmts(&t.body, &mut warnings);
+            }
+            DeclKind::Benchmark(b) => {
+                ctx.in_thread_pool = false;
+                ctx.in_loop = false;
+                ctx.in_multitasking = false;
+                ctx.in_root = true;
+                ctx.check_stmts(&b.body, &mut warnings);
             }
             _ => {}
         }
     }
 
     warnings
+}
+
+/// A function nothing else calls, so there is no call site for CC2 to point at:
+/// the entry point and `@test` functions. Everything else that reaches `spawn`
+/// is reported at its callers instead — that is what lets a library function
+/// like `http.serve` spawn per connection and leave the block to whoever calls
+/// it.
+fn is_root_fn(f: &FnDecl) -> bool {
+    f.name == "main" || f.attrs.iter().any(|a| a == "test")
 }
 
 struct WarnContext<'a> {
@@ -52,14 +86,17 @@ struct WarnContext<'a> {
     in_thread_pool: bool,
     in_loop: bool,
     in_multitasking: bool,
+    /// Walking a function nothing calls — see `is_root_fn`. CC1 only fires here.
+    in_root: bool,
 }
 
 impl<'a> WarnContext<'a> {
-    fn check_fn(&mut self, f: &FnDecl, warnings: &mut Vec<EffectWarning>) {
+    fn check_fn(&mut self, f: &FnDecl, is_root: bool, warnings: &mut Vec<EffectWarning>) {
         // Reset context per function
         self.in_thread_pool = false;
         self.in_loop = false;
         self.in_multitasking = false;
+        self.in_root = is_root;
         self.check_stmts(&f.body, warnings);
     }
 
@@ -136,6 +173,37 @@ impl<'a> WarnContext<'a> {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
                     self.maybe_warn_io_call(name, expr.span, warnings);
+                    // CC1: a `spawn` in a function nothing calls. Everywhere else
+                    // the error belongs at the call site instead (CC2), which is
+                    // what lets `http.serve` spawn per connection and leave the
+                    // block to its caller — reporting the definition would make
+                    // that function unwritable.
+                    if self.in_root
+                        && !self.in_multitasking
+                        && (name == "spawn" || name.ends_with(".spawn"))
+                    {
+                        warnings.push(EffectWarning {
+                            code: "E0352",
+                            message: "`spawn` needs a `using Multitasking { }` scope"
+                                .to_string(),
+                            span: expr.span,
+                            callee_name: name.clone(),
+                            is_error: true,
+                            label: "no block installs a runtime for this task".to_string(),
+                            fix: Some(
+                                "wrap the spawn and whatever joins it:\n    \
+                                 using Multitasking { let h = spawn(|| { … })  h.join() }"
+                                    .to_string(),
+                            ),
+                            why: Some(
+                                "`spawn` submits the task to the runtime the block installs, \
+                                 and nothing here installs one. Nested calls are reported at \
+                                 the call site instead, so a library function is free to spawn \
+                                 and leave the block to whoever calls it [conc.async/CC1]"
+                                    .to_string(),
+                            ),
+                        });
+                    }
                     // CC2: calling a needs_runtime function outside any using Multitasking block
                     if !self.in_multitasking {
                         if let Some(callee_effects) = self.effects.get(name.as_str()) {
@@ -143,12 +211,23 @@ impl<'a> WarnContext<'a> {
                                 warnings.push(EffectWarning {
                                     code: "E0353",
                                     message: format!(
-                                        "`{}` reaches `spawn` — wrap the call in `using Multitasking {{ }}`",
+                                        "calling `{}` needs a `using Multitasking {{ }}` scope",
                                         name
                                     ),
                                     span: expr.span,
                                     callee_name: name.clone(),
                                     is_error: true,
+                                    label: format!("`{}` reaches `spawn`", name),
+                                    fix: Some(format!(
+                                        "wrap the call:\n    using Multitasking {{ {}(…) }}",
+                                        name
+                                    )),
+                                    why: Some(
+                                        "`spawn` submits the task to the runtime the block \
+                                         installs. Without one there is nowhere to submit it, \
+                                         and the call panics on the first task \
+                                         [conc.async/CC2]".to_string(),
+                                    ),
                                 });
                             }
                         }
@@ -352,6 +431,13 @@ impl<'a> WarnContext<'a> {
                 span,
                 callee_name: callee.to_string(),
                 is_error: false,
+                label: format!("`{}` has IO effect", callee),
+                fix: Some("hand the blocking work to `using Multitasking { }` and keep pool threads for CPU work".to_string()),
+                why: Some(
+                    "a pool thread that blocks on I/O is unavailable to every other \
+                     task queued behind it — the pool's whole point is that its \
+                     threads keep moving [comp.effects/CW1]".to_string(),
+                ),
             });
         }
 
@@ -366,6 +452,13 @@ impl<'a> WarnContext<'a> {
                 span,
                 callee_name: callee.to_string(),
                 is_error: false,
+                label: format!("`{}` has IO effect", callee),
+                fix: Some("wrap the loop in `using Multitasking { }` so each I/O pauses the task instead of the thread".to_string()),
+                why: Some(
+                    "outside a runtime, I/O blocks the calling thread (conc.async/IO2), \
+                     so a loop of them costs the whole program one wait after another \
+                     [comp.effects/CW2]".to_string(),
+                ),
             });
         }
     }

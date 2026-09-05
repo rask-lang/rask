@@ -96,32 +96,32 @@ func describe_coalesced(n: i64) -> string {
 }
 
 test "type.errors/ER14a — the drop on a flat `T? or E` keeps one layer" {
-    assert_eq(describe(3), "some:v3")
-    assert_eq(describe(0), "none")
-    assert_eq(describe(-1), "none")
+    assert describe(3) == "some:v3"
+    assert describe(0) == "none"
+    assert describe(-1) == "none"
 }
 
 test "type.optionals/OPT30 — the same answer with the type inferred" {
-    assert_eq(describe_inferred(3), "some:v3")
-    assert_eq(describe_inferred(0), "none")
-    assert_eq(describe_inferred(-1), "none")
+    assert describe_inferred(3) == "some:v3"
+    assert describe_inferred(0) == "none"
+    assert describe_inferred(-1) == "none"
 }
 
 test "type.errors/ER14a — an aggregate payload copies out intact" {
-    assert_eq(describe_struct(4), "some:4,8")
-    assert_eq(describe_struct(0), "none")
-    assert_eq(describe_struct(-1), "none")
+    assert describe_struct(4) == "some:4,8"
+    assert describe_struct(0) == "none"
+    assert describe_struct(-1) == "none"
 }
 
 test "type.errors/ER14a — a plain `T or E` still gains the layer" {
-    assert_eq(describe_plain(2), "some:p2")
-    assert_eq(describe_plain(-1), "none")
+    assert describe_plain(2) == "some:p2"
+    assert describe_plain(-1) == "none"
 }
 
 test "type.errors/ER16b — the `??` composite on the same shape is unchanged" {
-    assert_eq(describe_coalesced(5), "v5")
-    assert_eq(describe_coalesced(0), "MISS")
-    assert_eq(describe_coalesced(-1), "err:bad: negative")
+    assert describe_coalesced(5) == "v5"
+    assert describe_coalesced(0) == "MISS"
+    assert describe_coalesced(-1) == "err:bad: negative"
 }
 
 func main() {

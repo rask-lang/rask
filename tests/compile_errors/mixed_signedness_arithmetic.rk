@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: arithmetic between a signed and an unsigned integer (ORD4)
-// ERROR: one is signed, the other isn't
+// Rejects: one is signed, the other isn't
 //
 // Comparison is the one operator family that crosses signedness, because
 // `5u64 > -1i32` has an obviously-correct answer. Arithmetic doesn't:

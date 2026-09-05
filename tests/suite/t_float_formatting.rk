@@ -51,16 +51,16 @@ test "int to f32 rounds at f32's width" {
     // precision, so it answered 16777217 where native — which really has an
     // f32 — answered 16777216 (#334).
     let big: i64 = 16777217
-    assert "{big as f32}" == "16777216"
-    assert "{big as f64}" == "16777217"
+    assert "{big.round<f32>()}" == "16777216"
+    assert "{big.round<f64>()}" == "16777217"
 
     // The shortest decimal that reads back as this f32, which is what both
     // backends say they print. It used to come out as 123456792 — the f32's
     // *exact* value — because the re-render after the round-trip search asked
     // for a negative number of decimals and got zero (#845).
     let m: i64 = 123456789
-    assert "{m as f32}" == "123456790"
+    assert "{m.round<f32>()}" == "123456790"
 
     let small: i64 = 3
-    assert "{small as f32}" == "3"
+    assert "{small.round<f32>()}" == "3"
 }

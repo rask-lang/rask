@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR [mem.context/CC11]: the entry point declares a `using` context, and
+// Rejects: [mem.context/CC11]: the entry point declares a `using` context, and
 // nothing can supply it — the process starts here, so there's no caller to pass
 // the hidden parameter. It used to compile and run on garbage (#732): the
 // uninitialized pointer went straight into `insert`, which panicked with

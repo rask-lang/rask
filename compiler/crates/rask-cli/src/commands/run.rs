@@ -9,13 +9,6 @@ use rask_diagnostics::formatter::DiagnosticFormatter;
 
 use crate::{output, show_diagnostics, Format};
 
-/// Options for test execution (T7, T8 from std.testing spec).
-pub struct TestOptions {
-    pub verbose: bool,
-    pub sequential: bool,
-    pub seed: Option<String>,
-}
-
 /// What to tell the user about a fatal signal, beyond its name.
 fn signal_advice(sig: i32) -> Option<&'static str> {
     match sig {
@@ -383,7 +376,8 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let test_results = interp.run_tests(&all, filter.as_deref());
 
     // Render in the same format as native (JSON-per-line, then summarize).
-    let mut json_lines = String::new();
+    let (mut json_lines, comptime_count) =
+        comptime_test_records(&result.decls, filter.as_deref());
     for r in &test_results {
         let escaped_name = json_escape(&r.name);
         let dur_ns = r.duration.as_nanos() as u64;
@@ -412,24 +406,33 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
             ));
         }
     }
-    display_test_results(&json_lines, path, format, test_results.len());
+    display_test_results(&json_lines, path, format, test_results.len() + comptime_count);
+
+    // Same rule as native: asked for one file by name and finding nothing in it
+    // is a mistake, not a pass. Both halves matter — `differential.sh` compares
+    // the two backends and calls a file green when both exit 0 with matching
+    // output, so an empty file has to fail on both or it stays green on the
+    // strength of them agreeing about nothing.
+    if test_results.is_empty() && comptime_count == 0 {
+        if format == Format::Human {
+            eprintln!(
+                "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                output::error_label(),
+                path,
+            );
+        }
+        process::exit(1);
+    }
 
     if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
         process::exit(1);
     }
 }
 
-pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: Format, opts: &TestOptions) {
-    // --seed is accepted for forward-compatibility (T8) but not yet functional
-    if opts.seed.is_some() && format == Format::Human {
-        eprintln!("{}: --seed accepted but random ordering not yet implemented", "note".dimmed());
-    }
-    // --sequential is accepted for forward-compatibility (T7); tests already run sequentially
-    cmd_test_native(path, filter, format);
-}
-
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
-    match run_test_file_native(path, filter.as_deref(), format) {
+    // A named file with no tests is a mistake worth an exit code — see
+    // `run_test_file_native`.
+    match run_test_file_native_req(path, filter.as_deref(), format, true) {
         TestOutcome::Passed => {}
         TestOutcome::Failed => process::exit(1),
         TestOutcome::Leaked => process::exit(RASK_LEAK_EXIT),
@@ -458,16 +461,34 @@ impl TestOutcome {
     }
 }
 
-/// Run tests for a single file natively. Returns true on success.
+/// Run tests for a single file natively.
 /// Unlike `cmd_test_native`, this never calls `process::exit` — failures are
-/// reported via diagnostics and the return value, so callers can iterate over
-/// multiple files without aborting on the first failure. Panics anywhere in
+/// reported via diagnostics and the returned `TestOutcome`, so callers can
+/// iterate over multiple files without aborting on the first failure. Panics anywhere in
 /// the pipeline are caught and reported as a per-file failure.
+///
+/// `require_tests` decides what an empty file means. Asked to test one file by
+/// name, finding no tests in it is a mistake — the name was wrong, the blocks
+/// were renamed, a `cfg` took them out — and it used to exit 0, which is how a
+/// suite file could lose its tests and stay green on both backends
+/// (`differential.sh` calls a file green when both exit 0 with the same output,
+/// and "No tests found." satisfies that on both). Walking a directory is the
+/// other case: modules sit next to their test files and having no tests is
+/// ordinary, so that path passes `false`.
 pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) -> TestOutcome {
+    run_test_file_native_req(path, filter, format, false)
+}
+
+pub fn run_test_file_native_req(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+) -> TestOutcome {
     let path_owned = path.to_string();
     let filter_owned = filter.map(|s| s.to_string());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format)
+        run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format, require_tests)
     }));
     match result {
         Ok(outcome) => outcome,
@@ -478,13 +499,21 @@ pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) ->
     }
 }
 
-fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> TestOutcome {
+fn run_test_file_native_inner(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+) -> TestOutcome {
     // One frontend, shared with `rask build` — the test runner is the decl
     // rewrite handed to it, not a second copy of the pipeline (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
     let mut tests = Vec::new();
+    let mut comptime_records = String::new();
+    let mut comptime_count = 0;
     let output = rask_compiler::compile_file_with(path, Vec::new(), &config, |decls, _typed| {
+        (comptime_records, comptime_count) = comptime_test_records(decls, filter);
         tests = super::compile::extract_tests(decls, filter);
     });
 
@@ -508,11 +537,28 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     };
 
     if tests.is_empty() {
+        // Comptime tests are already in — nothing to build or run for them.
+        if comptime_count > 0 {
+            return if display_test_results(&comptime_records, path, format, comptime_count) {
+                TestOutcome::Passed
+            } else {
+                TestOutcome::Failed
+            };
+        }
         if format == Format::Human {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
+            if require_tests {
+                eprintln!(
+                    "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                    output::error_label(),
+                    path,
+                );
+            }
         }
-        return TestOutcome::Passed;
+        // A file asked for by name with no tests in it is a mistake, not a
+        // pass — see `run_test_file_native`.
+        return if require_tests { TestOutcome::Failed } else { TestOutcome::Passed };
     }
 
     let mono = result.mono;
@@ -555,7 +601,9 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         Ok(out) => {
             forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let complete = display_test_results(&stdout, path, format, tests.len());
+            let all = format!("{comptime_records}{stdout}");
+            let complete =
+                display_test_results(&all, path, format, tests.len() + comptime_count);
             let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
             if complete && (out.status.success() || leaked) {
                 if leaked { TestOutcome::Leaked } else { TestOutcome::Passed }
@@ -570,6 +618,23 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
     }
 }
 
+/// Drop `foo.rk` when `foo_test.rk` sits beside it.
+///
+/// The companion file compiles the two together (std.testing/T3), so running
+/// `foo.rk` on its own as well would run any inline tests it has twice — once
+/// alone and once as part of the pair.
+fn without_companion_modules(files: Vec<String>) -> Vec<String> {
+    let paired: std::collections::HashSet<String> = files
+        .iter()
+        .filter_map(|f| {
+            let path = std::path::Path::new(f);
+            let base = path.file_stem()?.to_str()?.strip_suffix("_test")?;
+            Some(path.with_file_name(format!("{base}.rk")).to_string_lossy().into_owned())
+        })
+        .collect();
+    files.into_iter().filter(|f| !paired.contains(f)).collect()
+}
+
 /// Run tests for every `.rk` file in a directory independently.
 ///
 /// Each file is type-checked and compiled in isolation, so identically-named
@@ -578,7 +643,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
 /// than a single multi-file package. Exits 1 if any file fails.
 pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) {
     let dir_path = std::path::Path::new(dir);
-    let files = crate::collect_rk_files(dir_path);
+    let files = without_companion_modules(crate::collect_rk_files(dir_path));
 
     if files.is_empty() {
         if format == Format::Human {
@@ -620,6 +685,33 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
 /// Print the run's results. `expected` is how many tests the binary was built
 /// with; fewer results than that means it died partway and the run is a
 /// failure, not a pass over whatever arrived. Returns false in that case.
+/// Protocol records for the `comptime test`s in this file.
+///
+/// They ran inside the pipeline, before either backend started (std.testing/T11)
+/// — a failing one is a compile error and never gets here, so every record is a
+/// pass. Feeding them through the same JSON channel the runners use keeps one
+/// renderer for both, and keeps a comptime test from being invisible to
+/// `rask test`.
+fn comptime_test_records(decls: &[rask_ast::decl::Decl], filter: Option<&str>) -> (String, usize) {
+    let mut records = String::new();
+    let mut count = 0;
+    for decl in decls {
+        let rask_ast::decl::DeclKind::Test(t) = &decl.kind else { continue };
+        if !t.is_comptime {
+            continue;
+        }
+        if filter.is_some_and(|pat| !t.name.contains(pat)) {
+            continue;
+        }
+        records.push_str(&format!(
+            "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            json_escape(&t.name),
+        ));
+        count += 1;
+    }
+    (records, count)
+}
+
 fn display_test_results(stdout: &str, path: &str, format: Format, expected: usize) -> bool {
     let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
     let truncated = reported < expected;

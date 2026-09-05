@@ -59,8 +59,8 @@ test "a named delete leaves other links alone" {
     drop_one(mutate s, b)
 
     // `a` came from its own insert, so it cannot be a second name for `b`.
-    assert_eq(a.id, 1)
-    assert_eq(s.len(), 1)
+    assert a.id == 1
+    assert s.len() == 1
 }
 
 test "a deleting call revokes the caller's links" {
@@ -73,9 +73,9 @@ test "a deleting call revokes the caller's links" {
 
     // PM5: the marker follows the signature, so a `deleting` parameter takes
     // `deleting` at the call site — `mutate` would print two contracts the same.
-    assert_eq(drop_all(deleting s), 2)
+    assert drop_all(deleting s) == 2
 
-    assert_eq(before, 1)
+    assert before == 1
     assert s.is_empty()
 }
 
@@ -83,15 +83,15 @@ test "deleting on a method receiver works the same way" {
     mut sc = Scene { nodes: Rack.new() }
     let _a = sc.nodes.insert(Node { id: 1, peer: none })
     let _b = sc.nodes.insert(Node { id: 2, peer: none })
-    assert_eq(sc.count(), 2)
+    assert sc.count() == 2
 
-    assert_eq(sc.purge(), 2)
+    assert sc.purge() == 2
 
-    assert_eq(sc.count(), 0)
+    assert sc.count() == 0
 }
 
 test "`deleting` is contextual, not reserved" {
     // Still usable as an ordinary name, so adding the mode broke no vocabulary.
     let deleting = 7
-    assert_eq(deleting, 7)
+    assert deleting == 7
 }

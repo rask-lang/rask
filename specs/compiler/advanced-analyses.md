@@ -36,14 +36,34 @@ Track handle validity states through control flow to catch stale handle access a
 | **TS7: Local analysis** | Typestate tracking is intraprocedural; function parameters default to Unknown |
 | **TS8: Error on Invalid access** | Accessing a handle in Invalid state is a compile error |
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: unbuilt -->
 ```rask
-func bad_example() using Pool<Player> {
-    let h = pool.insert(player)  // h: Fresh
-    pool.remove(h)                     // h: Invalid
-    pool[h].health -= 10               // ERROR [comp.advanced/TS8]: h is Invalid
+import memory.Pool
+import memory.Handle
+
+struct Player { health: i64 }
+
+func bad_example() {
+    mut pool = Pool<Player>.new()
+    let h = pool.insert(Player { health: 100 })  // h: Fresh
+    pool.remove(h)                               // h: Invalid
+    pool[h].health -= 10                         // ERROR [comp.advanced/TS8]: h is Invalid
 }
 ```
+
+> **None of the TS rules below are implemented.** The two rejection blocks in
+> this section are marked `unbuilt`: they compile today, and the harness holds
+> them to that, so the day TS8 lands the annotation is what fails and asks to be
+> corrected.
+>
+> They were `compile-fail` with no stage, which the old harness scored as a pass
+> — the fragments named a `pool` that doesn't exist, so they failed at *resolve*
+> and never reached TS8. Written out as programs the analysis could actually run
+> on, they compile clean, directly and through a must-alias.
+>
+> This matters beyond the section: `mem.ownership` promises use-after-free
+> through a stale handle is "caught at the access, never silent", and TS8 is
+> where that gets caught.
 
 ### State Transitions
 
@@ -67,13 +87,19 @@ func bad_example() using Pool<Player> {
 | **MA4: Reassignment breaks alias** | `h = new_value` removes h from its alias set |
 | **MA5: Local scope only** | Alias tracking within function scope; cross-function aliasing conservatively Unknown |
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: unbuilt -->
 ```rask
-func alias_example() using Pool<Player> {
-    let h1 = pool.insert(player)  // h1: Fresh, aliases: {}
-    let h2 = h1                       // h2: Fresh, aliases: {h1}
-    pool.remove(h1)                     // h1: Invalid, h2: Invalid (via alias)
-    pool[h2].health -= 10               // ERROR [comp.advanced/TS8]: h2 is Invalid
+import memory.Pool
+import memory.Handle
+
+struct Player { health: i64 }
+
+func alias_example() {
+    mut pool = Pool<Player>.new()
+    let h1 = pool.insert(Player { health: 100 })  // h1: Fresh, aliases: {}
+    let h2 = h1                                   // h2: Fresh, aliases: {h1}
+    pool.remove(h1)                               // h1 Invalid, h2 too (via alias)
+    pool[h2].health -= 10                         // ERROR [comp.advanced/TS8]
 }
 ```
 
@@ -86,7 +112,7 @@ func alias_example() using Pool<Player> {
 | **FN3: Mutation widens** | Pool structural mutation (insert/remove of other handles) widens to Unknown |
 | **FN4: Loop reset** | Each loop iteration resets to pre-loop state |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func safe_access(h: Handle<Player>) using Pool<Player> {
     // h: Unknown (parameter)
@@ -114,7 +140,7 @@ Demand-driven value range propagation to eliminate bounds checks and catch overf
 | **IV6: Eliminate provable checks** | If range proves `i < array.len()`, eliminate the bounds check |
 | **IV7: Local analysis** | Per-function with interprocedural summaries for known stdlib functions |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func process(pool: Pool<Entity>) {
     for i in 0..pool.len() {       // i: [0, pool.len())
@@ -143,10 +169,10 @@ func process(pool: Pool<Entity>) {
 | **BE3: Handle index bounds** | `pool.handles()[i]` eliminates check if `i in [0, pool.len())` |
 | **BE4: Slice bounds** | `array[start..end]` eliminates checks if `0 <= start <= end <= len` |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func safe_slice(data: Vec<i32>, start: usize, end: usize) -> Vec<i32> {
-    if start > end or end > data.len() {
+    if start > end || end > data.len() {
         panic("invalid range")
     }
     // Compiler knows: start <= end <= data.len()
@@ -169,7 +195,7 @@ Formalize Rask's `using Pool<T>` context clauses as a lightweight effect system 
 | **EF5: Frozen iteration** | In frozen contexts, the compiler may eliminate generation checks during iteration (see `comp.gen-coalesce/FZ1`). `h.field` auto-resolution uses standard generation checks |
 | **EF6: Effect polymorphism** | Functions can be effect-polymorphic: work with both frozen and mutable pools |
 
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
 // Frozen context — structural mutations forbidden
 func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
@@ -197,7 +223,7 @@ func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
 | `Grow<Pool<T>>` | Insert new elements | Widens to Unknown |
 | `Shrink<Pool<T>>` | Remove elements | Invalidates removed handle |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 // Effect-polymorphic: works with frozen or mutable
 func count_alive(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> -> usize {

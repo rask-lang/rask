@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: `try` can't pick between two variants that wrap the same error
-// ERROR: `try` can't tell which variant of `ApiError` should wrap `StoreError`
+// Rejects: `try` can't tell which variant of `ApiError` should wrap `StoreError`
 //
 // ER31a lets `try` place a propagated error in the caller's error enum, but only
 // when exactly one variant takes it. Two candidates and the compiler says so

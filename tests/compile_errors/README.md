@@ -2,7 +2,18 @@
 
 This directory contains code that **should not compile**. Each file demonstrates specific safety guarantees enforced by the Rask compiler.
 
-Each `// ERROR:` comment indicates the expected error. If the compiler accepts any of these, that's a bug in the compiler — the spec says it should be rejected.
+Each `// ERROR:` comment claims the compiler rejects the code below it. If the
+compiler accepts it, that's a compiler bug — the spec says it should be rejected.
+
+**Markers are anchored to a line.** The check is: between one marker and the
+next, at least one diagnostic must point at a line in that span. So put the
+marker directly above (or on the end of) the line that should be rejected. A run
+of consecutive `// ERROR` lines counts as one marker — several lines often
+describe a single rejection.
+
+Markers no diagnostic answers yet are listed in
+[DEAD_MARKERS.txt](DEAD_MARKERS.txt) with a per-file count. That count may only
+go down.
 
 ## Files
 
@@ -10,8 +21,9 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 
 | File | What it tests |
 |------|--------------|
-| [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `?`), `const` in a body, let reassignment, missing return, chained comparison |
+| [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `&`), `const` in a body. Parser errors only — a rule the checker enforces can never fire here, so those markers moved to files of their own |
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
+| [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 
 ### Type System
 
@@ -33,6 +45,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [untyped_bindings.rk](untyped_bindings.rk) | Bindings that carried no type at all, so a wrong annotation unified happily: a struct-variant pattern's fields, an `is` binding, a tuple `for` binding (E0308, #809) |
 | [newline_continuation.rk](newline_continuation.rk) | A line starting with `+` — excluded from newline continuation (P3) and not a statement either (#304) |
 | [bare_shared_with.rk](bare_shared_with.rk) | Bare `with shared as v` — the lock has to be named `.read()` or `.write()` (conc.sync/R4, E0839, #880). Nothing enforced it: the interpreter hit a self-contradictory runtime error and native read the wrong bytes |
+| [spawn_needs_multitasking.rk](spawn_needs_multitasking.rk) | `spawn` with no `using Multitasking { }` scope (conc.async/CC1 and CC2, std.testing/T17). CC1 was keyed off the qualified `async.spawn` spelling, so a bare `spawn(|| { … })` was never checked; CC2 worked but never walked `test` blocks. The error lands where the block belongs — at the `spawn` only in a root nothing calls (entry point, `test` block, `@test` function), at the call site otherwise, so a library function may spawn and leave the scope to its caller |
 | [local_shared_sent.rk](local_shared_sent.rk) | A `Shared.new` box — the `Local` strategy, no lock — captured by a spawned task (`conc.sync/SH7`, E0346). Both locking strategies in the same file must still compile |
 | [map_key_hashable.rk](map_key_hashable.rk) | A Map key that isn't Hashable (E0834, HA1/HA4, #812) — a nominal newtype with no `with (…)` clause, a float, a struct with a float field; each gets the way out that fits it |
 | [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0340/E0308, #812) |
@@ -66,7 +79,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [linear_containers.rk](linear_containers.rk) | Vec/Map can't hold linear elements (RC1/RC3): annotation, push, param, return, field, transitive, nested, optional, alias, Map value/key (E0820) |
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
-| [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
+| [borrow_stored.rk](borrow_stored.rk) | `string[..]` written as a type — a slice expression has no type spelling, because the storable form is `StringView`, which refcounts the source buffer rather than borrowing it. Parser-level only; the S3 rejection for keeping a slice past its statement is in borrow_errors.rk |
 | [mutate_marker_required.rk](mutate_marker_required.rk) | An argument to a `mutate` parameter with no `mutate` marker (PM4/PM5, E0373) — a Copy argument and a field path are no exception; a method receiver is exempt; the marker on a non-`mutate` parameter is E0328 (#530) |
 | [mutate_through_binding.rk](mutate_through_binding.rk) | Writing through a name a test or a pattern introduced (E0372, #788) — `if x? as v`, a `mutate` argument, a plain `for` element, a match-arm payload, `while x? as v`. `for mutate` and write-back through the original stay legal |
 | [mutate_param_left_empty.rk](mutate_param_left_empty.rk) | A `mutate` parameter consumed and not replaced (PM2, E0836, #815) — outright and on one path only; consume-and-replace stays legal, and `take` is how a function says it keeps the value |
@@ -87,7 +100,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 
 | File | What it tests |
 |------|--------------|
-| [closure_errors.rk](closure_errors.rk) | Double mutable capture, scope-limited escape, mutate params on closures |
+| [closure_errors.rk](closure_errors.rk) | What the parser rejects around closures: `\|mutate x\|` capture syntax (unimplemented, #1087 — the message used to suggest `\|mutate x: T\|`, which compiles and means something else) and a closure type in a signature. MC2 and SL2 can't be reached until those exist |
 
 ### Other
 
@@ -113,7 +126,11 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 ## Running Tests
 
 ```bash
-rask test-specs tests/compile_errors/
+cd compiler
+cargo test --release -p rask-cli --test compile_run every_compile_error_marker
 ```
 
-Each file includes `// ERROR:` comments indicating expected error patterns. If the compiler accepts any of these files, it's a compiler bug — the spec requires rejection.
+That test walks this directory, so a new fixture is covered the moment it lands
+— no registration step. Individual files also have their own tests in
+`compiler/crates/rask-cli/tests/compile_run.rs` that assert the *wording* of the
+diagnostic, which the marker gate doesn't look at.

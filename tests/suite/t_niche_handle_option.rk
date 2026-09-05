@@ -38,8 +38,8 @@ extend Index {
 
 test "a map lookup that misses answers none instead of crashing" {
     let idx = Index.new()
-    assert_eq(idx.title_of(1), "write it")
-    assert_eq(idx.title_of(99), "missing")
+    assert idx.title_of(1) == "write it"
+    assert idx.title_of(99) == "missing"
 }
 
 test "a handle option compares against none through a binding" {
@@ -57,7 +57,7 @@ test "`??` on a missed lookup falls through to the default" {
     let known = idx.by_id.get(1)!
     let fallback = idx.by_id.get(99) ?? known
     with idx.pool[fallback] as t {
-        assert_eq(t.title, "write it")
+        assert t.title == "write it"
     }
 }
 

@@ -35,7 +35,7 @@ test "a delete nulls only the fields that pointed at it" {
     if a.left? as _x { assert false }
     if a.up? as _y { assert false }
     if a.right? as still {
-        assert_eq(still.id, 3)
+        assert still.id == 3
     } else {
         assert false
     }
@@ -59,7 +59,7 @@ test "the same field retargeted across siblings keeps its own record" {
     rack.delete(b)
 
     if a.left? as kept {
-        assert_eq(kept.id, 3)
+        assert kept.id == 3
     } else {
         assert false
     }
@@ -73,13 +73,13 @@ test "an edge list beside scalar edges is fixed too" {
 
     a.left = b
     a.kids.push(b)
-    assert_eq(a.kids.len(), 1)
+    assert a.kids.len() == 1
 
     rack.delete(b)
 
     // The scalar field goes to `none`; the list entry goes away entirely.
     if a.left? as _x { assert false }
-    assert_eq(a.kids.len(), 0)
+    assert a.kids.len() == 0
 }
 
 test "every link field of a dying node is unhooked from its targets" {
@@ -95,8 +95,8 @@ test "every link field of a dying node is unhooked from its targets" {
     // Deleting the holder must take all three records out of hub's incoming
     // list. If any survives, hub's own delete writes through a freed slot.
     rack.delete(holder)
-    assert_eq(rack.len(), 1)
+    assert rack.len() == 1
 
     rack.delete(hub)
-    assert_eq(rack.len(), 0)
+    assert rack.len() == 0
 }

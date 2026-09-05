@@ -20,6 +20,12 @@ typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.
 | **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants: `@call_text(p)` from the caller's argument expression for `p`, `@call_location` from the call expression itself |
 | **CS5: Forward-only fill** | The only explicit fill: a named argument whose value is a parameter carrying the *same* annotation in the calling function. Any other expression — literal, computed, stored — is a compile error. Filled values are unforgeable: a text is always something some caller wrote, a location always names a real call site |
 
+`assert_eq` below is a *user-written* function, not the stdlib's — the stdlib has
+no such thing (`std.testing`: a comparison is `==`, and `assert` reports the
+operands itself). That it can be written at all, in ordinary Rask, is the point
+of this feature: what Rust needs `assert_eq!` for is a library problem here, not
+a language one.
+
 <!-- test: skip -->
 ```rask
 func assert_eq<T: Equal + Debug>(a: T, b: T,

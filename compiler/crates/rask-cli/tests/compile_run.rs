@@ -2452,7 +2452,13 @@ fn error_context_ambiguous_cc8() {
     // context is a real diagnostic, not the old unresolved-variable failure.
     let (failed, out) = compile_error_output("context_ambiguous_min.rk");
     assert!(failed, "ambiguous context must be rejected: {}", out);
-    assert!(out.contains("CC8"), "should carry the CC8 code: {}", out);
+    assert!(out.contains("E0849"), "should carry the code: {}", out);
+    assert!(
+        out.contains("mem.context/CC8"),
+        "and cite the rule in the why — the code is what `rask explain` takes, \
+         the rule id is what the spec calls it: {}",
+        out,
+    );
     assert!(
         out.contains("ambiguous context"),
         "should name the ambiguity, not a var lookup failure: {}", out,
@@ -2465,7 +2471,8 @@ fn error_context_closure_storable_cc10() {
     // take as a parameter is rejected — it can't inherit ambient contexts.
     let (failed, out) = compile_error_output("context_closure_storable.rk");
     assert!(failed, "storable closure needing context must be rejected: {}", out);
-    assert!(out.contains("CC10"), "should carry the CC10 code: {}", out);
+    assert!(out.contains("E0850"), "should carry the code: {}", out);
+    assert!(out.contains("mem.context/CC10"), "and cite the rule: {}", out);
 }
 
 #[test]
@@ -2569,8 +2576,76 @@ fn error_unknown_lowercase_type() {
 }
 
 #[test]
+fn error_comparison_chaining_p2() {
+    // type.operators/P2. Unenforced until the harness audit: `a == b == c`
+    // compiled and ran, because Rask's `bool` is orderable so `(a == b) == c`
+    // is a legal bool-vs-bool comparison and no later pass had a complaint.
+    // The check lives in the parser, which is also what made the long-dead
+    // marker in syntax_rejected.rk start firing — it sat below parse errors
+    // that stopped the pipeline before the checker ran.
+    let (failed, out) = compile_error_output("comparison_chaining.rk");
+    assert!(failed, "a comparison chain must be rejected: {}", out);
+
+    for op in ["`<` follows a comparison", "`==` follows a comparison",
+               "`!=` follows a comparison", "`<=` follows a comparison"] {
+        assert!(
+            out.contains(&format!("comparisons don't chain — {}", op)),
+            "should reject a chain ending in {}: {}", op, out,
+        );
+    }
+    // Five chains, five diagnostics — one per function, so none is hiding
+    // behind an earlier one.
+    assert_eq!(
+        out.matches("comparisons don't chain").count(), 5,
+        "every chain in the file should be reported: {}", out,
+    );
+    // The fix names both ways out, and the rule is cited.
+    assert!(out.contains("&& b"), "should suggest the `&&` form: {}", out);
+    assert!(out.contains("parenthesize"), "should offer the parenthesized form: {}", out);
+    assert!(out.contains("type.operators/P2"), "should cite P2: {}", out);
+}
+
+#[test]
 fn error_cast_rules() {
-    assert!(compile_error("cast_rules.rk"), "should reject invalid `as` casts and misused conversion forms (CV1–CV10, CH5, BL3)");
+    // This used to check only that the file failed to compile, which any one of
+    // its twelve markers satisfied — so CV1 went unenforced under a green test
+    // for as long as it took someone to count the diagnostics by hand. Assert
+    // each class by its own message instead.
+    let (failed, out) = compile_error_output("cast_rules.rk");
+    assert!(failed, "should reject invalid `as` casts and misused conversion forms: {}", out);
+
+    // CV1: int→float only where every source value lands exactly. An f64 keeps
+    // integers to 2^53 and an f32 to 2^24, so the wide sources are out — and an
+    // i32 is legal into an f64 and not into an f32, which is the rule doing
+    // something a blanket ban wouldn't.
+    for pair in ["`i64` to `f64`", "`i64` to `f32`", "`u64` to `f64`",
+                 "`i32` to `f32`", "`u32` to `f32`"] {
+        assert!(
+            out.contains(&format!("cannot convert {} with `as`", pair)),
+            "CV1 should reject {}: {}", pair, out,
+        );
+    }
+    assert!(
+        out.contains("x.round<f64>()"),
+        "CV1 should point at the conversion that names its rounding: {}", out,
+    );
+
+    // CV2/CV3/CV4, CH5, BL3 — one per class, by message.
+    assert!(out.contains("cannot narrow `i32` to `i8` with `as`"), "CV2: {}", out);
+    assert!(out.contains("cannot reinterpret sign converting `i32` to `u32`"), "CV3: {}", out);
+    assert!(out.contains("cannot convert float `f64` to integer `i32`"), "CV4: {}", out);
+    assert!(out.contains("cannot convert `u32` to `char` with `as`"), "CH5: {}", out);
+    assert!(out.contains("no conversion between `bool` and numeric types"), "BL3: {}", out);
+
+    // E0818: a conversion form used where its policy means nothing.
+    assert!(out.contains("`floor` rounds a float to an integer"), "CV15 misuse: {}", out);
+    assert!(out.contains("`wrap` produces an integer"), "CV12 misuse: {}", out);
+    assert!(out.contains("`round` has nothing to round"), "CV14 misuse: {}", out);
+    assert!(out.contains("`clamp` works between integer types"), "CV13 misuse: {}", out);
+
+    // E0838: `as` to a non-numeric target reinterprets bits (#862).
+    assert!(out.contains("`as Vec<i64>` reinterprets the bits"), "E0838 collection: {}", out);
+    assert!(out.contains("`as Point` reinterprets the bits"), "E0838 struct: {}", out);
 }
 
 #[test]
@@ -4409,12 +4484,13 @@ test "default argument fills in" {
     );
 }
 
-// ─── assert_eq compares values, not addresses ───────────────
+// ─── a comparison in an `assert` ────────────────────────────
 //
-// Native lowering handed both sides to a runtime function typed (i64, i64):
-// two strings arrived as their addresses and never matched, and a float or a
-// char didn't fit the signature at all, so Cranelift rejected the whole test
-// function. The interpreter had it right all along.
+// `assert_eq` used to live here (std.testing/A4). Its lowering handed both
+// sides to a runtime function typed (i64, i64): two strings arrived as their
+// addresses and never matched, and a float or a char didn't fit the signature
+// at all, so Cranelift rejected the whole test function. The rule is gone and
+// `assert a == b` carries what it was for, so these test that instead.
 
 fn rask_test_output(args: &[&str]) -> (bool, String) {
     let rask = rask_binary();
@@ -4433,43 +4509,76 @@ fn rask_test_output(args: &[&str]) -> (bool, String) {
 }
 
 #[test]
-fn assert_eq_compares_by_value_on_both_backends() {
-    let path = fixture("assert_eq_types.rk");
+fn assert_compares_by_value_on_both_backends() {
+    let path = fixture("assert_compares_by_value.rk");
     let path = path.to_str().unwrap();
 
     for args in [vec![path], vec!["--interp", path]] {
         let (ok, combined) = rask_test_output(&args);
         assert!(
             ok && combined.contains("8 passed"),
-            "assert_eq must compare by value ({:?}): {}", args, combined,
+            "`==` must compare by value ({:?}): {}", args, combined,
         );
     }
 }
 
+/// A failed comparison reads the same on both backends, whatever the operands.
+///
+/// The two disagreed on everything without a one-line rendering. Native prints
+/// the *address* of an aggregate, so a struct comparison came out as
+/// `140737253693408 == 140737253693424`; the interpreter has the whole value
+/// and printed `Point { x: 1, y: 2 }`. Both were "right" and they were not the
+/// same line, which is the one thing the two backends may not be — and no suite
+/// file asserted a *failing* comparison, so nothing compared them.
+///
+/// Native can't do better: a struct opts into `Displayable` (std.fmt/D3) and
+/// most don't, so there is nothing to render. The message stands alone for
+/// those, on both sides.
 #[test]
-fn assert_eq_failure_reports_got_and_expected() {
-    let dir = std::env::temp_dir().join(format!("rask_assert_eq_diff_{}", next_tmp_id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("mismatch.rk");
-    std::fs::write(&file, r#"
-func main() { println("x") }
+fn a_failed_comparison_reads_the_same_on_both_backends() {
+    let cases: &[(&str, &str)] = &[
+        ("ints", "assert 2 + 2 == 5"),
+        ("strings", "assert \"got\" == \"want\""),
+        ("chars", "assert 'a' == 'b'"),
+        ("floats", "assert 1.5 == 2.5"),
+        ("optionals", "assert maybe(1) == maybe(2)"),
+        ("structs", "assert Point { x: 1, y: 2 } == Point { x: 1, y: 3 }"),
+        ("tuples", "assert (1, 2) == (1, 3)"),
+    ];
 
-test "strings differ" {
-    let a = "hei"
-    assert_eq(a, "hallo")
-}
-"#).unwrap();
+    for (name, assertion) in cases {
+        let src = format!(
+            "struct Point {{ x: i64, y: i64 }}\n\
+             func maybe(n: i64) -> i64? {{\n    if n > 1 {{ return n }}\n    return none\n}}\n\
+             func main() {{ println(\"x\") }}\n\
+             test \"t\" {{ {assertion} }}\n"
+        );
+        let dir = std::env::temp_dir().join(format!("rask_cmp_msg_{}", next_tmp_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cmp.rk");
+        std::fs::write(&file, &src).unwrap();
+        let path = file.to_str().unwrap();
 
-    let (ok, combined) = rask_test_output(&[file.to_str().unwrap()]);
-    let _ = std::fs::remove_dir_all(&dir);
+        let (native_ok, native) = rask_test_output(&[path]);
+        let (interp_ok, interp) = rask_test_output(&["--interp", path]);
+        let _ = std::fs::remove_dir_all(&dir);
 
-    assert!(!ok, "a mismatched assert_eq must fail the test: {}", combined);
-    assert!(
-        combined.contains("got:") && combined.contains("hei")
-            && combined.contains("expected:") && combined.contains("hallo"),
-        "failure must name both values: {}", combined,
-    );
+        assert!(!native_ok && !interp_ok, "{name}: the assertion has to fail");
+        let strip = |s: &str| {
+            s.lines()
+                .filter(|l| l.contains("assertion failed"))
+                .map(|l| l.trim().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            strip(&native), strip(&interp),
+            "{name}: the two backends print different failure lines\n             native:\n{native}\ninterp:\n{interp}"
+        );
+        assert!(
+            !strip(&native).is_empty(),
+            "{name}: no failure line at all:\n{native}"
+        );
+    }
 }
 
 // ─── Regression: issues #566, #569 ──────────────────────────
@@ -6359,6 +6468,69 @@ fn run_rask_test_source(src: &str, interp: bool) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+const TRY_IN_TEST_SRC: &str = r#"
+enum OpenErr { Denied }
+extend OpenErr with Error {
+    func message(self) -> string { return "denied" }
+}
+func might_fail(ok: bool) -> i64 or OpenErr {
+    if !ok: return OpenErr.Denied
+    return 7
+}
+
+test "try that succeeds" {
+    let v = try might_fail(true)
+    assert v == 7
+}
+
+test "try that propagates" {
+    let v = try might_fail(false)
+    assert v == 7
+}
+
+test "a later test still runs" {
+    assert true
+}
+
+func main() {}
+"#;
+
+// std.testing/T20: a test block is the error branch for `try`.
+//
+// The suite can't hold this half — a failing test fails the file — so the
+// error path lives here, where a program's output is the assertion. Without
+// it the only thing pinned is `try` succeeding, which is the half that was
+// already fine.
+//
+// T20 replaced a rule saying the opposite: bare `try` in a test body was an
+// ER47 compile error, because a test block supposedly had nowhere to
+// propagate to and the failure would say nothing useful. It has somewhere to
+// go and it says what happened, so the rule went.
+#[test]
+fn try_in_a_test_block_fails_that_test_and_names_the_error() {
+    for interp in [true, false] {
+        let out = run_rask_test_source(TRY_IN_TEST_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+
+        assert!(
+            out.contains("try propagated an error out of a test block"),
+            "{backend}: a propagating `try` should say so: {out}",
+        );
+        // The failure is that test's, not the file's: the one before it passed
+        // and the one after it still ran.
+        assert!(
+            out.contains("try that succeeds"), "{backend}: {out}",
+        );
+        assert!(
+            out.contains("a later test still runs"), "{backend}: {out}",
+        );
+        assert!(
+            out.contains("3 tests, 2 passed, 1 failed"),
+            "{backend}: exactly one test should fail: {out}",
+        );
+    }
+}
+
 const STRING_ASSERT_SRC: &str = r#"
 test "two string variables" {
     let a = "abc"
@@ -6672,5 +6844,564 @@ fn nothing_leaks_at_exit() {
         run.status.success(),
         "the program leaked:\n{}",
         String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+// ─── The compile_errors/ marker gate ─────────────────────────
+
+/// A file's `// ERROR` markers, one entry per marker, holding the line each
+/// one is anchored to. A run of consecutive comment-only markers is one
+/// marker: several lines often describe a single rejection.
+fn marker_anchors(source: &str) -> Vec<usize> {
+    let mut anchors = Vec::new();
+    let mut in_standalone_run = false;
+    for (idx, raw) in source.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        let standalone = trimmed.starts_with("//");
+        let is_marker = if standalone {
+            trimmed.starts_with("// ERROR")
+        } else {
+            // Trailing marker on a line of code: `x = y  // ERROR: ...`
+            raw.split("//")
+                .skip(1)
+                .any(|c| c.trim_start().starts_with("ERROR"))
+        };
+        if !is_marker {
+            in_standalone_run = false;
+            continue;
+        }
+        if standalone && in_standalone_run {
+            continue;
+        }
+        anchors.push(idx + 1);
+        in_standalone_run = standalone;
+    }
+    anchors
+}
+
+/// Line numbers `rask check` pointed at, from the `--> file.rk:LINE:COL` line
+/// of each diagnostic.
+fn diagnostic_lines(output: &str) -> Vec<usize> {
+    let mut lines: Vec<usize> = output
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("--> "))
+        .filter_map(|loc| {
+            let mut parts = loc.rsplitn(3, ':');
+            parts.next()?; // column
+            parts.next()?.parse().ok()
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+fn compile_errors_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("compile_errors")
+}
+
+/// `<file> <count>` lines, `#` comments ignored.
+fn read_dead_marker_registry(dir: &Path) -> std::collections::BTreeMap<String, usize> {
+    let text = std::fs::read_to_string(dir.join("DEAD_MARKERS.txt"))
+        .expect("tests/compile_errors/DEAD_MARKERS.txt is missing");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let (name, count) = l
+                .rsplit_once(char::is_whitespace)
+                .unwrap_or_else(|| panic!("DEAD_MARKERS.txt: expected `<file> <count>`, got `{l}`"));
+            let count = count
+                .parse()
+                .unwrap_or_else(|_| panic!("DEAD_MARKERS.txt: `{count}` is not a number"));
+            (name.trim().to_string(), count)
+        })
+        .collect()
+}
+
+/// Every `// ERROR` marker must have a diagnostic under it.
+///
+/// `compile_error()` only ever asked whether a file failed *somewhere*, so a
+/// file with twelve markers passed on the strength of one parse error at the
+/// top — the other eleven rules could be unimplemented and nothing would say
+/// so. Three of the language's rules turned out to be exactly that (audit 1.1,
+/// 1.3). This test anchors each marker to a line instead: the compiler must
+/// point at something between this marker and the next one.
+///
+/// It walks the directory, so a new fixture is covered the moment it lands —
+/// 28 files had no test calling them at all.
+///
+/// Markers still unanswered are listed in DEAD_MARKERS.txt with a count per
+/// file. That count may only go down: a new dead marker fails the test, and so
+/// does a count that's too high, so a fix can't be quietly left unrecorded.
+#[test]
+fn every_compile_error_marker_is_answered_by_a_diagnostic() {
+    let dir = compile_errors_dir();
+    let rask = rask_binary();
+    let registry = read_dead_marker_registry(&dir);
+
+    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("cannot read tests/compile_errors")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rk"))
+        .collect();
+    fixtures.sort();
+    assert!(
+        fixtures.len() > 100,
+        "only {} fixtures found — is the path right?",
+        fixtures.len()
+    );
+
+    let mut new_dead = Vec::new();
+    let mut stale_registry = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for path in &fixtures {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let source = std::fs::read_to_string(path).unwrap();
+        let anchors = marker_anchors(&source);
+        if anchors.is_empty() {
+            continue;
+        }
+        seen.insert(name.clone());
+
+        let out = Command::new(&rask)
+            .arg("check")
+            .arg(path)
+            .output()
+            .expect("failed to run rask check");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let diagnostics = diagnostic_lines(&combined);
+
+        let mut dead = Vec::new();
+        for (i, &anchor) in anchors.iter().enumerate() {
+            let next = anchors.get(i + 1).copied().unwrap_or(usize::MAX);
+            let answered = diagnostics.iter().any(|&d| d >= anchor && d < next);
+            if !answered {
+                dead.push(anchor);
+            }
+        }
+
+        let allowed = registry.get(&name).copied().unwrap_or(0);
+        if dead.len() > allowed {
+            new_dead.push(format!(
+                "  {name}: {} markers unanswered, DEAD_MARKERS.txt allows {allowed}\n    \
+                 unanswered at lines {:?}",
+                dead.len(),
+                dead
+            ));
+        } else if dead.len() < allowed {
+            stale_registry.push(format!(
+                "  {name}: {} markers unanswered, DEAD_MARKERS.txt still says {allowed}",
+                dead.len()
+            ));
+        }
+    }
+
+    let mut problems = String::new();
+    if !new_dead.is_empty() {
+        problems.push_str(
+            "\nMarkers with no diagnostic under them. Either the rule stopped firing, or\n\
+             the marker sits below something that halts the pipeline before its pass runs:\n",
+        );
+        problems.push_str(&new_dead.join("\n"));
+        problems.push('\n');
+    }
+    if !stale_registry.is_empty() {
+        problems.push_str(
+            "\nFixed markers still listed as dead. Lower the count in\n\
+             tests/compile_errors/DEAD_MARKERS.txt:\n",
+        );
+        problems.push_str(&stale_registry.join("\n"));
+        problems.push('\n');
+    }
+    let unknown: Vec<&String> = registry.keys().filter(|k| !seen.contains(*k)).collect();
+    if !unknown.is_empty() {
+        problems.push_str(&format!(
+            "\nDEAD_MARKERS.txt lists files that are gone or have no markers: {unknown:?}\n"
+        ));
+    }
+    assert!(problems.is_empty(), "{problems}");
+}
+
+/// A `comptime test` runs during compilation, so `rask check` has to answer for
+/// it (std.testing/T11).
+///
+/// `is_comptime` was parsed and then ignored: the runner collected the block
+/// like any other test and ran it at run time, so `rask check` on a failing one
+/// exited 0 and `rask test` reported it as a red line rather than a compile
+/// error.
+#[test]
+fn error_comptime_test_failure() {
+    let (failed, out) = compile_error_output("comptime_test_failure.rk");
+    assert!(failed, "a failing comptime test must fail the compile:\n{out}");
+
+    assert!(
+        out.contains("comptime test \"factorial is off by one\" failed"),
+        "the message should name the test that failed:\n{out}"
+    );
+    assert!(
+        out.contains("left: 120, right: 121"),
+        "the caret should carry the operands — the diagnostic already prints \
+         the source line, so it doesn't repeat the operator:\n{out}"
+    );
+    assert!(
+        out.contains("comptime test \"touches the filesystem\" can't run at compile time"),
+        "a body the comptime subset can't evaluate is the same error, worded \
+         for what actually went wrong:\n{out}"
+    );
+    assert!(out.contains("std.testing/T11"), "should cite the rule:\n{out}");
+    assert!(out.contains("E0848"), "should carry the code:\n{out}");
+}
+
+/// The other half: a comptime test that passes is reported once, by the runner,
+/// on both backends — not run a second time as a runtime test (T11a).
+#[test]
+fn comptime_test_is_reported_but_not_run_twice() {
+    let src = "\
+comptime func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+comptime test \"doubles\" {
+    assert twice(21) == 42
+}
+
+test \"runtime one\" {
+    assert 1 + 1 == 2
+}
+";
+    let file = std::env::temp_dir().join(format!(
+        "rask_ct_test_{}_{}.rk",
+        std::process::id(),
+        next_tmp_id()
+    ));
+    std::fs::write(&file, src).unwrap();
+
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{args:?} should pass:\n{combined}");
+        assert!(
+            combined.contains("2 tests, 2 passed"),
+            "{args:?}: the comptime test counts once, beside the runtime one:\n{combined}"
+        );
+        assert_eq!(
+            combined.matches("doubles").count(),
+            1,
+            "{args:?}: reported twice — it ran in the runner as well as at \
+             compile time:\n{combined}"
+        );
+    }
+    let _ = std::fs::remove_file(&file);
+}
+
+/// `spawn` needs a `using Multitasking { }` scope, and that's a compile error
+/// rather than a panic on the first task (conc.async/CC1, CC2, std.testing/T17).
+///
+/// CC1 was written but keyed off `BuiltinFunctionKind::Spawn`, which is only
+/// minted for the qualified `async.spawn` spelling — so a bare `spawn(|| { … })`
+/// was never checked. CC2 worked, but the walk never entered `test` blocks, so a
+/// test body was exempt from both.
+#[test]
+fn error_spawn_needs_multitasking_scope() {
+    let (failed, out) = compile_error_output("spawn_needs_multitasking.rk");
+    assert!(failed, "spawn with no scope must not compile:\n{out}");
+
+    assert_eq!(
+        out.matches("E0352").count(),
+        2,
+        "CC1 fires at the entry point and in a test body, and nowhere else:\n{out}"
+    );
+    assert_eq!(
+        out.matches("E0353").count(),
+        1,
+        "CC2 fires once, at the call to the function that spawns:\n{out}"
+    );
+    assert!(
+        out.contains("`launch_worker` reaches `spawn`"),
+        "CC2 names the function that spawns, since nothing in its signature says so:\n{out}"
+    );
+    assert!(out.contains("conc.async/CC1"), "should cite CC1:\n{out}");
+    assert!(out.contains("conc.async/CC2"), "should cite CC2:\n{out}");
+    assert!(
+        !out.contains("launch_worker() {"),
+        "the definition that spawns is not the error — a library function may \
+         spawn and leave the scope to its caller:\n{out}"
+    );
+}
+
+/// A `*_test.rk` file compiles with the module beside it, so it sees that
+/// module's private members (std.testing/T3, T4).
+///
+/// Loose files were compiled one at a time, so a companion test file saw
+/// nothing at all — every name in it was `E0200 undefined symbol`. It worked
+/// inside a package, where the whole package compiles together, which is why
+/// nothing noticed.
+#[test]
+fn companion_test_file_sees_the_module_it_tests() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("companion_tests");
+    let test_file = dir.join("counter_test.rk");
+
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&test_file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{args:?} should pass:\n{combined}");
+        assert!(
+            combined.contains("3 tests, 3 passed"),
+            "{args:?}: a private function, a private method and the public \
+             surface:\n{combined}"
+        );
+    }
+
+    // Walking the directory must not run the module's own tests twice — the
+    // companion already pulled it in.
+    let out = Command::new(rask_binary())
+        .arg("test")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask test on the directory");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "directory run should pass:\n{combined}");
+    assert!(
+        combined.contains("(1 files)"),
+        "counter.rk is compiled as part of counter_test.rk, not again on its \
+         own:\n{combined}"
+    );
+}
+
+/// `s as i64` hands out the address of a string's buffer, and the string has to
+/// stay alive until the address is done with.
+///
+/// The RC pass read the cast as the string's last use — nothing after it names
+/// the string, only the integer holding its address — and put the release
+/// directly after. The buffer was freed, the allocator wrote its free-list link
+/// into the first eight bytes, and the callee wrote those out. `write_raw` in
+/// `stdlib/http.rk` is exactly this shape, so the flagship HTTP server answered
+/// every request with eight bytes of garbage where `HTTP/1.1` should be —
+/// caught by nothing, because `tests/http_api_harness.sh` runs in no CI job.
+#[test]
+fn a_string_cast_to_an_address_outlives_the_cast() {
+    let src = "\
+import string.StringBuilder
+
+extern \"C\" {
+    func rask_io_write_string(fd: i64, str_ptr: i64) -> i64
+}
+
+func write_raw(fd: i64, data: string) {
+    unsafe {
+        rask_io_write_string(fd, data as i64)
+    }
+}
+
+func build() -> string {
+    mut out = StringBuilder.new()
+    out.push(\"HTTP/1.1 200 OK\")
+    out.push(\"\\r\\n\")
+    return out.build()
+}
+
+func main() {
+    let built = build()
+    write_raw(1, built)
+
+    let n = 7
+    let interpolated = \"interpolated {n}, and long enough to be on the heap\\n\"
+    write_raw(1, interpolated)
+}
+";
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir();
+    let src_path = tmp.join(format!("rask_cast_{}_{}.rk", std::process::id(), id));
+    let bin_path = tmp.join(format!("rask_cast_{}_{}", std::process::id(), id));
+    std::fs::write(&src_path, src).unwrap();
+
+    let compile = Command::new(rask_binary())
+        .arg("compile")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let out = Command::new(&bin_path).output().expect("failed to run the binary");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    assert_eq!(
+        stdout,
+        "HTTP/1.1 200 OK\r\ninterpolated 7, and long enough to be on the heap\n",
+        "the first bytes of each string were freed before the write read them"
+    );
+}
+
+/// `assert` and `check` name `bool` as what they need, not as what you wrote.
+///
+/// The two constraints had their arguments the wrong way round — expected type
+/// second instead of first, unlike every other site — so `assert opt()` said
+/// "expected `i32?`, found `bool`": the code's own type presented as the
+/// requirement, and `assert`'s requirement as the mistake. `assert 1` read
+/// correctly by luck, because an unsolved literal is filled in from the other
+/// side and lands in the second slot anyway.
+#[test]
+fn assert_says_which_side_wanted_a_bool() {
+    let cases = [
+        ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
+        ("func main() { assert \"nonempty\" }", "found `string`"),
+        ("func main() { assert 1 }", "found `i64`"),
+        ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
+    ];
+    for (src, found) in cases {
+        let out = check_output(src);
+        assert!(
+            out.contains("expected `bool`"),
+            "`bool` is what assert needs, so it is the expected side:\n{out}"
+        );
+        assert!(out.contains(found), "should name what it got ({found}):\n{out}");
+    }
+
+    // The message argument had the same inversion.
+    let out = check_output("func main() { assert 1 == 1, 42 }");
+    assert!(
+        out.contains("expected `string`") && out.contains("found `i64`"),
+        "the message has to be a string, and 42 isn't one:\n{out}"
+    );
+}
+
+/// Every user-facing code is an E-number, so `rask explain` can be asked about
+/// any of them.
+///
+/// Three diagnostics carried a spec rule id instead — `error[mem.context/CC8]`,
+/// `CC10`, `comp.advanced/TS8`. Two schemes in one compiler means anything
+/// grepping for `E0` misses a family, and `rask explain mem.context/CC8` was
+/// never going to work. They're E0849–E0851 now, with the rule id where it
+/// belongs: in the `why`, which is what says the rule in words.
+#[test]
+fn every_diagnostic_code_is_an_e_number() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders = Vec::new();
+    for entry in walk_rs_files(&root) {
+        let text = std::fs::read_to_string(&entry).unwrap_or_default();
+        for (n, line) in text.lines().enumerate() {
+            let Some(rest) = line.split_once(".with_code(\"") else { continue };
+            let code = rest.1.split('"').next().unwrap_or("");
+            if code.starts_with('E') || code.starts_with('W') || code.starts_with('R') {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {code}", entry.display(), n + 1));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these emit a spec rule id as the diagnostic code — give them an \
+         E-number and cite the rule in the `why` instead:\n{offenders:#?}"
+    );
+}
+
+fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target" || n == ".git") {
+                continue;
+            }
+            out.extend(walk_rs_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// An error in the user's program doesn't produce a pile of errors in the
+/// stdlib's.
+///
+/// `struct T` is rejected by PC3 — single uppercase letters are type
+/// parameters, so a concrete type with that name is unusable. That is the right
+/// error. What followed was six more, in `stdlib/num.rk`, about `Wrapping<T>`
+/// having no `wrapping_add`: the user's `T` had displaced that declaration's own
+/// type parameter. None of it is actionable, and it buried the diagnostics that
+/// were — with `struct T` present, the `?`-on-a-result error stopped being
+/// reported at all.
+#[test]
+fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
+    let out = check_output(
+        "struct T { n: i32 }\n\
+         func main() {\n\
+             let t = T { n: 1 }\n\
+             println(\"{t.n}\")\n\
+         }\n",
+    );
+    assert!(out.contains("E0357"), "PC3 is the error here:\n{out}");
+    assert!(
+        !out.contains("stdlib/"),
+        "nothing in stdlib/ is the user's to fix:\n{out}"
+    );
+
+    // And the user's other errors survive, which they didn't before.
+    let out = check_output(
+        "struct ParseError { detail: string }\n\
+         extend ParseError {\n\
+             public func message(self) -> string { return self.detail }\n\
+         }\n\
+         struct T { n: i32 }\n\
+         func might_fail() -> i32 or ParseError { return 42 }\n\
+         func main() {\n\
+             let x = might_fail()?\n\
+             println(\"{x}\")\n\
+         }\n",
+    );
+    assert!(out.contains("E0357"), "the single-letter name:\n{out}");
+    assert!(
+        out.contains("E0368"),
+        "and `?` on a result, which the stdlib cascade used to displace:\n{out}"
     );
 }

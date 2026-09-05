@@ -80,17 +80,27 @@ let x = _temp.x
 
 Every temporary in the chain that the borrow transitively depends on is extended. Temporaries in inner blocks are NOT extended to outer blocks.
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: unbuilt -->
 ```rask
-let x = {
-    let p = get_point()
-    p.x  // ERROR: p dies at block end
+struct Point { x: i64, y: i64 }
+func get_point() -> Point { return Point { x: 1, y: 2 } }
+
+func main() {
+    let x = {
+        let p = get_point()
+        p.x  // ERROR: p dies at block end
+    }
+    println("{x}")
 }
-// x would outlive p
 ```
 
+The block above is `unbuilt`: nothing rejects it today. It used to be a
+four-line fragment calling an undefined `get_point`, so it failed at *resolve*
+and the harness counted that as the rule firing — a green tick for a check that
+does not exist. Written out in full, it compiles.
+
 **String slices are temporary (S2):**
-<!-- test: compile-fail -->
+<!-- test: compile-fail: typecheck -->
 ```rask
 let s = "hello world"
 let slice = s[0..5]    // ERROR: string slices can't be stored
@@ -220,11 +230,18 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 For Vec and Map: structural mutations are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally. (Strings are immutable — `with` doesn't apply to them.)
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: ownership -->
 ```rask
-with vec[i] as item {
-    item.count += 1
-    vec.push(new_item)       // ERROR: structural mutation inside with block
+struct Item { count: i64 }
+
+func main() {
+    mut vec: Vec<Item> = Vec.new()
+    vec.push(Item { count: 0 })
+    let i = 0
+    with vec[i] as item {
+        item.count += 1
+        vec.push(Item { count: 9 })   // ERROR: structural mutation inside with block
+    }
 }
 ```
 
@@ -245,18 +262,36 @@ with pool[h] as entity {
 
 Removing the bound handle or clearing the pool remain compile errors:
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: ownership -->
 ```rask
-with pool[h] as entity {
-    entity.health -= 10
-    pool.remove(h)           // ERROR: removing the bound element (W2c)
+import memory.Pool
+import memory.Handle
+
+struct Entity { health: i64 }
+
+func main() {
+    mut pool = Pool<Entity>.new()
+    let h = pool.insert(Entity { health: 100 })
+    with pool[h] as entity {
+        entity.health -= 10
+        pool.remove(h)           // ERROR: removing the bound element (W2c)
+    }
 }
 ```
 
-<!-- test: compile-fail -->
+<!-- test: compile-fail: ownership -->
 ```rask
-with pool[h] as entity {
-    pool.clear()             // ERROR: clears everything (W2d)
+import memory.Pool
+import memory.Handle
+
+struct Entity { health: i64 }
+
+func main() {
+    mut pool = Pool<Entity>.new()
+    let h = pool.insert(Entity { health: 100 })
+    with pool[h] as entity {
+        pool.clear()             // ERROR: clears everything (W2d)
+    }
 }
 ```
 

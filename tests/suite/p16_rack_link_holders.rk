@@ -54,11 +54,11 @@ test "a container inside a literal keeps its entries registered" {
     mut v: Vec<Link<Node>> = Vec.new()
     v.push(b)
     let h = Holder { list: v }
-    assert_eq(h.list.len(), 1)
+    assert h.list.len() == 1
 
     rack.delete(b)
 
-    assert_eq(h.list.len(), 0)
+    assert h.list.len() == 0
 }
 
 // A snapshot leaves a cross-rack edge pointing at the original node — there is

@@ -459,6 +459,32 @@ fn collect_string_field_offsets(
     offsets
 }
 
+/// `func main() { }` — an entry point for a file that has none and needs one
+/// only so the pipeline can finish.
+fn empty_main() -> Decl {
+    let span = Span::new(0, 0);
+    Decl {
+        id: NodeId(0),
+        kind: DeclKind::Fn(FnDecl {
+            name: "main".to_string(),
+            type_params: vec![],
+            params: vec![],
+            ret_ty: None,
+            context_clauses: vec![],
+            body: vec![],
+            is_pub: false,
+            is_private: false,
+            is_comptime: false,
+            is_unsafe: false,
+            abi: None,
+            attrs: vec![],
+            doc: None,
+            span,
+        }),
+        span,
+    }
+}
+
 /// Transform test declarations into compilable functions, returning
 /// (modified_decls, test_metadata) where metadata is (display_name, fn_name).
 pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String, String)> {
@@ -468,6 +494,12 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     for decl in decls.iter() {
         match &decl.kind {
             DeclKind::Test(t) => {
+                // A `comptime test` already ran, during the pipeline's comptime
+                // pass (std.testing/T11). Emitting it again would run it twice
+                // and report the second run as the result.
+                if t.is_comptime {
+                    continue;
+                }
                 if let Some(pat) = filter {
                     if !t.name.contains(pat) {
                         continue;
@@ -522,10 +554,23 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     // entry point — which the caller used to be spared because it checked for
     // tests before monomorphizing, and no longer does (#330).
     let has_runner = !tests.is_empty();
+    let has_comptime_test =
+        decls.iter().any(|d| matches!(&d.kind, DeclKind::Test(t) if t.is_comptime));
+    let has_main = decls.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"));
     decls.retain(|d| {
         !matches!(&d.kind, DeclKind::Test(_))
             && !(has_runner && matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"))
     });
+
+    // A file whose only tests are comptime ones has nothing to run, but
+    // monomorphization still needs an entry point to start from — without one it
+    // stops at "no `main` function to compile from", and the comptime results,
+    // which are already in by then, never reach the report. An empty main gets
+    // the pipeline to the end; the runner sees no runtime tests and never builds
+    // a binary from it.
+    if !has_runner && has_comptime_test && !has_main {
+        decls.push(empty_main());
+    }
 
     // Add test body functions
     decls.extend(test_fns);

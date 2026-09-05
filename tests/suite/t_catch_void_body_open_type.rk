@@ -37,13 +37,13 @@ func parse_and_log(s: string) -> string {
 }
 
 test "type.errors/ER14a — a real void success type still catches cleanly" {
-    assert_eq(run_it(true), "ran clean")
-    assert_eq(run_it(false), "caught: non-numeric character")
+    assert run_it(true) == "ran clean"
+    assert run_it(false) == "caught: non-numeric character"
 }
 
 test "type.errors/ER14a — an open type with only void-bodied catches defaults fine" {
-    assert_eq(parse_and_log("abc"), "done")
-    assert_eq(parse_and_log("3"), "done")
+    assert parse_and_log("abc") == "done"
+    assert parse_and_log("3") == "done"
 }
 
 func main() {

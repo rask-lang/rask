@@ -196,6 +196,59 @@ fn comparison_op_symbol(method: &str) -> Option<&'static str> {
 /// After desugaring, `a == b` becomes `a.eq(b)` and `a != b` becomes
 /// `!a.eq(b)`. This function recognizes both forms and re-evaluates the
 /// operands to show actual values in the error message.
+/// Render a failed comparison the way the native runtime renders it.
+///
+/// The two backends drifted here: native quoted strings and chars and the
+/// interpreter didn't, so `assert "a" == "b"` reported `"a" == "b"` on one and
+/// `a == b` on the other. Native's is the better message — quotes are what make
+/// a trailing space or an empty string visible — so this follows it, including
+/// the detail that the string form carries no `(left: …, right: …)` tail: the
+/// values are already in the line, and repeating a long string twice buries it.
+///
+/// `differential.sh` compares the two backends' output byte for byte, so a
+/// suite file with a failing string comparison used to diverge on formatting
+/// alone.
+fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> String {
+    // Same order as the MIR side picks its helper: string wins over everything,
+    // then char when both sides are chars, then the plain form.
+    if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
+        return format!("{}: \"{}\" {} \"{}\"", prefix, left, op, right);
+    }
+    // Anything native has no rendering for gets none here either. It compares
+    // an aggregate by address, so printing the operands there gave two pointer
+    // values; the interpreter has the whole struct and would have printed
+    // `Point { x: 1, y: 2 }`. Both are "correct" and they are not the same
+    // line, which is the one thing the two backends may not be.
+    if !renders_as_operand(left) || !renders_as_operand(right) {
+        return prefix.to_string();
+    }
+    if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
+        return format!(
+            "{}: '{}' {} '{}' (left: '{}', right: '{}')",
+            prefix, left, op, right, left, right,
+        );
+    }
+    format!("{}: {} {} {} (left: {}, right: {})", prefix, left, op, right, left, right)
+}
+
+/// Has a one-line rendering both backends agree on.
+///
+/// The list is the MIR side's `classify_cmp_fail` read from the other end: it
+/// has a typed reporter for exactly these, and falls through to a message with
+/// no operands for everything else — optionals, structs, enums, tuples, arrays.
+fn renders_as_operand(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Bool(_)
+            | Value::Int(..)
+            | Value::Int128(_)
+            | Value::Uint128(_)
+            | Value::Float(..)
+            | Value::Char(_)
+            | Value::String(_)
+    )
+}
+
 fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: &str) -> String {
     match &condition.kind {
         // Desugared comparison: a.eq(b), a.lt(b), etc.
@@ -206,7 +259,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(object).ok();
             let right_val = interp.eval_expr(&args[0].expr).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
                 _ => prefix.to_string(),
             }
         }
@@ -219,7 +272,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
                     let left_val = interp.eval_expr(object).ok();
                     let right_val = interp.eval_expr(&args[0].expr).ok();
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => format!("{}: {} != {} (left: {}, right: {})", prefix, l, r, l, r),
+                        (Some(l), Some(r)) => format_comparison(prefix, &l, "!=", &r),
                         _ => prefix.to_string(),
                     }
                 }
@@ -248,7 +301,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(left).ok();
             let right_val = interp.eval_expr(right).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
                 _ => prefix.to_string(),
             }
         }
@@ -2718,9 +2771,19 @@ impl Interpreter {
                 if self.is_truthy(&cond_val) {
                     Ok(Value::Unit)
                 } else {
+                    // A hand-written message gets `file:line:`, the same as
+                    // `assert cond, "msg"` — without it a failing check read
+                    // like an ordinary `print`. The comparison form already
+                    // says "check failed: a == b (…)" and carries no location
+                    // on either backend, so it goes in as it is.
                     let msg = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
-                        format!("{}", v)
+                        let origin = self.origin_string(expr.span);
+                        if origin.is_empty() {
+                            format!("{}", v)
+                        } else {
+                            format!("{}: {}", origin, v)
+                        }
                     } else {
                         build_comparison_message(self, condition, "check failed")
                     };

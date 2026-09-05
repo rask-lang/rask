@@ -15,21 +15,21 @@ const total = Shared.mutex(10)
 const derived = plain * 3
 
 test "a folded literal const still works" {
-    assert_eq(plain, 7)
-    assert_eq(derived, 21)
+    assert plain == 7
+    assert derived == 21
 }
 
 test "a boxed const is initialized before the first test runs" {
     with guarded.write() as g {
-        assert_eq(g.hits, 5)
+        assert g.hits == 5
     }
 }
 
 test "and stays initialized for later tests" {
     with total.write() as t {
-        assert_eq(t, 10)
+        assert t == 10
     }
     with guarded.write() as g {
-        assert_eq(g.hits, 5)
+        assert g.hits == 5
     }
 }

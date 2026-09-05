@@ -246,7 +246,11 @@ impl Interpreter {
                     );
                 }
                 DeclKind::Test(t) => {
-                    tests.push(t.clone());
+                    // A `comptime test` ran during compilation (std.testing/T11);
+                    // the runner isn't where its result comes from.
+                    if !t.is_comptime {
+                        tests.push(t.clone());
+                    }
                 }
                 DeclKind::Benchmark(b) => {
                     benchmarks.push(b.clone());
@@ -290,8 +294,6 @@ impl Interpreter {
             .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
         self.env
             .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
-        self.env
-            .define("assert_eq".to_string(), Value::Builtin(BuiltinKind::AssertEq));
         self.env
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env
@@ -502,8 +504,14 @@ impl Interpreter {
                         }
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::AssertionFailed(_)) => {
+                        // Native prefixes a failed assertion with `file:line`
+                        // and a failed check without one; the span is already on
+                        // the diagnostic, it was just being dropped here. Matched
+                        // deliberately, asymmetry included — `differential.sh`
+                        // compares the two backends' output byte for byte.
+                        let origin = self.origin_string(diag.span);
                         if let RuntimeError::AssertionFailed(msg) = diag.error {
-                            errors.push(msg);
+                            errors.push(prefix_origin(&origin, msg));
                         }
                         break;
                     }
@@ -564,8 +572,11 @@ impl Interpreter {
             Ok(_) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_) | RuntimeError::AssertionFailed(_)) => {
+                let origin = self.origin_string(diag.span);
                 let msg = match diag.error {
-                    RuntimeError::CheckFailed(m) | RuntimeError::AssertionFailed(m) => m,
+                    // Assert carries `file:line`, check doesn't — see above.
+                    RuntimeError::AssertionFailed(m) => prefix_origin(&origin, m),
+                    RuntimeError::CheckFailed(m) => m,
                     _ => unreachable!(),
                 };
                 errors.push(msg);
@@ -659,3 +670,15 @@ impl Interpreter {
     }
 }
 
+/// Prefix a failure message with `file:line`, the way the native runtime does.
+///
+/// `origin_string` gives `"file.rk:42"` or an empty string when the interpreter
+/// was handed no source (a spec-test block, say) — in which case the message
+/// stands alone, same as before.
+fn prefix_origin(origin: &str, msg: String) -> String {
+    if origin.is_empty() {
+        msg
+    } else {
+        format!("{}: {}", origin, msg)
+    }
+}

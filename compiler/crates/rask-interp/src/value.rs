@@ -639,7 +639,6 @@ pub enum BuiltinKind {
     Min,   // generic min(a, b) — prelude
     Max,   // generic max(a, b) — prelude
     Clamp, // generic clamp(value, lo, hi) — prelude
-    AssertEq,   // assert_eq(got, expected) — pretty-print diff on failure
     Skip,       // skip("reason") — skip rest of test
     ExpectFail, // expect_fail() — invert pass/fail
     Drop,       // drop(ptr) — consume an Owned<T> (mem.owned/OW3); no-op here,

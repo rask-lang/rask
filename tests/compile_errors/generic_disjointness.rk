@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// ERROR: generic instantiation collapses `T or E` into `E or E` (#488)
+// Rejects: generic instantiation collapses `T or E` into `E or E` (#488)
 // Expected: typecheck error E0358 at each call — `T` may not be `CacheError`
 //
 // The definition is fine: inside `cached`, T and CacheError are different

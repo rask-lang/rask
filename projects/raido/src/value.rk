@@ -56,7 +56,7 @@ extend Number {
         let b = other.raw as i128
 
         // Handle signs manually to avoid issues with unsigned splits
-        let sign = if a < 0 != b < 0 {
+        let sign = if (a < 0) != (b < 0) {
             -1
         } else {
             1
@@ -84,7 +84,7 @@ extend Number {
 
         let a = self.raw as i128
         let b = other.raw as i128
-        let sign = if a < 0 != b < 0 {
+        let sign = if (a < 0) != (b < 0) {
             -1
         } else {
             1

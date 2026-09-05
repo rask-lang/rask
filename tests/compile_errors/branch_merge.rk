@@ -5,6 +5,9 @@
 // must be treated as unavailable after the paths join.
 // Spec: mem.ownership/O3 (use after move), mem.linear/L1 (consume once).
 // Regression coverage for issue #294.
+//
+// One rejection per section, so one marker per section: the section header
+// names the case and the marker sits on the line the compiler points at.
 
 @resource
 struct Conn { fd: i32 }
@@ -16,7 +19,6 @@ extend Conn {
 func take_vec(take v: Vec<i32>) {}
 
 // --- Use after move in one if/else branch (O3) ---
-// ERROR: 'v' may have been moved
 func move_one_branch_ifelse(cond: bool) {
     let v = Vec<i32>.new()
     if cond {
@@ -28,7 +30,6 @@ func move_one_branch_ifelse(cond: bool) {
 }
 
 // --- Use after move in an if-without-else (O3, #294) ---
-// ERROR: 'v' may have been moved
 func move_one_branch_ifnoelse(cond: bool) {
     let v = Vec<i32>.new()
     if cond {
@@ -38,27 +39,29 @@ func move_one_branch_ifnoelse(cond: bool) {
 }
 
 // --- Linear resource consumed in one if/else branch only (L1) ---
-// ERROR: resource 'c' must be consumed before scope exit
 func resource_one_branch_ifelse(cond: bool) {
     let c = Conn { fd: 3 }
+    // The error lands on the branch, which is the block's last statement and so
+    // where the scope ends — not on the closing brace, where this marker used to
+    // sit answering nothing.
+    // ERROR: resource `c` must be consumed before scope exit — the else branch leaks it [E0805]
     if cond {
         c.close()
     } else {
         let x = 1
     }
-}                      // ERROR: else branch leaks c
+}
 
 // --- Linear resource consumed in an if-without-else (L1, #294) ---
-// ERROR: resource 'c' must be consumed before scope exit
 func resource_one_branch_ifnoelse(cond: bool) {
     let c = Conn { fd: 3 }
+    // ERROR: resource `c` must be consumed before scope exit — leaks when cond is false [E0805]
     if cond {
         c.close()
     }
-}                      // ERROR: c leaks when cond is false
+}
 
 // --- Move inside a loop body: use-after-move on the next iteration (O3) ---
-// ERROR: 'v' may have been moved
 func move_in_loop() {
     let v = Vec<i32>.new()
     loop {

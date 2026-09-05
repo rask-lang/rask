@@ -21,58 +21,58 @@
 
 test "type.primitives — an f32 method answers in f32" {
     let x: f32 = 2.0
-    assert_eq("{x.sqrt()}", "1.4142135")
-    assert_eq("{x.ln()}", "0.6931472")
-    assert_eq("{x.exp()}", "7.389056")
+    assert "{x.sqrt()}" == "1.4142135"
+    assert "{x.ln()}" == "0.6931472"
+    assert "{x.exp()}" == "7.389056"
 
     let y: f32 = 2.5
-    assert_eq("{y.sqrt()}", "1.5811388")
+    assert "{y.sqrt()}" == "1.5811388"
 
     // f64 is unchanged — it was never the one going through a wider type.
     let d: f64 = 2.0
-    assert_eq("{d.sqrt()}", "1.4142135623730951")
+    assert "{d.sqrt()}" == "1.4142135623730951"
 }
 
 test "type.primitives — f32 rounding and classification still work" {
     let x: f32 = 0 - 2.7
-    assert_eq("{x.abs()}", "2.7")
-    assert_eq("{x.floor()}", "-3")
-    assert_eq("{x.ceil()}", "-2")
-    assert_eq("{x.round()}", "-3")
-    assert_eq("{x.trunc()}", "-2")
+    assert "{x.abs()}" == "2.7"
+    assert "{x.floor()}" == "-3"
+    assert "{x.ceil()}" == "-2"
+    assert "{x.round()}" == "-3"
+    assert "{x.trunc()}" == "-2"
 
     let y: f32 = 2.0
     assert(!y.is_nan())
     assert(y.is_finite())
-    assert_eq(y.to_int(), 2)
+    assert y.to_int() == 2
 }
 
 test "type.primitives — a large float prints the digits that round-trip" {
     let a: f64 = 1.0e20
-    assert_eq("{a}", "100000000000000000000")
+    assert "{a}" == "100000000000000000000"
 
     let b: f64 = 123456789012345678901.0
-    assert_eq("{b}", "123456789012345680000")
+    assert "{b}" == "123456789012345680000"
 
     let c: f32 = 1.0e20
-    assert_eq("{c}", "100000000000000000000")
+    assert "{c}" == "100000000000000000000"
 }
 
 test "type.primitives — small and ordinary floats are unchanged" {
     let a: f64 = 1.0 / 3.0
-    assert_eq("{a}", "0.3333333333333333")
+    assert "{a}" == "0.3333333333333333"
 
     let b: f64 = 1.0e-7
-    assert_eq("{b}", "0.0000001")
+    assert "{b}" == "0.0000001"
 
     let c: f64 = 1234567.75
-    assert_eq("{c}", "1234567.75")
+    assert "{c}" == "1234567.75"
 
     let d: f64 = 0.0
-    assert_eq("{d}", "0")
+    assert "{d}" == "0"
 
     let e: f32 = 0.1
-    assert_eq("{e}", "0.1")
+    assert "{e}" == "0.1"
 }
 
 func main() {}

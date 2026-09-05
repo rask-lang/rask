@@ -3107,7 +3107,7 @@ mod tests {
         // rest of what `register_builtins` puts in scope — `min`, `max`,
         // `clamp`, the test builtins — are ordinary generic functions, and a
         // program declaring its own has always been allowed.
-        for name in ["min", "max", "clamp", "drop", "assert_eq"] {
+        for name in ["min", "max", "clamp", "drop"] {
             let decls = vec![make_fn_decl(name)];
             assert!(
                 Resolver::resolve(&decls).is_ok(),

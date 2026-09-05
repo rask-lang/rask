@@ -93,18 +93,17 @@ impl<'a> DiagnosticFormatter<'a> {
             return out;
         }
 
-        // Line 2: --> file:line:col
-        let first = &annotated[0];
-        let file = self.name_of(diagnostic.labels.first().map_or(0, |l| l.span.file_id));
-        let first_label = diagnostic.labels.first().unwrap();
-        let (_, col) = self.offset_to_line_col(first_label.span.start, first_label.span.file_id);
-        out.push_str(&format!(
-            "  {} {}:{}:{}\n",
-            "-->".blue(),
-            file,
-            first.line_num,
-            col
-        ));
+        // Line 2: --> file:line:col — the primary label, which is what the
+        // error is about. This used to take the line from the first *rendered*
+        // line and the column from the first label, so a secondary label above
+        // the primary put the wrong line in the header: E0808 ("cannot push
+        // inside `with`") carets the push but pointed at the `with` two lines
+        // up, and an editor jumping there landed on the wrong statement.
+        // `labels` is non-empty here, so `primary_span` always answers.
+        let anchor = diagnostic.primary_span().unwrap_or(diagnostic.labels[0].span);
+        let file = self.name_of(anchor.file_id);
+        let (line, col) = self.offset_to_line_col(anchor.start, anchor.file_id);
+        out.push_str(&format!("  {} {}:{}:{}\n", "-->".blue(), file, line, col));
 
         // Calculate gutter width from max line number
         let max_line = annotated.last().map(|a| a.line_num).unwrap_or(1);
@@ -500,5 +499,38 @@ fn flush_run(run: &str, kind: Option<char>) -> String {
         Some('^') => run.red().bold().to_string(),
         Some('-') => run.blue().to_string(),
         _ => run.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Diagnostic;
+    use rask_ast::Span;
+
+    /// The `--> file:line:col` header names the primary label.
+    ///
+    /// It used to take the line from the first *rendered* line and the column
+    /// from the first label in the list, which are two different things. A
+    /// diagnostic whose secondary label sits above its primary — E0808, "cannot
+    /// push inside `with`", underlines the push and points back at the `with` —
+    /// printed the secondary's line with the primary's column, so jumping to it
+    /// landed on the wrong statement.
+    #[test]
+    fn header_points_at_the_primary_label_not_the_earliest_one() {
+        let source = "func f() {\n    with v[0] as item {\n        v.push(3)\n    }\n}\n";
+        let push = source.find("v.push(3)").unwrap();
+        let with = source.find("with v[0]").unwrap();
+
+        let diag = Diagnostic::error("cannot push `v` inside `with` block")
+            .with_primary(Span::new(push, push + 9), "push not allowed inside with block")
+            .with_secondary(Span::new(with, with + 9), "element borrowed here");
+
+        let out = DiagnosticFormatter::new(source).with_file_name("t.rk").format(&diag);
+        let header = out.lines().find(|l| l.contains("-->")).expect("a header line");
+        assert!(
+            header.contains("t.rk:3:9"),
+            "header should name the push on line 3, got: {header}"
+        );
     }
 }

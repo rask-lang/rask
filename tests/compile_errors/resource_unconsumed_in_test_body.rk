@@ -17,5 +17,5 @@ func main() {}
 
 test "resource left open" {
     let c = Conn { id: 1 }
-    assert_eq(c.id, 1)          // ERROR: E0805 — never consumed
+    assert c.id == 1          // ERROR: E0805 — never consumed
 }

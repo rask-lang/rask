@@ -27,14 +27,14 @@ func make_holder() -> Holder {
 
 test "indexing a Vec field of a returned struct keeps the element type" {
     let h = make_holder()
-    assert_eq(h.names[0], "alpha")
-    assert_eq(h.names[1], "beta")
+    assert h.names[0] == "alpha"
+    assert h.names[1] == "beta"
 }
 
 test "a Map value type survives get" {
     let h = make_holder()
     if h.scores.get("alpha")? as s {
-        assert_eq(s, 1.5)
+        assert s == 1.5
     } else {
         assert(false)
     }
@@ -46,7 +46,7 @@ test "a for loop over a struct's Vec field binds the real element type" {
     for n in h.names {
         joined = "{joined}{n}"
     }
-    assert_eq(joined, "alphabeta")
+    assert joined == "alphabeta"
 }
 
 test "a Map inside a Mutex resolves its value type through lock" {
@@ -55,7 +55,7 @@ test "a Map inside a Mutex resolves its value type through lock" {
         inner.insert("k", 2.5)
     }
     let got: f64 = m.write().get("k") ?? 0.0
-    assert_eq(got, 2.5)
+    assert got == 2.5
 }
 
 test "a Vec of structs keeps its element type through index and iteration" {
@@ -63,13 +63,13 @@ test "a Vec of structs keeps its element type through index and iteration" {
     pts.push(Point { x: 1.5, y: 2.5 })
     pts.push(Point { x: 3.5, y: 4.5 })
 
-    assert_eq(pts[1].x, 3.5)
+    assert pts[1].x == 3.5
 
     mut sum = 0.0
     for p in pts {
         sum = sum + p.y
     }
-    assert_eq(sum, 7.0)
+    assert sum == 7.0
 }
 
 test "an iterator chain keeps the element type" {
@@ -80,14 +80,14 @@ test "an iterator chain keeps the element type" {
     for v in vals {
         total = total + v
     }
-    assert_eq(total, 4.0)
+    assert total == 4.0
 }
 
 test "removing during a snapshot iteration is not a stale handle" {
     mut pool: Pool<Point> = Pool.new()
     let a = pool.insert(Point { x: 1.0, y: 1.0 })
     let b = pool.insert(Point { x: 9.0, y: 9.0 })
-    assert_eq(pool.len(), 2)
+    assert pool.len() == 2
 
     // Each `h` is a distinct handle out of the snapshot, so reading one after a
     // previous iteration removed a different one is fine.
@@ -97,7 +97,7 @@ test "removing during a snapshot iteration is not a stale handle" {
             pool.remove(h)
         }
     }
-    assert_eq(pool.len(), 1)
-    assert_eq(pool[b].x, 9.0)
+    assert pool.len() == 1
+    assert pool[b].x == 9.0
     let _ = a
 }

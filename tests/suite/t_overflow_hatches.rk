@@ -19,51 +19,51 @@
 
 test "overflow — wrapping add and sub at the ends of each width" {
     let i8_max: i8 = 127
-    assert_eq(i8_max.wrapping_add(1), -128)
+    assert i8_max.wrapping_add(1) == -128
     let i8_min: i8 = -128
-    assert_eq(i8_min.wrapping_sub(1), 127)
+    assert i8_min.wrapping_sub(1) == 127
 
     let u8_big: u8 = 200
-    assert_eq(u8_big.wrapping_add(100), 44)
+    assert u8_big.wrapping_add(100) == 44
     let u8_small: u8 = 5
-    assert_eq(u8_small.wrapping_sub(10), 251)
+    assert u8_small.wrapping_sub(10) == 251
 
     let i32_max: i32 = 2147483647
-    assert_eq(i32_max.wrapping_add(1), -2147483648)
+    assert i32_max.wrapping_add(1) == -2147483648
 
     let i64_max: i64 = 9223372036854775807
-    assert_eq(i64_max.wrapping_add(1), -9223372036854775808)
+    assert i64_max.wrapping_add(1) == -9223372036854775808
 
     let u64_max: u64 = 18446744073709551615
-    assert_eq(u64_max.wrapping_add(1), 0)
+    assert u64_max.wrapping_add(1) == 0
 }
 
 test "overflow — wrapping multiply keeps the low bits" {
     let a: i8 = 127
-    assert_eq(a.wrapping_mul(2), -2)
+    assert a.wrapping_mul(2) == -2
 
     let b: u8 = 200
-    assert_eq(b.wrapping_mul(3), 88)
+    assert b.wrapping_mul(3) == 88
 
     let c: i32 = -2147483648
-    assert_eq(c.wrapping_mul(-1), -2147483648)
+    assert c.wrapping_mul(-1) == -2147483648
 
     let d: u64 = 18446744073709551615
-    assert_eq(d.wrapping_mul(2), 18446744073709551614)
+    assert d.wrapping_mul(2) == 18446744073709551614
 }
 
 test "overflow — saturating pins to the end it ran into" {
     let i8_max: i8 = 127
-    assert_eq(i8_max.saturating_add(1), 127)
+    assert i8_max.saturating_add(1) == 127
     let i8_min: i8 = -128
-    assert_eq(i8_min.saturating_sub(1), -128)
+    assert i8_min.saturating_sub(1) == -128
 
     // Unsigned subtraction saturates at zero, not at the maximum.
     let u8_small: u8 = 5
-    assert_eq(u8_small.saturating_sub(10), 0)
+    assert u8_small.saturating_sub(10) == 0
     let u8_big: u8 = 200
-    assert_eq(u8_big.saturating_add(100), 255)
-    assert_eq(u8_big.saturating_mul(3), 255)
+    assert u8_big.saturating_add(100) == 255
+    assert u8_big.saturating_mul(3) == 255
 }
 
 // A signed product runs off the end its own sign points to, so the limit
@@ -71,48 +71,48 @@ test "overflow — saturating pins to the end it ran into" {
 test "overflow — saturating multiply picks its end by the product's sign" {
     let pos: i8 = 127
     let neg: i8 = -128
-    assert_eq(pos.saturating_mul(2), 127)
-    assert_eq(pos.saturating_mul(-2), -128)
-    assert_eq(neg.saturating_mul(2), -128)
-    assert_eq(neg.saturating_mul(-2), 127)
+    assert pos.saturating_mul(2) == 127
+    assert pos.saturating_mul(-2) == -128
+    assert neg.saturating_mul(2) == -128
+    assert neg.saturating_mul(-2) == 127
 
     let i32_min: i32 = -2147483648
-    assert_eq(i32_min.saturating_mul(-1), 2147483647)
+    assert i32_min.saturating_mul(-1) == 2147483647
 
     let u64_max: u64 = 18446744073709551615
-    assert_eq(u64_max.saturating_mul(2), 18446744073709551615)
+    assert u64_max.saturating_mul(2) == 18446744073709551615
 }
 
 test "overflow — nothing changes when the answer fits" {
     let a: i32 = 5
-    assert_eq(a.wrapping_add(3), 8)
-    assert_eq(a.saturating_add(3), 8)
-    assert_eq(a.wrapping_sub(2), 3)
-    assert_eq(a.saturating_mul(4), 20)
+    assert a.wrapping_add(3) == 8
+    assert a.saturating_add(3) == 8
+    assert a.wrapping_sub(2) == 3
+    assert a.saturating_mul(4) == 20
 
     let b: u8 = 10
-    assert_eq(b.wrapping_mul(2), 20)
-    assert_eq(b.saturating_sub(3), 7)
+    assert b.wrapping_mul(2) == 20
+    assert b.saturating_sub(3) == 7
 }
 
 // SH2: the amount is masked to the width instead of panicking, so every
 // amount means something.
 test "overflow — wrapping shifts mask the amount" {
     let a: u8 = 200
-    assert_eq(a.wrapping_shl(9), 144)
-    assert_eq(a.wrapping_shr(9), 100)
+    assert a.wrapping_shl(9) == 144
+    assert a.wrapping_shr(9) == 100
 
     let one: i64 = 1
-    assert_eq(one.wrapping_shl(64), 1)
-    assert_eq(one.wrapping_shl(65), 2)
+    assert one.wrapping_shl(64) == 1
+    assert one.wrapping_shl(65) == 2
 }
 
 test "overflow — a wrapping right shift keeps the receiver's signedness" {
     let signed: i32 = -8
-    assert_eq(signed.wrapping_shr(1), -4)
+    assert signed.wrapping_shr(1) == -4
 
     let unsigned: u32 = 4294967288
-    assert_eq(unsigned.wrapping_shr(1), 2147483644)
+    assert unsigned.wrapping_shr(1) == 2147483644
 }
 
 // CT2: the same hatches fold at compile time, where plain overflow is a
@@ -133,63 +133,63 @@ const SHIFTED: u8 = comptime {
 }
 
 test "overflow — the hatches fold at comptime" {
-    assert_eq(WRAPPED, -2147483648)
-    assert_eq(SATURATED, 255)
-    assert_eq(SHIFTED, 144)
+    assert WRAPPED == -2147483648
+    assert SATURATED == 255
+    assert SHIFTED == 144
 }
 
 test "overflow — checked_* is none exactly when the answer doesn't exist" {
     let i32_max: i32 = 2147483647
-    assert_eq(i32_max.checked_add(0) ?? -1, 2147483647)
+    assert i32_max.checked_add(0) ?? -1 == 2147483647
     assert i32_max.checked_add(1) is none
 
     let u8_big: u8 = 200
-    assert_eq(u8_big.checked_add(55) ?? 0, 255)
+    assert u8_big.checked_add(55) ?? 0 == 255
     assert u8_big.checked_add(56) is none
-    assert_eq(u8_big.checked_sub(200) ?? 9, 0)
+    assert u8_big.checked_sub(200) ?? 9 == 0
     assert u8_big.checked_sub(201) is none
-    assert_eq(u8_big.checked_mul(1) ?? 0, 200)
+    assert u8_big.checked_mul(1) ?? 0 == 200
     assert u8_big.checked_mul(2) is none
 }
 
 // Division fails two ways, and both are `none` rather than a panic.
 test "overflow — checked_div covers a zero divisor and MIN / -1" {
     let ten: i32 = 10
-    assert_eq(ten.checked_div(3) ?? -1, 3)
+    assert ten.checked_div(3) ?? -1 == 3
     assert ten.checked_div(0) is none
 
     let i32_min: i32 = -2147483648
     assert i32_min.checked_div(-1) is none
-    assert_eq(i32_min.checked_div(2) ?? 0, -1073741824)
+    assert i32_min.checked_div(2) ?? 0 == -1073741824
 
     let u: u32 = 10
     assert u.checked_div(0) is none
-    assert_eq(u.checked_div(4) ?? 0, 2)
+    assert u.checked_div(4) ?? 0 == 2
 }
 
 test "overflow — overflowing_* reports the wrap instead of refusing it" {
     let i32_max: i32 = 2147483647
     let over = i32_max.overflowing_add(1)
-    assert_eq(over.0, -2147483648)
+    assert over.0 == -2147483648
     assert over.1
 
     let fits = i32_max.overflowing_add(0)
-    assert_eq(fits.0, 2147483647)
+    assert fits.0 == 2147483647
     assert !fits.1
 
     let u8_big: u8 = 200
     let mul = u8_big.overflowing_mul(3)
-    assert_eq(mul.0, 88)
+    assert mul.0 == 88
     assert mul.1
 
     let signed: i8 = 5
     let sub = signed.overflowing_sub(10)
-    assert_eq(sub.0, -5)
+    assert sub.0 == -5
     assert !sub.1
 
     let unsigned: u8 = 5
     let usub = unsigned.overflowing_sub(10)
-    assert_eq(usub.0, 251)
+    assert usub.0 == 251
     assert usub.1
 }
 
@@ -204,8 +204,8 @@ const CHECKED_FITS: i32 = comptime {
 }
 
 test "overflow — checked_* folds at comptime too" {
-    assert_eq(CHECKED_OVER, -1)
-    assert_eq(CHECKED_FITS, 15)
+    assert CHECKED_OVER == -1
+    assert CHECKED_FITS == 15
 }
 
 // The reason any of this exists: a hash that's meant to wrap.
@@ -216,7 +216,7 @@ test "overflow — an FNV-style hash runs to completion" {
         hash = hash.wrapping_mul(16777619)
         hash = hash.wrapping_add(byte as u32)
     }
-    assert_eq(hash, 675472312)
+    assert hash == 675472312
 }
 
 // type.overflow W1-W4 — Wrapping<T>/Saturating<T> as a type instead of a
@@ -226,25 +226,25 @@ import num.{Wrapping, Saturating}
 
 test "overflow — Wrapping<T> wraps through +, -, *" {
     let a: Wrapping<u8> = Wrapping(255)
-    assert_eq((a + Wrapping(1)).value, 0)
+    assert (a + Wrapping(1)).value == 0
 
     let b: Wrapping<u8> = Wrapping(0)
-    assert_eq((b - Wrapping(1)).value, 255)
+    assert (b - Wrapping(1)).value == 255
 
     let h = Wrapping(5381u32)
     let result = h * Wrapping(33) + Wrapping(65)
-    assert_eq(result.value, 177638)
+    assert result.value == 177638
 }
 
 test "overflow — Saturating<T> clamps through +, -, *" {
     let a: Saturating<u8> = Saturating(255)
-    assert_eq((a + Saturating(1)).value, 255)
+    assert (a + Saturating(1)).value == 255
 
     let b: Saturating<u8> = Saturating(0)
-    assert_eq((b - Saturating(1)).value, 0)
+    assert (b - Saturating(1)).value == 0
 
     let c: Saturating<i8> = Saturating(-128)
-    assert_eq((c * Saturating(-2)).value, 127)
+    assert (c * Saturating(-2)).value == 127
 }
 
 // W4 — Copy if T is Copy. A generic wrapper over a Copy scalar has to be
@@ -254,14 +254,14 @@ test "overflow — Wrapping<T> and Saturating<T> are Copy" {
     let a = Wrapping(7u32)
     let b = a
     let c = a
-    assert_eq(b.value, 7)
-    assert_eq(c.value, 7)
+    assert b.value == 7
+    assert c.value == 7
 
     let x = Saturating(7u32)
     let y = x
     let z = x
-    assert_eq(y.value, 7)
-    assert_eq(z.value, 7)
+    assert y.value == 7
+    assert z.value == 7
 }
 
 // UN1/UN2 — no check at all; undefined behavior if it actually overflows.
@@ -270,17 +270,17 @@ test "overflow — Wrapping<T> and Saturating<T> are Copy" {
 test "overflow — unchecked_* requires unsafe and computes the wrap either way" {
     unsafe {
         let i8_max: i8 = 127
-        assert_eq(i8_max.unchecked_add(1), -128)
+        assert i8_max.unchecked_add(1) == -128
 
         let u8_big: u8 = 200
-        assert_eq(u8_big.unchecked_mul(2), 144)
+        assert u8_big.unchecked_mul(2) == 144
 
         let u8_small: u8 = 5
-        assert_eq(u8_small.unchecked_sub(10), 251)
+        assert u8_small.unchecked_sub(10) == 251
 
         // No overflow at all — same answer a checked op would give.
         let safe: i32 = 40
-        assert_eq(safe.unchecked_add(2), 42)
+        assert safe.unchecked_add(2) == 42
     }
 }
 

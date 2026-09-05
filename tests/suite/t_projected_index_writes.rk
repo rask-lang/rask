@@ -35,20 +35,20 @@ test "a pool element's nested field takes the write" {
 
     // One field deep: worked before, still has to.
     pool[h].hp -= 25
-    assert_eq(pool[h].hp, 75)
+    assert pool[h].hp == 75
     pool[h].active = false
     assert pool[h].active == false
 
     // Two fields deep: this is what dropped.
     pool[h].health.current = 42
-    assert_eq(pool[h].health.current, 42)
+    assert pool[h].health.current == 42
     pool[h].health.current -= 2
-    assert_eq(pool[h].health.current, 40)
+    assert pool[h].health.current == 40
 
     // The sibling field is untouched — the store hit the right offset, not just
     // somewhere in the element.
-    assert_eq(pool[h].health.max, 100)
-    assert_eq(pool[h].hp, 75)
+    assert pool[h].health.max == 100
+    assert pool[h].hp == 75
 }
 
 test "three fields deep through a pool" {
@@ -58,8 +58,8 @@ test "three fields deep through a pool" {
     pool[h].mid.inner.v = 99
     pool[h].mid.tag += 5
 
-    assert_eq(pool[h].mid.inner.v, 99)
-    assert_eq(pool[h].mid.tag, 7)
+    assert pool[h].mid.inner.v == 99
+    assert pool[h].mid.tag == 7
 }
 
 test "a Vec element's nested field takes the write" {
@@ -69,8 +69,8 @@ test "a Vec element's nested field takes the write" {
     v[0].mid.inner.v = 77
     v[0].mid.tag -= 1
 
-    assert_eq(v[0].mid.inner.v, 77)
-    assert_eq(v[0].mid.tag, 1)
+    assert v[0].mid.inner.v == 77
+    assert v[0].mid.tag == 1
 }
 
 test "writes to two pool elements don't bleed into each other" {
@@ -89,8 +89,8 @@ test "writes to two pool elements don't bleed into each other" {
     pool[a].health.current = 1
     pool[b].health.current = 2
 
-    assert_eq(pool[a].health.current, 1)
-    assert_eq(pool[b].health.current, 2)
-    assert_eq(pool[a].health.max, 10)
-    assert_eq(pool[b].health.max, 20)
+    assert pool[a].health.current == 1
+    assert pool[b].health.current == 2
+    assert pool[a].health.max == 10
+    assert pool[b].health.max == 20
 }

@@ -31,9 +31,9 @@ test "all three strategies read through a generic parameter" {
     let b = Shared.mutex(2)
     let c = Shared.local(3)
 
-    assert_eq(peek(a), 1)
-    assert_eq(peek(b), 2)
-    assert_eq(peek(c), 3)
+    assert peek(a) == 1
+    assert peek(b) == 2
+    assert peek(c) == 3
 }
 
 test "get, set and replace work under every strategy" {
@@ -41,25 +41,25 @@ test "get, set and replace work under every strategy" {
     let mutex = Shared.mutex(20)
     let local = Shared.local(30)
 
-    assert_eq(readers.get(), 10)
-    assert_eq(mutex.get(), 20)
-    assert_eq(local.get(), 30)
+    assert readers.get() == 10
+    assert mutex.get() == 20
+    assert local.get() == 30
 
     readers.set(11)
     mutex.set(21)
     local.set(31)
 
-    assert_eq(readers.get(), 11)
-    assert_eq(mutex.get(), 21)
-    assert_eq(local.get(), 31)
+    assert readers.get() == 11
+    assert mutex.get() == 21
+    assert local.get() == 31
 
-    assert_eq(readers.replace(12), 11)
-    assert_eq(mutex.replace(22), 21)
-    assert_eq(local.replace(32), 31)
+    assert readers.replace(12) == 11
+    assert mutex.replace(22) == 21
+    assert local.replace(32) == 31
 
-    assert_eq(readers.get(), 12)
-    assert_eq(mutex.get(), 22)
-    assert_eq(local.get(), 32)
+    assert readers.get() == 12
+    assert mutex.get() == 22
+    assert local.get() == 32
 }
 
 // A bare `Shared<T>` is `Shared<T, Readers>` — a defaulted parameter, not an
@@ -68,13 +68,13 @@ test "the bare spelling and the written default are one type" {
     let bare: Shared<i64> = Shared.new(7)
     let written: Shared<i64, Readers> = Shared.new(8)
 
-    assert_eq(peek(bare), 7)
-    assert_eq(peek(written), 8)
+    assert peek(bare) == 7
+    assert peek(written) == 8
 
     with bare.write() as v {
         v = v + 1
     }
-    assert_eq(bare.get(), 8)
+    assert bare.get() == 8
 }
 
 test "a struct field carries its strategy" {
@@ -88,6 +88,6 @@ test "a struct field carries its strategy" {
     with c.total.write() as t {
         t = t + 5
     }
-    assert_eq(c.hits.get(), 5)
-    assert_eq(c.total.get(), 5)
+    assert c.hits.get() == 5
+    assert c.total.get() == 5
 }

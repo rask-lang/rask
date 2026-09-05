@@ -603,10 +603,11 @@ fn cc8_ambiguous(
     let pool = pass.type_to_source(clause_type);
     let names: Vec<String> = candidates.iter().map(|c| c.var_name.clone()).collect();
     Diagnostic::error(format!("ambiguous context — multiple {pool} in scope"))
-        .with_code("mem.context/CC8")
+        .with_code("E0849")
         .with_primary(call_span, format!("which pool satisfies {pool}?"))
         .with_why(format!(
-            "{} are both in scope and either could satisfy the {pool} context.",
+            "{} are both in scope and either could satisfy the {pool} context \
+             [mem.context/CC8].",
             names.join(" and ")
         ))
         .with_fix(format!(
@@ -628,11 +629,12 @@ fn cc10_needs_explicit(
     Diagnostic::error(format!(
         "storable closure cannot auto-resolve {pool} context"
     ))
-    .with_code("mem.context/CC10")
+    .with_code("E0850")
     .with_primary(call_span, format!("needs {pool}, but the closure can't inherit it"))
     .with_why(
         "A closure bound to a name can outlive the scope that owns the pool, so \
-         it can't capture an ambient context the way an inline callback does."
+         it can't capture an ambient context the way an inline callback does \
+         [mem.context/CC10]."
             .to_string(),
     )
     .with_fix(format!(

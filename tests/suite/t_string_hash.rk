@@ -15,10 +15,10 @@
 // Floats are excluded on purpose (HA4): `NaN != NaN` breaks the contract.
 
 test "equal strings hash equal" {
-    assert_eq("hei".hash(), "hei".hash())
+    assert "hei".hash() == "hei".hash()
     let a = "bo@example.io"
     let b = "bo@example.io"
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
 }
 
 test "different strings hash differently" {
@@ -27,13 +27,13 @@ test "different strings hash differently" {
 
 test "the empty string hashes" {
     // FNV-1a offset basis, untouched.
-    assert_eq("".hash(), "".hash())
+    assert "".hash() == "".hash()
 }
 
 test "a heap string past the small-string limit" {
     let long = "en ganske lang streng som ikke passer i sso-bufferen"
     let same = "en ganske lang streng som ikke passer i sso-bufferen"
-    assert_eq(long.hash(), same.hash())
+    assert long.hash() == same.hash()
 }
 
 struct EmailAddress {
@@ -56,7 +56,7 @@ test "a custom Hashable can delegate to string.hash()" {
     let a = EmailAddress { raw: "Bo@Example.IO" }
     let b = EmailAddress { raw: "bo@example.io" }
     assert a == b
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
 }
 
 // ── The scalar types (#813) ─────────────────────────────────────────
@@ -66,7 +66,7 @@ type Id = u64 with (Equal, Hashable)
 test "type.generics/HA1 — every integer width hashes" {
     let a: u64 = 5
     let b: u64 = 5
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
     let other: u64 = 6
     assert a.hash() != other.hash()
 
@@ -78,34 +78,34 @@ test "type.generics/HA1 — every integer width hashes" {
     // Signed, and negative.
     let neg: i16 = -300
     let same: i16 = -300
-    assert_eq(neg.hash(), same.hash())
+    assert neg.hash() == same.hash()
 
     // 128-bit, both signednesses.
     let big: i128 = -5
     let big2: i128 = -5
-    assert_eq(big.hash(), big2.hash())
+    assert big.hash() == big2.hash()
     let ubig: u128 = 5
     assert ubig.hash() != a.hash()
 }
 
 test "type.generics/HA1 — bool and char hash" {
-    assert_eq(true.hash(), true.hash())
+    assert true.hash() == true.hash()
     assert true.hash() != false.hash()
 
     let a: char = 'a'
     let same: char = 'a'
-    assert_eq(a.hash(), same.hash())
+    assert a.hash() == same.hash()
     assert a.hash() != 'b'.hash()
 }
 
 test "type.aliases/T11 — a nominal newtype delegates to what it wraps" {
     let id = Id(1)
     let same = Id(1)
-    assert_eq(id.hash(), same.hash())
+    assert id.hash() == same.hash()
 
     // Transparent: the newtype and the underlying value hash alike.
     let raw: u64 = 1
-    assert_eq(id.hash(), raw.hash())
+    assert id.hash() == raw.hash()
 }
 
 test "type.generics/HA1 — a hash agrees with the bucket its key lands in" {
@@ -116,7 +116,7 @@ test "type.generics/HA1 — a hash agrees with the bucket its key lands in" {
     let k: u64 = 5
     assert m[k] == "five"
     let same: u64 = 5
-    assert_eq(k.hash(), same.hash())
+    assert k.hash() == same.hash()
 }
 
 // A custom Hashable over an integer field, which is what HA1 exists for.
@@ -153,5 +153,5 @@ test "a custom Hashable can delegate to an integer's hash" {
     let a = Version { major: 1, minor: 0 }
     let b = Version { major: 1, minor: 9 }
     assert a == b
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
 }

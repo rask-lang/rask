@@ -2107,17 +2107,24 @@ impl TypeChecker {
             }
 
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                // Expected type first, found second — every other site in this
+                // file does that, and these two had it the other way round. So
+                // `assert opt()` reported "expected `i32?`, found `bool`",
+                // naming what the code wrote as the requirement and what
+                // `assert` requires as the mistake. `assert 1` read correctly
+                // only because an unsolved literal is filled in from the other
+                // side, which put the concrete type in the second slot by luck.
                 let cond_ty = self.infer_expr(condition);
                 self.ctx.add_constraint(TypeConstraint::Equal(
-                    cond_ty,
                     Type::Bool,
+                    cond_ty,
                     condition.span,
                 ));
                 if let Some(msg) = message {
                     let msg_ty = self.infer_expr(msg);
                     self.ctx.add_constraint(TypeConstraint::Equal(
-                        msg_ty,
                         Type::String,
+                        msg_ty,
                         msg.span,
                     ));
                 }
@@ -2635,7 +2642,7 @@ impl TypeChecker {
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
             | "assert" | "debug" | "format" | "fence" | "compiler_fence"
-            | "assert_eq" | "skip" | "expect_fail" | "drop")
+            | "skip" | "expect_fail" | "drop")
     }
 
 
@@ -5134,16 +5141,40 @@ fn as_cast_is_lossless(src_ty: &Type, tgt_ty: &Type, s: Prim, t: Prim) -> bool {
         (Prim::Int { bits: sb, signed: ss }, Prim::Int { bits: tb, signed: ts }) => {
             tb > sb && (ss == ts || !ss)
         }
-        (Prim::Int { .. }, Prim::Float { .. }) => true,
+        (Prim::Int { bits, signed }, Prim::Float { bits: fb }) => {
+            int_fits_float_exactly(bits, signed, fb)
+        }
         (Prim::Float { bits: sb }, Prim::Float { bits: tb }) => tb >= sb,
         (Prim::Char, Prim::Int { bits, .. }) => bits >= 32,
         _ => false,
     }
 }
 
+/// CV1: can every value of this integer type land on a float exactly?
+///
+/// A float holds every integer up to 2^mantissa exactly and nothing past it —
+/// `f32` stops at 2^24, `f64` at 2^53. So an `i32` survives an `f64` (2^31 is
+/// well under 2^53) and an `i64` doesn't, which is the whole rule. Signed types
+/// get one bit of slack because their magnitude is 2^(bits-1); unsigned ones
+/// reach 2^bits - 1 and need the full width.
+///
+/// This is the difference between `as` and `.round<f64>()`. Past the mantissa a
+/// float lands on multiples of 2, then 4, then 128 — so `1_000_000_001 as f32`
+/// would come back as 1000000000. `as` promises nothing was lost, so it can't
+/// be the operator that does that quietly.
+fn int_fits_float_exactly(int_bits: u32, signed: bool, float_bits: u32) -> bool {
+    let mantissa = match float_bits {
+        32 => 24,
+        64 => 53,
+        _ => return false,
+    };
+    if signed { int_bits <= mantissa + 1 } else { int_bits <= mantissa }
+}
+
 fn classify_invalid_cast(s: Prim, t: Prim) -> InvalidCastClass {
     match (s, t) {
         (Prim::Bool, _) | (_, Prim::Bool) => InvalidCastClass::Bool,
+        (Prim::Int { .. }, Prim::Float { .. }) => InvalidCastClass::IntToFloat,
         (Prim::Int { .. }, Prim::Char) => InvalidCastClass::IntToChar,
         (Prim::Float { .. }, Prim::Int { .. }) => InvalidCastClass::FloatToInt,
         (Prim::Float { .. }, Prim::Float { .. }) => InvalidCastClass::FloatNarrowing,

@@ -16,8 +16,8 @@ import random.Random
 test "std.random — the same seed gives the same sequence" {
     mut a = Random.from_seed(11)
     mut b = Random.from_seed(11)
-    assert_eq(a.i64(), b.i64())
-    assert_eq(a.i64(), b.i64())
+    assert a.i64() == b.i64()
+    assert a.i64() == b.i64()
 
     mut c = Random.from_seed(12)
     mut d = Random.from_seed(11)
@@ -28,44 +28,44 @@ test "std.random — shuffle permutes, and identically for a given seed" {
     mut r = Random.from_seed(4)
     mut v: Vec<i64> = [1, 2, 3, 4, 5]
     r.shuffle(v)
-    assert_eq(v.join(","), "2,5,3,1,4")
+    assert v.join(",") == "2,5,3,1,4"
 
     // Nothing is lost or duplicated.
     mut total = 0
     for x in v {
         total = total + x
     }
-    assert_eq(total, 15)
-    assert_eq(v.len(), 5)
+    assert total == 15
+    assert v.len() == 5
 }
 
 test "std.random — shuffling one element or none is a no-op" {
     mut r = Random.from_seed(1)
     mut one: Vec<i64> = [7]
     r.shuffle(one)
-    assert_eq(one.join(","), "7")
+    assert one.join(",") == "7"
 
     mut empty: Vec<i64> = []
     r.shuffle(empty)
-    assert_eq(empty.len(), 0)
+    assert empty.len() == 0
 }
 
 test "std.random — shuffle works on a wide element type" {
     mut r = Random.from_seed(4)
     mut v: Vec<string> = ["a", "b", "c", "d", "e"]
     r.shuffle(v)
-    assert_eq(v.join(","), "b,e,c,a,d")
-    assert_eq(v.len(), 5)
+    assert v.join(",") == "b,e,c,a,d"
+    assert v.len() == 5
 }
 
 test "std.random — choice picks an element" {
     mut r = Random.from_seed(4)
     let v: Vec<i64> = [1, 2, 3]
-    assert_eq(r.choice(v) ?? 0 - 1, 1)
+    assert r.choice(v) ?? 0 - 1 == 1
 
     mut r2 = Random.from_seed(4)
     let s: Vec<string> = ["x", "y", "z"]
-    assert_eq(r2.choice(s) ?? "-", "x")
+    assert r2.choice(s) ?? "-" == "x"
 }
 
 test "std.random — choice on an empty Vec is none" {

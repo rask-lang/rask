@@ -183,7 +183,6 @@ pub enum BuiltinFunctionKind {
     /// clamp - constrain value between lo and hi
     Clamp,
     /// assert_eq - compare got/expected with pretty-print diff
-    AssertEq,
     /// skip - skip rest of test with reason
     Skip,
     /// expect_fail - invert pass/fail for test
@@ -334,7 +333,6 @@ pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
     bf("min", BuiltinFunctionKind::Min, None, false),
     bf("max", BuiltinFunctionKind::Max, None, false),
     bf("clamp", BuiltinFunctionKind::Clamp, None, false),
-    bf("assert_eq", BuiltinFunctionKind::AssertEq, None, false),
     bf("skip", BuiltinFunctionKind::Skip, Some("!"), false),
     bf("expect_fail", BuiltinFunctionKind::ExpectFail, None, false),
     bf("drop", BuiltinFunctionKind::Drop, None, false),

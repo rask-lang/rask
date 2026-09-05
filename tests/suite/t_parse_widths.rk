@@ -51,35 +51,35 @@ func i32_of(s: string) -> string {
 }
 
 test "std.strings — an unsigned target reaches its own maximum" {
-    assert_eq(u64_of("9223372036854775808"), "9223372036854775808")
-    assert_eq(u64_of("18446744073709551615"), "18446744073709551615")
+    assert u64_of("9223372036854775808") == "9223372036854775808"
+    assert u64_of("18446744073709551615") == "18446744073709551615"
     // One past u64::MAX.
-    assert_eq(u64_of("18446744073709551616"), "err value out of range")
+    assert u64_of("18446744073709551616") == "err value out of range"
 }
 
 test "std.strings — nothing negative parses into an unsigned target" {
-    assert_eq(u64_of("-1"), "err value out of range")
-    assert_eq(u8_of("-1"), "err value out of range")
+    assert u64_of("-1") == "err value out of range"
+    assert u8_of("-1") == "err value out of range"
 }
 
 test "std.strings — a value the width can't hold is out of range" {
-    assert_eq(u8_of("255"), "255")
-    assert_eq(u8_of("256"), "err value out of range")
-    assert_eq(u8_of("70000"), "err value out of range")
+    assert u8_of("255") == "255"
+    assert u8_of("256") == "err value out of range"
+    assert u8_of("70000") == "err value out of range"
 
-    assert_eq(i8_of("127"), "127")
-    assert_eq(i8_of("-128"), "-128")
-    assert_eq(i8_of("128"), "err value out of range")
-    assert_eq(i8_of("-129"), "err value out of range")
+    assert i8_of("127") == "127"
+    assert i8_of("-128") == "-128"
+    assert i8_of("128") == "err value out of range"
+    assert i8_of("-129") == "err value out of range"
 
-    assert_eq(i32_of("2147483647"), "2147483647")
-    assert_eq(i32_of("2147483648"), "err value out of range")
+    assert i32_of("2147483647") == "2147483647"
+    assert i32_of("2147483648") == "err value out of range"
 }
 
 test "std.strings — the other failures still name themselves" {
-    assert_eq(u8_of(""), "err no digits found")
-    assert_eq(u8_of("abc"), "err non-numeric character")
-    assert_eq(u8_of("  7  "), "7")
+    assert u8_of("") == "err no digits found"
+    assert u8_of("abc") == "err non-numeric character"
+    assert u8_of("  7  ") == "7"
 }
 
 func main() {}

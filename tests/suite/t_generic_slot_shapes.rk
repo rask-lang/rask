@@ -83,35 +83,35 @@ extend Wrap<T> {
 
 test "generic slot — an optional argument survives the field" {
     let a = Wrap { value: opt(3) }
-    assert_eq(a.value ?? -1, 3)
+    assert a.value ?? -1 == 3
     let n = Wrap { value: opt(-1) }
     assert n.value is none
     // Zero is a value, not an absence — the tag has to be read, not the payload.
     let z = Wrap { value: opt(0) }
-    assert_eq(z.value ?? -1, 0)
+    assert z.value ?? -1 == 0
 }
 
 test "generic slot — an optional argument survives a method" {
     let a = Wrap { value: opt(7) }
-    assert_eq(a.get() ?? -1, 7)
+    assert a.get() ?? -1 == 7
     let n = Wrap { value: opt(-4) }
     assert n.get() is none
 }
 
 test "generic slot — a result argument survives the field" {
     let ok = Wrap { value: res(4) }
-    assert_eq(ok.value catch _ => -1, 4)
+    assert (ok.value catch _ => -1) == 4
     let bad = Wrap { value: res(-2) }
-    assert_eq(bad.value catch e => -1, -1)
+    assert (bad.value catch e => -1) == -1
 }
 
 test "generic slot — a result argument survives a method" {
     let ok = Wrap { value: res(5) }
-    assert_eq(ok.get() catch _ => -1, 5)
+    assert (ok.get() catch _ => -1) == 5
     let bad = Wrap { value: res(-9) }
     let got = bad.get()
     if got is MyErr as e {
-        assert_eq(e.message(), "negative")
+        assert e.message() == "negative"
     } else {
         assert false
     }
@@ -123,7 +123,7 @@ test "generic slot — the error side keeps its own size" {
     let bad = Wrap { value: res(-1) }
     let got = bad.get()
     if got is MyErr as e {
-        assert_eq(e.detail, "negative")
+        assert e.detail == "negative"
     } else {
         assert false
     }
@@ -131,9 +131,9 @@ test "generic slot — the error side keeps its own size" {
 
 test "generic slot — a bound naming the type's own parameter" {
     let w = Wrap { value: Wide { w: 11 } }
-    assert_eq(w.wrapped_width(), 11)
+    assert w.wrapped_width() == 11
     let other = Wrap { value: Wide { w: 2 } }
-    assert_eq(other.wrapped_width(), 2)
+    assert other.wrapped_width() == 2
 }
 
 // Optional and result instantiations of the same type have to stay apart —
@@ -143,9 +143,9 @@ test "generic slot — optional and result instantiations don't share" {
     let o = Wrap { value: opt(1) }
     let r = Wrap { value: res(2) }
     let plain = Wrap { value: 3 }
-    assert_eq(o.get() ?? -1, 1)
-    assert_eq(r.get() catch _ => -1, 2)
-    assert_eq(plain.get(), 3)
+    assert o.get() ?? -1 == 1
+    assert (r.get() catch _ => -1) == 2
+    assert plain.get() == 3
 }
 
 func main() {}

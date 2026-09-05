@@ -11,7 +11,9 @@
 //! ## Available annotations:
 //!
 //! - `<!-- test: compile -->` - Must compile without errors
-//! - `<!-- test: compile-fail -->` - Must fail to compile
+//! - `<!-- test: compile-fail: <stage> -->` - Must be rejected by that pass
+//!   (`lex`, `parse`, `resolve`, `typecheck`, `ownership`, or `unbuilt` for a
+//!   rule that is specified but not implemented yet)
 //! - `<!-- test: parse -->` - Must parse (skip type checking)
 //! - `<!-- test: parse-fail -->` - Must fail to parse
 //! - `<!-- test: skip -->` - Don't test this block
@@ -24,5 +26,5 @@ pub mod extract;
 pub mod runner;
 
 pub use deps::{check_staleness, extract_deps, SpecDeps, StalenessWarning};
-pub use extract::{extract_tests, has_rk_tests, Expectation, SpecTest};
+pub use extract::{extract_tests, has_rk_tests, Expectation, FailStage, SpecTest};
 pub use runner::{run_test, run_test_with_config, run_rk_test_file, NativeResult, RkTestResult, RunConfig, TestResult, TestSummary};

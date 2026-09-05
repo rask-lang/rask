@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: the field name in `value.("x")` has to name a real field
-// ERROR: no field `nope` on type `Budget9`
+// Rejects: no field `nope` on type `Budget9`
 //
 // `value.("x")` is a field access with the name in quotes, so a name that isn't
 // a field is the same error `value.x` gives, at the same point in the pipeline.

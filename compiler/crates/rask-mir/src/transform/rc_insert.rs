@@ -22,6 +22,26 @@ use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
+/// `dst = <local> as <int>` — the cast that turns a string into the address of
+/// its buffer, which only `unsafe` code can ask for.
+///
+/// It reads as the string's last use because nothing afterwards names the
+/// string; what continues is the integer holding its address. Releasing on that
+/// reading frees the buffer while the address is still in flight.
+fn casts_to_int(stmt: &MirStmt, local: LocalId) -> bool {
+    let MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } = &stmt.kind
+    else {
+        return false;
+    };
+    matches!(value, MirOperand::Local(id) if *id == local)
+        && matches!(
+            target_ty,
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
+                | MirType::Ptr
+        )
+}
+
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 pub fn insert_rc_ops(func: &mut MirFunction) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
@@ -683,6 +703,23 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 )));
             } else if let Some(si) = last_use_idx {
                 let span = func.blocks[block_idx].statements[si].span;
+                // A cast to an integer hands out the buffer's address and
+                // nothing after that mentions the string, so the naive spot is
+                // directly after the cast — the release runs, the buffer is
+                // freed, and the raw address the callee dereferences is
+                // dangling. `write_raw` in `stdlib/http.rk` is exactly this
+                // shape, which is how the HTTP server answered with eight bytes
+                // of allocator free-list where `HTTP/1.1` should be. Hold the
+                // reference to the end of the block, so every use of the
+                // address it produced is covered.
+                if casts_to_int(&func.blocks[block_idx].statements[si], *local) {
+                    let span = func.blocks[block_idx].terminator.span;
+                    insertions.push((stmts_len, MirStmt::new(
+                        MirStmtKind::RcDec { local: *local },
+                        span,
+                    )));
+                    continue;
+                }
                 // Step over the increments the copy pass already put here. At
                 // `dst = src`, `src`'s last use is the copy itself, so the naive
                 // spot is directly between `dst = src` and `RcInc(dst)` — the

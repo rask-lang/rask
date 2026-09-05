@@ -939,12 +939,32 @@ mod tests {
 
     #[test]
     fn comparison_not_generic_call_no_paren() {
-        // a < b > c — no `(` after `>`, so it's comparison
-        let stmts = parse_body("a < b > c");
+        // `a < b > c` — no `(` after `>`, so both angle brackets are comparison
+        // operators, not a generic argument list.
+        //
+        // This used to assert the result was `(a < b) > c`. P2 made comparisons
+        // non-associative, so that shape is now a parse error — and the error is
+        // *better* evidence than the AST was. Reading `a<b>` as a generic call
+        // would consume both brackets as one construct and leave nothing to
+        // chain, so a P2 complaint can only come from having read `<` and `>` as
+        // two comparisons. Same question, sharper witness.
+        let result = parse_body_err("a < b > c");
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("comparisons don't chain")),
+            "`a < b > c` should read as two comparisons, not a generic call: {:?}",
+            result.errors,
+        );
+    }
+
+    #[test]
+    fn comparison_not_generic_call_parenthesized_half() {
+        // The half that still has an AST to check: one comparison, `>` used as
+        // an operator with a call on its right. Nothing here is a chain, so P2
+        // has no opinion and the tree is observable.
+        let stmts = parse_body("let ok = (a < b) > c(1)");
         assert_eq!(stmts.len(), 1);
-        // Should parse as (a < b) > c (two comparisons chained by precedence)
-        if let StmtKind::Expr(ref e) = stmts[0].kind {
-            assert!(matches!(e.kind, ExprKind::Binary { op: BinOp::Gt, .. }));
+        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Gt, .. }));
         } else {
             panic!("expected comparison");
         }
@@ -1347,12 +1367,20 @@ mod tests {
         }
     }
 
-    // mem.closures/CP3: `|mutate x|` without type must be rejected as a param form.
+    // mem.closures/CP3: `|mutate x|` without a type is a mutable capture, not a
+    // parameter — and mutable captures aren't implemented, so it's rejected as
+    // the missing feature it is. The message used to ask for a type, which
+    // turns it into the parameter form: a different thing, accepted in silence.
     #[test]
-    fn closure_mutate_param_without_type_errors() {
+    fn closure_mutate_capture_says_it_is_not_implemented() {
         let result = parse_body_err("let f = |mutate x| { x }");
-        assert!(result.errors.iter().any(|e| e.message.contains("'mutate' requires an explicit type")),
-            "expected error about mutate requiring explicit type, got {:?}", result.errors);
+        let e = result.errors.iter()
+            .find(|e| e.message.contains("capturing `x` by `mutate`"))
+            .unwrap_or_else(|| panic!("expected the CP3 message, got {:?}", result.errors));
+        assert!(
+            e.why.as_deref().is_some_and(|w| w.contains("mem.closures/CP3")),
+            "should cite the rule that says this is capture syntax: {:?}", e.why
+        );
     }
 
     // Existing untyped closure params still parse as read-only borrows (CP1).

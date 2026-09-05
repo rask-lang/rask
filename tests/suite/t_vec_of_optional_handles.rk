@@ -23,7 +23,7 @@ test "an empty slot in a Vec of optional handles is empty" {
     mut v: Vec<Handle<Item>?> = Vec.new()
     v.push(none)
 
-    assert_eq(v.len(), 1)
+    assert v.len() == 1
     if v.get(0)? as slot {
         if slot? as _h {
             assert false           // the empty slot read as a handle
@@ -40,10 +40,10 @@ test "a filled slot in a Vec of optional handles reads back" {
     v.push(h)
     v.push(none)
 
-    assert_eq(v.len(), 2)
+    assert v.len() == 2
     if v.get(0)? as slot {
         if slot? as live {
-            assert_eq(pool[live].hp, 9)
+            assert pool[live].hp == 9
         } else {
             assert false
         }

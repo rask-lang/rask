@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a bare `T` only becomes a `T or E` at `return`
-// ERROR: a `i32` doesn't become a `i64 or LoadError` here — auto-wrap only fires at `return`
+// Rejects: a `i32` doesn't become a `i64 or LoadError` here — auto-wrap only fires at `return`
 //
 // ER11: for `T or E` where E isn't `none`, a bare value doesn't acquire the
 // union type at an assignment, an argument, or a field. At a `return` the

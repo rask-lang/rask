@@ -1,35 +1,26 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `try` inside a `test` block — #932.
+// `try` inside a `test` block — std.testing/T20.
 //
-// A `try` in a test block emits a propagation edge, the synthetic test function's
-// signature is void, and native fails the Cranelift verifier:
+// A test block is the error branch. `try` on a fallible step reads the way it
+// does anywhere else, and when the step fails, that test fails by name with the
+// error reported — later tests still run.
 //
-//     error: compile: codegen '__test_0': Cranelift error:
-//       ... message: "arguments of return must match function signature"
+// This file was written as the #932 probe, back when the same code failed the
+// Cranelift verifier on native and passed silently on interp, and the spec said
+// bare `try` here should have been an ER47 compile error. #1057 fixed the
+// codegen and gave the propagation somewhere to go; the rule that banned it was
+// deleted afterwards, because its whole argument was that the failure would say
+// nothing useful and it now says exactly what happened.
 //
-// The `try` succeeding doesn't help — the propagation edge existing is enough. It
-// also survives `rask check`, so the file type-checks, `--interp` passes, and only
-// the native build says anything, in a message that names an internal symbol and a
-// Cranelift structure and never mentions `try` or the line.
+// Only the success half can live here — a failing test fails the file, so the
+// propagation path is pinned in `compile_run.rs`
+// (`try_in_a_test_block_fails_that_test_and_names_the_error`), which reads a
+// program's output instead of asserting inside it.
 //
-// The check already exists and just doesn't fire for results: `try` on an
-// *optional* in a test block is rejected properly, on both backends, with
-//
-//     error[E0317]: `try` can only be used within a function
-//
-// so the language has already decided to reject `try` here rather than let a test
-// block propagate. The result-shaped `try` isn't reaching E0317 and falls through
-// to codegen instead — a missed check, not an open design question. Extending
-// E0317's check to the `T or E` path turns the Cranelift error into that message.
-//
-// (That message's "not inside a function" is literally false — it *is* inside a
-// test block — and its fix line says to move the `try` into a function body, which
-// isn't what you want to do to a test. `catch _ =>` and `!` are.)
-//
-// The three controls at the bottom all work today. The suite's existing JSON tests
-// use `catch`, which is why this never came up — but `try` is the shorter, more
-// natural spelling for a test that expects success, so it's what anyone writing a
-// new fallible-API test reaches for.
+// The three controls at the bottom are the other spellings of the same step:
+// `catch` when you want to handle the failure, `!` when you want to assert it
+// can't happen, and `try` inside an ordinary function as the shape this rule is
+// modelled on.
 
 enum MyErr {
     Bad
@@ -51,12 +42,12 @@ func uses_try() -> i64 or MyErr {
     return v
 }
 
-test "type.errors — try on a result inside a test block" {
+test "std.testing — T20: try on a result inside a test block" {
     let v = try might_fail(true)
     assert v == 7
 }
 
-test "type.errors — two trys in one test block" {
+test "std.testing — T20: two trys in one test block" {
     let a = try might_fail(true)
     let b = try might_fail(true)
     assert a + b == 14

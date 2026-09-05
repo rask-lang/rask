@@ -11,7 +11,7 @@ test "priority order follows variant order" {
 }
 
 test "priority parses known labels and rejects the rest" {
-    assert_eq(Priority.from_label("high")!, Priority.High)
+    assert Priority.from_label("high")! == Priority.High
     let bad = Priority.from_label("epic")
     assert bad is ValidationError
 }
@@ -28,7 +28,7 @@ test "email equality is case-insensitive (custom Equal)" {
     let b = EmailAddress { raw: "bo@example.io" }
     assert a == b
     // OC1: the redeclared Hashable must agree with the override.
-    assert_eq(a.hash(), b.hash())
+    assert a.hash() == b.hash()
 }
 
 test "ids are distinct values, stepped through .value" {
@@ -36,20 +36,20 @@ test "ids are distinct values, stepped through .value" {
     // with `TaskId(n)` (T7), unwrap with `.value` (T8).
     let a = TaskId(1)
     let b = a.next()
-    assert_eq(b.value, 2)
+    assert b.value == 2
     assert a != b
 }
 
 test "config carries its defaults" {
     // `Config {}` is the fully-defaulted value (FD3).
     let c = Config {}
-    assert_eq(c.port, 8080)
-    assert_eq(c.host, "0.0.0.0")
+    assert c.port == 8080
+    assert c.host == "0.0.0.0"
     assert c.request_log
     // A subset override leaves the rest at their declared defaults.
     let c2 = Config { port: 9090 }
-    assert_eq(c2.port, 9090)
-    assert_eq(c2.host, "0.0.0.0")
+    assert c2.port == 9090
+    assert c2.host == "0.0.0.0"
 }
 
 test "validation catches an empty title" {
@@ -67,10 +67,10 @@ test "validation catches an empty title" {
 
 test "percentile handles the empty and single-sample cases" {
     mut empty = Vec.new()
-    assert_eq(percentile(empty, 50), 0.0)
+    assert percentile(empty, 50) == 0.0
 
     mut one = Vec.from([42.0])
-    assert_eq(percentile(one, 95), 42.0)
+    assert percentile(one, 95) == 42.0
 }
 
 func regression_740_still_blocked_after_dep_delete(mutate store: Store) -> bool or StoreError {

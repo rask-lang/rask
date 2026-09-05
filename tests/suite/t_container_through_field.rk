@@ -136,25 +136,25 @@ func build() -> World {
 
 test "type.gradual — a `for` over a Vec field knows its element type" {
     let w = build()
-    assert_eq(w.total_n(), 3)
-    assert_eq(w.keys_joined(), "A/B/")
+    assert w.total_n() == 3
+    assert w.keys_joined() == "A/B/"
 }
 
 test "type.gradual — indexing a Vec or Map field into a bare binding" {
     let w = build()
-    assert_eq(w.row_at(1), "b")
-    assert_eq(w.lookup("b"), 20)
+    assert w.row_at(1) == "b"
+    assert w.lookup("b") == 20
 }
 
 test "mem.pools/PF1 — `for h in pool` over a field yields handles" {
     let w = build()
-    assert_eq(w.count_active(), 2)
-    assert_eq(w.first_hp(), 5)
+    assert w.count_active() == 2
+    assert w.first_hp() == 5
 }
 
 test "mem.pools/PF1 — `for h in pool` over a local yields handles too" {
-    assert_eq(local_pool_active(), 2)
-    assert_eq(local_pool_via_handles(), 30)
+    assert local_pool_active() == 2
+    assert local_pool_via_handles() == 30
 }
 
 func main() {
