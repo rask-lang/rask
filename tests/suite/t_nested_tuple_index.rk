@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `n.0.0` on a nested tuple didn't parse (#914). After the dot, `0.0` looks
+// exactly like a float and the lexer made one, so the second index disappeared
+// and the parser complained about a name — pointing at digits and saying names
+// start with a letter.
+//
+// The split happens in the lexer, from the source text rather than the parsed
+// value: `0.10` and `0.1` are the same f64 and different pairs of indices.
+
+test "two levels" {
+    let n = ((1, 2), 3)
+    assert n.0.0 == 1
+    assert n.0.1 == 2
+    assert n.1 == 3
+}
+
+test "three levels" {
+    let deep = (((7, 8), 9), 10)
+    assert deep.0.0.0 == 7
+    assert deep.0.0.1 == 8
+    assert deep.0.1 == 9
+    assert deep.1 == 10
+}
+
+test "a two-digit index survives the split" {
+    let t = (0, (10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20))
+    assert t.1.10 == 20
+    assert t.1.1 == 11
+}
+
+test "inside an interpolation" {
+    let n = ((1, 2), 3)
+    assert "{n.0.1}" == "2"
+}
+
+test "float literals still lex as floats" {
+    let f = 0.5
+    let g = 1.25
+    assert f + g == 1.75
+}
+
+test "a range is still a range" {
+    mut total = 0
+    for i in 0..3 {
+        total = total + i
+    }
+    assert total == 3
+}
