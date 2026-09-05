@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Rule registry and dispatch.
 
-use rask_ast::decl::Decl;
+use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::Span;
 
 use crate::types::{LintDiagnostic, LintOpts};
-use crate::{naming, idiom, style};
+use crate::{naming, idiom, style, util};
 
 /// A lint rule: id, check function.
 struct Rule {
@@ -40,6 +41,11 @@ fn all_rules() -> Vec<Rule> {
     ]
 }
 
+/// Every registered rule id, for the check that `@allow` names one that exists.
+pub fn rule_ids() -> Vec<&'static str> {
+    all_rules().into_iter().map(|r| r.id).collect()
+}
+
 /// Run selected rules against declarations.
 pub fn run_rules(decls: &[Decl], source: &str, opts: &LintOpts) -> Vec<LintDiagnostic> {
     let mut results = Vec::new();
@@ -51,7 +57,75 @@ pub fn run_rules(decls: &[Decl], source: &str, opts: &LintOpts) -> Vec<LintDiagn
         results.extend((rule.check)(decls, source));
     }
 
+    let scopes = allow_scopes(decls, source);
+    results.retain(|d| !suppressed(d, &scopes));
     results
+}
+
+/// A declaration that carries `@allow(...)`, and the lines it covers.
+struct AllowScope {
+    first_line: usize,
+    last_line: usize,
+    allowed: Vec<String>,
+}
+
+/// `@allow` used to be honoured by each rule that remembered to ask, so eleven
+/// of the twenty did and the rest ignored it in silence. One filter over the
+/// results means a name that's accepted is a name that works.
+fn allow_scopes(decls: &[Decl], source: &str) -> Vec<AllowScope> {
+    let mut scopes = Vec::new();
+    let mut add = |span: Span, attrs: &[String]| {
+        let allowed: Vec<String> = attrs
+            .iter()
+            .filter_map(|a| rask_ast::allow_names::allowed_name(a).map(str::to_string))
+            .collect();
+        if allowed.is_empty() {
+            return;
+        }
+        scopes.push(AllowScope {
+            first_line: util::line_col(source, span.start).0,
+            last_line: util::line_col(source, span.end).0,
+            allowed,
+        });
+    };
+    for decl in decls {
+        match &decl.kind {
+            // The declaration's span, not the function's: it starts at the
+            // first `@`, and a rule that underlines the attribute line itself
+            // would otherwise fall outside its own scope.
+            DeclKind::Fn(f) => add(decl.span, &f.attrs),
+            DeclKind::Struct(s) => {
+                add(decl.span, &s.attrs);
+                for m in &s.methods {
+                    add(m.span, &m.attrs);
+                }
+            }
+            DeclKind::Enum(e) => {
+                add(decl.span, &e.attrs);
+                for m in &e.methods {
+                    add(m.span, &m.attrs);
+                }
+            }
+            DeclKind::Impl(i) => {
+                for m in &i.methods {
+                    add(m.span, &m.attrs);
+                }
+            }
+            DeclKind::Trait(t) => add(decl.span, &t.attrs),
+            DeclKind::Test(t) => add(decl.span, &t.attrs),
+            DeclKind::Benchmark(b) => add(decl.span, &b.attrs),
+            _ => {}
+        }
+    }
+    scopes
+}
+
+fn suppressed(diag: &LintDiagnostic, scopes: &[AllowScope]) -> bool {
+    scopes.iter().any(|s| {
+        diag.location.line >= s.first_line
+            && diag.location.line <= s.last_line
+            && s.allowed.iter().any(|a| a == &diag.rule)
+    })
 }
 
 /// Check if a rule should run based on include/exclude filters.

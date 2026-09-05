@@ -542,6 +542,7 @@ impl TypeChecker {
         self.collect_import_aliases();
         self.collect_type_declarations(decls);
         self.check_user_annotations(decls);
+        self.check_allow_names(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();

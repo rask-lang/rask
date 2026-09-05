@@ -815,6 +815,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `@allow(name)` where nothing answers to `name` — a typo, or a rule id
+    /// that doesn't exist. Silence here is indistinguishable from a warning
+    /// correctly suppressed, so it's an error.
+    #[error("`@allow({name})` names nothing")]
+    UnknownAllowName {
+        name: String,
+        suggestion: Option<String>,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -1188,6 +1198,7 @@ impl TypeError {
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
+            | UnknownAllowName { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

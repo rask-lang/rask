@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every name `@allow` accepts, one per declaration (#1085). A name that stops
+// being accepted breaks this file, which is the point — the list is the
+// contract between the checker and the linter.
+
+@allow(torn_lock_update)
+func f0() {
+    println("0")
+}
+
+@allow(naming/from)
+func f1() {
+    println("1")
+}
+
+@allow(naming/into)
+func f2() {
+    println("2")
+}
+
+@allow(naming/as)
+func f3() {
+    println("3")
+}
+
+@allow(naming/to)
+func f4() {
+    println("4")
+}
+
+@allow(naming/is)
+func f5() {
+    println("5")
+}
+
+@allow(naming/with)
+func f6() {
+    println("6")
+}
+
+@allow(naming/try)
+func f7() {
+    println("7")
+}
+
+@allow(naming/or_suffix)
+func f8() {
+    println("8")
+}
+
+@allow(idiom/unwrap-production)
+func f9() {
+    println("9")
+}
+
+@allow(idiom/missing-ensure)
+func f10() {
+    println("10")
+}
+
+@allow(idiom/ensure-ordering)
+func f11() {
+    println("11")
+}
+
+@allow(idiom/large-unsafe-block)
+func f12() {
+    println("12")
+}
+
+@allow(idiom/duck-trait)
+func f13() {
+    println("13")
+}
+
+@allow(idiom/equality-absent-check)
+func f14() {
+    println("14")
+}
+
+@allow(idiom/mod-for-index)
+func f15() {
+    println("15")
+}
+
+@allow(idiom/too-many-contexts)
+func f16() {
+    println("16")
+}
+
+@allow(style/snake-case-func)
+func f17() {
+    println("17")
+}
+
+@allow(style/pascal-case-type)
+func f18() {
+    println("18")
+}
+
+@allow(style/public-return-type)
+func f19() {
+    println("19")
+}
+
+func main() {
+    f0()
+    f1()
+    f2()
+    f3()
+    f4()
+    f5()
+    f6()
+    f7()
+    f8()
+    f9()
+    f10()
+    f11()
+    f12()
+    f13()
+    f14()
+    f15()
+    f16()
+    f17()
+    f18()
+    f19()
+}

@@ -27,35 +27,29 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
         match &decl.kind {
             DeclKind::Struct(s) => {
                 for m in &s.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &s.name,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &s.name,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             DeclKind::Enum(e) => {
                 for m in &e.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &e.name,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &e.name,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             DeclKind::Impl(imp) => {
                 for m in &imp.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &imp.target_ty,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &imp.target_ty,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             _ => {}
@@ -63,19 +57,6 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
     }
 
     methods
-}
-
-fn is_suppressed(f: &FnDecl, rule_id: &str) -> bool {
-    f.attrs.iter().any(|a| {
-        a == &format!("allow({})", rule_id)
-            || a.starts_with("allow(") && rule_id.is_empty()
-    })
-}
-
-fn is_rule_suppressed(f: &FnDecl, rule_id: &str) -> bool {
-    f.attrs
-        .iter()
-        .any(|a| a == &format!("allow({})", rule_id))
 }
 
 fn make_diagnostic(
@@ -106,9 +87,6 @@ fn make_diagnostic(
 pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/from") {
-            continue;
-        }
         if !ctx.method.name.starts_with("from_") {
             continue;
         }
@@ -140,9 +118,6 @@ pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/into") {
-            continue;
-        }
         if !ctx.method.name.starts_with("into_") {
             continue;
         }
@@ -186,9 +161,6 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/as") {
-            continue;
-        }
         if !ctx.method.name.starts_with("as_") {
             continue;
         }
@@ -297,9 +269,6 @@ fn walk_returns_in_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
 pub fn check_to(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/to") {
-            continue;
-        }
         if !ctx.method.name.starts_with("to_") {
             continue;
         }
@@ -328,9 +297,6 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 
     // Check methods
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/is") {
-            continue;
-        }
         if !ctx.method.name.starts_with("is_") {
             continue;
         }
@@ -356,7 +322,7 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     // Also check standalone functions
     for decl in decls {
         if let DeclKind::Fn(f) = &decl.kind {
-            if is_rule_suppressed(f, "naming/is") || !f.name.starts_with("is_") {
+            if !f.name.starts_with("is_") {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
@@ -382,9 +348,6 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_with(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/with") {
-            continue;
-        }
         if !ctx.method.name.starts_with("with_") {
             continue;
         }
@@ -413,9 +376,6 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 
     // Check methods
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/try") {
-            continue;
-        }
         if !ctx.method.name.starts_with("try_") {
             continue;
         }
@@ -439,7 +399,7 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     // Standalone functions
     for decl in decls {
         if let DeclKind::Fn(f) = &decl.kind {
-            if is_rule_suppressed(f, "naming/try") || !f.name.starts_with("try_") {
+            if !f.name.starts_with("try_") {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
@@ -467,9 +427,6 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_or_suffix(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/or_suffix") {
-            continue;
-        }
         if !ctx.method.name.ends_with("_or") {
             continue;
         }

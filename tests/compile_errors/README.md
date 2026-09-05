@@ -108,6 +108,8 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
 | [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |
 | [context_unnamed_structural.rk](context_unnamed_structural.rk) | Unnamed context used as binding |
+| [unknown_allow_name.rk](unknown_allow_name.rk) | `@allow(name)` where nothing answers to `name` (E0855, #1085) — the warning fired as if the annotation weren't there, which is exactly what a correctly-suppressed one looks like |
+| [container_turbofish.rk](container_turbofish.rk) | `Vec.new<string>()` followed by a push of the wrong type (#1084) — the written type argument used to be dropped, so the binding stayed open and widened instead |
 | [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
 
 ## Running Tests

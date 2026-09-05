@@ -521,10 +521,6 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
         if !t.is_duck {
             continue;
         }
-        // SU1: an intentionally-kept sketch can opt out
-        if t.attrs.iter().any(|a| a == "allow(idiom/duck-trait)") {
-            continue;
-        }
         let (line, col) = util::line_col(source, decl.span.start);
         let source_line = util::get_source_line(source, line);
         diags.push(LintDiagnostic {

@@ -2034,6 +2034,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(*why)
             }
 
+            UnknownAllowName { name, suggestion, span } => {
+                let diag = Diagnostic::error(format!("`@allow({})` names nothing", name))
+                    .with_code("E0855")
+                    .with_primary(*span, format!("`@allow({})` on this declaration", name))
+                    .with_why("an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever");
+                match suggestion {
+                    Some(s) => diag
+                        .with_fix(format!("did you mean `@allow({})`?", s))
+                        .with_help(format!("did you mean `@allow({})`?", s)),
+                    None => diag
+                        .with_fix("use a compiler warning name or a lint rule id".to_string())
+                        .with_help(format!(
+                            "`@allow` takes one warning name or one lint rule id. Known names: {}",
+                            rask_ast::allow_names::all().collect::<Vec<_>>().join(", ")
+                        )),
+                }
+            }
+
             LegacyWrapperConstructor { name, span } => {
                 let (what, fix) = match name.as_str() {
                     "Some" => (

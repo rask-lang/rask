@@ -4378,6 +4378,28 @@ fn dynamic_field_name_must_be_comptime() {
     );
 }
 
+/// #1085: an `@allow` that matches nothing is silent, and silence is what a
+/// correctly-suppressed warning looks like — so a typo hid itself forever. The
+/// two name registries (compiler warnings, lint rule ids) live in one place now
+/// and a name in neither is an error.
+#[test]
+fn an_allow_that_names_nothing_is_rejected() {
+    let (failed, output) = compile_error_output("unknown_allow_name.rk");
+    assert!(failed, "a misspelled @allow name must be a compile error:\n{output}");
+    assert!(output.contains("E0855"), "expected E0855, got:\n{output}");
+    assert!(
+        output.contains("torn_lock_update"),
+        "the nearest name is the fix and has to be shown:\n{output}"
+    );
+}
+
+/// The names that do exist stay accepted, from both registries.
+#[test]
+fn a_real_allow_name_still_compiles() {
+    let (built, output) = check_fixture("allow_names_accepted.rk");
+    assert!(built, "every listed @allow name must type-check:\n{output}");
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).
