@@ -7983,11 +7983,33 @@ impl<'a> MirLowerer<'a> {
                     vec![op.clone(), MirOperand::Constant(MirConst::Int(kind))],
                 )),
                 None => {
+                    // A Vec whose elements the runtime can't read a slot at a
+                    // time — of structs, of tuples, of Vecs. Walk it here
+                    // instead, one element per iteration through the same
+                    // renderer a struct field goes through.
+                    if depth + 1 < MAX_DEPTH {
+                        if let Some(elem_ty) = decl.and_then(|d| self.vec_elem_of_checker_type(d)) {
+                            let elem_decl = decl.and_then(Self::vec_elem_decl);
+                            // An element that lives in its slot — a struct, an
+                            // enum, a tuple — or one that is itself a container,
+                            // which reaches MIR as a bare pointer and renders
+                            // through this same path one level down.
+                            let walkable = elem_ty.passed_by_address()
+                                || matches!(
+                                    elem_decl.and_then(|d| self.generic_head(d)),
+                                    Some((name, _)) if name == "Vec" || name == "Map"
+                                );
+                            if walkable {
+                                return self.debug_render_vec_loop(
+                                    op, &elem_ty, elem_decl, depth + 1,
+                                );
+                            }
+                        }
+                    }
                     // Shape without contents, when the shape is at least known.
-                    // A Vec of structs or of Vecs needs per-element recursion
-                    // the runtime helper can't do, and a Map needs its entries
-                    // walked; both read better as an elided container than as a
-                    // bare ellipsis.
+                    // A Map needs its entries walked, which needs an iteration
+                    // order the runtime doesn't expose; that reads better as an
+                    // elided container than as a bare ellipsis.
                     let shape = match decl.and_then(|d| self.generic_head(d)) {
                         Some((name, _)) if name == "Vec" => Some("[…]"),
                         Some((name, _)) if name == "Map" => Some("{…}"),
@@ -8015,6 +8037,145 @@ impl<'a> MirLowerer<'a> {
             // of its own; printing the word was the bug, so say nothing instead.
             _ => Ok(elided(self)),
         }
+    }
+
+    /// The checked element type of a `Vec<T>`, for handing down to the
+    /// element's own rendering.
+    fn vec_elem_decl(decl: &rask_types::Type) -> Option<&rask_types::Type> {
+        let args = match decl {
+            rask_types::Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            rask_types::Type::Generic { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    /// `[Point { x: 1, y: 2 }, …]` — a Vec walked one element at a time.
+    ///
+    /// The runtime's `rask_vec_debug` reads a slot at a time and switches on a
+    /// kind code, which covers the scalars and strings; there is no code for
+    /// "aggregate", because C can't walk a Rask struct layout. So the loop is
+    /// here, where the element type is known and `debug_render_value` is the
+    /// same renderer a struct field goes through.
+    ///
+    /// Elements are read with `Vec_get`, which hands back the address of the
+    /// element in place for anything that lives in its slot — nothing is copied
+    /// out, so nothing needs releasing afterwards.
+    fn debug_render_vec_loop(
+        &mut self,
+        vec_op: &MirOperand,
+        elem_ty: &MirType,
+        elem_decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let acc = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String("[".to_string()))),
+        }));
+
+        let len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![vec_op.clone()],
+        }));
+
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+
+        let head = self.builder.create_block();
+        let body = self.builder.create_block();
+        let sep = self.builder.create_block();
+        let elem_block = self.builder.create_block();
+        let exit = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        // head: more elements?
+        self.builder.switch_to_block(head);
+        let more = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: more,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(more),
+            then_block: body,
+            else_block: exit,
+        }));
+
+        // body: everything but the first element is preceded by a comma.
+        self.builder.switch_to_block(body);
+        let not_first = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: not_first,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Gt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(not_first),
+            then_block: sep,
+            else_block: elem_block,
+        }));
+
+        self.builder.switch_to_block(sep);
+        let with_sep = self.concat_into(acc, MirOperand::Constant(MirConst::String(", ".to_string())));
+        let _ = with_sep;
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: elem_block }));
+
+        // elem: read it in place, render it, append, step.
+        self.builder.switch_to_block(elem_block);
+        let elem = self.builder.alloc_temp(elem_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(elem),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![vec_op.clone(), MirOperand::Local(idx)],
+        }));
+        let rendered = self.debug_render_value(
+            &MirOperand::Local(elem), elem_ty, elem_decl, depth,
+        )?;
+        self.concat_into(acc, rendered);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        self.builder.switch_to_block(exit);
+        self.concat_into(acc, MirOperand::Constant(MirConst::String("]".to_string())));
+        Ok(MirOperand::Local(acc))
+    }
+
+    /// `acc = concat(acc, part)`, in place, for building a string across blocks.
+    fn concat_into(&mut self, acc: crate::LocalId, part: MirOperand) {
+        let joined = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(joined),
+            func: FunctionRef::internal("concat".to_string()),
+            args: vec![MirOperand::Local(acc), part],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Local(joined)),
+        }));
     }
 
     /// `(1, "x", true)` — positional, so no field names.

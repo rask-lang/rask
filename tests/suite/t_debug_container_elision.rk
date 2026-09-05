@@ -2,24 +2,17 @@
 //
 // Where the two backends still disagree about `{x:debug}`. Tracked, not fixed.
 //
-// Native renders what the runtime can read on its own: a Vec of scalars or
-// strings elementwise, a tuple positionally, a struct or enum from its layout.
-// A Vec of aggregates, or a Map, needs per-element recursion it doesn't have,
-// so those come out as `[…]` and `{…}` — the shape, without the contents.
+// One shape left: a `Map`. Native renders it `{…}` — the shape without the
+// contents — because walking a map's entries needs an iteration order the
+// runtime doesn't expose, and the interpreter walks values so it prints them.
 //
-// The interpreter walks values, so it renders all of them fully. Neither
-// backend is wrong about anything it prints; native is incomplete, and the
-// interpreter is the reference for what the answer should be.
+// The other two converged. A `Vec` of aggregates is walked in MIR now, one
+// element at a time through the same renderer a struct field goes through, so
+// native prints its contents; and a tuple is a real value in the interpreter
+// (#1063) rather than a `Vec`, so it renders positionally on both.
 //
-// One gap left: a Vec of aggregates and a Map render elided natively.
-//
-// The tuple case used to be the other one — a tuple was a `Vec` in the
-// interpreter, so it printed `[1, "x"]` where native prints `(1, "x")`. The
-// interpreter has a real tuple value now (#1063), and that assertion agrees on
-// both backends.
-//
-// The assertions below are written against native. They fail on the
-// interpreter, which is the point: this is what has to converge.
+// Neither backend is wrong about anything it prints. Native is incomplete, and
+// the interpreter is the reference for what the answer should be.
 
 struct Point {
     x: i64
@@ -41,9 +34,16 @@ func main() {
     println("{t:debug}")
 }
 
-test "a Vec of aggregates shows its shape, not its contents" {
+test "a Vec of aggregates shows its contents on both backends" {
     let ps: Vec<Point> = [Point { x: 1, y: 2 }].iter().to_vec()
-    assert "{ps:debug}" == "[…]"
+    assert "{ps:debug}" == "[Point {{ x: 1, y: 2 }}]"
+}
+
+test "a Vec of Vecs recurses" {
+    let inner: Vec<i64> = [1, 2].iter().to_vec()
+    mut outer = Vec.new()
+    outer.push(inner)
+    assert "{outer:debug}" == "[[1, 2]]"
 }
 
 test "a Map shows its shape" {
