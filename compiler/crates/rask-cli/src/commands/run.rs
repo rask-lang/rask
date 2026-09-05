@@ -304,7 +304,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         Ok(out) => {
             forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let complete = display_test_results(&stdout, path, format, tests.len());
+            let complete = display_test_results(&stdout, path, format, tests.len(), Some(&out.status));
             if !out.status.success() || !complete {
                 process::exit(test_exit_code(&out.status));
             }
@@ -313,6 +313,60 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             eprintln!("{}: executing test binary: {}", output::error_label(), e);
             process::exit(1);
         }
+    }
+}
+
+/// How a test binary ended, when it ended badly — "signal 11 (SIGSEGV)" rather
+/// than nothing at all.
+///
+/// `rask test` collapses every failure to exit 1, so the one fact a caller has
+/// about a binary that died is the one it can't see. That is exactly the fact an
+/// intermittent crash is diagnosed from — SIGSEGV, SIGABRT and an OOM kill point
+/// at three different bugs — and a CI failure that reported only "the test binary
+/// died mid-run" had to be chased without it (#1105).
+fn death_description(status: &process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            let name = match sig {
+                2 => " (SIGINT)",
+                4 => " (SIGILL — a Cranelift trap, usually a match on an out-of-range tag)",
+                6 => " (SIGABRT — often a double free or a corrupted allocator)",
+                8 => " (SIGFPE)",
+                9 => " (SIGKILL — killed from outside, an out-of-memory kill on a shared runner)",
+                11 => " (SIGSEGV — run again with RASK_RUNTIME_CHECKS=1 to name the dereference)",
+                _ => "",
+            };
+            return format!("was killed by signal {}{}", sig, name);
+        }
+    }
+    match status.code() {
+        Some(c) => format!("exited {}", c),
+        None => "ended without a status".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod death_tests {
+    use super::death_description;
+    use std::process::Command;
+
+    #[test]
+    fn a_signal_is_named_not_collapsed_to_an_exit_code() {
+        // `rask test` reports 1 for every failure, so the message is the only
+        // place the signal survives — and it is the fact an intermittent crash
+        // is diagnosed from (#1105).
+        let st = Command::new("sh").args(["-c", "kill -SEGV $$"]).status().unwrap();
+        let d = death_description(&st);
+        assert!(d.contains("signal 11"), "should name the signal: {d}");
+        assert!(d.contains("SIGSEGV"), "and what it is: {d}");
+    }
+
+    #[test]
+    fn an_ordinary_exit_reports_its_code() {
+        let st = Command::new("sh").args(["-c", "exit 3"]).status().unwrap();
+        assert_eq!(death_description(&st), "exited 3");
     }
 }
 
@@ -406,7 +460,7 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
             ));
         }
     }
-    display_test_results(&json_lines, path, format, test_results.len() + comptime_count);
+    display_test_results(&json_lines, path, format, test_results.len() + comptime_count, None);
 
     // Same rule as native: asked for one file by name and finding nothing in it
     // is a mistake, not a pass. Both halves matter — `differential.sh` compares
@@ -539,7 +593,7 @@ fn run_test_file_native_inner(
     if tests.is_empty() {
         // Comptime tests are already in — nothing to build or run for them.
         if comptime_count > 0 {
-            return if display_test_results(&comptime_records, path, format, comptime_count) {
+            return if display_test_results(&comptime_records, path, format, comptime_count, None) {
                 TestOutcome::Passed
             } else {
                 TestOutcome::Failed
@@ -602,8 +656,9 @@ fn run_test_file_native_inner(
             forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let all = format!("{comptime_records}{stdout}");
-            let complete =
-                display_test_results(&all, path, format, tests.len() + comptime_count);
+            let complete = display_test_results(
+                &all, path, format, tests.len() + comptime_count, Some(&out.status),
+            );
             let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
             if complete && (out.status.success() || leaked) {
                 if leaked { TestOutcome::Leaked } else { TestOutcome::Passed }
@@ -712,7 +767,13 @@ fn comptime_test_records(decls: &[rask_ast::decl::Decl], filter: Option<&str>) -
     (records, count)
 }
 
-fn display_test_results(stdout: &str, path: &str, format: Format, expected: usize) -> bool {
+fn display_test_results(
+    stdout: &str,
+    path: &str,
+    format: Format,
+    expected: usize,
+    death: Option<&process::ExitStatus>,
+) -> bool {
     let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
     let truncated = reported < expected;
 
@@ -721,8 +782,9 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
         print!("{}", stdout);
         if truncated {
             eprintln!(
-                "{}: test run stopped after {} of {} tests — the binary died mid-run",
+                "{}: test run stopped after {} of {} tests — the binary {}",
                 output::error_label(), reported, expected,
+                death.map_or_else(|| "died mid-run".to_string(), death_description),
             );
         }
         return !truncated;
@@ -832,9 +894,10 @@ fn display_test_results(stdout: &str, path: &str, format: Format, expected: usiz
         println!(
             "{}",
             format!(
-                "stopped after {} of {} tests — the test binary died mid-run, \
+                "stopped after {} of {} tests — the test binary {}, \
                  so the rest never ran",
                 reported, expected,
+                death.map_or_else(|| "died mid-run".to_string(), death_description),
             ).red(),
         );
     }
