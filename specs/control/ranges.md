@@ -17,15 +17,24 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 | **R4: Empty range** | `start >= end` produces zero iterations, not an error |
 | **R5: End fits type** | Range end value must fit in iterator type — compile error otherwise |
 
-| Syntax | Type | Behavior |
-|--------|------|----------|
-| `0..n` | `Range<Int>` | Half-open [0, n) |
-| `0..=n` | `RangeInclusive<Int>` | Closed [0, n] |
-| `(0..n).step(s)` | `StepRange<Int>` | Stepped half-open |
-| `(0..=n).step(s)` | `StepRangeInclusive<Int>` | Stepped closed |
-| `0..` | `RangeFrom<Int>` | Unbounded (panics on overflow per OV2) |
-| `..n` | `RangeTo<Int>` | Cannot iterate (no start) |
-| `..` | `RangeFull` | Cannot iterate (unbounded) |
+| Rule | Description |
+|------|-------------|
+| **R6: One range type** | Every iterable range is a `Range<T>` — one nominal type carrying start, end, step, and whether the end is included. Not a family of seven types. `.rev()` and `.step(s)` return a `Range<T>`, so they chain, and the whole `Sequence` surface attaches once |
+| **R7: `..n` and `..` are index syntax** | The open forms exist only inside `[]`, where they slice. They are not values, have no type you can name, and cannot be iterated — there is nothing to iterate from |
+| **R8: A range is a sequence** | `Range<T>` exposes `iter(self) -> Sequence<T>`, so every adapter and terminal in `type.sequence` reaches ranges. `(0..n).map(f)`, `(1..n).sum()`, `(0..4).to_vec()` are that method's, not new surface |
+
+| Syntax | Value | Behavior |
+|--------|-------|----------|
+| `0..n` | `Range<T>` | Half-open [0, n) |
+| `0..=n` | `Range<T>` (end included) | Closed [0, n] |
+| `(0..n).step(s)` | `Range<T>` (step s) | Stepped half-open |
+| `(0..=n).step(s)` | `Range<T>` (step s, end included) | Stepped closed |
+| `0..` | `Range<T>` (no end) | Unbounded (panics on overflow per OV2) |
+| `..n`, `..` | — | Index syntax only (R7) — not a value |
+
+**Why one type.** Four shapes of range times a 28-method sequence surface is either four copies of that surface or a trait to unify them, and the difference between them is two fields. Step and inclusivity are runtime state on one type. The common `0..n` — step 1, end excluded, both literal at the loop head — constant-folds back to the same loop it always was, and the uncommon ones stop being separate types nobody implemented.
+
+**Terminals may be computed** (`type.sequence/SEQ42`): a range knows its length without walking, so `count()` is arithmetic and `sum()` is closed form. Same answers, no yield closure.
 
 ```rask
 for i in 0..10 {
@@ -122,29 +131,38 @@ ERROR [ctrl.ranges/SP3]: zero step
 
 ## Appendix (non-normative)
 
-### RangeInclusive Implementation
+### Range Implementation
 
 <!-- test: skip -->
 ```rask
-struct RangeInclusive<T> {
+struct Range<T> {
     start: T
-    end: T
-    exhausted: bool
+    end: T?          // none = unbounded (R3)
+    step: T
+    inclusive: bool
 }
 
-extend RangeInclusive<T> where T: Int {
+extend Range<T> where T: Int {
     public func iter(self) -> Sequence<T> {
         return |yield| {
             mut cur = self.start
             loop {
-                if not yield(cur): return
-                if cur == self.end: return
-                cur += 1
+                if self.end? as stop {
+                    if self.inclusive {
+                        if cur > stop { return }
+                    } else {
+                        if cur >= stop { return }
+                    }
+                }
+                if !yield(cur) { return }
+                cur += self.step
             }
         }
     }
 }
 ```
+
+Written out it looks like more work per item than the old four-type split. It isn't: `step` and `inclusive` are constants at nearly every real loop head, so the checks fold away and what's left is the increment. The inclusive-at-max case (OV3) needs the comparison ordered as above — test the bound before yielding, increment after — so `0u8..=255` stops instead of wrapping.
 
 ### See Also
 

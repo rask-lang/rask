@@ -82,7 +82,7 @@ static void *pool_worker(void *arg) {
         if (!job) continue;
 
         rask_task_run_body(job->state, job->func, job->env);
-        if (job->alloc_base) rask_free(job->alloc_base);
+        if (job->alloc_base) rask_closure_free(job->alloc_base);
         rask_task_state_release(job->state);   // the worker's ref
         rask_free(job);
     }

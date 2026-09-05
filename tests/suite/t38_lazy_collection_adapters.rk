@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An adapter on a collection builds a sequence, not a second collection
+// (type.sequence/SEQ41).
+//
+// `v.filter(p)` used to hand back a `Vec<T>`. The type changed; the AST didn't,
+// and that distinction is the whole implementation:
+//
+//   - A *terminated* chain still fuses. `v.filter(p).to_vec()` and
+//     `for x in v.filter(p)` are the same index loop with no closure they
+//     always were, because the terminal is matched first and consumes the whole
+//     chain.
+//   - An *un-terminated* one is now lazy. A bare adapter used to be lowered as
+//     "the chain, with an implicit `.to_vec()`"; that's gone, so
+//     `let odd = v.filter(p)` builds the closure chain and re-runs like any
+//     sequence.
+//
+// Leaving one of those implicit-collect arms in while the type said `Sequence`
+// is worth remembering: the frame handed the caller a Vec pointer where its
+// type said closure, and `Sequence_count` jumped through it. A segfault, not a
+// type error.
+
+import sequence.Sequence
+
+test "a bound adapter is a sequence, not a Vec" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let evens = v.filter(|x| x % 2 == 0)
+    assert evens.count() == 2
+    mut total = 0
+    for x in evens {
+        total = total + x
+    }
+    assert total == 6
+}
+
+// SEQ11: a sequence is re-runnable. The eager version wasn't a sequence at all,
+// so this is new ground rather than a preserved property.
+test "a bound adapter re-runs" {
+    let v: Vec<i64> = [1, 2, 3]
+    let odd = v.filter(|x| x % 2 == 1)
+    assert odd.count() == 2
+    assert odd.count() == 2
+}
+
+test "a terminated chain still materializes" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let out: Vec<i64> = v.filter(|x| x % 2 == 0).to_vec()
+    assert out.len() == 2
+    assert out[0] == 2
+    assert out[1] == 4
+}
+
+test "map is lazy too" {
+    let v: Vec<i64> = [1, 2, 3]
+    let doubled = v.map(|x| x * 2)
+    assert doubled.count() == 3
+    let out: Vec<i64> = v.map(|x| x * 2).to_vec()
+    assert out[2] == 6
+}
+
+test "skip and take are lazy" {
+    let v: Vec<i64> = [1, 2, 3, 4, 5]
+    assert v.take(2).count() == 2
+    assert v.skip(3).count() == 2
+    let head: Vec<i64> = v.take(2).to_vec()
+    assert head[0] == 1
+    assert head[1] == 2
+}
+
+test "enumerate is lazy" {
+    let v: Vec<string> = ["a", "b", "c"]
+    mut indices = 0
+    mut last = ""
+    for (i, s) in v.enumerate() {
+        indices = indices + i
+        last = s
+    }
+    assert indices == 3
+    assert last == "c"
+}
+
+test "flat_map is lazy" {
+    let v: Vec<i64> = [1, 2]
+    let pairs = v.flat_map(|x| {
+        mut out: Vec<i64> = []
+        out.push(x)
+        out.push(x * 10)
+        return out
+    })
+    assert pairs.count() == 4
+}
+
+// A chain of them, un-terminated then driven. Nothing between the stages is
+// allocated: each adapter wraps the one before it.
+test "a chain of collection adapters" {
+    let v: Vec<i64> = [1, 2, 3, 4, 5, 6]
+    let chain = v.filter(|x| x % 2 == 0).map(|x| x * 10).take(2)
+    let out: Vec<i64> = chain.to_vec()
+    assert out.len() == 2
+    assert out[0] == 20
+    assert out[1] == 40
+}
+
+// SEQ13a through a collection-headed chain: the break has to reach the source.
+test "break through a collection-headed chain" {
+    let v: Vec<i64> = [1, 2, 3, 4, 5]
+    mut seen = 0
+    for x in v.filter(|x| x > 1) {
+        seen = seen + 1
+        if x == 3 { break }
+    }
+    assert seen == 2
+}
+
+// take(n) after a filter counts *emitted* elements, not source positions. The
+// lazy path has to agree with the fused one, which is what made this a bug
+// worth its own test when the fused path was the only one.
+test "take after filter counts what came out" {
+    let v: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    let picked = v.filter(|x| x % 3 == 0).take(3)
+    assert picked.count() == 3
+    let out: Vec<i64> = v.filter(|x| x % 3 == 0).take(3).to_vec()
+    assert out.len() == 3
+    assert out[0] == 0
+    assert out[1] == 3
+    assert out[2] == 6
+}
+
+// An adapter's result is an ordinary `Sequence<T>`, so it goes where one goes.
+func drive(s: Sequence<i64>) -> i64 {
+    mut total = 0
+    for x in s {
+        total = total + x
+    }
+    return total
+}
+
+test "an adapter's result passes as a Sequence" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    assert drive(v.filter(|x| x % 2 == 0)) == 6
+}
+
+func evens_of(v: Vec<i64>) -> Sequence<i64> {
+    return v.filter(|x| x % 2 == 0)
+}
+
+test "an adapter's result returns as a Sequence" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let s = evens_of(v)
+    assert s.count() == 2
+}
+
+// SEQ14/SEQ39: `zip` and `chunks` are not adapters. Two positions at once is
+// exactly what a push source can't hold, so they stay on the indexable source
+// and materialize.
+test "zip stays on the collection" {
+    let a: Vec<i64> = [1, 2, 3]
+    let b: Vec<i64> = [10, 20]
+    let pairs: Vec<(i64, i64)> = a.zip(b)
+    assert pairs.len() == 2
+}
+
+test "a lazy chain zips by materializing first, as SEQ39 says" {
+    let a: Vec<i64> = [1, 2, 3, 4]
+    let b: Vec<i64> = [10, 20]
+    let pairs: Vec<(i64, i64)> = a.filter(|x| x % 2 == 0).to_vec().zip(b)
+    assert pairs.len() == 2
+}
+
+test "chunks stays on the collection" {
+    let v: Vec<i64> = [1, 2, 3, 4, 5]
+    let parts: Vec<Vec<i64>> = v.chunks(2)
+    assert parts.len() == 3
+}

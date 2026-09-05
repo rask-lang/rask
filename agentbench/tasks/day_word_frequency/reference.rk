@@ -10,7 +10,7 @@ func word_frequency(text: string) -> Map<string, i64> {
 }
 
 func most_common(text: string) -> string {
-    mut words = text.split_whitespace().to_vec().map(|w| w.to_lowercase())
+    mut words = text.split_whitespace().to_vec().map(|w| w.to_lowercase()).to_vec()
     words.sort()
     let counts = word_frequency(text)
     mut best = ""

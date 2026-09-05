@@ -23,19 +23,6 @@ const SPAWN_NO_RUNTIME_MSG: &str =
 
 /// Copy scalar primitives are copied into a `mutate` param, so a whole-variable
 /// argument of scalar type isn't written back (mem.parameters Copy interaction).
-fn value_is_copy_scalar(v: &Value) -> bool {
-    matches!(
-        v,
-        Value::Int(..)
-            | Value::Int128(_)
-            | Value::Uint128(_)
-            | Value::Float(_, _)
-            | Value::Bool(_)
-            | Value::Char(_)
-            | Value::Unit
-    )
-}
-
 /// type.primitives/NT1 — associated constants on the numeric types.
 /// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
 /// bounds; `ZERO`/`ONE` are the same value everywhere.
@@ -1530,16 +1517,21 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, fields, spread } => {
-                // Explicit generic args (`Ring<i64> { }`): run monomorphization
-                // for its side effects, but the value carries the BASE name —
-                // methods and field decls register under the stripped name
+                // Explicit generic args (`Ring<i64> { }`) give two names, and
+                // they are not interchangeable. The value carries the BASE name
+                // — methods and field decls register under the stripped name
                 // (like the inferred `Ring { }` form), so dispatch keys match.
-                let concrete_name = if name.contains('<') {
-                    self.monomorphize_struct_from_name(name)
+                // The field-type lookup further down needs the INSTANTIATED one
+                // instead: that decl has the type parameters substituted, and
+                // without it a field declared `T` never looks like the `i64?`
+                // it was instantiated to, so the wrap below never fires (#1080).
+                let (concrete_name, decl_name) = if name.contains('<') {
+                    let instantiated = self
+                        .monomorphize_struct_from_name(name)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    name.split('<').next().unwrap_or(name).to_string()
+                    (name.split('<').next().unwrap_or(name).to_string(), instantiated)
                 } else {
-                    name.clone()
+                    (name.clone(), name.clone())
                 };
 
                 // `A4.N { v: 5 }` is an enum variant with a named payload, not a
@@ -1598,11 +1590,15 @@ impl Interpreter {
                 // wrapped here, the same way an annotated binding is — without
                 // it `Holder { slot: 77 }` stored a raw 77 and `h.slot?` then
                 // complained the value wasn't an optional at all (#376).
-                let field_types = self.struct_decls.get(&concrete_name).map(|d| {
-                    d.fields.iter()
-                        .map(|f| (f.name.clone(), f.ty.clone()))
-                        .collect::<Vec<_>>()
-                });
+                let field_types = self
+                    .struct_decls
+                    .get(&decl_name)
+                    .or_else(|| self.struct_decls.get(&concrete_name))
+                    .map(|d| {
+                        d.fields.iter()
+                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .collect::<Vec<_>>()
+                    });
                 for field in fields {
                     let value = self.eval_owned(&field.value)?;
                     let value = match field_types.as_ref()
@@ -2330,8 +2326,23 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Closure { params, body, .. } => {
-                let captured = self.env.capture();
+            ExprKind::Closure { params, body, is_own, .. } => {
+                // mem.closures/MC1: a scope-limited closure borrows what it
+                // captures, so a write inside it reaches the enclosing
+                // variable. An `own` closure copies — it captures by move and
+                // outlives its creation scope, so sharing live storage would
+                // let it read a variable that changed after it was built.
+                //
+                // Both halves of that split were added together and only one
+                // was wired here, so `own` aliased: `mut n = 0; let f = own ||
+                // { print(n) }; n = 42; f()` printed 42 on the interpreter and
+                // 0 on native, which is a divergence as well as the wrong
+                // answer.
+                let captured = if *is_own {
+                    self.env.capture_snapshot()
+                } else {
+                    self.env.capture_shared()
+                };
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
@@ -2465,7 +2476,7 @@ impl Interpreter {
 
             ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 let join_handle = crate::spawn_interp_thread(move || {
@@ -2488,7 +2499,7 @@ impl Interpreter {
             }
 
             ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
-                let pool = self.env.get("__thread_pool").cloned();
+                let pool = self.env.get("__thread_pool");
                 let pool = match pool {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {
@@ -2502,7 +2513,7 @@ impl Interpreter {
                 };
 
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
@@ -2686,7 +2697,7 @@ impl Interpreter {
                 use crate::value::ACTIVE_RUNTIME;
 
                 let body = body.clone();
-                let captured = self.env.capture();
+                let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
 
                 // Read the active runtime from the process-global slot (CC3 fallback if None)
@@ -3012,7 +3023,7 @@ impl Interpreter {
                 if !matches!(info.source, WithSource::SharedRead(_))
                     && !discard.contains(info.name.as_str())
                 {
-                    if let Some(updated) = self.env.get(&info.name).cloned() {
+                    if let Some(updated) = self.env.get(&info.name) {
                         match &info.source {
                             WithSource::Index { collection, key } => {
                                 if let Err(e) = self.write_back_index(collection, key, updated) {

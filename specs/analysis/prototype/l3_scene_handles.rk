@@ -35,7 +35,7 @@ func reparent(mutate scene: Scene, n: Handle<SceneNode>, new_parent: Handle<Scen
     // *parameter* inside a branch is wrongly reported as maybe-moved (#768).
     let me = n
     if scene.nodes[n].parent? as old {
-        scene.nodes[old].children = scene.nodes[old].children.filter(own |c| c != me)
+        scene.nodes[old].children = scene.nodes[old].children.filter(own |c| c != me).to_vec()
     }
     scene.nodes[new_parent].children.push(n)
     scene.nodes[n].parent = new_parent
@@ -50,7 +50,7 @@ func delete_subtree(mutate scene: Scene, n: Handle<SceneNode>) {
         delete_subtree(mutate scene, c)
     }
     if scene.nodes[n].parent? as p {
-        scene.nodes[p].children = scene.nodes[p].children.filter(own |c| c != me)
+        scene.nodes[p].children = scene.nodes[p].children.filter(own |c| c != me).to_vec()
     }
     if scene.selected? as s {
         if s == n {

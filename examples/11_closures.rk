@@ -26,7 +26,7 @@ func apply_twice(f: func(i32) -> i32, x: i32) -> i32 {
 // Function that filters a vector based on a predicate
 func filter_vec(vec: Vec<i32>, predicate: func(i32) -> bool) -> Vec<i32> {
     mut result = Vec.new()
-    for item in vec.iter() {
+    for item in vec {
         if predicate(item) {
             result.push(item)
         }
@@ -120,7 +120,7 @@ func main() {
     let evens = filter_vec(numbers, is_even)
 
     print("Even numbers: ")
-    for n in evens.iter() {
+    for n in evens {
         print(n)
         print(" ")
     }
@@ -132,7 +132,7 @@ func main() {
     let large = filter_vec(numbers, is_greater_than_5)
 
     print("Numbers > 5: ")
-    for n in large.iter() {
+    for n in large {
         print(n)
         print(" ")
     }
@@ -143,7 +143,7 @@ func main() {
         return n % 2 == 1
     })
     print("Odd numbers: ")
-    for n in odd.iter() {
+    for n in odd {
         print(n)
         print(" ")
     }

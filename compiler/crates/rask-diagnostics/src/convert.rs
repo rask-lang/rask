@@ -2148,13 +2148,26 @@ impl ToDiagnostic for rask_types::TypeError {
                         "range indexing produces a slice — only Vec, arrays, slices, and strings support it [std.collections/V1]".to_string(),
                         None,
                     ),
+                    K::NotPositioned => (
+                        format!("`{}` has no positions to index", container),
+                        "a sequence yields its elements one at a time as it runs, so nothing \
+                         is stored at a position until something drives it — two positions at \
+                         once is what `zip` and indexing both need, and a push source can't \
+                         hold one [type.sequence/SEQ39]"
+                            .to_string(),
+                        Some("materialize it first: `seq.to_vec()[i]`".to_string()),
+                    ),
                 };
                 let mut diag = Diagnostic::error(label.clone())
                     .with_code("E0819")
                     .with_primary(*span, label)
                     .with_why(why);
                 if let Some(fix) = fix {
-                    diag = diag.with_help(fix);
+                    // `with_fix`, not `with_help`: this is the fix line, and
+                    // help doesn't render here — the pool case has been
+                    // carrying an invisible `let h = pool.insert(value)` all
+                    // along.
+                    diag = diag.with_fix(fix);
                 }
                 diag
             }

@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::cfg;
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
 use crate::analysis::uses;
@@ -542,6 +543,36 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
 ///
 /// Uses liveness analysis: when a string local is live at a statement but dead
 /// after it (no further uses on any path), insert `RcDec` after that statement.
+/// Blocks the program never leaves — a terminator of `unreachable`, or a chain
+/// of gotos that only reaches those. A release placed in one of these is dead
+/// code: the process is gone before it runs.
+fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
+    let mut aborting: HashSet<BlockId> = func
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable))
+        .map(|b| b.id)
+        .collect();
+    // Walk backwards: a block all of whose successors abort, aborts too.
+    loop {
+        let mut grew = false;
+        for block in &func.blocks {
+            if aborting.contains(&block.id) {
+                continue;
+            }
+            let succs = cfg::successors(&block.terminator);
+            if !succs.is_empty() && succs.iter().all(|s| aborting.contains(s)) {
+                aborting.insert(block.id);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    aborting
+}
+
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
@@ -558,6 +589,55 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     // returning a parameter incs just below.
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
 
+    // `assert s == t` branches to a block that prints `s` and aborts. That
+    // block holds the local's last use, so the release lands there — dead code,
+    // because the process is gone before it runs — and the branch that actually
+    // continues gets nothing. One allocation leaked per passing assert on a
+    // string too long to sit inline (#1049).
+    //
+    // The release is owed either way: this pass already decided so when it put
+    // one on the aborting branch. What is wrong is only *which* path discharges
+    // it. So when the sole reason a local outlives a block is a successor that
+    // aborts, put a release at the top of the successors that don't.
+    //
+    // Narrower than it looks, and deliberately. An earlier attempt at this
+    // released whenever a local was live-out of every predecessor and dead on
+    // entry here, which fires on shapes where no release exists anywhere — and
+    // "liveness says dead" is not "the data is dead" when ownership has moved
+    // into an aggregate or a rack node. That version segfaulted
+    // `l3_scene_handles.rk`. This one adds no obligation that wasn't already
+    // placed; it moves one onto the path that runs.
+    let aborting = aborting_blocks(func);
+    let preds = cfg::predecessors(func);
+    let mut edge_releases: Vec<(BlockId, LocalId)> = Vec::new();
+    for block in &func.blocks {
+        if aborting.contains(&block.id) {
+            continue;
+        }
+        let succs = cfg::successors(&block.terminator);
+        let (dead_end, live_on): (Vec<BlockId>, Vec<BlockId>) =
+            succs.iter().partition(|s| aborting.contains(s));
+        if dead_end.is_empty() || live_on.is_empty() {
+            continue;
+        }
+        for local in string_locals {
+            if params.contains(local) || !live.live_at_exit(block.id, *local) {
+                continue;
+            }
+            // Only when the aborting side is the whole reason it is still live.
+            if live_on.iter().any(|s| live.live_at_entry(*s, *local)) {
+                continue;
+            }
+            for succ in &live_on {
+                // A successor reached from anywhere else could arrive with the
+                // value still live, and releasing at its top would run twice.
+                if preds.get(succ).map(|p| p.len()) != Some(1) {
+                    continue;
+                }
+                edge_releases.push((*succ, *local));
+            }
+        }
+    }
     for block_idx in 0..func.blocks.len() {
         let block_id = func.blocks[block_idx].id;
         let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
@@ -681,6 +761,16 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
         insertions.sort_by(|a, b| b.0.cmp(&a.0));
         for (idx, stmt) in insertions {
             func.blocks[block_idx].statements.insert(idx, stmt);
+        }
+    }
+
+    // After the last-use loop, not before it: an `RcDec` sitting at the top of
+    // the block reads the local, so the loop counted it as a use, found the
+    // local dead at exit, and placed a second release right behind it.
+    for (block_id, local) in edge_releases {
+        if let Some(b) = func.blocks.iter_mut().find(|b| b.id == block_id) {
+            let span = b.terminator.span;
+            b.statements.insert(0, MirStmt::new(MirStmtKind::RcDec { local }, span));
         }
     }
 }

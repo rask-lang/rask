@@ -5,23 +5,86 @@
 
 # Sequence Protocol
 
-Iteration in Rask is a function that takes a yield closure. `Sequence<T>` is not a trait, not a struct — it's a function type. `for x in seq` desugars to a call with a closure body. Adapters are plain generic functions. No stored references, no state machines, no `Iterator` trait.
+Iteration in Rask is **push**: the source owns the loop and hands you each item. A `Sequence<T>` wraps a function that takes a yield closure and calls it per item. `for x in seq` desugars to a call with the loop body as that closure. Adapters are methods. No stored references, no state machines, no `Iterator` trait, no generators.
 
 ## The Type
 
 | Rule | Description |
 |------|-------------|
-| **SEQ1: Core type** | `type alias Sequence<T> = func(yield: \|T\| -> bool)` |
-| **SEQ2: Mutable variant** | `type alias SequenceMut<T> = func(yield: \|mutate item: T\| -> bool)` |
+| **SEQ1: Core type** | `Sequence<T>` is a nominal type wrapping `func(yield: \|T\| -> bool)`. Nominal, not an alias — methods need a name to attach to, and an alias is transparent by the time the checker sees a value |
+| **SEQ2: Mutable variant** | `SequenceMut<T>` wraps `func(yield: \|mutate item: T\| -> bool)` |
 | **SEQ3: Yield return** | `yield` returns `true` to continue, `false` to stop. The sequence must honor the return — on `false`, stop yielding and return |
+| **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP4`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
+| **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
+| **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
+| **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C4`) |
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
-type alias Sequence<T> = func(yield: |T| -> bool)
-type alias SequenceMut<T> = func(yield: |mutate item: T| -> bool)
+public func in_order(self) -> Sequence<i32> {
+    return |emit| { walk(self.root, emit) }    // SEQ36: the return type says what this is
+}
 ```
 
 A `Sequence<T>` is a first-class value. It can be stored, passed, returned — subject to the same scope rules as any closure (`mem.closures/SL1-SL2`).
+
+**Why it isn't a reserved name.** `Vec`, `Map`, `Set`, `string`, `Error` and `Channel` are in scope everywhere and can't be redeclared. `Sequence` deliberately isn't: it's a far more likely thing for a program to want for itself — a DNA sequence, an animation sequence, a sequence number — and rask-lang/rask#977 already taught this lesson once, when `Handle` was reserved and programs couldn't declare their own. The import costs one line in the files that author sequences and nothing anywhere else.
+
+**Why nominal.** The earlier draft made `Sequence<T>` a bare `type alias`, on the grounds that it's "just a function type." That reads well and it doesn't work: `extend` blocks attach methods to a *name*, and an alias has dissolved into `func(func(T) -> bool)` before method resolution runs. There would be nothing for `seq.filter(p)` to find. Making the type nominal costs one sentence of framing and buys ordinary dispatch, chains that can be split across statements, and a type users can write in a signature.
+
+## Yields Lend, Except to a Terminal
+
+The yield closure's parameter is a parameter like any other, so `mem.closures` has already decided this: `|T|` is a read-only borrow, `|mutate item: T|` a mutable one, and a closure cannot take ownership through a parameter at all. A sequence lends each item for one call and takes it back.
+
+Two things fall out.
+
+**Re-running is safe.** SEQ11 says calling a sequence twice runs the traversal twice. If a yield could move, a sequence over a drained buffer would hand the same element out twice and free it twice. Because yields only lend, a second run is a second traversal of data the sequence still owns — repeated side effects, never a double free.
+
+**Nothing needs a linearity story.** There is no once-only sequence, no consumed-ness to thread through ten adapters, no second protocol type. `filter` lends on what its source lent it.
+
+The cost: `files.take_all().filter(|f| f.stale)` does not exist. Draining and adapting are separate steps (SEQ35).
+
+**The one exception, and why it isn't a second kind of sequence.** A terminal is the last thing that touches an item — after `to_vec` has run, nothing can observe what it consumed. So where the chain *owns* the value, the terminal may move it rather than copy it (SEQ47). Ownership is a property of the chain's shape, not a second type: `map` returns values its closure made, so they belong to the chain; `filter`, `take` and `skip` pass along whatever they were lent. The compiler reads that off the chain, so `Sequence<T>` stays one type.
+
+This is what keeps the cost honest. `to_vec` copies `Copy` elements and moves owned ones, and it never deep-clones on your behalf — a chain that only lends non-`Copy` items is a compile error, with the fix being a `map` that clones.
+
+| Rule | Description |
+|------|-------------|
+| **SEQ44: A yield parameter is not storage** | A yielded value may be an aggregate carrying a borrow — `enumerate()` yields `(usize, T)` where `T` is the lent item. The no-storable-references rule (`mem.relocatable`) is about what a value keeps between statements; a yield parameter lives for one call and is gone. Without this, `enumerate` would only work for `Copy` elements |
+
+<!-- test: skip -->
+```rask
+for file in files.take_all() {     // drained Vec — the loop owns each file
+    try file.close()
+}
+
+let stale = files.filter(|f| f.stale).to_vec()    // borrowed — adapt freely
+```
+
+A sequence that *produces* values rather than walking a collection — a channel reader, a parser — owns them in its own frame and lends from there. `rx.stream()` receives a message into a local and yields a borrow of it; a body that wants to keep the message clones it.
+
+## Lazy, But Not Resumable
+
+Push buys one kind of laziness completely and rules out the other. Naming both together is worth more than the three separate limitations they otherwise look like.
+
+| Rule | Description |
+|------|-------------|
+| **SEQ37: Lazy and fused** | Building a chain runs nothing and allocates nothing. Work happens on consumption, in one pass, with no intermediate collection. `.take(n)` over an infinite source terminates |
+| **SEQ38: Not resumable** | A sequence cannot be half-consumed. There is no `next()`, no peek, no holding a position across unrelated work. Once called, it runs to completion or to a `false` |
+| **SEQ39: Two positions means indices** | Anything needing two independent positions — zip, merge, element-wise compare — uses indices over indexable sources, or materializes with `to_vec()` first. `zip`, `peekable` and friends are absent for one reason, not several |
+
+The reason is the same one that makes authoring easy: a push source keeps its position on the call stack. Suspending it mid-traversal would mean heap-allocating that stack, which is a coroutine, which Rask does not have (SEQ22). So the position is free to create and impossible to save.
+
+<!-- test: skip -->
+```rask
+// Lazy: nothing runs until to_vec, and no intermediate Vec is built
+let first_ten = readings.filter(|r| r.valid).map(|r| r.value).take(10).to_vec()
+
+// Not resumable: two positions, so use indices
+for i in 0..min(a.len(), b.len()) {
+    merge(a[i], b[i])
+}
+```
 
 ## For-Loop Desugaring
 
@@ -31,9 +94,12 @@ A `Sequence<T>` is a first-class value. It can be stored, passed, returned — s
 | **SEQ5: Built-in collections** | `for x in vec` / `for mutate x in vec` — inline-alias desugar (`ctrl.loops/LP17`), no `Sequence` involved |
 | **SEQ6: Custom types** | `for x in seq_expr { body }` where `seq_expr: Sequence<T>` desugars to a yield-closure call |
 | **SEQ7: Break/continue translation** | Inside the desugared closure: `break` becomes `return false`, `continue` becomes `return true`. The closure returns `true` at end-of-body |
-| **SEQ8: Return propagation** | `return` inside a for-body exits the enclosing function, not the yield closure — compiler translates via a flag |
+| **SEQ8: Return propagation** | `return` in a for-body exits the enclosing function, not the yield closure. The closure writes the return value to a slot in the enclosing frame, sets a flag beside it, and returns `false`; the frame checks the flag after the call and returns if set. This is why SEQ13a is load-bearing — an adapter that swallowed the `false` would swallow the `return` with it |
+| **SEQ40: The desugar needs nothing special** | The yield closure the compiler builds for a for-body captures what the body writes, mutably, by ordinary inference (`mem.closures/MC1`) — the same way every hand-written closure does. No capture list to emit, no annotation, no carve-out for generated code |
 
-<!-- test: parse -->
+A `Sequence<T>` is nominal but still callable — `seq(f)` invokes it. The wrapper exists for method dispatch, not to hide the call.
+
+<!-- test: skip -->
 ```rask
 // Source
 for node in tree.in_order() {
@@ -53,6 +119,27 @@ tree.in_order()(|node| {
 })
 ```
 
+**The accumulating body (SEQ40).** This is the common shape, and it's the one that needs the capture rule — the loop body writes a local that lives in the enclosing function:
+
+<!-- test: skip -->
+```rask
+// Source
+mut total = 0
+for v in tree.in_order() {
+    total = total + v
+}
+
+// Desugars to — nothing special; `total` is captured mutably by inference:
+tree.in_order()(|v| {
+    total = total + v
+    return true
+})
+```
+
+This took three tries to get right, and the two dead ends are worth recording. First draft had generated closures exempt from `MC1` — capture implicitly, because a desugared body can't escape. Withdrawn: the escape isn't actually checked, and an exemption for compiler-written code is a second rule for no gain. Second draft had the desugar emit an explicit capture list, `|mutate total, v|` — which needed a capture and a parameter in one bracket, told apart by whether a type annotation was present. That made an annotation load-bearing when annotations are inert everywhere else in Rask.
+
+Both dead ends existed only because `MC1` demanded the annotation. Once captures are inferred (`mem.closures/MC1`) there is no capture list, no bracket to design, and nothing for the desugar to do differently from any other closure. The rule that generated the problem was the problem.
+
 ## Laziness and Re-Consumption
 
 | Rule | Description |
@@ -63,7 +150,7 @@ tree.in_order()(|node| {
 
 <!-- test: skip -->
 ```rask
-let s = users.iter().filter(|u| u.active)
+let s = users.filter(|u| u.active)
 // nothing has run yet
 
 for u in s { print(u.name) }     // runs the chain
@@ -74,7 +161,7 @@ To consume twice without re-running, materialize with `.to_vec()`:
 
 <!-- test: skip -->
 ```rask
-let active = users.iter().filter(|u| u.active).to_vec()
+let active = users.filter(|u| u.active).to_vec()
 for u in active { print(u.name) }
 let count = active.len()
 ```
@@ -83,44 +170,37 @@ let count = active.len()
 
 A method returning `Sequence<T>` constructs a closure. The closure captures `self` (or whatever source it walks). Per closure rules, the resulting `Sequence<T>` is scope-limited to the captured source's lifetime.
 
-**Pool-backed tree:**
+The recursion is the point. Traversal position lives on the call stack, so a walk is written the way the algorithm is written — no explicit stack, no state machine, no self-reference.
+
+**Rack-backed tree** — the idiomatic shape for anything with edges (`mem.racks`):
 
 <!-- test: skip -->
 ```rask
-struct Tree<T> {
-    public nodes: Pool<Node<T>>
-    public root: Handle<Node<T>>?
-}
-
 struct Node<T> {
     public value: T
-    public left: Handle<Node<T>>?
-    public right: Handle<Node<T>>?
+    public left: Link<Node<T>>?
+    public right: Link<Node<T>>?
 }
+
+struct Tree<T> { public root: Link<Node<T>>? }
 
 extend Tree<T> {
     public func in_order(self) -> Sequence<Node<T>> {
-        return |yield| {
-            walk(self.nodes, self.root, yield)
-        }
+        return |yield| { walk(self.root, yield) }
     }
 }
 
-func walk<T>(
-    nodes: Pool<Node<T>>,
-    h: Handle<Node<T>>?,
-    yield: |Node<T>| -> bool,
-) -> bool {
-    if h? as handle {
-        if not walk(nodes, nodes[handle].left, yield): return false
-        if not yield(nodes[handle]): return false
-        if not walk(nodes, nodes[handle].right, yield): return false
+func walk<T>(n: Link<Node<T>>?, yield: |Node<T>| -> bool) -> bool {
+    if n? as node {
+        if !walk(node.left, yield)  { return false }
+        if !yield(node)             { return false }
+        if !walk(node.right, yield) { return false }
     }
     return true
 }
 ```
 
-**Owned-recursive tree:**
+**Owned-recursive tree** — one owner per child, no edges to maintain:
 
 <!-- test: skip -->
 ```rask
@@ -135,18 +215,22 @@ struct Node<T> {
 extend Tree<T> {
     public func in_order(self) -> Sequence<Node<T>> {
         return |yield| {
-            if self.root? as r: walk(*r, yield)
+            if self.root? as r { walk(*r, yield) }
         }
     }
 }
 
 func walk<T>(node: Node<T>, yield: |Node<T>| -> bool) -> bool {
-    if node.left? as l: if not walk(*l, yield): return false
-    if not yield(node): return false
-    if node.right? as r: if not walk(*r, yield): return false
+    if node.left?  as l { if !walk(*l, yield) { return false } }
+    if !yield(node)                           { return false }
+    if node.right? as r { if !walk(*r, yield) { return false } }
     return true
 }
 ```
+
+This second shape is the one push exists to serve, and the one a pull cursor could not express: `Heap<T>` is a linear owning box, so there is no non-owning value that names a node halfway down the tree. The position has nowhere to live except the call stack.
+
+**Stack depth is the cost.** A push traversal recurses once per level, and nothing bounds that. A balanced tree is fine; a degenerate one overflows the native stack. Push trades a visible allocation (the explicit stack a pull cursor would need) for an invisible one, and this is the place where that shows.
 
 **From a channel:**
 
@@ -159,7 +243,7 @@ extend Receiver<T> {
         return |yield| {
             loop {
                 if self.receive()? as msg {
-                    if not yield(msg): break
+                    if !yield(msg) { break }
                 } else {
                     break
                 }
@@ -177,12 +261,14 @@ If the returned `Sequence<T>` is dropped without being consumed, the captured `R
 
 ## Standard Adapters
 
-Adapters are plain generic functions. They take a `Sequence<T>` and return a new one. Chaining uses Rask's method-call syntax via the extension model.
+Adapters are methods on `Sequence<T>`, declared in one `extend Sequence<T>` block in the stdlib and written in ordinary Rask. Each takes the sequence it extends and returns a new one, so chains read left to right.
 
 | Rule | Description |
 |------|-------------|
-| **SEQ12: Adapter shape** | Adapters are `public func name<T, ...>(seq: Sequence<T>, ...) -> Sequence<U>` |
-| **SEQ13: Chain syntax** | `seq.adapter(args)` resolves via extension — identical surface to method calls |
+| **SEQ12: Adapter shape** | Adapters are `extend Sequence<T> { public func name<...>(self, ...) -> Sequence<U> }`. Ordinary methods on a nominal type — nothing special-cased in the checker, and users can add their own |
+| **SEQ13: Chain syntax** | `seq.adapter(args)` resolves like any method call. An earlier draft declared adapters as free functions taking the sequence as the first parameter *and* said they resolve as methods; those are different mechanisms and the method one wins |
+| **SEQ41: One adapter surface** | An adapter builds a sequence, never a second collection. `v.map(f)` is legal — SEQ48 makes the collection its own chain head — and it hands back a `Sequence<U>`, so nothing is allocated until a terminal asks. An eager copy allocates per stage; the chain allocates once, where you wrote the terminal. `std.api/SD5` says one operation gets one spelling, and this is it. `zip` and `chunks` are *not* adapters and stay on the indexable source (SEQ14, SEQ39): lockstep and position need two positions at once, which a push source can't hold |
+| **SEQ48: A collection is its own chain head** | There is no `.iter()`. `v.filter(p)` starts a sequence over `v` directly, and `for x in v` walks it. Rust needs `.iter()` to separate borrowing from `into_iter()`'s move and `iter_mut()`'s mutable borrow; Rask spells those `take_all()` and `for mutate x in v`, so the distinction `.iter()` exists to draw isn't there and the call was pure ceremony. A user type still reaches iterability by returning a sequence from a method of its own (SEQ6) — that method may be called `iter`, and nothing in the compiler treats the name specially |
 | **SEQ13a: Short-circuit propagation** | If the downstream yield returns `false`, the adapter must stop and return `false` from its own yield call. Sources must likewise stop emitting when their yield returns `false`. This is the contract that makes `.take(n)`, `.find()`, and `break` work. Violating it changes observable semantics |
 
 | Adapter | Behavior | Signature |
@@ -201,7 +287,6 @@ Adapters are plain generic functions. They take a `Sequence<T>` and return a new
 <!-- test: skip -->
 ```rask
 for name in users
-    .iter()
     .filter(|u| u.active)
     .map(|u| u.name)
     .take(10)
@@ -237,10 +322,19 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 
 <!-- test: skip -->
 ```rask
-let total = orders.iter().map(|o| o.amount).sum()
-let admin = users.iter().find(|u| u.is_admin)
-let active = users.iter().filter(|u| u.active).to_vec()
+let total = orders.map(|o| o.amount).sum()
+let admin = users.find(|u| u.is_admin)
+let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
 ```
+
+## Specialized Terminals
+
+| Rule | Description |
+|------|-------------|
+| **SEQ42: A terminal may be computed** | A source that knows an answer without walking may compute it, provided the result is what the walk would have produced. `(0..n).count()` is `n`; `(a..b).sum()` is the closed form; `v.count()` is `v.len()`. Specialization is invisible — same answer, same type, less work |
+| **SEQ43: Only where the walk is pure** | A terminal that runs a user closure (`find`, `any`, `fold`, `for_each`) is never specialized: the closure may have effects, and skipping it would change what the program does. `count`, `sum`, `product`, `min`, `max` over a range or a Vec are the specializable set |
+
+Routing `(1..n).sum()` through a yield closure to add integers one at a time would be a pessimisation of the two most obvious calls anyone makes on a range. The protocol says what the answer is; it doesn't require arriving at it the slow way.
 
 ## Materializing
 
@@ -252,6 +346,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ29: `to_map()` builds a `Map<K, V>`** | Defined only on `Sequence<(K, V)>`. Later keys overwrite earlier ones — identical to repeated `insert`. A sequence of non-pairs is a type error at the call, not a silent tuple coercion |
 | **SEQ30: `join(sep)` builds a `string`** | Defined only on `Sequence<string>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
 | **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` trait, no turbofish. Adding a materializing target means adding a named terminal to this table |
+| **SEQ47: `to_vec` never clones for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
 
@@ -261,14 +356,13 @@ let lines = input.lines().to_vec()
 let parts = version.split(".").to_vec()
 
 let views = rows()
-    .iter()
     .skip(page * size)
     .take(size)
     .map(|r| r.view.clone())
     .to_vec()
 
-let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
-let csv = fields.iter().map(|f| f.escaped()).join(",")
+let by_id = users.map(|u| (u.id, u.clone())).to_map()
+let csv = fields.map(|f| f.escaped()).join(",")
 ```
 
 Each line says what it produces, at the end of the chain, with no annotation and no type argument. The element type comes from the chain; the container type comes from the method name.
@@ -277,7 +371,7 @@ Each line says what it produces, at the end of the chain, with no annotation and
 
 | Rule | Description |
 |------|-------------|
-| **SEQ14: No general zip** | Rask does not provide a general `zip` adapter on `Sequence<T>`. Lockstep over arbitrary sequences would require coroutines or buffering, both of which hide cost |
+| **SEQ14: No general zip** | There is no `zip` adapter. This is SEQ38 and SEQ39 in a particular costume, not a separate decision: lockstep needs two positions held at once, and a push source cannot hold one |
 | **SEQ15: Indexable lockstep** | For indexable sources (Vec, array, Pool+handles), use index iteration: `for i in 0..min(a.len(), b.len()) { use(a[i], b[i]) }` |
 | **SEQ16: Non-indexable lockstep** | Non-indexable sources must buffer explicitly. The allocation is visible in the code |
 
@@ -303,6 +397,26 @@ func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
 }
 ```
 
+## SequenceMut Has No Adapters
+
+| Rule | Description |
+|------|-------------|
+| **SEQ45: Mutable sequences are terminal-only** | `SequenceMut<T>` supports `for mutate x in seq` and nothing else. No `filter`, no `map`, no terminals |
+
+`filter` on a mutable sequence would work. `map` cannot: it produces new values, and there is nothing to hand back a mutable borrow *of* — the mapped value belongs to the adapter's frame and dies when the yield returns, so writing through it would write to a temporary.
+
+That leaves a half-surface where the adapters that survive are the ones nobody reaches for first, which is worse than none. So `SequenceMut` does one job. A mutable walk that needs filtering puts the test in the loop body, where it reads better anyway:
+
+<!-- test: skip -->
+```rask
+for mutate node in tree.in_order_mut() {
+    if node.value < 0 { continue }
+    node.value += 1
+}
+```
+
+Anything needing more than that — reordering, removal, two positions — is index work (SEQ39).
+
 ## Zero-Cost Contract
 
 | Rule | Description |
@@ -311,7 +425,9 @@ func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
 | **SEQ18: Fusion** | Adapter chains (`.filter().map().take()`) compile to a single fused loop, equivalent to a hand-written version |
 | **SEQ19: Verified** | Compiler test `compiler/tests/sequence_fusion.rs` verifies MIR output for canonical adapter chains matches the hand-written equivalent |
 
-This is a hard contract. A benchmark regression in adapter fusion is a compiler bug.
+**What this requires, and doesn't have yet.** An adapter chain composes closures, so calling it emits an indirect call per adapter per item. The general inliner only inlines *direct* calls, so nothing fuses on its own. What closes the gap is devirtualization: where a call's target traces back to a known closure literal, rewrite it to a direct call and let the ordinary inliner take it from there. That pass does not exist.
+
+So SEQ17–SEQ19 are the target, not the present state, and this section says so rather than asserting a guarantee nothing enforces. Until the pass lands, a chain is correct and slow, and the honest claim is "fused for built-in sources, whose chains are recognized and lowered as loops already." Once it lands, a fusion regression is a compiler bug.
 
 ## What Does Not Exist
 
@@ -339,13 +455,12 @@ Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the retur
 ```rask
 func collect_active(users: Vec<User>) -> Vec<User> {
     return users
-        .iter()                        // Sequence borrows users
-        .filter(|u| u.active)          // Filter borrows the Sequence
+        .filter(|u| u.active)          // Sequence borrows users
         .to_vec()                      // Materialized here — no Sequence escapes
 }
 
 func bad_return(users: Vec<User>) -> Sequence<User> {
-    return users.iter().filter(|u| u.active)
+    return users.filter(|u| u.active)
     // ERROR: Sequence borrows `users` (a parameter borrow);
     // cannot escape the function. Same rule as returning a closure
     // that captures a block-scoped borrow (mem.closures/SL2).
@@ -361,7 +476,7 @@ func make_active_seq(take users: Vec<User>) -> Sequence<User> {
     return |yield| {
         for u in users {
             if u.active {
-                if not yield(u): return
+                if !yield(u) { return }
             }
         }
     }
@@ -374,16 +489,16 @@ func make_active_seq(take users: Vec<User>) -> Sequence<User> {
 ```
 ERROR [mem.closures/SL2]: sequence borrows a value that does not outlive the return
    |
-3  |  return users.iter().filter(|u| u.active)
-   |         ^^^^^^^^^^^^ borrows `users` (parameter borrow)
-   |                      sequence cannot escape the function
+3  |  return users.filter(|u| u.active)
+   |         ^^^^^ borrows `users` (parameter borrow)
+   |               sequence cannot escape the function
 
 WHY: A Sequence<T> built over a borrowed source is scope-limited
      to that borrow. Returning it would outlive the source.
 
 FIX 1: Consume inside the function (to_vec, fold, for-loop):
 
-  return users.iter().filter(|u| u.active).to_vec()
+  return users.filter(|u| u.active).to_vec()
 
 FIX 2: Take ownership of the source:
 
@@ -411,15 +526,15 @@ FIX: pick the one you meant:
 ```
 ERROR [type.sequence/SEQ29]: `to_map` needs a sequence of pairs, got Sequence<User>
    |
-3  |  let by_id = users.iter().to_map()
-   |                           ^^^^^^ each item must be a (K, V) tuple
+3  |  let by_id = users.to_map()
+   |                    ^^^^^^ each item must be a (K, V) tuple
 
 WHY: A Map needs a key per value. `to_map` reads the key out of the
      first tuple slot — it will not invent one.
 
 FIX: produce the pairs first:
 
-  let by_id = users.iter().map(|u| (u.id, u.clone())).to_map()
+  let by_id = users.map(|u| (u.id, u.clone())).to_map()
 ```
 
 **Break with value in Sequence for-loop:**
@@ -443,6 +558,127 @@ FIX: Use find() or capture via a local:
   }
 ```
 
+**A collection's adapter hands back a sequence [type.sequence/SEQ41]:**
+
+`users.map(f)` is legal — the collection is the chain's head (SEQ48) — but what
+comes back is a `Sequence<U>`, not a `Vec<U>`. Treating it as a collection is
+where the error lands:
+
+```
+ERROR [type.sequence/SEQ39]: `Sequence<string>` has no positions to index
+   |
+7  |  let first = users.map(|u| u.name)[0]
+   |                                    ^
+
+WHY: a sequence yields its elements one at a time as it runs, so nothing is
+     stored at a position until something drives it.
+
+FIX: materialize it first, and let the terminal name what you build:
+
+  let names = users.map(|u| u.name).to_vec()
+  let first = names[0]
+```
+
+The same goes for `.len()` — a sequence has a `count()`, which runs it.
+
+**Asking a sequence for one item [type.sequence/SEQ38]:**
+```
+ERROR [type.sequence/SEQ38]: no method `next` on Sequence<Token>
+   |
+4  |  let t = tokens.next()
+   |                 ^^^^ a sequence cannot be half-consumed
+
+WHY: a push sequence keeps its position on the call stack, so there is no
+     position to hand back and resume from. Suspending one means heap-
+     allocating that stack — a coroutine, which Rask does not have.
+
+FIX: index an indexable source, and keep the position yourself:
+
+  mut i = 0
+  while i < tokens.len() {
+      use(tokens[i])
+      i += 1
+  }
+
+  // or materialize first, when the source isn't indexable
+  let all = tokens.to_vec()
+```
+
+**Lockstep over two sequences [type.sequence/SEQ39]:**
+```
+ERROR [type.sequence/SEQ39]: no method `zip` on Sequence<i32>
+   |
+5  |  for (a, b) in xs.zip(ys) {
+   |                   ^^^ lockstep needs two positions at once
+
+WHY: the same reason there is no `next` — a push sequence cannot hold a
+     position, so two of them cannot be advanced together. Buffering one
+     side would hide an allocation.
+
+FIX: index both, up to the shorter:
+
+  for i in 0..min(xs.len(), ys.len()) {
+      use(xs[i], ys[i])
+  }
+```
+
+**Materializing borrowed items [type.sequence/SEQ47]:**
+```
+ERROR [type.sequence/SEQ47]: `to_vec` has nothing it may move — `User` is lent, not owned
+   |
+6  |  let active = users.filter(|u| u.active).to_vec()
+   |                                           ^^^^^^ needs an owned element
+
+WHY: this chain filters what `users` lent it, so every item still belongs to
+     `users`. A Vec owns what it holds, and `to_vec` will not deep-clone on
+     your behalf — at 10k users that is 10k allocations the line doesn't show.
+
+FIX: clone where you mean it. A `map` closure's result belongs to the chain,
+     so the terminal moves it in and clones exactly once:
+
+  let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
+
+  // Copy elements need none of this — `string` and the small structs move
+  // straight in:
+  let names = users.map(|u| u.name).to_vec()
+```
+
+**Materializing a resource [type.sequence/SEQ47]:**
+```
+ERROR [type.sequence/SEQ47]: `File` is a resource — it can't be cloned into a Vec
+   |
+6  |  let open = files.filter(|f| f.is_open).map(|f| f.clone()).to_vec()
+   |                                                 ^^^^^ File has no clone
+
+WHY: cloning a file handle would duplicate the resource, so `@resource` types
+     have no clone to call.
+
+FIX: do the work in the loop, where each item is still just lent:
+
+  for f in files.filter(|f| f.is_open) { use(f) }
+
+  // or take ownership of all of them by draining the source:
+  for f in files.take_all() { try f.close() }
+```
+
+**Adapting a drained collection [type.sequence/SEQ35]:**
+```
+ERROR [type.sequence/SEQ35]: no method `filter` on Vec<File>
+   |
+3  |  for f in files.take_all().filter(|f| f.stale) {
+   |                            ^^^^^^ take_all hands back a Vec, not a sequence
+
+WHY: adapters lend what they were lent, and `take_all` exists to give the
+     items away — the two don't compose. Draining and adapting are separate
+     steps.
+
+FIX: test inside the loop, where the item is yours:
+
+  for f in files.take_all() {
+      if f.stale { try f.close() }
+  }
+```
+
 ## Edge Cases
 
 | Case | Rule | Behavior |
@@ -450,7 +686,7 @@ FIX: Use find() or capture via a local:
 | Empty sequence | SEQ1 | For-loop body never runs |
 | Break in sequence body | SEQ7 | Yield closure returns `false`; sequence must stop |
 | Continue in sequence body | SEQ7 | Yield closure returns `true` |
-| Sequence yields owned non-Copy | SEQ1 | Each yield moves the value to the closure |
+| Sequence yields owned non-Copy | SEQ34 | Only to a terminal, and only where the chain owns the item (SEQ47). Draining a collection is `take_all()`, which is a `Vec<T>` (SEQ35) |
 | Sequence yields borrow | SEQ1 | Each yield passes a borrow for the closure duration only |
 | SequenceMut yields mutable | SEQ2 | Each yield passes a fresh mutable borrow; ends when closure returns |
 | Re-consuming a Sequence | SEQ11 | Runs the chain again; side effects repeat |
@@ -468,7 +704,17 @@ FIX: Use find() or capture via a local:
 
 ### Rationale
 
-**Why push over pull.** Rask's foundational rule is "no storable references" (`mem.relocatable`). A pull iterator must remember its position across `next()` calls — for anything more complex than a flat array, that position is a reference or pointer into the source. Pull fights the foundation. Push puts traversal state on the real call stack, where it's scoped correctly by construction.
+**Why push over pull.** Push and pull are the same loop with the stack inverted, and the only question is whose frame holds it. Pull hands the frame to the consumer, so the *producer* has to turn its position into data. Push hands it to the producer, so the *consumer's* locals become captures. Whoever holds the frame keeps their state for free.
+
+An earlier draft justified push with "Rask has no storable references, so a pull cursor's position has nowhere to live." That argument died with `mem.pools`: `Link<T>` is a storable reference — `mem.racks` says so in its own summary line — and a cursor over a rack is `struct InOrder<T> { stack: Vec<Link<Node<T>>> }`, perfectly ordinary Rask. Anyone re-deriving this decision from the old sentence will find it false and reopen the question, so here is the argument that actually holds.
+
+**Nothing can point into a `Vec`.** A pull cursor over a Vec is `struct VecCursor<T> { source: <a borrow of the Vec>, i: usize }`, and there is no such field. `Link` points into a rack and nothing else; there is no value naming a position inside a `Vec`, a `Map`, a `string`, or a `Heap` chain. So pull is authorable only for rack-shaped data, and every other collection stays compiler-magic — user types and stdlib types iterating by different mechanisms, permanently.
+
+Making it uniform needs a struct that is scope-limited by a borrow it holds. Closures already have that property (`mem.closures/SL1-SL2`) and so do links (`mem.racks/RK6`); generalizing it to structs is lifetime annotations with the serial numbers filed off, which is the one bill Rask has refused to pay since the start.
+
+Push has no such asymmetry. The closure captures its source *by borrow*, which is legal precisely because the closure can't escape — Vec, Map, string, Heap, Rack, channels, one mechanism, all of it user-authorable. That is the reason, and it costs what SEQ34 (no owned yields), SEQ38 (no resuming), SEQ8 (return needs a flag) and SEQ40 (the desugar spells out its captures) say it costs.
+
+Go reached the same shape in 1.23 — `func(yield func(V) bool)`, same `bool`, same short-circuit — for the same reason: iteration that works without lifetimes and without coroutines. It has since been through a large ecosystem, no `zip`, `break` on the bool, compiler help for `return`. Corroboration, not the argument.
 
 **Why not generators.** A generator function with a `yield` keyword compiles to a state machine that stores locals across pause points. When those locals include borrows into the generator's own state, you get the self-reference problem — the reason Rust needs `Pin`. Rask avoids the whole category by not synthesizing state machines.
 
@@ -487,7 +733,7 @@ Rejected, with the sketches that killed them:
 - **Infer the target from later use.** Best-looking call site, and it doesn't work on Rask's own code. `let lines = input.lines().collect()` is followed by `lines[i]`, `lines.len()` and `for l in lines` — every one of those is shared between `Vec` and `Map`, so there's nothing to infer *from*. Inference only bites when the value is returned or passed to a typed parameter, which the common local-buffer case never does. Paying for backwards type flow through a function body, and getting a worse error when it fails, to resolve a fraction of call sites — no.
 - **Require the annotation.** `let parts: Vec<string> = s.split(".").collect()` — the source already said `string` twice and the reader already knew it was a Vec. Worse in the shape that motivated it: `let users: Vec<UserResponse> = d.users.values().map(|u| UserResponse { … }).collect()` names `UserResponse` twice in one statement. Go writes this in one term with no annotation; principle 4 says that's a design bug, not a style preference.
 - **Keep `collect()` for Vec, add `to_map()` for the rest.** Works, and it's the closest runner-up. It loses on consistency: `collect` names the process, `to_map` names the result, and they sit in the same slot at the end of the same chain. Renaming the Vec case to match is a smaller change than teaching everyone why the two look different.
-- **Target leads: `Vec.from(seq)`, `Map.from(seq)`.** Reads fine on one-liners and badly on the chains that matter. `Vec.from(rows().iter().skip(n).take(m).map(|r| r.view.clone()))` puts the opening paren four lines above its close and forces the reader to jump back to the head to find out what's being built. Terminals belong in trailing position because that's the direction chains are read. `Vec.from` keeps its array-literal job (SEQ33) and doesn't grow a sequence overload — one operation, one spelling.
+- **Target leads: `Vec.from(seq)`, `Map.from(seq)`.** Reads fine on one-liners and badly on the chains that matter. `Vec.from(rows().skip(n).take(m).map(|r| r.view.clone()))` puts the opening paren four lines above its close and forces the reader to jump back to the head to find out what's being built. Terminals belong in trailing position because that's the direction chains are read. `Vec.from` keeps its array-literal job (SEQ33) and doesn't grow a sequence overload — one operation, one spelling.
 
 This also settles the note in `rejected-features.md` about associated types being worth promoting for "a `collect` that targets `Vec` or `Map`": there is no such `collect`, so that particular argument for associated types is withdrawn.
 
@@ -503,10 +749,10 @@ The retired `Iterator<Item>` trait mapped to these patterns:
 
 | Old | New |
 |-----|-----|
-| `extend MyType with Iterator<T> { func next(...) }` | `public func iter(self) -> Sequence<T> { return \|yield\| { ... } }` |
-| `collection.iterate()` (returned `VecRefIterator<T>` etc.) | `collection.iter()` returns `Sequence<T>` |
+| `extend MyType with Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
+| `collection.iterate()` (returned `VecRefIterator<T>` etc.) | the collection *is* the chain head — `collection.filter(p)`, `for x in collection` (SEQ48) |
 | `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
-| `.take_all()` returning consuming iterator struct | `.take_all()` returns `Sequence<T>` yielding owned items |
+| `.take_all()` returning consuming iterator struct | `.take_all()` returns the drained `Vec<T>` (SEQ35) — not a Sequence |
 | `pool.handles()` returning handle iterator | `pool.handles()` returns `Sequence<Handle<T>>` |
 | `iter.zip(other)` | Use indices: `for i in 0..min(a.len(), b.len())` |
 

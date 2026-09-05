@@ -726,6 +726,27 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
+        // rask_closure_alloc(block_size: i64) -> i64 (pointer past the header)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_closure_alloc", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_closure_alloc".to_string(), id);
+        }
+
+        // rask_closure_free(ptr: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_closure_free", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_closure_free".to_string(), id);
+        }
+
         // rask_bench_run(fn_ptr: i64, name_ptr: i64) -> void
         {
             let mut sig = self.module.make_signature();

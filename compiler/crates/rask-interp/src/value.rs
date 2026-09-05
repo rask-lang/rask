@@ -629,6 +629,13 @@ pub enum BuiltinKind {
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
+    /// The yield handed to a `Sequence<T>` by a `for` loop (type.sequence/SEQ6).
+    ///
+    /// Not a name any program can write — `register.rs` never binds it — so the
+    /// only way to hold one is to be the sequence a `for` loop is driving. The
+    /// loop body it runs, and where the body's `break`/`return` go, live on the
+    /// interpreter's `yield_stack`.
+    SequenceYield,
     Min,   // generic min(a, b) — prelude
     Max,   // generic max(a, b) — prelude
     Clamp, // generic clamp(value, lo, hi) — prelude
@@ -1027,11 +1034,17 @@ pub enum Value {
     Package(String),
     /// Open file handle (Option allows close to invalidate)
     File(Arc<Mutex<Option<StdFile>>>),
-    /// Closure (captured environment + params + body)
+    /// Closure: params, body, and the storage its captures are bound to.
+    ///
+    /// Slots, not values. A scope-limited closure borrows the variables it
+    /// captures, so it has to reach the same storage the definer writes —
+    /// binding names to values made every write through a capture land on a
+    /// copy (#1038). An `own` closure gets fresh slots holding deep copies,
+    /// which is what capturing by move means.
     Closure {
         params: Vec<String>,
         body: Expr,
-        captured_env: HashMap<String, Value>,
+        captured_env: HashMap<String, crate::env::Slot>,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1471,8 +1484,10 @@ impl Value {
                 Value::Pool(Arc::new(Mutex::new(new_pool)))
             }
             Value::Closure { params, body, captured_env } => {
-                let deep_env: HashMap<String, Value> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                // Deep-cloning a closure detaches it from what it borrowed, so
+                // each capture gets storage of its own.
+                let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
+                    .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
                     .collect();
                 Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env }
             }

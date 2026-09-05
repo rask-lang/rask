@@ -2485,8 +2485,7 @@ impl TypeChecker {
                             (name, fresh)
                         })
                         .collect();
-                    let fresh_vars: Vec<Type> = pairs.iter().map(|(_, v)| v.clone()).collect();
-                    self.pending_call_type_args.push((call_id, fresh_vars));
+                    self.pending_call_type_args.push((call_id, pairs.clone()));
                     pairs
                 })
         } else {
@@ -2511,6 +2510,17 @@ impl TypeChecker {
             Self::substitute_type_params(&func_ty, &subst)
         } else {
             func_ty
+        };
+
+        // type.sequence/SEQ36: calling a `Sequence<T>` is calling the function
+        // it stands for. Expanding it here is what types the yield closure —
+        // `self(|item| { … })` inside an adapter has nothing else to say what
+        // `item` is, and the `Type::Fn` arm below is what propagates it.
+        // Unifying the two shapes isn't enough on its own: unification happens
+        // once the argument already has a type, and this is where it gets one.
+        let func_ty = match self.sequence_element(&func_ty) {
+            Some(elem) => Self::sequence_fn_shape(elem),
+            None => func_ty,
         };
 
         match func_ty {
@@ -3089,6 +3099,33 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
+        // A static method's receiver is a bare type name — `Box.new("hei")`.
+        // Named bare it says nothing about which instantiation the call is for,
+        // and the instantiation is what the dispatch record has to carry:
+        // `Box.new` stayed on the shared placeholder layout while
+        // `Box<string>.get()` got a per-instantiation one, and the value one
+        // wrote the other read back at the wrong field size (#820). Give each
+        // declared parameter a fresh variable and let the signature bind it —
+        // `new`'s own `-> Box<T>` does exactly that. Downstream then reads the
+        // instantiation off the receiver like any other call, instead of
+        // guessing it back out of the call's result type.
+        let obj_ty = match (&object.kind, &obj_ty) {
+            (ExprKind::Ident(name), Type::Named(id)) if self.lookup_local(name).is_none() => {
+                let params = self.declared_type_params(*id);
+                if params.is_empty() {
+                    obj_ty
+                } else {
+                    Type::Generic {
+                        base: *id,
+                        args: params
+                            .iter()
+                            .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                            .collect(),
+                    }
+                }
+            }
+            _ => obj_ty,
+        };
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
@@ -4603,7 +4640,28 @@ impl TypeChecker {
                 }
             }
             // Unknown / unresolved container, or `Handle<T>` itself — leave it.
-            None => {}
+            None => {
+                // A `Sequence<T>` is the one unindexable thing worth naming.
+                // SEQ41 made a collection's adapters lazy, so `v.filter(p)[0]`
+                // is now an ordinary mistake to make — and it used to reach
+                // codegen as "Function not found: Sequence_index", which tells
+                // the reader nothing about what to do.
+                if matches!(
+                    &self.ctx.apply(container),
+                    Type::UnresolvedGeneric { name, .. } if name == "Sequence" || name == "SequenceMut"
+                ) || matches!(
+                    &self.ctx.apply(container),
+                    Type::Generic { base, .. }
+                        if self.types.type_name(*base).starts_with("Sequence")
+                ) {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: self.nameable(&self.ctx.apply(container)),
+                        found: index.clone(),
+                        kind: IndexErrorKind::NotPositioned,
+                        span,
+                    });
+                }
+            }
         }
     }
 

@@ -105,7 +105,7 @@ test "a list replaced by filter has its new entries registered" {
     // `filter` builds a NEW Vec. Nothing pushed into it, so its entries were
     // never recorded by the pushes that filled the old one — the assignment has
     // to register them.
-    h.other = h.other.filter(|n| n.id != 6)
+    h.other = h.other.filter(|n| n.id != 6).to_vec()
     assert h.other.len() == 1
 
     h.rack.delete(g)

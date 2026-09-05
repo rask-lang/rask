@@ -68,7 +68,7 @@ func main() {
     let messages = Vec.from([Message.Text("Hello, Rask!"), Message.Move { x: 10, y: 20 }, Message.Color { r: 255, g: 128, b: 0 }, Message.Quit])
 
     print("Processing messages:\n")
-    for msg in messages.iter() {
+    for msg in messages {
         handle_message(msg)
     }
 

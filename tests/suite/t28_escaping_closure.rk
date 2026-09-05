@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that outlives the frame that built it.
+//
+// Spec: specs/memory/closures.md
+//   MC3  a scope-limited closure can't outlive what it captured
+//
+// The environment used to be a stack slot in the frame that built it, so a
+// returned closure read a frame that had already been popped: right answers in
+// a small program, `max=1194732450` in a real one, a segfault with a Vec
+// capture (#1045). Escaping now means heap.
+//
+// The padding is load-bearing. Shrink these functions and the inliner moves the
+// closure into a frame that is still alive, and the bug disappears — which is
+// why nothing in the suite caught it. Three call sites hold off `called_once`
+// inlining; the locals hold off the size heuristic.
+
+import sequence.Sequence
+
+func big_source(base: i32) -> Sequence<i32> {
+    let p0 = 0
+    let p1 = 1
+    let p2 = 2
+    let p3 = 3
+    let p4 = 4
+    let p5 = 5
+    let p6 = 6
+    let p7 = 7
+    let p8 = 8
+    let p9 = 9
+    let p10 = 10
+    let p11 = 11
+    let p12 = 12
+    let p13 = 13
+    let p14 = 14
+    let p15 = 15
+    let p16 = 16
+    let p17 = 17
+    let p18 = 18
+    let p19 = 19
+    let p20 = 20
+    let p21 = 21
+    let p22 = 22
+    let p23 = 23
+    let guard = p0 + p1 + p2 + p3 + p23
+    return |yield| {
+        if guard < 0 { return }
+        if !yield(base) { return }
+        if !yield(base + 1) { return }
+        if !yield(base + 2) { return }
+    }
+}
+
+func sum_from(base: i32) -> i32 {
+    mut t = 0
+    for x in big_source(base) {
+        t = t + x
+    }
+    return t
+}
+
+func count_from(base: i32) -> i32 {
+    mut n = 0
+    for _x in big_source(base) {
+        n = n + 1
+    }
+    return n
+}
+
+func max_from(base: i32) -> i32 {
+    mut b = 0
+    for x in big_source(base) {
+        if x > b { b = x }
+    }
+    return b
+}
+
+test "mem.closures/MC3 — a returned closure reads its captures, not a dead frame" {
+    assert sum_from(10) == 33
+    assert count_from(10) == 3
+    assert max_from(10) == 12
+}
+
+// The same shape with a scalar the closure counts up, so the environment is
+// both read and written after the building frame is gone.
+func stepper(start: i32) -> func() -> i32 {
+    let p0 = 0
+    let p1 = 1
+    let p2 = 2
+    let p3 = 3
+    let p4 = 4
+    let p5 = 5
+    let p6 = 6
+    let p7 = 7
+    let p8 = 8
+    let p9 = 9
+    let p10 = 10
+    let p11 = 11
+    let p12 = 12
+    let p13 = 13
+    let p14 = 14
+    let p15 = 15
+    let p16 = 16
+    let p17 = 17
+    let p18 = 18
+    let p19 = 19
+    let p20 = 20
+    let p21 = 21
+    let p22 = 22
+    let p23 = 23
+    let guard = p0 + p1 + p2 + p3 + p23
+    mut n = start
+    return own || {
+        if guard < 0 { return -1 }
+        n += 1
+        return n
+    }
+}
+
+func run_three(start: i32) -> i32 {
+    let s = stepper(start)
+    let a = s()
+    let b = s()
+    let c = s()
+    return a + b + c
+}
+
+func run_two(start: i32) -> i32 {
+    let s = stepper(start)
+    return s() + s()
+}
+
+func run_one(start: i32) -> i32 {
+    let s = stepper(start)
+    return s()
+}
+
+test "mem.closures/MC1 — writes through a heap environment stick" {
+    assert run_one(0) == 1
+    assert run_two(0) == 3
+    assert run_three(0) == 6
+}

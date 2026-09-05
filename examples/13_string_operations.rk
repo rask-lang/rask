@@ -67,7 +67,7 @@ func main() {
     let words = sentence.split_whitespace().to_vec()
 
     print("Words: ")
-    for word in words.iter() {
+    for word in words {
         print("[")
         print(word)
         print("] ")
@@ -79,7 +79,7 @@ func main() {
     let fruits = csv.split(",").to_vec()
 
     print("Fruits: ")
-    for fruit in fruits.iter() {
+    for fruit in fruits {
         print(fruit)
         print(" ")
     }

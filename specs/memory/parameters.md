@@ -229,6 +229,21 @@ func bump(mutate x: i32) {
 }
 ```
 
+`mutate` does not collapse. It means the caller sees the write, at every type and every size — Copy governs whether the *source* is still usable after the call, not whether `mutate` has an effect. PM5 says the call-site marker never depends on a type's size, and the semantics can't either: a mode that quietly does nothing for `i32` but works for a four-byte struct wrapping one is not a mode anyone can reason about (#899).
+
+<!-- test: parse -->
+```rask
+func bump(mutate c: i32) {
+    c = c + 1
+}
+
+func main() {
+    mut n = 0
+    bump(mutate n)
+    // n is 1
+}
+```
+
 ## Interaction with Resource Types
 
 Resource types (`mem.resources/R1`) must be consumed exactly once. Only `take` parameters can consume them.

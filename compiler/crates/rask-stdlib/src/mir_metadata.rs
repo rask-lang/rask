@@ -356,6 +356,8 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // is gone afterwards, which is neither borrowing it nor leaving it alone.
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
+    ("Rack_free", Internal::ConsumesReceiver),
+    ("Pool_free", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];

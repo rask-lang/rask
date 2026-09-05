@@ -22,7 +22,7 @@ pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;
-use rask_types::{Type, TypedProgram};
+use rask_types::{Type, TypeBinding, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphized program with all generics eliminated
@@ -90,7 +90,8 @@ impl MonoProgram {
 /// Monomorphized function instance
 pub struct MonoFunction {
     pub name: String,
-    pub type_args: Vec<Type>,
+    /// The type parameters this copy fixes, each named by the parameter it binds.
+    pub type_args: Vec<TypeBinding>,
     pub body: Decl,
 }
 

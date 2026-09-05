@@ -122,6 +122,29 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
     return new_ptr;
 }
 
+// ─── Closure blocks ────────────────────────────────────────
+//
+// A closure block is `[block_size | func_ptr | captures...]` and the closure
+// value points at `func_ptr`, so the environment is still `closure + 8`. The
+// size header exists because whoever frees the block usually didn't build it:
+// `let tick = counter()` hands the caller a block whose capture layout only
+// `counter` knew. Without it the free is a bare `rask_free`, which can't
+// subtract the bytes it released and leaves the leak checker reporting a leak
+// that isn't there.
+
+void *rask_closure_alloc(int64_t block_size) {
+    int64_t total = block_size + 8;
+    int64_t *base = (int64_t *)rask_alloc(total);
+    base[0] = total;
+    return (void *)(base + 1);
+}
+
+void rask_closure_free(void *ptr) {
+    if (!ptr) return;
+    int64_t *base = ((int64_t *)ptr) - 1;
+    rask_realloc((void *)base, base[0], 0);
+}
+
 void rask_free(void *ptr) {
     if (ptr) {
         active_allocator.free(ptr, active_allocator.ctx);

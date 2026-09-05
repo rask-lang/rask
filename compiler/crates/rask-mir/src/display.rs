@@ -221,9 +221,13 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmtKind::LoadCapture { dst, env_ptr, offset, by_ref } => {
-                write!(f, "_{} = load_capture{}(_{}+{})",
-                    dst.0, if *by_ref { "_ref" } else { "" }, env_ptr.0, offset)
+            MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
+                let how = match access {
+                    crate::CaptureAccess::Value => "",
+                    crate::CaptureAccess::Borrowed => "_ref",
+                    crate::CaptureAccess::Owned => "_own",
+                };
+                write!(f, "_{} = load_capture{}(_{}+{})", dst.0, how, env_ptr.0, offset)
             }
             MirStmtKind::EnsureHookRegister { thunk, captures } => {
                 write!(f, "ensure_hook_register({}, [{}])", thunk,

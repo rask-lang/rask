@@ -370,6 +370,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Iterator runtime support ──────────────────────────────
         StdlibEntry::simple("Vec_skip", "rask_iter_skip", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_take", "rask_iter_take", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_map", "rask_vec_map", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_collect", "rask_vec_collect", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_filter", "rask_vec_filter", &[types::I64, types::I64], Some(types::I64), false),

@@ -243,7 +243,7 @@ but the wording is.
 
 `t_assert_check_message_shapes.rk` pins the passing side of every shape above.
 
-### 1.7 The leak gate greps for a line that can't reach it — FIXED ELSEWHERE
+### 1.7 The leak gate greps for a line that can't reach it — FIXED (on #1042, merged)
 
 `leak_gate.sh` runs each suite file under `RASK_LEAK_CHECK=1` and decides by
 grepping the output for `never released`:
@@ -300,13 +300,15 @@ run before just moves it into the leaking column.
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
 
-**Not fixed here.** Both halves are already built on
-`claude/sequence-protocol-design-maakls` ([#1042](https://github.com/rask-lang/rask/pull/1042)):
-`forward_test_stderr` and `test_exit_code` pass the binary's stderr through and
-let 97 survive, `leak_gate.sh` reads the exit code, and `known_leaks.txt` there
-carries 174 entries — the same set of files, seen through a gate that can see
-them. #1053 was closed on that basis. Building it a second time on this branch
-would be two registries of the same 190 files to reconcile at merge.
+**Not fixed here — fixed on #1042, which has since merged.** Both halves were
+already built on `claude/sequence-protocol-design-maakls`
+([#1042](https://github.com/rask-lang/rask/pull/1042)): `forward_test_stderr`
+and `test_exit_code` pass the binary's stderr through and let 97 survive,
+`leak_gate.sh` reads the exit code, and `known_leaks.txt` carries the files that
+leak. #1053 was closed on that basis, and building it a second time here would
+have been two registries of the same ~190 files to reconcile at merge. Both
+arrived on this branch when main was merged in, so the number the gate reports
+now is a measurement rather than a blind spot.
 
 ### 1.9 The spec-test runner isn't running the same compiler — FIXED
 

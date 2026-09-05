@@ -31,15 +31,15 @@ impl Interpreter {
     ) -> Result<(Value, Option<Value>), RuntimeError> {
         if let Value::Closure { params, body, captured_env } = func {
             self.env.push_scope();
-            for (name, val) in captured_env {
-                self.env.define(name, val);
+            for (name, cell) in captured_env {
+                self.env.define_slot(name, cell);
             }
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
             }
             let result = self.eval_expr(&body).map_err(|diag| diag.error);
-            let final_arg = first.and_then(|name| self.env.get(&name).cloned());
+            let final_arg = first.and_then(|name| self.env.get(&name));
             self.env.pop_scope();
             let value = match result {
                 Ok(v) => v,
@@ -70,6 +70,9 @@ impl Interpreter {
             }
             Value::Builtin(kind) => {
                 // Handle async builtins separately as they need mutable access
+                if kind == BuiltinKind::SequenceYield {
+                    return Ok(self.run_yield_body(args));
+                }
                 if kind == BuiltinKind::AsyncSpawn {
                     return self.spawn_async_task(args);
                 }
@@ -110,8 +113,8 @@ impl Interpreter {
                 captured_env,
             } => {
                 self.env.push_scope();
-                for (name, val) in captured_env {
-                    self.env.define(name, val);
+                for (name, cell) in captured_env {
+                    self.env.define_slot(name, cell);
                 }
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     // Closure params are by-value bindings (VS1) — copy so the
@@ -192,6 +195,9 @@ impl Interpreter {
             | BuiltinKind::SelectFirst | BuiltinKind::Cancelled => {
                 // These should have been handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
+            }
+            BuiltinKind::SequenceYield => {
+                unreachable!("SequenceYield is handled in call_value — it runs a loop body")
             }
             BuiltinKind::Todo => {
                 let msg = if let Some(Value::String(s)) = args.first() {
@@ -320,7 +326,22 @@ impl Interpreter {
     pub(crate) fn nominal_type_name(v: &Value) -> Option<String> {
         Some(match v {
             Value::Struct(s) => s.lock().unwrap().name.clone(),
+            // A callable is a `Sequence<T>` as far as method lookup goes: that
+            // is the type the adapters and terminals are written on, and a
+            // closure of the right shape *is* one (type.sequence/SEQ36). The
+            // checker has already refused any other method, and the primitive
+            // layer's error is the one reported, so a genuine typo still reads
+            // "no method `foo` on type `closure`".
+            Value::Closure { .. } | Value::Function { .. } => "Sequence".to_string(),
             Value::Enum { name, .. } => name.clone(),
+            // The collections, so a method written in Rask on one of them is
+            // reachable. Nothing was until `Vec.as_sequence` — the chain head a
+            // collection stands for (SEQ48) — so the fallback below had never
+            // been asked for a Vec and these arms were simply missing.
+            Value::Vec(_) => "Vec".to_string(),
+            Value::Map(_) => "Map".to_string(),
+            Value::Pool(_) => "Pool".to_string(),
+            Value::Rack(_) => "Rack".to_string(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),
             Value::File(_) => "File".to_string(),
@@ -755,8 +776,8 @@ impl Interpreter {
                         ));
                     }
                     self.env.push_scope();
-                    for (k, v) in &captured_env {
-                        self.env.define(k.clone(), v.clone());
+                    for (k, cell) in &captured_env {
+                        self.env.define_slot(k.clone(), cell.clone());
                     }
                     let result = self.eval_expr(&body);
                     self.env.pop_scope();
@@ -786,8 +807,8 @@ impl Interpreter {
                         ));
                     }
                     self.env.push_scope();
-                    for (k, v) in &captured_env {
-                        self.env.define(k.clone(), v.clone());
+                    for (k, cell) in &captured_env {
+                        self.env.define_slot(k.clone(), cell.clone());
                     }
                     let result = self.eval_expr(&body);
                     self.env.pop_scope();

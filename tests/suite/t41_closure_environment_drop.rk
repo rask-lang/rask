@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Who frees a closure's environment.
+//
+// A function that returns a closure allocates an environment per call. Calling
+// one in a loop leaked every environment but the last: 99 allocations for 100
+// calls (#1045).
+//
+// Two things were wrong, and the first was hiding the second.
+//
+// The back-edge case only knew closures built by a `ClosureCreate` in this
+// frame. A closure that arrived from a *call* — which is the whole point of
+// tracking functions that hand one back — had no entry, and the filter read
+// that absence as "not made in the loop". So the only drop that ever fired was
+// the one at the return, which happened to free the environment still live.
+//
+// Fixing that turned the leak into a double free, because the return case
+// dropped every owned closure at every return with no dominance check at all.
+// A closure made in a loop body isn't live at the loop's exit — it was already
+// freed at the back-edge — and on the path that skips the body it was never
+// made. Both cases decide by dominance now, the way `container_drop` has all
+// along.
+//
+// What this does *not* fix, measured per test rather than assumed:
+//
+//   - A closure made on one branch of an `if` inside a loop. Neither the
+//     back-edge nor the return dominates the block that made it, so there is
+//     no point where freeing it is unconditionally safe. Same conservatism
+//     `container_drop` has; the answer is drop placement at last use, not
+//     another boundary.
+//   - A chain's intermediate environments. Each adapter captures the one
+//     before it, so only the outermost is this frame's — and freeing an
+//     environment doesn't free what it captured.
+//
+// Both are the same question one level up: what happens to what an environment
+// *owns* when the environment goes. That is #1045's remaining half and a design
+// decision, not a missing case here.
+
+import sequence.Sequence
+
+func counter(base: i64) -> Sequence<i64> {
+    return |yield| {
+        if !yield(base) {
+            return
+        }
+        if !yield(base + 1) {
+            return
+        }
+    }
+}
+
+// The shape that leaked: one environment per call, a hundred calls.
+test "an environment per call is freed per call" {
+    mut total = 0
+    mut r = 0
+    while r < 100 {
+        for x in counter(r) {
+            total = total + x
+        }
+        r = r + 1
+    }
+    assert total == 10000
+}
+
+test "the same through a terminal rather than a for loop" {
+    mut total = 0
+    mut r = 0
+    while r < 50 {
+        total = total + counter(r).count()
+        r = r + 1
+    }
+    assert total == 100u64
+}
+
+// A closure built in the loop body directly, rather than received from a call.
+// This half always worked; it's here because the fix could have broken it.
+test "a closure built in the loop body" {
+    mut total = 0
+    mut r = 0
+    while r < 100 {
+        let s: Sequence<i64> = |yield| {
+            if !yield(r) {
+                return
+            }
+        }
+        total = total + s.count()
+        r = r + 1
+    }
+    assert total == 100u64
+}
+
+// The dominance half, from the other side: a closure made on one branch is not
+// freed on a path that never made it. Freeing it there was the double free the
+// first version of this fix produced.
+test "a closure made on one branch only" {
+    mut total = 0
+    mut r = 0
+    while r < 20 {
+        if r % 2 == 0 {
+            total = total + counter(r).count()
+        } else {
+            total = total + 1
+        }
+        r = r + 1
+    }
+    assert total == 30u64
+}
+
+// Straight-line, no loop: the plain case, which the return path handles.
+test "a returned closure outside any loop" {
+    assert counter(5).count() == 2
+}
+
+// A sequence re-run (SEQ11): the environment has to survive the first run and
+// still be freed once at the end.
+test "a returned closure run twice" {
+    let s = counter(1)
+    assert s.count() == 2
+    assert s.count() == 2
+}
+
+// A chain of them — each adapter is another environment.
+test "a chain of adapters in a loop" {
+    mut total = 0
+    mut r = 0
+    while r < 50 {
+        total = total + counter(r).map(|x| x * 2).filter(|x| x > 0).count()
+        r = r + 1
+    }
+    assert total == 99u64
+}
+
+// A callback that *returns* a sequence, which is where this went wrong.
+//
+// The chain's own environments are freed by the frame holding the chain, and
+// the two shapes I expected to break — a chain returned out of a function, and
+// a bound sequence re-run — both behaved. This one didn't, and it isn't either
+// of them: the frame doing the freeing is the *callback's*, and it builds a
+// sequence per element and hands it straight back.
+//
+//     _8 = closure[heap](upto__closure_0, [_6@0])
+//     _5 = _8
+//     closure_drop(_8)      <- frees the environment being returned
+//     return _5
+//
+// The return case excludes the value going back to the caller, and compared the
+// bare local — but lowering copies a closure before returning it, so `_8` never
+// matched `_5`. It resolves through the alias now, like every other decision in
+// that pass. This segfaulted on the first element.
+func upto(n: i64) -> Sequence<i64> {
+    return |yield| {
+        mut i = 1
+        while i <= n {
+            if !yield(i) {
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+test "a flat_map callback that builds a sequence per element" {
+    let out: Vec<i64> = upto(3).flat_map(|x| upto(x)).to_vec()
+    assert out.len() == 6
+    assert out[0] == 1
+    assert out[5] == 3
+}
+
+// Repeated, because the crash was on the first element and a regression could
+// just as easily be on the second. Deliberately a handful of rounds and not a
+// hundred: each round leaks the sequences the callback returned — that is the
+// per-element half of #1045, not fixed here — and a big loop would bury this
+// file's leak count under one unrelated shape.
+test "the same callback shape driven repeatedly" {
+    mut total = 0u64
+    mut r = 0
+    while r < 5 {
+        total = total + upto(3).flat_map(|x| upto(x)).count()
+        r = r + 1
+    }
+    assert total == 30u64
+}
+
+// A captured container, which turns out to be clean: the environment is freed
+// and the vector outlives it. Kept as the boundary marker — if this starts
+// leaking, something about capture ownership changed.
+func over_a_vec(v: Vec<i64>) -> Sequence<i64> {
+    return |yield| {
+        mut i = 0
+        while i < v.len() {
+            if !yield(v[i]) {
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+test "capturing a vec still works" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert over_a_vec(v).count() == 3
+    assert v.len() == 3
+}

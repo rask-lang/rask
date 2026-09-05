@@ -44,7 +44,7 @@ func scalar(n: i32, v: Vec<i32>, flag: bool) -> string {
     mut count: u64 = 0
     if flag {
         let kept = v.filter(own |c| c != n)
-        count = kept.len()
+        count = kept.count()
     }
     return "kept={count} n={n}"
 }
@@ -54,7 +54,7 @@ func handle(mutate p: Pool<Item>, n: Handle<Item>, v: Vec<Handle<Item>>) -> stri
     mut count: u64 = 0
     if p[n].other? as _o {
         let kept = v.filter(own |c| c != n)
-        count = kept.len()
+        count = kept.count()
     }
     return "kept={count} id={p[n].id}"
 }
@@ -64,7 +64,7 @@ func handle(mutate p: Pool<Item>, n: Handle<Item>, v: Vec<Handle<Item>>) -> stri
 func nocopy(big: Big, v: Vec<i64>, flag: bool) -> u64 {
     if flag {
         let kept = v.filter(own |c| c != big.a)
-        return kept.len()
+        return kept.count()
     }
     return 0
 }

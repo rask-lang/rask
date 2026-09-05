@@ -21,15 +21,41 @@ pub(super) struct IterLoopSetup {
     pub(super) inc_block: BlockId,
     pub(super) exit_block: BlockId,
     pub(super) check_block: BlockId,
+    /// `skip`/`take` that a `filter` upstream forced into a runtime counter,
+    /// keyed by position in the adapter list: counter local, and the limit.
+    pub(super) counted: std::collections::HashMap<usize, (LocalId, MirOperand)>,
+}
+
+/// Which `skip`/`take` adapters can't be loop bounds.
+///
+/// `take(3)` normally lowers to "stop at source index 3", which is only the
+/// same thing as "three elements out" while every element upstream survives.
+/// Put a `filter` in front and the two part company: `v.filter(p).take(3)` was
+/// stopping after three *candidates*, so `[0..9].filter(%3==0).take(3)` yielded
+/// one element instead of three. Everything downstream of a filter counts.
+fn counted_skip_take(adapters: &[super::IterAdapter<'_>]) -> std::collections::HashSet<usize> {
+    let mut dropping = false;
+    let mut out = std::collections::HashSet::new();
+    for (i, adapter) in adapters.iter().enumerate() {
+        match adapter {
+            super::IterAdapter::Filter { .. } => dropping = true,
+            super::IterAdapter::Skip { .. } | super::IterAdapter::Take { .. } if dropping => {
+                out.insert(i);
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 impl<'a> MirLowerer<'a> {
-    /// Walk a method call chain backward to find .iter() and collect adapters.
+    /// Walk a method call chain backward to its source and collect adapters.
     ///
-    /// vec.iter().filter(|x| p(x)).map(|x| f(x))
-    ///                                 ↑ start here, walk left
+    /// vec.filter(|x| p(x)).map(|x| f(x))
+    ///                          ↑ start here, walk left
     ///
-    /// Returns None if the chain doesn't end in .iter() or uses unsupported adapters.
+    /// Returns None if the walk finds no iterable source, or hits an adapter
+    /// fusion doesn't handle.
     pub(super) fn try_parse_iter_chain<'e>(&self, expr: &'e Expr) -> Option<super::IterChain<'e>> {
         let mut adapters = Vec::new();
         let mut current = expr;
@@ -38,13 +64,6 @@ impl<'a> MirLowerer<'a> {
             match &current.kind {
                 ExprKind::MethodCall { object, method, args, .. } => {
                     match method.as_str() {
-                        "iter" if args.is_empty() => {
-                            adapters.reverse();
-                            return Some(super::IterChain {
-                                source: object,
-                                adapters,
-                            });
-                        }
                         "filter" if args.len() == 1 => {
                             if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
                                 adapters.push(super::IterAdapter::Filter { closure: &args[0].expr });
@@ -278,30 +297,17 @@ impl<'a> MirLowerer<'a> {
             //
             // Without it these fell through to `Vec_map`, a runtime function
             // that ignores the closure-object/env ABI and segfaulted (#441).
-            "map" | "filter" if args.len() == 1 => {
-                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                    if let Some(mut chain) = self.try_parse_iter_chain(object) {
-                        chain.adapters.push(if method == "map" {
-                            super::IterAdapter::Map { closure: &args[0].expr }
-                        } else {
-                            super::IterAdapter::Filter { closure: &args[0].expr }
-                        });
-                        let result = self.lower_iter_collect(&chain)?;
-                        return Ok(Some(result));
-                    }
-                }
-            }
-            // `v.enumerate()` on its own is `v.iter().enumerate().to_vec()`.
-            // Same argument as `map`/`filter` above, and the adapter already
-            // existed — only the standalone spelling was missing, so it reached
-            // codegen as `Vec_enumerate`, which nothing emits (#886).
-            "enumerate" if args.is_empty() => {
-                if let Some(mut chain) = self.try_parse_iter_chain(object) {
-                    chain.adapters.push(super::IterAdapter::Enumerate);
-                    let result = self.lower_iter_collect(&chain)?;
-                    return Ok(Some(result));
-                }
-            }
+            // There is no arm for a bare adapter here any more. `map`,
+            // `filter`, `skip`, `take` and `enumerate` used to be treated as a
+            // chain with an implicit `.to_vec()`, which is what made them eager.
+            // SEQ41 made them lazy: a bare `v.filter(p)` is a `Sequence<T>`, so
+            // materializing it handed the caller a Vec pointer where its type
+            // said closure, and `Sequence_count` jumped through it. Their Rask
+            // bodies forward to `self.as_sequence().<adapter>(…)` instead.
+            //
+            // A chain that *is* terminated still fuses: the terminal arms above
+            // match first and consume the whole chain, so `v.filter(p).to_vec()`
+            // and `for x in v.filter(p)` are the same index loop they were.
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
@@ -399,26 +405,14 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             // `v.zip(other)` pairs elements at matching indices, stopping at
-            // the shorter side. Same "implicit .collect()" reasoning as
-            // `map`/`filter` above; without this it reached codegen as a call
-            // to `Vec_zip`, which nothing emits (#887).
+            // the shorter side, and materializes. It is not an adapter:
+            // SEQ14/SEQ39 keep lockstep on the indexable source, because a push
+            // source can't hold two positions. Without this it reached codegen
+            // as a call to `Vec_zip`, which nothing emits (#887).
             "zip" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_zip(&chain, &args[0].expr)?;
                     return Ok(Some(result));
-                }
-            }
-            // `v.flat_map(f)` on its own is the same "implicit .collect()"
-            // reasoning as `map`/`filter` above, except each pushed value is one
-            // of `f(elem)`'s own elements, not `f(elem)` itself. Without this it
-            // reached codegen as a call to `Vec_flat_map`, which nothing emits
-            // (#842).
-            "flat_map" if args.len() == 1 => {
-                if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                    if let Some(chain) = self.try_parse_iter_chain(object) {
-                        let result = self.lower_iter_flat_map(&chain, &args[0].expr)?;
-                        return Ok(Some(result));
-                    }
                 }
             }
             // `v.sort_by_key(f)` — in place, answers unit. Not an iterator
@@ -967,12 +961,30 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        // Process Skip/Take adapters to adjust start/end bounds
+        // Process Skip/Take adapters to adjust start/end bounds. The ones a
+        // filter has already made non-positional get a counter instead.
+        let counted_idx = counted_skip_take(&chain.adapters);
+        let mut counted: std::collections::HashMap<usize, (LocalId, MirOperand)> =
+            std::collections::HashMap::new();
         let mut start_val: Option<MirOperand> = None;
         let mut end_op = MirOperand::Local(len_local);
         let mut took = false;
 
-        for adapter in &chain.adapters {
+        for (adapter_idx, adapter) in chain.adapters.iter().enumerate() {
+            if counted_idx.contains(&adapter_idx) {
+                let count = match adapter {
+                    super::IterAdapter::Skip { count } | super::IterAdapter::Take { count } => count,
+                    _ => unreachable!("only skip/take are counted"),
+                };
+                let (limit, _) = self.lower_expr(count)?;
+                let counter = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: counter,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+                }));
+                counted.insert(adapter_idx, (counter, limit));
+                continue;
+            }
             match adapter {
                 super::IterAdapter::Skip { count } => {
                     let (skip_op, _) = self.lower_expr(count)?;
@@ -1097,6 +1109,7 @@ impl<'a> MirLowerer<'a> {
             inc_block,
             exit_block,
             check_block,
+            counted,
         })
     }
 
@@ -1108,9 +1121,10 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         elem_op: MirOperand,
         elem_ty: MirType,
-        inc_block: BlockId,
-        idx: LocalId,
+        setup: &IterLoopSetup,
     ) -> Result<TypedOperand, LoweringError> {
+        let inc_block = setup.inc_block;
+        let idx = setup.idx;
         let mut current_op = elem_op;
         let mut current_ty = elem_ty;
 
@@ -1125,7 +1139,7 @@ impl<'a> MirLowerer<'a> {
         // come back out at the end.
         let callable_params = self.register_callable_adapter_params(chain);
 
-        for adapter in &chain.adapters {
+        for (adapter_idx, adapter) in chain.adapters.iter().enumerate() {
             match adapter {
                 super::IterAdapter::Filter { closure } => {
                     let (pred_op, _) = self.inline_closure_body(closure, current_op.clone(), current_ty.clone())?;
@@ -1160,8 +1174,56 @@ impl<'a> MirLowerer<'a> {
                     current_op = MirOperand::Local(tuple_local);
                     current_ty = tuple_ty;
                 }
-                super::IterAdapter::Skip { .. } | super::IterAdapter::Take { .. } => {
-                    // Already handled in setup (start/end bounds)
+                super::IterAdapter::Skip { .. } => {
+                    // A skip a filter didn't disturb is the loop's start index.
+                    if let Some(&(counter, ref limit)) = setup.counted.get(&adapter_idx) {
+                        // while counter < n: burn this element and count it
+                        let under = self.builder.alloc_temp(MirType::Bool);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: under,
+                            rvalue: MirRValue::BinaryOp {
+                                op: crate::operand::BinOp::Lt,
+                                left: MirOperand::Local(counter),
+                                right: limit.clone(),
+                            },
+                        }));
+                        let burn_block = self.builder.create_block();
+                        let pass_block = self.builder.create_block();
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                            cond: MirOperand::Local(under),
+                            then_block: burn_block,
+                            else_block: pass_block,
+                        }));
+                        self.builder.switch_to_block(burn_block);
+                        self.bump_counter(counter);
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                            target: inc_block,
+                        }));
+                        self.builder.switch_to_block(pass_block);
+                    }
+                }
+                super::IterAdapter::Take { .. } => {
+                    // A take a filter didn't disturb is the loop's end index.
+                    if let Some(&(counter, ref limit)) = setup.counted.get(&adapter_idx) {
+                        // once n have come through, the loop is done
+                        let done = self.builder.alloc_temp(MirType::Bool);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: done,
+                            rvalue: MirRValue::BinaryOp {
+                                op: crate::operand::BinOp::Ge,
+                                left: MirOperand::Local(counter),
+                                right: limit.clone(),
+                            },
+                        }));
+                        let pass_block = self.builder.create_block();
+                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                            cond: MirOperand::Local(done),
+                            then_block: setup.exit_block,
+                            else_block: pass_block,
+                        }));
+                        self.builder.switch_to_block(pass_block);
+                        self.bump_counter(counter);
+                    }
                 }
             }
         }
@@ -1171,6 +1233,18 @@ impl<'a> MirLowerer<'a> {
             self.func_sigs.remove(name);
         }
         Ok((current_op, current_ty))
+    }
+
+    /// `counter = counter + 1`.
+    fn bump_counter(&mut self, counter: LocalId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: counter,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(counter),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
     }
 
     /// Register every adapter closure's parameters as callable, when the source
@@ -1274,8 +1348,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
         let elem_size = Self::mir_slot_size(&final_ty);
         if elem_size > 0 {
@@ -1319,8 +1393,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let (key_ty, val_ty) = match &final_ty {
@@ -1397,8 +1471,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         // Inline the fold closure with two args: (acc, elem)
@@ -1477,8 +1551,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let (pred_op, _) = self.inline_closure_body(predicate, final_op, final_ty)?;
@@ -1515,8 +1589,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let (pred_op, _) = self.inline_closure_body(predicate, final_op, final_ty)?;
@@ -1552,8 +1626,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let _ = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let incremented = self.builder.alloc_temp(MirType::I64);
@@ -1589,8 +1663,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, _) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let sum = self.builder.alloc_temp(MirType::I64);
@@ -1635,8 +1709,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, _) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         // Take this element when the slot is still empty, or when it beats what's
@@ -1740,8 +1814,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         // This element's own position, before the counter moves on.
@@ -1810,8 +1884,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let opt_ty = MirType::Option(Box::new(final_ty.clone()));
@@ -1937,8 +2011,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         let (pred_op, _) = self.inline_closure_body(predicate, final_op.clone(), final_ty)?;
@@ -1997,8 +2071,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (elem_op, elem_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         // The Vec the closure hands back is not freed, so one allocation per
@@ -2140,8 +2214,8 @@ impl<'a> MirLowerer<'a> {
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
-            chain, MirOperand::Local(setup.elem_local), setup.elem_ty,
-            setup.inc_block, setup.idx,
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
         )?;
 
         // `zip` stops at the shorter Vec. Filter may have skipped straight to

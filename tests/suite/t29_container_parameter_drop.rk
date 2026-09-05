@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container handed to a function still belongs to the caller.
+//
+// Spec: specs/memory/parameters.md
+//   PM1  borrow is the default — `f(x)` leaves the value valid
+//   PM3  `take param: T` is the transfer, and the caller's name dies with it
+//   PM6  a borrow can't be given away; keeping one needs `take` on the
+//        declaration, which is what makes the two readable from either side
+//
+// Drop insertion treated every argument as given away, so `first(v)` left the
+// vector to nobody: the caller stopped tracking it at the call and the callee
+// never built one. Nothing in the suite passed a container to a plain function,
+// which is why it went unnoticed for as long as the gate did (#1047, #1048).
+
+func first(v: Vec<i32>) -> i32 {
+    return v[0]
+}
+
+func total(v: Vec<i32>) -> i32 {
+    mut t = 0
+    mut i = 0
+    while i < v.len() {
+        t = t + v[i]
+        i = i + 1
+    }
+    return t
+}
+
+test "mem.parameters/PM1 — the caller keeps a vector it passed" {
+    mut v = Vec<i32>.new()
+    v.push(3)
+    v.push(4)
+    assert first(v) == 3
+    // PM1: still valid after the call, and readable again.
+    assert total(v) == 7
+    assert v.len() == 2
+}
+
+test "mem.parameters/PM1 — the same vector through two calls in a loop" {
+    mut sum = 0
+    mut i = 0
+    while i < 4 {
+        mut v = Vec<i32>.new()
+        v.push(i)
+        v.push(i)
+        sum = sum + total(v) + first(v)
+        i = i + 1
+    }
+    assert sum == 18
+}
+
+func longest(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() >= b.len() {
+        return a.len().wrap<i32>()
+    }
+    return b.len().wrap<i32>()
+}
+
+test "mem.parameters/PM1 — two borrowed vectors in one call" {
+    mut a = Vec<i32>.new()
+    a.push(1)
+    mut b = Vec<i32>.new()
+    b.push(1)
+    b.push(2)
+    assert longest(a, b) == 2
+    assert a.len() == 1
+    assert b.len() == 2
+}

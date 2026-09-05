@@ -2,12 +2,28 @@
 //! Environment for variable bindings.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use crate::value::Value;
+
+/// A variable's storage, shared by everything bound to that variable.
+///
+/// A binding is a *slot*, not a value. The distinction is invisible until a
+/// closure captures the name: a scope-limited closure borrows the variable
+/// (`rask_ast::ExprKind::Closure::is_own` — "without this flag the closure
+/// borrows outer variables"), so it has to reach the same storage the definer
+/// writes. Binding names to values instead made a capture a copy, and every
+/// write through it landed on the copy (#1038).
+pub type Slot = Arc<Mutex<Value>>;
+
+/// Wrap a value in fresh storage.
+pub fn slot(value: Value) -> Slot {
+    Arc::new(Mutex::new(value))
+}
 
 /// A scope in the environment.
 #[derive(Debug, Default)]
 struct Scope {
-    bindings: HashMap<String, Value>,
+    bindings: HashMap<String, Slot>,
 }
 
 /// The environment holding variable bindings.
@@ -59,30 +75,40 @@ impl Environment {
         }
     }
 
-    /// Define a variable in the current scope.
+    /// Define a variable in the current scope, in storage of its own.
     pub fn define(&mut self, name: String, value: Value) {
+        self.define_slot(name, slot(value));
+    }
+
+    /// Bind a name to storage that already exists.
+    ///
+    /// This is what makes a capture a borrow: the closure's scope binds the
+    /// definer's slot, so a write through either name is the same write.
+    pub fn define_slot(&mut self, name: String, cell: Slot) {
         let index = self.scopes.len().saturating_sub(1);
         let Some(scope) = self.scopes.last_mut() else { return };
-        // Redefining in the same scope replaces the value; the index already
+        // Redefining in the same scope replaces the binding; the index already
         // has an entry for it and must not get a second one.
-        if scope.bindings.insert(name.clone(), value).is_none() {
+        if scope.bindings.insert(name.clone(), cell).is_none() {
             self.defined_at.entry(name).or_default().push(index);
         }
     }
 
-    /// Look up a variable.
-    pub fn get(&self, name: &str) -> Option<&Value> {
+    /// Read a variable's current value.
+    pub fn get(&self, name: &str) -> Option<Value> {
+        Some(self.slot_of(name)?.lock().unwrap().clone())
+    }
+
+    /// The storage a name is bound to, for sharing it with a closure.
+    pub fn slot_of(&self, name: &str) -> Option<&Slot> {
         let index = *self.defined_at.get(name)?.last()?;
         self.scopes.get(index)?.bindings.get(name)
     }
 
-    /// Assign to an existing variable.
+    /// Assign to an existing variable, in place.
     pub fn assign(&mut self, name: &str, value: Value) -> bool {
-        let Some(index) = self.defined_at.get(name).and_then(|i| i.last().copied()) else {
-            return false;
-        };
-        let Some(scope) = self.scopes.get_mut(index) else { return false };
-        scope.bindings.insert(name.to_string(), value);
+        let Some(cell) = self.slot_of(name) else { return false };
+        *cell.lock().unwrap() = value;
         true
     }
 
@@ -98,10 +124,14 @@ impl Environment {
         }
     }
 
-    /// Get a mutable reference to a variable (for in-place field assignment).
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
-        let index = *self.defined_at.get(name)?.last()?;
-        self.scopes.get_mut(index)?.bindings.get_mut(name)
+    /// Apply `f` to a variable's value in place (for field assignment).
+    ///
+    /// The slot is locked for the length of `f`, so `f` must not reach back
+    /// into the environment for the same name.
+    pub fn with_mut<R>(&mut self, name: &str, f: impl FnOnce(&mut Value) -> R) -> Option<R> {
+        let cell = self.slot_of(name)?.clone();
+        let mut guard = cell.lock().unwrap();
+        Some(f(&mut guard))
     }
 
     /// Get the current scope depth.
@@ -115,8 +145,9 @@ impl Environment {
     /// struct fields to reach a pool held in `self`.
     pub fn find_map<T, F: Fn(&Value) -> Option<T>>(&self, f: F) -> Option<T> {
         for scope in self.scopes.iter().rev() {
-            for value in scope.bindings.values() {
-                if let Some(found) = f(value) {
+            for cell in scope.bindings.values() {
+                let value = cell.lock().unwrap();
+                if let Some(found) = f(&value) {
                     return Some(found);
                 }
             }
@@ -124,12 +155,28 @@ impl Environment {
         None
     }
 
-    /// Capture all visible variables (for closures).
-    pub fn capture(&self) -> HashMap<String, Value> {
+    /// Share every visible variable's storage — a scope-limited closure's
+    /// captures. Writes through the closure land on the definer's variable,
+    /// which is what "borrows outer variables" means.
+    pub fn capture_shared(&self) -> HashMap<String, Slot> {
         let mut captured = HashMap::new();
         for scope in &self.scopes {
-            for (name, value) in &scope.bindings {
-                captured.insert(name.clone(), value.clone());
+            for (name, cell) in &scope.bindings {
+                captured.insert(name.clone(), Arc::clone(cell));
+            }
+        }
+        captured
+    }
+
+    /// Copy every visible variable into storage of its own — an `own` closure's
+    /// captures, and a spawned task's. Neither may alias the definer: `own`
+    /// captures by move and outlives its creation scope, and a task that shared
+    /// its parent's locals would be a data race.
+    pub fn capture_snapshot(&self) -> HashMap<String, Slot> {
+        let mut captured = HashMap::new();
+        for scope in &self.scopes {
+            for (name, cell) in &scope.bindings {
+                captured.insert(name.clone(), slot(cell.lock().unwrap().clone()));
             }
         }
         captured
@@ -144,9 +191,9 @@ mod tests {
         Value::Int(n, crate::value::IntKind::I64)
     }
 
-    fn as_int(v: Option<&Value>) -> Option<i64> {
+    fn as_int(v: Option<Value>) -> Option<i64> {
         match v {
-            Some(Value::Int(n, _)) => Some(*n),
+            Some(Value::Int(n, _)) => Some(n),
             _ => None,
         }
     }
@@ -219,16 +266,51 @@ mod tests {
     }
 
     #[test]
-    fn get_mut_reaches_the_innermost_binding() {
+    fn with_mut_reaches_the_innermost_binding() {
         let mut env = Environment::new();
         env.define("x".into(), int(1));
         env.push_scope();
         env.define("x".into(), int(2));
-        if let Some(v) = env.get_mut("x") {
-            *v = int(7);
-        }
+        env.with_mut("x", |v| *v = int(7));
         assert_eq!(as_int(env.get("x")), Some(7));
         env.pop_scope();
         assert_eq!(as_int(env.get("x")), Some(1));
+    }
+
+    // The capture that #1038 was about: a shared slot means a write through the
+    // closure's name is a write to the definer's variable.
+    #[test]
+    fn a_shared_capture_writes_through_to_the_definer() {
+        let mut env = Environment::new();
+        env.define("a".into(), int(1));
+        let captured = env.capture_shared();
+
+        // What calling the closure does: a fresh scope binding the same storage.
+        env.push_scope();
+        for (name, cell) in &captured {
+            env.define_slot(name.clone(), Arc::clone(cell));
+        }
+        env.assign("a", int(5));
+        env.pop_scope();
+
+        assert_eq!(as_int(env.get("a")), Some(5), "the definer sees the write");
+    }
+
+    // `own` and `spawn` must not alias — a moved-from local and a parent's
+    // locals are both things the closure has no business writing.
+    #[test]
+    fn a_snapshot_capture_leaves_the_definer_alone() {
+        let mut env = Environment::new();
+        env.define("a".into(), int(1));
+        let captured = env.capture_snapshot();
+
+        env.push_scope();
+        for (name, cell) in &captured {
+            env.define_slot(name.clone(), Arc::clone(cell));
+        }
+        env.assign("a", int(5));
+        env.pop_scope();
+
+        assert_eq!(as_int(env.get("a")), Some(1), "the definer is untouched");
     }
 }

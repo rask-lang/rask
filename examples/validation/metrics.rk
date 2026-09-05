@@ -31,7 +31,7 @@ extend Metrics {
     }
 
     // How many samples breached the SLA budget. Would read as an adapter
-    // chain — `.iter().filter(|ms| ms >= budget_ms).count()` — but an adapter
+    // chain — `.filter(|ms| ms >= budget_ms).count()` — but an adapter
     // closure can't capture a local (`budget_ms`) in the current checker, so
     // it's a plain loop. See FINDINGS.
     func slow_count(self, budget_ms: f64) -> usize {

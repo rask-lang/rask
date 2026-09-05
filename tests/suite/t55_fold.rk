@@ -5,7 +5,7 @@
 // back with its init value.
 //
 // Also covers folding a Vec directly (#462 reached `Vec_fold`, which doesn't
-// exist) — a collection is its own iteration source, same as `.iter()`.
+// exist) — a collection is its own iteration source (SEQ48).
 
 func main() {}
 
@@ -17,7 +17,7 @@ test "fold with an explicit return in the body" {
 
 test "fold through an explicit iter() is the same" {
     let v = Vec.from([1, 2, 3, 4])
-    let total: i64 = v.iter().fold(0, |acc, x| { return acc + x })
+    let total: i64 = v.fold(0, |acc, x| { return acc + x })
     assert total == 10
 }
 
@@ -42,7 +42,7 @@ test "fold is not commutative — order is preserved" {
 
 test "fold composes with map and filter" {
     let v = Vec.from([1, 2, 3, 4, 5, 6])
-    let total: i64 = v.iter()
+    let total: i64 = v
         .filter(|x| { return x % 2 == 0 })
         .map(|x| { return x * 10 })
         .fold(0, |acc, x| { return acc + x })

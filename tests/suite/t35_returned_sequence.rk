@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A sequence handed back out of a function, and who frees what on the way.
+//
+// SEQ25/SEQ26 make a `Sequence<T>` an ordinary closure value: it can be
+// returned, and its lifetime is whatever it captures. One level of that always
+// worked — a closure built directly over a parameter has no inner environment
+// to leave behind. Two levels segfaulted (#1051):
+//
+//     func chained(v: Vec<i32>) -> Sequence<i32> {
+//         let src: Sequence<i32> = v.as_sequence()
+//         return src.filter(|x| x > 1)      // src freed here, adapter returned
+//     }
+//
+// Three things were wrong, and all three had to go:
+//
+//   - Escape didn't propagate through captures, so the adapter went to the heap
+//     and the source it wraps stayed on the stack.
+//   - `param_escapes_from` counted call arguments, stores and returns but not
+//     closure captures — so `Sequence_filter(self, pred)` reported that neither
+//     parameter escaped, and callers read that as "borrow".
+//   - The transfer analysis compared raw locals, and lowering copies a closure
+//     on before passing it, so the alias never matched the closure it came from.
+//
+// Together they meant the frame emitted `closure_drop` on the source
+// immediately before returning the adapter that pointed at it.
+
+import sequence.Sequence
+
+// One level: the shape that always worked. Kept so a fix to the two-level case
+// can't quietly break it.
+func over_a_parameter(v: Vec<i32>) -> Sequence<i32> {
+    return |yield| {
+        mut i = 0
+        while i < v.len() {
+            if !yield(v[i]) {
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+// Two levels: an adapter over a local sequence.
+func adapted(v: Vec<i32>) -> Sequence<i32> {
+    let src: Sequence<i32> = v.as_sequence()
+    return src.filter(|x| x > 1)
+}
+
+// Three levels, to pin that the propagation is a fixpoint and not one hop.
+func adapted_twice(v: Vec<i32>) -> Sequence<i32> {
+    let src: Sequence<i32> = v.as_sequence()
+    let odd: Sequence<i32> = src.filter(|x| x % 2 == 1)
+    return odd.map(|x| x * 10)
+}
+
+test "a sequence over a parameter survives the return" {
+    let v: Vec<i32> = [1, 2, 3]
+    let s = over_a_parameter(v)
+    assert s.count() == 3u64
+}
+
+test "an adapter over a local sequence survives the return" {
+    let v: Vec<i32> = [1, 2, 3]
+    let s = adapted(v)
+    assert s.count() == 2u64
+}
+
+test "the values are right, not just the count" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    let out: Vec<i32> = adapted(v).to_vec()
+    assert out.len() == 3
+    assert out[0] == 2
+    assert out[2] == 4
+}
+
+test "two adapters deep" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let out: Vec<i32> = adapted_twice(v).to_vec()
+    assert out.len() == 3
+    assert out[0] == 10
+    assert out[1] == 30
+    assert out[2] == 50
+}
+
+// A returned sequence is re-runnable like any other (SEQ11): the source it
+// captured has to still be there the second time.
+test "a returned sequence runs twice" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    let s = adapted(v)
+    assert s.count() == 3u64
+    assert s.count() == 3u64
+}
+
+test "a returned sequence drives a for loop" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    mut total = 0
+    for x in adapted(v) {
+        total = total + x
+    }
+    assert total == 9
+}
+
+// SEQ13a through a returned chain: the break has to reach the source.
+test "break through a returned chain" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    mut seen = 0
+    for x in adapted(v) {
+        seen = seen + 1
+        if x == 3 { break }
+    }
+    assert seen == 2
+}
+
+// The struct-method spelling SEQ36's own example uses.
+struct Bag {
+    items: Vec<i32>
+}
+
+extend Bag {
+    public func walk(self) -> Sequence<i32> {
+        return |yield| {
+            mut i = 0
+            while i < self.items.len() {
+                if !yield(self.items[i]) {
+                    return
+                }
+                i = i + 1
+            }
+        }
+    }
+}
+
+test "a method hands back a sequence over its receiver" {
+    mut v = Vec<i32>.new()
+    v.push(4)
+    v.push(5)
+    let bag = Bag { items: v }
+    mut total = 0
+    for x in bag.walk() {
+        total = total + x
+    }
+    assert total == 9
+    let s = bag.walk()
+    assert s.count() == 2u64
+}

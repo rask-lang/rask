@@ -187,8 +187,8 @@ impl Interpreter {
                 captured_env,
             } => {
                 self.env.push_scope();
-                for (k, v) in captured_env {
-                    self.env.define(k.clone(), v.clone());
+                for (k, cell) in captured_env {
+                    self.env.define_slot(k.clone(), cell.clone());
                 }
                 if let Some(param_name) = params.first() {
                     self.env.define(param_name.clone(), arg);
@@ -227,8 +227,8 @@ impl Interpreter {
                 }
 
                 self.env.push_scope();
-                for (k, v) in captured_env {
-                    self.env.define(k.clone(), v.clone());
+                for (k, cell) in captured_env {
+                    self.env.define_slot(k.clone(), cell.clone());
                 }
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
                 self.env.pop_scope();
@@ -263,8 +263,8 @@ impl Interpreter {
                 })?;
 
                 self.env.push_scope();
-                for (k, v) in captured_env {
-                    self.env.define(k.clone(), v.clone());
+                for (k, cell) in captured_env {
+                    self.env.define_slot(k.clone(), cell.clone());
                 }
                 let param_name = params
                     .first()
@@ -407,8 +407,8 @@ impl Interpreter {
                 })?;
 
                 self.env.push_scope();
-                for (k, v) in captured_env {
-                    self.env.define(k.clone(), v.clone());
+                for (k, cell) in captured_env {
+                    self.env.define_slot(k.clone(), cell.clone());
                 }
                 let param_name = params
                     .first()
