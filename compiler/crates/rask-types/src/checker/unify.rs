@@ -103,8 +103,22 @@ impl TypeChecker {
         let leftovers = std::mem::take(&mut self.ctx.constraints);
         for constraint in leftovers {
             match constraint {
-                TypeConstraint::HasField { ty, field, span, .. } => {
+                TypeConstraint::HasField { ty, field, expected, span, self_type } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    // A receiver that's still a variable has something left to
+                    // wait for, the same as the `HasMethod` case below — and the
+                    // commonest one is a closure parameter, which its *caller*
+                    // pins when the method taking the closure resolves. That can
+                    // land after this pass, and dropping the constraint here left
+                    // `|x, y| x.rank.compare(y.rank)` with no type for `x.rank`
+                    // at all: four open nodes per `sort_by` (#1026). Retry it
+                    // once everything else has settled.
+                    if matches!(resolved, Type::Var(_)) {
+                        self.deferred_fields.push(TypeConstraint::HasField {
+                            ty, field, expected, span, self_type,
+                        });
+                        continue;
+                    }
                     if !Self::is_placeholder_type(&resolved) {
                         self.errors.push(TypeError::NoSuchField {
                             ty: resolved,
@@ -227,6 +241,23 @@ impl TypeChecker {
     /// method that doesn't exist on the type the literal defaulted to was
     /// accepted here and failed later — in MIR lowering, in codegen, or not at
     /// all.
+    /// Field accesses whose receiver was still a variable when the leftovers
+    /// pass ran. Same shape as the deferred methods next door: one pass, and
+    /// anything still open after it had nothing to wait for.
+    fn retry_deferred_fields(&mut self) {
+        let deferred = std::mem::take(&mut self.deferred_fields);
+        for constraint in deferred {
+            let TypeConstraint::HasField { ref ty, .. } = constraint else { continue };
+            if matches!(self.ctx.apply(ty), Type::Var(_) | Type::Error) {
+                continue;
+            }
+            match self.solve_constraint(constraint) {
+                Ok(_) => {}
+                Err(e) => self.errors.push(e),
+            }
+        }
+    }
+
     pub(super) fn retry_deferred_methods(&mut self) {
         // A deferred call can be waiting on another deferred call. The receiver
         // of `"{n.compare(m)}"`'s `to_string` is compare's *result*, which only
@@ -256,6 +287,7 @@ impl TypeChecker {
                 break;
             }
         }
+        self.retry_deferred_fields();
         // Anything still deferred has nothing left to wait for. Those were
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.

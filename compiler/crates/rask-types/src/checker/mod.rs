@@ -354,6 +354,9 @@ pub struct TypeChecker {
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
+    /// Field accesses whose receiver was still open when the leftovers pass ran
+    /// — a closure parameter, most often, which its caller pins later.
+    pub(super) deferred_fields: Vec<TypeConstraint>,
     /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
@@ -488,6 +491,7 @@ impl TypeChecker {
             pending_int_literals: Vec::new(),
             pending_discards: Vec::new(),
             deferred_methods: Vec::new(),
+            deferred_fields: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),

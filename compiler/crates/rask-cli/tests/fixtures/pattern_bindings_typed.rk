@@ -40,6 +40,7 @@ func main() {
     println(unwrap_text(Holder<string>.Full("text")))
     println(describe(Value.Num(1.5), Value.Text("tail")))
     println(none_from_context(Vec<string>.new(), 0))
+    println("{sorted_rows().len()}")
 }
 
 // `none` has no payload type of its own — whatever it's compared or assigned
@@ -63,4 +64,26 @@ func none_from_context(v: Vec<string>, i: i64) -> bool {
     let popped = v.get(i)
     let dropped = maybe(i) catch _ => none
     return popped == none && dropped == none
+}
+
+// A closure parameter is pinned by the *caller* — the method taking the closure
+// resolves after the body has been walked. A field read on that parameter left
+// its `HasField` constraint waiting, and the leftovers pass dropped it, so
+// `x.rank` had no type at all: four open nodes per `sort_by` (#1026, cluster 1).
+struct Row {
+    rank: i64
+    name: string
+}
+
+func sorted_rows() -> Vec<Row> {
+    mut rows: Vec<Row> = []
+    rows.push(Row { rank: 2, name: "b" })
+    rows.push(Row { rank: 1, name: "a" })
+    rows.sort_by(|x, y| {
+        return x.rank.compare(y.rank)
+    })
+    rows.sort_by_key(|r| {
+        return r.name
+    })
+    return rows
 }
