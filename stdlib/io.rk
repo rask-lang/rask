@@ -188,11 +188,10 @@ extend Stdin with Reader {
     /// Read all remaining bytes as UTF-8 string.
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes)
-        text catch e => {
+        let text = string.from_utf8(bytes) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
-        return try text
+        return text
     }
 }
 
@@ -376,11 +375,10 @@ extend Buffer with Reader {
     /// way every other failure on a stream is.
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes)
-        text catch e => {
+        let text = string.from_utf8(bytes) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
-        return try text
+        return text
     }
 }
 

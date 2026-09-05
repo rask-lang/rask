@@ -36,9 +36,13 @@ extend Config with Displayable {
     }
 }
 
+// `try` propagates the bad branch unchanged, and this function's bad branch is
+// `none` — a `ParseError` can't leave through it. `catch _ => none` is the
+// acknowledged drop (ER14a): unparseable and absent read the same to a caller
+// that only asked for a port.
 func parse_port(raw: string?) -> u16? {
     let s = try raw
-    return try s.parse<u16>()
+    return s.parse<u16>() catch _ => none
 }
 
 // Read-heavy shared state (conc.sync SY1): many request tasks read it,

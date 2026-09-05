@@ -412,9 +412,7 @@ extend JsonParser {
         }
 
         let num_str = self.input[start..self.pos].to_string()
-        let n = try {
-            try num_str.parse<f64>()
-        } catch _e => {
+        let n = num_str.parse<f64>() catch _e => {
             return JsonError.ParseError("invalid number: {num_str}")
         }
         return JsonValue.Number(n)

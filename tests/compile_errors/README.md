@@ -108,6 +108,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [context_ambiguous.rk](context_ambiguous.rk) | Ambiguous pool context |
 | [context_unavailable.rk](context_unavailable.rk) | Pool context not in scope |
 | [context_unnamed_structural.rk](context_unnamed_structural.rk) | Unnamed context used as binding |
+| [catch_binding_type.rk](catch_binding_type.rk) | The value `catch e =>` binds, checked against an annotation (E0308, #950) — it used to satisfy any type, which is how `grep_clone` lost every error message it printed |
 | [enum_payload_mismatch.rk](enum_payload_mismatch.rk) | A variant payload that genuinely doesn't match, reported with the declared type as the expectation (E0308, #922) — it used to be named as "found" |
 | [wide_scalar_copy_threshold.rk](wide_scalar_copy_threshold.rk) | An `i128` field counting its real 16 bytes, so a 24-byte struct moves instead of copying (E0800, #936) — and reports once, not twice (#1092) |
 | [unknown_allow_name.rk](unknown_allow_name.rk) | `@allow(name)` where nothing answers to `name` (E0855, #1085) — the warning fired as if the annotation weren't there, which is exactly what a correctly-suppressed one looks like |

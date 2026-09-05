@@ -4437,6 +4437,21 @@ fn an_enum_payload_mismatch_names_the_declared_type() {
     );
 }
 
+/// #950: `catch e =>` bound a value that type-checked against anything, so
+/// `examples/grep_clone.rk` handed an `IoError` to a `FileError(string)` variant
+/// and printed nothing where the reason belonged. The binder always carried the
+/// right type; unification deferred a name it could have resolved, and nothing
+/// discharged the deferred constraint.
+#[test]
+fn a_catch_binding_has_a_type() {
+    let (failed, output) = compile_error_output("catch_binding_type.rk");
+    assert!(failed, "an IoError is not an i64:\n{output}");
+    assert!(
+        output.contains("expected `i64`, found `IoError`"),
+        "and the message has to name both:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).

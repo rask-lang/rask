@@ -1143,6 +1143,17 @@ impl TypeChecker {
             }
 
             ExprKind::Try { expr: inner } => {
+                // ER18: `try { … } catch e => …`. `catch` binds tighter than the
+                // `try` prefix, so the parse is `Try(Catch(Block))` — the arm
+                // below in `Catch` looks for the other nesting and never fired,
+                // which is how the handler ended up covering nothing (#950).
+                if let ExprKind::Catch { value: caught, clause } = &inner.kind {
+                    if matches!(caught.kind, ExprKind::Block(_)) {
+                        return self.check_try_block_with_handler(
+                            caught, clause, expr.span,
+                        );
+                    }
+                }
                 // ER17: `try { … }` block form. Inner `try`s propagate on their
                 // own; the block's value is this expression's.
                 if matches!(&inner.kind, ExprKind::Block(_)) {
@@ -1179,6 +1190,20 @@ impl TypeChecker {
                             });
                             return Type::Error;
                         }
+                        // ER18: inside `try { … } catch e => …` the handler
+                        // covers the block, so this error goes to it and not to
+                        // the enclosing function. It used to be matched against
+                        // the function's error type — `try { try s.parse<f64>() }
+                        // catch _e =>` in a `f64 or LowError` function propagated
+                        // a `ParseError` past its own handler — and the mismatch
+                        // was swallowed because a stdlib name deferred instead of
+                        // resolving (#950). The block can leave through the
+                        // handler whether or not the function has an error
+                        // branch, so `error_can_leave` doesn't apply either.
+                        if let Some(target) = self.try_block_errors.last().cloned() {
+                            self.propagate_try_error(expr.id, err, &target, expr.span);
+                            return *ok.clone();
+                        }
                         if !self.error_can_leave(expr.span) {
                             return Type::Error;
                         }
@@ -1203,6 +1228,21 @@ impl TypeChecker {
                         *ok.clone()
                     }
                     Type::Var(_) => {
+                        // ER18 again, for an operand whose own type hasn't
+                        // settled yet — `try s.parse<f64>()` inside a `try { … }
+                        // catch`. The block's handler is the target, the same as
+                        // in the resolved case above.
+                        if let Some(target) = self.try_block_errors.last().cloned() {
+                            let ok_ty = self.ctx.fresh_var();
+                            let err_ty = self.ctx.fresh_var();
+                            let result_ty = Type::Result {
+                                ok: Box::new(ok_ty.clone()),
+                                err: Box::new(err_ty.clone()),
+                            };
+                            let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                            self.propagate_try_error(expr.id, &err_ty, &target, expr.span);
+                            return ok_ty;
+                        }
                         if let Some(return_ty) = &self.current_return_type {
                             let resolved_ret = self.ctx.apply(return_ty);
                             match &resolved_ret {
@@ -1286,36 +1326,7 @@ impl TypeChecker {
                     _ => false,
                 };
                 if is_try_block {
-                    let block_ty = self.infer_expr(value);
-                    let err_ty = self
-                        .current_return_type
-                        .as_ref()
-                        .map(|t| self.ctx.apply(t))
-                        .and_then(|t| match t {
-                            Type::Result { err, .. } => Some(*err),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| self.ctx.fresh_var());
-                    self.push_scope();
-                    if !clause.is_discard() {
-                        self.define_local_bound(
-                            clause.binder.clone(),
-                            err_ty,
-                            super::BoundFrom::Payload,
-                        );
-                    }
-                    let handler_ty = self.infer_expr(&clause.body);
-                    self.pop_scope();
-                    // A diverging handler produces nothing, and constraining it
-                    // would drag the whole expression's type down to `!`.
-                    if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            block_ty.clone(),
-                            handler_ty,
-                            expr.span,
-                        ));
-                    }
-                    return block_ty;
+                    return self.check_try_block_with_handler(value, clause, expr.span);
                 }
 
                 let val_ty = self.infer_expr(value);
@@ -1566,6 +1577,7 @@ impl TypeChecker {
                 // Save enclosing return type — `return` inside a closure
                 // returns from the closure, not the enclosing function
                 let outer_return_type = self.current_return_type.take();
+                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
@@ -1576,6 +1588,7 @@ impl TypeChecker {
 
                 self.pop_scope();
                 self.current_return_type = outer_return_type;
+                self.try_block_errors = outer_try_blocks;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
 
@@ -1730,6 +1743,7 @@ impl TypeChecker {
 
                 // Spawn blocks are like anonymous functions - they have their own return type
                 let outer_return_type = self.current_return_type.take();
+                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
@@ -1768,6 +1782,7 @@ impl TypeChecker {
                 ));
 
                 self.current_return_type = outer_return_type;
+                self.try_block_errors = outer_try_blocks;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
 
@@ -3550,6 +3565,56 @@ impl TypeChecker {
     /// force: `try dto.validate()` inside a `-> Response or ApiError` handler
     /// would pin `validate`'s own error type to `ApiError` before method
     /// resolution ever ran, and the real signature then looks like the mistake.
+    /// ER18: `try { … } catch e => …`. The handler covers the whole block — the
+    /// first error any inner `try` raises goes to it — so the binder is whatever
+    /// the block propagates, not the enclosing function's error type.
+    fn check_try_block_with_handler(
+        &mut self,
+        block: &Expr,
+        clause: &rask_ast::expr::CatchClause,
+        span: Span,
+    ) -> Type {
+        let block_err = self.ctx.fresh_var();
+        self.try_block_errors.push(block_err.clone());
+        let block_ty = self.infer_expr(block);
+        self.try_block_errors.pop();
+        // A block with no `try` in it leaves the variable open; the enclosing
+        // function's error type is the only other thing the binder could stand
+        // for, and that's what this used to read in every case.
+        let err_ty = match self.ctx.apply(&block_err) {
+            Type::Var(_) => self
+                .current_return_type
+                .as_ref()
+                .map(|t| self.ctx.apply(t))
+                .and_then(|t| match t {
+                    Type::Result { err, .. } => Some(*err),
+                    _ => None,
+                })
+                .unwrap_or(block_err),
+            settled => settled,
+        };
+        self.push_scope();
+        if !clause.is_discard() {
+            self.define_local_bound(
+                clause.binder.clone(),
+                err_ty,
+                super::BoundFrom::Payload,
+            );
+        }
+        let handler_ty = self.infer_expr(&clause.body);
+        self.pop_scope();
+        // A diverging handler produces nothing, and constraining it would drag
+        // the whole expression's type down to `!`.
+        if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
+            self.ctx.add_constraint(TypeConstraint::Equal(
+                block_ty.clone(),
+                handler_ty,
+                span,
+            ));
+        }
+        block_ty
+    }
+
     pub(super) fn propagate_try_error(
         &mut self,
         node: rask_ast::NodeId,

@@ -1480,6 +1480,24 @@ impl TypeChecker {
             }
 
             (Type::UnresolvedNamed(_), _) | (_, Type::UnresolvedNamed(_)) => {
+                // Resolve the name before giving up on it. A stdlib signature
+                // arrives spelled `UnresolvedNamed("IoError")` while the type
+                // table holds the same type as `Named(id)`, and deferring a name
+                // that *is* declared parks the constraint where nothing
+                // discharges it — so the mismatch is never reported at all.
+                // That's why `catch e => { let x: i64 = e }` on an `IoError`
+                // type-checked, and `grep_clone` lost every error message it
+                // ever tried to print (#950).
+                //
+                // A name that still won't resolve is a type parameter mid-flight
+                // and keeps the old deferral.
+                let r1 = self.resolve_named(&t1);
+                let r2 = self.resolve_named(&t2);
+                let both_known = !matches!(r1, Type::UnresolvedNamed(_))
+                    && !matches!(r2, Type::UnresolvedNamed(_));
+                if both_known && (r1 != t1 || r2 != t2) {
+                    return self.unify(&r1, &r2, span);
+                }
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(t1, t2, span));
                 Ok(false)

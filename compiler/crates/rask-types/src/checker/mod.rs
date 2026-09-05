@@ -182,6 +182,10 @@ pub struct TypeChecker {
     /// even when it did infer — `let x: f64 = "42".parse<i64>()!` type-checked
     /// and ran the float parse (#1029).
     pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
+    /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
+    /// `try`s propagate to the innermost of these instead of to the enclosing
+    /// function, which is what makes the handler cover the block.
+    pub(super) try_block_errors: Vec<Type>,
     /// Interpolations that asked for `{:debug}`, by the `__fmt` call's NodeId.
     ///
     /// Every type derives Debug (std.fmt/G2), so `{:debug}` needs nothing of
@@ -440,6 +444,7 @@ impl TypeChecker {
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             written_method_type_args: HashMap::new(),
+            try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),

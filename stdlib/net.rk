@@ -140,11 +140,10 @@ extend TcpConnection {
     /// TcpConnection_read_text" while the interpreter ran it (#863).
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes)
-        text catch e => {
+        let text = string.from_utf8(bytes) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
-        return try text
+        return text
     }
 
     /// Write text to the connection — its UTF-8 bytes, nothing added.
