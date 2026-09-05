@@ -3,13 +3,19 @@
 # Every `// ERROR` line in that directory claims the compiler rejects the code
 # below it. `compile_error()` only ever checked that the file failed *somewhere*,
 # so a marker whose rule had never been implemented — or had stopped firing —
-# looked exactly like one that worked. 49 of 358 turned out to answer nothing.
+# looked exactly like one that worked. 52 of 363 turned out to answer nothing.
 #
 # The gate now anchors each marker to a line: a marker must be followed by a
 # diagnostic before the next marker. The counts below are the ones still
-# outstanding. They may only go DOWN — the test fails if a file grows a new dead
-# marker, and fails if a count here is too high, so a fix can't be made and left
-# unrecorded.
+# outstanding. They go DOWN on their own — the test fails if a file grows a new
+# dead marker, and fails if a count here is too high, so a fix can't be made and
+# left unrecorded.
+#
+# A count going UP needs a reason in the commit, and there is only one good one:
+# a diagnostic that was answering the marker by accident has been removed, so a
+# claim nobody was checking becomes visible. Three files went up that way when
+# fixtures that had forgotten `mut` on their own locals stopped reporting
+# `E0322 cannot mutate — declared let` over the rule they meant to test.
 #
 # Two ways off this list. Either the rule is real and the marker should fire, in
 # which case the compiler needs the check (that is the interesting case — see
@@ -19,22 +25,20 @@
 #
 # Format: <file> <count of dead markers>
 
-borrow_errors.rk                         11
+borrow_errors.rk                         15
 borrow_stored.rk                         1
 branch_merge.rk                          5
 closure_errors.rk                        3
 comptime_field_name.rk                   2
 consumed_borrow_param.rk                 1
+context_ambiguous.rk                     1
 context_missing.rk                       1
 context_unavailable.rk                   1
 context_unnamed_structural.rk            1
-cross_task_ownership.rk                  1
-for_mutate_errors.rk                     2
+for_mutate_errors.rk                     1
 linear_containers.rk                     1
 match_errors.rk                          5
-own_capture_moves_noncopy.rk             1
-ownership_errors.rk                      6
-rack_link_use_after_delete.rk            1
+ownership_errors.rk                      8
 sl2_closure_escape.rk                    1
 syntax_rejected.rk                       3
 type_errors.rk                           2

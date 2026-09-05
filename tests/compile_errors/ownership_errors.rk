@@ -6,7 +6,7 @@
 // --- use after move (O3) ---
 // ERROR: 'v' used after being moved
 func test_use_after_move() {
-    let v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     v.push(1)
     let v2 = v
     v.push(2)       // ERROR: v was moved to v2
@@ -27,7 +27,7 @@ func test_use_after_take() {
 // --- use after move in one branch (O3 edge case) ---
 // ERROR: 'v' may have been moved
 func test_conditional_move(cond: bool) {
-    let v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     if cond {
         let v2 = v     // moved in this branch
     }
@@ -37,7 +37,7 @@ func test_conditional_move(cond: bool) {
 // --- double move (O3) ---
 // ERROR: 'v' used after being moved
 func test_double_move() {
-    let v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     let a = v
     let b = v          // ERROR: v already moved to a
 }
@@ -95,7 +95,7 @@ func test_double_consume() {
 func take_vec(take v: Vec<i32>) {}
 
 func test_vec_no_copy() {
-    let v = Vec<i32>.new()
+    mut v = Vec<i32>.new()
     take_vec(v)
     v.push(1)            // ERROR: v was taken
 }
