@@ -548,6 +548,18 @@ impl TypeChecker {
                         self.local_shared_uses.push((name.clone(), ty.clone(), expr.span));
                     }
                     ty
+                } else if let Some(type_id) = self
+                    .types
+                    .alias_target(name)
+                    .and_then(|target| self.types.get_type_id(target))
+                {
+                    // A transparent alias used where a type name goes — the
+                    // receiver of `Zwibble.make(7)`, say. The resolver points
+                    // the name at the alias declaration, whose symbol carries no
+                    // type, so the node came back a fresh variable and stayed
+                    // one. An alias is the target under another spelling, so
+                    // answer the target (#1026).
+                    Type::Named(type_id)
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
                 } else if let Some(type_id) = self.types.get_type_id(name) {
@@ -931,6 +943,7 @@ impl TypeChecker {
                     self.errors.push(TypeError::MatchOnOption { span: expr.span });
                 }
                 let result_ty = self.ctx.fresh_var();
+                let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
@@ -950,6 +963,7 @@ impl TypeChecker {
                     let resolved_arm_ty = self.ctx.apply(&arm_ty);
                     // In statement position, arm types don't need to agree.
                     if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
+                        every_arm_diverges = false;
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             result_ty.clone(),
                             arm_ty,
@@ -961,7 +975,17 @@ impl TypeChecker {
                 // Exhaustiveness check for enum scrutinees
                 self.check_match_exhaustiveness(&scrutinee_ty, arms, expr.span);
 
-                if is_stmt { Type::Unit } else { result_ty }
+                if is_stmt {
+                    Type::Unit
+                } else if every_arm_diverges {
+                    // Every arm returns, so nothing comes back out of the match
+                    // and no arm ever constrained the result. It stayed a fresh
+                    // variable, which is the same "no type" a genuine inference
+                    // failure leaves behind (#1026).
+                    Type::Never
+                } else {
+                    result_ty
+                }
             }
 
             ExprKind::Block(stmts) => {

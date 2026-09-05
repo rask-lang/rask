@@ -2,6 +2,8 @@
 // Every binding these patterns introduce must come out of the checker with a
 // real type. See `open_nodes_pattern_bindings` in compile_run.rs.
 
+import memory.Heap
+
 enum Holder<T> {
     Full(T)
     Empty
@@ -86,4 +88,69 @@ func sorted_rows() -> Vec<Row> {
         return r.name
     })
     return rows
+}
+
+// A map with no annotation: the key type has nowhere to come from but the first
+// index write, and the check that compares the two never wrote the answer back
+// (#1026, cluster 3).
+func word_counts() -> i64 {
+    mut counts = Map.new()
+    counts["a"] = 1
+    counts["b"] = 2
+    return counts["a"] + counts["b"]
+}
+
+// A transparent alias standing where a type name goes. The resolver points the
+// name at the alias declaration, whose symbol carries no type, so the receiver
+// node came back a fresh variable and stayed one.
+struct Budget {
+    n: i64
+}
+
+extend Budget {
+    func make(v: i64) -> Budget {
+        return Budget { n: v }
+    }
+}
+
+type alias Allowance = Budget
+
+func through_alias() -> i64 {
+    let b: Allowance = Allowance.make(7)
+    return b.n
+}
+
+// A named-payload arm can leave the enum off. Then there was no name to look up
+// and every field went back to a fresh variable, so `at` had no type.
+enum Status {
+    Pending
+    Completed { at: i64 }
+}
+
+func when(s: Status) -> i64 {
+    return match s {
+        Pending => 0,
+        Completed { at } => at,
+    }
+}
+
+// A recursive enum keeps its tail behind a `Heap`, and mem.heap/HP5 lets the box
+// stand for what it holds. The variant lookup asked `Heap` for a `Cons` and got
+// nothing, so `second` had no type.
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+func second_of(l: List) -> i64 {
+    match l {
+        List.Cons(_, rest) => {
+            match rest {
+                List.Cons(second, _) => return second
+                List.Nil => return 0
+            }
+        }
+        List.Nil => return 0
+    }
+    return 0
 }

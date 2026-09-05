@@ -148,6 +148,30 @@ impl TypeChecker {
         None
     }
 
+    /// Spell a variant pattern's name as `Enum.Variant`.
+    ///
+    /// An already-qualified name is left alone. A bare one is looked up in the
+    /// scrutinee's own enum, which is the only thing that can say which enum a
+    /// bare `Completed { at }` belongs to.
+    fn qualify_variant_name(&mut self, name: &str, scrutinee_ty: &Type) -> String {
+        if name.contains('.') {
+            return name.to_string();
+        }
+        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+        let id = match resolved {
+            Type::Named(id) => id,
+            Type::Generic { base, .. } => base,
+            _ => return name.to_string(),
+        };
+        let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else {
+            return name.to_string();
+        };
+        if !variants.iter().any(|(v, _)| v == name) {
+            return name.to_string();
+        }
+        format!("{}.{}", self.types.type_name(id), name)
+    }
+
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
         match pattern {
             Pattern::Wildcard => vec![],
@@ -242,6 +266,12 @@ impl TypeChecker {
                 // The name isn't a type, so the struct lookup below missed it and
                 // every field got a fresh variable: `kind` had no type at all,
                 // and `let x: i64 = kind` type-checked (#809).
+                //
+                // The arm can leave the enum off — `match s { Completed { at } =>
+                // … }` — and then there was no name to look up either, so the
+                // fields went back to fresh variables and `at` had no type
+                // (#1026). The scrutinee says which enum it is; ask it.
+                let name = &self.qualify_variant_name(name, scrutinee_ty);
                 if let Some(variant_fields) = self.types.struct_variant_fields(name) {
                     let mut bindings = vec![];
                     for (field_name, field_pattern) in fields {
@@ -494,6 +524,26 @@ impl TypeChecker {
         }
     }
 
+    /// The enum a qualified pattern names, with its declared type parameters.
+    ///
+    /// `List.Cons(head, rest)` says `List` outright; nothing else has to be
+    /// known for that. Returns `None` for a bare variant name or a prefix that
+    /// isn't an enum.
+    fn enum_id_from_pattern_name(
+        &self,
+        name: &str,
+    ) -> Option<(crate::types::TypeId, Vec<String>)> {
+        let (enum_name, variant) = name.rsplit_once('.')?;
+        let id = self.types.get_type_id(enum_name)?;
+        let TypeDef::Enum { variants, type_params, .. } = self.types.get(id)? else {
+            return None;
+        };
+        if !variants.iter().any(|(v, _)| v == variant) {
+            return None;
+        }
+        Some((id, type_params.clone()))
+    }
+
     pub(super) fn check_constructor_pattern(
         &mut self,
         name: &str,
@@ -626,6 +676,11 @@ impl TypeChecker {
         // nothing ever solved. The value came out right anyway because MIR's
         // fallback guesses a machine word, which is what an `i64` payload is —
         // a `string` or `f64` payload in the same position would not have been.
+        // `Heap<List>` arrives spelled, not registered — the declared field type
+        // of a recursive enum never went through the type table. Normalizing
+        // first turns it into `Generic { base: Heap, args: [Named(List)] }`, so
+        // both the lookup below and the box case further down can read it.
+        let resolved_scrutinee = normalize_type(&resolved_scrutinee, &self.types);
         let (base_id, type_args) = match &resolved_scrutinee {
             Type::Named(id) => (Some(*id), Vec::new()),
             Type::Generic { base, args } => (
@@ -637,6 +692,22 @@ impl TypeChecker {
                     })
                     .collect(),
             ),
+            // The scrutinee hasn't been worked out yet — a value returned by a
+            // channel receive, or bound by an enclosing pattern that was in the
+            // same state. A qualified pattern names its own enum, though, so the
+            // payload types are readable from that alone, instead of binding
+            // every field to a fresh variable nothing ever solves (#1026).
+            //
+            // The scrutinee is *not* pinned to that enum. It may well be a
+            // `void or GrowError<i32>` and the arm matching only its error side,
+            // and saying the whole thing is a `GrowError` rejects the match.
+            Type::Var(_) => match self.enum_id_from_pattern_name(name) {
+                Some((id, params)) => (
+                    Some(id),
+                    params.iter().map(|_| self.ctx.fresh_var()).collect(),
+                ),
+                None => (None, Vec::new()),
+            },
             _ => (None, Vec::new()),
         };
 
@@ -675,6 +746,56 @@ impl TypeChecker {
                     bindings.extend(self.check_pattern(pat, &field_ty, span));
                 }
                 return bindings;
+            }
+        }
+
+        // The enum inside a box. `Heap<List>` is a `List` to a pattern —
+        // mem.heap/HP5 lets the box stand for what it holds — but the lookup
+        // above asked `Heap` for a `Cons` variant, got nothing, and bound every
+        // field to a fresh variable instead (#1026). Only the enum the pattern
+        // itself names, and only when the box really holds it.
+        if let Some((enum_id, type_params)) = self.enum_id_from_pattern_name(name) {
+            let held = type_args.iter().any(|a| {
+                let a = normalize_type(&self.ctx.apply(a), &self.types);
+                matches!(a, Type::Named(id) | Type::Generic { base: id, .. } if id == enum_id)
+            });
+            if held {
+                let variant_field_types = self.types.get(enum_id).and_then(|def| {
+                    let TypeDef::Enum { variants, .. } = def else { return None };
+                    variants
+                        .iter()
+                        .find(|(n, _)| n == variant_lookup_name)
+                        .map(|(_, f)| f.clone())
+                });
+                if let Some(variant_field_types) = variant_field_types {
+                    if fields.len() != variant_field_types.len() {
+                        self.errors.push(TypeError::ArityMismatch {
+                            expected: variant_field_types.len(),
+                            found: fields.len(),
+                            span,
+                        });
+                        return vec![];
+                    }
+                    // A generic enum reached through a box has no arguments
+                    // here; a fresh variable per parameter is honest about that.
+                    let fresh: Vec<Type> =
+                        type_params.iter().map(|_| self.ctx.fresh_var()).collect();
+                    let subst: HashMap<&str, Type> = type_params
+                        .iter()
+                        .map(|p| p.as_str())
+                        .zip(fresh.into_iter())
+                        .collect();
+                    let mut bindings = vec![];
+                    for (pat, field_ty) in fields.iter().zip(variant_field_types.iter()) {
+                        let field_ty = if subst.is_empty() {
+                            field_ty.clone()
+                        } else {
+                            Self::substitute_type_params(field_ty, &subst)
+                        };
+                        bindings.extend(self.check_pattern(pat, &field_ty, span));
+                    }
+                    return bindings;
+                }
             }
         }
 
