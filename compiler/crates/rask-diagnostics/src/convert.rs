@@ -2712,7 +2712,10 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     name
                 ))
                 .with_code("E0805")
-                .with_primary(self.span, "resource goes out of scope here")
+                .with_primary(
+                    self.span,
+                    format!("scope ends after this, and `{}` is still owed", name),
+                )
                 .with_help(format!(
                     "consume the resource inside `{}`, then `discard {}` — or hold it \
                      somewhere the compiler can name, like a plain field",
@@ -2735,7 +2738,14 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     name
                 ))
                 .with_code("E0805")
-                .with_primary(self.span, "resource goes out of scope here")
+                // The span is the block's last statement, which is where the
+                // scope ends — not always where the resource is. On an `if`
+                // that consumes on one branch only, "resource goes out of scope
+                // here" pointed at the `if` and read as nonsense.
+                .with_primary(
+                    self.span,
+                    format!("scope ends after this, and `{}` is still owed", name),
+                )
                 .with_help(format!(
                     "call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup",
                     name

@@ -4278,14 +4278,25 @@ impl Parser {
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
             } else if is_mutate {
+                // CP3 says the untyped form is a mutable capture, and nothing
+                // implements those yet. The old message asked for a type, which
+                // turns it into the parameter form — a different thing that
+                // writes to an argument instead of the enclosing variable, and
+                // compiles without saying so.
                 return Err(ParseError {
                     span: mutate_span,
-                    message: format!(
-                        "closure parameter '{}' with 'mutate' requires an explicit type",
+                    message: format!("capturing `{}` by `mutate` isn't implemented yet", name),
+                    hint: Some(format!(
+                        "pass it instead — `func bump(mutate {}: T) {{ … }}` — or hold the \
+                         state in a `Shared` box and write through that inside the closure",
                         name
-                    ),
-                    hint: Some(format!("write it as |mutate {}: T|", name)),
-                    why: None,
+                    )),
+                    why: Some(format!(
+                        "`|mutate {}|` is capture syntax, not a parameter (mem.closures/CP3): \
+                         `{}` is the enclosing variable and the closure writes through to it. \
+                         The typed form `|mutate {}: T|` is the parameter, and that one works",
+                        name, name, name
+                    )),
                 });
             } else {
                 None

@@ -1,31 +1,37 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: Closure violations
+// Rejects: closure rule violations
 //
-// Spec: mem.closures (MC1-MC4, SL1-SL2, IO1-IO4)
+// Spec: mem.closures (MC1-MC4, SL1-SL2, CP1-CP4)
+//
+// Everything below is a parse error, and a parse error stops the pipeline
+// before the checker runs — so the markers here can only claim rules the
+// *parser* enforces. That is the whole of what this file can test today,
+// because the two closure features it was written for don't exist:
+//
+//   - mutable capture (`|mutate x|`, MC1–MC4) — #1087. The capture syntax is
+//     rejected outright, so MC2's "already mutably captured" can never fire.
+//   - a closure type in a signature (`-> ||`) — the parser wants a name there,
+//     so the SL2 escape case can't be written down either.
+//
+// When either lands, the case moves to a file whose errors come from the pass
+// that rejects it, the way `?`-propagation moved to rust_error_propagation.rk.
 
-// --- mutable capture conflict (MC2) ---
-// ERROR: variable 'x' already mutably captured
-func test_double_mutable_capture() {
+// --- mutable capture is capture syntax, not a parameter (CP3) ---
+func test_mutable_capture() {
     mut x = 0
+    // ERROR: capturing `x` by `mutate` isn't implemented yet [mem.closures/CP3]
     let a = |mutate x| { x += 1 }
-    let b = |mutate x| { x += 2 }   // ERROR: x already captured by a
+    // ERROR: capturing `x` by `mutate` isn't implemented yet [mem.closures/CP3]
+    let b = |mutate x| { x += 2 }
 }
 
-// --- scope-limited closure escape (SL2) ---
-// ERROR: closure cannot escape scope
+// --- a closure type in a return position ---
 struct Entity { tags: Vec<string> }
 
+// ERROR: a closure type can't be written in a signature yet
 func test_closure_escape() -> || {
     let entity = Entity { tags: Vec.new() }
     let tags = entity.tags           // block-scoped borrow
     let f = || println("{tags.len()}")
-    return f                           // ERROR: f captures scoped borrow
-}
-
-// --- mutate parameter on closure (mem.closures) ---
-// ERROR: closure parameters use borrow mode only
-func test_closure_mutate_param() {
-    let f = |mutate x: i32| { x += 1 }   // ERROR: ambiguous — is this
-                                             // mutable capture or mutate param?
-    // Closures don't support mutate/take params. Extract to a function.
+    return f                         // SL2 would reject this, if it got here
 }

@@ -3,7 +3,7 @@
 # Every `// ERROR` line in that directory claims the compiler rejects the code
 # below it. `compile_error()` only ever checked that the file failed *somewhere*,
 # so a marker whose rule had never been implemented — or had stopped firing —
-# looked exactly like one that worked. 49 of 362 turned out to answer nothing.
+# looked exactly like one that worked. 41 of 354 turned out to answer nothing.
 #
 # The gate now anchors each marker to a line: a marker must be followed by a
 # diagnostic before the next marker. The counts below are the ones still
@@ -27,8 +27,6 @@
 
 borrow_errors.rk                         15
 borrow_stored.rk                         1
-branch_merge.rk                          5
-closure_errors.rk                        3
 comptime_field_name.rk                   2
 consumed_borrow_param.rk                 1
 context_ambiguous.rk                     1
