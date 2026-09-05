@@ -227,7 +227,22 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                     // Look up user-defined types from the layout cache first — a user
                     // struct can be named the same as a builtin container (e.g. `Wide`),
                     // and its real, cached size must win over the builtin guess below.
-                    if let Some(&cached) = cache.get(name.as_str()) {
+                    //
+                    // Except a zero. A container's stdlib declaration is an empty
+                    // struct standing in for an opaque runtime pointer, so the
+                    // cache reports `Vec` as nothing at all — and a `Vec<i64>?`
+                    // type argument, whose name loses its `<i64>` on the way here,
+                    // sized as one byte of tag with no payload. The instance
+                    // layout then came out smaller than the shared one, was
+                    // dropped as pointless, and the struct literal wrapped its
+                    // field against the shared layout's placeholder: a bare `Vec`
+                    // stored where a `Vec?` goes, tag never written, and the read
+                    // came back `none` (#1081). No user struct is zero-sized *and*
+                    // named after a container, so this costs nothing.
+                    let cached_size = cache
+                        .get(name.as_str())
+                        .filter(|(size, _)| *size > 0 || !is_opaque_container_name(name));
+                    if let Some(&cached) = cached_size {
                         cached
                     } else if is_typevar_name(name) {
                         // Unsubstituted type parameter — pointer-sized fallback,
@@ -484,6 +499,19 @@ fn resolve_field_type(
         }
         _ => (parsed, false),
     }
+}
+
+/// A builtin container or box, written without its type arguments.
+///
+/// Each is an opaque runtime pointer whose Rask declaration is an empty struct,
+/// so the layout cache holds a zero for it that isn't the truth.
+fn is_opaque_container_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Vec" | "Wide" | "Map" | "Set" | "Handle" | "Pool" | "Rack" | "Link"
+            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
+            | "Sender" | "Receiver"
+    )
 }
 
 /// Check whether a struct has `@layout(C)` attribute.

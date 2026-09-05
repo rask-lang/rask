@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct field whose type parameter was instantiated to an optional (#1081).
+//
+// `Holder<Vec<i64>?> { v: items }` read back as `none` natively, and a 24-byte
+// struct payload took the binary down. Payload size decided it: `i64?`, `bool?`
+// and `string?` were fine, anything passed by address wasn't.
+//
+// The cause is a size of zero. A container's stdlib declaration is an empty
+// struct standing in for an opaque runtime pointer, so the layout cache holds
+// `Vec` as nothing at all. A `Vec<i64>?` type argument loses its `<i64>` on the
+// way into the cache lookup — the instance layout it would have named isn't
+// there yet — so it sized as one byte of tag with no payload. That made the
+// instance layout *smaller* than the shared one, which dropped it as pointless,
+// and the struct literal then wrapped its field against the shared layout's
+// word-sized placeholder: a bare `Vec` stored where a `Vec?` goes, the tag never
+// written, and the read finding whatever was in the slot.
+//
+// KNOWN DIVERGENCE: the interpreter fails all of these for an unrelated reason
+// (#1080 — it looks the field type up under the base name, whose field is still
+// declared `T`, so it never wraps either). Fixed on #1042.
+
+struct Holder<T> {
+    public v: T
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+test "a word-sized payload through a type argument" {
+    let h = Holder<i64?> { v: 5 }
+    assert h.v! == 5
+}
+
+test "a bool payload" {
+    let h = Holder<bool?> { v: true }
+    assert h.v!
+}
+
+test "a string payload — sixteen bytes, not a word" {
+    let h = Holder<string?> { v: "hi" }
+    assert h.v! == "hi"
+}
+
+test "a container payload is a pointer, not nothing" {
+    let items: Vec<i64> = [1, 2]
+    let h = Holder<Vec<i64>?> { v: items }
+    assert h.v!.len() == 2
+}
+
+test "a map payload" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", 1)
+    let h = Holder<Map<string, i64>?> { v: m }
+    assert h.v!["k"] == 1
+}
+
+test "an aggregate payload bigger than a word" {
+    // This one took the binary down rather than answering wrongly: the store
+    // ran past the shared layout's one-word slot.
+    let h = Holder<Big?> { v: Big { a: 1, b: 2, c: 3 } }
+    assert h.v!.a == 1
+    assert h.v!.c == 3
+}
+
+test "the absent case still reads as absent" {
+    let h = Holder<Vec<i64>?> { v: none }
+    assert h.v is none
+}
