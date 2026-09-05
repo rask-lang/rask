@@ -470,6 +470,21 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail_cmp_char".to_string(), id);
         }
 
+        // assert_fail_cmp_bool — same shape; the helper spells the two words.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // left
+            sig.params.push(AbiParam::new(types::I64)); // right
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_bool", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_bool".to_string(), id);
+        }
+
         // main_error_exit(msg: *RaskStr | null) — prints and exits 1 (EX4)
         {
             let mut sig = self.module.make_signature();

@@ -4031,6 +4031,9 @@ impl<'a> MirLowerer<'a> {
                         && matches!(right_ty, MirType::F32);
                     let is_char = matches!(left_ty, MirType::Char)
                         && matches!(right_ty, MirType::Char);
+                    // A bool through the i64 helper reported `1 == 0` (#994).
+                    let is_bool = matches!(left_ty, MirType::Bool)
+                        && matches!(right_ty, MirType::Bool);
                     // A 128-bit comparison gets its own helper: narrowing the
                     // operands to report them would print the wrong numbers,
                     // since the values worth asserting about at that width are
@@ -4053,6 +4056,8 @@ impl<'a> MirLowerer<'a> {
                         "assert_fail_cmp_f64"
                     } else if is_char {
                         "assert_fail_cmp_char"
+                    } else if is_bool {
+                        "assert_fail_cmp_bool"
                     } else if is_u128 {
                         "assert_fail_cmp_u128"
                     } else if is_i128 {

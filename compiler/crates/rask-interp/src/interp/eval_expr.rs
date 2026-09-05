@@ -204,6 +204,20 @@ fn comparison_op_symbol(method: &str) -> Option<&'static str> {
     }
 }
 
+/// One operand as an assertion message shows it.
+///
+/// A string is quoted, because an empty one and a trailing space are invisible
+/// otherwise — `assertion failed:  ==  ` says nothing. Everything else renders
+/// the way it prints. Native quotes the same way and doesn't escape either, so
+/// the same failing assert reads the same on both backends (#994).
+fn assert_operand(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+        Value::Char(c) => format!("'{}'", c),
+        other => format!("{}", other),
+    }
+}
+
 /// Build a descriptive failure message for assert/check.
 ///
 /// After desugaring, `a == b` becomes `a.eq(b)` and `a != b` becomes
@@ -219,7 +233,10 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(object).ok();
             let right_val = interp.eval_expr(&args[0].expr).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                (Some(l), Some(r)) => {
+                    let (l, r) = (assert_operand(&l), assert_operand(&r));
+                    format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r)
+                }
                 _ => prefix.to_string(),
             }
         }
@@ -232,7 +249,10 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
                     let left_val = interp.eval_expr(object).ok();
                     let right_val = interp.eval_expr(&args[0].expr).ok();
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => format!("{}: {} != {} (left: {}, right: {})", prefix, l, r, l, r),
+                        (Some(l), Some(r)) => {
+                            let (l, r) = (assert_operand(&l), assert_operand(&r));
+                            format!("{}: {} != {} (left: {}, right: {})", prefix, l, r, l, r)
+                        }
                         _ => prefix.to_string(),
                     }
                 }
@@ -261,7 +281,10 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(left).ok();
             let right_val = interp.eval_expr(right).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r),
+                (Some(l), Some(r)) => {
+                    let (l, r) = (assert_operand(&l), assert_operand(&r));
+                    format!("{}: {} {} {} (left: {}, right: {})", prefix, l, op_str, r, l, r)
+                }
                 _ => prefix.to_string(),
             }
         }

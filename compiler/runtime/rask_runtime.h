@@ -924,6 +924,9 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
 void rask_assert_fail_cmp_char(int64_t left, int64_t right,
                                const char *op, const char *file,
                                int32_t line, int32_t col);
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);

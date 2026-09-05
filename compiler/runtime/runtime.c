@@ -288,6 +288,21 @@ void rask_assert_fail_cmp_char(int64_t left, int64_t right,
     rask_panic_at(file, line, col, buf);
 }
 
+// A bool reported through the i64 helper printed `1 == 0`, where the
+// interpreter — the reference — says `true == false` (#994). Same shape as the
+// char helper: the operand arrives widened, and this decides how to spell it.
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    const char *l = left ? "true" : "false";
+    const char *r = right ? "true" : "false";
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf),
+             "assertion failed: %s %s %s (left: %s, right: %s)",
+             l, op ? op : "?", r, l, r);
+    rask_panic_at(file, line, col, buf);
+}
+
 // The two string operands arrive as `RaskStr *`, not as C strings. Read as
 // `const char *` they printed the struct's first bytes — which for a short
 // string *are* the characters, because those live inline, and for anything
@@ -296,14 +311,18 @@ void rask_assert_fail_cmp_char(int64_t left, int64_t right,
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col) {
+    // Quoted, because an empty string and a trailing space are invisible
+    // otherwise (#848), and with the `(left:, right:)` half every other type's
+    // message carries — a string was the one shape where the two backends
+    // printed different text for the same failure (#994).
+    int llen = left ? (int)rask_string_len(left) : 6;
+    const char *lptr = left ? rask_string_ptr(left) : "(null)";
+    int rlen = right ? (int)rask_string_len(right) : 6;
+    const char *rptr = right ? rask_string_ptr(right) : "(null)";
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf),
-             "assertion failed: \"%.*s\" %s \"%.*s\"",
-             left ? (int)rask_string_len(left) : 6,
-             left ? rask_string_ptr(left) : "(null)",
-             op ? op : "?",
-             right ? (int)rask_string_len(right) : 6,
-             right ? rask_string_ptr(right) : "(null)");
+             "assertion failed: \"%.*s\" %s \"%.*s\" (left: \"%.*s\", right: \"%.*s\")",
+             llen, lptr, op ? op : "?", rlen, rptr, llen, lptr, rlen, rptr);
     rask_panic_at(file, line, col, buf);
 }
 

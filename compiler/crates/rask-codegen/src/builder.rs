@@ -4615,6 +4615,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().call(*assert_fn, &[]);
             }
         } else if func.name == "assert_fail_cmp_i64" || func.name == "assert_fail_cmp_char"
+            || func.name == "assert_fail_cmp_bool"
             || func.name == "assert_fail_cmp_i128" || func.name == "assert_fail_cmp_u128" {
             // Comparison assert failure with scalar values: args = [left, right, op_str].
             // Same shape for all of them; the char helper formats the codepoints

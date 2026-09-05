@@ -6565,6 +6565,82 @@ test "f32 operands" {
 func main() {}
 "#;
 
+/// Every operand shape whose assertion message the two backends used to spell
+/// differently (#994). Floats and integers already agreed; a string, a char and
+/// a bool did not.
+const SCALAR_ASSERT_SRC: &str = r#"
+test "a string operand" {
+    let a = "abc"
+    assert a == "abd"
+}
+
+test "an empty string against a space" {
+    let a = ""
+    assert a == " "
+}
+
+test "a char operand" {
+    let a = 'a'
+    assert a == 'b'
+}
+
+test "a bool operand" {
+    let a = true
+    assert a == false
+}
+
+test "an integer operand" {
+    let a = 1
+    assert a == 2
+}
+
+func main() {}
+"#;
+
+/// The assertion message reads the same however the test was run.
+///
+/// A string was quoted natively and bare on the interpreter, and native left
+/// out the `(left:, right:)` half every other type carries. Probing that turned
+/// up two more of the same shape: a char was quoted on one side only, and a
+/// bool went through the integer helper and reported `1 == 0` where the
+/// interpreter — the reference — says `true == false`.
+///
+/// Quoting is what makes an empty string and a trailing space visible at all,
+/// so it stays and the interpreter gained it, rather than the other way round.
+#[test]
+fn scalar_assertion_messages_agree_across_backends() {
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed"))
+            .map(|l| match l.find("assertion failed") {
+                Some(i) => l[i..].to_string(),
+                None => l.to_string(),
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(SCALAR_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(SCALAR_ASSERT_SRC, true));
+    assert_eq!(interp.len(), 5, "expected all five asserts to report:\n{interp:#?}");
+    assert_eq!(
+        native, interp,
+        "native and interpreter must render the same assertion message"
+    );
+    let joined = interp.join("\n");
+    // An empty string and a trailing space are invisible unquoted.
+    assert!(
+        joined.contains("\"\" == \" \""),
+        "a string operand is quoted on both backends:\n{joined}"
+    );
+    assert!(
+        joined.contains("'a' == 'b'"),
+        "a char operand is quoted on both backends:\n{joined}"
+    );
+    assert!(
+        joined.contains("true == false"),
+        "a bool reports as the two words, not as 1 and 0:\n{joined}"
+    );
+}
+
 #[test]
 fn float_assertion_message_keeps_every_digit() {
     for interp in [false, true] {
