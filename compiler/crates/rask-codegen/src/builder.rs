@@ -4604,9 +4604,9 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().call(*assert_fn, &[]);
             }
         } else if matches!(func.name.as_str(),
-            "assert_fail_cmp_i64" | "assert_fail_cmp_char"
+            "assert_fail_cmp_i64" | "assert_fail_cmp_char" | "assert_fail_cmp_bool"
             | "assert_fail_cmp_i128" | "assert_fail_cmp_u128"
-            | "check_fail_cmp_i64" | "check_fail_cmp_char"
+            | "check_fail_cmp_i64" | "check_fail_cmp_char" | "check_fail_cmp_bool"
             | "check_fail_cmp_i128" | "check_fail_cmp_u128") {
             // Comparison assert/check failure with scalar values: args = [left, right, op_str].
             // The two prefixes share this lowering — same operands, same
@@ -4675,20 +4675,38 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
         } else if func.name == "check_fail" {
-            // check failed — record failure, don't unwind
-            let msg = if !args.is_empty() {
-                Self::lower_operand_as_cstr(builder, &args[0], ctx)?
+            // check failed — record failure, don't unwind.
+            //
+            // With a message, through `_msg_at` so the recorded text carries
+            // `file:line:` — the same shape `assert cond, "msg"` produces.
+            // Without one it goes in bare, because the comparison reporters
+            // have already built the whole "check failed: a == b (…)" line.
+            if !args.is_empty() {
+                let msg = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
+                if let (Some(file_str), Some(func_ref)) =
+                    (ctx.source_file, ctx.func_refs.get("rask_check_fail_msg_at"))
+                {
+                    if let Some(gv) = ctx.string_globals.get(file_str) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                        builder.ins().call(*func_ref, &[msg, file_ptr, line_val, col_val]);
+                        return Ok(true);
+                    }
+                }
+                let func_ref = ctx.func_refs.get("rask_check_fail")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
+                builder.ins().call(*func_ref, &[msg]);
             } else {
-                // Create a default "check failed" message
-                if let Some(gv) = ctx.string_globals.get("check failed") {
+                let msg = if let Some(gv) = ctx.string_globals.get("check failed") {
                     builder.ins().global_value(types::I64, *gv)
                 } else {
                     builder.ins().iconst(types::I64, 0)
-                }
-            };
-            let func_ref = ctx.func_refs.get("rask_check_fail")
-                .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
-            builder.ins().call(*func_ref, &[msg]);
+                };
+                let func_ref = ctx.func_refs.get("rask_check_fail")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_check_fail".into()))?;
+                builder.ins().call(*func_ref, &[msg]);
+            }
         } else if func.name == "rask_test_skip" {
             // skip("reason") — pass reason as C string, calls rask_test_skip
             let reason = if !args.is_empty() {

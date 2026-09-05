@@ -260,6 +260,36 @@ void rask_check_fail_cmp_i64(int64_t left, int64_t right,
     rask_check_fail(buf);
 }
 
+// Bools reach here as scalars too, and `1 == 0` for `true == false` is the same
+// mistake as the char one below: the number is the representation, not the
+// value the reader wrote. The interpreter has always printed `true`/`false`,
+// so this is also what makes a failed bool comparison read the same on both
+// backends.
+static void fmt_cmp_bool(char *buf, size_t n, const char *what,
+                         int64_t left, int64_t right, const char *op) {
+    const char *l = left ? "true" : "false";
+    const char *r = right ? "true" : "false";
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, l, op ? op : "?", r, l, r);
+}
+
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_bool(buf, sizeof(buf), "assertion failed", left, right, op);
+    rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_bool(int64_t left, int64_t right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_bool(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
+}
+
 // Chars reach here as scalars, same as integers — but reporting `120 == 121`
 // for `'x' == 'y'` tells the reader nothing. Print the characters.
 static void fmt_cmp_char(char *buf, size_t n, const char *what,

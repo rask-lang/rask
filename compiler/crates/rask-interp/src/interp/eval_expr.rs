@@ -2760,9 +2760,19 @@ impl Interpreter {
                 if self.is_truthy(&cond_val) {
                     Ok(Value::Unit)
                 } else {
+                    // A hand-written message gets `file:line:`, the same as
+                    // `assert cond, "msg"` — without it a failing check read
+                    // like an ordinary `print`. The comparison form already
+                    // says "check failed: a == b (…)" and carries no location
+                    // on either backend, so it goes in as it is.
                     let msg = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
-                        format!("{}", v)
+                        let origin = self.origin_string(expr.span);
+                        if origin.is_empty() {
+                            format!("{}", v)
+                        } else {
+                            format!("{}: {}", origin, v)
+                        }
                     } else {
                         build_comparison_message(self, condition, "check failed")
                     };

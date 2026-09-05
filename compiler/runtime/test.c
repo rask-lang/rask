@@ -56,6 +56,12 @@ static __thread int rask_check_failures = 0;
 static __thread char rask_check_last_msg[2048] = {0};
 
 // check_fail — record failure without unwinding (test continues)
+//
+// The comparison reporters build their own "check failed: a == b (…)" and pass
+// it whole, so nothing is prefixed here. A hand-written `check(cond, "msg")`
+// passes only the message, and `rask_check_fail_msg_at` below is what gives it
+// the same `file:line:` an `assert` with a message gets — without it a failing
+// check read like an ordinary `print`.
 void rask_check_fail(const char *msg) {
     rask_check_failures++;
     const char *text = msg ? msg : "check failed";
@@ -71,6 +77,19 @@ void rask_check_fail(const char *msg) {
                  "; %s", text);
     }
     fprintf(stderr, "%s\n", text);
+}
+
+void rask_check_fail_msg_at(const char *msg, const char *file,
+                            int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    if (file) {
+        (void)col;
+        snprintf(buf, sizeof(buf), "%s:%d: %s", file, (int)line,
+                 msg ? msg : "check failed");
+    } else {
+        snprintf(buf, sizeof(buf), "%s", msg ? msg : "check failed");
+    }
+    rask_check_fail(buf);
 }
 
 // A test name is a string literal, so it can hold a quote, a backslash or a

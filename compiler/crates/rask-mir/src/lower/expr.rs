@@ -75,6 +75,13 @@ fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType) -> CmpFailHelper {
     if matches!(left_ty, MirType::Char) && matches!(right_ty, MirType::Char) {
         return CmpFailHelper::Typed("char", MirType::I64);
     }
+    // `true`/`false`, not `1`/`0`. Bool fell through to the integer helper, so
+    // `assert a == b` on two bools reported `1 == 0` compiled and
+    // `true == false` interpreted — the two backends disagreeing on the one
+    // type where the representation and the value read differently.
+    if matches!(left_ty, MirType::Bool) && matches!(right_ty, MirType::Bool) {
+        return CmpFailHelper::Typed("bool", MirType::I64);
+    }
     if matches!(left_ty, MirType::U128) || matches!(right_ty, MirType::U128) {
         return CmpFailHelper::Typed("u128", MirType::U128);
     }

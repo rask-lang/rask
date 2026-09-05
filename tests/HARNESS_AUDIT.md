@@ -191,7 +191,7 @@ calls a file green when both backends exit 0 with identical output — which an
 empty file satisfies. No suite file is in that state right now, but nothing
 detects it if one drifts there.
 
-### 1.6 The two backends print different failure text
+### 1.6 The two backends print different failure text — FIXED
 
 Same failure, different words:
 
@@ -206,9 +206,42 @@ interp:  got:      got            (assert_eq on strings)
 native:  got:      "got"
 ```
 
-Native's `check` is the one that matters: it loses the expression, both values,
-and the count. A test with three failing checks reports the same two words as a
+Native's `check` was the one that mattered: it lost the expression, both values,
+and the count. A test with three failing checks reported the same two words as a
 test with one.
+
+The reason none of this was caught is that the differential harness compares the
+two backends over the output a *passing* run produces. Failure text is what a
+test prints when it doesn't get that far, so it had never been compared at all.
+
+All of it agrees now, and `a_failed_comparison_reads_the_same_on_both_backends`
+in `compile_run.rs` runs both backends on a deliberately failing file and diffs
+them, so the next divergence is a test failure rather than a discovery. Four
+shapes had to move:
+
+- **`check` lost everything.** Native printed the literal words `check failed`.
+  It accumulates the built message now, joined with `; `, same as the
+  interpreter.
+- **`assert` named the wrong side.** Fixed with the `assert_eq` removal (**A5**).
+- **Two bools printed as `1 == 0`.** Bool fell through to the integer reporter,
+  which is right for every scalar except the one where the representation and
+  the value read differently. `assert a == b` on two bools now says
+  `true == false` on both backends.
+- **`check cond, "msg"` lost its location.** Native passed the message straight
+  through, so a failing check read like an ordinary `print` — no `file:line:`,
+  which `assert cond, "msg"` has always had. It goes through
+  `rask_check_fail_msg_at` now.
+
+Two shapes were checked and left alone. An aggregate (`assert a == b` on two
+structs) prints no operands on either backend — native can't render one, since a
+struct opts into `Displayable` (std.fmt/D3), and printing two addresses is worse
+than printing nothing. And a failing `assert` *outside* a test block still reads
+differently: the interpreter frames it as a diagnostic and doubles the
+`assertion failed:` prefix. That's [#1098](https://github.com/rask-lang/rask/issues/1098) —
+the `test` path is what the harness compares, so nothing is silently wrong,
+but the wording is.
+
+`t_assert_check_message_shapes.rk` pins the passing side of every shape above.
 
 ### 1.7 The leak gate greps for a line that can't reach it — FIXED ELSEWHERE
 

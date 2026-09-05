@@ -432,19 +432,23 @@ impl CodeGenerator {
             self.func_ids.insert(mir_name.to_string(), id);
         }
 
-        // assert_fail_cmp_char(left: i64, right: i64, op: ptr, file: ptr, line: i32, col: i32)
-        {
+        // assert_fail_cmp_char / _bool — both take their operands as i64 and
+        // render them as what the reader wrote, not as the number underneath.
+        for (internal, symbol) in [
+            ("assert_fail_cmp_char", "rask_assert_fail_cmp_char"),
+            ("assert_fail_cmp_bool", "rask_assert_fail_cmp_bool"),
+        ] {
             let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64)); // left codepoint
-            sig.params.push(AbiParam::new(types::I64)); // right codepoint
+            sig.params.push(AbiParam::new(types::I64)); // left
+            sig.params.push(AbiParam::new(types::I64)); // right
             sig.params.push(AbiParam::new(types::I64)); // op str ptr
             sig.params.push(AbiParam::new(types::I64)); // file ptr
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_fail_cmp_char", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("assert_fail_cmp_char".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // main_error_exit(msg: *RaskStr | null) — prints and exits 1 (EX4)
@@ -502,6 +506,7 @@ impl CodeGenerator {
         for (internal, symbol, value_ty) in [
             ("check_fail_cmp_i64",  "rask_check_fail_cmp_i64",  types::I64),
             ("check_fail_cmp_char", "rask_check_fail_cmp_char", types::I64),
+            ("check_fail_cmp_bool", "rask_check_fail_cmp_bool", types::I64),
             ("check_fail_cmp_str",  "rask_check_fail_cmp_str",  types::I64),
             ("check_fail_cmp_i128", "rask_check_fail_cmp_i128", types::I128),
             ("check_fail_cmp_u128", "rask_check_fail_cmp_u128", types::I128),
@@ -780,6 +785,21 @@ impl CodeGenerator {
                 .declare_function("rask_check_fail", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_check_fail".to_string(), id);
+        }
+
+        // rask_check_fail_msg_at(msg: ptr, file: ptr, line: i32, col: i32)
+        // — the `check cond, "msg"` form, which gets the same `file:line:` an
+        // `assert` with a message gets.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // msg ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_check_fail_msg_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_check_fail_msg_at".to_string(), id);
         }
 
         // rask_i64_to_string(out: *RaskStr, val: i64) -> void

@@ -909,6 +909,14 @@ void rask_assert_fail_msg_at(const char *msg, const char *file,
 // `check` records and carries on where `assert` unwinds; the message is built
 // by the same formatter either way (std.testing/A1 vs A2).
 void rask_check_fail(const char *msg);
+void rask_check_fail_msg_at(const char *msg, const char *file,
+                            int32_t line, int32_t col);
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
+void rask_check_fail_cmp_bool(int64_t left, int64_t right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col);
 void rask_check_fail_cmp_i64(int64_t left, int64_t right,
                              const char *op, const char *file,
                              int32_t line, int32_t col);
