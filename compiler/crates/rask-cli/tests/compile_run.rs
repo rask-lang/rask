@@ -7072,3 +7072,38 @@ test \"runtime one\" {
     }
     let _ = std::fs::remove_file(&file);
 }
+
+/// `spawn` needs a `using Multitasking { }` scope, and that's a compile error
+/// rather than a panic on the first task (conc.async/CC1, CC2, std.testing/T17).
+///
+/// CC1 was written but keyed off `BuiltinFunctionKind::Spawn`, which is only
+/// minted for the qualified `async.spawn` spelling — so a bare `spawn(|| { … })`
+/// was never checked. CC2 worked, but the walk never entered `test` blocks, so a
+/// test body was exempt from both.
+#[test]
+fn error_spawn_needs_multitasking_scope() {
+    let (failed, out) = compile_error_output("spawn_needs_multitasking.rk");
+    assert!(failed, "spawn with no scope must not compile:\n{out}");
+
+    assert_eq!(
+        out.matches("E0352").count(),
+        2,
+        "CC1 fires at the entry point and in a test body, and nowhere else:\n{out}"
+    );
+    assert_eq!(
+        out.matches("E0353").count(),
+        1,
+        "CC2 fires once, at the call to the function that spawns:\n{out}"
+    );
+    assert!(
+        out.contains("`launch_worker` reaches `spawn`"),
+        "CC2 names the function that spawns, since nothing in its signature says so:\n{out}"
+    );
+    assert!(out.contains("conc.async/CC1"), "should cite CC1:\n{out}");
+    assert!(out.contains("conc.async/CC2"), "should cite CC2:\n{out}");
+    assert!(
+        !out.contains("launch_worker() {"),
+        "the definition that spawns is not the error — a library function may \
+         spawn and leave the scope to its caller:\n{out}"
+    );
+}

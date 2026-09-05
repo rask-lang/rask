@@ -103,7 +103,7 @@ Tests are application code. `conc.async/C6` says application code opens the runt
 
 | Rule | Description |
 |------|-------------|
-| **T17: Tests open their own runtime** | A test whose body reaches `spawn` (directly or transitively) contains a `using Multitasking { }` block. Forgetting it is the standard `conc.async/CC2` compile error at the call site, naming the function that spawns — the ceremony is one line, and the error teaches it |
+| **T17: Tests open their own runtime** | A test whose body reaches `spawn` (directly or transitively) contains a `using Multitasking { }` block. Forgetting it is the standard compile error: `conc.async/CC2` at the call, naming the function that spawns, or `CC1` at the `spawn` itself when the test body spawns directly — a test block is a root, so there is no caller to blame. The ceremony is one line, and the error teaches it |
 | **T18: Runner respects C1** | At most one runtime per process (`conc.async/C1`), so the runner never executes two runtime-holding tests concurrently in-process: tests containing a `using Multitasking` block are serialized with respect to each other, while runtime-free tests keep running in parallel around them (T7). The runner knows which tests qualify lexically — no new analysis |
 | **T19: Drain bounds the test** | Block exit waits for the test's tasks (`conc.async/C4`), so a leaked or hung task fails *that* test by timeout, under that test's name — it can't pollute later tests. Same rule for `using ThreadPool` |
 
@@ -274,7 +274,7 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 | `assert` failure in table loop | Test stops at failing iteration | A1 |
 | `comptime test` uses I/O | Compile error (comptime subset only) | T11 |
 | `benchmark` in debug build | Stripped | B1 |
-| `spawn` in a test with no `using Multitasking` block | Compile error at the call site (`conc.async/CC2`) | T17 |
+| `spawn` in a test with no `using Multitasking` block | Compile error — `conc.async/CC1` at the `spawn`, or `CC2` at the call when it's a helper that spawns | T17 |
 | Two runtime-holding tests under parallel execution | Serialized by the runner — never concurrent in-process | T18 |
 | Detached task still running at test's block exit | Block exit waits; hang is reported as that test's timeout | T19 |
 | `comptime test` reaches `spawn` | Compile error (comptime subset has no concurrency) | T11 |

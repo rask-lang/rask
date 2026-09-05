@@ -829,17 +829,19 @@ fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
 }
 
 fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
-    let diag = if w.is_error {
+    let mut diag = if w.is_error {
         Diagnostic::error(&w.message)
     } else {
         Diagnostic::warning(&w.message)
     };
-    let label = if w.is_error {
-        format!("`{}` reaches spawn here", w.callee_name)
-    } else {
-        format!("`{}` has IO effect", w.callee_name)
-    };
-    diag.with_code(w.code).with_primary(w.span, label)
+    diag = diag.with_code(w.code).with_primary(w.span, &w.label);
+    if let Some(fix) = &w.fix {
+        diag = diag.with_fix(fix);
+    }
+    if let Some(why) = &w.why {
+        diag = diag.with_why(why);
+    }
+    diag
 }
 
 /// EO1: `ensure` runs LIFO, so a dependency registered *after* its dependent is

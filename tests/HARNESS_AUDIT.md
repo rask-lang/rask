@@ -282,9 +282,9 @@ reachable without the stdlib.
 | **T8** | `--seed X` reproduces a run | prints "accepted but random ordering not yet implemented" |
 | **T10** (nested) | `test` blocks nest, output `PASS: parent > child` | parse error: "Expected expression, found 'test'" |
 | ~~**T10** (no `try`)~~ | ~~bare `try` in a test body is an `ER47` compile error~~ | **rule deleted** — replaced by **T20**, which says the test block is the error branch (see below) |
-| **T11** | `comptime test` runs during compilation, failure is a compile error | `rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test` |
+| ~~**T11**~~ | `comptime test` runs during compilation, failure is a compile error | ~~`rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test`~~ — **fixed**: the comptime pass runs them, a failure is `E0848`, and the result is reported once instead of being re-run by the backend |
 | **T14/T15** | doc-comment code blocks extracted and run | not implemented — a doc test asserting `add(2,3) == 999` reports "No tests found", exit 0 |
-| **T17** | `spawn` with no `using Multitasking` is a `CC2` compile error at the call site | type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block" |
+| ~~**T17**~~ | `spawn` with no `using Multitasking` is a compile error | ~~type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block"~~ — **fixed**: CC1 was keyed off the qualified `async.spawn` spelling, so bare `spawn(|| { … })` was never checked, and the CC2 walk never entered `test` blocks. Both now fire (`E0352`/`E0353`) |
 | **T3/T4** | tests may live in `*_test.rk`; same-package tests see private members | each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`. Zero coverage in the repo |
 | **T6/T18/T19** | isolation; runtime-holding tests serialised; drain bounds the test | untested (T18 is moot while everything is sequential) |
 | CLI `--verbose` | show all names | field never read |

@@ -81,7 +81,7 @@ impl Effects {
 /// Per-function effect results keyed by qualified function name.
 pub type EffectMap = HashMap<String, Effects>;
 
-/// A warning or error from effect analysis (CW1, CW2, CC2).
+/// A warning or error from effect analysis (CW1, CW2, CC1, CC2).
 #[derive(Debug, Clone)]
 pub struct EffectWarning {
     /// Spec rule: "comp.effects/CW1", "comp.effects/CW2", "conc.async/CC2".
@@ -91,8 +91,15 @@ pub struct EffectWarning {
     pub span: Span,
     /// Name of the function that introduces the effect.
     pub callee_name: String,
-    /// True if this should be reported as an error (CC2), false for warnings (CW1, CW2).
+    /// True if this should be reported as an error (CC1, CC2), false for
+    /// warnings (CW1, CW2).
     pub is_error: bool,
+    /// What the caret under `span` says.
+    pub label: String,
+    /// The fix, as code where there is one to show.
+    pub fix: Option<String>,
+    /// Why the rule exists — not a restatement of the message.
+    pub why: Option<String>,
 }
 
 /// Run effect inference on a set of declarations.
