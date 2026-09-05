@@ -336,7 +336,7 @@ server.
 |---|---|---|
 | **A4** | `assert_eq`, `assert_ne`, `check_eq`, `check_ne` | only `assert_eq` exists; the other three are `E0200 undefined symbol` |
 | **T7** | parallel by default, `--sequential` opts out | always sequential; the flag is accepted and the field is never read |
-| **T8** | `--seed X` reproduces a run | prints "accepted but random ordering not yet implemented" |
+| ~~**T8**~~ | `--seed X` reproduces a run | ~~prints "accepted but random ordering not yet implemented"~~ — **flag removed.** It did nothing, and silently ate its own argument once the note was the only thing distinguishing it. It comes back with the feature |
 | **T10** (nested) | `test` blocks nest, output `PASS: parent > child` | parse error: "Expected expression, found 'test'" |
 | ~~**T10** (no `try`)~~ | ~~bare `try` in a test body is an `ER47` compile error~~ | **rule deleted** — replaced by **T20**, which says the test block is the error branch (see below) |
 | ~~**T11**~~ | `comptime test` runs during compilation, failure is a compile error | ~~`rask check` on a failing `comptime test` **exits 0**; it runs as an ordinary runtime test under `rask test`~~ — **fixed**: the comptime pass runs them, a failure is `E0848`, and the result is reported once instead of being re-run by the backend |
@@ -344,7 +344,7 @@ server.
 | ~~**T17**~~ | `spawn` with no `using Multitasking` is a compile error | ~~type-checks fine; fails at runtime with "spawn outside `using Multitasking {}` block"~~ — **fixed**: CC1 was keyed off the qualified `async.spawn` spelling, so bare `spawn(|| { … })` was never checked, and the CC2 walk never entered `test` blocks. Both now fire (`E0352`/`E0353`) |
 | ~~**T3/T4**~~ | tests may live in `*_test.rk`; same-package tests see private members | ~~each file compiles alone, so the companion file can't see anything — `E0200 undefined symbol`~~ — **fixed**: it worked inside a package all along, which is why nothing noticed; loose files were compiled one at a time. `foo_test.rk` now compiles with `foo.rk` either way, covered by `tests/fixtures/companion_tests/` |
 | **T6/T18/T19** | isolation; runtime-holding tests serialised; drain bounds the test | untested (T18 is moot while everything is sequential) |
-| CLI `--verbose` | show all names | field never read |
+| ~~CLI `--verbose`~~ | show all names | ~~field never read~~ — **flag removed.** Every test name is printed already, so there was nothing for it to add. `--sequential` went with it: it is T7's switch, and T7 isn't built |
 
 Working as specified: A1 (assert stops), A2 (check continues), A3 (messages),
 T2 (`@test` functions), T12 (`skip`), T13 (`expect_fail`, both directions),

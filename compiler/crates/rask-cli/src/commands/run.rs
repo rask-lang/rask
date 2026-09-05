@@ -9,13 +9,6 @@ use rask_diagnostics::formatter::DiagnosticFormatter;
 
 use crate::{output, show_diagnostics, Format};
 
-/// Options for test execution (T7, T8 from std.testing spec).
-pub struct TestOptions {
-    pub verbose: bool,
-    pub sequential: bool,
-    pub seed: Option<String>,
-}
-
 /// What to tell the user about a fatal signal, beyond its name.
 fn signal_advice(sig: i32) -> Option<&'static str> {
     match sig {
@@ -401,15 +394,6 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
         process::exit(1);
     }
-}
-
-pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: Format, opts: &TestOptions) {
-    // --seed is accepted for forward-compatibility (T8) but not yet functional
-    if opts.seed.is_some() && format == Format::Human {
-        eprintln!("{}: --seed accepted but random ordering not yet implemented", "note".dimmed());
-    }
-    // --sequential is accepted for forward-compatibility (T7); tests already run sequentially
-    cmd_test_native(path, filter, format);
 }
 
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {

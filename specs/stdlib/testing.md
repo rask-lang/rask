@@ -67,8 +67,8 @@ test "add cases" {
 | Rule | Description |
 |------|-------------|
 | **T6: Isolation** | Each test runs in isolation with no shared state |
-| **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential` |
-| **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X` |
+| **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential`. *Not built — tests run sequentially, and `--sequential` isn't a flag until it means something* |
+| **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X`. *Not built, same as T7* |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |
 | **T20: `try` propagates to the runner** | A test block is the error branch: `try` on a failing step ends that test as a failure, naming it and reporting the error, and later tests still run. Fallible setup needs no handler — use `catch` when you want to *test* the failure rather than be stopped by it |
 
@@ -235,9 +235,8 @@ test "schedule" {
 rask test              # all tests
 rask test math         # module filter
 rask test -f "parser"  # pattern filter
-rask test --sequential # force sequential
-rask test --seed X     # reproducible run
-rask test --verbose    # show all names
+rask test --interp     # run on the interpreter instead of compiling
+rask test --json       # machine-readable output
 rask benchmark         # all benchmarks
 rask benchmark -f "vec"    # filter benchmarks
 rask benchmark --json      # machine-readable output
