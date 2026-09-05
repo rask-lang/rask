@@ -1193,6 +1193,27 @@ impl<'a> MirLowerer<'a> {
         self.reflect_field_consts(type_name)
     }
 
+    /// The declaration's type parameters paired with an instantiation's written
+    /// arguments — `Ring<i64>` on `struct Ring<T>` gives `[("T", "i64")]`.
+    ///
+    /// Empty for a name that isn't an instantiation, or when the declaration
+    /// can't be found or takes a different number of parameters. A partial
+    /// mapping would report some fields substituted and some not, which is
+    /// worse than reporting the declared types throughout.
+    fn generic_type_subst(&self, type_name: &str) -> Vec<(String, String)> {
+        use rask_types::TypeDef;
+        let Some((base, _)) = rask_ast::type_str::split_generic_name(type_name) else {
+            return Vec::new();
+        };
+        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(base) else {
+            return Vec::new();
+        };
+        let Some(TypeDef::Struct { type_params, .. }) = self.ctx.type_defs.get(id) else {
+            return Vec::new();
+        };
+        rask_ast::type_str::generic_type_subst(type_name, type_params)
+    }
+
     /// The same field metadata, by type name — shared with the value form in
     /// `expr.rs`, which builds a runtime `Vec<FieldInfo>` out of it.
     pub(super) fn reflect_field_consts(
@@ -1201,7 +1222,33 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
         use rask_ast::decl::field_attrs;
 
-        let Some((_, layout)) = self.ctx.find_struct(type_name) else {
+        // A generic instantiation is written `Ring<i64>` and its layout, when
+        // there is one, is keyed `Ring$i64` — mono's own spelling. Reflection
+        // was only ever asking under the written name, so every generic struct
+        // answered "not a struct type" (#968).
+        let instance = rask_ast::type_str::generic_instance_key(type_name);
+        let found = self
+            .ctx
+            .find_struct(type_name)
+            .or_else(|| instance.as_deref().and_then(|k| self.ctx.find_struct(k)));
+
+        // No instance layout means mono decided the shared one is exact for
+        // this instantiation — it emits one exactly when an argument overflows
+        // the shared slot. `Ring<i64>` and `Ring<string>` really do have the
+        // same layout, because what varies sits behind the `Vec`'s pointer.
+        //
+        // The shared layout is still wrong about one thing: it records the
+        // field's *declared* type, so `slots` reads as `Vec<T>` where the
+        // instantiation says `Vec<i64>`. The type arguments are substituted
+        // back in below rather than reported as the placeholder.
+        let found = match found {
+            Some(f) => Some(f),
+            None => rask_ast::type_str::generic_base_name(type_name)
+                .and_then(|b| self.ctx.find_struct(&b)),
+        };
+        let type_subst = self.generic_type_subst(type_name);
+
+        let Some((_, layout)) = found else {
             // The uninstantiated generic template gets lowered too (alongside
             // every real instantiation), with its type params still literal
             // ("T"). It's never actually run — type.generics/G2 treats an
@@ -1237,6 +1284,8 @@ impl<'a> MirLowerer<'a> {
                         .unwrap_or_else(|| format!("{}", fl.ty)),
                     other => format!("{}", other),
                 };
+                let type_name =
+                    rask_ast::type_str::substitute_type_params(&type_name, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,

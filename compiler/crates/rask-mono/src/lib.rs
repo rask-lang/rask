@@ -724,6 +724,13 @@ fn monomorphize_inner(
                 .node_types
                 .values()
                 .chain(mono.instantiated_node_types.values())
+                // A type argument is an instantiation even when nothing builds
+                // one. `reflect.fields<Box2<string>>()` names the type and never
+                // constructs it, so it appeared in no expression's type — and
+                // the layout that would have said `value` is sixteen bytes was
+                // never emitted. Reflection then read the shared layout and
+                // reported a `string` field as an eight-byte `i64` (#968).
+                .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
             {
                 collect_generic_instances(ty, &type_names, &mut instances);
             }

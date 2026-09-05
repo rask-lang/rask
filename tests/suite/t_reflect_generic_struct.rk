@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `reflect.fields<T>()` on a generic struct instantiation.
+//
+// It failed on both backends — not a divergence, just unbuilt (#968):
+//
+//     native:  reflect.fields<Ring<i64>>(): not a struct type
+//     interp:  reflect.fields<Ring<i64>>(): not a struct type
+//
+// A generic instantiation is written `Ring<i64>` and declared as `Ring`, and
+// nothing bridged the two. Native lays instantiations out under a third
+// spelling again — `Ring$i64`, mono's own — so all three had to meet.
+//
+// The trap in fixing it is reporting the *shared* layout, which is what a
+// generic struct gets when its arguments all fit a word. That layout has the
+// right field names and the declared field types, so it looks fine — and its
+// types name the type parameter rather than the argument, which is a wrong
+// answer that reads like a right one. The arguments are substituted back in.
+//
+// Offsets and sizes are deliberately not asserted here: the interpreter reports
+// 0 for both, on every struct, generic or not (#1104). This file is about the
+// half where the two backends agree.
+
+import std.reflect
+
+struct Ring<T> {
+    slots: Vec<T>
+    cap: i64
+}
+
+// The type argument lands in a field directly, so `Pair<string>` really does
+// have a different layout from `Pair<i64>` — the case where native emits a
+// per-instantiation layout instead of reusing the shared one.
+struct Pair<T> {
+    value: T
+    tag: i64
+}
+
+struct Both<K, V> {
+    key: K
+    val: V
+}
+
+struct Plain {
+    a: i64
+    b: string
+}
+
+func describe<T>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name}:{f.type_name} "
+    }
+    return out
+}
+
+func count<T>() -> i64 {
+    mut n = 0i64
+    comptime for f in reflect.fields<T>() {
+        n = n + 1i64
+    }
+    return n
+}
+
+test "a generic struct has fields at all" {
+    assert count<Ring<i64>>() == 2i64
+    assert count<Pair<string>>() == 2i64
+    assert count<Both<string, i64>>() == 2i64
+}
+
+test "the field type is the argument, not the parameter" {
+    assert describe<Ring<i64>>() == "slots:Vec<i64> cap:i64 "
+    assert describe<Pair<string>>() == "value:string tag:i64 "
+}
+
+// Two instantiations of one declaration report their own arguments. Reading the
+// shared layout would give both the same answer, and reading whichever
+// instantiation was laid out last would give both *that* one.
+test "two instantiations of the same struct don't bleed into each other" {
+    assert describe<Pair<i64>>() == "value:i64 tag:i64 "
+    assert describe<Pair<string>>() == "value:string tag:i64 "
+    assert describe<Ring<string>>() == "slots:Vec<string> cap:i64 "
+}
+
+test "more than one type parameter, in declaration order" {
+    assert describe<Both<string, i64>>() == "key:string val:i64 "
+    assert describe<Both<i64, string>>() == "key:i64 val:string "
+}
+
+// A parameter name that is a prefix of a field's type must not be substituted
+// inside it: `Vec<T>` becomes `Vec<i64>`, but a type called `Tag` stays `Tag`.
+struct Holder<T> {
+    item: T
+    label: Tag
+}
+
+struct Tag {
+    n: i64
+}
+
+test "substitution replaces whole names only" {
+    assert describe<Holder<i64>>() == "item:i64 label:Tag "
+}
+
+test "a non-generic struct still reads the same" {
+    assert describe<Plain>() == "a:i64 b:string "
+    assert count<Plain>() == 2i64
+}
+
+// The fields are real enough to build one and read it back — the reflection
+// answer and the layout the program actually runs on are the same layout.
+test "and the struct it describes still works" {
+    let p = Pair<string> { value: "x", tag: 7i64 }
+    assert p.value == "x"
+    assert p.tag == 7i64
+    let q = Pair<i64> { value: 42i64, tag: 8i64 }
+    assert q.value == 42i64
+    assert q.tag == 8i64
+}

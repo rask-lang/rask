@@ -143,3 +143,150 @@ mod tests {
         assert!(!is_optional("Handle<T>"));
     }
 }
+
+/// `Ring<i64>` split into its base name and its written type arguments.
+///
+/// `None` for a name with no `<…>`. Nested arguments stay whole:
+/// `Pair<Vec<i64>, string>` gives `["Vec<i64>", "string"]`.
+pub fn split_generic_name(name: &str) -> Option<(&str, Vec<&str>)> {
+    let open = name.find('<')?;
+    if !name.trim_end().ends_with('>') {
+        return None;
+    }
+    let base = name[..open].trim();
+    let inner = name[open + 1..name.trim_end().len() - 1].trim();
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < inner.len() {
+        args.push(inner[start..].trim());
+    }
+    if args.is_empty() {
+        return None;
+    }
+    Some((base, args))
+}
+
+/// The base name of a written instantiation — `Ring` for `Ring<i64>`.
+pub fn generic_base_name(name: &str) -> Option<String> {
+    split_generic_name(name).map(|(base, _)| base.to_string())
+}
+
+/// The key mono lays a generic instantiation out under: `Ring<i64>` → `Ring$i64`.
+///
+/// Mirrors `rask_mono::generic_instance_name`, which builds the same string from
+/// the resolved types. Reflection only has the written spelling, so it rebuilds
+/// it from that.
+pub fn generic_instance_key(name: &str) -> Option<String> {
+    let (base, args) = split_generic_name(name)?;
+    Some(format!("{}${}", base, args.join("$")))
+}
+
+/// Replace whole type-parameter names in a rendered type: `Vec<T>` with
+/// `T → i64` becomes `Vec<i64>`.
+///
+/// Textual because that is the shape reflection reports — `FieldInfo.type_name`
+/// is a string, and the layout has already rendered the declared type. Only
+/// whole identifiers are replaced, so a `T` inside `Trait` is left alone.
+pub fn substitute_type_params(rendered: &str, subst: &[(String, String)]) -> String {
+    if subst.is_empty() {
+        return rendered.to_string();
+    }
+    let mut out = String::with_capacity(rendered.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.is_empty() {
+            return;
+        }
+        match subst.iter().find(|(p, _)| p == word) {
+            Some((_, arg)) => out.push_str(arg),
+            None => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in rendered.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// A declaration's type parameters paired with an instantiation's written
+/// arguments — `Ring<i64>` on `struct Ring<T>` gives `[("T", "i64")]`.
+///
+/// Empty when the name isn't an instantiation or the counts disagree: a partial
+/// mapping would substitute some fields and not others, which reads as a
+/// compiler bug rather than as the declared types it fell back to.
+pub fn generic_type_subst(type_name: &str, type_params: &[String]) -> Vec<(String, String)> {
+    let Some((_, args)) = split_generic_name(type_name) else {
+        return Vec::new();
+    };
+    if type_params.len() != args.len() {
+        return Vec::new();
+    }
+    type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().map(|a| a.to_string()))
+        .collect()
+}
+
+#[cfg(test)]
+mod generic_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_name_is_not_an_instantiation() {
+        assert_eq!(split_generic_name("Ring"), None);
+        assert_eq!(generic_instance_key("Ring"), None);
+    }
+
+    #[test]
+    fn one_argument() {
+        assert_eq!(split_generic_name("Ring<i64>"), Some(("Ring", vec!["i64"])));
+        assert_eq!(generic_instance_key("Ring<i64>").as_deref(), Some("Ring$i64"));
+    }
+
+    #[test]
+    fn a_nested_argument_stays_whole() {
+        assert_eq!(
+            split_generic_name("Pair<Vec<i64>, string>"),
+            Some(("Pair", vec!["Vec<i64>", "string"]))
+        );
+    }
+
+    #[test]
+    fn substitution_replaces_whole_identifiers_only() {
+        let subst = vec![("T".to_string(), "i64".to_string())];
+        assert_eq!(substitute_type_params("Vec<T>", &subst), "Vec<i64>");
+        assert_eq!(substitute_type_params("T", &subst), "i64");
+        // `T` inside a longer name is part of that name.
+        assert_eq!(substitute_type_params("Trait", &subst), "Trait");
+        assert_eq!(substitute_type_params("Map<T, T>", &subst), "Map<i64, i64>");
+    }
+
+    #[test]
+    fn a_count_mismatch_substitutes_nothing() {
+        assert!(generic_type_subst("Ring<i64>", &["T".into(), "U".into()]).is_empty());
+        assert_eq!(
+            generic_type_subst("Ring<i64>", &["T".into()]),
+            vec![("T".to_string(), "i64".to_string())]
+        );
+    }
+}

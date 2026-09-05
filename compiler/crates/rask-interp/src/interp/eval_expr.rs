@@ -3430,12 +3430,11 @@ fn annotation_value(text: &str, ty: &str) -> Value {
 /// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
 /// `None` when the name carries none.
 fn written_type_args(name: &str) -> Option<Vec<String>> {
-    let open = name.find('<')?;
-    let inner = name[open + 1..].strip_suffix('>')?;
-    let args = rask_ast::decl::field_attrs::split_top_level(inner, ',')
-        .into_iter()
-        .map(|a| a.trim().to_string())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>();
+    // Angle brackets nest, and `split_top_level` doesn't count them — it is
+    // written for annotation arguments, where `<` is a comparison rather than a
+    // bracket. So `describe<Both<string, i64>>` split at the inner comma and
+    // bound `T` to the string `Both<string`, which then named no struct.
+    let (_, args) = rask_ast::type_str::split_generic_name(name)?;
+    let args: Vec<String> = args.into_iter().map(|a| a.to_string()).collect();
     (!args.is_empty()).then_some(args)
 }
