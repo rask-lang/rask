@@ -182,6 +182,10 @@ pub struct TypeChecker {
     /// even when it did infer — `let x: f64 = "42".parse<i64>()!` type-checked
     /// and ran the float parse (#1029).
     pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
+    /// TR5 checks whose container hadn't resolved yet when the call was walked
+    /// — `(argument node, was it an `as any Trait`, receiver, argument)`.
+    pub(super) pending_trait_elem_coercions:
+        Vec<(NodeId, bool, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
     /// function, which is what makes the handler cover the block.
@@ -444,6 +448,7 @@ impl TypeChecker {
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             written_method_type_args: HashMap::new(),
+            pending_trait_elem_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
@@ -648,6 +653,12 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+
+        // TR5: an element pushed into a container the checker only resolved
+        // later. A concrete value going into an `any Trait` slot has to be boxed
+        // with a vtable, and the container reached through a field wasn't known
+        // when the push was walked (#955).
+        self.validate_pending_trait_elem_coercions();
 
         // S2: view bindings whose source was a field or loop variable — the type
         // is concrete now, so "is this a string slice / a growable view" has an

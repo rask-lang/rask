@@ -347,10 +347,40 @@ impl TypeChecker {
     /// that knows its expected type — an annotated binding, a struct field, a
     /// collection element, a return value — type-checked and then segfaulted
     /// at the first method call (#335, #474, #481).
+    /// An explicit `x as any Trait` boxes itself, so it needs no second box.
+    fn is_any_cast(expr: &Expr) -> bool {
+        matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any "))
+    }
+
+    /// The same question for a collection element whose container only settled
+    /// after the call was walked. Runs after solving, from the same list of
+    /// deferred checks as the rest.
+    pub(super) fn validate_pending_trait_elem_coercions(&mut self) {
+        let pending = std::mem::take(&mut self.pending_trait_elem_coercions);
+        for (node, is_any_cast, recv_ty, arg_ty) in pending {
+            let applied = self.ctx.apply(&arg_ty);
+            for elem in Self::trait_object_type_args(&self.ctx.apply(&recv_ty)) {
+                let Type::TraitObject { ref trait_name } = elem else { continue };
+                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
+                    self.note_trait_coercion_node(node, is_any_cast, &elem, &arg_ty);
+                }
+            }
+        }
+    }
+
     pub(super) fn note_trait_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
+        self.note_trait_coercion_node(expr.id, Self::is_any_cast(expr), expected, found)
+    }
+
+    fn note_trait_coercion_node(
+        &mut self,
+        node: rask_ast::NodeId,
+        is_any_cast: bool,
+        expected: &Type,
+        found: &Type,
+    ) {
         let Type::TraitObject { trait_name } = expected else { return };
-        // An explicit `x as any Trait` boxes itself.
-        if matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any ")) {
+        if is_any_cast {
             return;
         }
         if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
@@ -384,7 +414,7 @@ impl TypeChecker {
         if !undecided && !crate::traits::implements_trait(&self.types, &resolved, trait_name) {
             return;
         }
-        self.trait_coercions.insert(expr.id, trait_name.clone());
+        self.trait_coercions.insert(node, trait_name.clone());
     }
 
     /// True when the literal's own spelling doesn't pin a type, so the slot it
@@ -3175,6 +3205,23 @@ impl TypeChecker {
         // argument can only be that element. Without this, push stored a bare
         // struct pointer into a 16-byte element slot and every element read
         // back through whichever vtable was written last (#335).
+        // The receiver reached through a *field* isn't resolved yet here — its
+        // type arrives from a deferred constraint — so there was no element type
+        // to compare against and the push went in unboxed. `h.shapes.push(Circle
+        // { r: 2 })` on a `Holder { shapes: Vec<any Shape> }` wrote eight bytes
+        // into a sixteen-byte slot and the first `area()` call read a vtable
+        // pointer out of whatever followed: SIGSEGV natively, right on the
+        // interpreter (#955). Ask again once the receiver has settled.
+        if matches!(self.ctx.apply(&obj_ty), Type::Var(_)) {
+            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                self.pending_trait_elem_coercions.push((
+                    arg.expr.id,
+                    Self::is_any_cast(&arg.expr),
+                    obj_ty.clone(),
+                    arg_ty.clone(),
+                ));
+            }
+        }
         for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
             let applied = self.ctx.apply(arg_ty);
             for elem in Self::trait_object_type_args(&self.ctx.apply(&obj_ty)) {
