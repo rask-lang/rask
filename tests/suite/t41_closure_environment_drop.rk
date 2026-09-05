@@ -130,6 +130,57 @@ test "a chain of adapters in a loop" {
     assert total == 99u64
 }
 
+// A callback that *returns* a sequence, which is where this went wrong.
+//
+// The chain's own environments are freed by the frame holding the chain, and
+// the two shapes I expected to break — a chain returned out of a function, and
+// a bound sequence re-run — both behaved. This one didn't, and it isn't either
+// of them: the frame doing the freeing is the *callback's*, and it builds a
+// sequence per element and hands it straight back.
+//
+//     _8 = closure[heap](upto__closure_0, [_6@0])
+//     _5 = _8
+//     closure_drop(_8)      <- frees the environment being returned
+//     return _5
+//
+// The return case excludes the value going back to the caller, and compared the
+// bare local — but lowering copies a closure before returning it, so `_8` never
+// matched `_5`. It resolves through the alias now, like every other decision in
+// that pass. This segfaulted on the first element.
+func upto(n: i64) -> Sequence<i64> {
+    return |yield| {
+        mut i = 1
+        while i <= n {
+            if !yield(i) {
+                return
+            }
+            i = i + 1
+        }
+    }
+}
+
+test "a flat_map callback that builds a sequence per element" {
+    let out: Vec<i64> = upto(3).flat_map(|x| upto(x)).to_vec()
+    assert out.len() == 6
+    assert out[0] == 1
+    assert out[5] == 3
+}
+
+// Repeated, because the crash was on the first element and a regression could
+// just as easily be on the second. Deliberately a handful of rounds and not a
+// hundred: each round leaks the sequences the callback returned — that is the
+// per-element half of #1045, not fixed here — and a big loop would bury this
+// file's leak count under one unrelated shape.
+test "the same callback shape driven repeatedly" {
+    mut total = 0u64
+    mut r = 0
+    while r < 5 {
+        total = total + upto(3).flat_map(|x| upto(x)).count()
+        r = r + 1
+    }
+    assert total == 30u64
+}
+
 // A captured container, which turns out to be clean: the environment is freed
 // and the vector outlives it. Kept as the boundary marker — if this starts
 // leaking, something about capture ownership changed.

@@ -2,7 +2,9 @@
 
 //! Closure optimization pass — escape analysis, ownership transfer, and drop insertion.
 //!
-//! Entry point: `optimize_all_closures(fns)`.
+//! Entry points: `optimize_all_closures(fns)` decides stack vs heap, and
+//! `insert_all_closure_drops(fns)` frees what each frame is left holding. They
+//! run either side of inlining — see `insert_all_closure_drops` for why.
 //!
 //! Per function, using cross-function callee escape info:
 //! 1. Identifies closure locals (destinations of ClosureCreate)
@@ -33,6 +35,26 @@ pub fn optimize_all_closures(fns: &mut [MirFunction]) {
     for func in fns.iter_mut() {
         decide_allocation(func, &callee_escapes);
     }
+}
+
+/// Free the heap closures each frame is left holding.
+///
+/// Split out of `optimize_all_closures` and run **after** inlining, which is
+/// the whole reason a chain leaked. `v.filter(p)` is three small stdlib
+/// functions, so the inliner takes all of them — and it copies their
+/// `ClosureCreate`s into the caller *after* the ownership analysis has already
+/// run. Every environment in an inlined chain therefore reached codegen having
+/// been analysed only in a frame it no longer lives in, and `main` was never
+/// looked at at all: no owner, no drop, three allocations a call (#1045).
+///
+/// The allocation decision above still runs before inlining and has to — it
+/// answers "does this outlive its frame", which is a question about the frame
+/// the closure was *written* in. The flag rides along when the statement is
+/// copied. Ownership is the opposite kind of question: it is about the frame
+/// that ends up holding the thing, so it can only be asked once inlining has
+/// settled which frame that is.
+pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
+    let callee_escapes = build_callee_escape_map(fns);
 
     // A function that hands a heap closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
@@ -102,6 +124,7 @@ fn insert_drops(
         return;
     }
 
+    let aliases = closure_aliases(func, &owned);
     let transferred = find_transferred_closures(func, &owned, callee_escapes);
     let heap_closures: HashSet<LocalId> = owned
         .keys()
@@ -113,7 +136,12 @@ fn insert_drops(
         return;
     }
 
-    insert_closure_drops(func, &heap_closures);
+    // The chain's inner environments are excluded from `heap_closures` above —
+    // captured by an escaping closure, so not this frame's. That is right, and
+    // it stopped there: the owner was named and never asked to free them, so a
+    // two-adapter chain leaked four allocations a call (#1045).
+    let owned_by = captured_environments(func, &owned, &aliases);
+    insert_closure_drops(func, &heap_closures, &owned_by, &aliases);
 }
 
 /// The `ClosureCreate` destinations in a function.
@@ -436,9 +464,135 @@ fn find_transferred_closures(
     passed_or_stored.difference(&used_locally).copied().collect()
 }
 
+/// How many environments captured each one.
+///
+/// This is the ownership test, and it is deliberately not "did a `let` name
+/// it". A MIR local's name is not only a binding — after inlining, the callee's
+/// parameter names land in the caller, so `self` and `f` from an inlined
+/// adapter look exactly like a user's `let`. Counting capturers asks the
+/// question directly instead.
+///
+/// Captured once: that capturer owns it, and frees it when it is itself freed.
+/// Captured more than once, as in
+///
+/// ```text
+/// let src = counter(1)
+/// let a = src.map(f)
+/// let b = src.map(g)
+/// ```
+///
+/// no single environment owns `src`, and picking either would free it twice.
+/// Those keep today's behaviour — this frame does not free them, so they leak
+/// rather than double-free. The enclosing scope is the right owner there and
+/// that is a separate change; erring toward a leak is the same call
+/// `find_transferred_closures` already makes.
+fn capture_counts(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+    aliases: &HashMap<LocalId, LocalId>,
+) -> HashMap<LocalId, usize> {
+    let mut counts: HashMap<LocalId, usize> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
+                continue;
+            };
+            let owner = aliases.get(dst).copied().unwrap_or(*dst);
+            let mut seen_here: HashSet<LocalId> = HashSet::new();
+            for cap in captures {
+                let Some(inner) = aliases.get(&cap.local_id).copied() else { continue };
+                if inner == owner || !closure_locals.contains_key(&inner) {
+                    continue;
+                }
+                // One environment capturing the same thing at two offsets is
+                // still one owner.
+                if seen_here.insert(inner) {
+                    *counts.entry(inner).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    counts
+}
+
+/// What each environment captured that it therefore owns.
+///
+/// An adapter's environment holds the sequence it wraps and the closure it was
+/// given — `closure[heap](Sequence_filter…, [_36@0, _37@8])` — and both are
+/// environments of their own. `find_transferred_closures` already worked this
+/// out and used it to say "not this frame's to free"; this is the other half of
+/// the same fact, which nothing was asking for: they are the *owner's* to free.
+///
+/// Named captures are left out, per `named_closures`.
+fn captured_environments(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+    aliases: &HashMap<LocalId, LocalId>,
+) -> HashMap<LocalId, Vec<LocalId>> {
+    let counts = capture_counts(func, closure_locals, aliases);
+    let mut owned: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
+                continue;
+            };
+            let owner = aliases.get(dst).copied().unwrap_or(*dst);
+            for cap in captures {
+                let Some(inner) = aliases.get(&cap.local_id).copied() else { continue };
+                if inner == owner || !closure_locals.contains_key(&inner) {
+                    continue;
+                }
+                if counts.get(&inner).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                let slot = owned.entry(owner).or_default();
+                if !slot.contains(&inner) {
+                    slot.push(inner);
+                }
+            }
+        }
+    }
+    owned
+}
+
+/// Everything `roots` transitively owns, the roots included, innermost first.
+///
+/// Innermost first because freeing an environment releases its block, and the
+/// inner ones are reached through what that block holds. They are separate MIR
+/// locals so the order is not strictly required, but emitting the other way
+/// round is a use-after-free waiting for the first person who changes how a
+/// capture is read.
+fn expand_owned(roots: &[LocalId], owned: &HashMap<LocalId, Vec<LocalId>>) -> Vec<LocalId> {
+    let mut out: Vec<LocalId> = Vec::new();
+    let mut seen: HashSet<LocalId> = HashSet::new();
+    fn walk(
+        id: LocalId,
+        owned: &HashMap<LocalId, Vec<LocalId>>,
+        seen: &mut HashSet<LocalId>,
+        out: &mut Vec<LocalId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        for inner in owned.get(&id).map(|v| v.as_slice()).unwrap_or(&[]) {
+            walk(*inner, owned, seen, out);
+        }
+        out.push(id);
+    }
+    for root in roots {
+        walk(*root, owned, &mut seen, &mut out);
+    }
+    out
+}
+
 /// Insert ClosureDrop statements before Return terminators and loop back-edges
 /// for heap-allocated closures that aren't the return value on that path.
-fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>) {
+fn insert_closure_drops(
+    func: &mut MirFunction,
+    heap_closures: &HashSet<LocalId>,
+    owned_by: &HashMap<LocalId, Vec<LocalId>>,
+    aliases: &HashMap<LocalId, LocalId>,
+) {
     // Which block each owned closure arrives in — built here, made there, or
     // handed back by a call.
     //
@@ -500,8 +654,17 @@ fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>
             // Return: drop what this path actually made, minus the value going
             // back to the caller.
             MirTerminatorKind::Return { value } | MirTerminatorKind::CleanupReturn { value, .. } => {
+                // Through the alias, not the bare local. Lowering copies a
+                // closure before returning it — `_5 = _8; return _5` — so
+                // comparing the returned name against the `ClosureCreate`
+                // destination never matched, and the frame freed the
+                // environment it was handing back. `|x| { return upto(x) }`
+                // as a `flat_map` callback segfaulted: every element built a
+                // sequence and freed it on the way out.
                 let returned_local = match value {
-                    Some(MirOperand::Local(id)) => Some(*id),
+                    Some(MirOperand::Local(id)) => {
+                        Some(aliases.get(id).copied().unwrap_or(*id))
+                    }
                     _ => None,
                 };
                 let to_drop: Vec<LocalId> = heap_closures
@@ -532,7 +695,7 @@ fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>
     }
 
     for (block_idx, locals) in drops_to_insert {
-        for local_id in locals {
+        for local_id in expand_owned(&locals, owned_by) {
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::ClosureDrop {
                 closure: local_id,
             }));
@@ -546,6 +709,17 @@ mod tests {
     use crate::{BlockId, MirBlock, MirConst, MirLocal, MirType};
     use crate::operand::FunctionRef;
     use crate::MirTerminatorKind;
+
+    /// Both halves, in pipeline order.
+    ///
+    /// The real pipeline runs allocation before inlining and drop insertion
+    /// after it, because an inlined chain's environments land in a frame the
+    /// first pass never saw (#1045). A test that called only the first half
+    /// would assert on drops that nothing had inserted yet.
+    fn run_closure_passes(fns: &mut Vec<MirFunction>) {
+        optimize_all_closures(fns);
+        insert_all_closure_drops(fns);
+    }
 
     fn temp(id: u32, ty: MirType) -> MirLocal {
         MirLocal { id: LocalId(id), name: None, ty, is_param: false }
@@ -602,7 +776,7 @@ mod tests {
         };
 
         let mut fns = vec![func];
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
         let func = &fns[0];
 
         assert!(!get_heap(func), "non-escaping closure should be stack-allocated");
@@ -631,7 +805,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         assert!(get_heap(&fns[0]), "returned closure must stay heap");
         assert!(!has_drop(&fns[0]), "returned closure should not be dropped");
@@ -665,7 +839,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         assert!(get_heap(&fns[0]), "closure to unknown callee must be heap");
         assert!(!has_drop(&fns[0]), "ownership transferred to unknown callee");
@@ -720,7 +894,7 @@ mod tests {
         };
 
         let mut fns = vec![apply_fn, caller_fn];
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
         let main = fns.iter().find(|f| f.name == "main").unwrap();
 
         assert!(!get_heap(main), "closure to borrow-only callee should be stack");
@@ -776,7 +950,7 @@ mod tests {
         };
 
         let mut fns = vec![store_fn, caller_fn];
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
         let main = fns.iter().find(|f| f.name == "main").unwrap();
 
         assert!(get_heap(main), "closure to escaping callee must be heap");
@@ -817,7 +991,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         assert!(get_heap(&fns[0]), "unknown callee forces heap");
         assert!(has_drop(&fns[0]), "local use prevents transfer — drop needed");
@@ -898,7 +1072,7 @@ mod tests {
         };
 
         let mut fns = vec![outer_closure, f_fn];
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         let outer = &fns[0];
         let f = &fns[1];
@@ -987,7 +1161,7 @@ mod tests {
         };
 
         let mut fns = vec![outer_closure, f_fn];
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         let outer = &fns[0];
         let f = &fns[1];
@@ -1058,7 +1232,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         // Closure only used in ClosureCall → stack (safe even in loop)
         let loop_block = &fns[0].blocks[2];
@@ -1113,7 +1287,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         let loop_block = &fns[0].blocks[2];
         let heap = loop_block.statements.iter().find_map(|s| {
@@ -1192,7 +1366,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         // Both closures only used in ClosureCall → both stack
         let arm1_heap = fns[0].blocks[1].statements.iter().find_map(|s| {
@@ -1245,7 +1419,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         let heap = fns[0].blocks[1].statements.iter().find_map(|s| {
             if let MirStmtKind::ClosureCreate { heap, .. } = &s.kind { Some(*heap) } else { None }
@@ -1312,7 +1486,7 @@ mod tests {
             source_file: None,
         }];
 
-        optimize_all_closures(&mut fns);
+        run_closure_passes(&mut fns);
 
         let loop_block = &fns[0].blocks[2];
         assert!(

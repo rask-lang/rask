@@ -16,10 +16,19 @@
 # path that continues never ran one — every passing string assert leaked a
 # buffer, and asserts are everywhere in a test suite (#1049).
 #
+# An adapter chain now frees the environments it built, which is most of what
+# the sequence files were carrying — t41 went from 212 allocations to 12, and
+# `.map()` in a loop from 200 to none (#1045).
+#
 # What's left, after that and after wiring Rack and Pool into the drop pass:
-#   - a container moved into a struct field, or nested inside another
-#     container, is never freed (#1047) — the biggest remaining share
-#   - freeing a closure block doesn't release what it captured (#1045)
+#   - a container captured by a closure, or moved into a struct field, or
+#     nested inside another container, is never freed (#1035, #1047) — the
+#     biggest remaining share
+#   - a callback that builds a value per element — flat_map's inner sequences
+#     and containers — hands back something nobody owns (#1045, the half this
+#     didn't reach)
+#   - a closure made on one branch of an `if` has no point where freeing it is
+#     unconditionally safe (#1045)
 #   - a const string built by interpolation is never released (#1048)
 #
 # Format: one basename per line, then `# N allocations`.
@@ -28,7 +37,6 @@
 
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
-p08_sequence.rk  # 5 allocations — adapter closures capture self, #1045
 p11_rack_link.rk  # 18 allocations
 p12_rack_link_churn.rk  # 129 allocations
 p13_rack_snapshot.rk  # 27 allocations
@@ -44,7 +52,7 @@ t19_result_operators.rk  # 1 allocation
 t22_parameter_modes.rk  # 2 allocations
 t25_iterator_adapters.rk  # 4 allocations
 t26_closure_scoping.rk  # 2 allocations
-t26_custom_sequence.rk  # 6 allocations
+t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
 t27_own_closure_state.rk  # 4 allocations
 t29_branch_merge.rk  # 4 allocations
@@ -52,11 +60,11 @@ t30_nested_container_take.rk  # 6 allocations — nested containers, #1047
 t31_channels.rk  # 20 allocations
 t31_sequence_adapters.rk  # 40 allocations — adapter closures capture self and f, #1045
 t34_vec_as_sequence.rk  # 17 allocations — the source closure captures self, #1045
-t35_returned_sequence.rk  # 36 allocations — returned sequences keep their environments, #1045
+t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
 t36_cross_task_ownership.rk  # 18 allocations
 t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
 t37_extend_header_binding.rk  # 4 allocations — a container in a struct field, #1047
-t38_lazy_collection_adapters.rk  # 46 allocations — SEQ41 routes a collection's adapters through the sequence path, and an adapter closure's captures are never released, #1045
+t38_lazy_collection_adapters.rk  # 24 allocations — a collection's adapters capture the collection, #1035
 t40_stdlib_renames.rk  # 8 allocations
 t41_os.rk  # 149 allocations
 t50_boxes.rk  # 4 allocations
@@ -173,7 +181,7 @@ t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
 t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045
 t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
-t41_closure_environment_drop.rk  # 212 allocations — a closure made on one branch has no point where freeing it is safe, and a chain's intermediate environments belong to the one that captured them, #1045
+t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
 t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
 t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
-t42_flatten_shaped_header.rk  # 36 allocations — sequence adapter closures and their captures, #1045
+t42_flatten_shaped_header.rk  # 26 allocations — flatten's per-element inner sequences, #1045

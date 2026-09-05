@@ -27,7 +27,7 @@ mod container_drop;
 mod trait_drop;
 
 pub use builder::BlockBuilder;
-pub use closures::optimize_all_closures;
+pub use closures::{insert_all_closure_drops, optimize_all_closures};
 pub use container_drop::insert_container_drops;
 pub use trait_drop::insert_trait_drops;
 pub use transform::clone_elision::elide_clones;
