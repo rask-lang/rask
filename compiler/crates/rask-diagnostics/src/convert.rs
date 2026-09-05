@@ -1456,6 +1456,22 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "not a Result type")
             }
 
+            DynamicFieldNameNotComptime { span } => {
+                Diagnostic::error("the field name in `value.(…)` isn\'t known at compile time")
+                    .with_code("E0385")
+                    .with_primary(*span, "this isn\'t a name the compiler can read")
+                    .with_fix(
+                        "write the name: `value.(\"field\")`, a `comptime { … }` block, \
+                         a `let` bound to either, or a `comptime for` binding\'s `.name`",
+                    )
+                    .with_why(
+                        "`value.(expr)` is rewritten to a direct field access while \
+                         compiling, so there has to be a name to rewrite it to. A string \
+                         that only exists once the program runs has nothing behind it \
+                         [ctrl.comptime/CT53]",
+                    )
+            }
+
             AtomicPayload { ty, reason, span } => {
                 Diagnostic::error(format!("`Atomic<{}>` — {}", ty, reason))
                     .with_code("E0384")

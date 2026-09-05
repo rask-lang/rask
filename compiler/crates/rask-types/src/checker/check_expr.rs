@@ -624,9 +624,23 @@ impl TypeChecker {
                 }
                 // Anything else — a `comptime for` binding's `.name`, a binding
                 // holding a comptime string — is only known once the loop is
-                // unrolled, which happens after this pass.
+                // unrolled, which happens after this pass. What *can* be
+                // decided here is whether it will ever be knowable: a name that
+                // came out of a call or an `if` never will (CT53). Native said
+                // so as a MIR lowering failure and the interpreter looked the
+                // field up at run time and carried on, so the same program ran
+                // on one backend and wouldn't build on the other (#996).
                 let _obj_ty = self.infer_expr(object);
                 let _field_ty = self.infer_expr(field_expr);
+                if !self.comptime_field_name_shape(field_expr) {
+                    // The whole access, not the name inside it: an
+                    // interpolation reparses its expression and the
+                    // sub-expressions come back without source spans, so a
+                    // caret on `field_expr` lands at the top of the file.
+                    self.errors.push(TypeError::DynamicFieldNameNotComptime {
+                        span: expr.span,
+                    });
+                }
                 Type::Error
             }
 
@@ -3626,6 +3640,25 @@ impl TypeChecker {
     /// literal, or a `comptime { … }` block whose value is one. Read off the
     /// syntax — this pass has no comptime evaluator, and doesn't need one for
     /// the shapes a reader actually writes.
+    /// Whether `expr` is a shape whose value the compiler will know, and so
+    /// can name a field in `value.(expr)`.
+    ///
+    /// The list is MIR's `comptime_field_name`, which is what does the rewrite:
+    /// a string literal, a `comptime { … }` block, a `let` bound to either, or
+    /// a `comptime for` binding's `.name`/`.serial_name`/`.type_name`. The last
+    /// of those only resolves when the loop unrolls, so it's accepted here on
+    /// its shape and settled in lowering.
+    pub(super) fn comptime_field_name_shape(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::String(_) | ExprKind::Comptime { .. } => true,
+            ExprKind::Ident(name) => self.is_comptime_string(name),
+            ExprKind::Field { field, .. } => {
+                matches!(field.as_str(), "name" | "serial_name" | "type_name")
+            }
+            _ => false,
+        }
+    }
+
     fn literal_field_name(expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::String(s) => Some(s.clone()),

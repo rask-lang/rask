@@ -98,6 +98,7 @@ impl TypeChecker {
 
     pub(super) fn push_scope(&mut self) {
         self.local_types.push(HashMap::new());
+        self.comptime_string_names.push(HashMap::new());
     }
 
     pub(super) fn pop_scope(&mut self) {
@@ -105,6 +106,29 @@ impl TypeChecker {
         // ESAD Phase 2: Remove persistent borrows created at this scope depth
         self.persistent_borrows.retain(|b| b.scope_depth < depth);
         self.local_types.pop();
+        // Leave at least the module scope: `pop_scope` is called in a few
+        // places that never pushed, and an empty stack has no innermost to
+        // record a binding in.
+        if self.comptime_string_names.len() > 1 {
+            self.comptime_string_names.pop();
+        }
+    }
+
+    /// Record whether `name` holds a string the compiler will know (CT53).
+    pub(super) fn note_comptime_string(&mut self, name: &str, known: bool) {
+        if let Some(scope) = self.comptime_string_names.last_mut() {
+            scope.insert(name.to_string(), known);
+        }
+    }
+
+    /// Innermost binding of `name` wins, the way a lookup does.
+    pub(super) fn is_comptime_string(&self, name: &str) -> bool {
+        self.comptime_string_names
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .copied()
+            .unwrap_or(false)
     }
 
     pub(super) fn define_local(&mut self, name: String, ty: Type) {

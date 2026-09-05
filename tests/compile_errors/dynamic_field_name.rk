@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: the field name in `value.(expr)` has to be known at compile time
+// ERROR: the field name in `value.(…)` isn't known at compile time
+//
+// CT53. `value.(expr)` is not dynamic field access — it's a rewrite to a direct
+// field access, done while compiling, which is why it costs nothing at run
+// time. A name that only exists once the program is running has nothing to
+// rewrite to.
+//
+// Native said so as a MIR lowering failure and the interpreter looked the field
+// up by name at run time and carried on, so the same program ran on one backend
+// and wouldn't build on the other (#996). It's a diagnostic now, before either
+// backend sees it.
+
+struct Budget {
+    spent: i64
+    limit: i64
+}
+
+func pick(n: i64) -> string {
+    if n > 0 {
+        return "limit"
+    }
+    return "spent"
+}
+
+func from_a_call() -> i64 {
+    let b = Budget { spent: 3, limit: 10 }
+    let which = pick(1)
+    return b.(which)
+}
+
+func from_a_mut() -> i64 {
+    // A `mut` never qualifies however it was initialised — it can be
+    // reassigned, so the name it holds at the access isn't decidable here.
+    let b = Budget { spent: 3, limit: 10 }
+    mut which = "spent"
+    which = "limit"
+    return b.(which)
+}
+
+func main() {
+    println("{from_a_call()} {from_a_mut()}")
+}

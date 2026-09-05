@@ -4316,6 +4316,22 @@ fn torn_lock_update_warns_once_and_only_where_it_should() {
     );
 }
 
+/// #996: `value.(expr)` is a compile-time rewrite (CT53), so the name has to be
+/// one the compiler can read. Native said so as a MIR lowering failure and the
+/// interpreter looked the field up by name at run time and carried on — the
+/// same program ran on one backend and wouldn't build on the other, which is
+/// the reverse of the usual direction. Both stop at the check now.
+#[test]
+fn dynamic_field_name_must_be_comptime() {
+    let (failed, output) = compile_error_output("dynamic_field_name.rk");
+    assert!(failed, "a runtime field name must be a compile error:\n{output}");
+    assert_eq!(
+        output.matches("E0385").count(),
+        2,
+        "both the call-derived name and the `mut` must be rejected:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).

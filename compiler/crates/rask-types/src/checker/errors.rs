@@ -933,6 +933,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
+    /// while compiling, so the name has to be one the compiler knows. A runtime
+    /// string has nothing to rewrite to.
+    #[error("the field name in `value.(…)` isn't known at compile time")]
+    DynamicFieldNameNotComptime {
+        span: Span,
+    },
+
     /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
     /// whose index type doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -1126,6 +1134,7 @@ impl TypeError {
 
             // Carry no types.
             Undefined(..)
+            | DynamicFieldNameNotComptime { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
             | UnimplementedStdlibMethod { .. }

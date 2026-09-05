@@ -303,6 +303,16 @@ pub struct TypeChecker {
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
     pub(super) allowed_warnings: Vec<String>,
+    /// Per scope: whether a name is bound to a string the compiler will know —
+    /// a literal or a `comptime { … }` block. `value.(name)` is a compile-time
+    /// rewrite to a direct field access (ctrl.comptime/CT53), so only these can
+    /// name a field. Mirrors MIR's `comptime_strings`, which does the rewrite.
+    ///
+    /// A stack rather than one set, because it has to shadow the way bindings
+    /// do: an inner `let which = f()` must not make an outer comptime `which`
+    /// unusable after the block ends. `false` is an explicit "not knowable
+    /// here", which is what shadows an outer `true`.
+    pub(super) comptime_string_names: Vec<HashMap<String, bool>>,
     /// ST1: `staged()` calls found outside a `with` binding source, collected by
     /// the sync-access walk and reported by its caller (the walk itself only
     /// gathers).
@@ -456,6 +466,7 @@ impl TypeChecker {
             local_shared_uses: Vec::new(),
             staged_outside_with: Vec::new(),
             allowed_warnings: Vec::new(),
+            comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
             pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),

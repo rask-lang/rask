@@ -66,6 +66,9 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Mut { name, name_span, ty, init } => {
+                // A `mut` can be reassigned, so whatever this name meant to
+                // `value.(name)` before, it doesn't now.
+                self.note_comptime_string(name, false);
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     // AN8: an annotation name here would leave the binding
                     // asking for a value nothing can produce, and the type
@@ -108,6 +111,12 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Let { name, name_span, ty, init } => {
+                // CT53: a `let` bound to a compile-time string can name a field
+                // in `value.(name)`. MIR records the same fact to do the
+                // rewrite; this records whether it will be able to, so a name
+                // that won't is an error here rather than a lowering failure.
+                let known = self.comptime_field_name_shape(init);
+                self.note_comptime_string(name, known);
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     // AN8: an annotation name here would leave the binding
                     // asking for a value nothing can produce, and the type
