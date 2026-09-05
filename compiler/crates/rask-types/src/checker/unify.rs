@@ -193,6 +193,29 @@ impl TypeChecker {
                         });
                     }
                 }
+                // A widening into `T?` whose value never settled. The coercion
+                // re-defers while the value is a variable, waiting to find out
+                // whether it's already optional — and if nothing ever tells it,
+                // the constraint lands here and used to be dropped, leaving the
+                // value with no type at all:
+                //
+                //     extend Bin<T> {
+                //         func take(mutate self) -> T? {
+                //             return self.items.remove(last)   // no type (#1026)
+                //         }
+                //     }
+                //
+                // `pop()` in the same position was fine, because it answers
+                // `T?` outright and unified. There is only one answer left for
+                // the widening case — the value is the payload — so give it.
+                TypeConstraint::Coerce { value, target, span, .. } => {
+                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
+                        continue;
+                    }
+                    if let Some(inner) = self.ctx.apply(&target).as_option().cloned() {
+                        let _ = self.unify(&value, &inner, span);
+                    }
+                }
                 _ => {}
             }
         }

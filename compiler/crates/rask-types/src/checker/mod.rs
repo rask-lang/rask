@@ -718,7 +718,7 @@ impl TypeChecker {
             // holds. Ids are allocation order — two nodes with the same gap get
             // different ids and look like two problems, while one line of source
             // that produces eight open nodes looks like eight.
-            let mut sites: std::collections::BTreeMap<(usize, usize, &'static str, String), u32> =
+            let mut sites: std::collections::BTreeMap<(u16, usize, usize, &'static str, String), u32> =
                 Default::default();
             let mut unattributed = 0u32;
             for (id, ty) in node_types.iter() {
@@ -727,15 +727,20 @@ impl TypeChecker {
                 }
                 match self.node_origins.get(id) {
                     Some((span, kind)) => {
-                        *sites.entry((span.start, span.end, kind, format!("{ty:?}"))).or_insert(0) += 1
+                        *sites
+                            .entry((span.file_id, span.start, span.end, kind, format!("{ty:?}")))
+                            .or_insert(0) += 1
                     }
                     None => unattributed += 1,
                 }
             }
             let mut v: Vec<_> = sites.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1));
-            for ((start, end, kind, shape), n) in v.iter().take(25) {
-                eprintln!("[open-nodes] {n:>5}  bytes {start}..{end}  {kind}  {shape}");
+            // The file id matters: checking one file of a package checks the
+            // whole package, and a bare byte offset then names a position in a
+            // file nobody can identify.
+            for ((file, start, end, kind, shape), n) in v.iter().take(25) {
+                eprintln!("[open-nodes] {n:>5}  file {file} bytes {start}..{end}  {kind}  {shape}");
             }
             if unattributed > 0 {
                 eprintln!("[open-nodes] {unattributed:>5}  (no recorded origin)");

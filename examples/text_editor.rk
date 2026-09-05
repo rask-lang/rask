@@ -7,6 +7,12 @@ import io
 import memory.Pool
 import memory.Handle
 
+// What an edit can refuse to do. `Error` is the trait every error type
+// satisfies, not a type of its own — a document needs its own.
+enum EditError {
+    IndexOutOfBounds
+}
+
 // A line in the document
 struct Line {
     text: string
@@ -72,7 +78,7 @@ extend Document {
     }
 
     // Insert a new line after the given index (-1 for beginning)
-    func insert_line(self, after: i32, text: string) -> void or Error {
+    func insert_line(self, after: i32, text: string) -> void or EditError {
         let h = self.lines.insert(Line { text })
         let raw_pos = (after + 1) as i64
         let cap = self.line_order.len().wrap<i64>()
@@ -86,8 +92,8 @@ extend Document {
     }
 
     // Delete a line at the given index
-    func delete_line(self, at: i32) -> void or Error {
-        if at < 0 || at >= self.line_count() { return Error.IndexOutOfBounds }
+    func delete_line(self, at: i32) -> void or EditError {
+        if at < 0 || at >= self.line_count() { return EditError.IndexOutOfBounds }
 
         let h = self.line_order.remove(at as i64)
         let deleted = self.lines.remove(h)!
@@ -99,8 +105,8 @@ extend Document {
     }
 
     // Modify text at the given line
-    func modify_line(self, at: i32, new_text: string) -> void or Error {
-        if at < 0 || at >= self.line_count() { return Error.IndexOutOfBounds }
+    func modify_line(self, at: i32, new_text: string) -> void or EditError {
+        if at < 0 || at >= self.line_count() { return EditError.IndexOutOfBounds }
 
         let h = self.line_order[at]
         let old_text = self.lines[h].text
@@ -113,7 +119,7 @@ extend Document {
     }
 
     // Undo the last edit
-    func undo(self) -> bool or Error {
+    func undo(self) -> bool or EditError {
         let cmd = self.undo_stack.pop() ?? {
             return false
         }
@@ -125,7 +131,7 @@ extend Document {
     }
 
     // Redo the last undone edit
-    func redo(self) -> bool or Error {
+    func redo(self) -> bool or EditError {
         let cmd = self.redo_stack.pop() ?? {
             return false
         }
@@ -137,7 +143,7 @@ extend Document {
     }
 
     // Apply a command without recording it
-    func apply_command_silent(self, cmd: EditCommand) -> void or Error {
+    func apply_command_silent(self, cmd: EditCommand) -> void or EditError {
         match cmd {
             InsertLine(after, text) => {
                 let h = self.lines.insert(Line { text })
@@ -241,7 +247,7 @@ func print_help() {
     println("  h/help                  - Show this help")
 }
 
-func main() -> void or Error {
+func main() -> void or EditError|fs.IoError {
     mut doc = Document.new()
 
     println("Simple Text Editor - type 'help' for commands")

@@ -2337,6 +2337,30 @@ impl TypeChecker {
     /// What `container[index]` yields, for the shapes it can be read off the
     /// container's type. `None` means "nothing to say" — an unresolved container,
     /// or a generic whose argument list doesn't carry the element.
+    /// The primitive a bare type name spells, for a receiver position.
+    ///
+    /// `string` is deliberately absent: the resolver already has a branch for
+    /// it that handles the namespace calls (`string.from_utf8`).
+    pub(super) fn primitive_type_named(name: &str) -> Option<Type> {
+        Some(match name {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "i128" => Type::I128,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
+            "u128" => Type::U128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            _ => return None,
+        })
+    }
+
     pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
         match obj_ty {
             Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
@@ -2983,21 +3007,31 @@ impl TypeChecker {
             }
         }
 
-        // Primitive type namespace: char.from_u32(n). `char` is a type name here,
-        // not a variable — route to the primitive's method resolver.
+        // Primitive type namespace: `char.from_u32(n)`. The name is a type
+        // here, not a variable — route to the primitive's method resolver.
+        //
+        // Only `char` used to be recognized, so `i64.pow(10, n)` — which isn't
+        // an API; `pow` is a method on an f64 *value* (std.math/N1) — got a
+        // fresh variable for the receiver, another for the result, and no
+        // complaint. It failed much later, in MIR, as "unresolved variable
+        // `i64`", and only if that line was reached (#1026). raido's lexer has
+        // been carrying one of these.
         if let ExprKind::Ident(name) = &object.kind {
-            if name == "char" && self.lookup_local(name).is_none() {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
-                let ret_ty = self.ctx.fresh_var();
-                self.ctx.add_constraint(TypeConstraint::HasMethod {
-                    ty: Type::Char,
-                    method: method.to_string(),
-                    args: arg_types,
-                    ret: ret_ty.clone(),
-                    span,
-                    call_node: Some(call_id),
-                });
-                return ret_ty;
+            if let Some(prim) = Self::primitive_type_named(name) {
+                if self.lookup_local(name).is_none() {
+                    let arg_types: Vec<_> =
+                        args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                    let ret_ty = self.ctx.fresh_var();
+                    self.ctx.add_constraint(TypeConstraint::HasMethod {
+                        ty: prim,
+                        method: method.to_string(),
+                        args: arg_types,
+                        ret: ret_ty.clone(),
+                        span,
+                        call_node: Some(call_id),
+                    });
+                    return ret_ty;
+                }
             }
         }
 
