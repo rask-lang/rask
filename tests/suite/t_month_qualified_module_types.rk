@@ -103,6 +103,30 @@ test "both spellings of the same module name one type" {
     assert_eq(viaModule.status, viaAlias.status)
 }
 
+// The aliased spelling has to reach the *layout*, not just agree on a number.
+// It didn't: MIR's own type-string parser has no module-prefix handling, so
+// `h.Response` left the local a bare pointer and every field read off it fell
+// back to a machine word. `status` is a `u16` and went through `i64_to_string`
+// — right only because the field sits in an 8-byte slot that zero-extends it,
+// and wrong the moment fields hold their real widths (#1097, #1083).
+//
+// `65535` is `u16`'s maximum, so a read at the wrong width or offset shows.
+test "an aliased spelling reads its fields at their own type" {
+    let r: h.Response = h.Response.new(65535, "body")
+    assert_eq(r.status, 65535)
+    assert_eq(r.body, "body")
+    assert_eq("{r.status}", "65535")
+}
+
+func status_of(r: h.Response) -> u16 {
+    return r.status
+}
+
+test "and through a parameter written the aliased way" {
+    let r: h.Response = h.Response.new(404, "missing")
+    assert_eq(status_of(r), 404)
+}
+
 func main() {
     println("qualified module types ok")
     return

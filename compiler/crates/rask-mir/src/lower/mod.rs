@@ -1077,13 +1077,40 @@ impl<'a> MirContext<'a> {
                     } else if let Some((idx, el)) = self.find_enum(base) {
                         MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                     } else {
-                        MirType::Ptr
+                        self.module_qualified_mir_type(name)
                     }
                 } else {
-                    MirType::Ptr
+                    self.module_qualified_mir_type(name)
                 }
             }
         }
+    }
+
+    /// A type reached through its module — `http.Response`, or `h.Response`
+    /// under `import http as h`.
+    ///
+    /// Layouts are filed under the bare name, and the checker's own
+    /// `resolve_named` has stripped the prefix like this since #915. MIR's
+    /// separate type-string parser never did, so an annotation written the
+    /// aliased way left the local a bare pointer and every field read off it
+    /// fell back to a machine word: `h.Response.status` is a `u16` and printed
+    /// through `i64_to_string`. Right only because the field sat in an 8-byte
+    /// slot that zero-extends it — and wrong the moment fields hold their real
+    /// widths (#1097, which is what blocks #1083).
+    fn module_qualified_mir_type(&self, name: &str) -> MirType {
+        let Some((_, bare)) = name.rsplit_once('.') else {
+            return MirType::Ptr;
+        };
+        if bare.is_empty() {
+            return MirType::Ptr;
+        }
+        if let Some((idx, sl)) = self.find_struct(bare) {
+            return self.struct_or_handle(bare, idx, sl);
+        }
+        if let Some((idx, el)) = self.find_enum(bare) {
+            return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
+        }
+        MirType::Ptr
     }
 
     /// The registration a whole container of links needs, or `None`.
