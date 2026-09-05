@@ -13,6 +13,7 @@ func cruising_altitudes_meters(readings_feet: Vec<f64>) -> Vec<f64> {
     return readings_feet
         .map(|ft| ft * 0.3048)
         .filter(|m| m >= 10000.0)
+        .to_vec()
 }
 
 func apply_n(f: |f64| -> f64, x: f64, n: i32) -> f64 {

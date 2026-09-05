@@ -124,21 +124,34 @@ extend Vec<T> {
     @native("rask_vec_swap")
     public func swap(mutate self, i: i64, j: i64) {}
 
-    /// Iterate over elements by reference.
-    @native
-    public func iter(self) -> Iterator<T> {}
-
     /// Drain all elements into an iterator, leaving the vec empty.
     @native("rask_vec_take_all")
     public func take_all(mutate self) -> Iterator<T> {}
 
-    /// Skip the first n elements.
-    @native("rask_iter_skip")
-    public func skip(self, n: usize) -> Vec<T> {}
+    /// A sequence over these elements — the chain head a collection stands for
+    /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
+    /// spelling anyone writes, and not a second `.iter()`.
+    public func as_sequence(self) -> Sequence<T> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                if !yield(self[i]) {
+                    return
+                }
+                i = i + 1
+            }
+        }
+    }
 
-    /// Take the first n elements.
-    @native
-    public func take(self, n: usize) -> Vec<T> {}
+    /// Skip the first n elements. Lazy (type.sequence/SEQ41).
+    public func skip(self, n: usize) -> Sequence<T> {
+        return self.as_sequence().skip(n)
+    }
+
+    /// Take the first n elements. Lazy (type.sequence/SEQ41).
+    public func take(self, n: usize) -> Sequence<T> {
+        return self.as_sequence().take(n)
+    }
 
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
@@ -180,25 +193,45 @@ extend Vec<T> {
     @native("rask_vec_dedup")
     public func remove_adjacent_duplicates(mutate self) {}
 
-    /// Keep only elements where f returns true.
-    @native("rask_vec_filter")
-    public func filter(self, f: func(T) -> bool) -> Vec<T> {}
+    /// Keep only elements where f returns true. Lazy: the chain's head, not a
+    /// second Vec (type.sequence/SEQ41). `.to_vec()` materializes.
+    public func filter(self, f: func(T) -> bool) -> Sequence<T> {
+        return self.as_sequence().filter(f)
+    }
 
-    /// Transform each element.
-    @native("rask_vec_map")
-    public func map(self, f: func(T) -> U) -> Vec<U> {}
+    /// Transform each element. Lazy (type.sequence/SEQ41).
+    public func map(self, f: func(T) -> U) -> Sequence<U> {
+        return self.as_sequence().map(f)
+    }
 
     /// Stage this data as a Wide plan for data-parallel execution.
     @native("rask_vec_clone")
     public func wide(self) -> Wide<T> {}
 
-    /// Map then flatten results.
-    @native
-    public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> {}
-
-    /// Flatten a Vec of Vecs into a single Vec.
-    @native
-    public func flatten(self) -> Vec<T> {}
+    /// Map then flatten results. Lazy (type.sequence/SEQ41).
+    ///
+    /// Written out rather than forwarded. `Sequence.flat_map` wants
+    /// `func(T) -> Sequence<U>` and `f` gives a `Vec<U>`, so forwarding means
+    /// `flat_map(|x| f(x).as_sequence())` — and that inner sequence has to
+    /// outlive the closure call that made the Vec it reads. It segfaults
+    /// (#1045). Changing `f`'s type instead would break every call site that
+    /// hands back a Vec, which is all of them.
+    public func flat_map(self, f: func(T) -> Vec<U>) -> Sequence<U> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                let inner = f(self[i])
+                mut j = 0
+                while j < inner.len() {
+                    if !yield(inner[j]) {
+                        return
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+    }
 
     /// Reduce to a single value using an accumulator.
     @native
@@ -208,9 +241,10 @@ extend Vec<T> {
     @native
     public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
 
-    /// Yield (index, element) pairs.
-    @native
-    public func enumerate(self) -> Vec<(usize, T)> {}
+    /// Yield (index, element) pairs. Lazy (type.sequence/SEQ41).
+    public func enumerate(self) -> Sequence<(usize, T)> {
+        return self.as_sequence().enumerate()
+    }
 
     /// Zip with another vector into pairs.
     ///
@@ -415,10 +449,6 @@ extend Map<K, V> {
     @native
     public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
 
-    /// Iterate over (key, value) pairs.
-    @native("rask_map_entries")
-    public func iter(self) -> Iterator<(K, V)> {}
-
     /// Iterate over keys.
     @native("rask_map_keys")
     public func keys(self) -> Iterator<K> {}
@@ -436,6 +466,32 @@ extend Map<K, V> {
 /// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `read`/`sum`
 /// run the plan on the current backend (the CPU baseline for now).
 public struct Wide<T> { }
+
+// The receiver has to say its element is itself a Vec, which the block header
+// is the only place to write.
+extend Vec<Vec<T>> {
+    /// Flatten one level. Lazy (type.sequence/SEQ41).
+    ///
+    /// Written out for the same reason `flat_map` is: forwarding would wrap each
+    /// inner Vec in a sequence that has to outlive the read that produced it
+    /// (#1045).
+    public func flatten(self) -> Sequence<T> {
+        return |yield| {
+            mut i = 0
+            while i < self.len() {
+                let inner = self[i]
+                mut j = 0
+                while j < inner.len() {
+                    if !yield(inner[j]) {
+                        return
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+    }
+}
 
 extend Wide<T> {
     /// Transform each lane. Lazy — records the op, runs nothing.

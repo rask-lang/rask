@@ -66,17 +66,17 @@ test "card: Vec methods" {
 
 test "card: sequence terminals" {
     let v = [1i64, 2i64, 3i64]
-    let doubled: Vec<i64> = v.iter().map(|x| x * 2i64).to_vec()
+    let doubled: Vec<i64> = v.map(|x| x * 2i64).to_vec()
     assert doubled[2] == 6i64
 
-    let evens: Vec<i64> = v.iter().filter(|x| x % 2i64 == 0i64).to_vec()
+    let evens: Vec<i64> = v.filter(|x| x % 2i64 == 0i64).to_vec()
     assert evens.len() == 1u64
 
-    assert v.iter().sum() == 6i64
-    assert v.iter().count() == 3u64
+    assert v.sum() == 6i64
+    assert v.count() == 3u64
     // join on a *fixed array* of strings is broken natively (#1021), so the card's
     // `join` claim is pinned here on a Vec; the array case has its own probe.
-    let names: Vec<string> = ["a", "b"].iter().to_vec()
+    let names: Vec<string> = ["a", "b"].to_vec()
     assert names.join("-") == "a-b"
 }
 

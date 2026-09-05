@@ -104,6 +104,125 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
     }
 }
 
+/// What a statement wants from a local it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseKind {
+    /// The local's value is read.
+    Value,
+    /// The local's *address* is what's wanted — a closure capture, or `Ref`.
+    /// Substituting a different local here changes which variable is pointed
+    /// at, so a rewrite that replaces reads must leave these alone.
+    AddressOf,
+}
+
+fn visit_operand_local_mut(op: &mut MirOperand, f: &mut impl FnMut(&mut LocalId, UseKind)) {
+    if let MirOperand::Local(id) = op {
+        f(id, UseKind::Value);
+    }
+}
+
+fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, UseKind)) {
+    match rv {
+        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_local_mut(o, f),
+        MirRValue::Ref(id) => f(id, UseKind::AddressOf),
+        MirRValue::BinaryOp { left, right, .. } => {
+            visit_operand_local_mut(left, f);
+            visit_operand_local_mut(right, f);
+        }
+        MirRValue::UnaryOp { operand, .. } => visit_operand_local_mut(operand, f),
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => {
+            visit_operand_local_mut(value, f)
+        }
+        MirRValue::Field { base, .. } => visit_operand_local_mut(base, f),
+        MirRValue::EnumTag { value } => visit_operand_local_mut(value, f),
+        MirRValue::ArrayIndex { base, index, .. } => {
+            visit_operand_local_mut(base, f);
+            visit_operand_local_mut(index, f);
+        }
+    }
+}
+
+/// Visit every local a statement reads, with a mutable handle so a pass can
+/// substitute one local for another. Mirrors `visit_stmt_uses`; write
+/// destinations are not visited (`stmt_def` has those).
+pub fn visit_stmt_use_locals_mut(
+    stmt: &mut MirStmt,
+    f: &mut impl FnMut(&mut LocalId, UseKind),
+) {
+    match &mut stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => visit_rvalue_locals_mut(rvalue, f),
+        MirStmtKind::Store { addr, value, .. } => {
+            f(addr, UseKind::Value);
+            visit_operand_local_mut(value, f);
+        }
+        MirStmtKind::Call { args, .. } => {
+            args.iter_mut().for_each(|a| visit_operand_local_mut(a, f))
+        }
+        MirStmtKind::ClosureCall { closure, args, .. } => {
+            f(closure, UseKind::Value);
+            args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
+        }
+        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
+            f(pool, UseKind::Value);
+            f(handle, UseKind::Value);
+        }
+        MirStmtKind::ClosureCreate { captures, .. }
+        | MirStmtKind::EnsureHookRegister { captures, .. } => {
+            for c in captures.iter_mut() {
+                // A by-ref capture wants the variable itself; a by-value one
+                // wants what it holds. Only the first is an address use.
+                let kind = if c.by_ref { UseKind::AddressOf } else { UseKind::Value };
+                f(&mut c.local_id, kind);
+            }
+        }
+        MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
+        MirStmtKind::ClosureDrop { closure } => f(closure, UseKind::Value),
+        MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),
+        MirStmtKind::ArrayStore { base, index, value, .. } => {
+            f(base, UseKind::Value);
+            visit_operand_local_mut(index, f);
+            visit_operand_local_mut(value, f);
+        }
+        MirStmtKind::TraitBox { value, .. } => visit_operand_local_mut(value, f),
+        MirStmtKind::TraitCall { trait_object, args, .. } => {
+            f(trait_object, UseKind::Value);
+            args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
+        }
+        MirStmtKind::TraitDrop { trait_object } => f(trait_object, UseKind::Value),
+        MirStmtKind::Phi { args, .. } => {
+            args.iter_mut().for_each(|(_, o)| visit_operand_local_mut(o, f))
+        }
+        MirStmtKind::RcInc { local }
+        | MirStmtKind::RcDec { local }
+        | MirStmtKind::RcDecContents { local } => f(local, UseKind::Value),
+        MirStmtKind::ResourceRegister { .. }
+        | MirStmtKind::GlobalRef { .. }
+        | MirStmtKind::EnsurePush { .. }
+        | MirStmtKind::EnsurePop
+        | MirStmtKind::EnsureHookPop
+        | MirStmtKind::ResourceScopeCheck { .. } => {}
+    }
+}
+
+/// As `visit_stmt_use_locals_mut`, for a terminator.
+pub fn visit_terminator_use_locals_mut(
+    term: &mut MirTerminator,
+    f: &mut impl FnMut(&mut LocalId, UseKind),
+) {
+    match &mut term.kind {
+        MirTerminatorKind::Return { value: Some(op) }
+        | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => {
+            visit_operand_local_mut(op, f)
+        }
+        MirTerminatorKind::Branch { cond, .. } => visit_operand_local_mut(cond, f),
+        MirTerminatorKind::Switch { value, .. } => visit_operand_local_mut(value, f),
+        MirTerminatorKind::Return { value: None }
+        | MirTerminatorKind::CleanupReturn { value: None, .. }
+        | MirTerminatorKind::Goto { .. }
+        | MirTerminatorKind::Unreachable => {}
+    }
+}
+
 /// True if the rvalue reads the given local.
 pub fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
     let mut hit = false;

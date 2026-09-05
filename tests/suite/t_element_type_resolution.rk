@@ -77,7 +77,7 @@ test "an iterator chain keeps the element type" {
     vals.push(1.5)
     vals.push(2.5)
     mut total = 0.0
-    for v in vals.iter() {
+    for v in vals {
         total = total + v
     }
     assert_eq(total, 4.0)

@@ -167,7 +167,7 @@ extend Store {
             return a.id.compare(b.id)
         })
 
-        let page = ranked.iter().skip(filter.offset).take(filter.limit).map(|r| r.view.clone()).to_vec()
+        let page = ranked.skip(filter.offset).take(filter.limit).map(|r| r.view.clone()).to_vec()
 
         return ListResponse { items: page, total, offset: filter.offset }
     }

@@ -5,10 +5,10 @@
 // out of it — and a stub says `Iterator<T>`, with `T` the parameter name and
 // nothing substituted for it.
 //
-// So `[1, 2, 3].iter()` handed back an iterator over a dangling `T`, and
-// anything reading the element inherited that:
+// So `[1, 2, 3].filter(…)` ran over a dangling `T`, and anything reading the
+// element inherited that:
 //
-//     let evens: Vec<i64> = v.iter().filter(|x| x % 2i64 == 0i64).to_vec()
+//     let evens: Vec<i64> = v.filter(|x| x % 2i64 == 0i64).to_vec()
 //
 // `x` had no type, `x % 2i64` had no type, and MIR gave up — "method `rem` on
 // receiver of unresolved type". The same line on a `Vec<i64>` was always fine.
@@ -17,28 +17,28 @@
 
 test "iterating an array literal knows the element type" {
     let v = [1i64, 2i64, 3i64]
-    let evens: Vec<i64> = v.iter().filter(|x| x % 2i64 == 0i64).to_vec()
+    let evens: Vec<i64> = v.filter(|x| x % 2i64 == 0i64).to_vec()
     assert evens.len() == 1u64
     assert evens[0] == 2i64
 }
 
 test "a method call on the element inside map" {
     let v = [-1i64, 2i64, -3i64]
-    let sizes: Vec<i64> = v.iter().map(|x| x.abs()).to_vec()
+    let sizes: Vec<i64> = v.map(|x| x.abs()).to_vec()
     assert sizes[0] == 1i64
     assert sizes[2] == 3i64
 }
 
 test "strings too — the element isn't always a machine word" {
     let names = ["ada", "grace"]
-    let upper: Vec<string> = names.iter().map(|n| n.to_uppercase()).to_vec()
+    let upper: Vec<string> = names.map(|n| n.to_uppercase()).to_vec()
     assert upper[0] == "ADA"
     assert upper[1] == "GRACE"
 }
 
 test "floats" {
     let xs = [1.5, 2.5]
-    let doubled: Vec<f64> = xs.iter().map(|x| x * 2.0).to_vec()
+    let doubled: Vec<f64> = xs.map(|x| x * 2.0).to_vec()
     assert doubled[0] == 3.0
     assert doubled[1] == 5.0
 }
@@ -53,14 +53,14 @@ test "the read-only surface, straight through" {
 }
 
 test "an empty literal in an annotated slot" {
-    let v: Vec<i64> = [].iter().to_vec()
+    let v: Vec<i64> = [].to_vec()
     assert v.len() == 0u64
 }
 
 test "a slice keeps the element type as well" {
     let v = [10i64, 20i64, 30i64]
     let s = v[0..2]
-    let sum = s.iter().map(|x| x + 1i64).to_vec()
+    let sum = s.map(|x| x + 1i64).to_vec()
     assert sum[0] == 11i64
     assert sum[1] == 21i64
 }

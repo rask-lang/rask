@@ -967,8 +967,15 @@ impl<'a> MirContext<'a> {
                     } else {
                         name
                     };
-                    let parts = split_top_level_parens(bare, '|');
+                    let mut parts = split_top_level_parens(bare, '|');
                     if parts.len() > 1 {
+                        // Same order the checker canonicalizes to — by member
+                        // name. A union's member index is what says which member
+                        // is present, so the frame that writes one and the frame
+                        // that reads it have to agree, and this path reading the
+                        // written order while the checker read a sorted one is
+                        // how `AErr`'s slot came back as a `BErr` (#1102).
+                        parts.sort_by(|a, b| a.trim().cmp(b.trim()));
                         return MirType::Union(
                             parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
                         );
@@ -1514,6 +1521,40 @@ impl<'a> MirContext<'a> {
 
     /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
     /// Used when resolving method calls on struct fields.
+    /// A written type you can call.
+    ///
+    /// Function types are spelled `|T| -> R` or `func(T) -> R`, so a string test
+    /// used to be enough. `Sequence<T>` is also callable but wears a nominal
+    /// name — it has to, so adapters can attach to it (type.sequence/SEQ1) —
+    /// and it names no arrow at all, so the string test missed it and a
+    /// `func evens(src: Sequence<i32>)` lowered `src(…)` as a call to a
+    /// function called "src".
+    pub fn is_callable_ty_str(s: &str) -> bool {
+        let s = s.trim();
+        s.starts_with('|')
+            || s.starts_with("func(")
+            || s.starts_with("Sequence<")
+            || s.starts_with("SequenceMut<")
+    }
+
+    /// The answer a callable type hands back, for a type the checker resolved.
+    /// `None` if it isn't callable. A sequence answers nothing — it is driven
+    /// for its yields, not for a return value.
+    pub fn callable_ret_ty(
+        &self,
+        ty: &Type,
+        type_names: &HashMap<rask_types::TypeId, String>,
+    ) -> Option<MirType> {
+        if let Type::Fn { ret, .. } = ty {
+            return Some(self.type_to_mir(ret));
+        }
+        let head = Self::type_prefix(ty, type_names)?;
+        match head.split('<').next() {
+            Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
+            _ => None,
+        }
+    }
+
     pub fn type_prefix_str(s: &str) -> Option<String> {
         let s = s.trim();
         match s {
@@ -1978,8 +2019,11 @@ impl<'a> MirLowerer<'a> {
         }
         let arg = match name.as_str() {
             // Iterator is here because a `for` source is often one, and it
-            // carries its element type the same way.
-            "Vec" | "Pool" | "Iterator" => args.first()?,
+            // carries its element type the same way. So does `Sequence<T>` —
+            // it was simply never added, which is why `for (k, v) in self`
+            // inside `Sequence.to_map` had no element type and fell back to a
+            // word (#1046).
+            "Vec" | "Pool" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
             // `m[k]` and `m.get(k)` yield V, not K.
             "Map" => args.get(1)?,
             _ => return None,
@@ -2392,12 +2436,12 @@ impl<'a> MirLowerer<'a> {
         // A view over a collection holds what the collection holds, so ask the
         // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
         // leaves the element a variable — while `PRIMES` itself knows.
-        // `iter`/`values` view a collection; `lock`/`read`/`write` unwrap a box
+        // `values` views a collection; `lock`/`read`/`write` unwrap a box
         // around one. Either way the receiver is the thing that knows.
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             if matches!(
                 method.as_str(),
-                "iter" | "values" | "into_iter" | "lock" | "read" | "write"
+                "values" | "into_iter" | "lock" | "read" | "write"
             ) {
                 if let Some(elem) = self.collection_elem_of_expr(object) {
                     return Some(elem);
@@ -3289,16 +3333,36 @@ impl<'a> MirLowerer<'a> {
         let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
         let mut thunk_res_local: Option<LocalId> = None;
         for (i, cap) in caps.iter().enumerate() {
-            let dst = thunk_builder.alloc_local(cap.name.clone(), cap.ty.clone());
+            // A by-ref capture's local in the thunk is the same thing the outer
+            // local is, so it gets the same type. A `mut` scalar's stack cell is
+            // registered as `Ptr` by name — that is how the capture decision
+            // reads it as an address — but the local itself is a one-word array,
+            // and typing the thunk's copy `Ptr` made it look like a scalar's
+            // address instead of an aggregate. `addr_taken` then turned each
+            // read into a load through it, one dereference too many, and the
+            // hook read the value as if it were a pointer (#1011).
+            let cap_ty = self
+                .builder
+                .local_type(cap.outer)
+                .filter(|t| cap.by_ref && t.passed_by_address())
+                .unwrap_or_else(|| cap.ty.clone());
+            let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
                 env_ptr: env_param,
                 offset: (i as u32) * 8,
-                by_ref: cap.by_ref,
+                access: if cap.by_ref {
+                    crate::CaptureAccess::Borrowed
+                } else {
+                    crate::CaptureAccess::Value
+                },
             }));
             if Some(i) == res_index {
                 thunk_res_local = Some(dst);
             } else {
+                // The body still resolves the name the way the outer function
+                // did — through the pointer for a cell — so the registered type
+                // stays `cap.ty`.
                 thunk_locals.insert(cap.name.clone(), (dst, cap.ty.clone()));
             }
         }
@@ -3372,6 +3436,7 @@ impl<'a> MirLowerer<'a> {
                 local_id: c.outer,
                 offset: (i as u32) * 8,
                 size: 8,
+                by_ref: c.by_ref,
             })
             .collect();
         Some((thunk_name, captures))
@@ -3830,13 +3895,27 @@ impl<'a> MirLowerer<'a> {
                         let elem_mir = ctx.resolve_type_str(elem_str);
                         meta.elem_type = Some(elem_mir);
                     }
+                    // A `Sequence<T>` parameter carries its element type the
+                    // same way, and this is the only place it survives
+                    // monomorphization: the instantiated copy has fresh node
+                    // ids, so the checker's record is gone, but mono did
+                    // substitute the declared string — `Sequence<(K, V)>`
+                    // arrives here as `Sequence<(i32, i32)>`. Without it
+                    // `for (k, v) in self` inside `Sequence.to_map` had no
+                    // element type and fell back to a machine word (#1046).
+                    for head in ["Sequence<", "SequenceMut<"] {
+                        if let Some(elem_str) = param_ty_str.strip_prefix(head).and_then(|s| s.strip_suffix('>')) {
+                            let elem_mir = ctx.resolve_type_str(elem_str);
+                            meta.elem_type = Some(elem_mir);
+                        }
+                    }
                 }
             }
 
             // Function-type params (|args| -> ret) are closures passed as arguments.
             // Register them so call sites emit ClosureCall instead of Call.
             // Parser normalizes |T| -> R to "func(T) -> R", so check both forms.
-            if param_ty_str.starts_with('|') || param_ty_str.starts_with("func(") {
+            if MirContext::is_callable_ty_str(param_ty_str) {
                 lowerer.closure_locals.insert(param.name.clone());
                 let ret_ty = if let Some(arrow_pos) = param_ty_str.rfind("-> ") {
                     let ret_str = param_ty_str[arrow_pos + 3..].trim();

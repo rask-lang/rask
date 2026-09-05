@@ -1,26 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Parameter modes: borrow (the default), mutate, take — and #899.
+// Parameter modes: borrow (the default), mutate, take.
 //
 // mem.parameters gives three modes. Borrow is the default and read-only.
 // `mutate` is a mutable borrow, marked at the call site as well as in the
 // signature (PM4). `take` moves ownership in, and the call site does not mark it.
 //
-// #899 is the `mutate` half. The spec says two things about it and the compiler
-// matches neither cleanly:
-//
-//   PM2's prose — "unrestricted write access to the value; the constraint is
-//   that the caller keeps ownership after the call", and "there's no
-//   half-mutable state" — reads as: the caller sees the write.
-//
-//   The edge-case table — "Copy type + mutate: value is copied in; mutations
-//   affect the copy" — reads as: the caller does not.
-//
-// What actually happens is a third thing: a *primitive* parameter drops the
-// write, and an *aggregate* keeps it at any size, including a 4-byte one-field
-// struct that is every bit as Copy as an i32. Same on both backends. The
-// primitive tests below assert PM2's reading, which is the one the rest of the
-// spec supports; if the edge-case table wins instead, `mutate` on a Copy type
-// should be a compile error rather than a silent no-op.
+// The `mutate` half is what #899 was about. A *primitive* parameter dropped the
+// write while an *aggregate* kept it at any size — including a four-byte
+// one-field struct every bit as Copy as an i32 — because the call site spilled a
+// copy of the scalar and passed the copy's address. The spec argued both sides:
+// PM2's prose ("unrestricted write access", "there's no half-mutable state")
+// says the caller sees the write; an edge-case row said Copy types mutate a
+// copy. PM2 won — PM5 already promises the call-site marker never depends on a
+// type's size, and semantics that silently do can't be reasoned about — and the
+// row is gone. These tests pin that reading at every size.
 
 struct Small {
     a: i32

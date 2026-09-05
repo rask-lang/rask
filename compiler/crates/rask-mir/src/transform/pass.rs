@@ -92,6 +92,9 @@ impl PassManager {
         // Cross-function passes (sequential) — PC2
         pm.add(ClosureOptimizationPass);
         pm.add(InliningPass);
+        // After inlining, deliberately: an inlined chain's environments end up
+        // in a frame the pre-inline analysis never saw (#1045).
+        pm.add(ClosureDropInsertionPass);
         pm.add(TraitDropInsertionPass);
         pm.add(ContainerDropInsertionPass);
         // Per-function passes — run after inlining for wider optimization window (IN5)
@@ -127,6 +130,17 @@ impl MirPass for ClosureOptimizationPass {
     fn name(&self) -> &str { "closure_optimization" }
     fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_all_closures(fns);
+    }
+}
+
+/// Free the heap closures each frame is left holding — after inlining, because
+/// that is what decides which frame holds them (#1045).
+pub struct ClosureDropInsertionPass;
+
+impl MirPass for ClosureDropInsertionPass {
+    fn name(&self) -> &str { "closure_drop_insertion" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::insert_all_closure_drops(fns);
     }
 }
 

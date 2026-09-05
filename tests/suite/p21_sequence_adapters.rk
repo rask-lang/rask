@@ -1,0 +1,217 @@
+// PENDING type.sequence — the adapter and terminal surface on Sequence<T>. Expected RED until built; drives implementation. Do NOT assert current (wrong) behavior.
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/types/sequence-protocol.md
+//   SEQ12 adapters are methods on Sequence<T>, in one extend block
+//   SEQ13a an adapter must pass a `false` yield answer upstream, or break,
+//        take(n), the short-circuit terminals and non-local return all fail
+//   SEQ37 building a chain runs nothing; the terminal drives it
+//   SEQ41 adapters live on Sequence and nowhere else — no eager Vec.map
+//   SEQ47 to_vec copies Copy elements and moves chain-owned ones
+//
+// p08_sequence.rk drives the protocol itself — the for-loop desugar, break,
+// continue, non-local return. This file drives the surface: every adapter and
+// every terminal, once each, against a source small enough that the expected
+// answer is obvious by inspection.
+//
+// Two sources on purpose. `count_to_five()` is user-authored, which is the case
+// that has never worked at all. `v` is a built-in collection, which today fuses
+// its chain and must go through `Sequence<T>` after the stage-6 migration — so
+// these also pin that the two are the same protocol.
+
+import sequence.Sequence
+
+func main() {}
+
+func count_to_five() -> Sequence<i32> {
+    return |yield| {
+        if !yield(1) { return }
+        if !yield(2) { return }
+        if !yield(3) { return }
+        if !yield(4) { return }
+        if !yield(5) { return }
+    }
+}
+
+// --- adapters ---
+
+test "type.sequence/SEQ12 — filter keeps what the predicate accepts" {
+    let odds: Vec<i32> = count_to_five().filter(|x| x % 2 == 1).to_vec()
+    assert odds.len() == 3
+    assert odds[0] == 1
+    assert odds[2] == 5
+}
+
+test "type.sequence/SEQ12 — map transforms each item" {
+    let doubled: Vec<i32> = count_to_five().map(|x| x * 2).to_vec()
+    assert doubled.len() == 5
+    assert doubled[0] == 2
+    assert doubled[4] == 10
+}
+
+test "type.sequence/SEQ12 — map may change the element type" {
+    let flags: Vec<bool> = count_to_five().map(|x| x > 2).to_vec()
+    assert flags.len() == 5
+    assert !flags[0]
+    assert flags[4]
+}
+
+test "type.sequence/SEQ13a — take stops the source after n items" {
+    let first_two: Vec<i32> = count_to_five().take(2).to_vec()
+    assert first_two.len() == 2
+    assert first_two[1] == 2
+}
+
+test "type.sequence/SEQ12 — skip drops the first n and yields the rest" {
+    let rest: Vec<i32> = count_to_five().skip(3).to_vec()
+    assert rest.len() == 2
+    assert rest[0] == 4
+}
+
+test "type.sequence/SEQ12 — take_while stops at the first failure" {
+    let small: Vec<i32> = count_to_five().take_while(|x| x < 3).to_vec()
+    assert small.len() == 2
+    assert small[1] == 2
+}
+
+test "type.sequence/SEQ12 — skip_while yields everything after the first failure" {
+    let big: Vec<i32> = count_to_five().skip_while(|x| x < 3).to_vec()
+    assert big.len() == 3
+    assert big[0] == 3
+}
+
+test "type.sequence/SEQ12 — chain concatenates two sequences" {
+    let both: Vec<i32> = count_to_five().take(2).chain(count_to_five().take(1)).to_vec()
+    assert both.len() == 3
+    assert both[2] == 1
+}
+
+test "type.sequence/SEQ44 — enumerate pairs each item with its position" {
+    mut positions = 0
+    mut values = 0
+    for (i, x) in count_to_five().enumerate() {
+        positions = positions + i
+        values = values + x
+    }
+    assert positions == 10
+    assert values == 15
+}
+
+test "type.sequence/SEQ12 — flat_map maps then flattens one level" {
+    let pairs: Vec<i32> = count_to_five().take(2).flat_map(|x| count_to_five().take(x)).to_vec()
+    assert pairs.len() == 3
+    assert pairs[0] == 1
+    assert pairs[2] == 2
+}
+
+// --- adapters compose, and stay lazy until a terminal ---
+
+test "type.sequence/SEQ37 — a chain of adapters runs once, in order" {
+    let out: Vec<i32> = count_to_five()
+        .filter(|x| x % 2 == 1)
+        .map(|x| x * 10)
+        .take(2)
+        .to_vec()
+    assert out.len() == 2
+    assert out[0] == 10
+    assert out[1] == 30
+}
+
+// --- terminals ---
+
+test "type.sequence/SEQ47 — to_vec lands Copy elements in a Vec" {
+    let all: Vec<i32> = count_to_five().to_vec()
+    assert all.len() == 5
+    assert all[4] == 5
+}
+
+test "type.sequence/SEQ29 — to_map builds a Map from a sequence of pairs" {
+    let squares: Map<i32, i32> = count_to_five().take(3).map(|x| (x, x * x)).to_map()
+    assert squares.len() == 3
+    assert squares[2] == 4
+    assert squares[3] == 9
+}
+
+test "type.sequence/SEQ30 — join concatenates a sequence of strings" {
+    let csv: string = count_to_five().take(3).map(|x| x.to_string()).join(",")
+    assert csv == "1,2,3"
+}
+
+test "type.sequence/SEQ12 — fold reduces with a starting value" {
+    let total: i32 = count_to_five().fold(100, |acc, x| acc + x)
+    assert total == 115
+}
+
+test "type.sequence/SEQ12 — reduce answers none on an empty sequence" {
+    assert count_to_five().reduce(|a, b| a + b) == 15
+    assert count_to_five().take(0).reduce(|a, b| a + b) is none
+}
+
+test "type.sequence/SEQ12 — sum and product" {
+    let s: i32 = count_to_five().sum()
+    assert s == 15
+    let p: i32 = count_to_five().take(4).product()
+    assert p == 24
+}
+
+test "type.sequence/SEQ12 — sum of an empty sequence is zero" {
+    let s: i32 = count_to_five().take(0).sum()
+    assert s == 0
+}
+
+test "type.sequence/SEQ12 — count answers how many items were yielded" {
+    let n: usize = count_to_five().filter(|x| x > 2).count()
+    assert n == 3
+}
+
+test "type.sequence/SEQ12 — min and max, and none when empty" {
+    assert count_to_five().min() == 1
+    assert count_to_five().max() == 5
+    assert count_to_five().take(0).max() is none
+}
+
+test "type.sequence/SEQ12 — min_by and max_by use the comparator" {
+    assert count_to_five().max_by(|a, b| (3 - a) - (3 - b)) == 1
+}
+
+test "type.sequence/SEQ12 — min_by_key and max_by_key use the extracted key" {
+    assert count_to_five().min_by_key(|x| if x > 3 { x - 3 } else { 3 - x }) == 3
+}
+
+test "type.sequence/SEQ12 — any stops at the first match" {
+    assert count_to_five().any(|x| x == 3)
+    assert !count_to_five().any(|x| x > 99)
+}
+
+test "type.sequence/SEQ12 — all stops at the first failure" {
+    assert count_to_five().all(|x| x > 0)
+    assert !count_to_five().all(|x| x < 3)
+}
+
+test "type.sequence/SEQ12 — find answers the first match, or none" {
+    assert count_to_five().find(|x| x > 3) == 4
+    assert count_to_five().find(|x| x > 99) is none
+}
+
+test "type.sequence/SEQ12 — for_each visits every item" {
+    mut seen = 0
+    count_to_five().for_each(|x| { seen = seen + x })
+    assert seen == 15
+}
+
+// --- the same protocol from a built-in collection (stage 6) ---
+
+test "type.sequence/SEQ41 — Vec.iter is a Sequence and takes the same adapters" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let out: Vec<i32> = v.filter(|x| x % 2 == 1).map(|x| x * 10).to_vec()
+    assert out.len() == 3
+    assert out[0] == 10
+    assert out[2] == 50
+}
+
+test "type.sequence/SEQ41 — a Vec chain and a user chain answer alike" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    let from_vec: i32 = v.filter(|x| x > 2).sum()
+    let from_user: i32 = count_to_five().filter(|x| x > 2).sum()
+    assert from_vec == from_user
+    assert from_vec == 12
+}

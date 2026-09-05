@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// #398 — stdlib methods that answer with an optional, and Map iteration through
-// `.iter()`. Every one of these used to give a pointer-shaped number on native
-// while the interpreter was right.
+// #398 — stdlib methods that answer with an optional, and iterating a Map.
+// Every one of these used to give a pointer-shaped number on native while the
+// interpreter was right.
 
 test "string.index_of answers with a position" {
     assert "hello world".index_of("world") ?? 999 == 6
@@ -41,31 +41,31 @@ test "Map.remove hands back the value it removed" {
     assert m.remove("zzz") ?? -1 == -1
 }
 
-test "Map iteration through .iter() reads both halves of the pair" {
+test "iterating a Map reads both halves of the pair" {
     mut m = Map.new()
     m.insert("x", 1)
     m.insert("y", 2)
 
     mut total = 0
-    for pair in m.iter() {
+    for pair in m {
         total += pair.1
     }
     assert total == 3
 
     mut key_chars = 0
-    for pair in m.iter() {
+    for pair in m {
         key_chars += pair.0.len()
     }
     assert key_chars == 2
 
     mut destructured = 0
-    for (k, v) in m.iter() {
+    for (k, v) in m {
         destructured += v
     }
     assert destructured == 3
 }
 
-test "iterating the map directly agrees with .iter()" {
+test "a tuple binding sees the same pair a single binding does" {
     mut m = Map.new()
     m.insert("x", 5)
     m.insert("y", 7)
@@ -75,7 +75,7 @@ test "iterating the map directly agrees with .iter()" {
         bare += pair.1
     }
     mut through_iter = 0
-    for pair in m.iter() {
+    for pair in m {
         through_iter += pair.1
     }
     assert bare == 12
@@ -90,13 +90,13 @@ test "iterator adapters still fuse over a Vec" {
     v.push(4)
 
     mut even = 0
-    for x in v.iter().filter(|n| n % 2 == 0) {
+    for x in v.filter(|n| n % 2 == 0) {
         even += x
     }
     assert even == 6
 
     mut chained = 0
-    for x in v.iter().filter(|n| n > 1).map(|n| n * 10) {
+    for x in v.filter(|n| n > 1).map(|n| n * 10) {
         chained += x
     }
     assert chained == 90

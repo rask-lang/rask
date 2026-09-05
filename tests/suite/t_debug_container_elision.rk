@@ -25,10 +25,10 @@ struct Point {
 }
 
 func main() {
-    let ps: Vec<Point> = [Point { x: 1, y: 2 }].iter().to_vec()
+    let ps: Vec<Point> = [Point { x: 1, y: 2 }].to_vec()
     println("{ps:debug}")
 
-    let nested: Vec<Vec<i64>> = [].iter().to_vec()
+    let nested: Vec<Vec<i64>> = [].to_vec()
     println("{nested:debug}")
 
     mut m: Map<string, i64> = Map.new()
@@ -40,12 +40,12 @@ func main() {
 }
 
 test "a Vec of aggregates shows its contents on both backends" {
-    let ps: Vec<Point> = [Point { x: 1, y: 2 }].iter().to_vec()
+    let ps: Vec<Point> = [Point { x: 1, y: 2 }].to_vec()
     assert "{ps:debug}" == "[Point {{ x: 1, y: 2 }}]"
 }
 
 test "a Vec of Vecs recurses" {
-    let inner: Vec<i64> = [1, 2].iter().to_vec()
+    let inner: Vec<i64> = [1, 2].to_vec()
     mut outer = Vec.new()
     outer.push(inner)
     assert "{outer:debug}" == "[[1, 2]]"

@@ -38,7 +38,7 @@ test "a removed slot isn't an entry" {
     let es: Vec<(Handle<i64>, i64)> = p.entries()
     assert es.len() == 2
     mut total = 0
-    for e in es.iter() {
+    for e in es {
         total = total + e.1
     }
     assert total == 4

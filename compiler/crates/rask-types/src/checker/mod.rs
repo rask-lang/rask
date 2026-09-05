@@ -28,7 +28,7 @@ mod resolve;
 mod validate;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram, receiver_name};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypeBinding, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
@@ -184,9 +184,10 @@ pub struct TypeChecker {
     pub(super) borrow_stack: Vec<ActiveBorrow>,
     /// Persistent borrows across statements within a scope (ESAD Phase 2).
     pub(super) persistent_borrows: Vec<PersistentBorrow>,
-    /// Pending generic call sites: (call NodeId, fresh type vars for type params).
-    /// Resolved after constraint solving to populate TypedProgram.call_type_args.
-    pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
+    /// Pending generic call sites: (call NodeId, one fresh type var per type
+    /// parameter, named by that parameter). Resolved after constraint solving to
+    /// populate TypedProgram.call_type_args.
+    pub(super) pending_call_type_args: Vec<(NodeId, Vec<(String, Type)>)>,
     /// Type arguments written at a *method* call, keyed by the call's NodeId.
     ///
     /// `s.parse<i64>()` says what it wants and nothing carried it: the method's
@@ -774,16 +775,20 @@ impl TypeChecker {
         // attempts hold variables that never got bound. Keep the entry that
         // actually resolved; a half-resolved one mangles to `Box2_echo$_` and
         // collides with every other unresolved instantiation of the same method.
-        let mut call_type_args: HashMap<NodeId, Vec<Type>> = HashMap::new();
+        let mut call_type_args: HashMap<NodeId, Vec<type_defs::TypeBinding>> = HashMap::new();
         for (node_id, vars) in &self.pending_call_type_args {
-            let resolved: Vec<Type> = vars.iter().map(|v| {
+            let resolved: Vec<type_defs::TypeBinding> = vars.iter().map(|(name, v)| {
                 let applied = self.ctx.apply(v);
-                Self::normalize_named_types(&applied, &id_to_name)
+                type_defs::TypeBinding::new(
+                    name.clone(),
+                    Self::normalize_named_types(&applied, &id_to_name),
+                )
             }).collect();
-            let fully_resolved = !resolved.iter().any(Self::contains_type_var);
+            let unsettled = |b: &type_defs::TypeBinding| Self::contains_type_var(&b.ty);
+            let fully_resolved = !resolved.iter().any(unsettled);
             match call_type_args.get(node_id) {
                 Some(existing) if !fully_resolved
-                    && !existing.iter().any(Self::contains_type_var) => {}
+                    && !existing.iter().any(unsettled) => {}
                 _ => { call_type_args.insert(*node_id, resolved); }
             }
         }
@@ -800,6 +805,31 @@ impl TypeChecker {
                 (name.clone(), applied)
             })
             .filter(|(_, ty)| !Self::contains_type_var(ty))
+            .collect();
+
+        // The receiver each call dispatches on, with inference settled. It's
+        // recorded the moment the method resolves, which can be before the
+        // solver has bound the receiver's own type arguments — `wrap(3.14).get()`
+        // recorded `Box<?2133>`, and downstream then had a receiver that named a
+        // variable instead of a type. `node_types` and `span_types` are both
+        // applied on the way out; this is the same job.
+        let call_targets: HashMap<NodeId, type_defs::Callee> = self
+            .call_targets
+            .iter()
+            .map(|(id, callee)| {
+                let settled = match callee {
+                    type_defs::Callee::Free(sym) => type_defs::Callee::Free(*sym),
+                    // Left as interned ids, not normalized to names: the
+                    // receiver's `TypeId` is what dispatch keys on.
+                    type_defs::Callee::Method { recv, method } => {
+                        type_defs::Callee::Method {
+                            recv: self.ctx.apply(recv),
+                            method: method.clone(),
+                        }
+                    }
+                };
+                (*id, settled)
+            })
             .collect();
 
         // The same normalization, for the parameters a function didn't declare.
@@ -857,7 +887,7 @@ impl TypeChecker {
             types: self.types,
             node_types,
             call_type_args,
-            call_targets: self.call_targets,
+            call_targets,
             trait_coercions,
             error_wraps,
             fallback_keeps_shape,

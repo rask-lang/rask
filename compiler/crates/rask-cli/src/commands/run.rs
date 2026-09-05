@@ -313,7 +313,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
             if !out.status.success() || !complete {
-                process::exit(1);
+                process::exit(test_exit_code(&out.status));
             }
         }
         Err(e) => {
@@ -323,20 +323,36 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     }
 }
 
-/// Pass the test binary's own stderr through.
+/// The leak checker's exit code, passed through.
 ///
-/// `.output()` captures both streams and only stdout was read, so anything the
-/// binary said on stderr was collected and dropped: a leak report, a panic
-/// message, a runtime warning. `tests/leak_gate.sh` decides by grepping this
-/// output for the leak report, so with stderr going nowhere every file read as
-/// clean and the gate had never checked anything (#1048).
-fn forward_test_stderr(bytes: &[u8]) {
-    if bytes.is_empty() {
-        return;
+/// Everything else collapses to 1 — a failing assert and a binary that died
+/// mean the same thing to a caller. `RASK_LEAK_CHECK=1` doesn't: the tests all
+/// passed and the program simply didn't give its memory back, and a gate wants
+/// to tell those apart without reading prose. `tests/leak_gate.sh` used to
+/// decide by grepping the output for "never released", which is how it managed
+/// to read 180 leaking files as clean when nothing was forwarding that line.
+fn test_exit_code(status: &process::ExitStatus) -> i32 {
+    match status.code() {
+        Some(c) if c == RASK_LEAK_EXIT => c,
+        _ => 1,
     }
-    use std::io::Write;
-    let _ = std::io::stderr().write_all(bytes);
-    let _ = std::io::stderr().flush();
+}
+
+/// `rask_leak_check`'s exit code in `runtime/string.c`.
+const RASK_LEAK_EXIT: i32 = 97;
+
+/// Pass the test binary's stderr through to ours.
+///
+/// `.output()` captures both streams and only the results parser wants stdout,
+/// so stderr was read and dropped. Everything the binary said on the way out
+/// went with it: a panic message, a runtime warning, and — the one that made
+/// this worth chasing — the leak checker's report. `tests/leak_gate.sh` decides
+/// by grepping for "never released", so it read every file as clean while the
+/// binaries were exiting 97 underneath it.
+fn forward_test_stderr(stderr: &[u8]) {
+    if !stderr.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(stderr));
+    }
 }
 
 /// Compile a .rk file's tests natively and run them.
@@ -413,8 +429,32 @@ pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: For
 }
 
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
-    if !run_test_file_native(path, filter.as_deref(), format) {
-        process::exit(1);
+    match run_test_file_native(path, filter.as_deref(), format) {
+        TestOutcome::Passed => {}
+        TestOutcome::Failed => process::exit(1),
+        TestOutcome::Leaked => process::exit(RASK_LEAK_EXIT),
+    }
+}
+
+/// How a test file finished.
+///
+/// `Leaked` is why this isn't a bool. Under `RASK_LEAK_CHECK=1` a file whose
+/// tests all pass and whose memory doesn't come back is neither of the other
+/// two, and a gate wants to tell it apart without reading prose:
+/// `tests/leak_gate.sh` decided by grepping the output for "never released",
+/// which is how it read 180 leaking files as clean while nothing was
+/// forwarding that line (#1048).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestOutcome {
+    Passed,
+    Failed,
+    Leaked,
+}
+
+impl TestOutcome {
+    /// True when nothing failed — a leak is not a failed test.
+    pub fn tests_passed(self) -> bool {
+        self != TestOutcome::Failed
     }
 }
 
@@ -423,22 +463,22 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
 /// reported via diagnostics and the return value, so callers can iterate over
 /// multiple files without aborting on the first failure. Panics anywhere in
 /// the pipeline are caught and reported as a per-file failure.
-pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) -> bool {
+pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) -> TestOutcome {
     let path_owned = path.to_string();
     let filter_owned = filter.map(|s| s.to_string());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format)
     }));
     match result {
-        Ok(success) => success,
+        Ok(outcome) => outcome,
         Err(_) => {
             eprintln!("{}: panic while testing {}", output::error_label(), path);
-            false
+            TestOutcome::Failed
         }
     }
 }
 
-fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> bool {
+fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> TestOutcome {
     // One frontend, shared with `rask build` — the test runner is the decl
     // rewrite handed to it, not a second copy of the pipeline (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -464,7 +504,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         if format == Format::Human {
             eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
         }
-        return false;
+        return TestOutcome::Failed;
     };
 
     if tests.is_empty() {
@@ -472,7 +512,7 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
         }
-        return true;
+        return TestOutcome::Passed;
     }
 
     let mono = result.mono;
@@ -491,14 +531,14 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
             eprintln!("{}: compile: {}", output::error_label(), e);
         }
         let _ = std::fs::remove_file(&obj_path);
-        return false;
+        return TestOutcome::Failed;
     }
 
     let link_opts = super::link::LinkOptions::default();
     if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
         eprintln!("{}: link: {}", output::error_label(), e);
         let _ = std::fs::remove_file(&obj_path);
-        return false;
+        return TestOutcome::Failed;
     }
     let _ = std::fs::remove_file(&obj_path);
 
@@ -516,11 +556,16 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
             forward_test_stderr(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
             let complete = display_test_results(&stdout, path, format, tests.len());
-            out.status.success() && complete
+            let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
+            if complete && (out.status.success() || leaked) {
+                if leaked { TestOutcome::Leaked } else { TestOutcome::Passed }
+            } else {
+                TestOutcome::Failed
+            }
         }
         Err(e) => {
             eprintln!("{}: executing test binary: {}", output::error_label(), e);
-            false
+            TestOutcome::Failed
         }
     }
 }
@@ -550,7 +595,7 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
 
     let mut failed_files = 0;
     for file in &files {
-        if !run_test_file_native(file, filter.as_deref(), format) {
+        if !run_test_file_native(file, filter.as_deref(), format).tests_passed() {
             failed_files += 1;
         }
     }
@@ -1315,13 +1360,46 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
     let output = process::Command::new(&bin_str).output();
     let _ = std::fs::remove_file(&bin_path);
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().filter_map(|l| parse_bench_json(l)).collect()
+    collect_bench_results(output, "benchmark", format)
+}
+
+/// Parse a benchmark binary's results, saying so when it didn't produce any.
+///
+/// Both callers used to answer `Vec::new()` for every failure — a binary that
+/// crashed, one that exited non-zero, one that couldn't be spawned. An empty
+/// result set is also what a file with no benchmarks in it returns, so a
+/// benchmark that died read exactly like a benchmark that wasn't there. The
+/// stderr went the same way.
+fn collect_bench_results(
+    output: std::io::Result<process::Output>,
+    what: &str,
+    format: Format,
+) -> Vec<BenchResult> {
+    let out = match output {
+        Ok(out) => out,
+        Err(e) => {
+            if format == Format::Human {
+                eprintln!("    {}: running the {}: {}", output::error_label(), what, e);
+            }
+            return Vec::new();
         }
-        _ => Vec::new(),
+    };
+    if !out.stderr.is_empty() && format == Format::Human {
+        eprint!("{}", String::from_utf8_lossy(&out.stderr));
     }
+    if !out.status.success() {
+        if format == Format::Human {
+            eprintln!(
+                "    {}: the {} exited {}",
+                output::error_label(),
+                what,
+                out.status.code().map_or_else(|| "on a signal".to_string(), |c| c.to_string()),
+            );
+        }
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout.lines().filter_map(parse_bench_json).collect()
 }
 
 /// Compile and run a C baseline file, return parsed results.
@@ -1375,13 +1453,7 @@ fn run_c_baseline(c_path: &std::path::Path, opt_level: &str, format: Format) -> 
     let output = process::Command::new(&bin_str).output();
     let _ = std::fs::remove_file(&bin_path);
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().filter_map(|l| parse_bench_json(l)).collect()
-        }
-        _ => Vec::new(),
-    }
+    collect_bench_results(output, "C baseline", format)
 }
 
 /// Match a diagnostic to a source file by span validity.

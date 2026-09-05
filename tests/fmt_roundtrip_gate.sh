@@ -78,6 +78,12 @@ done
 # --- showed it.
 unstable=0
 parsed=0
+# Files the formatter can't read at all. Most are tests/compile_errors/*.rk,
+# which exist to be rejected — but the skip was `|| continue` with no counter
+# and no name, so a file that newly stopped formatting left no trace and the
+# gate's "N files reformatted" quietly went down by one.
+unformattable=0
+skipped=()
 # The intermediate keeps the file's relative path: a stdlib stub is parsed with
 # the keyword-name allowance the stub loader uses, and that is decided by the
 # path. Written to a flat `once.rk` the second pass lost the allowance and
@@ -86,7 +92,11 @@ for f in $(find stdlib examples tests projects -name '*.rk' 2>/dev/null); do
     once="$TMP/once/$f"
     twice="$TMP/twice/$f"
     mkdir -p "$(dirname "$once")" "$(dirname "$twice")"
-    "$RASK" fmt "$f" > "$once" 2>/dev/null || continue
+    if ! "$RASK" fmt "$f" > "$once" 2>/dev/null; then
+        unformattable=$((unformattable + 1))
+        skipped+=("$f")
+        continue
+    fi
     parsed=$((parsed + 1))
     if ! "$RASK" fmt "$once" > "$twice" 2>"$TMP/err.log"; then
         unstable=$((unstable + 1))
@@ -118,5 +128,11 @@ fi
 echo "──────────────────────────────────────────────────"
 echo "fmt round-trip: $checked files formatted, $broken still-compiles failures"
 echo "fmt stability:  $parsed files reformatted, $unstable parse/idempotence failures"
+if [ "$unformattable" -gt 0 ]; then
+    echo "fmt skipped:    $unformattable files the formatter can't read —"
+    for f in "${skipped[@]:-}"; do
+        [ -n "$f" ] && echo "                  $f"
+    done
+fi
 echo "fmt --check:    stdlib/ and examples/, $dirty files not formatted"
 [ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ] && [ "$dirty" -eq 0 ]

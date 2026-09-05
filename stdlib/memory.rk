@@ -141,10 +141,6 @@ extend Pool<T> {
     @native
     public func clear(mutate self) {}
 
-    /// Iterate over (handle, element) pairs.
-    @native
-    public func iter(self) -> Iterator<(Handle<T>, T)> {}
-
     /// Snapshot of handles. Returned as a Vec so callers can index, slice,
     /// or iterate without invalidating on subsequent insert/remove.
     @native("rask_pool_handles_packed")

@@ -98,7 +98,7 @@ func main() {
     }
 
     print("\nPrime numbers up to 50:\n")
-    for prime in PRIMES.iter() {
+    for prime in PRIMES {
         print(prime)
         print(" ")
     }

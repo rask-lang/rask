@@ -62,7 +62,7 @@ test "ctrl.ranges — take and skip off a range" {
 }
 
 test "ctrl.ranges — iter on a range" {
-    let v: Vec<i32> = (0..3).iter().to_vec()
+    let v: Vec<i32> = (0..3).to_vec()
     assert v.len() == 3
 }
 

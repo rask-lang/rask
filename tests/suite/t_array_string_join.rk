@@ -16,7 +16,7 @@ test "elements of a local string array read back" {
 }
 
 test "the same strings join fine through a Vec" {
-    let v: Vec<string> = ["a", "b"].iter().to_vec()
+    let v: Vec<string> = ["a", "b"].to_vec()
     assert v.join("-") == "a-b"
 }
 

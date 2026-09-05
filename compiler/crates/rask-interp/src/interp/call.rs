@@ -411,7 +411,7 @@ impl Interpreter {
                 };
                 if let Some(name) = receiver_name {
                     if let Some(value) = self.env.get(name) {
-                        if let Some(id) = self.get_resource_id(value) {
+                        if let Some(id) = self.get_resource_id(&value) {
                             return self.resource_tracker.is_consumed(id);
                         }
                     }

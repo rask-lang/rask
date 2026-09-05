@@ -1750,9 +1750,14 @@ impl<'a> MirLowerer<'a> {
         // e.g., `const add_5 = make_adder(5)` where make_adder returns |i32| -> i32.
         // Check via type checker's node_types: if init expr has Type::Fn, it's a closure.
         if !is_closure {
-            if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
+            // A `Sequence<T>` counts: `let chain = src.filter(p)` binds
+            // something callable, and calling it is how the next adapter drives
+            // it (type.sequence/SEQ1 makes it nominal, so the `Type::Fn` test
+            // alone doesn't see it).
+            let bound_ret = self.ctx.node_types.get(&init.id)
+                .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names));
+            if let Some(ret_mir) = bound_ret {
                 self.closure_locals.insert(name.to_string());
-                let ret_mir = self.ctx.type_to_mir(ret);
                 self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
             }
         }
@@ -1792,7 +1797,7 @@ impl<'a> MirLowerer<'a> {
     /// Bind a tuple pattern against `base`, following the pattern's shape.
     /// A nested pattern reads its own sub-tuple out first, so element indices
     /// always match the tuple they're read from.
-    fn destructure_tuple_pattern(
+    pub(super) fn destructure_tuple_pattern(
         &mut self,
         pats: &[TuplePat],
         base: &MirOperand,
@@ -2109,25 +2114,34 @@ impl<'a> MirLowerer<'a> {
         // changes went into a local copy and the collection never saw them
         // (LP11-LP12). A bare `for mutate x in v` parses as a trivial chain, so
         // it was landing here.
-        // A bare `.iter()` with nothing chained onto it iterates exactly what
-        // its receiver does, so unwrap it and let the checks below see the
-        // collection. The fused-chain path assumes a Vec-shaped source: on a
-        // Map it ran `Vec_len` and `Vec_get` against the map pointer, and
-        // reading a field off what came back gave "unresolved field `1`" and
-        // then a segfault (#398).
-        let iter_expr = match &iter_expr.kind {
-            ExprKind::MethodCall { object, method, args, .. }
-                if method == "iter" && args.is_empty() =>
-            {
-                object.as_ref()
-            }
-            _ => iter_expr,
-        };
+        // The expression as written, kept because the `.iter()` unwrapping just
+        // below loses it and SEQ6 has to be asked about the method's *result*.
+        let as_written = iter_expr;
 
+        // Fusion first, and it has to stay first. `for x in v.iter()` fuses into
+        // an index loop with no closure at all; asking SEQ6 before this would
+        // send it through a yield closure per element instead, once a
+        // collection's `iter()` returns a `Sequence<T>`. That is the language's
+        // most common loop, so the fast path wins the tie.
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
                 return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
             }
+        }
+
+        // type.sequence/SEQ6, asked of the expression as written. A method that
+        // hands back a `Sequence<T>` is the thing to call, and the unwrapping
+        // above would ask its receiver instead — so `for x in bag.iter()` looked
+        // at `Bag`, found no element type, and gave up in MIR while the
+        // interpreter ran the same program fine.
+        if let Some(elem) = self.sequence_elem_ty(as_written) {
+            return self.lower_for_sequence(label, binding, as_written, body, elem);
+        }
+
+        // The same question about the unwrapped receiver: a `Sequence<T>` held
+        // in a variable, rather than one a method just returned.
+        if let Some(elem) = self.sequence_elem_ty(iter_expr) {
+            return self.lower_for_sequence(label, binding, iter_expr, body, elem);
         }
 
         // pool.entries(): for (h, val) in pool.entries() { ... }
@@ -2316,6 +2330,12 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| matches!(binding, ForBinding::Tuple(_))
                     .then(|| self.vec_tuple_elem_type(iter_expr))
                     .flatten())
+                // The element type tracked against the binding itself. Every
+                // step above reads the checker's record, and an instantiated
+                // copy has fresh node ids, so inside a generic stdlib method
+                // none of them answer. This one comes off the declared type
+                // string, which mono *did* substitute (#1046).
+                .or_else(|| self.vec_elem_of_expr(iter_expr))
                 // Last: the source collection's own declared element type.
                 .or_else(|| self.collection_elem_of_expr(iter_expr))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:for_loop_elem"))
@@ -3138,7 +3158,7 @@ impl<'a> MirLowerer<'a> {
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
-            setup.inc_block, setup.idx,
+            &setup,
         )?;
 
         // Destructuring needs the element's real shape. A `Vec<(string, i64)>`

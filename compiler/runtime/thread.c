@@ -362,7 +362,7 @@ static int64_t closure_spawn_entry(void *arg) {
     rask_free(ctx);
 
     int64_t result = func(env);
-    rask_free(alloc_base);
+    rask_closure_free(alloc_base);
     return result;
 }
 

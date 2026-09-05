@@ -1206,6 +1206,12 @@ impl TypeChecker {
             return Ok(false);
         }
 
+        // type.sequence/SEQ36: a closure literal fills a Sequence-typed slot with
+        // no constructor, so the two shapes have to unify.
+        if let Some(progress) = self.unify_sequence_shape(&t1, &t2, span)? {
+            return Ok(progress);
+        }
+
         match (&t1, &t2) {
             (a, b) if a == b => Ok(false),
 
@@ -1669,6 +1675,72 @@ impl TypeChecker {
                 .map(|s| s.to_string()),
             _ => None,
         }
+    }
+
+    /// The element type behind `Sequence<T>` or `SequenceMut<T>`, if this is one.
+    ///
+    /// `Sequence` is nominal so that adapters can attach to the name — `extend`
+    /// is name-keyed, and an alias has dissolved into its function type before
+    /// method resolution runs (type.sequence/SEQ1). But a closure of the right
+    /// shape still fills a Sequence-typed slot with no constructor (SEQ36), so
+    /// the checker has to know the shape the name stands for. Same arrangement
+    /// as `string`: a compiler type whose representation the compiler knows.
+    pub(super) fn sequence_element(&self, ty: &Type) -> Option<Type> {
+        let (base, args) = match ty {
+            Type::Generic { base, args } => (Some(*base), args),
+            Type::UnresolvedGeneric { name, args } => (self.types.get_type_id(name), args),
+            _ => return None,
+        };
+        let base = base?;
+        let is_sequence = ["Sequence", "SequenceMut"]
+            .iter()
+            .any(|n| self.types.get_type_id(n) == Some(base));
+        if !is_sequence || args.len() != 1 {
+            return None;
+        }
+        match &args[0] {
+            GenericArg::Type(t) => Some((**t).clone()),
+            GenericArg::ConstUsize(_) => None,
+        }
+    }
+
+    /// The function type a sequence over `elem` is written as:
+    /// `func(func(elem) -> bool)`.
+    pub(super) fn sequence_fn_shape(elem: Type) -> Type {
+        Type::Fn {
+            params: vec![Type::Fn {
+                params: vec![elem],
+                ret: Box::new(Type::Bool),
+            }],
+            ret: Box::new(Type::Unit),
+        }
+    }
+
+    /// Unify a `Sequence<T>` against the function shape it stands for (SEQ36).
+    ///
+    /// `Ok(None)` means neither side is a sequence facing a function, so the
+    /// ordinary rules apply.
+    fn unify_sequence_shape(
+        &mut self,
+        t1: &Type,
+        t2: &Type,
+        span: Span,
+    ) -> Result<Option<bool>, TypeError> {
+        // A sequence on both sides is an ordinary nominal comparison, and two
+        // function types are an ordinary function comparison. Only the mixed
+        // case needs the bridge.
+        let pair = match (self.sequence_element(t1), self.sequence_element(t2)) {
+            (Some(elem), None) if matches!(t2, Type::Fn { .. }) => (elem, t2.clone()),
+            (None, Some(elem)) if matches!(t1, Type::Fn { .. }) => (elem, t1.clone()),
+            _ => return Ok(None),
+        };
+        let (elem, actual) = pair;
+        // A closure the checker hasn't pinned down yet arrives with variables in
+        // it. Unifying against the shape is what pins them: the yield's
+        // parameter becomes the element type and its answer becomes `bool`,
+        // which is how `|yield| { if !yield(1) { return } }` gets typed at all.
+        let progress = self.unify(&Self::sequence_fn_shape(elem), &actual, span)?;
+        Ok(Some(progress))
     }
 
     pub(super) fn unify_generic_arg(&mut self, arg1: &GenericArg, arg2: &GenericArg, span: Span) -> Result<bool, TypeError> {

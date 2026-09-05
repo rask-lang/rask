@@ -127,8 +127,8 @@ const STRING_METHODS: &[&str] = &[
 
 const VEC_METHODS: &[&str] = &[
     "push", "pop", "len", "get", "is_empty", "clear",
-    "iter", "skip", "take", "first", "last", "contains",
-    "reverse", "swap", "join", "eq", "ne", "clone", "to_vec",
+    "skip", "take", "first", "last", "contains",
+    "reverse", "swap", "join", "eq", "ne", "clone", "to_vec", "to_map",
     "insert", "remove", "chunks",
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",
@@ -138,7 +138,7 @@ const VEC_METHODS: &[&str] = &[
 
 const MAP_METHODS: &[&str] = &[
     "insert", "get", "remove", "contains", "keys", "values",
-    "len", "is_empty", "clear", "iter", "clone",
+    "len", "is_empty", "clear", "clone",
 ];
 
 const POOL_METHODS: &[&str] = &[

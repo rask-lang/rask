@@ -134,14 +134,14 @@ for mutate entity in pool {
 | Rule | Description |
 |------|-------------|
 | **T1: Consumes collection** | `.take_all()` takes ownership (`take self`). Collection left empty |
-| **T2: Buffer transfer** | Collection's internal buffer transferred to iterator |
+| **T2: Hands back a Vec** | `.take_all()` returns the drained `Vec<T>`, not a `Sequence<T>` — a sequence lends its items and this one has to give them away (`type.sequence/SEQ34-SEQ35`). `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns, which is what lets it consume linear elements |
 | **T3: Early exit cleanup** | On `break`/`return`/`try`, remaining items cleaned up in LIFO order |
 
 | Collection | Method | Yields |
 |------------|--------|--------|
-| `Vec<T>` | `.take_all()` | `T` |
-| `Pool<T>` | `.take_all()` | `T` |
-| `Map<K,V>` | `.take_all()` | `(K, V)` |
+| `Vec<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
+| `Pool<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
+| `Map<K,V>` | `.take_all()` | `Vec<(K, V)>`, iterated as `(K, V)` |
 
 <!-- test: skip -->
 ```rask

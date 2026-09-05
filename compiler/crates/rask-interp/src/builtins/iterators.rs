@@ -196,10 +196,6 @@ impl Interpreter {
                     }),
                 }
             }
-            "iter" => {
-                // Iterator.iter() returns self — already an iterator
-                Ok(Value::Iterator(Arc::clone(iter)))
-            }
             "to_vec" => {
                 let mut result = Vec::new();
                 loop {

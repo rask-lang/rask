@@ -476,10 +476,12 @@ impl TypeChecker {
             }
         }
         let Some(node) = call_node else { return };
-        let args: Vec<Type> = method_sig
+        let args: Vec<(String, Type)> = method_sig
             .type_params
             .iter()
-            .filter_map(|(name, _)| subst.get(name.as_str()).cloned())
+            .filter_map(|(name, _)| {
+                subst.get(name.as_str()).cloned().map(|ty| (name.clone(), ty))
+            })
             .collect();
         if args.len() == method_sig.type_params.len() {
             self.pending_call_type_args.push((node, args));
@@ -1279,9 +1281,29 @@ impl TypeChecker {
                     }
                 };
 
-                let mut subst = Self::build_type_param_subst(&type_params, generic_args);
+                let found = methods.iter().find(|m| m.name == method);
 
-                if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                // What the block's header binds, on top of what the type
+                // declares. `extend Sequence<(K, V)>` on a `Sequence<(i64, i64)>`
+                // binds `T` to the pair *and* `K` and `V` to its halves — the
+                // header's names are the receiver's, not the method's, and
+                // nothing else in the signature can settle them. Held in an
+                // owned list because the names come out of the pattern, not out
+                // of the declaration `subst` borrows from.
+                let header_bound: Vec<(String, Type)> = found
+                    .map(|m| {
+                        Self::build_owner_pattern_subst(&m.owner_patterns, generic_args)
+                            .into_iter()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let mut subst = Self::build_type_param_subst(&type_params, generic_args);
+                for (name, bound) in &header_bound {
+                    subst.insert(name.as_str(), bound.clone());
+                }
+
+                if let Some(method_sig) = found {
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1715,7 +1737,6 @@ impl TypeChecker {
             "next" if args.is_empty() => {
                 self.unify(ret, &Type::option(elem), span)
             }
-            "iter" if args.is_empty() => self.unify(ret, &self_ty, span),
             // SEQ28/SEQ31: the target is named, and `Vec<T>` is the only thing
             // it can be. There is no `collect()`.
             "to_vec" if args.is_empty() => {
@@ -2935,6 +2956,13 @@ impl TypeChecker {
             name: "Vec".to_string(),
             args: type_args.to_vec(),
         };
+        // SEQ41: an adapter on a collection is the chain's head and builds a
+        // sequence. `zip` and `chunks` are not adapters — SEQ14/SEQ39 keep them
+        // on the indexable source, where two positions are actually available.
+        let sequence_of = |elem: Type| Type::UnresolvedGeneric {
+            name: "Sequence".to_string(),
+            args: vec![GenericArg::Type(Box::new(elem))],
+        };
 
         match method {
             // The element slot is an argument position like any other, so it
@@ -3000,16 +3028,44 @@ impl TypeChecker {
             "to_vec" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
             }
-            "iter" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
+            // SEQ29: `v.map(|u| (u.id, u.name)).to_map()`. A chain's head is the
+            // collection itself now that `.iter()` is gone, so the terminal has
+            // to be reachable from `Vec<(K, V)>` and not only from a sequence.
+            // Same pair-or-error rule; MIR fuses either spelling identically.
+            "to_map" if args.is_empty() => {
+                let resolved = self.ctx.apply(&inner_type);
+                match &resolved {
+                    Type::Tuple(parts) if parts.len() == 2 => {
+                        let map_ty = Type::UnresolvedGeneric {
+                            name: "Map".to_string(),
+                            args: vec![
+                                GenericArg::Type(Box::new(parts[0].clone())),
+                                GenericArg::Type(Box::new(parts[1].clone())),
+                            ],
+                        };
+                        self.unify(ret, &map_ty, span)
+                    }
+                    Type::Var(_) => {
+                        self.ctx.add_constraint(TypeConstraint::HasMethod {
+                            ty: self_ty.clone(),
+                            method: "to_map".to_string(),
+                            args: args.to_vec(),
+                            ret: ret.clone(),
+                            span,
+                            call_node: None,
+                        });
+                        Ok(false)
+                    }
+                    other => Err(TypeError::ToMapNeedsPairs {
+                        elem: other.clone(),
+                        span,
+                    }),
+                }
             }
-            "skip" if args.len() == 1 => {
+            "skip" | "take" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
-            }
-            "take" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
+                let seq = sequence_of(inner_type);
+                self.unify(ret, &seq, span)
             }
             "limit" if args.len() == 1 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
@@ -3070,9 +3126,9 @@ impl TypeChecker {
             "remove_adjacent_duplicates" if args.is_empty() => {
                 self.unify(ret, &Type::Unit, span)
             }
-            // vec.filter(predicate) -> Vec<T>
             "filter" if args.len() == 1 => {
-                self.unify(ret, &self_ty, span)
+                let seq = sequence_of(inner_type);
+                self.unify(ret, &seq, span)
             }
             // vec.map(transform) -> Vec<U>. U is the closure's return type —
             // without tying the two together the element stayed an unbound var
@@ -3084,14 +3140,11 @@ impl TypeChecker {
                     ret: Box::new(fresh.clone()),
                 };
                 let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
+                let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
             }
-            // vec.flat_map(transform) -> Vec<U>, where the closure hands back a
-            // Vec<U> per element.
+            // vec.flat_map(transform) -> Sequence<U>, where the closure hands
+            // back a Vec<U> per element.
             "flat_map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
                 let inner_vec = Type::UnresolvedGeneric {
@@ -3103,19 +3156,32 @@ impl TypeChecker {
                     ret: Box::new(inner_vec),
                 };
                 let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
+                let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
             }
-            // vec.flatten() -> Vec<T>
+            // vec.flatten() -> Sequence<T>, where the receiver's element is
+            // itself a Vec. The element's element is what comes out, so it's
+            // read off the receiver rather than left to a fresh variable —
+            // nothing downstream would ever settle one.
             "flatten" if args.is_empty() => {
-                let fresh = self.ctx.fresh_var();
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
+                let inner_elem = match &self.ctx.apply(&inner_type) {
+                    Type::UnresolvedGeneric { name, args } if name == "Vec" => {
+                        match args.first() {
+                            Some(GenericArg::Type(t)) => (**t).clone(),
+                            _ => self.ctx.fresh_var(),
+                        }
+                    }
+                    Type::Generic { base, args }
+                        if self.types.type_name(*base).starts_with("Vec") =>
+                    {
+                        match args.first() {
+                            Some(GenericArg::Type(t)) => (**t).clone(),
+                            _ => self.ctx.fresh_var(),
+                        }
+                    }
+                    _ => self.ctx.fresh_var(),
                 };
+                let result_ty = sequence_of(inner_elem);
                 self.unify(ret, &result_ty, span)
             }
             // vec.fold(init, f) -> U, with f: func(U, T) -> U
@@ -3134,13 +3200,10 @@ impl TypeChecker {
                 let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
-            // vec.enumerate() -> Vec<(i64, T)>
+            // vec.enumerate() -> Sequence<(i64, T)>
             "enumerate" if args.is_empty() => {
                 let pair_ty = Type::Tuple(vec![Type::I64, inner_type]);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(pair_ty))],
-                };
+                let result_ty = sequence_of(pair_ty);
                 self.unify(ret, &result_ty, span)
             }
             // vec.zip(other) -> Vec<(T, U)>. U never had anywhere to come

@@ -433,7 +433,7 @@ impl TypeChecker {
         // `struct Wrapper<T>` leaves them out of the block header entirely, and
         // reading only `Wrapper` would make `T` look like the method's own —
         // a second variable per call, shadowing the one the receiver bound.
-        let impl_params = self
+        let decl_params = self
             .types
             .get(type_id)
             .and_then(|d| match d {
@@ -444,8 +444,26 @@ impl TypeChecker {
             })
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
-        let new_methods: Vec<_> =
-            i.methods.iter().map(|m| self.method_signature(m, &impl_params)).collect();
+
+        // What the block's header says each of those parameters is, as written.
+        // `extend Sequence<(K, V)>` on a `Sequence<T>` gives `["(K, V)"]`: one
+        // pattern for the type's one parameter, naming two of its own. A header
+        // that just repeats the declaration's names — `extend Map<K, V>` — gives
+        // those names back, which is the ordinary case.
+        //
+        // A header that omits them (`extend Wrapper` on a `Wrapper<T>`) or whose
+        // arity doesn't line up keeps the declaration's own names, same as before.
+        let header_args = Self::target_type_args(&i.target_ty);
+        let owner_patterns = if header_args.len() == decl_params.len() {
+            header_args
+        } else {
+            decl_params.clone()
+        };
+        let new_methods: Vec<_> = i
+            .methods
+            .iter()
+            .map(|m| self.method_signature(m, &decl_params, &owner_patterns))
+            .collect();
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }
@@ -524,7 +542,11 @@ impl TypeChecker {
             .collect();
 
         let struct_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
-        let methods = s.methods.iter().map(|m| self.method_signature(m, &struct_params)).collect();
+        let methods = s
+            .methods
+            .iter()
+            .map(|m| self.method_signature(m, &struct_params, &struct_params))
+            .collect();
 
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
@@ -673,7 +695,11 @@ impl TypeChecker {
             .collect();
 
         let enum_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
-        let methods = e.methods.iter().map(|m| self.method_signature(m, &enum_params)).collect();
+        let methods = e
+            .methods
+            .iter()
+            .map(|m| self.method_signature(m, &enum_params, &enum_params))
+            .collect();
 
         // Field names for the struct-shaped variants, so a pattern that names
         // them can be matched against the positional payload types (#809).
@@ -708,7 +734,7 @@ impl TypeChecker {
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
-        let methods = t.methods.iter().map(|m| self.method_signature(m, &[])).collect();
+        let methods = t.methods.iter().map(|m| self.method_signature(m, &[], &[])).collect();
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -780,10 +806,29 @@ impl TypeChecker {
     ///
     /// An `extend` block names its receiver as a string, so this is the only
     /// place the owner's parameters can be read back out.
+    /// The extend header's target arguments as written, nesting kept:
+    /// `["(K, V)"]` for `Sequence<(K, V)>`, `["K", "V"]` for `Map<K, V>`.
+    ///
+    /// Unlike `target_type_params` this drops nothing — a concrete argument
+    /// (`extend Holder<i64>`) is an argument too, and the caller has to line the
+    /// list up one-for-one with what the type declares.
+    pub(super) fn target_type_args(target_ty: &str) -> Vec<String> {
+        let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
+        // Exactly one `>`, not every trailing one: `Vec<Vec<T>>` closes the
+        // outer bracket here and the inner one belongs to the argument.
+        // `trim_end_matches` took both and left `Vec<T`, a name nothing has.
+        let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
+        super::parse_type::split_type_args(inner)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
     pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
         let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
-        rest.trim_end()
-            .trim_end_matches('>')
+        let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
+        inner
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| is_type_param_name(s))
@@ -795,7 +840,12 @@ impl TypeChecker {
     /// binds them once, and a method claiming them again takes a *second* fresh
     /// variable per call that shadows the first, so `self.value.width()` loses
     /// the type it was already given (#872).
-    pub(super) fn method_signature(&self, m: &FnDecl, owner_params: &[String]) -> MethodSig {
+    pub(super) fn method_signature(
+        &self,
+        m: &FnDecl,
+        owner_params: &[String],
+        owner_patterns: &[String],
+    ) -> MethodSig {
         let self_param_decl = m.params.iter().find(|p| p.name == "self");
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
@@ -857,9 +907,21 @@ impl TypeChecker {
                     .iter()
                     .map(|tp| (tp.name.as_str(), &tp.bounds))
                     .collect();
+                // A name the header introduced belongs to the receiver too,
+                // even though the declaration never mentions it: `K` and `V` in
+                // `extend Sequence<(K, V)>` are the receiver's, bound from its
+                // element type. Counted as the method's own they took a fresh
+                // variable per call with nothing to bind it, and `to_map`'s
+                // `Map<K, V>` return type stayed open (#1046).
+                let from_header = |name: &String| {
+                    owner_patterns
+                        .iter()
+                        .any(|p| super::generics::pattern_names(p).iter().any(|n| n == name))
+                };
                 signature_type_param_names(m)
                     .into_iter()
                     .filter(|name| !owner_params.iter().any(|o| o == name))
+                    .filter(|name| !from_header(name))
                     .map(|name| {
                         let bounds = declared
                             .get(name.as_str())
@@ -869,6 +931,7 @@ impl TypeChecker {
                     })
                     .collect()
             },
+            owner_patterns: owner_patterns.to_vec(),
         }
     }
 
@@ -998,6 +1061,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
@@ -1012,6 +1076,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
@@ -1025,6 +1090,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "default".to_string(),
                             self_param: SelfParam::None,
@@ -1039,6 +1105,7 @@ impl TypeChecker {
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
@@ -1055,6 +1122,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
@@ -1065,6 +1133,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    owner_patterns: Vec::new(),
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
@@ -1078,6 +1147,7 @@ impl TypeChecker {
                     // G2: auto-derive debug for all types
                     if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "debug".to_string(),
                             self_param: SelfParam::Value,
@@ -1117,6 +1187,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
@@ -1131,6 +1202,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
@@ -1147,6 +1219,7 @@ impl TypeChecker {
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
@@ -1161,6 +1234,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
@@ -1171,6 +1245,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    owner_patterns: Vec::new(),
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
@@ -1184,6 +1259,7 @@ impl TypeChecker {
                     // G2: auto-derive debug for all types
                     if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
+                            owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "debug".to_string(),
                             self_param: SelfParam::Value,
@@ -1539,6 +1615,7 @@ impl TypeChecker {
 
             let mut methods = vec![
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
@@ -1546,6 +1623,7 @@ impl TypeChecker {
                     ret: parse_result,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "build".to_string(),
                     self_param: SelfParam::Value,
@@ -1553,6 +1631,7 @@ impl TypeChecker {
                     ret: vec_u8,
                 },
                 MethodSig {
+                    owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "build_into".to_string(),
                     self_param: SelfParam::Value,

@@ -166,7 +166,7 @@ extend Document {
         mut file = try fs.create(path)
         ensure file.close()
 
-        for h in self.line_order.iter() {
+        for h in self.line_order {
             try file.write_line(self.lines[h].text)
         }
 

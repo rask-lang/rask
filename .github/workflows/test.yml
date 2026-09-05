@@ -38,6 +38,11 @@ jobs:
   gates:
     name: gates (needs the rask binary)
     runs-on: ubuntu-latest
+    # A run takes 20-30 minutes. Without this the default is six hours, so a
+    # runner that wedges holds the PR for a working day before anyone learns
+    # anything. Both numbers are roughly double what the job actually takes, so
+    # a genuine slowdown still passes.
+    timeout-minutes: 60
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
     steps:
@@ -196,6 +201,8 @@ jobs:
   rust-tests:
     name: rust-tests (cargo test)
     runs-on: ubuntu-latest
+    # Five to six minutes in practice.
+    timeout-minutes: 30
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
     steps:

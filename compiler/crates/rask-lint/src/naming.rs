@@ -155,6 +155,9 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 /// `Vec` its enum payload already holds while `as_bytes`, which calls
 /// `.clone()`, still fails.
 ///
+/// A `Sequence<T>` counts on the type side too: it's a closure over the
+/// receiver that walks in place and copies nothing.
+///
 /// The old test asked whether the return type started with `&`. No Rask type
 /// string ever does — that is a Rust reference sigil — so the clause was dead
 /// and every `as_ptr` in the stdlib was reported as possibly allocating (#993).
@@ -194,8 +197,14 @@ fn cheap_view_type(ret: &str) -> bool {
     ];
     // An optional over a cheap thing is still cheap — the flag costs nothing.
     let bare = ret.trim().trim_end_matches('?').trim();
+    // A `Sequence<T>` walks the receiver in place, so the type argument doesn't
+    // change the answer.
+    let base = bare.split('<').next().unwrap_or(bare).trim();
     // `*T` is a cast, `[]T` a view: both as cheap as it gets.
-    bare.starts_with('*') || bare.starts_with("[]") || CHEAP.contains(&bare)
+    bare.starts_with('*')
+        || bare.starts_with("[]")
+        || CHEAP.contains(&bare)
+        || matches!(base, "Sequence" | "SequenceMut")
 }
 
 /// Whether every `return` in the body hands back something that already exists

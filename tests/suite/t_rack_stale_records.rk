@@ -95,7 +95,7 @@ test "a replaced container's entries stop naming it" {
     assert parent.kids.len() == 2
 
     // A fresh vector: the old one's records are the ones that used to linger.
-    parent.kids = parent.kids.filter(|c| c.value != 1)
+    parent.kids = parent.kids.filter(|c| c.value != 1).to_vec()
     assert parent.kids.len() == 1
 
     // Deleting the node the *old* vector still holds must not touch it.

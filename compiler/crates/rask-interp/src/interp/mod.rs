@@ -158,6 +158,35 @@ pub struct Interpreter {
     /// this to write each value back to its argument place. Cleared before every
     /// call so stale entries can't leak into an unrelated call's arguments.
     pub(crate) mutate_writebacks: Vec<(usize, Value)>,
+    /// The `for` loops currently driving a `Sequence<T>`, innermost last
+    /// (type.sequence/SEQ6). A `SequenceYield` builtin call runs the top
+    /// frame's body; nesting works because each frame is pushed by its own loop.
+    pub(crate) yield_stack: Vec<YieldFrame>,
+}
+
+/// A `for` loop driving a `Sequence<T>`.
+///
+/// The loop hands the sequence a `SequenceYield` and waits. Each yield runs
+/// `body` with `binding` bound to the item and answers `true` to keep going;
+/// `break` answers `false` (SEQ7). Anything the yield can't settle by itself —
+/// a `return`, a `try` propagation, a `break` aimed at an outer label — parks
+/// in `escaped` and answers `false`, and the loop re-raises it once the
+/// sequence has unwound. That is SEQ8: the closure records the answer in the
+/// enclosing frame and stops the traversal rather than unwinding through
+/// adapter frames that would have to know to pass it on.
+pub(crate) struct YieldFrame {
+    pub(crate) binding: rask_ast::stmt::ForBinding,
+    pub(crate) body: Vec<rask_ast::stmt::Stmt>,
+    pub(crate) label: Option<String>,
+    pub(crate) escaped: Option<RuntimeDiagnostic>,
+    /// The variables the `for` could see, shared not copied.
+    ///
+    /// The body belongs to the loop's scope, but it runs from inside the
+    /// sequence's frame — a closure call pushes its captures onto the same
+    /// scope stack, so whatever the sequence captured shadows the loop's own
+    /// names. An `own` sequence captures by copy, so `for x in seq { sum += x }`
+    /// wrote to the copy and the loop read `sum` back as 0.
+    pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -193,6 +222,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
+            yield_stack: Vec::new(),
         }
     }
 
@@ -221,6 +251,7 @@ impl Interpreter {
             build_state: None,
             source_info: None,
             mutate_writebacks: Vec::new(),
+            yield_stack: Vec::new(),
         }
     }
 
@@ -251,6 +282,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
+            yield_stack: Vec::new(),
         };
         (interp, buffer)
     }
@@ -419,7 +451,7 @@ impl Interpreter {
     }
 
     /// Clones function/enum/method tables and captured environment for spawned thread.
-    pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
+    pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, crate::env::Slot>) -> Self {
         let mut child = Interpreter::new();
         child.functions = self.functions.clone();
         child.enums = self.enums.clone();
@@ -433,8 +465,8 @@ impl Interpreter {
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
-        for (name, value) in captured_vars {
-            child.env.define(name, value);
+        for (name, cell) in captured_vars {
+            child.env.define_slot(name, cell);
         }
         child
     }
@@ -587,7 +619,7 @@ impl Interpreter {
                 }
 
                 // Check for thread pool context
-                let pool = self.env.get("__thread_pool").cloned();
+                let pool = self.env.get("__thread_pool");
                 let pool = match pool {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {

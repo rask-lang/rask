@@ -101,7 +101,7 @@ test "a Vec of strings folds, inline and heap elements alike" {
 
 test "a folded string element is a string like any other" {
     mut joined = ""
-    for n in NAMES.iter() {
+    for n in NAMES {
         joined = "{joined}{n.len()}:"
     }
     assert joined == "5:0:15:16:59:"

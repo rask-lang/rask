@@ -76,7 +76,7 @@ func from_for_stepped_range(n: i64) -> i64 {
 }
 
 func from_for_chain(items: Vec<i64>) -> i64 {
-    for it in items.iter().map(|x| x * 2) {
+    for it in items.map(|x| x * 2) {
         return it
     }
     return -1

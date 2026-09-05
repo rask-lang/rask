@@ -28,27 +28,12 @@ impl Interpreter {
     /// Parse generic arguments from a string like "i32, 256".
     fn parse_generic_args(&self, args_str: &str) -> Result<Vec<GenericArg>, RuntimeError> {
         let mut args = Vec::new();
-        let parts: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
-
-        for part in parts {
+        for part in split_top_level(args_str) {
             // Try to parse as usize (const generic)
             if let Ok(n) = part.parse::<usize>() {
                 args.push(GenericArg::ConstUsize(n));
             } else {
-                // It's a type - for now just store as Type with a placeholder
-                // In a real implementation, we'd parse the type properly
-                use rask_types::Type;
-                let ty = match part {
-                    "i32" => Type::I32,
-                    "i64" => Type::I64,
-                    "f32" => Type::F32,
-                    "f64" => Type::F64,
-                    "bool" => Type::Bool,
-                    "string" => Type::String,
-                    "usize" => Type::usize_ty(),
-                    _ => Type::UnresolvedNamed(part.to_string()),
-                };
-                args.push(GenericArg::Type(Box::new(ty)));
+                args.push(GenericArg::Type(Box::new(parse_arg_type(part))));
             }
         }
 
@@ -173,3 +158,60 @@ impl Interpreter {
     }
 }
 
+
+/// Split a generic argument list at the commas that separate arguments,
+/// leaving the ones inside a nested type alone.
+///
+/// A plain `split(',')` cut `Holder<(i64, string)>` into `["(i64", "string)"]` —
+/// two arguments where the type declares one — and the interpreter then rejected
+/// the arity of a program the native backend compiles (#1052).
+fn split_top_level(args_str: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut angle = 0i32;
+    let mut paren = 0i32;
+    let mut start = 0usize;
+    for (i, c) in args_str.char_indices() {
+        match c {
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            '(' | '[' => paren += 1,
+            ')' | ']' => paren -= 1,
+            ',' if angle == 0 && paren == 0 => {
+                parts.push(args_str[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let last = args_str[start..].trim();
+    if !last.is_empty() {
+        parts.push(last);
+    }
+    parts
+}
+
+/// One generic argument as a type. A tuple keeps its members, so a struct
+/// instantiated with a pair has a pair for its parameter and not the first half.
+fn parse_arg_type(part: &str) -> rask_types::Type {
+    use rask_types::Type;
+    let part = part.trim();
+    if let Some(members) = part.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let elems: Vec<Type> = split_top_level(members)
+            .into_iter()
+            .map(parse_arg_type)
+            .collect();
+        if elems.len() > 1 {
+            return Type::Tuple(elems);
+        }
+    }
+    match part {
+        "i32" => Type::I32,
+        "i64" => Type::I64,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
+        "bool" => Type::Bool,
+        "string" => Type::String,
+        "usize" => Type::usize_ty(),
+        _ => Type::UnresolvedNamed(part.to_string()),
+    }
+}

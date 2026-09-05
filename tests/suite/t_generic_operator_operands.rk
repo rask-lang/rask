@@ -53,9 +53,9 @@ test "a Comparable parameter compares at every instantiation" {
 }
 
 test "a Numeric parameter adds at every instantiation" {
-    let ints: Vec<i64> = [1, 2, 3].iter().to_vec()
+    let ints: Vec<i64> = [1, 2, 3].to_vec()
     assert total(ints, 0) == 6
-    let floats: Vec<f64> = [1.5, 2.5].iter().to_vec()
+    let floats: Vec<f64> = [1.5, 2.5].to_vec()
     assert total(floats, 0.0) == 4.0
 }
 

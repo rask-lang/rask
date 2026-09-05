@@ -232,6 +232,28 @@ impl BlockBuilder {
     }
 
     /// Check if the current block still has the default Unreachable terminator.
+    /// Does any terminator jump to `target`?
+    ///
+    /// Asked after a body has been lowered, so the answer is what lowering
+    /// actually produced rather than a prediction from the source. A block
+    /// nothing jumps to is dead: its statements never run, and a `Return` in it
+    /// is a path the frame can't take.
+    pub fn any_jump_to(&self, target: BlockId) -> bool {
+        self.function.blocks.iter().any(|b| match &b.terminator.kind {
+            MirTerminatorKind::Goto { target: t } => *t == target,
+            MirTerminatorKind::Branch { then_block, else_block, .. } => {
+                *then_block == target || *else_block == target
+            }
+            MirTerminatorKind::Switch { cases, default, .. } => {
+                *default == target || cases.iter().any(|(_, b)| *b == target)
+            }
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
+                cleanup_chain.contains(&target)
+            }
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::Unreachable => false,
+        })
+    }
+
     pub fn current_block_unterminated(&self) -> bool {
         matches!(
             self.function.blocks[self.current_block.0 as usize].terminator.kind,

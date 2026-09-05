@@ -39,7 +39,6 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
-t_generic_optional_field.rk  # a struct field whose type parameter was instantiated to an optional isn't wrapped on the interpreter — #1080 (interp run)
 #
 # The native half of the same shape was #1081 and is fixed: a container's stdlib
 # declaration is an empty struct standing in for an opaque runtime pointer, so
@@ -125,10 +124,20 @@ t_generic_optional_field.rk  # a struct field whose type parameter was instantia
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
-
 # `{x:debug}` landed on this branch and all three container shapes now agree.
 # Pruned 2026-09-05:
 #   t_debug_container_elision.rk — #1064. The Map half turned out not to need an
 #     iteration order from the runtime, because there isn't one to have: order
 #     is unspecified and seeded per process on both backends. The renderer sorts
 #     by key instead, which is the same on every run and on both sides.
+
+# --- interp lag: a lazy chain's `mutate` writeback ---
+#
+# `counting_source(mutate calls).filter(…)` then `.sum()`. Native reports
+# calls == 1, the interpreter 0, and native is right. The interpreter writes a
+# `mutate` parameter back at the *call boundary* — but a Sequence is lazy, so
+# nothing has run when `counting_source` returns, and the write-back snapshots 0
+# and puts 0 back over the increment the closure makes later. Five of the six
+# tests in the file pass on both; this is the one that needs a lazy value's
+# writeback deferred to when the value is actually driven.
+p08_sequence.rk  # sequence — #1046 (interp run)

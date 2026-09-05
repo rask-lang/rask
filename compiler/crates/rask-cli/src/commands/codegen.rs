@@ -140,7 +140,7 @@ pub fn cmd_mono(path: &str, format: Format) {
                     mono_fn
                         .type_args
                         .iter()
-                        .map(|t| format!("{:?}", t))
+                        .map(|b| format!("{}={}", b.param, b.ty))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -402,6 +402,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     // raw lowering output hid every bug that lives in a pass: refcount
     // insertion, inlining, bounds-check elimination and generation coalescing
     // are all invisible before this point.
+    rask_mir::transform::addr_taken::run_all(&mut mir_functions);
     for func in &mut mir_functions {
         rask_mir::transform::ssa::construct(func);
     }

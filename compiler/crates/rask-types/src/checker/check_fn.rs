@@ -292,7 +292,7 @@ impl TypeChecker {
         // ER20: Finalize error union from accumulated error types
         if self.accumulate_errors && !self.inferred_errors.is_empty() {
             let errors = std::mem::take(&mut self.inferred_errors);
-            let error_union = Type::union(errors);
+            let error_union = Type::union_named(errors, |id| Some(self.types.type_name(id)));
             let ret = self.current_return_type.as_ref().unwrap().clone();
             let resolved_ret = self.ctx.apply(&ret);
             match &resolved_ret {

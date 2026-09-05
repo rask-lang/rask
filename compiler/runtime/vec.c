@@ -978,6 +978,22 @@ RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
     return dst;
 }
 
+// take(vec, n) — returns a new Vec holding at most the first n elements.
+// Fusion handles `v.take(n)` inside a chain; this is the standalone call, where
+// the result is bound to a variable and there is no loop to fold it into.
+RaskVec *rask_iter_take(const RaskVec *src, int64_t n) {
+    if (!src) return rask_vec_new(8, NULL, 0);
+    if (n < 0) n = 0;
+    int64_t new_len = src->len < n ? src->len : n;
+    if (new_len <= 0) return rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len,
+                                          src->strs.offsets, src->strs.count);
+    memcpy(dst->data, src->data, (size_t)(new_len * src->elem_size));
+    dst->len = new_len;
+    vec_retain_elems(dst, 0, dst->len);
+    return dst;
+}
+
 // Write Vec data to a FILE*. Used by self-hosted fs.write_bytes.
 void rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
     FILE *f = (FILE *)(uintptr_t)fptr;

@@ -30,34 +30,34 @@ struct Point {
 }
 
 test "a Vec of integers renders its elements" {
-    let v: Vec<i64> = [1, 2, 3].iter().to_vec()
+    let v: Vec<i64> = [1, 2, 3].to_vec()
     assert "{v:debug}" == "[1, 2, 3]"
 }
 
 test "element width is the element's own, not a machine word" {
-    let a: Vec<i32> = [1i32, 2i32].iter().to_vec()
+    let a: Vec<i32> = [1i32, 2i32].to_vec()
     assert "{a:debug}" == "[1, 2]"
-    let b: Vec<u8> = [1u8, 255u8].iter().to_vec()
+    let b: Vec<u8> = [1u8, 255u8].to_vec()
     assert "{b:debug}" == "[1, 255]"
 }
 
 test "a Vec of strings quotes them, the way a struct field does" {
-    let v: Vec<string> = ["a", "b"].iter().to_vec()
+    let v: Vec<string> = ["a", "b"].to_vec()
     assert "{v:debug}" == "[\"a\", \"b\"]"
 }
 
 test "a Vec of bools renders as bools" {
-    let v: Vec<bool> = [true, false].iter().to_vec()
+    let v: Vec<bool> = [true, false].to_vec()
     assert "{v:debug}" == "[true, false]"
 }
 
 test "an empty Vec is a pair of brackets" {
-    let v: Vec<i64> = [].iter().to_vec()
+    let v: Vec<i64> = [].to_vec()
     assert "{v:debug}" == "[]"
 }
 
 test "a Vec inside a struct renders, it doesn't print the buffer" {
-    let h = Holder { items: [1, 2].iter().to_vec(), name: "n" }
+    let h = Holder { items: [1, 2].to_vec(), name: "n" }
     assert "{h:debug}" == "Holder {{ items: [1, 2], name: \"n\" }}"
 }
 

@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A generic method calling another method from its own body.
+//
+// This worked, mostly, and the exception had a sharp edge: a method call
+// *inside an instantiated copy* was invisible to reachability, so nothing
+// enqueued the callee and codegen asked for a symbol nobody emitted.
+//
+//     error: codegen 'Holder_mapped$i64_i64': Function not found: Sequence_map
+//
+// Node ids inside a copy are ones the checker never saw, and the dispatch
+// lookup read only the checker's own map — never the copies that
+// `carry_node_records` had already brought across. So the record existed and
+// nothing looked at it (#1065).
+//
+// It only showed on a callee that declares a type parameter of its own. Any
+// other callee got enqueued from the *template* walk instead, under its bare
+// name, and one shared body happens to serve every word-sized argument — so
+// `filter` forwarded fine and `map` didn't, and the difference looked like it
+// was about `map`.
+
+import sequence.Sequence
+
+struct Holder<T> {
+    public items: Vec<T>
+}
+
+extend Holder<T> {
+    public func walk(self) -> Sequence<T> {
+        return |yield| {
+            mut i = 0
+            while i < self.items.len() {
+                if !yield(self.items[i]) {
+                    return
+                }
+                i = i + 1
+            }
+        }
+    }
+
+    // The callee declares its own type parameter — `Sequence.map<U>`.
+    public func mapped(self, f: func(T) -> U) -> Sequence<U> {
+        return self.walk().map(f)
+    }
+
+    // The callee doesn't. Same shape otherwise; this half always worked.
+    public func kept(self, p: func(T) -> bool) -> Sequence<T> {
+        return self.walk().filter(p)
+    }
+
+    // Two hops, both with their own parameter, to pin that it isn't one level.
+    public func mapped_twice(self, f: func(T) -> U) -> Sequence<U> {
+        return self.walk().map(f).map(|u| u)
+    }
+}
+
+test "a forwarded call to a callee with its own type parameter" {
+    let h = Holder<i64> { items: [1, 2, 3] }
+    assert h.mapped(|x| x * 2).count() == 3
+}
+
+test "the values are right, not just the count" {
+    let h = Holder<i64> { items: [1, 2, 3] }
+    let out: Vec<i64> = h.mapped(|x| x * 2).to_vec()
+    assert out.len() == 3
+    assert out[0] == 2
+    assert out[2] == 6
+}
+
+test "the type argument can differ from the receiver's" {
+    let h = Holder<i64> { items: [1, 2] }
+    let names: Vec<string> = h.mapped(|x| "n{x}").to_vec()
+    assert names.len() == 2
+    assert names[0] == "n1"
+    assert names[1] == "n2"
+}
+
+test "a callee without its own type parameter still forwards" {
+    let h = Holder<i64> { items: [1, 2, 3] }
+    assert h.kept(|x| x > 1).count() == 2
+}
+
+test "two hops" {
+    let h = Holder<i64> { items: [1, 2] }
+    assert h.mapped_twice(|x| x * 3).count() == 2
+    let out: Vec<i64> = h.mapped_twice(|x| x * 3).to_vec()
+    assert out[0] == 3
+    assert out[1] == 6
+}
+
+// Two instantiations of the same forwarding method. One shared body can't
+// serve both, so this is what would break if the fix bound the argument once
+// and reused it.
+test "two instantiations don't share a body" {
+    let a = Holder<i64> { items: [1, 2] }
+    let b = Holder<string> { items: ["x", "y", "z"] }
+    assert a.mapped(|x| x + 1).count() == 2
+    assert b.mapped(|s| s).count() == 3
+}
+
+// The same thing through the stdlib, which is where it was found:
+// `Vec.map` forwards to `Sequence.map`.
+test "Vec.map forwards to the sequence adapter" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert v.map(|x| x * 2).count() == 3
+    let out: Vec<i64> = v.map(|x| x * 2).to_vec()
+    assert out[1] == 4
+}
