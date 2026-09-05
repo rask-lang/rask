@@ -142,8 +142,20 @@ test "parser" {
 | Rule | Description |
 |------|-------------|
 | **T11: Comptime** | `comptime test` runs during compilation; failure is a compile error |
+| **T11a: Not run twice** | A `comptime test` doesn't reach either backend's runner. It ran at compile time; `rask test` reports the result it already has |
 
+Everything the body needs has to be reachable from the comptime subset
+(`ctrl.comptime/CT6`–`CT8`). A test that can't be evaluated there is the same
+compile error as one that fails — the compiler has no files, no sockets and no
+scheduler to lend it.
+
+<!-- test: compile -->
 ```rask
+comptime func factorial(n: i64) -> i64 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
+
 comptime test "factorial" {
     assert factorial(5) == 120
 }

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `comptime test` that fails, or that can't run at compile time
+// (std.testing/T11, E0848).
+//
+// A comptime test runs during compilation, so a false `assert` is a compile
+// error rather than a red line in the test report. Nothing ran them before:
+// `is_comptime` was parsed and then ignored, the runner collected the block
+// like any other test, and `rask check` on a failing one exited 0.
+//
+// The second shape is the one that catches people out. The compiler has no
+// files, no sockets and no scheduler — only the comptime subset
+// (ctrl.comptime/CT7) — so a body it can't evaluate is the same error, with the
+// reason in place of the operands.
+
+import fs
+
+comptime func factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+// --- a false assert ---
+comptime test "factorial is off by one" {
+    // ERROR: comptime test failed — left: 120, right: 121 [E0848]
+    assert factorial(5) == 121
+}
+
+// --- a body the compiler can't evaluate: there is no filesystem at comptime ---
+// ERROR: comptime test can't run at compile time [E0848]
+comptime test "touches the filesystem" {
+    let meta = fs.metadata("build.rk")
+    assert factorial(3) == 6
+}

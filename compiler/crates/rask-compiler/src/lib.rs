@@ -332,7 +332,7 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 
     let package_names = collect_builtin_imports(&parse_result.decls);
 
-    // --- Comptime folds (CT1) ---
+    // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
     }
@@ -372,15 +372,20 @@ fn comptime_diagnostics_for(
     typed: &rask_types::TypedProgram,
     cfg: &CfgConfig,
 ) -> Vec<Diagnostic> {
+    // T11 tests need neither typecheck output nor monomorphization — the AST
+    // interpreter runs them straight off the decls.
+    let mut diags = evaluate_comptime_tests(decls, Some(cfg));
+
     if !decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls))) {
-        return Vec::new();
+        return diags;
     }
     let Ok(mono) = rask_mono::monomorphize(typed, decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
-        return Vec::new();
+        return diags;
     };
-    evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1
+    diags.extend(evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1);
+    diags
 }
 
 /// Check a multi-file package.
@@ -514,7 +519,7 @@ pub fn check_package(
         diags.push(ensure_order_to_diagnostic(&w));
     }
 
-    // --- Comptime folds (CT1) ---
+    // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
         diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
@@ -723,8 +728,9 @@ fn finalize_compile(
     // --- Evaluate comptime globals (single source of truth) ---
     // Hard errors (overflow, divide-by-zero) become pipeline diagnostics and
     // fail the build like any other pass — no separate handling downstream.
-    let (comptime_globals, ct_diags) =
+    let (comptime_globals, mut ct_diags) =
         evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
+    ct_diags.extend(evaluate_comptime_tests(&check.decls, Some(&config.cfg)));
     if !ct_diags.is_empty() {
         diags.extend(ct_diags);
         return PipelineOutput::fail_with_sources(diags, pkg_source_files);
@@ -749,7 +755,7 @@ fn finalize_compile(
 
 // The comptime-global evaluator lives in `comptime_eval` — the single source
 // of truth used by both the pipeline (below) and the CLI's test/bench paths.
-pub use crate::comptime_eval::evaluate_comptime_globals;
+pub use crate::comptime_eval::{evaluate_comptime_globals, evaluate_comptime_tests};
 
 pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;

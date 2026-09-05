@@ -246,7 +246,11 @@ impl Interpreter {
                     );
                 }
                 DeclKind::Test(t) => {
-                    tests.push(t.clone());
+                    // A `comptime test` ran during compilation (std.testing/T11);
+                    // the runner isn't where its result comes from.
+                    if !t.is_comptime {
+                        tests.push(t.clone());
+                    }
                 }
                 DeclKind::Benchmark(b) => {
                     benchmarks.push(b.clone());

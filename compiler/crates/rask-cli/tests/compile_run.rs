@@ -6991,3 +6991,84 @@ fn every_compile_error_marker_is_answered_by_a_diagnostic() {
     }
     assert!(problems.is_empty(), "{problems}");
 }
+
+/// A `comptime test` runs during compilation, so `rask check` has to answer for
+/// it (std.testing/T11).
+///
+/// `is_comptime` was parsed and then ignored: the runner collected the block
+/// like any other test and ran it at run time, so `rask check` on a failing one
+/// exited 0 and `rask test` reported it as a red line rather than a compile
+/// error.
+#[test]
+fn error_comptime_test_failure() {
+    let (failed, out) = compile_error_output("comptime_test_failure.rk");
+    assert!(failed, "a failing comptime test must fail the compile:\n{out}");
+
+    assert!(
+        out.contains("comptime test \"factorial is off by one\" failed"),
+        "the message should name the test that failed:\n{out}"
+    );
+    assert!(
+        out.contains("left: 120, right: 121"),
+        "the caret should carry the operands — the diagnostic already prints \
+         the source line, so it doesn't repeat the operator:\n{out}"
+    );
+    assert!(
+        out.contains("comptime test \"touches the filesystem\" can't run at compile time"),
+        "a body the comptime subset can't evaluate is the same error, worded \
+         for what actually went wrong:\n{out}"
+    );
+    assert!(out.contains("std.testing/T11"), "should cite the rule:\n{out}");
+    assert!(out.contains("E0848"), "should carry the code:\n{out}");
+}
+
+/// The other half: a comptime test that passes is reported once, by the runner,
+/// on both backends — not run a second time as a runtime test (T11a).
+#[test]
+fn comptime_test_is_reported_but_not_run_twice() {
+    let src = "\
+comptime func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+comptime test \"doubles\" {
+    assert twice(21) == 42
+}
+
+test \"runtime one\" {
+    assert 1 + 1 == 2
+}
+";
+    let file = std::env::temp_dir().join(format!(
+        "rask_ct_test_{}_{}.rk",
+        std::process::id(),
+        next_tmp_id()
+    ));
+    std::fs::write(&file, src).unwrap();
+
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(out.status.success(), "{args:?} should pass:\n{combined}");
+        assert!(
+            combined.contains("2 tests, 2 passed"),
+            "{args:?}: the comptime test counts once, beside the runtime one:\n{combined}"
+        );
+        assert_eq!(
+            combined.matches("doubles").count(),
+            1,
+            "{args:?}: reported twice — it ran in the runner as well as at \
+             compile time:\n{combined}"
+        );
+    }
+    let _ = std::fs::remove_file(&file);
+}

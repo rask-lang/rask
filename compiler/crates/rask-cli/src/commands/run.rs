@@ -350,7 +350,8 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let test_results = interp.run_tests(&all, filter.as_deref());
 
     // Render in the same format as native (JSON-per-line, then summarize).
-    let mut json_lines = String::new();
+    let (mut json_lines, comptime_count) =
+        comptime_test_records(&result.decls, filter.as_deref());
     for r in &test_results {
         let escaped_name = json_escape(&r.name);
         let dur_ns = r.duration.as_nanos() as u64;
@@ -379,14 +380,14 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
             ));
         }
     }
-    display_test_results(&json_lines, path, format, test_results.len());
+    display_test_results(&json_lines, path, format, test_results.len() + comptime_count);
 
     // Same rule as native: asked for one file by name and finding nothing in it
     // is a mistake, not a pass. Both halves matter — `differential.sh` compares
     // the two backends and calls a file green when both exit 0 with matching
     // output, so an empty file has to fail on both or it stays green on the
     // strength of them agreeing about nothing.
-    if test_results.is_empty() {
+    if test_results.is_empty() && comptime_count == 0 {
         if format == Format::Human {
             eprintln!(
                 "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
@@ -468,7 +469,10 @@ fn run_test_file_native_inner(
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
     let mut tests = Vec::new();
+    let mut comptime_records = String::new();
+    let mut comptime_count = 0;
     let output = rask_compiler::compile_file_with(path, Vec::new(), &config, |decls, _typed| {
+        (comptime_records, comptime_count) = comptime_test_records(decls, filter);
         tests = super::compile::extract_tests(decls, filter);
     });
 
@@ -492,6 +496,10 @@ fn run_test_file_native_inner(
     };
 
     if tests.is_empty() {
+        // Comptime tests are already in — nothing to build or run for them.
+        if comptime_count > 0 {
+            return display_test_results(&comptime_records, path, format, comptime_count);
+        }
         if format == Format::Human {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
@@ -545,7 +553,9 @@ fn run_test_file_native_inner(
     match run_output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            let complete = display_test_results(&stdout, path, format, tests.len());
+            let all = format!("{comptime_records}{stdout}");
+            let complete =
+                display_test_results(&all, path, format, tests.len() + comptime_count);
             out.status.success() && complete
         }
         Err(e) => {
@@ -605,6 +615,33 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
 /// Print the run's results. `expected` is how many tests the binary was built
 /// with; fewer results than that means it died partway and the run is a
 /// failure, not a pass over whatever arrived. Returns false in that case.
+/// Protocol records for the `comptime test`s in this file.
+///
+/// They ran inside the pipeline, before either backend started (std.testing/T11)
+/// — a failing one is a compile error and never gets here, so every record is a
+/// pass. Feeding them through the same JSON channel the runners use keeps one
+/// renderer for both, and keeps a comptime test from being invisible to
+/// `rask test`.
+fn comptime_test_records(decls: &[rask_ast::decl::Decl], filter: Option<&str>) -> (String, usize) {
+    let mut records = String::new();
+    let mut count = 0;
+    for decl in decls {
+        let rask_ast::decl::DeclKind::Test(t) = &decl.kind else { continue };
+        if !t.is_comptime {
+            continue;
+        }
+        if filter.is_some_and(|pat| !t.name.contains(pat)) {
+            continue;
+        }
+        records.push_str(&format!(
+            "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            json_escape(&t.name),
+        ));
+        count += 1;
+    }
+    (records, count)
+}
+
 fn display_test_results(stdout: &str, path: &str, format: Format, expected: usize) -> bool {
     let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
     let truncated = reported < expected;
