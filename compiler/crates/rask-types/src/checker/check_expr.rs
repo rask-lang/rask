@@ -2985,7 +2985,6 @@ impl TypeChecker {
                 }
             });
             if let Some((type_id, field_types)) = variant_fields {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 // A generic enum written without type arguments takes them from
                 // the payload: `GrowError.Full(item)` gives each declared
                 // parameter a fresh variable that the argument binds. Answering
@@ -3015,10 +3014,27 @@ impl TypeChecker {
                     };
                     (fields, ty)
                 };
+                // C4: the slot picks the shape, and a declared payload is a
+                // slot. Inferring the argument on its own first made
+                // `Node.Branch([1, 2, 3])` a `[i32; 3]` against a `Vec<i32>`
+                // payload and rejected it — while the same literal filled a
+                // struct field, an argument or a return with no trouble (#922).
+                let arg_types: Vec<Type> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| match instantiated.get(i) {
+                        Some(want) => self.infer_expr_expecting(&a.expr, want),
+                        None => self.infer_expr(&a.expr),
+                    })
+                    .collect();
+                // Declared type first: `Equal` reports its left as "expected",
+                // and the payload is what the reader has to match. Reversed, the
+                // fix line told them to change their expression to the type they
+                // had just written.
                 for (arg_ty, field_ty) in arg_types.iter().zip(instantiated.iter()) {
                     self.ctx.add_constraint(TypeConstraint::Equal(
-                        arg_ty.clone(),
                         field_ty.clone(),
+                        arg_ty.clone(),
                         span,
                     ));
                 }

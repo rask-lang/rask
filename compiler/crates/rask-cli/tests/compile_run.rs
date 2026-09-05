@@ -4419,6 +4419,24 @@ fn a_wide_scalar_field_counts_its_real_width() {
     );
 }
 
+/// #922: a variant payload's declared type is what the reader has to match, and
+/// the message named it as "found" — telling them to write the type they had
+/// just written. The literal it fired on is legal now (C4: the slot picks the
+/// shape), so this checks the remaining genuine mismatch reads the right way.
+#[test]
+fn an_enum_payload_mismatch_names_the_declared_type() {
+    let (failed, output) = compile_error_output("enum_payload_mismatch.rk");
+    assert!(failed, "a string is not an i32 payload:\n{output}");
+    assert!(
+        output.contains("expected `i32`, found `string`"),
+        "the declared payload is the expectation:\n{output}"
+    );
+    assert!(
+        output.contains("expected `Vec<i32>`, found `string`"),
+        "same for a collection payload:\n{output}"
+    );
+}
+
 #[test]
 fn staged_misuse_is_rejected_at_check_time() {
     // ST1 (no block to commit at) and ST3a (nothing to protect under `Local`).
