@@ -270,8 +270,17 @@ impl Interpreter {
                 if Self::value_eq(got, expected) {
                     Ok(Value::Unit)
                 } else {
-                    let got_str = format!("{}", got);
-                    let expected_str = format!("{}", expected);
+                    // Native quotes string operands here (rask_assert_eq_fail_str)
+                    // and the interpreter didn't, so the same failing assert_eq
+                    // read differently on the two backends. Quotes are what make
+                    // a trailing space or an empty string visible, so native's
+                    // is the one to match.
+                    let show = |v: &Value| match v {
+                        Value::String(_) => format!("\"{}\"", v),
+                        _ => format!("{}", v),
+                    };
+                    let got_str = show(got);
+                    let expected_str = show(expected);
                     let msg = if args.len() > 2 {
                         format!("{}", args[2])
                     } else {

@@ -493,6 +493,34 @@ impl CodeGenerator {
             self.func_ids.insert(internal.to_string(), id);
         }
 
+        // check_fail_cmp_* — one per operand kind, mirroring the assert_ set
+        // above. `check` records and carries on where `assert` unwinds, but the
+        // call shape and the message are identical, so the signatures are too.
+        // Without these, native `check` fell back to the operand-less
+        // `check_fail` and reported the bare words "check failed" while the
+        // interpreter reported the expression and both values.
+        for (internal, symbol, value_ty) in [
+            ("check_fail_cmp_i64",  "rask_check_fail_cmp_i64",  types::I64),
+            ("check_fail_cmp_char", "rask_check_fail_cmp_char", types::I64),
+            ("check_fail_cmp_str",  "rask_check_fail_cmp_str",  types::I64),
+            ("check_fail_cmp_i128", "rask_check_fail_cmp_i128", types::I128),
+            ("check_fail_cmp_u128", "rask_check_fail_cmp_u128", types::I128),
+            ("check_fail_cmp_f64",  "rask_check_fail_cmp_f64",  types::F64),
+            ("check_fail_cmp_f32",  "rask_check_fail_cmp_f32",  types::F32),
+        ] {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(value_ty));   // left
+            sig.params.push(AbiParam::new(value_ty));   // right
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function(symbol, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(internal.to_string(), id);
+        }
+
         // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
         {
             let mut sig = self.module.make_signature();

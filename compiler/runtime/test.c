@@ -49,19 +49,31 @@ void rask_test_expect_fail(void) {
 // assert_eq lives in runtime.c with the other assert reporters — the
 // comparison is generated code, so only the failure formatting is here.
 
-// Thread-local check failure tracking
+// Thread-local check failure tracking.
+//
+// `check` exists to collect several failures in one run (std.testing/A2), so
+// reporting only the last one throws away the reason anyone reached for it —
+// a test with three failing checks read the same as a test with one. The
+// interpreter has always joined them with "; "; this matches it.
 static __thread int rask_check_failures = 0;
-static __thread char rask_check_last_msg[512] = {0};
+static __thread char rask_check_last_msg[2048] = {0};
 
 // check_fail — record failure without unwinding (test continues)
 void rask_check_fail(const char *msg) {
     rask_check_failures++;
-    if (msg) {
-        snprintf(rask_check_last_msg, sizeof(rask_check_last_msg), "%s", msg);
-    } else {
-        snprintf(rask_check_last_msg, sizeof(rask_check_last_msg), "check failed");
+    const char *text = msg ? msg : "check failed";
+
+    size_t used = strlen(rask_check_last_msg);
+    if (used == 0) {
+        snprintf(rask_check_last_msg, sizeof(rask_check_last_msg), "%s", text);
+    } else if (used + 2 < sizeof(rask_check_last_msg)) {
+        // Truncation is silent by design past this point: the buffer is
+        // thread-local and fixed, and a test with enough failing checks to fill
+        // 2KB has already told the reader what they needed from the first few.
+        snprintf(rask_check_last_msg + used, sizeof(rask_check_last_msg) - used,
+                 "; %s", text);
     }
-    fprintf(stderr, "check failed: %s\n", rask_check_last_msg);
+    fprintf(stderr, "%s\n", text);
 }
 
 // A test name is a string literal, so it can hold a quote, a backslash or a

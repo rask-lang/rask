@@ -30,6 +30,60 @@ use rask_ast::{
 /// shape — true only when one side was written as a literal — so `assert a == b`
 /// on two string variables took the i64 helper and printed the two `RaskStr`
 /// slot addresses (#897).
+/// Which operand-carrying fail helper a comparison needs, and the width its
+/// operands have to be widened to.
+///
+/// `assert` and `check` ask the same question and differ only in what happens
+/// after the answer, so they pick the helper the same way. Every branch here is
+/// a bug someone already paid for — #897 (two string variables reached the i64
+/// helper and reported their slot addresses), #834 (an optional operand
+/// reinterpreted as a number), #762 (128-bit values narrowed to the wrong
+/// digits), #332 (an f32 or char reaching the f64/i64 helper at its own width,
+/// which Cranelift rejects outright). `check` used to skip all of it and report
+/// the bare words "check failed"; giving it a second copy would have been a
+/// second place to relearn them.
+enum CmpFailHelper {
+    /// An optional operand — the helpers take raw scalars, and an optional is a
+    /// slot with a present flag beside the payload. Report without the values.
+    NoOperands,
+    /// Helper suffix, plus the width both operands are widened to.
+    Typed(&'static str, MirType),
+}
+
+fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType) -> CmpFailHelper {
+    // Keyed off the lowered types, not the source shape: guessing from the
+    // source meant only a written literal counted as a string (#897).
+    if matches!(left_ty, MirType::Option(_)) || matches!(right_ty, MirType::Option(_)) {
+        return CmpFailHelper::NoOperands;
+    }
+    if matches!(left_ty, MirType::String) || matches!(right_ty, MirType::String) {
+        // Strings pass by reference; nothing to widen, and the width is unused.
+        return CmpFailHelper::Typed("str", MirType::String);
+    }
+    // Both sides f32 keeps the operands at that width. The shortest decimal that
+    // reads back as the same value depends on the width you check against, so an
+    // f32 widened to double reports 1.100000023841858 for 1.1 — a number no
+    // `println` of the same value would ever print.
+    if matches!(left_ty, MirType::F32) && matches!(right_ty, MirType::F32) {
+        return CmpFailHelper::Typed("f32", MirType::F32);
+    }
+    if matches!(left_ty, MirType::F32 | MirType::F64)
+        || matches!(right_ty, MirType::F32 | MirType::F64)
+    {
+        return CmpFailHelper::Typed("f64", MirType::F64);
+    }
+    if matches!(left_ty, MirType::Char) && matches!(right_ty, MirType::Char) {
+        return CmpFailHelper::Typed("char", MirType::I64);
+    }
+    if matches!(left_ty, MirType::U128) || matches!(right_ty, MirType::U128) {
+        return CmpFailHelper::Typed("u128", MirType::U128);
+    }
+    if matches!(left_ty, MirType::I128) || matches!(right_ty, MirType::I128) {
+        return CmpFailHelper::Typed("i128", MirType::I128);
+    }
+    CmpFailHelper::Typed("i64", MirType::I64)
+}
+
 fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str)> {
     match &condition.kind {
         // Desugared comparison: a.eq(b), a.lt(b), etc.
@@ -446,6 +500,51 @@ impl<'a> MirLowerer<'a> {
     /// reads it. Keeps the original node id so the comparison built around it
     /// still resolves to the same type. A plain ident needs no parking — it's
     /// already a name, and re-reading it costs nothing.
+    /// Emit the operand-carrying failure call for a comparison, into the block
+    /// that is already current.
+    ///
+    /// `prefix` is `"assert_fail"` or `"check_fail"` — the runtime pairs one
+    /// message formatter with both, so the only difference downstream is
+    /// whether the call unwinds or records.
+    fn emit_cmp_fail_call(
+        &mut self,
+        left_op: MirOperand,
+        left_ty: &MirType,
+        right_op: MirOperand,
+        right_ty: &MirType,
+        op_str: &str,
+        prefix: &str,
+    ) {
+        let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
+        match classify_cmp_fail(left_ty, right_ty) {
+            CmpFailHelper::NoOperands => {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal(prefix.to_string()),
+                    args: vec![],
+                }));
+            }
+            CmpFailHelper::Typed(suffix, want) => {
+                // Each helper has one fixed signature, so a narrower operand has
+                // to be widened to it (#332). Strings pass by reference and are
+                // left alone.
+                let (left_op, right_op) = if suffix == "str" {
+                    (left_op, right_op)
+                } else {
+                    (
+                        self.widen_for_assert_helper(left_op, left_ty, &want),
+                        self.widen_for_assert_helper(right_op, right_ty, &want),
+                    )
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal(format!("{}_cmp_{}", prefix, suffix)),
+                    args: vec![left_op, right_op, op_const],
+                }));
+            }
+        }
+    }
+
     fn bind_assert_operand(&mut self, src: &Expr, op: &MirOperand, ty: &MirType) -> Expr {
         if !expr_may_do_work(src) {
             return src.clone();
@@ -3822,92 +3921,9 @@ impl<'a> MirLowerer<'a> {
                     }));
 
                     self.builder.switch_to_block(fail_block);
-                    let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
-                    // Pick the right fail helper for the operand types so the
-                    // Cranelift call signature matches: f64 args go to a f64
-                    // helper, strings to the str helper, everything else i64.
-                    // Keyed off the lowered types, same as every classifier
-                    // below. Guessing from the source shape meant only a written
-                    // literal counted as a string, so two string variables went
-                    // to the i64 helper and reported their slot addresses (#897).
-                    let is_string = matches!(left_ty, MirType::String)
-                        || matches!(right_ty, MirType::String);
-                    let is_float = matches!(left_ty, MirType::F32 | MirType::F64)
-                        || matches!(right_ty, MirType::F32 | MirType::F64);
-                    // Both sides f32 keeps the operands at that width. The
-                    // shortest decimal that reads back as the same value depends
-                    // on the width you check against, so an f32 widened to
-                    // double reports 1.100000023841858 for 1.1 — a number no
-                    // `println` of the same value would ever print.
-                    let is_f32 = matches!(left_ty, MirType::F32)
-                        && matches!(right_ty, MirType::F32);
-                    let is_char = matches!(left_ty, MirType::Char)
-                        && matches!(right_ty, MirType::Char);
-                    // A 128-bit comparison gets its own helper: narrowing the
-                    // operands to report them would print the wrong numbers,
-                    // since the values worth asserting about at that width are
-                    // the ones i64 can't hold (#762).
-                    let is_i128 = matches!(left_ty, MirType::I128)
-                        || matches!(right_ty, MirType::I128);
-                    let is_u128 = matches!(left_ty, MirType::U128)
-                        || matches!(right_ty, MirType::U128);
-                    // Every cmp helper takes a raw scalar, and an optional is a
-                    // slot with a present flag next to the payload. Passing the
-                    // slot where a number is expected reinterprets its address,
-                    // so an optional operand reports without the values (#834).
-                    let is_optional = matches!(left_ty, MirType::Option(_))
-                        || matches!(right_ty, MirType::Option(_));
-                    let fail_fn = if is_string {
-                        "assert_fail_cmp_str"
-                    } else if is_f32 {
-                        "assert_fail_cmp_f32"
-                    } else if is_float {
-                        "assert_fail_cmp_f64"
-                    } else if is_char {
-                        "assert_fail_cmp_char"
-                    } else if is_u128 {
-                        "assert_fail_cmp_u128"
-                    } else if is_i128 {
-                        "assert_fail_cmp_i128"
-                    } else {
-                        "assert_fail_cmp_i64"
-                    };
-                    // Each fail helper has one fixed signature, so a narrower
-                    // operand has to be widened to it. An f32 or a char reached
-                    // the f64/i64 helper at its own width and Cranelift
-                    // rejected the call outright (#332).
-                    let (left_op, right_op) = if is_string || is_optional {
-                        (left_op, right_op)
-                    } else {
-                        let want = if is_f32 {
-                            MirType::F32
-                        } else if is_float {
-                            MirType::F64
-                        } else if is_u128 {
-                            MirType::U128
-                        } else if is_i128 {
-                            MirType::I128
-                        } else {
-                            MirType::I64
-                        };
-                        (
-                            self.widen_for_assert_helper(left_op, &left_ty, &want),
-                            self.widen_for_assert_helper(right_op, &right_ty, &want),
-                        )
-                    };
-                    if is_optional {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal("assert_fail".to_string()),
-                            args: vec![],
-                        }));
-                    } else {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal(fail_fn.to_string()),
-                            args: vec![left_op, right_op, op_const],
-                        }));
-                    }
+                    self.emit_cmp_fail_call(
+                        left_op, &left_ty, right_op, &right_ty, op_str, "assert_fail",
+                    );
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
                     self.builder.switch_to_block(ok_block);
@@ -3954,6 +3970,62 @@ impl<'a> MirLowerer<'a> {
 
             // Check (like assert but continues)
             ExprKind::Check { condition, message } => {
+                // Same comparison path as `assert` (A1/A2 differ in what happens
+                // after the failure, not in what the failure is). Without it
+                // native reported the bare words "check failed" while the
+                // interpreter reported the expression and both values.
+                let cmp_info = if message.is_none() {
+                    extract_assert_comparison(condition)
+                } else {
+                    None
+                };
+
+                if let Some((left_expr, right_expr, op_str)) = cmp_info {
+                    let (left_op, left_ty) = self.lower_expr(left_expr)?;
+                    let (right_op, right_ty) = self.lower_expr(right_expr)?;
+                    // Compare the values already lowered rather than the whole
+                    // condition again — re-lowering runs both sides twice, so
+                    // `check push(v) == 1` would push twice.
+                    let (cond_op, _) = if expr_may_do_work(left_expr) || expr_may_do_work(right_expr) {
+                        let left_ref = self.bind_assert_operand(left_expr, &left_op, &left_ty);
+                        let right_ref = self.bind_assert_operand(right_expr, &right_op, &right_ty);
+                        let rebuilt = rebuild_assert_condition(condition, left_ref, right_ref);
+                        self.lower_expr(&rebuilt)?
+                    } else {
+                        self.lower_expr(condition)?
+                    };
+                    let ok_block = self.builder.create_block();
+                    let fail_block = self.builder.create_block();
+                    let merge_block = self.builder.create_block();
+                    let result_local = self.builder.alloc_temp(MirType::Bool);
+
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: cond_op,
+                        then_block: ok_block,
+                        else_block: fail_block,
+                    }));
+
+                    self.builder.switch_to_block(fail_block);
+                    self.emit_cmp_fail_call(
+                        left_op, &left_ty, right_op, &right_ty, op_str, "check_fail",
+                    );
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+                    self.builder.switch_to_block(ok_block);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+                    self.builder.switch_to_block(merge_block);
+                    return Ok((MirOperand::Local(result_local), MirType::Bool));
+                }
+
                 let (cond_op, _) = self.lower_expr(condition)?;
                 let ok_block = self.builder.create_block();
                 let fail_block = self.builder.create_block();

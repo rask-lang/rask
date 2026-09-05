@@ -142,19 +142,32 @@ void rask_print_u128(rask_u128 val) {
 // exactly the wrong ones, since the values a 128-bit assertion is about are the
 // ones that don't fit 64 bits.
 
-void rask_assert_fail_cmp_i128(rask_i128 left, rask_i128 right,
-                               const char *op, const char *file,
-                               int32_t line, int32_t col) {
+static void fmt_cmp_i128(char *buf, size_t n, const char *what,
+                        rask_i128 left, rask_i128 right, const char *op) {
     RaskStr ls, rs;
     rask_i128_to_string(&ls, left);
     rask_i128_to_string(&rs, right);
     const char *lbuf = rask_string_ptr(&ls);
     const char *rbuf = rask_string_ptr(&rs);
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+}
+
+void rask_assert_fail_cmp_i128(rask_i128 left, rask_i128 right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %s %s %s (left: %s, right: %s)",
-             lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+    fmt_cmp_i128(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_i128(rask_i128 left, rask_i128 right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_i128(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // F3 for the widest ints: the same operand-carrying overflow message the
@@ -189,19 +202,32 @@ _Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int3
     rask_panic_at(file, line, col, buf);
 }
 
-void rask_assert_fail_cmp_u128(rask_u128 left, rask_u128 right,
-                               const char *op, const char *file,
-                               int32_t line, int32_t col) {
+static void fmt_cmp_u128(char *buf, size_t n, const char *what,
+                        rask_u128 left, rask_u128 right, const char *op) {
     RaskStr ls, rs;
     rask_u128_to_string(&ls, left);
     rask_u128_to_string(&rs, right);
     const char *lbuf = rask_string_ptr(&ls);
     const char *rbuf = rask_string_ptr(&rs);
+    snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
+             what, lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+}
+
+void rask_assert_fail_cmp_u128(rask_u128 left, rask_u128 right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf),
-             "assertion failed: %s %s %s (left: %s, right: %s)",
-             lbuf, op ? op : "?", rbuf, lbuf, rbuf);
+    fmt_cmp_u128(buf, sizeof(buf), "assertion failed", left, right, op);
     rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_u128(rask_u128 left, rask_u128 right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_u128(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
 }
 
 // `abs` at 128 bits. `llabs` can't stand in: it takes a `long long`, so the

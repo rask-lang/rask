@@ -4603,9 +4603,15 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                 builder.ins().call(*assert_fn, &[]);
             }
-        } else if func.name == "assert_fail_cmp_i64" || func.name == "assert_fail_cmp_char"
-            || func.name == "assert_fail_cmp_i128" || func.name == "assert_fail_cmp_u128" {
-            // Comparison assert failure with scalar values: args = [left, right, op_str].
+        } else if matches!(func.name.as_str(),
+            "assert_fail_cmp_i64" | "assert_fail_cmp_char"
+            | "assert_fail_cmp_i128" | "assert_fail_cmp_u128"
+            | "check_fail_cmp_i64" | "check_fail_cmp_char"
+            | "check_fail_cmp_i128" | "check_fail_cmp_u128") {
+            // Comparison assert/check failure with scalar values: args = [left, right, op_str].
+            // The two prefixes share this lowering — same operands, same
+            // signature; only the runtime symbol differs, and that comes from
+            // `func.name`. `check` records instead of unwinding.
             // Same shape for all of them; the char helper formats the codepoints
             // as characters, and the 128-bit pair takes its operands at their
             // own width so the reported numbers are the real ones.
@@ -4626,15 +4632,15 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
             }
-        } else if func.name == "assert_fail_cmp_str" {
-            // Comparison assert failure with string values: args = [left, right, op_str]
+        } else if func.name == "assert_fail_cmp_str" || func.name == "check_fail_cmp_str" {
+            // Comparison assert/check failure with string values: args = [left, right, op_str]
             if args.len() >= 3 {
                 let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
                 let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get("assert_fail_cmp_str"),
+                        ctx.func_refs.get(func.name.as_str()),
                         ctx.string_globals.get(file_str),
                     ) {
                         let file_ptr = builder.ins().global_value(types::I64, *gv);
@@ -4644,8 +4650,10 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
             }
-        } else if func.name == "assert_fail_cmp_f64" || func.name == "assert_fail_cmp_f32" {
-            // Comparison assert failure with float values: args = [left, right, op_str].
+        } else if matches!(func.name.as_str(),
+            "assert_fail_cmp_f64" | "assert_fail_cmp_f32"
+            | "check_fail_cmp_f64" | "check_fail_cmp_f32") {
+            // Comparison assert/check failure with float values: args = [left, right, op_str].
             // The operands stay at their own width — an f32 formatted as a
             // double round-trips against the wrong width and prints its exact
             // binary expansion rather than the digits `println` shows.

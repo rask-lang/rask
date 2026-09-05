@@ -302,6 +302,12 @@ void        rask_assert_fail_cmp_i128(RaskI128 left, RaskI128 right,
 void        rask_assert_fail_cmp_u128(RaskU128 left, RaskU128 right,
                                       const char *op, const char *file,
                                       int32_t line, int32_t col);
+void        rask_check_fail_cmp_i128(RaskI128 left, RaskI128 right,
+                                     const char *op, const char *file,
+                                     int32_t line, int32_t col);
+void        rask_check_fail_cmp_u128(RaskU128 left, RaskU128 right,
+                                     const char *op, const char *file,
+                                     int32_t line, int32_t col);
 
 // Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
 // arrives here separately — a base conversion, then padding.
@@ -900,6 +906,25 @@ void rask_assert_fail_at(const char *file, int32_t line, int32_t col);
 void rask_assert_fail_msg(const char *msg);
 void rask_assert_fail_msg_at(const char *msg, const char *file,
                              int32_t line, int32_t col);
+// `check` records and carries on where `assert` unwinds; the message is built
+// by the same formatter either way (std.testing/A1 vs A2).
+void rask_check_fail(const char *msg);
+void rask_check_fail_cmp_i64(int64_t left, int64_t right,
+                             const char *op, const char *file,
+                             int32_t line, int32_t col);
+void rask_check_fail_cmp_char(int64_t left, int64_t right,
+                              const char *op, const char *file,
+                              int32_t line, int32_t col);
+void rask_check_fail_cmp_str(const RaskStr *left, const RaskStr *right,
+                             const char *op, const char *file,
+                             int32_t line, int32_t col);
+void rask_check_fail_cmp_f64(double left, double right,
+                             const char *op, const char *file,
+                             int32_t line, int32_t col);
+void rask_check_fail_cmp_f32(float left, float right,
+                             const char *op, const char *file,
+                             int32_t line, int32_t col);
+
 void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
