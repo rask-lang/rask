@@ -9,13 +9,13 @@ trait Aircraft {
 struct Boeing737 { variant: string, passenger_count: i32 }
 struct Cessna172 { registration: string }
 
-extend Boeing737 {
+extend Boeing737 with Aircraft {
     func max_speed_knots(self) -> f64 { return 453.0 }
     func range_nm(self) -> f64 { return 3500.0 }
     func designation(self) -> string { return "Boeing 737-{self.variant}" }
 }
 
-extend Cessna172 {
+extend Cessna172 with Aircraft {
     func max_speed_knots(self) -> f64 { return 124.0 }
     func range_nm(self) -> f64 { return 640.0 }
     func designation(self) -> string { return "Cessna 172 ({self.registration})" }
@@ -32,7 +32,7 @@ trait Summable {
 
 struct Measurement { reading: f64, unit: string }
 
-extend Measurement {
+extend Measurement with Summable {
     func value(self) -> f64 { return self.reading }
 }
 

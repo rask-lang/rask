@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a slice has no growth surface either (std.collections/V1).
+//
+// A fixed array's length is in its type, so `push` on one has always been an
+// error. A slice reaches the same resolver as `Type::Slice` and the check only
+// looked for `Type::Array` — so `s.push(4)` type-checked, took the declared
+// return type straight out of the `Vec` stub, and ran.
+//
+// The message is its own: rendering a slice through the array template printed
+// `[[i32]; 0]` and called it a fixed array, which is two wrong things about a
+// type the author can see.
+
+// ERROR: `push` doesn't exist on a slice [E0843]
+func grow_a_slice() {
+    let a = [1, 2, 3]
+    mut s = a[0..2]
+    s.push(4)
+    println("{s.len()}")
+}
+
+// ERROR: `remove` doesn't exist on a slice [E0843]
+func shrink_a_slice() {
+    let a = [1, 2, 3]
+    mut s = a[0..2]
+    s.remove(0)
+    println("{s.len()}")
+}
+
+// ERROR: `push` doesn't exist on a fixed array [E0843]
+func grow_an_array() {
+    mut a = [1, 2, 3]
+    a.push(4)
+    println("{a.len()}")
+}
+
+func main() {
+    grow_a_slice()
+    shrink_a_slice()
+    grow_an_array()
+}

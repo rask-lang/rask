@@ -43,5 +43,9 @@ test "type.primitives — parse rejects out-of-range" {
 test "type.primitives — parse at an explicit width" {
     assert ("42".parse<i32>() ?? -1) == 42
     assert ("nope".parse<i32>() ?? -1) == -1
-    assert ("7".parse<u16>() ?? -1) == 7
+    // An unsigned width needs an unsigned fallback. `?? -1` compiled here only
+    // while the turbofish was decorative (#1029) — with `parse<u16>` actually
+    // meaning u16, `-1` is out of range and says so.
+    assert ("7".parse<u16>() ?? 0u16) == 7u16
+    assert ("nope".parse<u16>() ?? 0u16) == 0u16
 }

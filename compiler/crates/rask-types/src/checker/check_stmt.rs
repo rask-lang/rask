@@ -66,6 +66,9 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Mut { name, name_span, ty, init } => {
+                // A `mut` can be reassigned, so whatever this name meant to
+                // `value.(name)` before, it doesn't now.
+                self.note_comptime_string(name, false);
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     // AN8: an annotation name here would leave the binding
                     // asking for a value nothing can produce, and the type
@@ -108,6 +111,12 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Let { name, name_span, ty, init } => {
+                // CT53: a `let` bound to a compile-time string can name a field
+                // in `value.(name)`. MIR records the same fact to do the
+                // rewrite; this records whether it will be able to, so a name
+                // that won't is an error here rather than a lowering failure.
+                let known = self.comptime_field_name_shape(init);
+                self.note_comptime_string(name, known);
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     // AN8: an annotation name here would leave the binding
                     // asking for a value nothing can produce, and the type
@@ -494,9 +503,15 @@ impl TypeChecker {
                             span: stmt.span,
                         });
                     }
-                    // D2: Copy types — accepted but semantically a no-op.
-                    // Warning emitted by the lint pass, not the type checker,
-                    // because D2 is advisory, not a blocking error.
+                    // D2: `discard` on a Copy type. The binding still goes
+                    // away — that's D1, and it's the same for every type — but
+                    // the freeing half, which is the reason to write `discard`
+                    // rather than let the scope end, does nothing here. A
+                    // warning rather than an error: the program is correct,
+                    // it just says it's doing something it isn't.
+                    else {
+                        self.pending_discards.push((name.clone(), resolved, stmt.span));
+                    }
                     self.span_types.insert((name_span.start, name_span.end, name_span.file_id), ty);
                     // D1: Invalidate the binding
                     self.discarded_bindings.insert(name.clone(), stmt.span);
@@ -564,6 +579,16 @@ impl TypeChecker {
         }
     }
 
+    /// D2, once every literal has settled on a type.
+    pub(super) fn validate_pending_discards(&mut self) {
+        for (name, ty, span) in std::mem::take(&mut self.pending_discards) {
+            let ty = self.ctx.apply(&ty);
+            if self.is_copy_type(&ty) {
+                self.errors.push(TypeError::DiscardCopyType { name, ty, span });
+            }
+        }
+    }
+
     /// Check if a type is a primitive Copy type (trivially cleaned up).
     fn is_copy_type(&self, ty: &Type) -> bool {
         matches!(
@@ -625,12 +650,68 @@ impl TypeChecker {
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.
     /// Only `const x = shared.read().field` (Copy out) is allowed.
     fn check_sync_access_in_binding(&mut self, init: &Expr) {
-        if let Some((ty_name, method, span)) = self.is_sync_access(init) {
-            self.errors.push(TypeError::BareSyncAccess {
-                ty: ty_name,
-                method,
-                span,
-            });
+        self.check_unchained_sync(init, false);
+    }
+
+    /// R5/MX3: an inline `.read()`/`.write()`/`.lock()` is scoped to the chain
+    /// it starts, so one with nothing chained onto it is an error — wherever it
+    /// sits, not only when it's the whole initializer.
+    ///
+    /// `let a = cfg.read() + 1` slipped past, because only the initializer as a
+    /// whole was asked and that's a `+`. Native then dispatched to the
+    /// closure-taking runtime entry point with the element size where the
+    /// closure belongs, built a function pointer out of the integer 8 and
+    /// called it: `cfg.read() + 1` on a `Shared.new(41)` printed 49 natively
+    /// and 42 on the interpreter (#958). Copying the value out is `cfg.get()`.
+    fn check_unchained_sync(&mut self, expr: &Expr, chained: bool) {
+        if !chained {
+            if let Some((ty_name, method, span)) = self.is_sync_access(expr) {
+                self.errors.push(TypeError::BareSyncAccess {
+                    ty: ty_name,
+                    method,
+                    span,
+                });
+                return;
+            }
+        }
+        match &expr.kind {
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                self.check_unchained_sync(object, true);
+            }
+            // A method call chains — unless it's an operator. Desugaring turns
+            // `cfg.read() + 1` into `cfg.read().add(1)`, which is why an
+            // operand position looked like a chain and slipped through.
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let chains = !rask_ast::expr::is_operator_method(method);
+                self.check_unchained_sync(object, chains);
+                for a in args {
+                    self.check_unchained_sync(&a.expr, false);
+                }
+            }
+            ExprKind::Index { object, index } => {
+                self.check_unchained_sync(object, true);
+                self.check_unchained_sync(index, false);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.check_unchained_sync(left, false);
+                self.check_unchained_sync(right, false);
+            }
+            ExprKind::Unary { operand, .. } => self.check_unchained_sync(operand, false),
+            ExprKind::Call { func, args } => {
+                self.check_unchained_sync(func, false);
+                for a in args {
+                    self.check_unchained_sync(&a.expr, false);
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.check_unchained_sync(e, false);
+                }
+            }
+            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
+                self.check_unchained_sync(inner, false);
+            }
+            _ => {}
         }
     }
 

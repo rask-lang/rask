@@ -36,6 +36,17 @@ pub struct Parser {
     /// their signatures. Real source can't — the call would parse as the
     /// keyword form — so only stub parsing sets this.
     allow_keyword_fn_names: bool,
+    /// Every `struct` name this file declares, whatever its case.
+    ///
+    /// A struct literal is otherwise recognised by the name being capitalised,
+    /// which is the right default — `x { … }` in expression position is
+    /// ambiguous with a block, and a lowercase name is usually a variable. But
+    /// it left a *declared* lowercase struct with no way to construct it at all,
+    /// and `cstring` is one the spec names in lowercase (#949). Collected in one
+    /// token scan before parsing, so declaration order doesn't matter.
+    declared_structs: std::collections::HashSet<String>,
+    /// Namespaces an `import c` declaration binds — see `scan_c_namespaces`.
+    c_namespaces: std::collections::HashSet<String>,
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
@@ -54,7 +65,62 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new() }
+        let declared_structs = Self::scan_declared_structs(&tokens);
+        let c_namespaces = Self::scan_c_namespaces(&tokens);
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, c_namespaces, loop_labels: Vec::new() }
+    }
+
+    /// Names following the `struct` keyword. One pass, before anything is
+    /// parsed, so a literal can name a struct declared further down the file.
+    fn scan_declared_structs(tokens: &[Token]) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        for pair in tokens.windows(2) {
+            if matches!(pair[0].kind, TokenKind::Struct) {
+                if let TokenKind::Ident(name) = &pair[1].kind {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// The namespaces `import c` brings in — `c`, or whatever `as` renamed it
+    /// to. One token scan before parsing, the same way declared struct names
+    /// are found.
+    ///
+    /// A struct literal is recognised by a capitalised head, and `c.Rect { … }`
+    /// has a lowercase one, so the parser read it as a field access and choked
+    /// on the `{`. That left a C API taking a struct by value unreachable — and
+    /// every geometry, colour and vector type in C is one (#948).
+    fn scan_c_namespaces(tokens: &[Token]) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        for (i, t) in tokens.iter().enumerate() {
+            if !matches!(t.kind, TokenKind::Import) {
+                continue;
+            }
+            if !matches!(tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::Ident(s)) if s == "c")
+            {
+                continue;
+            }
+            // Walk to the `as` that renames it, stopping at the newline that
+            // ends the declaration. No `as` means the namespace is `c`.
+            let mut alias = "c".to_string();
+            let mut j = i + 2;
+            while let Some(tok) = tokens.get(j) {
+                match &tok.kind {
+                    TokenKind::Newline => break,
+                    TokenKind::As => {
+                        if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind) {
+                            alias = name.clone();
+                        }
+                        break;
+                    }
+                    _ => j += 1,
+                }
+            }
+            names.insert(alias);
+        }
+        names
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -682,10 +748,10 @@ impl Parser {
             TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
-            TokenKind::Const => self.parse_const_decl(is_pub, doc)?,
+            TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
             TokenKind::Type => self.parse_type_alias_decl(is_pub)?,
-            TokenKind::Test => self.parse_test_decl(is_comptime)?,
-            TokenKind::Benchmark => self.parse_benchmark_decl()?,
+            TokenKind::Test => self.parse_test_decl(is_comptime, attrs)?,
+            TokenKind::Benchmark => self.parse_benchmark_decl(attrs)?,
             TokenKind::Extern => {
                 let mut members = self.parse_extern_decls(doc)?;
                 let (first, first_span) = members.remove(0);
@@ -2198,7 +2264,7 @@ impl Parser {
     }
 
     /// Parse a top-level const declaration.
-    fn parse_const_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_const_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Const)?;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -2209,7 +2275,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let init = self.parse_expr()?;
         self.expect_terminator()?;
-        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, doc }))
+        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, attrs, doc }))
     }
 
     /// Parse type declaration:
@@ -2261,21 +2327,21 @@ impl Parser {
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
-    fn parse_test_decl(&mut self, is_comptime: bool) -> Result<DeclKind, ParseError> {
+    fn parse_test_decl(&mut self, is_comptime: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Test)?;
         let name = self.expect_string()?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
-        Ok(DeclKind::Test(TestDecl { name, body, is_comptime }))
+        Ok(DeclKind::Test(TestDecl { name, body, is_comptime, attrs }))
     }
 
     /// Parse a benchmark block: `benchmark "name" { body }`
-    fn parse_benchmark_decl(&mut self) -> Result<DeclKind, ParseError> {
+    fn parse_benchmark_decl(&mut self, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Benchmark)?;
         let name = self.expect_string()?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
-        Ok(DeclKind::Benchmark(BenchmarkDecl { name, body }))
+        Ok(DeclKind::Benchmark(BenchmarkDecl { name, body, attrs }))
     }
 
     /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.
@@ -3712,7 +3778,9 @@ impl Parser {
 
                 let end = self.tokens[self.pos - 1].span.end;
 
-                if Self::is_type_name(&full_name) && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                let names_a_struct = Self::is_type_name(&full_name)
+                    || self.declared_structs.contains(&full_name);
+                if names_a_struct && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
                     self.parse_struct_literal(full_name, start)
                 } else {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(full_name), span: self.span(start, end) })
@@ -4454,7 +4522,12 @@ impl Parser {
                     // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
                     // literal and swallowed the if-block (#342).
                     if let ExprKind::Ident(base) = &lhs.kind {
-                        if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
+                        // A C namespace is lowercase by convention — `c.Rect { … }`
+                        // — so the capitalised-head rule doesn't reach it. Only a
+                        // namespace this file actually imports counts.
+                        let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
+                            || self.c_namespaces.contains(base);
+                        if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
                             self.parse_struct_literal(full_name, start)
                         } else {
@@ -4832,12 +4905,19 @@ impl Parser {
             self.expect(&TokenKind::FatArrow)?;
             self.skip_newlines();
 
+            // The arm body's own start, not the `match` keyword's. Every arm
+            // used to be spanned from `match`, so anything reading the body's
+            // source text got the whole expression: the formatter's "did the
+            // source have braces?" test never saw a `{`, and it unwrapped a
+            // braced arm whose statement was a `for` into an arm body that
+            // doesn't parse (#925).
+            let body_start = self.current().span.start;
             let body = if self.check(&TokenKind::LBrace) {
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(body_start, end) }
             } else {
-                self.parse_inline_block(start)?
+                self.parse_inline_block(body_start)?
             };
 
             arms.push(MatchArm { pattern, guard, body: Box::new(body) });

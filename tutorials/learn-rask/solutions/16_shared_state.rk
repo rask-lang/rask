@@ -7,8 +7,9 @@
 //   3. match h.join() { T as v => ..., JoinError as e => ... } — explicit handling
 //
 import async.spawn
-import sync.AtomicI64
+import sync.Atomic
 import sync.Relaxed
+import sync.SeqCst
 import sync.Shared
 
 // Approach 1: Use ! to panic on task failure (simplest for tests)
@@ -16,16 +17,31 @@ func flight_tracker() -> i32 {
     using Multitasking {
         let sightings = Shared.new(Vec.new())
 
-        let h1 = spawn(|| {
-            sightings.write(|s| s.push("SAS937"))
-            sightings.write(|s| s.push("BAW123"))
+        // Each task needs its own handle on the shared value — `own` moves the
+        // capture in, and a `Shared` is cloned to hand out another reference to
+        // the same cell. That clone is the sharing; the value isn't copied.
+        //
+        // Access is scoped, not closure-based: `write()` inline for one
+        // expression, or `with … as` for several. Rask went this way so that
+        // `return`, `try`, `break` and `continue` work through it (mem.boxes).
+        let s1 = sightings.clone()
+        let s2 = sightings.clone()
+        let s3 = sightings.clone()
+
+        let h1 = spawn(own || {
+            with s1.write() as s {
+                s.push("SAS937")
+                s.push("BAW123")
+            }
         })
-        let h2 = spawn(|| {
-            sightings.write(|s| s.push("DLH456"))
-            sightings.write(|s| s.push("AFR789"))
+        let h2 = spawn(own || {
+            with s2.write() as s {
+                s.push("DLH456")
+                s.push("AFR789")
+            }
         })
-        let h3 = spawn(|| {
-            sightings.write(|s| s.push("UAL100"))
+        let h3 = spawn(own || {
+            s3.write().push("UAL100")
         })
 
         h1.join()!
@@ -33,49 +49,61 @@ func flight_tracker() -> i32 {
         h2.join()!
         h3.join()!
 
-        return sightings.read(|s| s.len())
+        return sightings.read().len().to<i32>()!
     }
 }
 
 // Approach 2: Propagate errors (if function can return JoinError)
 // For this version, we keep it simple and use ! since tests expect i64
+// The counter is module-level because `spawn` needs `own`, which moves what the
+// closure captures — a local atomic could only ever reach one task. A const is
+// reached by name from anywhere, and there is nothing to move.
+const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
+
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     using Multitasking {
-        let counter = AtomicI64.new(0)
+        COUNTER.store(0, SeqCst)
 
-        let handles = Vec.new()
+        // A `Vec` can't hold the handles — a `TaskHandle` is linear and a Vec
+        // drop can't consume its elements (mem.resource-types/RC1). So each
+        // task is detached and reports itself finished on a channel, and the
+        // count of reports is what we wait for.
+        mut (done_tx, done_rx) = Channel<bool>.buffered(num_tasks)
         for i in 0..num_tasks {
-            let h = spawn(|| {
+            let task_done = done_tx.clone()
+            spawn(own || {
                 for j in 0..count_per_task {
-                    counter.fetch_add(1, Relaxed)
+                    // Relaxed is enough: nothing here depends on the order of
+                    // anything but the counter itself.
+                    COUNTER.fetch_add(1, Relaxed)
                 }
-            })
-            handles.push(h)
+                task_done.send(true)
+            }).detach()
         }
 
-        for h in handles {
-            h.join()!
+        for i in 0..num_tasks {
+            done_rx.receive()!
         }
 
-        return counter.load(Relaxed)
+        return COUNTER.load(SeqCst)
     }
 }
 
 func shared_config_update() -> i32 {
     using Multitasking {
-        let config = Shared.new(35000)
+        mut config = Shared.new(35000)
         mut (tx, rx) = Channel<bool>.buffered(1)
 
-        let atc = spawn(|| {
-            config.write(|c| {
-                c = 37000
-            })
+        // `Shared` holds a Copy value here, so `set`/`get` are the whole API —
+        // `write()` is for reaching into something with methods or fields.
+        let atc = spawn(own || {
+            config.set(37000)
             tx.send(true)
         })
 
-        let pilot = spawn(|| {
-            rx.receive()
-            return config.read(|c| c)
+        let pilot = spawn(own || {
+            rx.receive()!
+            return config.get()
         })
 
         atc.join()!

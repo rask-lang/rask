@@ -154,7 +154,7 @@ impl Interpreter {
                 drop(st);
                 match (self.iter_next(&a)?, self.iter_next(&b)?) {
                     (Some(va), Some(vb)) => {
-                        let pair = Value::vec(vec![va, vb]);
+                        let pair = Value::tuple(vec![va, vb]);
                         Ok(Some(pair))
                     }
                     _ => Ok(None),
@@ -232,11 +232,10 @@ impl Interpreter {
                 let mut map = crate::value::MapData::new();
                 loop {
                     let Some(item) = self.iter_next(iter)? else { break };
-                    let pair = match &item {
-                        Value::Vec(v) => v.lock().unwrap().items.clone(),
-                        _ => return Err(RuntimeError::TypeError(
+                    let Some(pair) = item.as_tuple_elements() else {
+                        return Err(RuntimeError::TypeError(
                             "to_map needs a sequence of (key, value) pairs".to_string(),
-                        )),
+                        ));
                     };
                     if pair.len() != 2 {
                         return Err(RuntimeError::TypeError(

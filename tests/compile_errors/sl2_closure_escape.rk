@@ -22,7 +22,7 @@ func test_return_escape() {
     let entity = get_entity()
     let tags = entity.tags
     let f = || use_tags(tags)
-    return f                        // ERROR E0813: f captures scoped borrow
+    return f                        // ERROR E0862: f captures scoped borrow
 }
 
 func main() {}

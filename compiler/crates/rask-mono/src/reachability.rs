@@ -876,6 +876,18 @@ impl<'a> Monomorphizer<'a> {
     /// symbol never made it into the object file: a C driver linking against it
     /// got "undefined reference", which is why struct.c-interop/EX1's export
     /// form had no working path through the compiler at all.
+    /// Every non-generic top-level function with a body, as a root. For a file
+    /// with no `main` — a test-only file — where an analysis pass still needs
+    /// layouts and call targets.
+    pub fn add_all_plain_fn_roots(&mut self) {
+        for decl in self.decls {
+            let DeclKind::Fn(f) = &decl.kind else { continue };
+            if !f.body.is_empty() && f.type_params.is_empty() {
+                self.enqueue(f.name.clone(), Vec::new());
+            }
+        }
+    }
+
     pub fn add_exported_roots(&mut self) {
         for decl in self.decls {
             let DeclKind::Fn(f) = &decl.kind else { continue };
@@ -1238,6 +1250,48 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// The name of the type the checker gave a node, if it has one.
+    /// The `{ErrType}_message` bodies a `r!` on this operand could need: one
+    /// for a concrete error type, one per member for a union. Empty for an
+    /// optional (`err` is `none`) and whenever any candidate has no body,
+    /// since a switch that can't cover every member is worse than the message
+    /// it replaces.
+    fn forced_error_message_fns(&self, id: NodeId) -> Vec<String> {
+        let Some(typed) = self.typed else { return Vec::new() };
+        let Some(ty) = self
+            .instantiated_node_types
+            .get(&id)
+            .or_else(|| typed.node_types.get(&id))
+        else {
+            return Vec::new();
+        };
+        let Type::Result { err, .. } = ty else { return Vec::new() };
+        if **err == Type::None {
+            return Vec::new();
+        }
+        let members: Vec<&Type> = match &**err {
+            Type::Union(types) => types.iter().collect(),
+            other => vec![other],
+        };
+        let mut names = Vec::new();
+        for member in members {
+            // `receiver_name` answers "Result" for a nested result and a bare
+            // primitive name for a primitive; neither can carry a `message()`,
+            // and E0344 means neither is a legal error type anyway. Asking the
+            // method table for a body settles all of it at once — including an
+            // error type whose `message()` is derived (ER6), since the derive
+            // runs in desugaring and is an ordinary method by now.
+            let Some(name) = rask_types::receiver_name(member, &typed.types) else {
+                return Vec::new();
+            };
+            let mangled = format!("{}_message", name);
+            if !self.has_instantiable_body(&mangled) {
+                return Vec::new();
+            }
+            names.push(mangled);
+        }
+        names
+    }
+
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self
@@ -1498,11 +1552,55 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
 
-                    // Receiver type unknown here — enqueue every method with this
-                    // bare name and let the unused ones fall out.
-                    if let Some(qualified_names) = self.method_by_bare_name.get(method) {
-                        for qname in qualified_names.clone() {
-                            self.enqueue(qname, type_args.clone());
+                    // A stdlib receiver — `string`, `Vec`, a primitive — has no
+                    // TypeId, so the branch above passed it over. The checker
+                    // still recorded what it dispatched to, and `receiver_name`
+                    // spells those the same way mono mangles them, so the one
+                    // body is nameable.
+                    //
+                    // Widening instead is what made one interpolation reachable
+                    // from half the stdlib: every `len`, every `to_string`, and
+                    // the JSON encoder with them. That's how `Metadata_compare`
+                    // came to be generated for programs that never touch `fs`
+                    // (#1062).
+                    let narrowed = self.typed.and_then(|typed| {
+                        let Some(Callee::Method { recv, method: m }) =
+                            typed.call_targets.get(&expr.id)
+                        else {
+                            return None;
+                        };
+                        let name = rask_types::receiver_name(recv, &typed.types)?;
+                        // `{x}` reaches `to_string` or, for an error type,
+                        // `message` (std.fmt/D5) — same resolution the branch
+                        // above does.
+                        let candidates = if m == "to_string" || m == "__fmt" {
+                            vec![format!("{name}_to_string"), format!("{name}_message")]
+                        } else {
+                            vec![format!("{name}_{m}")]
+                        };
+                        candidates
+                            .into_iter()
+                            .find(|q| self.method_table.contains_key(q))
+                    });
+
+                    match narrowed {
+                        Some(qualified) => {
+                            // Only `message` standing in for `to_string` needs
+                            // recording; the plain case is the name lowering
+                            // would build anyway.
+                            if qualified != format!("{}_{}", qualified.rsplit_once('_').map(|(t, _)| t).unwrap_or(""), method) {
+                                self.call_rewrites.insert(expr.id, qualified.clone());
+                            }
+                            self.enqueue(qualified, type_args.clone());
+                        }
+                        // Receiver type unknown here — enqueue every method with
+                        // this bare name and let the unused ones fall out.
+                        None => {
+                            if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                                for qname in qualified_names.clone() {
+                                    self.enqueue(qname, type_args.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -1572,7 +1670,34 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(&clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
-            ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
+            ExprKind::Unwrap { expr: e, message } => {
+                // ER15: `r!` panics *using* the error's `message()`. Lowering
+                // can't name that method itself — the same lesson as
+                // `json.encode` above, which came out of codegen as "Function
+                // not found: JsonValue_to_string" because nothing had queued
+                // the body. So the name is decided here, where bodies are
+                // queued, and MIR reads the rewrite (#1009).
+                //
+                // Only when no custom message was written (`r! "msg"` says
+                // what to print), and only for a concrete error type: a union
+                // needs a switch on the member, which is more than a rewrite
+                // can carry.
+                if message.is_none() {
+                    let names = self.forced_error_message_fns(e.id);
+                    if !names.is_empty() {
+                        // A union error contributes one per member. The rewrite
+                        // carries the whole set joined by `|`, which no mangled
+                        // name can contain, and lowering matches each member
+                        // against it — so the two never have to agree on the
+                        // order members come out in.
+                        self.call_rewrites.insert(expr.id, names.join("|"));
+                        for name in names {
+                            self.enqueue(name, Vec::new());
+                        }
+                    }
+                }
+                self.visit_expr(e)
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.visit_expr(value);
                 self.visit_expr(default);

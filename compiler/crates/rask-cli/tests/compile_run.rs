@@ -924,6 +924,52 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
+/// underlying scalar and answered `true` because 104 is both a byte and `'h'`,
+/// while the interpreter refused at runtime. The comparison arms unify the
+/// operand with the receiver and discard the result on purpose — mixed
+/// signedness is allowed (ORD4) and would fail that unification — and
+/// discarding it discarded every real mismatch with it.
+/// #978: a primitive on the left of an operator accepted *any* right operand.
+/// `f64 * Meters` type-checked and natively multiplied the struct's address —
+/// `2.0 * Meters { v: 3.0 }` printed 281465035398656 — while `f < d` failed the
+/// Cranelift verifier and `i == d` segfaulted. Same discarded unify as #1034,
+/// across the float and arithmetic arms.
+#[test]
+fn primitive_operator_rejects_a_wrong_operand() {
+    let (failed, out) = compile_error_output("primitive_operator_wrong_operand.rk");
+    assert!(failed, "a primitive operator on a struct must not compile: {out}");
+    // Seven bad operators, seven errors — and no follow-on "couldn't work out
+    // the type", which is what pinning the result before reporting buys.
+    assert_eq!(
+        out.matches("E0382").count(),
+        7,
+        "one error per bad operator, no more and no fewer: {out}"
+    );
+    // The operator is named as written, not as the desugared method.
+    for op in ["`*`", "`+`", "`<`", "`==`", "`-`", "`<<`"] {
+        assert!(out.contains(op), "message should name {op} as written: {out}");
+    }
+    assert!(
+        !out.contains("E0361"),
+        "a bad operand should not also report an un-inferrable binding: {out}"
+    );
+}
+
+#[test]
+fn integer_compared_to_char_is_rejected() {
+    let (failed, out) = compile_error_output("char_int_comparison.rk");
+    assert!(failed, "an integer compared to a char must not compile: {out}");
+    assert!(
+        out.contains("E0382"),
+        "should be the incomparable-operands error, got: {out}"
+    );
+    assert!(
+        out.contains("char"),
+        "the message should name the char side: {out}"
+    );
+}
+
 #[test]
 fn error_annotation_against_a_container_initializer() {
     // #730: `unify` defers whenever either side is an unresolved generic, since
@@ -1325,7 +1371,7 @@ fn error_decode_bound_not_satisfied() {
     let (failed, out) = compile_error_output("decode_bound_not_satisfied.rk");
     assert!(failed, "a non-Decode type argument must be rejected: {}", out);
     assert!(
-        out.contains("E0333") && out.contains("cannot be decoded"),
+        out.contains("E0388") && out.contains("cannot be decoded"),
         "should say the type can't be decoded, not that it's missing methods: {}", out,
     );
 }
@@ -3736,6 +3782,97 @@ fn comptime_div_zero_is_compile_error() {
     assert!(output.contains("by zero"), "should report divide by zero: {}", output);
 }
 
+// ─── A comptime const that can't fold (#1072) ────────────────────
+//
+// `const X = comptime { … }` says the value is computed while compiling (CT2).
+// When the block panics or runs past its budget there is no value and nothing
+// to retry on, so it's a compile error — it used to run the block at startup
+// instead and say nothing, which turned a compile error into a crash in the
+// field. Overflow and divide-by-zero above were the only two that stopped the
+// build; the rest of the spec's list (CT35, CT46, CT7, CT31, CT33) didn't.
+
+#[test]
+fn comptime_panic_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_panic.rk");
+    assert!(!ok, "a comptime panic must fail compilation: {}", output);
+    assert!(
+        output.contains("seven is not allowed"),
+        "the panic's own message is the thing worth printing: {}",
+        output
+    );
+}
+
+#[test]
+fn comptime_branch_quota_is_compile_error() {
+    let (ok, output) = compile_only_succeeds("comptime_quota.rk");
+    assert!(!ok, "running past the branch quota must fail compilation: {}", output);
+    assert!(
+        output.contains("@comptime_quota"),
+        "the message has to name the way out: {}",
+        output
+    );
+}
+
+#[test]
+fn comptime_quota_annotation_raises_the_limit() {
+    // The same 5,000-iteration loop, with `@comptime_quota(6000)` on the const.
+    // The annotation existed only in the error message until now — nothing
+    // parsed it, so the advice it gave was impossible to follow.
+    let (output, code) = compile_and_run("comptime_quota_raised.rk");
+    assert_eq!(code, 0, "should compile and run: {}", output);
+    assert_eq!(output.trim(), "12497500", "got: {}", output);
+}
+
+#[test]
+fn atomic_payload_wider_than_a_word_is_rejected() {
+    // GA2. Three `i32` fields are twelve bytes — there is no single instruction
+    // behind that, and an atomic that silently took a lock would be the one
+    // thing `Atomic` promises not to be.
+    let (ok, output) = compile_only_succeeds("atomic_wide_payload.rk");
+    assert!(!ok, "a payload wider than a word must be rejected: {}", output);
+    assert!(
+        output.contains("one machine word"),
+        "the message has to say what the rule is: {}",
+        output
+    );
+}
+
+#[test]
+fn a_two_word_sized_payload_fits_an_atomic() {
+    // The other half of GA2, and the case the rule used to get wrong: two `i32`
+    // fields are eight bytes, which is one machine word. `Atomic<Slot>` over
+    // `{ index, generation }` is mem.atomics' own example and it was a compile
+    // error, because the rule counted fields times eight rather than reading
+    // the width (#1083).
+    let (output, code) = compile_and_run("atomic_word_payload.rk");
+    assert_eq!(code, 0, "should compile and run: {}", output);
+    assert_eq!(output.trim(), "1 2\n7 9", "got: {}", output);
+}
+
+#[test]
+fn a_padded_atomic_payload_is_rejected() {
+    // GA2 excludes padding and GA4 says why: `compare_exchange` compares raw
+    // bytes, so two logically equal values whose padding differs would fail CAS
+    // for no reason the author can see. `{ a: i8, b: i32 }` is five bytes of
+    // data in an eight-byte layout.
+    let (ok, output) = compile_only_succeeds("atomic_padded_payload.rk");
+    assert!(!ok, "a padded payload must be rejected: {}", output);
+    assert!(
+        output.contains("padding"),
+        "the message has to name padding as the reason: {}",
+        output
+    );
+}
+
+#[test]
+fn comptime_todo_still_compiles() {
+    // `todo()` is the exception: it means "not written yet", so a program full
+    // of them has to compile. The const falls back to runtime, where the same
+    // `todo()` panics — the tutorial lessons are written this way.
+    let (ok, output) = compile_only_succeeds("comptime_todo.rk");
+    assert!(ok, "a comptime `todo()` must not fail compilation: {}", output);
+}
+
 // ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────
 //
 // Step 1 of task 1.5 covers the interpreter (issues #289/#290/#291). Native
@@ -4011,6 +4148,29 @@ fn panic_ensure_scalar_snapshot_runs() {
     }
 }
 
+/// #1011: an ensure reading a scalar the function writes *again* runs on unwind,
+/// and reads the value at the moment of the panic.
+///
+/// The `let` case above is exact by construction — the value never changes, so a
+/// snapshot taken when the ensure was scheduled is the live one. A `mut` has no
+/// such guarantee, and native used to leave the ensure inline-only rather than
+/// print a stale number, which meant it didn't run on a panic at all.
+///
+/// A name like that gets a one-word stack cell now, so there is an address for
+/// the hook to capture. The float is here because a cell is eight bytes whatever
+/// it holds, and the load has to come back in the right register class.
+#[test]
+fn panic_ensure_reassigned_scalar_reads_the_live_value() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "panic_ensure_scalar_cell.rk");
+        assert_eq!(code, 101, "{}: panic should exit 101; stderr: {}", mode, stderr);
+        assert_eq!(
+            stdout, "body\nn=42 total=1.25\n",
+            "{}: the cleanup reads the values as they were when it panicked", mode,
+        );
+    }
+}
+
 #[test]
 fn try_inside_ensure_is_rejected() {
     // ctrl.ensure/ER4 + ER3: cleanup has no caller, so `try` has nowhere to
@@ -4155,7 +4315,10 @@ const PANIC_MESSAGES: &[(&str, &str)] = &[
     ("map_key_missing.rk", "key not found in map"),
     ("map_key_missing_mutate.rk", "key not found in map"),
     ("force_absent.rk", "! on a value that was absent"),
-    ("force_error.rk", "! on a value that was an error"),
+    // ER15: `!` panics *using* the error's `message()`. Both backends reach
+    // for it now — the pinned text changed together, which is the point of
+    // this test (#1009).
+    ("force_error.rk", "! on a value that was an error: no route"),
     ("explicit.rk", "hand written"),
     ("not_implemented.rk", "not yet implemented"),
     ("unreachable_reached.rk", "entered unreachable code"),
@@ -4250,13 +4413,37 @@ fn plain_write_keeps_the_partial_update_on_panic() {
     }
 }
 
+/// mem.ownership/D2: `discard` on a Copy type frees nothing.
+///
+/// The variant, the message and the code W0301 were all written and nothing
+/// ever constructed them — a dead error path holding a live number (#992).
+///
+/// The check waits for literal defaulting: `let n = 7` is an open type
+/// variable while the body is walked, and that is the commonest spelling of
+/// the case, so asking at the statement would have missed it.
+#[test]
+fn discard_on_a_copy_type_warns() {
+    let (checked, output) = check_fixture("discard_copy.rk");
+    assert!(checked, "D2 is a warning — the program still type-checks:\n{output}");
+    assert_eq!(
+        output.matches("W0301").count(),
+        3,
+        "the three primitives warn and the two owners don't:\n{output}"
+    );
+    assert!(
+        output.contains("`i32` is a Copy type"),
+        "an unsuffixed literal still has a type by the time this runs:\n{output}"
+    );
+}
+
 #[test]
 fn torn_lock_update_warns_once_and_only_where_it_should() {
     // W9 (tool.warnings, W0907): two fields of a locked value written in one
     // `with` block without staging. A warning, not an error — the program still
-    // builds and runs. The fixture has four blocks of the same shape and exactly
-    // one may warn: `@allow` says the tear is harmless, `Local` has nobody to
-    // observe one (and `staged()` is refused there, ST3a), and staging is the fix.
+    // builds and runs. The fixture has five blocks of the same shape and exactly
+    // one may warn: `@allow` says the tear is harmless — on a function and on a
+    // `test` block (#1010) — `Local` has nobody to observe one (and `staged()`
+    // is refused there, ST3a), and staging is the fix.
     let (built, build_output) = compile_only_succeeds("torn_lock_update.rk");
     assert!(built, "W9 is a warning — the program must still build:\n{}", build_output);
 
@@ -4274,6 +4461,150 @@ fn torn_lock_update_warns_once_and_only_where_it_should() {
     assert!(
         output.contains("staged()"),
         "the fix is `staged()` and the warning has to say so:\n{}", output,
+    );
+}
+
+/// #996: `value.(expr)` is a compile-time rewrite (CT53), so the name has to be
+/// one the compiler can read. Native said so as a MIR lowering failure and the
+/// interpreter looked the field up by name at run time and carried on — the
+/// same program ran on one backend and wouldn't build on the other, which is
+/// the reverse of the usual direction. Both stop at the check now.
+#[test]
+fn dynamic_field_name_must_be_comptime() {
+    let (failed, output) = compile_error_output("dynamic_field_name.rk");
+    assert!(failed, "a runtime field name must be a compile error:\n{output}");
+    assert_eq!(
+        output.matches("E0385").count(),
+        2,
+        "both the call-derived name and the `mut` must be rejected:\n{output}"
+    );
+}
+
+/// #1085: an `@allow` that matches nothing is silent, and silence is what a
+/// correctly-suppressed warning looks like — so a typo hid itself forever. The
+/// two name registries (compiler warnings, lint rule ids) live in one place now
+/// and a name in neither is an error.
+#[test]
+fn an_allow_that_names_nothing_is_rejected() {
+    let (failed, output) = compile_error_output("unknown_allow_name.rk");
+    assert!(failed, "a misspelled @allow name must be a compile error:\n{output}");
+    assert!(output.contains("E0855"), "expected E0855, got:\n{output}");
+    assert!(
+        output.contains("torn_lock_update"),
+        "the nearest name is the fix and has to be shown:\n{output}"
+    );
+}
+
+/// The names that do exist stay accepted, from both registries.
+#[test]
+fn a_real_allow_name_still_compiles() {
+    let (built, output) = check_fixture("allow_names_accepted.rk");
+    assert!(built, "every listed @allow name must type-check:\n{output}");
+}
+
+/// #936: the ownership checker's size table had no arm for `i128`/`u128`, so
+/// both counted as 8 bytes and a struct holding one never crossed the 16-byte
+/// Copy threshold. #1092 rides along: the same move used to be reported twice,
+/// once by the expression walk and once by the assignment.
+#[test]
+fn a_wide_scalar_field_counts_its_real_width() {
+    let (failed, output) = compile_error_output("wide_scalar_copy_threshold.rk");
+    assert!(failed, "24 bytes is over the threshold and has to move:\n{output}");
+    assert_eq!(
+        output.matches("E0800").count(),
+        1,
+        "one move, one error:\n{output}"
+    );
+    assert!(
+        output.contains("24 bytes"),
+        "the note has to name the real size:\n{output}"
+    );
+}
+
+/// #922: a variant payload's declared type is what the reader has to match, and
+/// the message named it as "found" — telling them to write the type they had
+/// just written. The literal it fired on is legal now (C4: the slot picks the
+/// shape), so this checks the remaining genuine mismatch reads the right way.
+#[test]
+fn an_enum_payload_mismatch_names_the_declared_type() {
+    let (failed, output) = compile_error_output("enum_payload_mismatch.rk");
+    assert!(failed, "a string is not an i32 payload:\n{output}");
+    assert!(
+        output.contains("expected `i32`, found `string`"),
+        "the declared payload is the expectation:\n{output}"
+    );
+    assert!(
+        output.contains("expected `Vec<i32>`, found `string`"),
+        "same for a collection payload:\n{output}"
+    );
+}
+
+/// #950: `catch e =>` bound a value that type-checked against anything, so
+/// `examples/grep_clone.rk` handed an `IoError` to a `FileError(string)` variant
+/// and printed nothing where the reason belonged. The binder always carried the
+/// right type; unification deferred a name it could have resolved, and nothing
+/// discharged the deferred constraint.
+#[test]
+fn a_catch_binding_has_a_type() {
+    let (failed, output) = compile_error_output("catch_binding_type.rk");
+    assert!(failed, "an IoError is not an i64:\n{output}");
+    assert!(
+        output.contains("expected `i64`, found `IoError`"),
+        "and the message has to name both:\n{output}"
+    );
+}
+
+/// #958: `cfg.read() + 1` slipped past R5 because desugaring makes it
+/// `cfg.read().add(1)`, which looked like a chain. Native then called the
+/// closure-taking runtime entry point with an element size where the closure
+/// belongs — a function pointer built out of the integer 8 — and printed 49 for
+/// a box holding 41 while the interpreter printed 42.
+#[test]
+fn an_unchained_inline_sync_read_is_rejected() {
+    let (failed, output) = compile_error_output("inline_sync_unchained.rk");
+    assert!(failed, "an operand position is not a chain:\n{output}");
+    assert!(output.contains("E0339"), "expected E0339, got:\n{output}");
+    assert!(
+        output.contains("get()"),
+        "copying the value out is the fix and has to be named:\n{output}"
+    );
+}
+
+/// #944: PS2 puts package-level mutable state behind a sync box, and nothing
+/// checked it. A bare `const Vec` took mutating methods from any number of
+/// tasks: five runs of the hammer program gave 9855, 7298, two
+/// `realloc(): invalid old size`, and 7729 — a data race out of safe code.
+#[test]
+fn bare_package_state_cannot_be_written() {
+    let (failed, output) = compile_error_output("package_state_unsynchronized.rk");
+    assert!(failed, "an unsynchronized const collection must be rejected:\n{output}");
+    assert_eq!(
+        output.matches("E0856").count(),
+        2,
+        "both the Vec and the Map are writes:\n{output}"
+    );
+    assert!(
+        output.contains("Shared.new"),
+        "the sanctioned shape is the fix and has to be named:\n{output}"
+    );
+}
+
+/// #941: E0379 caught a link leaving through a return, an assignment or an
+/// aggregate literal, and missed one leaving inside a collection — the check
+/// walks expressions, and `return v` is neither a link nor where the link went
+/// in. The rack rides on the container name now.
+#[test]
+fn a_link_cannot_escape_inside_a_collection() {
+    let (failed, output) = compile_error_output("link_escapes_in_collection.rk");
+    assert!(failed, "the links in `v` dangle at the return:\n{output}");
+    assert_eq!(
+        output.matches("E0379").count(),
+        2,
+        "the push and the literal are both escapes:\n{output}"
+    );
+    assert!(
+        output.contains("holds links"),
+        "a container isn't a link, and the message has to say which it is:\n{output}"
     );
 }
 
@@ -6128,7 +6459,7 @@ fn generic_struct_with_an_aggregate_type_arg_and_methods() {
 fn error_int_float_arithmetic() {
     let (failed, out) = compile_error_output("int_float_arithmetic.rk");
     assert!(failed, "mixing an integer and a float must be rejected: {}", out);
-    assert_eq!(out.matches("E0371").count(), 4, "one per operator: {}", out);
+    assert_eq!(out.matches("E0401").count(), 4, "one per operator: {}", out);
     assert!(
         out.contains("one is an integer, the other a float"),
         "should say which is which: {}", out,
@@ -6623,6 +6954,82 @@ test "f32 operands" {
 func main() {}
 "#;
 
+/// Every operand shape whose assertion message the two backends used to spell
+/// differently (#994). Floats and integers already agreed; a string, a char and
+/// a bool did not.
+const SCALAR_ASSERT_SRC: &str = r#"
+test "a string operand" {
+    let a = "abc"
+    assert a == "abd"
+}
+
+test "an empty string against a space" {
+    let a = ""
+    assert a == " "
+}
+
+test "a char operand" {
+    let a = 'a'
+    assert a == 'b'
+}
+
+test "a bool operand" {
+    let a = true
+    assert a == false
+}
+
+test "an integer operand" {
+    let a = 1
+    assert a == 2
+}
+
+func main() {}
+"#;
+
+/// The assertion message reads the same however the test was run.
+///
+/// A string was quoted natively and bare on the interpreter, and native left
+/// out the `(left:, right:)` half every other type carries. Probing that turned
+/// up two more of the same shape: a char was quoted on one side only, and a
+/// bool went through the integer helper and reported `1 == 0` where the
+/// interpreter — the reference — says `true == false`.
+///
+/// Quoting is what makes an empty string and a trailing space visible at all,
+/// so it stays and the interpreter gained it, rather than the other way round.
+#[test]
+fn scalar_assertion_messages_agree_across_backends() {
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed"))
+            .map(|l| match l.find("assertion failed") {
+                Some(i) => l[i..].to_string(),
+                None => l.to_string(),
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(SCALAR_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(SCALAR_ASSERT_SRC, true));
+    assert_eq!(interp.len(), 5, "expected all five asserts to report:\n{interp:#?}");
+    assert_eq!(
+        native, interp,
+        "native and interpreter must render the same assertion message"
+    );
+    let joined = interp.join("\n");
+    // An empty string and a trailing space are invisible unquoted.
+    assert!(
+        joined.contains("\"\" == \" \""),
+        "a string operand is quoted on both backends:\n{joined}"
+    );
+    assert!(
+        joined.contains("'a' == 'b'"),
+        "a char operand is quoted on both backends:\n{joined}"
+    );
+    assert!(
+        joined.contains("true == false"),
+        "a bool reports as the two words, not as 1 and 0:\n{joined}"
+    );
+}
+
 #[test]
 fn float_assertion_message_keeps_every_digit() {
     for interp in [false, true] {
@@ -6844,6 +7251,180 @@ fn nothing_leaks_at_exit() {
         run.status.success(),
         "the program leaked:\n{}",
         String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// What `import c` makes of a header.
+///
+/// Nothing tested this surface at all, which is how three things stayed broken
+/// at once. A `c.f(…)` call's return type never reached the checker, so every
+/// call had to be annotated at its binding or MIR gave up on it. CI3 — a C call
+/// needs `unsafe` — was enforced only for a bare `extern "C" func` call, never
+/// for one reached through the namespace, so the spec's own error message had
+/// never fired. And a header's `int` becomes the name `c_int`, which wasn't a
+/// type: `*i64` passed for a `const int *` and the C side read the 64-bit
+/// buffer as 32-bit ints, which is arithmetic that looks fine (#947).
+///
+/// Checked, not run: the point is the signatures, and linking a C object is the
+/// build system's business. Run from the repository root rather than the
+/// fixture directory — a header is found next to the file that imports it, so
+/// where the compiler is invoked from doesn't come into it (#1096).
+fn check_in_fixtures(name: &str) -> (String, bool) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join(name),
+        )
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (text, out.status.success())
+}
+
+#[test]
+fn c_header_signatures_reach_the_checker() {
+    let (text, ok) = check_in_fixtures("c_interop.rk");
+    assert!(ok, "c_interop.rk should type-check:\n{text}");
+}
+
+#[test]
+fn a_c_call_requires_unsafe() {
+    let (text, ok) = check_in_fixtures("c_interop_unsafe.rk");
+    assert!(!ok, "a C call outside `unsafe` must be rejected:\n{text}");
+    assert!(
+        text.contains("E0386") && text.contains("extern function call"),
+        "expected CI3's unsafe error, got:\n{text}"
+    );
+}
+
+#[test]
+fn a_c_pointer_parameter_checks_its_element_type() {
+    let (text, ok) = check_in_fixtures("c_interop_width.rk");
+    assert!(!ok, "`*i64` for a `const int *` must be rejected:\n{text}");
+    assert!(
+        text.contains("E0857") && text.contains("`*i64`") && text.contains("`*i32`"),
+        "expected the pointee-mismatch error naming both widths, got:\n{text}"
+    );
+}
+
+/// Run a fixture that calls into a C object built from the matching `.c` file.
+///
+/// The linker takes its extra inputs from `RASK_EXTRA_CFLAGS` — the same door
+/// a sanitizer goes through. `rask build`'s `compile_c()` is the real answer,
+/// and an `import c` doesn't survive a package build yet (#1100), so a single
+/// file linked by hand is what can be tested today.
+fn run_with_c_object(stem: &str) -> (String, bool) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+    let obj = std::env::temp_dir().join(format!("rask_{}_{}.o", stem, std::process::id()));
+    let cc = Command::new("cc")
+        .arg("-c")
+        .arg(dir.join(format!("{}.c", stem)))
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .expect("failed to run cc");
+    assert!(
+        cc.status.success(),
+        "cc failed on {}.c:\n{}",
+        stem,
+        String::from_utf8_lossy(&cc.stderr)
+    );
+
+    let out = Command::new(rask_binary())
+        .arg("run")
+        .arg(dir.join(format!("{}.rk", stem)))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .env("RASK_EXTRA_CFLAGS", &obj)
+        .output()
+        .expect("failed to run rask run");
+    let _ = std::fs::remove_file(&obj);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (text, out.status.success())
+}
+
+/// One line per System V argument class. A struct passed as a pointer, or cut
+/// into the wrong register class, gives a different number here.
+#[test]
+fn a_c_struct_goes_by_value() {
+    let (text, ok) = run_with_c_object("c_struct");
+    assert!(ok, "c_struct.rk should run:\n{text}");
+    for expected in [
+        "fields 6 7 4",
+        "area 42",
+        "vec2 3.75",
+        "vec2d 3.75",
+        "stamp 41.5",
+        "triple 321",
+        "rgba 4321",
+        "mixed 50",
+    ] {
+        assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_c_function_returning_a_struct_is_rejected() {
+    let (text, ok) = check_in_fixtures("c_struct_return.rk");
+    assert!(!ok, "a by-value struct return must be rejected:\n{text}");
+    assert!(
+        text.contains("E0858") && text.contains("c.Rect"),
+        "expected the struct-return error naming the type, got:\n{text}"
+    );
+}
+
+/// A header is found next to the file that imports it, not next to wherever the
+/// compiler happens to be run from.
+///
+/// The quoted path used to be resolved against the process's current directory,
+/// so `rask check tests/fixtures/c_interop.rk` failed with "header not found"
+/// while `cd tests/fixtures && rask check c_interop.rk` worked — on the same
+/// two files (#1096). Every other quoted path in the language means "relative
+/// to this file", and `#include "…"` means it in C.
+#[test]
+fn a_c_header_is_found_beside_the_file_that_imports_it() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("c_interop.rk");
+    // A directory with nothing of ours in it, so nothing can be found by luck.
+    let out = Command::new(rask_binary())
+        .arg("check")
+        .arg(&fixture)
+        .current_dir(std::env::temp_dir())
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "the header sits beside the file that imports it:\n{text}"
+    );
+}
+
+#[test]
+fn a_name_a_c_header_never_declared_is_not_a_type() {
+    let (text, ok) = check_in_fixtures("c_struct_unknown.rk");
+    assert!(!ok, "`c.Nonexistent` must be rejected:\n{text}");
+    assert!(
+        text.contains("c.Nonexistent"),
+        "expected the unknown-type error naming it, got:\n{text}"
     );
 }
 

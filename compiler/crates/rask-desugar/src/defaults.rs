@@ -608,12 +608,24 @@ impl DefaultDesugarer {
                 }
             }
             ExprKind::MethodCall { object, method, args, .. } => {
-                // Static method: Type.method(...)
+                // `Type.method(...)` and `variable.method(...)` are the same
+                // shape here — both have an `Ident` for the object, and only a
+                // name table can tell a type from a variable. Taking the bare
+                // `Ident` as a type name and stopping there meant every
+                // ordinary method call on a local skipped default filling:
+                // `f.bump()` errored with "expected 1 argument, found 0" while
+                // `Foo { x: 10 }.bump()` worked, because a struct literal isn't
+                // an `Ident` and fell through to the instance path (#1028).
+                //
+                // So try the type reading first and fall back to the method
+                // name. The fallback only fires when no type of that name has
+                // such a method, and it already requires the name to be
+                // unambiguous across the program.
                 let params = if let ExprKind::Ident(type_name) = &object.kind {
                     self.lookup.lookup_static_method(type_name, method)
+                        .or_else(|| self.lookup.lookup_instance_method(method))
                         .map(|p| p.to_vec())
                 } else {
-                    // Instance method fallback: look up by method name
                     self.lookup.lookup_instance_method(method)
                         .map(|p| p.to_vec())
                 };

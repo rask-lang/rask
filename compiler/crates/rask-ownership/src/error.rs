@@ -189,6 +189,9 @@ pub enum OwnershipErrorKind {
         rack: String,
         /// How it escapes — a return, or an assignment into a longer-lived name.
         via: LinkEscape,
+        /// The escaping name is a *container* holding links rather than a link:
+        /// `v.push(n)` then `return v`. Same dangle, different sentence.
+        carried: bool,
     },
 
     /// analysis.fourth-option: a node written through a link whose rack this

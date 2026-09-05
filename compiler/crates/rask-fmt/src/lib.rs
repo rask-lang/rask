@@ -77,6 +77,25 @@ mod tests {
         assert!(output.contains("let x = 42"), "should add spaces around =: {}", output);
     }
 
+    /// #1043: a comment after the last declaration went out through a path
+    /// that emitted no blank lines at all, so an explanatory block at the end
+    /// of a file came back jammed against the closing brace. `stdlib/` is held
+    /// to `fmt --check`, so that failed the gate for something no human would
+    /// call a formatting mistake.
+    #[test]
+    fn keeps_the_blank_line_before_a_trailing_comment() {
+        let input = "func a() -> i32 {\n    return 1\n}\n\n// A trailing note.\n";
+        assert_eq!(format_source(input), input);
+    }
+
+    /// The other half of the same rule: separation the source didn't have
+    /// isn't invented either.
+    #[test]
+    fn does_not_add_a_blank_line_before_a_trailing_comment() {
+        let input = "func a() -> i32 {\n    return 1\n}\n// A trailing note.\n";
+        assert_eq!(format_source(input), input);
+    }
+
     #[test]
     fn idempotent_on_clean_code() {
         let clean = "func main() {\n    let x = 42\n    println(x.to_string())\n}\n";

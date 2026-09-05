@@ -168,22 +168,88 @@ impl Interpreter {
         pad(&base, spec.width, spec.effective_align(numeric), spec.fill)
     }
 
+    /// Quote a string for `{:debug}`, escaping what would otherwise make the
+    /// output unreadable — `a"b` came out as `"a"b"`, three quotes and no way
+    /// to tell which one closed it. Matches `rask_string_debug` in the runtime.
+    fn quote_debug(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                    out.push_str(&format!("\\x{:02x}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
     fn debug_format(&self, value: &Value) -> String {
         match value {
-            Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+            Value::String(s) => Self::quote_debug(&s.lock().unwrap()),
             Value::Char(c) => format!("'{}'", c),
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();
                 let items: Vec<String> = vec.iter().map(|v| self.debug_format(v)).collect();
                 format!("[{}]", items.join(", "))
             }
+            // Parens, and a one-element tuple keeps its comma — `(1,)` is a
+            // tuple where `(1)` is a parenthesized number.
+            Value::Tuple(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.debug_format(v)).collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
+                // A fieldless struct is `Empty {}`, not `Empty {  }` — the
+                // braces-with-a-space template gave two spaces around nothing.
+                if guard.fields.is_empty() {
+                    return format!("{} {{}}", guard.name);
+                }
                 let field_strs: Vec<String> = guard.fields
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
                     .collect();
                 format!("{} {{ {} }}", guard.name, field_strs.join(", "))
+            }
+            // A map's iteration order is unspecified and seeded per process
+            // (std.collections, determinism/D7) — this interpreter seeds it
+            // too, in `map_entries_seeded` — so there is no runtime order to
+            // print. The renderer picks one: sorted by key, or by the rendered
+            // entry when the key has no ordering (a struct, a tuple). Native
+            // does the same, in `debug_render_map_loop`.
+            Value::Map(m) => {
+                let guard = m.lock().unwrap();
+                let mut entries: Vec<(Option<DebugKey>, String, String)> = guard
+                    .iter()
+                    .map(|(k, v)| {
+                        (debug_sort_key(&k.0), self.debug_format(&k.0), self.debug_format(v))
+                    })
+                    .collect();
+                if entries.is_empty() {
+                    return "Map {}".to_string();
+                }
+                if entries.iter().all(|(k, _, _)| k.is_some()) {
+                    entries.sort_by(|a, b| a.0.cmp(&b.0));
+                } else {
+                    entries.sort_by(|a, b| (&a.1, &a.2).cmp(&(&b.1, &b.2)));
+                }
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|(_, k, v)| format!("{}: {}", k, v))
+                    .collect();
+                format!("Map {{ {} }}", parts.join(", "))
             }
             Value::Enum { name, variant, fields, .. } => {
                 if fields.is_empty() {
@@ -323,3 +389,33 @@ impl Interpreter {
     }
 }
 
+
+/// The order `{m:debug}` sorts a map's entries by, for keys that have one.
+///
+/// `Int` covers every integer width, `bool` and `char`; an unsigned value goes
+/// in as unsigned, which is what native's comparator does. `Float` is the IEEE
+/// total-order key — flip every bit of a negative, set the sign bit of a
+/// non-negative — the same transform `rask_f64_order_key` uses, so -NaN sorts
+/// first and +NaN last on both backends.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DebugKey {
+    Int(i128),
+    Float(u64),
+    Text(String),
+}
+
+pub(crate) fn debug_sort_key(v: &Value) -> Option<DebugKey> {
+    Some(match v {
+        Value::Int(n, k) if k.is_unsigned() => DebugKey::Int(*n as u64 as i128),
+        Value::Int(n, _) => DebugKey::Int(*n as i128),
+        Value::Int128(n) => DebugKey::Int(*n),
+        Value::Bool(b) => DebugKey::Int(*b as i128),
+        Value::Char(c) => DebugKey::Int(*c as u32 as i128),
+        Value::Float(f, _) => {
+            let bits = f.to_bits();
+            DebugKey::Float(if bits & (1 << 63) != 0 { !bits } else { bits | 1 << 63 })
+        }
+        Value::String(s) => DebugKey::Text(s.lock().unwrap().clone()),
+        _ => return None,
+    })
+}

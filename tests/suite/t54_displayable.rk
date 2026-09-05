@@ -24,6 +24,27 @@ extend AppError {
     }
 }
 
+// An inherent `to_string` counts too — the conformance is about *having* the
+// method, not about writing `with Displayable` next to it. That is what lets a
+// stdlib type like `StringView` render without a conformance declaration, and
+// what broke when `stdlib/fmt.rk` joined the stub set: a declaration for
+// `Displayable` made it look like a trait a program had written, and G1 gates
+// those on `extend T with Trait` (#990).
+struct Tally { hits: i64 }
+
+extend Tally {
+    public func to_string(self) -> string {
+        return "{self.hits} hits"
+    }
+}
+
+test "std.fmt/D3 — an inherent to_string is the conformance" {
+    let t = Tally { hits: 3 }
+    assert "{t}" == "3 hits"
+    assert t.to_string() == "3 hits"
+    assert format("{}", t) == "3 hits"
+}
+
 test "std.fmt/D3 — a struct that opts in renders through its own to_string" {
     let p = Point { x: 1, y: 2 }
     assert "{p}" == "(1, 2)"

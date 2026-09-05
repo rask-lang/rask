@@ -2,6 +2,8 @@
 // Every binding these patterns introduce must come out of the checker with a
 // real type. See `open_nodes_pattern_bindings` in compile_run.rs.
 
+import memory.Heap
+
 enum Holder<T> {
     Full(T)
     Empty
@@ -40,6 +42,7 @@ func main() {
     println(unwrap_text(Holder<string>.Full("text")))
     println(describe(Value.Num(1.5), Value.Text("tail")))
     println(none_from_context(Vec<string>.new(), 0))
+    println("{sorted_rows().len()}")
 }
 
 // `none` has no payload type of its own — whatever it's compared or assigned
@@ -63,4 +66,136 @@ func none_from_context(v: Vec<string>, i: i64) -> bool {
     let popped = v.get(i)
     let dropped = maybe(i) catch _ => none
     return popped == none && dropped == none
+}
+
+// A closure parameter is pinned by the *caller* — the method taking the closure
+// resolves after the body has been walked. A field read on that parameter left
+// its `HasField` constraint waiting, and the leftovers pass dropped it, so
+// `x.rank` had no type at all: four open nodes per `sort_by` (#1026, cluster 1).
+struct Row {
+    rank: i64
+    name: string
+}
+
+func sorted_rows() -> Vec<Row> {
+    mut rows: Vec<Row> = []
+    rows.push(Row { rank: 2, name: "b" })
+    rows.push(Row { rank: 1, name: "a" })
+    rows.sort_by(|x, y| {
+        return x.rank.compare(y.rank)
+    })
+    rows.sort_by_key(|r| {
+        return r.name
+    })
+    return rows
+}
+
+// A map with no annotation: the key type has nowhere to come from but the first
+// index write, and the check that compares the two never wrote the answer back
+// (#1026, cluster 3).
+func word_counts() -> i64 {
+    mut counts = Map.new()
+    counts["a"] = 1
+    counts["b"] = 2
+    return counts["a"] + counts["b"]
+}
+
+// A transparent alias standing where a type name goes. The resolver points the
+// name at the alias declaration, whose symbol carries no type, so the receiver
+// node came back a fresh variable and stayed one.
+struct Budget {
+    n: i64
+}
+
+extend Budget {
+    func make(v: i64) -> Budget {
+        return Budget { n: v }
+    }
+}
+
+type alias Allowance = Budget
+
+func through_alias() -> i64 {
+    let b: Allowance = Allowance.make(7)
+    return b.n
+}
+
+// A named-payload arm can leave the enum off. Then there was no name to look up
+// and every field went back to a fresh variable, so `at` had no type.
+enum Status {
+    Pending
+    Completed { at: i64 }
+}
+
+func when(s: Status) -> i64 {
+    return match s {
+        Pending => 0,
+        Completed { at } => at,
+    }
+}
+
+// A recursive enum keeps its tail behind a `Heap`, and mem.heap/HP5 lets the box
+// stand for what it holds. The variant lookup asked `Heap` for a `Cons` and got
+// nothing, so `second` had no type.
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+func second_of(l: List) -> i64 {
+    match l {
+        List.Cons(_, rest) => {
+            match rest {
+                List.Cons(second, _) => return second
+                List.Nil => return 0
+            }
+        }
+        List.Nil => return 0
+    }
+    return 0
+}
+
+// A field access answered with a variable even when the receiver's type was
+// already known, so a pattern checked against one saw nothing. `self.current`
+// is a `Token`; the variant lookup needs the scrutinee to name its enum, and it
+// only did after solving — by which time `n` was bound to a fresh variable.
+enum Token {
+    Number(f64)
+    Plus
+}
+
+struct Parser {
+    current: Token
+}
+
+extend Parser {
+    func token_string(self) -> string {
+        match self.current {
+            Number(n) => return "{n}"
+            Plus => return "+"
+        }
+    }
+}
+
+// A body has to say what it returns for there to be anything to infer. `todo()`
+// leaves the function for certain and says nothing, so this signature got a
+// fresh variable for its return that nothing ever solved — and every call to it
+// came out untyped.
+func record_altitude(mutate log: Vec<i32>, altitude: i32) {
+    todo()
+}
+
+// `null` is deliberately typed `*_`; the comparison says what it's compared
+// against. Only the deferred path tied the two, so a comparison against an
+// already-known pointer left the `null` with a pointee nothing bound.
+extern "C" func allocate(size: usize) -> *u8
+
+func allocated() -> bool {
+    unsafe {
+        let p = allocate(16)
+        if p == null {
+            return false
+        }
+        return true
+    }
 }

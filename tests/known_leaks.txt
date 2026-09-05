@@ -35,6 +35,11 @@
 
 
 
+# The seventeen added 2026-09-05 came in with the bug-crunch branch: some
+# are files that branch added, the rest leak there for shapes the fixes
+# above didn't reach. None are new leaks — they were on that branch's own
+# list before the merge.
+
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
 p11_rack_link.rk  # 18 allocations
@@ -59,28 +64,37 @@ t29_branch_merge.rk  # 4 allocations
 t30_nested_container_take.rk  # 6 allocations — nested containers, #1047
 t31_channels.rk  # 20 allocations
 t31_sequence_adapters.rk  # 40 allocations — adapter closures capture self and f, #1045
+t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
 t34_vec_as_sequence.rk  # 17 allocations — the source closure captures self, #1045
 t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
 t36_cross_task_ownership.rk  # 18 allocations
 t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
 t37_extend_header_binding.rk  # 4 allocations — a container in a struct field, #1047
 t38_lazy_collection_adapters.rk  # 24 allocations — a collection's adapters capture the collection, #1035
+t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
+t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
 t40_stdlib_renames.rk  # 8 allocations
+t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
 t41_os.rk  # 149 allocations
+t42_flatten_shaped_header.rk  # 26 allocations — flatten's per-element inner sequences, #1045
 t50_boxes.rk  # 4 allocations
 t54_strings.rk  # 8 allocations
+t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
 t57_spawn.rk  # 24 allocations
 t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
 t_any_error_boxing.rk  # 5 allocations
+t_array_method_surface.rk  # 10 allocations
 t_assert_side_effects.rk  # 12 allocations
+t_atomic_across_tasks.rk  # 6 allocations
 t_bare_lock_value.rk  # 21 allocations
 t_binding_types.rk  # 4 allocations
 t_borrow_param_consume.rk  # 7 allocations
 t_box_replace_payload.rk  # 9 allocations
 t_card_method_surface.rk  # 9 allocations
 t_channel_aggregates.rk  # 21 allocations
+t_channel_receive_error.rk  # 16 allocations
 t_channel_try_receive.rk  # 20 allocations
 t_closure_diverging_return.rk  # 2 allocations
 t_closure_in_collection.rk  # 11 allocations
@@ -89,17 +103,23 @@ t_collection_literal.rk  # 8 allocations
 t_conditional_conformance.rk  # 2 allocations
 t_container_ownership.rk  # 3 allocations
 t_container_through_field.rk  # 32 allocations
+t_container_turbofish.rk  # 4 allocations
 t_day_const.rk  # 1 allocation
+t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
 t_day_map.rk  # 8 allocations
 t_day_strings.rk  # 7 allocations
 t_day_vec.rk  # 4 allocations
+t_debug_container_elision.rk  # 2 allocations
+t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 26 allocations
 t_float_payloads.rk  # 4 allocations
 t_for_mutate_early_exit.rk  # 2 allocations
+t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
 t_fs_open_failure.rk  # 4 allocations
 t_generic_clone_any_t.rk  # 8 allocations
 t_generic_index_clone.rk  # 4 allocations
 t_generic_method_return.rk  # 4 allocations
+t_generic_optional_field.rk  # 6 allocations
 t_implicit_widening.rk  # 2 allocations
 t_index_through_field.rk  # 64 allocations
 t_io_buffer.rk  # 71 allocations
@@ -108,11 +128,13 @@ t_json_decode.rk  # 69 allocations
 t_json_encode_shapes.rk  # 17 allocations
 t_json_field_annotations.rk  # 1 allocation
 t_json_roundtrip.rk  # 15 allocations
+t_link_in_collection.rk  # 2 allocations
 t_local_box_payload.rk  # 19 allocations
 t_map_struct_values.rk  # 16 allocations
 t_match_scrutinee_brace.rk  # 1 allocation
 t_modify_writeback.rk  # 15 allocations
 t_module_exports.rk  # 12 allocations
+t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 13 allocations
 t_month_boxes.rk  # 26 allocations
 t_month_concurrency.rk  # 61 allocations
@@ -125,6 +147,7 @@ t_month_qualified_module_types.rk  # 16 allocations
 t_month_resource_ensure.rk  # 10 allocations
 t_month_staged.rk  # 4 allocations
 t_month_stdlib_modules.rk  # 14 allocations
+t_mutate_handle_field.rk  # 12 allocations
 t_mutex_guard_exits.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
 t_named_context_resolves_by_type.rk  # 4 allocations
@@ -133,13 +156,18 @@ t_net_loopback.rk  # 8 allocations
 t_niche_handle_option.rk  # 18 allocations
 t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 157 allocations
+t_package_state.rk  # 12 allocations
 t_path_module.rk  # 11 allocations
+t_pool_entries.rk  # 7 allocations
 t_pool_iter_handles.rk  # 20 allocations
+t_rack_stale_records.rk  # 23 allocations
 t_random_seeded.rk  # 13 allocations
 t_range_element_type.rk  # 2 allocations
 t_runtime_handle_out_of_result.rk  # 1 allocation
 t_select.rk  # 74 allocations
 t_sequence_join.rk  # 25 allocations
+t_set.rk  # 28 allocations
+t_shared_inline_access.rk  # 11 allocations
 t_shared_strategies.rk  # 23 allocations
 t_sort_by_closure.rk  # 3 allocations
 t_sort_contracts.rk  # 7 allocations
@@ -152,17 +180,20 @@ t_string_from_utf8.rk  # 29 allocations
 t_string_rc_escapes.rk  # 10 allocations
 t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 4 allocations
+t_subprocess.rk  # 24 allocations
 t_supertrait_dispatch.rk  # 4 allocations
 t_sync_box_payloads.rk  # 14 allocations
 t_test_const_init.rk  # 4 allocations
 t_test_isolation.rk  # 2 allocations — a module-level Shared box, #1099
 t_text_units.rk  # 9 allocations
+t_trait_object_in_field_container.rk  # 24 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_try_coalesce_diverge.rk  # 2 allocations
 t_try_payload_type.rk  # 6 allocations
 t_vec_elem_from_call.rk  # 2 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 16 allocations
+t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045
 t_vec_position_reduce.rk  # 6 allocations
 t_week_closures.rk  # 20 allocations
 t_week_generics.rk  # 4 allocations
@@ -177,12 +208,3 @@ t_week_traits.rk  # 5 allocations
 t_while_presence_binding.rk  # 8 allocations
 t_with_collection_field_writes.rk  # 14 allocations
 t_with_mutex_value.rk  # 4 allocations
-t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
-t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
-t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045
-t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
-t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
-t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
-t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
-t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
-t42_flatten_shaped_header.rk  # 26 allocations — flatten's per-element inner sequences, #1045

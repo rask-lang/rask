@@ -365,6 +365,60 @@ impl TypeChecker {
         }
     }
 
+    /// `@allow(name)` where nothing answers to `name`.
+    ///
+    /// The names come from two registries that can't see each other — compiler
+    /// warnings here, lint rule ids in `rask-lint` — so a misspelled one used to
+    /// match nothing and the warning fired as if the annotation weren't there
+    /// (#1085). `rask_ast::allow_names` holds both lists, below both crates.
+    pub(super) fn check_allow_names(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let (attrs, span): (&[String], Span) = match &decl.kind {
+                DeclKind::Fn(f) => (&f.attrs, f.span),
+                DeclKind::Struct(s) => (&s.attrs, decl.span),
+                DeclKind::Enum(e) => (&e.attrs, decl.span),
+                DeclKind::Trait(t) => (&t.attrs, decl.span),
+                DeclKind::Test(t) => (&t.attrs, decl.span),
+                DeclKind::Benchmark(b) => (&b.attrs, decl.span),
+                DeclKind::Const(c) => (&c.attrs, decl.span),
+                _ => (&[], decl.span),
+            };
+            self.check_allow_attrs(attrs, span);
+            match &decl.kind {
+                DeclKind::Struct(s) => {
+                    for m in &s.methods {
+                        self.check_allow_attrs(&m.attrs, m.span);
+                    }
+                }
+                DeclKind::Enum(e) => {
+                    for m in &e.methods {
+                        self.check_allow_attrs(&m.attrs, m.span);
+                    }
+                }
+                DeclKind::Impl(i) => {
+                    for m in &i.methods {
+                        self.check_allow_attrs(&m.attrs, m.span);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn check_allow_attrs(&mut self, attrs: &[String], span: Span) {
+        for attr in attrs {
+            let Some(name) = rask_ast::allow_names::allowed_name(attr) else { continue };
+            if rask_ast::allow_names::is_known(name) {
+                continue;
+            }
+            self.errors.push(TypeError::UnknownAllowName {
+                name: name.to_string(),
+                suggestion: rask_ast::allow_names::nearest(name).map(str::to_string),
+                span,
+            });
+        }
+    }
+
     /// AN8: parameter and return types of one function.
     fn check_signature_types(
         &mut self,

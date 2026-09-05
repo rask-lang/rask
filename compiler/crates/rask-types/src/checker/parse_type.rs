@@ -30,7 +30,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         let types_vec: Result<Vec<_>, _> = parts.iter()
             .map(|p| parse_type_string(p, types))
             .collect();
-        return Ok(Type::union(types_vec?));
+        return Ok(Type::union_named(types_vec?, |id| Some(types.type_name(id))));
     }
 
     if s.ends_with('?') && !s.starts_with('(') {

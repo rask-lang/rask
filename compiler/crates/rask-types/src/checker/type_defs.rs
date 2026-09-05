@@ -298,6 +298,10 @@ impl TypeBinding {
 pub struct TypedProgram {
     /// Resolved symbols from name resolution.
     pub symbols: rask_resolve::SymbolTable,
+    /// Struct declarations synthesized from `import c` headers. Not in the
+    /// source, so monomorphization has to be handed them or a C struct gets no
+    /// layout (#948).
+    pub c_type_decls: Vec<rask_ast::decl::Decl>,
     /// Symbol resolutions from name resolution.
     pub resolutions: HashMap<NodeId, SymbolId>,
     /// Type table with all type definitions.

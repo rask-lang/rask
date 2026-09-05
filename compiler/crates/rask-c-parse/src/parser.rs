@@ -25,6 +25,25 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Point a typedef target at a struct that has just been given a name.
+///
+/// `typedef struct { … } Rect, *RectPtr;` parses the body before any name
+/// exists, so both targets go through a placeholder. Once `Rect` is adopted as
+/// the tag, they name the tag instead — including through pointers.
+fn retarget_anon(ty: &mut CType, placeholder: &str, adopted: &str, is_struct: bool) {
+    match ty {
+        CType::Named(n) if n == placeholder => {
+            *ty = if is_struct {
+                CType::StructTag(adopted.to_string())
+            } else {
+                CType::UnionTag(adopted.to_string())
+            };
+        }
+        CType::Pointer(inner) => retarget_anon(inner, placeholder, adopted, is_struct),
+        _ => {}
+    }
+}
+
 pub struct CParser {
     tokens: Vec<CToken>,
     pos: usize,
@@ -864,6 +883,7 @@ impl CParser {
 
         // `typedef struct { ... } name;` or `typedef struct tag { ... } name;`
         if is_typedef {
+            let anon_placeholder = format!("__anon_{}", self.pos);
             // Parse typedef name(s)
             let mut first = true;
             loop {
@@ -885,8 +905,9 @@ impl CParser {
                         CType::UnionTag(t.clone())
                     }
                 } else {
-                    // Anonymous struct — embed the full type
-                    CType::Named(format!("__anon_{}", self.pos))
+                    // Anonymous struct — a placeholder until a typedef name
+                    // below gives it one.
+                    CType::Named(anon_placeholder.clone())
                 };
 
                 while self.peek() == CTokenKind::Star {
@@ -898,14 +919,32 @@ impl CParser {
                 decls.push(CDecl::Typedef(CTypedef { name, target: td_ty }));
             }
 
-            // If no tag, emit the struct with the first typedef name as tag
+            // If no tag, the first typedef name becomes the struct's tag.
             if tag.is_none() && !decls.is_empty() {
                 if let CDecl::Typedef(ref td) = decls[0] {
+                    let adopted = td.name.clone();
                     let named_decl = CStructDecl {
-                        tag: Some(td.name.clone()),
+                        tag: Some(adopted.clone()),
                         fields: decl.fields,
                         is_forward: false,
                     };
+                    // The struct has a name now, so every typedef that pointed
+                    // at the placeholder points at it instead. The one that
+                    // donated the name then reads `typedef Rect Rect` — drop
+                    // it, or it shadows the struct under the same name and the
+                    // fields become unreachable.
+                    for d in decls.iter_mut() {
+                        if let CDecl::Typedef(td) = d {
+                            retarget_anon(&mut td.target, &anon_placeholder, &adopted, is_struct);
+                        }
+                    }
+                    decls.retain(|d| match d {
+                        CDecl::Typedef(td) => !matches!(
+                            &td.target,
+                            CType::StructTag(t) | CType::UnionTag(t) if *t == td.name
+                        ),
+                        _ => true,
+                    });
                     decls.insert(0, if is_struct {
                         CDecl::Struct(named_decl)
                     } else {

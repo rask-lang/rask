@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure bound to a name and spawned afterwards. `free(): invalid pointer`,
+// natively, for any return type (#1008):
+//
+//     let f = own || { return 5 }
+//     let b = spawn(f)
+//
+// `ClosureCreate` writes one local and the escape analysis matched on exactly
+// that one. A closure used by name reaches its use through a copy — `_12 =
+// closure(…)` then `_13 = _12` — so `spawn(_13)` was invisible, the closure was
+// downgraded to a stack allocation, and `spawn` freed a stack address. Copies
+// are followed to a fixpoint now, so a chain of them resolves to the one
+// `ClosureCreate` at the root.
+//
+// A result too wide for the task's one word is the second half (#1094). A task
+// hands back one word, so a wider result travels in a box the runtime owns —
+// and that wrapper is built while the closure is lowered, which for a named one
+// happens at its binding, before the `spawn` that reveals why it matters. The
+// function's body is scanned for `spawn(<name>)` up front so the binding knows.
+// Without it, `spawn` got a stack address where a box was expected and the
+// program died on the free.
+
+test "a named closure, spawned" {
+    using Multitasking {
+        let f = own || { return 5 }
+        let b = spawn(f)
+        assert (b.join() catch _ => -1) == 5
+    }
+}
+
+test "through a chain of copies" {
+    using Multitasking {
+        let g = own || { return 7 }
+        let h = g
+        let t = spawn(h)
+        assert (t.join() catch _ => -1) == 7
+    }
+}
+
+test "the inline form still works" {
+    using Multitasking {
+        let c = spawn(|| { return 9 })
+        assert (c.join() catch _ => -1) == 9
+    }
+}
+
+test "several named closures in one block" {
+    using Multitasking {
+        let a = own || { return 1 }
+        let b = own || { return 2 }
+        let ha = spawn(a)
+        let hb = spawn(b)
+        let sum = (ha.join() catch _ => 0) + (hb.join() catch _ => 0)
+        assert sum == 3
+    }
+}
+
+test "a closure that never escapes still gets the stack" {
+    let local = || { return 3 }
+    assert local() == 3
+}
+
+struct Report {
+    lines: i64
+    name: string
+}
+
+test "a named closure whose result is wider than a word" {
+    using Multitasking {
+        let g = own || { return "text from a task" }
+        let t = spawn(g)
+        assert (t.join() catch _ => "?") == "text from a task"
+    }
+}
+
+test "and one whose result is a struct" {
+    using Multitasking {
+        let h = own || { return Report { lines: 3, name: "r" } }
+        let t = spawn(h)
+        let r = t.join() catch _ => Report { lines: 0, name: "?" }
+        assert r.lines == 3
+        assert r.name == "r"
+    }
+}
+
+// The inline form decides the same thing from the call rather than from a scan,
+// so both paths have to reach it — and a scalar must still not be boxed.
+test "the inline form boxes a wide result too" {
+    using Multitasking {
+        let t = spawn(|| { return "inline and wide" })
+        assert (t.join() catch _ => "?") == "inline and wide"
+        let n = spawn(|| { return 7i64 })
+        assert (n.join() catch _ => 0i64) == 7i64
+    }
+}
+
+test "a named scalar closure is still unboxed" {
+    using Multitasking {
+        let s = own || { return 42i64 }
+        let t = spawn(s)
+        assert (t.join() catch _ => 0i64) == 42i64
+    }
+}

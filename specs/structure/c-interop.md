@@ -19,7 +19,7 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 
 | Syntax | Effect |
 |--------|--------|
-| `import c "header.h"` | Parse header, expose as `c.symbol` |
+| `import c "header.h"` | Parse header, expose as `c.symbol`. A quoted path is relative to the importing file, then the system include paths — same as `#include "…"` |
 | `import c "header.h" as name` | Parse header, expose as `name.symbol` |
 | `import c { "a.h", "b.h" }` | Multiple headers, unified namespace |
 
@@ -59,6 +59,8 @@ Use explicit bindings for: C++ libraries, complex macros (token pasting, stringi
 | **TM1: Platform types** | `c_int`, `c_long`, etc. resolve to target platform sizes, not host |
 | **TM2: Pointer mapping** | `T*` → `*T`, `void*` → `*void`, function pointers → `*func(...)` |
 | **TM3: Composite types** | `extern "C" struct/union/enum` for C-layout types |
+| **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
+| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
 
 ### Primitive Types
 
@@ -79,6 +81,29 @@ Use explicit bindings for: C++ libraries, complex macros (token pasting, stringi
 | `enum E { A, B }` | `extern "C" enum E { A, B }` |
 | Bit fields | `@bitfield` annotation |
 | Packed struct | `@packed` annotation |
+
+A header's struct is named and built under its namespace:
+
+<!-- test: skip -->
+```rask
+import c "mylib.h"          // typedef struct { int width; int height; } Rect;
+
+func main() {
+    let r = c.Rect { width: 6, height: 7 }
+    println("{r.width}")
+    unsafe {
+        println("{c.mylib_area(r)}")     // by value, in registers
+    }
+}
+```
+
+`c.Rect` is the spelling everywhere — in a signature, in a literal, in a type
+argument. The bare `Rect` is not in scope: a header must not claim a name a Rask
+declaration might want.
+
+Handing a struct *to* C works; getting one *back* does not, and the call is
+rejected rather than reading a value nobody wrote. Take it through an
+out-parameter instead.
 
 ## String Interop
 

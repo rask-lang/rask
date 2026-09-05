@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Pushing a concrete value into a `Vec<any Trait>` reached through a *field*
+// segfaulted natively and worked on the interpreter (#955).
+//
+// A concrete value going into an `any Trait` slot has to be boxed — data
+// pointer plus vtable — and MIR does that from a map the checker fills when it
+// sees the value flow into such a position. The container reached through a
+// field isn't resolved yet at the call: its type arrives from a deferred
+// constraint, so there was no element type to compare against and the push went
+// in bare. Eight bytes into a sixteen-byte slot, and the first `area()` read a
+// vtable pointer out of whatever followed.
+//
+// A plain local `Vec<any Shape>` always worked, which is what said the boxing
+// machinery was fine and only the question was being asked too early.
+
+trait Shape {
+    func area(self) -> i64
+}
+
+struct Circle {
+    public r: i64
+}
+
+struct Square {
+    public s: i64
+}
+
+extend Circle with Shape {
+    public func area(self) -> i64 {
+        return self.r * self.r * 3
+    }
+}
+
+extend Square with Shape {
+    public func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+struct Holder {
+    shapes: Vec<any Shape>
+    named: Map<string, any Shape>
+}
+
+struct Outer {
+    inner: Holder
+}
+
+func empty_holder() -> Holder {
+    return Holder { shapes: Vec.new(), named: Map.new() }
+}
+
+test "a Vec field of trait objects" {
+    mut h = empty_holder()
+    h.shapes.push(Circle { r: 2 })
+    h.shapes.push(Square { s: 3 })
+    mut sum = 0
+    for s in h.shapes {
+        sum = sum + s.area()
+    }
+    assert sum == 21
+}
+
+test "a Map field of trait objects" {
+    mut h = empty_holder()
+    h.named.insert("c", Circle { r: 1 })
+    h.named.insert("s", Square { s: 4 })
+    assert h.named["c"].area() == 3
+    assert h.named["s"].area() == 16
+}
+
+test "two fields deep" {
+    mut o = Outer { inner: empty_holder() }
+    o.inner.shapes.push(Square { s: 4 })
+    assert o.inner.shapes[0].area() == 16
+}
+
+test "a local still works" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Circle { r: 2 })
+    shapes.push(Square { s: 3 })
+    mut sum = 0
+    for s in shapes {
+        sum = sum + s.area()
+    }
+    assert sum == 21
+}

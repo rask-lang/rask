@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct declared with a lowercase name can be constructed.
+//
+// A struct literal is otherwise recognised by the name being capitalised, which
+// is the right default — `x { … }` in expression position is ambiguous with a
+// block, and a lowercase name is usually a variable. But it left a *declared*
+// lowercase struct with no way to build one at all: `widget { value: 3 }` failed
+// at the brace with "Expected ';' or newline after statement". The stdlib has
+// one such type — `cstring`, which the spec names in lowercase — and that is
+// half of why `to_cstring` is still a stub (#949).
+//
+// The names come from one token scan before parsing, so declaration order
+// doesn't matter, and only a name this file declares as a struct is eligible.
+
+struct widget {
+    value: i64
+    label: string
+}
+
+// Declared below its first use on purpose.
+func make(n: i64) -> gauge {
+    return gauge { reading: n }
+}
+
+struct gauge {
+    reading: i64
+}
+
+test "a lowercase struct takes a literal" {
+    let w = widget { value: 3, label: "hi" }
+    assert w.value == 3
+    assert w.label == "hi"
+}
+
+test "declaration order doesn't matter" {
+    assert make(7).reading == 7
+}
+
+test "uppercase is untouched" {
+    let g = Gauge { reading: 1 }
+    assert g.reading == 1
+}
+
+struct Gauge {
+    reading: i64
+}
+
+test "a lowercase name that isn't a struct is still a variable" {
+    let value = 5
+    assert value == 5
+}

@@ -1,0 +1,8 @@
+# Tutorial solutions that check but whose `test` run fails, with the bug.
+#
+# tests/tutorials_gate.sh reports these without failing, and fails if one
+# starts passing — delete the line when that happens. Every solution here has
+# to pass `rask check` regardless; only the test run is excused.
+#
+# Format: one basename, then the reason and its issue.
+

@@ -259,7 +259,12 @@ impl Interpreter {
                     top_level_consts.push(c.clone());
                 }
                 DeclKind::TypeAlias(a) => {
-                    if !a.is_transparent {
+                    if a.is_transparent {
+                        // The same type under another spelling, so a static call
+                        // through it has to reach the target's methods (#998).
+                        self.transparent_aliases
+                            .insert(a.name.clone(), a.target.clone());
+                    } else {
                         // Nominal type: register constructor so `UserId(42)` works
                         self.env.define(
                             a.name.clone(),

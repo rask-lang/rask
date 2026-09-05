@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CI3: every C call needs an `unsafe` block. Enforced for a bare `extern "C"`
+// call and, until #947's work, not for one reached through the `c.` namespace.
+import c "c_interop.h"
+
+func main() {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    println("{c.c_sum(v.as_ptr(), 1)}")
+}

@@ -191,6 +191,20 @@ fn comparison_op_symbol(method: &str) -> Option<&'static str> {
     }
 }
 
+/// One operand as an assertion message shows it.
+///
+/// A string is quoted, because an empty one and a trailing space are invisible
+/// otherwise — `assertion failed:  ==  ` says nothing. Everything else renders
+/// the way it prints. Native quotes the same way and doesn't escape either, so
+/// the same failing assert reads the same on both backends (#994).
+fn assert_operand(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+        Value::Char(c) => format!("'{}'", c),
+        other => format!("{}", other),
+    }
+}
+
 /// Build a descriptive failure message for assert/check.
 ///
 /// After desugaring, `a == b` becomes `a.eq(b)` and `a != b` becomes
@@ -800,6 +814,17 @@ impl Interpreter {
                 if let Some(kind) = super::register::prelude_builtin(base_name) {
                     return Ok(Value::Builtin(kind));
                 }
+                // `import sync.Relaxed` brings the ordering into scope under
+                // its bare name, which is how mem.atomics writes its examples.
+                if rask_stdlib::ordering_tag(base_name).is_some() {
+                    return Ok(Value::Enum {
+                        name: "Ordering".to_string(),
+                        variant: base_name.to_string(),
+                        fields: vec![],
+                        variant_index: rask_stdlib::ordering_tag(base_name).unwrap_or(0) as u32,
+                        origin: None,
+                    });
+                }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 
@@ -910,7 +935,13 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                if let ExprKind::Ident(written) = &object.kind {
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` is the same type under another
+                    // spelling, and everything below keys off the spelling. One
+                    // rewrite here reaches every branch — the enum table, the
+                    // stdlib namespaces, `extend` methods — rather than each of
+                    // them learning about aliases (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — written type arguments are folded
                     // into the name and the enum table is keyed by the bare one, so
                     // the whole-name lookup missed and the variant call fell through
@@ -1064,7 +1095,23 @@ impl Interpreter {
                     }
                 }
 
-                let receiver = self.eval_expr(object)?;
+                // A transparent alias over a stdlib type reaches its statics
+                // through the environment rather than the tables above —
+                // `Duration.from_millis` is a value in scope, `Zwibble` is not.
+                // Look up what the alias names (#998).
+                let receiver = match &object.kind {
+                    ExprKind::Ident(ident) => {
+                        let target = self.resolve_transparent_alias(ident);
+                        match (target != *ident)
+                            .then(|| self.env.get(&target))
+                            .flatten()
+                        {
+                            Some(v) => v,
+                            None => self.eval_expr(object)?,
+                        }
+                    }
+                    _ => self.eval_expr(object)?,
+                };
                 let mut arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(&a.expr))
@@ -1643,7 +1690,10 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                if let ExprKind::Ident(written) = &object.kind {
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` names the same enum, so a
+                    // variant reached through it is that enum's variant (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — the parser folds written type
                     // arguments into the name, and the enum table is keyed by the
                     // bare one. Looked up whole, it missed, and the miss surfaced
@@ -1724,6 +1774,10 @@ impl Interpreter {
                         Ok(*inner.clone())
                     }
                     // Tuple field access: tuple.0, tuple.1, ...
+                    Value::Tuple(ref items) if field.parse::<usize>().is_ok() => {
+                        let idx = field.parse::<usize>().unwrap();
+                        Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
+                    }
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {
                         let idx = field.parse::<usize>().unwrap();
                         let vec = v.lock().unwrap();
@@ -2057,7 +2111,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::vec(values))
+                Ok(Value::tuple(values))
             }
 
             ExprKind::Match { scrutinee, arms } => {
@@ -2305,7 +2359,17 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
+                                // ER15: `!` panics *using* the error's message.
+                                // The payload is right here, and every error
+                                // type has a `message()` — E0344 is what makes
+                                // that true — so there is always something to
+                                // say beyond "it was an error" (#1009).
+                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                                let text = self.describe_error_value(&payload);
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::ForcedError(text),
+                                    expr.span,
+                                ))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
@@ -3366,12 +3430,11 @@ fn annotation_value(text: &str, ty: &str) -> Value {
 /// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
 /// `None` when the name carries none.
 fn written_type_args(name: &str) -> Option<Vec<String>> {
-    let open = name.find('<')?;
-    let inner = name[open + 1..].strip_suffix('>')?;
-    let args = rask_ast::decl::field_attrs::split_top_level(inner, ',')
-        .into_iter()
-        .map(|a| a.trim().to_string())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>();
+    // Angle brackets nest, and `split_top_level` doesn't count them — it is
+    // written for annotation arguments, where `<` is a comparison rather than a
+    // bracket. So `describe<Both<string, i64>>` split at the inner comma and
+    // bound `T` to the string `Both<string`, which then named no struct.
+    let (_, args) = rask_ast::type_str::split_generic_name(name)?;
+    let args: Vec<String> = args.into_iter().map(|a| a.to_string()).collect();
     (!args.is_empty()).then_some(args)
 }

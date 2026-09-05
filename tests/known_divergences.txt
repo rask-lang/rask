@@ -117,6 +117,13 @@ t_block_exit_drains_tasks.rk  # multitasking — #1093 (interp output)
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+# `{x:debug}` landed on this branch and all three container shapes now agree.
+# Pruned 2026-09-05:
+#   t_debug_container_elision.rk — #1064. The Map half turned out not to need an
+#     iteration order from the runtime, because there isn't one to have: order
+#     is unspecified and seeded per process on both backends. The renderer sorts
+#     by key instead, which is the same on every run and on both sides.
+
 # --- interp lag: a lazy chain's `mutate` writeback ---
 #
 # `counting_source(mutate calls).filter(…)` then `.sum()`. Native reports
@@ -127,4 +134,3 @@ t_block_exit_drains_tasks.rk  # multitasking — #1093 (interp output)
 # tests in the file pass on both; this is the one that needs a lazy value's
 # writeback deferred to when the value is actually driven.
 p08_sequence.rk  # sequence — #1046 (interp run)
-

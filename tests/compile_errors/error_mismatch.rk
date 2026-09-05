@@ -88,10 +88,9 @@ func load_config_v3(path: string) -> Config or Error {
 
 // Another error case: error type can't widen
 func narrow_error() -> i32 or ParseError {
-    let x = try might_fail()  // Returns i32 or IoError
-
     // ERROR: IoError cannot convert to ParseError
     // Widening works (specific -> general), narrowing doesn't
+    let x = try might_fail()  // Returns i32 or IoError
 
     return x
 }

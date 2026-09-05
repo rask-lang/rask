@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// GA2 excludes padding, and GA4 says why: `compare_exchange` compares raw
+// bytes, so two logically equal values whose padding differs would fail CAS for
+// no reason the author can see. Five bytes of data in an eight-byte layout.
+import sync.Atomic
+
+struct Padded {
+    a: i8
+    b: i32
+}
+
+func main() {
+    let s = Atomic<Padded>.new(Padded { a: 1, b: 2 })
+    println("{s.load(Ordering.SeqCst).b}")
+}

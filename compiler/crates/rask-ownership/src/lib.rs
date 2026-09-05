@@ -130,6 +130,12 @@ pub struct OwnershipChecker<'a> {
     /// say — two `Rack<Node>` parameters give links of the same type — so the
     /// origin is carried from wherever the link was derived.
     link_rack_root: HashMap<String, String>,
+    /// A container that has had a link put into it, and which rack that link
+    /// came from. E0379 walks *expressions* to find a link leaving, and a
+    /// container is neither a link nor built where the link went in — `v.push(n)`
+    /// several statements before `return v` (#941). The rack rides on the
+    /// container name instead, so the same escape test covers it.
+    container_link_rack: HashMap<String, String>,
     /// Rack bindings this body may write nodes through: `mut` locals, and
     /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
     /// a permission of its own, so this is what a node write is checked against.
@@ -207,6 +213,7 @@ impl<'a> OwnershipChecker<'a> {
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
             link_rack_root: HashMap::new(),
+            container_link_rack: HashMap::new(),
             writable_racks: HashSet::new(),
             link_params: HashSet::new(),
             writable_links: HashSet::new(),
@@ -496,6 +503,7 @@ impl<'a> OwnershipChecker<'a> {
         self.exit_reported.clear();
         self.deleting_params.clear();
         self.link_rack_root.clear();
+        self.container_link_rack.clear();
         self.writable_racks.clear();
         self.link_params.clear();
         self.writable_links.clear();
@@ -991,6 +999,16 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
+                        // Rebinding replaces what the name holds, links included:
+                        // `v = Vec.new()` after a `v.push(n)` points at nothing.
+                        match self.link_bearing_root(value) {
+                            Some(rack) => {
+                                self.container_link_rack.insert(target_name.clone(), rack);
+                            }
+                            None => {
+                                self.container_link_rack.remove(target_name);
+                            }
+                        }
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
                         // Putting a resource into a binding gives it the
                         // obligation, whether or not it had one before. This is
@@ -1368,6 +1386,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
+                self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters of user
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
@@ -2296,9 +2315,21 @@ impl<'a> OwnershipChecker<'a> {
     /// iteration binding or a call result may be a second name for a node some
     /// other local also names, and a delete of either invalidates both.
     fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
+        // A container binding takes its links from whatever it is bound to, and
+        // loses them when it's bound to something else. Recomputed rather than
+        // accumulated, so `v = Vec.new()` after a `v.push(n)` starts clean.
         if !self.is_link_type(ty) {
+            match self.link_bearing_root(init) {
+                Some(rack) => {
+                    self.container_link_rack.insert(name.to_string(), rack);
+                }
+                None => {
+                    self.container_link_rack.remove(name);
+                }
+            }
             return;
         }
+        self.container_link_rack.remove(name);
         let from_insert = matches!(
             &init.kind,
             ExprKind::MethodCall { object, method, .. }
@@ -2323,6 +2354,59 @@ impl<'a> OwnershipChecker<'a> {
         } else {
             self.writable_links.remove(name);
         }
+    }
+
+    /// A link handed to a container keeps the container alive no longer than its
+    /// rack. `v.push(n)`, `m.insert(k, n)`, `v[i] = n` — anything that puts a
+    /// link somewhere the container outlives the statement.
+    fn note_link_into_container(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[rask_ast::expr::CallArg],
+    ) {
+        let Some(root) = Self::extract_root_and_fields(object).0 else { return };
+        // `clear` throws the links away with everything else, so what's left
+        // points at nothing and outlives nothing.
+        if method == "clear" && args.is_empty() {
+            self.container_link_rack.remove(&root);
+            return;
+        }
+        for arg in args {
+            if let Some(rack) = self.link_bearing_root(&arg.expr) {
+                self.container_link_rack.insert(root.clone(), rack);
+                return;
+            }
+        }
+    }
+
+    /// The rack behind a value that is, or contains, a link. Walks the literal
+    /// forms the same way the escape check does, so `[n]` and `(n, 7)` count.
+    fn link_bearing_root(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                elems.iter().find_map(|e| self.link_bearing_root(e))
+            }
+            ExprKind::StructLit { fields, spread, .. } => fields
+                .iter()
+                .find_map(|f| self.link_bearing_root(&f.value))
+                .or_else(|| spread.as_ref().and_then(|sp| self.link_bearing_root(sp))),
+            ExprKind::Ident(name) => self
+                .container_link_rack
+                .get(name)
+                .cloned()
+                .or_else(|| self.link_carrying_expr_root(expr)),
+            _ => self.link_carrying_expr_root(expr),
+        }
+    }
+
+    /// The rack behind an expression whose *own* type is a link.
+    fn link_carrying_expr_root(&self, expr: &Expr) -> Option<String> {
+        let ty = self.program.node_types.get(&expr.id)?;
+        if !self.is_link_type(ty) {
+            return None;
+        }
+        self.link_root_of_expr(expr)
     }
 
     /// Whether this expression is reached from a link this body may write through.
@@ -2438,11 +2522,25 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => {}
         }
-        let Some(ty) = self.program.node_types.get(&expr.id) else { return };
-        if !self.is_link_type(ty) {
-            return;
-        }
-        let Some(rack) = self.link_root_of_expr(expr) else { return };
+        // A container that had a link put into it escapes with the link inside
+        // it. Asked first, because the container's own type isn't a link and the
+        // walk below would stop at that (#941).
+        let via_container = match &expr.kind {
+            ExprKind::Ident(name) => self.container_link_rack.get(name).cloned(),
+            _ => None,
+        };
+        let carried = via_container.is_some();
+        let rack = match via_container {
+            Some(rack) => rack,
+            None => {
+                let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+                if !self.is_link_type(ty) {
+                    return;
+                }
+                let Some(rack) = self.link_root_of_expr(expr) else { return };
+                rack
+            }
+        };
         // A parameter rack outlives this body, so nothing can escape it here.
         if self.param_type_strings.contains_key(&rack) {
             return;
@@ -2463,7 +2561,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => rack.clone(),
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via },
+            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via, carried },
             span,
         });
     }
@@ -2836,28 +2934,14 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                                 return;
                             }
-                            BindingState::Moved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
-                                return;
-                            }
-                            BindingState::MaybeMoved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMaybeMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
+                            // Already reported. Every caller walks this same
+                            // expression with `check_expr` first, and its `Ident`
+                            // arm reports the use — at the name rather than at
+                            // the whole statement, which is the better underline.
+                            // Reporting again here gave one `let z = x` two
+                            // identical E0800s at two spans (#1092). There is
+                            // still nothing to move.
+                            BindingState::Moved { .. } | BindingState::MaybeMoved { .. } => {
                                 return;
                             }
                             BindingState::Discarded { at } => {
@@ -3286,6 +3370,11 @@ impl<'a> OwnershipChecker<'a> {
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
             Type::I64 | Type::U64 | Type::F64 => 8,
+            // Two words, and the only scalar that is. Falling through to the
+            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
+            // instead of 24, so it sat on the Copy threshold instead of over it
+            // and two bindings aliased one value with nothing said (#936).
+            Type::I128 | Type::U128 => 16,
             Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
             Type::Array { elem, len } => self.type_size(elem) * len,
             ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte

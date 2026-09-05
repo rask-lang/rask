@@ -23,5 +23,4 @@ p11_gradual_generalization.rk # type.gradual IN1/IN3 — an inferred parameter n
 
 # --- declared-but-unbuilt stdlib surface ---
 t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912 (both check)
-t_month_atomics.rk         # mem.atomics — Atomic<T> has no operations on any spelling, #927 (both check)
 t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920 (both check)

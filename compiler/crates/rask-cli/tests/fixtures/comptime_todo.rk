@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `todo()` is the exception to "a comptime panic is a compile error": it means
+// the block hasn't been written yet, and a program full of them still has to
+// compile. The const runs at runtime, where the same `todo()` panics.
+const D: i64 = comptime { todo("write the table") }
+
+func main() { println(D.to_string()) }

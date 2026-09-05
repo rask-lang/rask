@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A function whose error type is a union, returning a member of it (#1013).
+//
+// Two producers reach this shape and only one was covered. `try` propagation
+// went through `wrap_union_member` and was right; a direct `return AErr { … }`
+// went through the coercion path, which compared the member against the whole
+// union, decided it wasn't the error side, and wrapped it as Ok. The caller
+// then read a success carrying the error's bytes as its value — no crash, an
+// answer, which is the worst thing `T or E` can do.
+//
+// Three more things were wrong behind that one, invisible while the error arm
+// was never taken:
+//
+//   - the Result payload holding a union was loaded as a word instead of
+//     addressed, so the member index arrived where its address belonged
+//   - every member arm was given the Err tag, so `switch [0: ok, 1: A, 1: B]`
+//     ran the first error arm whichever member was returned
+//   - a member arm bound the whole union, so `e.code` read the member index
+//
+// `t19b_union_method_dispatch.rk` has the same signature and passes, because it
+// only ever reaches its error side through `try`.
+
+struct AErr {
+    why: string
+}
+
+extend AErr {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+struct BErr {
+    code: i64
+}
+
+extend BErr {
+    func message(self) -> string {
+        return "code {self.code}"
+    }
+}
+
+// ── Producer 1: return a member directly ──
+
+func direct_a() -> i64 or (AErr | BErr) {
+    return AErr { why: "no route" }
+}
+
+func direct_b() -> i64 or (AErr | BErr) {
+    return BErr { code: 42 }
+}
+
+func direct_ok() -> i64 or (AErr | BErr) {
+    return 7
+}
+
+// ── Producer 2: propagate through try ──
+
+func inner_a() -> i64 or AErr {
+    return AErr { why: "via try" }
+}
+
+func propagated() -> i64 or (AErr | BErr) {
+    let v = try inner_a()
+    return v
+}
+
+// ── Reading them back ──
+
+func describe(r: i64 or (AErr | BErr)) -> string {
+    match r {
+        i64 as v => return "ok {v}",
+        AErr as e => return "A/{e.message()}",
+        BErr as e => return "B/{e.message()}",
+    }
+}
+
+test "a directly returned union member is the error side" {
+    assert describe(direct_a()) == "A/no route"
+}
+
+test "the arm that runs is the member that was returned" {
+    assert describe(direct_b()) == "B/code 42"
+}
+
+test "the ok side still reads as ok" {
+    assert describe(direct_ok()) == "ok 7"
+}
+
+test "try propagation into a union agrees with a direct return" {
+    assert describe(propagated()) == "A/via try"
+}
+
+test "a member arm binds the member, not the union" {
+    // `e.code` read the union's member index before this — 1, not 42.
+    mut seen = 0
+    match direct_b() {
+        i64 as v => { seen = -1 },
+        AErr as e => { seen = -2 },
+        BErr as e => { seen = e.code },
+    }
+    assert seen == 42
+}
+
+test "a member's own fields survive the round trip" {
+    mut why = "unset"
+    match direct_a() {
+        i64 as v => { why = "took ok" },
+        AErr as e => { why = e.why },
+        BErr as e => { why = "took B" },
+    }
+    assert why == "no route"
+}
+
+test "is checks the member, not just the error side" {
+    let a = direct_a()
+    assert a is AErr
+    let b = direct_b()
+    assert b is BErr
+}

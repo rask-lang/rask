@@ -489,6 +489,26 @@ impl<'a> MirLowerer<'a> {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
                     None => (val_op, val_ty),
                 };
+                // The container this place *held* is about to be nobody's, and
+                // its records name it by address on every target it points at.
+                // Drop them before the store — a target deleted later would
+                // otherwise walk a record for storage the program has finished
+                // with (#983). Read the place first, so this is the old value.
+                if matches!(&target.kind, ExprKind::Field { .. } | ExprKind::Ident(_)) {
+                    if let Some(func) = self
+                        .ctx
+                        .lookup_raw_type(target.id)
+                        .cloned()
+                        .and_then(|t| self.ctx.container_link_forget(&t))
+                    {
+                        let (old_op, _) = self.lower_expr(target)?;
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal(func.to_string()),
+                            args: vec![old_op],
+                        }));
+                    }
+                }
                 // A container of links that arrived whole — a `filter` result,
                 // say — carries edges nothing recorded. Register them here; the
                 // records dedupe per (container, target), so this is free where
@@ -532,9 +552,12 @@ impl<'a> MirLowerer<'a> {
                         // #270: a scalar `mutate` param's local is a pointer — the
                         // store must use the *scalar* size, not the pointer's, or it
                         // clobbers the adjacent field (e.g. `swap_fields(p.x, p.y)`).
-                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_mutate_ptr.clone());
-                        let store_through_ptr = is_mutate_param
-                            && (scalar_mutate.is_some() || mutate_param_by_pointer(&dst_ty));
+                        let scalar_mutate = self.meta(name).and_then(|m| m.scalar_through_ptr.clone());
+                        // A cell is an address whether or not it came from a
+                        // parameter, so the scalar case doesn't need the
+                        // `mutate` half of the test any more (#1011).
+                        let store_through_ptr = scalar_mutate.is_some()
+                            || (is_mutate_param && mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
                             let store_size = match (&scalar_mutate, &dst_ty) {
                                 (Some(sty), _) => Some(sty.size()),
@@ -1170,6 +1193,27 @@ impl<'a> MirLowerer<'a> {
         self.reflect_field_consts(type_name)
     }
 
+    /// The declaration's type parameters paired with an instantiation's written
+    /// arguments — `Ring<i64>` on `struct Ring<T>` gives `[("T", "i64")]`.
+    ///
+    /// Empty for a name that isn't an instantiation, or when the declaration
+    /// can't be found or takes a different number of parameters. A partial
+    /// mapping would report some fields substituted and some not, which is
+    /// worse than reporting the declared types throughout.
+    fn generic_type_subst(&self, type_name: &str) -> Vec<(String, String)> {
+        use rask_types::TypeDef;
+        let Some((base, _)) = rask_ast::type_str::split_generic_name(type_name) else {
+            return Vec::new();
+        };
+        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(base) else {
+            return Vec::new();
+        };
+        let Some(TypeDef::Struct { type_params, .. }) = self.ctx.type_defs.get(id) else {
+            return Vec::new();
+        };
+        rask_ast::type_str::generic_type_subst(type_name, type_params)
+    }
+
     /// The same field metadata, by type name — shared with the value form in
     /// `expr.rs`, which builds a runtime `Vec<FieldInfo>` out of it.
     pub(super) fn reflect_field_consts(
@@ -1178,7 +1222,33 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
         use rask_ast::decl::field_attrs;
 
-        let Some((_, layout)) = self.ctx.find_struct(type_name) else {
+        // A generic instantiation is written `Ring<i64>` and its layout, when
+        // there is one, is keyed `Ring$i64` — mono's own spelling. Reflection
+        // was only ever asking under the written name, so every generic struct
+        // answered "not a struct type" (#968).
+        let instance = rask_ast::type_str::generic_instance_key(type_name);
+        let found = self
+            .ctx
+            .find_struct(type_name)
+            .or_else(|| instance.as_deref().and_then(|k| self.ctx.find_struct(k)));
+
+        // No instance layout means mono decided the shared one is exact for
+        // this instantiation — it emits one exactly when an argument overflows
+        // the shared slot. `Ring<i64>` and `Ring<string>` really do have the
+        // same layout, because what varies sits behind the `Vec`'s pointer.
+        //
+        // The shared layout is still wrong about one thing: it records the
+        // field's *declared* type, so `slots` reads as `Vec<T>` where the
+        // instantiation says `Vec<i64>`. The type arguments are substituted
+        // back in below rather than reported as the placeholder.
+        let found = match found {
+            Some(f) => Some(f),
+            None => rask_ast::type_str::generic_base_name(type_name)
+                .and_then(|b| self.ctx.find_struct(&b)),
+        };
+        let type_subst = self.generic_type_subst(type_name);
+
+        let Some((_, layout)) = found else {
             // The uninstantiated generic template gets lowered too (alongside
             // every real instantiation), with its type params still literal
             // ("T"). It's never actually run — type.generics/G2 treats an
@@ -1195,9 +1265,15 @@ impl<'a> MirLowerer<'a> {
             )));
         };
 
-        Ok(layout
-            .fields
-            .iter()
+        // Declaration order, not layout order. `@layout(Rask)` reorders by
+        // alignment (S1/L4), and reflection reports what the author wrote —
+        // which is also what a serializer's key order follows. The two only
+        // agreed while every field had the same alignment (#1083).
+        let mut ordered: Vec<&rask_mono::FieldLayout> = layout.fields.iter().collect();
+        ordered.sort_by_key(|fl| fl.decl_index);
+
+        Ok(ordered
+            .into_iter()
             .map(|fl| {
                 let type_name = match &fl.ty {
                     rask_types::Type::Named(id) => self
@@ -1208,6 +1284,8 @@ impl<'a> MirLowerer<'a> {
                         .unwrap_or_else(|| format!("{}", fl.ty)),
                     other => format!("{}", other),
                 };
+                let type_name =
+                    rask_ast::type_str::substitute_type_params(&type_name, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
@@ -1365,7 +1443,23 @@ impl<'a> MirLowerer<'a> {
         // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
         // point where "the value in this local is a heap box" is knowable (#739).
         let init_may_be_box = self.expr_yields_owned_box(init);
-        let (init_op, inferred_ty) = self.lower_expr(init)?;
+        // A closure this function later hands to `spawn` is lowered as one, here
+        // — the wrapper that boxes a result too wide for the task's one word is
+        // built while the closure is lowered, and the `spawn` comes later (#1094).
+        let spawned = is_closure && self.spawned_closure_names.contains(name);
+        let (init_op, inferred_ty) = if spawned {
+            let ExprKind::Closure { params, ret_ty, body, is_own } = &init.kind else {
+                unreachable!("checked by `is_closure` above")
+            };
+            let lowered = self.lower_closure_expecting(
+                params, ret_ty.as_deref(), body, *is_own || spawned, &[],
+                Some(init.id), true,
+            )?;
+            self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
+            lowered
+        } else {
+            self.lower_expr(init)?
+        };
 
         // `let p = own Big { … }` takes over the box rather than copying out of
         // it. A struct-typed destination copies its bytes on assignment, which is
@@ -1392,6 +1486,47 @@ impl<'a> MirLowerer<'a> {
             }
         }
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
+        // A `mut` scalar that an `ensure` reads and this function writes again
+        // gets a cell of its own (#1011).
+        //
+        // An ensure's cleanup runs from a hook during unwind, and the hook can
+        // only reach what it captured. An aggregate is already an address, so
+        // capturing it by reference shows the cleanup whatever the function did
+        // before it panicked. A scalar has no address — its value lives in an
+        // SSA variable — so all a hook could hold is a snapshot from where the
+        // ensure was scheduled, which for a name the function writes again is a
+        // stale number. The ensure stayed inline-only rather than print one, and
+        // then didn't run at all on a panic.
+        //
+        // So give it an address: a one-word stack slot, with reads loading
+        // through it and writes storing through it, exactly the way a scalar
+        // `mutate` parameter already works. Only for the names that need it —
+        // read by an ensure *and* written afterwards — because a plain SSA local
+        // is cheaper everywhere else.
+        let wants_cell = self.ensure_read_names.contains(name)
+            && self.reassigned_names.contains(name)
+            && !Self::is_ref_capturable(&var_ty);
+        if wants_cell {
+            let cell = self.builder.alloc_local(
+                name.to_string(),
+                MirType::Array { elem: Box::new(MirType::I64), len: 1 },
+            );
+            // Registered as an address, which is what makes the ensure hook
+            // capture the cell by reference rather than snapshot its contents.
+            self.locals.insert(name.to_string(), (cell, MirType::Ptr));
+            self.meta_mut(name).scalar_through_ptr = Some(var_ty.clone());
+            let init_op = self.coerce_into_wrapper(
+                rask_ast::coercion::CoercionSite::AnnotatedBinding,
+                init_op, &inferred_ty, &var_ty,
+            );
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: cell,
+                offset: 0,
+                value: init_op,
+                store_size: Some(var_ty.size()),
+            }));
+            return Ok(());
+        }
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
         // An annotated binding is a coercion site like any other: `let b: T?? = t`

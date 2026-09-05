@@ -392,16 +392,6 @@ impl Interpreter {
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Command" => {
-                let guard = s.lock().unwrap();
-                self.call_command_instance_method(&guard.fields, method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Output" => {
-                let guard = s.lock().unwrap();
-                self.call_output_instance_method(&guard.fields, method)
-            }
             // The stdlib `io` module is compiled out on wasm, and it owns both
             // these handlers and the `io.stdout()`/`stdin()`/`stderr()` calls
             // that produce these structs — so on wasm these arms are dead as

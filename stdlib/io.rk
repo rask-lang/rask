@@ -188,11 +188,10 @@ extend Stdin with Reader {
     /// Read all remaining bytes as UTF-8 string.
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes)
-        text catch e => {
+        let text = string.from_utf8(bytes) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
-        return try text
+        return text
     }
 }
 
@@ -376,11 +375,10 @@ extend Buffer with Reader {
     /// way every other failure on a stream is.
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes)
-        text catch e => {
+        let text = string.from_utf8(bytes) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
-        return try text
+        return text
     }
 }
 
@@ -427,10 +425,11 @@ extend Buffer {
 
     /// Every byte written, from the start — not just what's left to read.
     ///
-    /// A copy, not a view. A borrowed slice into a struct field isn't
+    /// A copy, not a view, so `to_` rather than `as_`: the name says the cost
+    /// (`canonical-patterns`). A borrowed slice into a struct field isn't
     /// something Rask can express yet (#492), and a copy that says so beats a
     /// name that promises otherwise.
-    public func as_bytes(self) -> Vec<u8> {
+    public func to_bytes(self) -> Vec<u8> {
         return self.data.clone()
     }
 

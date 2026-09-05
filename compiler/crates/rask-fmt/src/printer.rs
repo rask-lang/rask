@@ -40,8 +40,20 @@ impl<'a> Printer<'a> {
     }
 
     pub fn finish(mut self) -> String {
-        // Emit any remaining comments
-        for c in self.comments.take_rest() {
+        // Comments left over after the last declaration. They get the same
+        // blank-line treatment as a comment that precedes one: separation the
+        // source had is kept, separation it didn't have isn't invented.
+        //
+        // This ran without either check, so a file ending in an explanatory
+        // block came back with that block jammed against the closing brace —
+        // and since `stdlib/` is held to `fmt --check`, a stdlib file could
+        // fail the gate for a blank line no human would call a formatting
+        // mistake (#1043).
+        let rest: Vec<comment::Comment> = self.comments.take_rest();
+        for c in rest {
+            if self.has_blank_line_before(c.span.start) {
+                self.emit_blank_line();
+            }
             self.output.push_str(&c.text);
             self.output.push('\n');
         }
@@ -328,6 +340,13 @@ impl<'a> Printer<'a> {
         // on the formatter's own output (#805).
         if ty == "()" {
             return "void".to_string();
+        }
+        // A pointer's element type goes through the same rewrites, and only the
+        // bare case was handled: `*void` came back as `*()`, which doesn't parse
+        // either. `*void` is the untyped pointer and the spelling the C header
+        // translator produces, so it has to survive a round trip.
+        if let Some(inner) = ty.strip_prefix('*') {
+            return format!("*{}", self.format_type(inner));
         }
         if let Some(inner) = ty.strip_prefix("Result<") {
             if let Some(inner) = inner.strip_suffix('>') {
@@ -1236,6 +1255,11 @@ impl<'a> Printer<'a> {
 
     fn format_const_decl(&mut self, c: &ConstDecl) {
         self.emit_indent();
+        for attr in &c.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         if c.is_pub {
             self.emit("public ");
         }
@@ -1251,6 +1275,11 @@ impl<'a> Printer<'a> {
 
     fn format_test_decl(&mut self, t: &TestDecl) {
         self.emit_indent();
+        for attr in &t.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         if t.is_comptime {
             self.emit("comptime ");
         }
@@ -1268,6 +1297,11 @@ impl<'a> Printer<'a> {
 
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
+        for attr in &b.attrs {
+            self.emit(&format!("@{attr}"));
+            self.emit_newline();
+            self.emit_indent();
+        }
         self.emit("benchmark \"");
         self.emit(&escape_string_literal(&b.name));
         self.emit("\" {");
@@ -2631,13 +2665,28 @@ impl<'a> Printer<'a> {
     /// `time.Instant.now() - start.as_nanos()` — a different call on a different
     /// receiver (#805).
     fn format_postfix_receiver(&mut self, object: &Expr) {
-        if Self::binds_tighter_than_postfix(&object.kind) {
+        if Self::binds_tighter_than_postfix(&object.kind)
+            && !Self::is_negative_literal(&object.kind)
+        {
             self.format_expr(object);
             return;
         }
         self.emit("(");
         self.format_expr(object);
         self.emit(")");
+    }
+
+    /// A negative literal is one AST node and two tokens, and `.` binds tighter
+    /// than the minus. Printing `(-7).to_string()` as `-7.to_string()` reads back
+    /// as `-(7.to_string())` — negating a string — so the parentheses carry the
+    /// whole meaning (#921). Only in a receiver position: everywhere else the
+    /// minus is already where it belongs.
+    fn is_negative_literal(kind: &ExprKind) -> bool {
+        match kind {
+            ExprKind::Int(n, _) => *n < 0,
+            ExprKind::Float(f, _) => *f < 0.0,
+            _ => false,
+        }
     }
 
     /// Primary and postfix forms, which can carry a `.` directly. Anything else

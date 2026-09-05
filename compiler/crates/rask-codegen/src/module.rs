@@ -47,6 +47,11 @@ pub struct CodeGenerator {
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
     internal_fns: HashSet<String>,
+    /// How each C function's arguments cross the C ABI, for the ones with a
+    /// struct parameter. A call site can't read this off the declared signature
+    /// — a struct in registers looks like any other `i64` there — so the plan
+    /// is kept beside it (#948).
+    c_abi_args: HashMap<String, Vec<crate::c_abi::CArg>>,
     /// Declared param types per Rask function. Call sites need these to pass
     /// aggregates by pointer even when the caller's own local is a scalar.
     fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
@@ -93,6 +98,7 @@ impl CodeGenerator {
             module,
             ctx: codegen::Context::new(),
             func_ids: HashMap::new(),
+            c_abi_args: HashMap::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
@@ -145,6 +151,7 @@ impl CodeGenerator {
             module,
             ctx: codegen::Context::new(),
             func_ids: HashMap::new(),
+            c_abi_args: HashMap::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
@@ -371,6 +378,29 @@ impl CodeGenerator {
             self.func_ids.insert("panic_unwrap_at".to_string(), id);
         }
 
+        // panic_forced_error(msg: RaskStr ptr) -> void (diverges), and the
+        // located variant. `r!` on the error branch, with the error's own
+        // `message()` already rendered (#1009).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // RaskStr ptr
+            let id = self.module
+                .declare_function("rask_panic_forced_error", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_forced_error".to_string(), id);
+        }
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // RaskStr ptr
+            let id = self.module
+                .declare_function("rask_panic_forced_error_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_forced_error_at".to_string(), id);
+        }
+
         // assert_fail_at(file: ptr, line: i32, col: i32) -> void (diverges)
         {
             let mut sig = self.module.make_signature();
@@ -449,6 +479,21 @@ impl CodeGenerator {
                 .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert(internal.to_string(), id);
+        }
+
+        // assert_fail_cmp_bool — same shape; the helper spells the two words.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // left
+            sig.params.push(AbiParam::new(types::I64)); // right
+            sig.params.push(AbiParam::new(types::I64)); // op str ptr
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_cmp_bool", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_cmp_bool".to_string(), id);
         }
 
         // main_error_exit(msg: *RaskStr | null) — prints and exits 1 (EX4)
@@ -934,17 +979,47 @@ impl CodeGenerator {
     ///
     /// Each extern decl becomes a Cranelift function import with the declared
     /// parameter and return types. The linker resolves these to actual symbols.
-    pub fn declare_extern_functions(&mut self, extern_decls: &[crate::ExternFuncSig]) -> CodegenResult<()> {
+    /// Declare the C functions a header brought in.
+    ///
+    /// `layouts` are the program's struct layouts, needed because a C parameter
+    /// declared as a struct doesn't cross the ABI as a pointer — see `c_abi`.
+    /// They arrive here rather than through `declare_functions` because the
+    /// declarations come first.
+    pub fn declare_extern_functions(
+        &mut self,
+        extern_decls: &[crate::ExternFuncSig],
+        layouts: &[StructLayout],
+    ) -> CodegenResult<()> {
+        use crate::c_abi::CArg;
+        use cranelift_codegen::ir::ArgumentPurpose;
+
         for decl in extern_decls {
             // Skip if already declared (e.g. a runtime or stdlib function with the same name)
             if self.func_ids.contains_key(&decl.name) {
                 continue;
             }
             let mut sig = self.module.make_signature();
+            let mut plan = Vec::with_capacity(decl.param_types.len());
             for param_ty in &decl.param_types {
                 let mir_ty = type_string_to_mir(param_ty);
                 let cl_ty = mir_to_cranelift_type(&mir_ty)?;
-                sig.params.push(AbiParam::new(cl_ty));
+                let arg = crate::c_abi::classify(param_ty, cl_ty, layouts);
+                match &arg {
+                    CArg::Scalar(t) => sig.params.push(AbiParam::new(*t)),
+                    CArg::Pieces(tys) => {
+                        for t in tys {
+                            sig.params.push(AbiParam::new(*t));
+                        }
+                    }
+                    CArg::Memory(size) => sig.params.push(AbiParam::special(
+                        types::I64,
+                        ArgumentPurpose::StructArgument(*size),
+                    )),
+                }
+                plan.push(arg);
+            }
+            if plan.iter().any(|a| !matches!(a, CArg::Scalar(_))) {
+                self.c_abi_args.insert(decl.name.clone(), plan);
             }
             if let Some(ret) = &decl.ret_ty {
                 let mir_ty = type_string_to_mir(ret);
@@ -1251,6 +1326,14 @@ impl CodeGenerator {
         globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
     ) -> CodegenResult<()> {
         for (name, meta) in globals {
+            // A string element too long to sit inline is a pointer to a static
+            // header, so the header has to exist before the blob that points at
+            // it. Registering it here also shares one copy with every literal
+            // of the same text elsewhere in the program.
+            for (_, text) in &meta.string_relocs {
+                self.register_string(text)?;
+            }
+
             let data_name = format!(".comptime.{}", name);
             let data_id = self.module
                 .declare_data(&data_name, Linkage::Local, false, false)
@@ -1258,6 +1341,20 @@ impl CodeGenerator {
 
             let mut desc = DataDescription::new();
             desc.define(meta.bytes.clone().into_boxed_slice());
+            // Elements are read as words and as `RaskStr` values, both of which
+            // want the blob eight-byte aligned.
+            desc.set_align(8);
+
+            for (offset, text) in &meta.string_relocs {
+                let Some(&header_id) = self.string_header_data.get(text) else {
+                    return Err(CodegenError::CraneliftError(format!(
+                        "comptime global `{name}` wants a string header for a {}-byte element that was never registered",
+                        text.len()
+                    )));
+                };
+                let gv = self.module.declare_data_in_data(header_id, &mut desc);
+                desc.write_data_addr(*offset as u32, gv, 0);
+            }
 
             self.module
                 .define_data(data_id, &desc)
@@ -1550,6 +1647,7 @@ impl CodeGenerator {
         if let Some(lm) = &self.line_map {
             builder.set_line_map(lm);
         }
+        builder.set_c_abi_args(&self.c_abi_args);
         builder.build()?;
 
         // Temporary: dump CLIF IR for debugging
@@ -1918,8 +2016,12 @@ impl crate::Backend for CodeGenerator {
         self.declare_stdlib_functions()
     }
 
-    fn declare_extern_functions(&mut self, extern_decls: &[crate::ExternFuncSig]) -> CodegenResult<()> {
-        self.declare_extern_functions(extern_decls)
+    fn declare_extern_functions(
+        &mut self,
+        extern_decls: &[crate::ExternFuncSig],
+        layouts: &[StructLayout],
+    ) -> CodegenResult<()> {
+        self.declare_extern_functions(extern_decls, layouts)
     }
 
     fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {

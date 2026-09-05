@@ -114,7 +114,7 @@ impl Interpreter {
             }
             "char_indices" => {
                 let pairs: Vec<Value> = s.lock().unwrap().char_indices()
-                    .map(|(i, c)| Value::vec(vec![Value::int(i as i64), Value::Char(c)]))
+                    .map(|(i, c)| Value::tuple(vec![Value::int(i as i64), Value::Char(c)]))
                     .collect();
                 Ok(Value::vec(pairs))
             }

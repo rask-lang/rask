@@ -412,9 +412,7 @@ extend JsonParser {
         }
 
         let num_str = self.input[start..self.pos].to_string()
-        let n = try {
-            try num_str.parse<f64>()
-        } catch _e => {
+        let n = num_str.parse<f64>() catch _e => {
             return JsonError.ParseError("invalid number: {num_str}")
         }
         return JsonValue.Number(n)
@@ -471,7 +469,12 @@ extend json {
     }
 
     /// Encode a value as an indented JSON string.
-    @native("rask_json_encode_pretty")
+    ///
+    /// No symbol: this is lowered from the value's own derived encoder, then
+    /// re-indented, so there is nothing named `rask_json_encode_pretty` for it
+    /// to reach. It claimed there was, and the claim went unchecked until
+    /// `every_named_native_symbol_exists` started reading these (#1007).
+    @native
     public func encode_pretty<T: Encode>(value: T) -> string {}
 
     /// Convert a typed value to a JsonValue tree.

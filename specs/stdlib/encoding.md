@@ -377,7 +377,7 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 
 **Non-encodable field [E12]:**
 ```
-ERROR [E0333]: `Connection` cannot be decoded
+ERROR [E0388]: `Connection` cannot be decoded
    |
 5  |  json.decode<Connection>(body)
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `socket` has type `Socket`, which can't be decoded

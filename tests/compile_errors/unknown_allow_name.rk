@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `@allow` has to name a warning or a lint rule that exists
+// ERROR: `@allow(torn_lock_updat)` names nothing
+//
+// The annotation parsed, the name was collected, nothing matched it, and the
+// warning fired as if the annotation weren't there (#1085). There was no way to
+// tell that from a warning you suppressed correctly that then stopped firing
+// for its own reasons.
+//
+// Two registries feed one annotation — compiler warnings in the type checker,
+// lint rule ids in `rask-lint` — and neither could see the other's list. They
+// live in `rask_ast::allow_names` now, below both, so one check covers both.
+
+@allow(torn_lock_updat)
+func transfer(amount: i64) {
+    println("{amount}")
+}
+
+func main() {
+    transfer(1)
+}

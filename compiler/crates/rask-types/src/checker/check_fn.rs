@@ -129,14 +129,7 @@ impl TypeChecker {
         // `@allow(name)` on the function suppresses that warning inside it.
         let old_allowed = std::mem::replace(
             &mut self.allowed_warnings,
-            f.attrs
-                .iter()
-                .filter_map(|a| {
-                    a.strip_prefix("allow(")
-                        .and_then(|r| r.strip_suffix(')'))
-                        .map(str::to_string)
-                })
-                .collect(),
+            super::declarations::allowed_from(&f.attrs),
         );
 
         // ER20: Save outer accumulation state and detect if we should accumulate
@@ -299,7 +292,7 @@ impl TypeChecker {
         // ER20: Finalize error union from accumulated error types
         if self.accumulate_errors && !self.inferred_errors.is_empty() {
             let errors = std::mem::take(&mut self.inferred_errors);
-            let error_union = Type::union(errors);
+            let error_union = Type::union_named(errors, |id| Some(self.types.type_name(id)));
             let ret = self.current_return_type.as_ref().unwrap().clone();
             let resolved_ret = self.ctx.apply(&ret);
             match &resolved_ret {
@@ -387,6 +380,7 @@ impl TypeChecker {
         let mut unknown: Vec<String> = Vec::new();
         {
             let types = &self.types;
+            let c_namespaces = &self.c_namespaces;
             for_each_unresolved_name(ty, &mut |name: &str| {
                 // PC1: single letters are always type parameters
                 if is_type_param_name(name) {
@@ -426,6 +420,18 @@ impl TypeChecker {
                 // resolve. The real primitives are lowercase and land in the
                 // `builtins` check below.
                 if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    // A C type is the exception: `c.Rect` is registered under
+                    // that exact spelling, so `c.Nonexistent` is a name that
+                    // isn't there rather than a path resolving elsewhere.
+                    let from_c_header = name
+                        .split_once('.')
+                        .is_some_and(|(ns, _)| c_namespaces.contains(ns));
+                    if !from_c_header || types.get_type_id(name).is_some() {
+                        return;
+                    }
+                    if !unknown.iter().any(|u| u == name) {
+                        unknown.push(name.to_string());
+                    }
                     return;
                 }
                 if types.get_type_id(name).is_some()
@@ -558,6 +564,88 @@ impl TypeChecker {
                 for arm in arms { self.check_no_alloc_expr(fn_name, &arm.body); }
             }
             _ => {}
+        }
+    }
+
+    /// Does this body contain a `return <value>` anywhere?
+    ///
+    /// Different question from `has_explicit_return`, which asks whether
+    /// control definitely leaves. A `todo()` body definitely leaves and says
+    /// nothing about what the function returns — so treating it as an inferred
+    /// return handed the signature a fresh variable that nothing ever solved,
+    /// and every call to a `func record(…) { todo() }` came out untyped
+    /// (#1026). A function with no `->` and no value return is `void`.
+    ///
+    /// A closure or `spawn` body has its own return, so the walk stops there.
+    pub(super) fn body_returns_a_value(body: &[Stmt]) -> bool {
+        body.iter().any(Self::stmt_returns_a_value)
+    }
+
+    fn stmt_returns_a_value(stmt: &Stmt) -> bool {
+        use rask_ast::stmt::StmtKind as SK;
+        match &stmt.kind {
+            SK::Return(Some(_)) => true,
+            SK::Return(None) | SK::Continue(_) | SK::Discard { .. } => false,
+            SK::Expr(e)
+            | SK::Let { init: e, .. }
+            | SK::Mut { init: e, .. }
+            | SK::LetTuple { init: e, .. }
+            | SK::MutTuple { init: e, .. }
+            | SK::LetStruct { init: e, .. }
+            | SK::Assign { value: e, .. } => Self::expr_returns_a_value(e),
+            SK::Break { value, .. } => value.as_ref().is_some_and(Self::expr_returns_a_value),
+            SK::While { cond, body, .. } => {
+                Self::expr_returns_a_value(cond) || Self::body_returns_a_value(body)
+            }
+            SK::For { iter, body, .. } => {
+                Self::expr_returns_a_value(iter) || Self::body_returns_a_value(body)
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => Self::body_returns_a_value(body),
+            SK::WhileLet { expr, body, .. } => {
+                Self::expr_returns_a_value(expr) || Self::body_returns_a_value(body)
+            }
+            SK::ComptimeFor { iter, body, .. } => {
+                Self::expr_returns_a_value(iter) || Self::body_returns_a_value(body)
+            }
+            SK::Ensure { body, .. } => Self::body_returns_a_value(body),
+        }
+    }
+
+    fn expr_returns_a_value(expr: &rask_ast::expr::Expr) -> bool {
+        use rask_ast::expr::ExprKind as EK;
+        match &expr.kind {
+            // Its own frame, its own return.
+            EK::Closure { .. } | EK::Spawn { .. } => false,
+            EK::Block(body)
+            | EK::Unsafe { body }
+            | EK::Comptime { body }
+            | EK::UsingBlock { body, .. }
+            | EK::WithAs { body, .. }
+            | EK::Loop { body, .. } => Self::body_returns_a_value(body),
+            EK::If { cond, then_branch, else_branch, .. } => {
+                Self::expr_returns_a_value(cond)
+                    || Self::expr_returns_a_value(then_branch)
+                    || else_branch.as_ref().is_some_and(|e| Self::expr_returns_a_value(e))
+            }
+            EK::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                Self::expr_returns_a_value(scrut)
+                    || Self::expr_returns_a_value(then_branch)
+                    || else_branch.as_ref().is_some_and(|e| Self::expr_returns_a_value(e))
+            }
+            EK::Match { scrutinee, arms } => {
+                Self::expr_returns_a_value(scrutinee)
+                    || arms.iter().any(|a| Self::expr_returns_a_value(&a.body))
+            }
+            EK::Catch { value, clause } => {
+                Self::expr_returns_a_value(value) || Self::expr_returns_a_value(&clause.body)
+            }
+            EK::NullCoalesce { value, default } => {
+                Self::expr_returns_a_value(value) || Self::expr_returns_a_value(default)
+            }
+            EK::GuardPattern { expr: inner, else_branch, .. } => {
+                Self::expr_returns_a_value(inner) || Self::expr_returns_a_value(else_branch)
+            }
+            _ => false,
         }
     }
 

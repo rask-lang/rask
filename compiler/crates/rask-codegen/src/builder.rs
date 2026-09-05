@@ -210,6 +210,9 @@ struct CodegenCtx<'a> {
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
     is_extern_c: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
+    /// How a C function's arguments cross the C ABI, for the ones with a struct
+    /// parameter. Absent means every argument is a plain scalar (#948).
+    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
 }
 
 /// How to compare one slot of an aggregate. Struct and enum-payload fields
@@ -225,6 +228,17 @@ enum CallAdapt {
     None,
     /// Result is void* — load the i64 value from the returned pointer
     DerefResult,
+    /// compare-exchange: the call returned the value it observed, and wrote
+    /// whether the swap happened into this slot. Build the `T or T` the
+    /// signature promises — Ok(old) when it swapped, Err(actual) when it
+    /// didn't. `PopOutParam` was standing in here and handed back the success
+    /// flag as the value, so `compare_exchange(5, 9, …)` reported that it had
+    /// found 1.
+    CasResult(StackSlot),
+    /// The call returned one machine word that IS the destination aggregate —
+    /// `Atomic<Slot>.load()` on a word-sized struct payload (mem.atomics/GA2).
+    /// Store it into the destination's own slot.
+    WordIntoAggregate,
     /// Result is void* — wrap as Option: NULL→None(tag=1), non-NULL→Some(tag=0, deref)
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
@@ -245,11 +259,11 @@ enum CallAdapt {
     /// Receiver.try_recv: call returned a channel status; the payload was
     /// written into the given slot. Build a `T or E` Result in dst —
     /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
-    TryRecvResult(StackSlot, u32),
-    /// Receiver.receive on a struct element: the call wrote the value into the
-    /// buffer it returns (and panicked if the channel was closed), so the result
-    /// is always Ok. Copy `elem_size` bytes out of it into dst's payload.
-    RecvStructOk(u32),
+    /// The bool says whether a closed channel is a distinct error variant.
+    /// `try_receive` answers `TryReceiveError` — Empty(0) or Closed(1) — and
+    /// stored a bare tag with no variant, so a drained closed channel reported
+    /// "channel is empty" (#1067). `receive`'s `ReceiveError` has one variant.
+    TryRecvResult(StackSlot, u32, bool),
     /// parse: the call returned 0/1; the value was written into the given slot.
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries (slot, type the runtime wrote, type the destination wants).
@@ -325,7 +339,14 @@ pub struct FunctionBuilder<'a> {
 
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
+
+    /// C functions taking a struct by value, and how each argument goes.
+    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
 }
+
+/// No C function in this program takes a struct by value.
+static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<crate::c_abi::CArg>>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -367,7 +388,14 @@ impl<'a> FunctionBuilder<'a> {
             current_col: 0,
             line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
+            c_abi_args: &NO_C_ABI_ARGS,
         })
+    }
+
+    /// The C-ABI argument plans, when the program imports a header whose
+    /// functions take a struct by value.
+    pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<crate::c_abi::CArg>>) {
+        self.c_abi_args = plans;
     }
 
     /// Set the line map for converting byte offsets to line:col in assert messages.
@@ -609,6 +637,7 @@ impl<'a> FunctionBuilder<'a> {
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
+            c_abi_args: self.c_abi_args,
         };
 
         // ctrl.panic/A1: an exported symbol is entered from C, so the frames
@@ -3904,6 +3933,28 @@ impl<'a> FunctionBuilder<'a> {
     /// Struct and enum-payload fields sit in 8-byte slots, so scalars load as
     /// i64/f64 (see `lower_store`). `size` is the field's slot size, used for
     /// the byte-compare fallback.
+    /// The Cranelift type a struct field of `size` bytes is held in.
+    ///
+    /// Struct fields used to be word slots without exception, so every scalar
+    /// arm below loaded an i64 and one comparison shape covered all of them.
+    /// A field holds its real width now (#1083), and reading eight bytes out of
+    /// a four-byte field takes its neighbour with it — which is how two equal
+    /// `Vec2 { x: i32, y: i32 }` compared unequal.
+    fn field_scalar_type(is_float: bool, size: u32) -> Type {
+        let bytes = rask_mono::abi::slot_scalar_bytes(is_float, size, size);
+        if is_float {
+            if bytes >= 8 { types::F64 } else { types::F32 }
+        } else {
+            match bytes {
+                1 => types::I8,
+                2 => types::I16,
+                4 => types::I32,
+                16 => types::I128,
+                _ => types::I64,
+            }
+        }
+    }
+
     fn emit_field_eq_rask(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
@@ -3914,17 +3965,18 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         match ty {
             RaskType::F32 | RaskType::F64 => {
-                // Stored promoted to f64 in the 8-byte slot.
-                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(true, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
             }
             RaskType::Bool
             | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64
             | RaskType::Char => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().icmp(IntCC::Equal, a, b))
             }
             RaskType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
@@ -4153,8 +4205,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         match ty {
             RaskType::F32 | RaskType::F64 => {
-                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(true, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, b);
                 let lt = builder.ins().fcmp(FloatCC::LessThan, a, b);
                 let gt = builder.ins().uextend(types::I64, gt);
@@ -4162,8 +4215,19 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().isub(gt, lt))
             }
             RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                // The compare works at a word; a narrower field is zero-extended
+                // so the ordering is the field type's, not its bits'.
+                let (a, b) = if lty == types::I64 {
+                    (a, b)
+                } else {
+                    (
+                        builder.ins().uextend(types::I64, a),
+                        builder.ins().uextend(types::I64, b),
+                    )
+                };
                 let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
                 let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
                 let gt = builder.ins().uextend(types::I64, gt);
@@ -4173,8 +4237,18 @@ impl<'a> FunctionBuilder<'a> {
             RaskType::Bool
             | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
             | RaskType::Char => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                // Sign-extended for the same reason, at the field's signedness.
+                let (a, b) = if lty == types::I64 {
+                    (a, b)
+                } else {
+                    (
+                        builder.ins().sextend(types::I64, a),
+                        builder.ins().sextend(types::I64, b),
+                    )
+                };
                 Ok(Self::emit_signed_three_way(builder, a, b))
             }
             // Every arm above reads its field as an i64, because a scalar
@@ -4860,6 +4934,70 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, zero);
                 }
             }
+        } else if func.name.starts_with("assert_eq_fail") {
+            // assert_eq failure: args = [got, expected] (empty for aggregates).
+            // MIR already emitted the comparison and branched here.
+            let value_args: Vec<Value> = match func.name.as_str() {
+                "assert_eq_fail_str" => vec![
+                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?,
+                    Self::lower_operand_as_cstr(builder, &args[1], ctx)?,
+                ],
+                "assert_eq_fail_f64" => vec![
+                    Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?,
+                    Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?,
+                ],
+                // f32 stays f32: see assert_fail_cmp_f32.
+                "assert_eq_fail_f32" => vec![
+                    Self::lower_operand_typed(builder, &args[0], Some(types::F32), ctx)?,
+                    Self::lower_operand_typed(builder, &args[1], Some(types::F32), ctx)?,
+                ],
+                "assert_eq_fail" => Vec::new(),
+                _ => vec![
+                    Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?,
+                    Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?,
+                ],
+            };
+            if let Some(file_str) = ctx.source_file {
+                if let (Some(func_ref), Some(gv)) = (
+                    ctx.func_refs.get(func.name.as_str()),
+                    ctx.string_globals.get(file_str),
+                ) {
+                    let file_ptr = builder.ins().global_value(types::I64, *gv);
+                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                    let mut call_args = value_args;
+                    call_args.extend_from_slice(&[file_ptr, line_val, col_val]);
+                    builder.ins().call(*func_ref, &call_args);
+                }
+            }
+        } else if func.name == "panic_forced_error" {
+            // `r!` on the error branch, with the error's `message()` already
+            // rendered into the one argument (#1009). Same shape as
+            // `panic_unwrap` below, including the `_at` variant that carries
+            // the source location — without it the panic still says what went
+            // wrong and stops saying where.
+            let msg = match args.first() {
+                Some(op) => Self::lower_operand(builder, op, ctx)?,
+                None => return Err(CodegenError::UnsupportedFeature(
+                    "panic_forced_error with no message operand".into(),
+                )),
+            };
+            let located = ctx.source_file.and_then(|file_str| {
+                let f = ctx.func_refs.get("panic_forced_error_at")?;
+                let gv = ctx.string_globals.get(file_str)?;
+                Some((*f, *gv))
+            });
+            if let Some((func_ref, gv)) = located {
+                let file_ptr = builder.ins().global_value(types::I64, gv);
+                let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                builder.ins().call(func_ref, &[file_ptr, line_val, col_val, msg]);
+            } else {
+                let plain = ctx.func_refs.get("panic_forced_error").ok_or_else(|| {
+                    CodegenError::FunctionNotFound("panic_forced_error".into())
+                })?;
+                builder.ins().call(*plain, &[msg]);
+            }
         } else if func.name == "panic_unwrap" {
             // MIR already handled branching; this is the panic path. The single
             // argument says which mistake it was — an absent optional or a
@@ -4963,9 +5101,40 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or(false);
         let param_offset = usize::from(injects_out_param);
 
+        // A struct passed by value doesn't reach C as a pointer: it is cut into
+        // register-sized pieces, or copied onto the stack. The declared
+        // signature can't say which — a struct piece looks like any other
+        // `i64` there — so the plan is looked up by name (#948).
+        let abi_plan = ctx.c_abi_args.get(func.name.as_str());
+
         let mut arg_vals = Vec::with_capacity(args.len());
+        let mut slot = param_offset;
         for (i, a) in args.iter().enumerate() {
-            let expected = param_types.get(i + param_offset).copied();
+            match abi_plan.and_then(|p| p.get(i)) {
+                Some(crate::c_abi::CArg::Pieces(piece_tys)) => {
+                    let addr = Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?;
+                    for (n, piece_ty) in piece_tys.iter().enumerate() {
+                        let off = (n * 8) as i32;
+                        let raw = builder.ins().load(types::I64, MemFlags::new(), addr, off);
+                        arg_vals.push(if *piece_ty == types::F64 {
+                            builder.ins().bitcast(types::F64, MemFlags::new(), raw)
+                        } else {
+                            raw
+                        });
+                    }
+                    slot += piece_tys.len();
+                    continue;
+                }
+                Some(crate::c_abi::CArg::Memory(_)) => {
+                    // Cranelift copies it onto the stack from this address.
+                    arg_vals.push(Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?);
+                    slot += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let expected = param_types.get(slot).copied();
+            slot += 1;
             let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
             let actual = builder.func.dfg.value_type(val);
             if let Some(exp) = expected {
@@ -5294,6 +5463,40 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().stack_addr(types::I64, ss, 0)
                 }
+                CallAdapt::CasResult(ok_ss) => {
+                    let results = builder.inst_results(call_inst);
+                    let observed = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    let swapped = builder.ins().stack_load(types::I64, ok_ss, 0);
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        let ok_tag = builder.ins().iconst(types::I64, 0);
+                        let err_tag = builder.ins().iconst(types::I64, 1);
+                        let tag = builder.ins().select(swapped, ok_tag, err_tag);
+                        builder.ins().stack_store(tag, *dst_ss, crate::layouts::TAG_OFFSET);
+                        Self::zero_result_origin(builder, *dst_ss);
+                        builder.ins().stack_store(
+                            observed, *dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
+                        );
+                        slot_already_written = true;
+                    }
+                    observed
+                }
+                CallAdapt::WordIntoAggregate => {
+                    let results = builder.inst_results(call_inst);
+                    let word = if !results.is_empty() {
+                        results[0]
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                        builder.ins().stack_store(word, *ss, 0);
+                        slot_already_written = true;
+                    }
+                    word
+                }
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
                     // Copy `slot_size` bytes into the dst's own slot.
@@ -5307,25 +5510,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     ptr
                 }
-                CallAdapt::RecvStructOk(elem_size) => {
-                    // The value is in the buffer the call returns; wrap it as Ok.
-                    // Storing the pointer instead left the payload holding an
-                    // address, so the received struct read as garbage (#463).
-                    let results = builder.inst_results(call_inst);
-                    let ptr = if !results.is_empty() { results[0] } else {
-                        builder.ins().iconst(types::I64, 0)
-                    };
-                    if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                        let is_result = ctx.locals.iter()
-                            .find(|l| l.id == *dst_id)
-                            .map(|l| matches!(l.ty, MirType::Result { .. }))
-                            .unwrap_or(false);
-                        Self::build_wrapped_aggregate(builder, *ss, is_result, 0, ptr, elem_size);
-                        slot_already_written = true;
-                    }
-                    ptr
-                }
-                CallAdapt::TryRecvResult(payload_ss, elem_size) => {
+                CallAdapt::TryRecvResult(payload_ss, elem_size, closed_is_own_variant) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else (EMPTY/CLOSED) → Err.
                     let results = builder.inst_results(call_inst);
@@ -5350,11 +5535,19 @@ impl<'a> FunctionBuilder<'a> {
                         );
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err: tag only (recv failure carries no payload).
+                        // Err(variant). The payload is the error enum's own
+                        // discriminant: `TryReceiveError` is Empty(0) or
+                        // Closed(1), and the channel reports CLOSED as -1.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        let variant = if closed_is_own_variant {
+                            let closed = builder.ins().iconst(types::I64, -1);
+                            let is_closed = builder.ins().icmp(IntCC::Equal, status, closed);
+                            builder.ins().uextend(types::I64, is_closed)
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
+                        Self::build_err(builder, dst_ss, variant);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -7939,6 +8132,48 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            // GA2: a word-sized struct is a legal payload, and the runtime's
+            // atomic is one machine word — so the struct travels *as* that
+            // word. Codegen hands aggregates around by address, so the value
+            // has to be loaded out of its storage first; storing the pointer
+            // instead made `Atomic<Slot>` an atomic pointer to a temporary, and
+            // the load read whatever that address held (mem.atomics).
+            "Atomic_new" | "Atomic_store" | "Atomic_swap" | "Atomic_load"
+            | "Atomic_into_inner" | "Atomic_compare_exchange"
+            | "Atomic_compare_exchange_weak" => {
+                // Argument side: load the word out of an aggregate payload. The
+                // ordering arguments are plain integers and answer `false` to
+                // the aggregate question, so this can sweep every argument.
+                for i in 0..args.len().min(mir_args.len()) {
+                    let (size, is_aggregate) = Self::struct_elem_size(mir_args, i, ctx);
+                    if is_aggregate && size <= 8 {
+                        args[i] = builder.ins().load(types::I64, MemFlags::new(), args[i], 0);
+                    }
+                }
+                if matches!(
+                    func_name,
+                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak"
+                ) {
+                    // The observed value comes back through an out-param; the
+                    // call's own result is whether it succeeded.
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 8, 0,
+                    ));
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    return CallAdapt::CasResult(ss);
+                }
+                // Return side: a word going back into an aggregate destination.
+                let dst_is_aggregate = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
+                    .unwrap_or(false);
+                if dst_is_aggregate {
+                    CallAdapt::WordIntoAggregate
+                } else {
+                    CallAdapt::None
+                }
+            }
+
             // Sender_send: wrap value as pointer (structs already are)
             "Sender_send" | "send" => {
                 if args.len() >= 2 {
@@ -7951,24 +8186,12 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Receiver_receive_struct: replace elem_size arg with stack buffer address
-            "Receiver_receive_struct" => {
-                let elem_size = match mir_args.get(1) {
-                    Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
-                    _ => 8,
-                };
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, elem_size, 0,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::RecvStructOk(elem_size)
-            }
-
-            // Receiver_try_receive: recv into a buffer of the element's real size;
-            // the C call returns the channel status. Args in: [rx, elem_size].
-            // Args out: [rx, out_ptr]. Post-call builds the `T or E` Result.
-            "Receiver_try_receive" => {
+            // Both receives take the value through a buffer of the element's
+            // real size; the C call returns the channel status. Args in:
+            // [rx, elem_size]. Args out: [rx, out_ptr]. Post-call builds the
+            // `T or E` Result the signature promises — the blocking one used to
+            // return the payload and panic on a closed channel (#1067).
+            "Receiver_receive" | "Receiver_try_receive" => {
                 let elem_size = match mir_args.get(1) {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,
@@ -7978,7 +8201,7 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::TryRecvResult(ss, elem_size)
+                CallAdapt::TryRecvResult(ss, elem_size, func_name == "Receiver_try_receive")
             }
 
             _ => CallAdapt::None,

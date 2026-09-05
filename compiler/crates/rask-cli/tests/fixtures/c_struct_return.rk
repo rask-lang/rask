@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A C function handing a struct *back* is its own ABI rule — registers for a
+// small one, a hidden pointer for a large one — and it isn't built. Rejected at
+// the call, rather than reading back a value nobody wrote (#948).
+import c "c_struct.h"
+
+func main() {
+    unsafe {
+        let r = c.rask_test_make(3, 4)
+        println("{r.width} {r.height}")
+    }
+}

@@ -84,13 +84,60 @@ use crate::translate;
         }
     }
 
+    // An anonymous struct takes the name of its first typedef, and that typedef
+    // then says `typedef FileHandle FileHandle` — which used to be emitted, and
+    // shadowed the struct under the same name, so `c.FileHandle` resolved to an
+    // alias pointing at nothing and had no fields (#948).
     #[test]
-    fn parse_typedef_struct() {
+    fn a_typedef_names_the_anonymous_struct_it_wraps() {
         let r = parse("typedef struct { int fd; } FileHandle;");
-        let has_struct = r.decls.iter().any(|d| matches!(d, CDecl::Struct(_)));
-        let has_typedef = r.decls.iter().any(|d| matches!(d, CDecl::Typedef(_)));
-        assert!(has_struct, "should emit struct");
-        assert!(has_typedef, "should emit typedef");
+        let structs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+            CDecl::Struct(s) => Some(s),
+            _ => None,
+        }).collect();
+        assert_eq!(structs.len(), 1, "one struct: {:?}", r.decls);
+        assert_eq!(structs[0].tag.as_deref(), Some("FileHandle"));
+        assert_eq!(structs[0].fields.len(), 1);
+        assert!(
+            !r.decls.iter().any(|d| matches!(d, CDecl::Typedef(_))),
+            "the name-donating typedef is a no-op: {:?}", r.decls
+        );
+    }
+
+    // A second name in the same declaration still needs one, and it points at
+    // the tag the first one donated.
+    #[test]
+    fn a_second_typedef_name_points_at_the_adopted_tag() {
+        let r = parse("typedef struct { int fd; } FileHandle, *FilePtr;");
+        let typedefs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+            CDecl::Typedef(t) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(typedefs.len(), 1, "one typedef: {:?}", r.decls);
+        assert_eq!(typedefs[0].name, "FilePtr");
+        assert_eq!(
+            typedefs[0].target,
+            CType::Pointer(Box::new(CType::StructTag("FileHandle".into())))
+        );
+    }
+
+    // A tagged struct keeps both: the struct under its tag, and the alias.
+    #[test]
+    fn a_tagged_typedef_keeps_the_alias() {
+        let r = parse("typedef struct file { int fd; } FileHandle;");
+        let structs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+            CDecl::Struct(s) => Some(s),
+            _ => None,
+        }).collect();
+        assert_eq!(structs.len(), 1);
+        assert_eq!(structs[0].tag.as_deref(), Some("file"));
+        let typedefs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+            CDecl::Typedef(t) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(typedefs.len(), 1);
+        assert_eq!(typedefs[0].name, "FileHandle");
+        assert_eq!(typedefs[0].target, CType::StructTag("file".into()));
     }
 
     #[test]

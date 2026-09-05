@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A primitive on the left of an operator, anything at all on the right (#978).
+//
+// The type checker accepted every one of these. Native then did one of three
+// things, none of them right: `f * d` and `i + d` computed on the struct's
+// address and printed it as an integer, `f < d` failed the Cranelift verifier,
+// and `i == d` segfaulted. The interpreter refused all of them, which is what
+// made it a divergence rather than just a hole.
+//
+// The cause is a discarded unify: the operator arms called
+// `self.unify(&args[0], ty, span)` and threw the result away. That discard is
+// deliberate for mixed signedness, which ORD4 allows and which unification
+// would reject — and it discarded every other wrong operand with it. #816
+// fixed the int-against-float pair by adding a dedicated guard and left the
+// discard in place, so everything else still sailed through.
+//
+// ERROR: E0382 — cannot apply `*` to `f64` and `Meters`
+// ERROR: E0382 — cannot apply `+` to `i64` and `Meters`
+// ERROR: E0382 — cannot apply `<` to `f64` and `Meters`
+// ERROR: E0382 — cannot apply `==` to `i64` and `Meters`
+// ERROR: E0382 — cannot apply `-` to `f64` and `Color`
+// ERROR: E0382 — cannot apply `*` to `i64` and `string`
+// ERROR: E0382 — cannot apply `<<` to `i64` and `Meters`
+
+struct Meters {
+    v: f64
+}
+
+enum Color {
+    Red
+    Blue
+}
+
+func main() {
+    let d = Meters { v: 3.0 }
+    let f: f64 = 2.0
+    let i: i64 = 2
+    let s = "hi"
+
+    let x1 = f * d
+    let x2 = i + d
+    let x3 = f < d
+    let x4 = i == d
+    let x5 = f - Color.Red
+    let x6 = i * s
+    // A shift count has its own width — `x << 2i32` is fine — but it still has
+    // to be a number.
+    let x7 = i << d
+
+    println("{x1} {x2} {x3} {x4} {x5} {x6} {x7}")
+}

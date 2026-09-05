@@ -424,6 +424,7 @@ static STORE_REGISTRY: LazyLock<Mutex<HashMap<u32, Weak<Mutex<RackData>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn register_rack(rack: &Arc<Mutex<RackData>>) {
+    crate::rack::RACKS_MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let id = rack.lock().unwrap().rack_id;
     let mut reg = STORE_REGISTRY.lock().unwrap();
     reg.retain(|_, w| w.strong_count() > 0);
@@ -1016,6 +1017,12 @@ pub enum Value {
     },
     /// Vec (growable array) with interior mutability
     Vec(Arc<Mutex<VecData>>),
+    /// Tuple — fixed arity, heterogeneous, immutable (type.tuples).
+    ///
+    /// A tuple used to be a `Vec` here, which meant nothing downstream could
+    /// tell the two apart: `{t:debug}` printed `[1, "x"]` where native prints
+    /// `(1, "x")`, and "is this a tuple?" had no answer at all (#1063).
+    Tuple(Arc<Vec<Value>>),
     /// Type constructor (for static method calls like Vec.new())
     TypeConstructor {
         kind: TypeConstructorKind,
@@ -1093,12 +1100,18 @@ pub enum Value {
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
     Map(Arc<Mutex<MapData>>),
-    /// Atomic bool (lock-free boolean)
-    AtomicBool(Arc<std::sync::atomic::AtomicBool>),
-    /// Atomic usize (lock-free unsigned integer)
-    AtomicUsize(Arc<std::sync::atomic::AtomicUsize>),
-    /// Atomic u64 (lock-free 64-bit unsigned integer)
-    AtomicU64(Arc<std::sync::atomic::AtomicU64>),
+    /// `Atomic<T>` — one type for every payload (mem.atomics/GA1).
+    ///
+    /// A mutex rather than a lock-free word: the interpreter is the reference
+    /// for *what the answer is*, and a mutex gives every operation the
+    /// sequentially-consistent answer whatever ordering was asked for. It also
+    /// holds a payload a machine word can't — a word-sized struct is a legal
+    /// payload (GA2) and there is no `AtomicStruct` in Rust to borrow.
+    ///
+    /// There were three of these — bool, usize, u64 — each with `load` and
+    /// `store` and nothing else, which is how `swap` and `fetch_add` came back
+    /// "no method on type `Atomic<usize>`".
+    Atomic(Arc<Mutex<Value>>),
     /// Shared<T> (RwLock wrapper for concurrent read-heavy access)
     Shared(Arc<RwLock<Value>>),
     /// Mutex<T> (exclusive lock wrapper)
@@ -1298,6 +1311,24 @@ impl Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
 
+    /// A tuple of these elements.
+    pub fn tuple(items: Vec<Value>) -> Value {
+        Value::Tuple(Arc::new(items))
+    }
+
+    /// The elements of a tuple, or of a `Vec` standing in for one.
+    ///
+    /// Tuples were `Vec` values everywhere until #1063, and a few producers
+    /// outside the interpreter still hand one over — a two-element `Vec` in
+    /// tuple position reads as a pair rather than failing.
+    pub fn as_tuple_elements(&self) -> Option<Vec<Value>> {
+        match self {
+            Value::Tuple(items) => Some((**items).clone()),
+            Value::Vec(v) => Some(v.lock().unwrap().items.clone()),
+            _ => None,
+        }
+    }
+
     /// CP3: a vector bounded at `n`, pre-allocated.
     pub fn vec_fixed(n: usize) -> Value {
         Value::Vec(Arc::new(Mutex::new(VecData::fixed(n))))
@@ -1343,6 +1374,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Range { .. } => "range",
             Value::Vec(_) => "Vec",
+            Value::Tuple(_) => "tuple",
             Value::Wide(_) => "Wide",
             Value::TypeConstructor { .. } => "type",
             Value::EnumConstructor { .. } => "enum constructor",
@@ -1367,9 +1399,7 @@ impl Value {
             Value::Receiver(_) => "Receiver",
             Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
-            Value::AtomicBool(_) => "Atomic<bool>",
-            Value::AtomicUsize(_) => "Atomic<usize>",
-            Value::AtomicU64(_) => "Atomic<u64>",
+            Value::Atomic(_) => "Atomic",
             Value::Shared(_) => "Shared",
             Value::RaskMutex(_) => "Mutex",
             Value::TcpListener(_) => "TcpListener",
@@ -1450,6 +1480,9 @@ impl Value {
             Value::Vec(v) => {
                 let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
                 Value::vec(deep)
+            }
+            Value::Tuple(items) => {
+                Value::tuple(items.iter().map(|v| v.deep_clone()).collect())
             }
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
@@ -1626,6 +1659,16 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
             Value::Wide(_) => write!(f, "<Wide plan>"),
             Value::TypeConstructor { kind, type_param } => {
                 let base_name = match kind {
@@ -1735,14 +1778,9 @@ impl fmt::Display for Value {
                 let inner = m.lock().unwrap();
                 write!(f, "Mutex({})", inner)
             }
-            Value::AtomicBool(a) => {
-                write!(f, "Atomic<bool>({})", a.load(std::sync::atomic::Ordering::Relaxed))
-            }
-            Value::AtomicUsize(a) => {
-                write!(f, "Atomic<usize>({})", a.load(std::sync::atomic::Ordering::Relaxed))
-            }
-            Value::AtomicU64(a) => {
-                write!(f, "Atomic<u64>({})", a.load(std::sync::atomic::Ordering::Relaxed))
+            Value::Atomic(a) => {
+                let inner = a.lock().unwrap();
+                write!(f, "Atomic({})", inner)
             }
             Value::TcpListener(l) => {
                 if l.lock().unwrap().is_some() {

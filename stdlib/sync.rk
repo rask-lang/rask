@@ -84,3 +84,23 @@ extend Shared<T, S> {
     @native("rask_cell_get")
     public func into_inner(take self) -> T {}
 }
+
+/// What a failed compare-exchange hands back: the value the atomic actually
+/// held (mem.atomics).
+///
+/// The wrapper is what makes the two branches tell apart. `compare_exchange`
+/// answers the old value on success and the observed value on failure — both
+/// are a `T`, so `T or T` left every match arm ambiguous and `r is …` with
+/// nothing to name.
+///
+/// One field, so it is the same word the atomic holds; the wrapper costs
+/// nothing at run time.
+public struct CasFailed<T> {
+    public found: T
+}
+
+extend CasFailed<T> {
+    public func message(self) -> string {
+        return "compare-exchange found a different value"
+    }
+}

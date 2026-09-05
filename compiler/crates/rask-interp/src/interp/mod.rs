@@ -85,6 +85,13 @@ pub struct Interpreter {
     /// it — a newtype over a primitive is flat, and answering "not declared" made
     /// it not (#791).
     pub(crate) nominal_targets: HashMap<String, String>,
+    /// `type alias X = Y` — the transparent kind, which is the same type under
+    /// another spelling. An instance call takes its prefix from the receiver's
+    /// *value*, so the alias is long gone by then; a static call takes it from
+    /// the spelling, and `Zwibble.make(7)` found nothing named `Zwibble` in
+    /// scope. Resolved through here before the static-call path reads the name
+    /// (#998).
+    pub(crate) transparent_aliases: HashMap<String, String>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
@@ -199,6 +206,7 @@ impl Interpreter {
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
@@ -227,6 +235,7 @@ impl Interpreter {
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
@@ -257,6 +266,7 @@ impl Interpreter {
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
@@ -287,6 +297,22 @@ impl Interpreter {
     }
 
     /// Compute an error origin string like `"file.rk:42"` from a span.
+    /// Follow a transparent `type alias` chain to the type it names.
+    ///
+    /// Bounded rather than trusting the chain to be acyclic: `type alias A = B`
+    /// with `type alias B = A` is a resolution error, not something a runtime
+    /// loop should hang on.
+    pub(crate) fn resolve_transparent_alias(&self, name: &str) -> String {
+        let mut current = name;
+        for _ in 0..16 {
+            match self.transparent_aliases.get(current) {
+                Some(target) if target != current => current = target,
+                _ => break,
+            }
+        }
+        current.to_string()
+    }
+
     pub(crate) fn origin_string(&self, span: Span) -> Arc<str> {
         if let Some(info) = &self.source_info {
             let (line, _) = info.line_map.offset_to_line_col(span.start);
@@ -770,12 +796,17 @@ impl Interpreter {
                     self.transfer_resource_to_scope(field, new_depth);
                 }
             }
-            // A tuple is a `Vec` at runtime, and `return (request, responder)`
-            // hands the resource to the caller the same way a struct field
-            // does. Without this the callee's scope exit read it as a leak, and
-            // native — which has no runtime tracker — disagreed (#792). A real
-            // `Vec` can't hold a resource at all (mem.linear/RC1, RC3), so
-            // walking one costs nothing and finds nothing.
+            // `return (request, responder)` hands the resource to the caller
+            // the same way a struct field does. Without this the callee's scope
+            // exit read it as a leak, and native — which has no runtime tracker
+            // — disagreed (#792). A `Vec` can't hold a resource at all
+            // (mem.linear/RC1, RC3), so walking one costs nothing and finds
+            // nothing.
+            Value::Tuple(items) => {
+                for item in items.iter() {
+                    self.transfer_resource_to_scope(item, new_depth);
+                }
+            }
             Value::Vec(items) => {
                 let snapshot: Vec<Value> = items.lock().unwrap().items.clone();
                 for item in &snapshot {
@@ -1091,8 +1122,15 @@ pub enum RuntimeError {
     /// ForcedAbsent because they are different mistakes: one had nothing there,
     /// the other had a failure it threw away. Both used to report "value was
     /// None", which for the error case names something that never happened.
-    #[error("! on a value that was an error")]
-    ForcedError,
+    ///
+    /// Carries the error's own `message()`. ER15 says `!` panics *using* it,
+    /// and ctrl.panic/F3 wants a panic message to be a function of the failing
+    /// operation's operands — here the operand is the error, and every error
+    /// type has a `message()` (that's what E0344 enforces), so there is always
+    /// something to print. Reporting only "was an error" threw away the one
+    /// thing the reader wanted and had in hand (#1009).
+    #[error("! on a value that was an error: {0}")]
+    ForcedError(String),
 
     /// Assertion failed (assert expr) — stops test immediately
     #[error("assertion failed: {0}")]
@@ -1138,7 +1176,7 @@ impl RuntimeError {
                 | RuntimeError::DivisionByZero
                 | RuntimeError::IndexOutOfBounds { .. }
                 | RuntimeError::ForcedAbsent
-                | RuntimeError::ForcedError
+                | RuntimeError::ForcedError(_)
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)

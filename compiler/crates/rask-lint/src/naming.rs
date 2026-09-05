@@ -6,6 +6,8 @@
 
 use rask_ast::decl::*;
 use rask_ast::type_str;
+use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::types::*;
 use crate::util;
@@ -25,35 +27,29 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
         match &decl.kind {
             DeclKind::Struct(s) => {
                 for m in &s.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &s.name,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &s.name,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             DeclKind::Enum(e) => {
                 for m in &e.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &e.name,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &e.name,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             DeclKind::Impl(imp) => {
                 for m in &imp.methods {
-                    if !is_suppressed(m, "") {
-                        methods.push(MethodContext {
-                            type_name: &imp.target_ty,
-                            method: m,
-                            span: decl.span,
-                        });
-                    }
+                    methods.push(MethodContext {
+                        type_name: &imp.target_ty,
+                        method: m,
+                        span: m.span,
+                    });
                 }
             }
             _ => {}
@@ -61,19 +57,6 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
     }
 
     methods
-}
-
-fn is_suppressed(f: &FnDecl, rule_id: &str) -> bool {
-    f.attrs.iter().any(|a| {
-        a == &format!("allow({})", rule_id)
-            || a.starts_with("allow(") && rule_id.is_empty()
-    })
-}
-
-fn is_rule_suppressed(f: &FnDecl, rule_id: &str) -> bool {
-    f.attrs
-        .iter()
-        .any(|a| a == &format!("allow({})", rule_id))
 }
 
 fn make_diagnostic(
@@ -104,9 +87,6 @@ fn make_diagnostic(
 pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/from") {
-            continue;
-        }
         if !ctx.method.name.starts_with("from_") {
             continue;
         }
@@ -138,9 +118,6 @@ pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/into") {
-            continue;
-        }
         if !ctx.method.name.starts_with("into_") {
             continue;
         }
@@ -167,38 +144,31 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     diags
 }
 
-/// naming/as: `as_*` should return a reference or primitive (cheap view).
+/// naming/as: `as_*` hands back something the value already has, without
+/// allocating (`canonical-patterns`).
 ///
-/// "Cheap" means O(1) and no copy of the receiver's contents — not "returns
-/// something small". The list below started as references, slices and
-/// primitives, and said the wrong thing about the three cheapest views in the
-/// stdlib: `as_ptr` and `as_mut_ptr` hand back a raw pointer, and
-/// `as_sequence` hands back a closure that walks the receiver in place. All
-/// three read as "may allocate", which is exactly backwards.
+/// Two things say so, and either is enough. The **type**: a primitive, a raw
+/// pointer, a slice, or a `string`/`StringView` — a string is a sixteen-byte
+/// value plus a refcount bump, which is what `std.strings/V1` calls a view.
+/// Or the **body**: every `return` hands back a name, a field, or `none`,
+/// constructing nothing. That second test is what lets `as_array` hand back the
+/// `Vec` its enum payload already holds while `as_bytes`, which calls
+/// `.clone()`, still fails.
+///
+/// A `Sequence<T>` counts on the type side too: it's a closure over the
+/// receiver that walks in place and copies nothing.
+///
+/// The old test asked whether the return type started with `&`. No Rask type
+/// string ever does — that is a Rust reference sigil — so the clause was dead
+/// and every `as_ptr` in the stdlib was reported as possibly allocating (#993).
 pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-    let cheap_types = [
-        "bool", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-        "f32", "f64", "char", "usize", "isize",
-    ];
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/as") {
-            continue;
-        }
         if !ctx.method.name.starts_with("as_") {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            // References start with & or [], raw pointers with *, primitives are
-            // in the list. A `Sequence<T>` is a closure over the receiver: it
-            // walks in place and copies nothing, which is the cheap view this
-            // rule is named for.
-            let ret_base = ret.split('<').next().unwrap_or(ret).trim();
-            let is_cheap = ret.starts_with('&')
-                || ret.starts_with("[]")
-                || ret.starts_with('*')
-                || cheap_types.contains(&ret.as_str())
-                || matches!(ret_base, "Sequence" | "SequenceMut");
+            let is_cheap = cheap_view_type(ret) || returns_without_building(&ctx.method.body);
             if !is_cheap {
                 diags.push(make_diagnostic(
                     "naming/as",
@@ -218,13 +188,96 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     diags
 }
 
+/// A type that can be handed back without allocating.
+fn cheap_view_type(ret: &str) -> bool {
+    const CHEAP: &[&str] = &[
+        "bool", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64",
+        "u128", "f32", "f64", "char", "usize", "isize", "string", "StringView",
+        "Span", "()",
+    ];
+    // An optional over a cheap thing is still cheap — the flag costs nothing.
+    let bare = ret.trim().trim_end_matches('?').trim();
+    // A `Sequence<T>` walks the receiver in place, so the type argument doesn't
+    // change the answer.
+    let base = bare.split('<').next().unwrap_or(bare).trim();
+    // `*T` is a cast, `[]T` a view: both as cheap as it gets.
+    bare.starts_with('*')
+        || bare.starts_with("[]")
+        || CHEAP.contains(&bare)
+        || matches!(base, "Sequence" | "SequenceMut")
+}
+
+/// Whether every `return` in the body hands back something that already exists
+/// — a name, a field path, `self`, or `none`. A call, a method call or a
+/// literal builds something, and building is where the allocation is.
+///
+/// An empty body (a `@native` or `@unimplemented` declaration) has no returns
+/// to look at, so it decides nothing and the type test stands alone.
+fn returns_without_building(body: &[Stmt]) -> bool {
+    let mut saw_return = false;
+    let mut all_plain = true;
+    walk_returns(body, &mut |e| {
+        saw_return = true;
+        if !hands_back_existing(e) {
+            all_plain = false;
+        }
+    });
+    saw_return && all_plain
+}
+
+fn hands_back_existing(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) | ExprKind::None => true,
+        ExprKind::Field { object, .. } => hands_back_existing(object),
+        _ => false,
+    }
+}
+
+/// Every `return` expression in a body.
+///
+/// An `if` or a `match` is an expression in Rask, so a return inside one is
+/// reached through the statement that holds it rather than through a statement
+/// kind of its own.
+fn walk_returns(body: &[Stmt], f: &mut impl FnMut(&Expr)) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(Some(e)) => f(e),
+            StmtKind::Expr(e) => walk_returns_in_expr(e, f),
+            StmtKind::While { body, .. } | StmtKind::Loop { body, .. } => walk_returns(body, f),
+            StmtKind::For { body, .. } => walk_returns(body, f),
+            _ => {}
+        }
+    }
+}
+
+fn walk_returns_in_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    match &expr.kind {
+        ExprKind::Block(stmts) => walk_returns(stmts, f),
+        ExprKind::If { then_branch, else_branch, .. } => {
+            walk_returns_in_expr(then_branch, f);
+            if let Some(eb) = else_branch {
+                walk_returns_in_expr(eb, f);
+            }
+        }
+        ExprKind::IfLet { then_branch, else_branch, .. } => {
+            walk_returns_in_expr(then_branch, f);
+            if let Some(eb) = else_branch {
+                walk_returns_in_expr(eb, f);
+            }
+        }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                walk_returns_in_expr(&arm.body, f);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// naming/to: `to_*` should return a different type than Self.
 pub fn check_to(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/to") {
-            continue;
-        }
         if !ctx.method.name.starts_with("to_") {
             continue;
         }
@@ -253,9 +306,6 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 
     // Check methods
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/is") {
-            continue;
-        }
         if !ctx.method.name.starts_with("is_") {
             continue;
         }
@@ -281,7 +331,7 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     // Also check standalone functions
     for decl in decls {
         if let DeclKind::Fn(f) = &decl.kind {
-            if is_rule_suppressed(f, "naming/is") || !f.name.starts_with("is_") {
+            if !f.name.starts_with("is_") {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
@@ -307,9 +357,6 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_with(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/with") {
-            continue;
-        }
         if !ctx.method.name.starts_with("with_") {
             continue;
         }
@@ -338,9 +385,6 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 
     // Check methods
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/try") {
-            continue;
-        }
         if !ctx.method.name.starts_with("try_") {
             continue;
         }
@@ -364,7 +408,7 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     // Standalone functions
     for decl in decls {
         if let DeclKind::Fn(f) = &decl.kind {
-            if is_rule_suppressed(f, "naming/try") || !f.name.starts_with("try_") {
+            if !f.name.starts_with("try_") {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
@@ -392,9 +436,6 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 pub fn check_or_suffix(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
-        if is_rule_suppressed(ctx.method, "naming/or_suffix") {
-            continue;
-        }
         if !ctx.method.name.ends_with("_or") {
             continue;
         }

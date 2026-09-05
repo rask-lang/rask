@@ -124,15 +124,7 @@ fn dummy_value(type_name: &str) -> Value {
         // Int rather than Unit: `Cell.get`/`replace` hand the payload back, and a
         // Unit payload makes them look unimplemented to this walk.
         "Cell" => Value::Cell(Arc::new(Mutex::new(Value::int(0)))),
-        "AtomicBool" => {
-            Value::AtomicBool(Arc::new(std::sync::atomic::AtomicBool::new(false)))
-        }
-        "AtomicUsize" => {
-            Value::AtomicUsize(Arc::new(std::sync::atomic::AtomicUsize::new(0)))
-        }
-        "AtomicU64" => {
-            Value::AtomicU64(Arc::new(std::sync::atomic::AtomicU64::new(0)))
-        }
+        "Atomic" => Value::Atomic(Arc::new(Mutex::new(Value::int(0)))),
         _ => panic!("no dummy value for type '{type_name}'"),
     }
 }

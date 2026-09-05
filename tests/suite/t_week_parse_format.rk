@@ -29,14 +29,16 @@ test "std.string — parse_int rejects what isn't an integer" {
 }
 
 test "std.string — parse_float" {
-    let f1: f64 = "1.5".parse<f64>()!
+    // No annotations: `parse<f64>()` says what it produces, so `!` on it does
+    // too. They were a workaround for #1029 and came out when it closed.
+    let f1 = "1.5".parse<f64>()!
     assert f1 == 1.5
-    let f2: f64 = "0.0".parse<f64>()!
+    let f2 = "0.0".parse<f64>()!
     assert f2 == 0.0
-    let f3: f64 = "-2.25".parse<f64>()!
+    let f3 = "-2.25".parse<f64>()!
     assert f3 == -2.25
     // An integer literal is a valid float.
-    let f4: f64 = "3".parse<f64>()!
+    let f4 = "3".parse<f64>()!
     assert f4 == 3.0
 }
 
@@ -89,10 +91,9 @@ test "std.fmt — numbers into text through interpolation" {
 
 test "std.fmt — to_string" {
     assert 42.to_string() == "42"
-    // Bound first: `rask fmt` strips the parens from `(-7).to_string()` and
-    // `-7.to_string()` then parses as `-(7.to_string())` — #921.
-    let neg = -7
-    assert neg.to_string() == "-7"
+    // The parens are load-bearing: `-7.to_string()` parses as
+    // `-(7.to_string())`, and `rask fmt` used to strip them (#921).
+    assert (-7).to_string() == "-7"
     assert true.to_string() == "true"
     let f: f64 = 0.5
     assert f.to_string() == "0.5"
@@ -123,11 +124,9 @@ test "std.fmt — hex and binary" {
 
 test "a parse then a format, round-tripped" {
     let text = "123"
-    // The annotations are a workaround for rask-lang/rask#1029 — `!` on a
-    // generic call drops the type argument. Drop them when that closes.
-    let n: i64 = text.parse<i64>()!
+    let n = text.parse<i64>()!
     assert "{n}" == text
-    let f: f64 = "2.5".parse<f64>()!
+    let f = "2.5".parse<f64>()!
     assert "{f}" == "2.5"
 }
 
@@ -141,3 +140,14 @@ test "parsing a whole line of numbers" {
 }
 
 func main() {}
+
+test "a written type argument decides, with nothing else to go on" {
+    // #1029: `!` on a generic call dropped the type argument, so this had
+    // nothing to infer from and was reported un-inferrable. The turbofish was
+    // decorative even when something else did pin it — `let x: f64 =
+    // "42".parse<i64>()!` type-checked and ran the float parse.
+    let n = "42".parse<i64>()!
+    assert n == 42
+    let f = "2.5".parse<f64>()!
+    assert f == 2.5
+}

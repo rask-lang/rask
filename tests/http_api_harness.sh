@@ -92,9 +92,49 @@ drive() {
     done
 }
 
+# The responses say `Connection: close`. Check the server means it.
+#
+# curl reads to Content-Length and stops, so it never noticed that the socket
+# stayed open — Rask's own client, which reads until EOF because the header told
+# it to, hung forever on Rask's own server, and the server held a descriptor per
+# request for the life of the process (#1055). Reading the socket to EOF is the
+# only thing that catches it: `cat` returns when the server closes, and `timeout`
+# fails the check when it doesn't.
+closes_the_connection() {
+    timeout 5 bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/'"$PORT"' || exit 3
+        printf "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n" >&3
+        # A reset counts as closed. The server hangs up with the request still
+        # sitting unread in its receive buffer, which is an RST rather than a
+        # FIN, and `cat` calls that an error — but "the server did not leave the
+        # socket open" is the whole question, and both answers are the same.
+        cat <&3 > /dev/null 2>&1
+        exit 0
+    '
+    rc=$?
+    # 124 is the timeout: nothing ever closed. 3 is our own connect failure.
+    [ "$rc" -ne 124 ] && [ "$rc" -ne 3 ]
+}
+
+# The example binds :8080 and says so in its source, so the harness can't pick
+# a free port — but it can say which of the two things went wrong. A leftover
+# server from an interrupted run, or another copy of this harness, answers
+# /health perfectly well and then fails the golden diff for reasons that have
+# nothing to do with the code under test.
+port_is_busy() {
+    curl -s -m 1 "$BASE/health" >/dev/null 2>&1
+}
+
 run_backend() {
     backend="$1"
     out="$WORK/$backend.out"
+
+    if port_is_busy; then
+        echo "FAIL: $backend — something is already answering on :$PORT"
+        echo "    a leftover server from an interrupted run, or a second copy of"
+        echo "    this harness. The example hardcodes the port, so they collide."
+        return 1
+    fi
 
     if [ "$backend" = native ]; then
         "$RASK" compile "$SRC" -o "$WORK/server" >/dev/null 2>&1 \
@@ -119,6 +159,12 @@ run_backend() {
     fi
 
     requests | drive | normalise > "$out"
+
+    if ! closes_the_connection; then
+        echo "FAIL: $backend — server sent Connection: close and kept the socket open"
+        kill -9 "$SERVER_PID" 2>/dev/null; SERVER_PID=""
+        return 1
+    fi
 
     kill -9 "$SERVER_PID" 2>/dev/null; SERVER_PID=""
     wait "$SERVER_PID" 2>/dev/null

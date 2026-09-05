@@ -29,17 +29,28 @@
 // joined or detached. That's the same idea — task handles are resources.
 //
 
+import fs
+import io.IoError
+
+// An error type has to be a type of your own — `or string` is rejected, since
+// a primitive carries no `message()` (type.errors/ER4). A bare enum is enough:
+// the message is derived from the variant name and payload.
+enum BookingError {
+    PaymentDeclined(passenger: string)
+    NoSuchFlight(id: i32)
+}
+
 // --- Example ---
 
-// This example shows the pattern. The actual file I/O isn't
-// implemented in the tutorial compiler, but the concept is key.
-func example_resource() -> () or string {
-    let file = try fs.open("test.txt")
+// This example shows the pattern: acquire, `ensure` the cleanup on the very
+// next line, then use it. The `ensure` runs on every way out of the scope —
+// the `try` below included — so there is no path that leaks the handle.
+func example_resource() -> void or IoError {
+    mut file = try fs.open("test.txt")
     ensure file.close()
 
     let text = try file.read_text()
     println("read {text.len()} characters")
-    return ()
 }
 
 // ============================================================
@@ -90,7 +101,7 @@ extend Booking {
 //   3. Try to process payment
 //   4. If payment works, commit
 //   5. ensure runs on scope exit — but commit already happened, so no rollback
-func book_flight(id: i32, passenger: string) -> i32 or string {
+func book_flight(id: i32, passenger: string) -> i32 or BookingError {
     todo()
 }
 
@@ -133,7 +144,7 @@ func two_bookings() -> BookingStatus {
 // Fun fact: the Space Shuttle's flight software used a similar
 // pattern. Every state change had a guaranteed rollback path.
 // The software flew 135 missions with zero in-flight failures.
-func process_flights(flights: Vec<string>) -> i32 or string {
+func process_flights(flights: Vec<string>) -> i32 or BookingError {
     todo()
 }
 
@@ -141,12 +152,12 @@ func process_flights(flights: Vec<string>) -> i32 or string {
 
 test "booking commit" {
     let result = book_flight(1, "Besse")
-    assert result?
+    assert !(result is BookingError)
 }
 
 test "booking failure" {
     let result = book_flight(2, "FAIL")
-    assert result is string
+    assert result is BookingError
 }
 
 test "booking pattern" {

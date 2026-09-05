@@ -210,7 +210,7 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 let mut d = Diagnostic::error(format!(
                     "`{name}` is neither a variable to break with nor a label to break to"
                 ))
-                .with_code("E0210")
+                .with_code("E0215")
                 .with_primary(self.span, "not a variable, and no loop here carries this label");
                 d = match labels.split_first() {
                     Some((nearest, _)) => d
@@ -395,7 +395,7 @@ impl ToDiagnostic for rask_resolve::ResolveError {
 
             CHeaderNotFound { header, detail } => {
                 Diagnostic::error(format!("C header not found: `{}`", header))
-                    .with_code("E0210")
+                    .with_code("E0214")
                     .with_primary(self.span, detail.as_str())
                     .with_help("check the header path or install the library's development package")
                     .with_fix("verify the header path and include directories")
@@ -528,6 +528,90 @@ impl ToDiagnostic for rask_types::TypeError {
 
             // SEQ31: `collect` was removed, so the bare "no method" reads as if
             // it were a typo. Name the replacement instead.
+            IncomparableOperands { left, right, op, span } => {
+                let is_int = |t: &str| matches!(
+                    t,
+                    "i8" | "i16" | "i32" | "i64" | "i128"
+                    | "u8" | "u16" | "u32" | "u64" | "u128"
+                );
+                let is_primitive = |t: &str| is_int(t)
+                    || matches!(t, "f32" | "f64" | "bool" | "char" | "string");
+                let l = left.to_string();
+                let r = right.to_string();
+                let diag = Diagnostic::error(format!(
+                    "cannot apply `{}` to `{}` and `{}`", op, l, r
+                ))
+                .with_code("E0382")
+                .with_primary(*span, format!("`{}` on the left, `{}` on the right", l, r));
+
+                // The case worth spelling out. `s[i]` is a byte, so reaching for
+                // a character literal next to it is the natural typo, and it
+                // compiles into a code-point comparison that happens to be right
+                // for ASCII.
+                let char_and_int = (l == "char" && is_int(&r)) || (r == "char" && is_int(&l));
+                if char_and_int {
+                    diag.with_fix(concat!(
+                        "`line[i] == 44u8` if you meant the byte, or ",
+                        "`line.char_at(i)? as c` then compare `c` if you meant the character",
+                    ).to_string())
+                    .with_why(concat!(
+                        "`char` is a Unicode scalar, not a number, so comparing it to an ",
+                        "integer answers by code point — right for ASCII, silently wrong ",
+                        "for everything else. Mixed signedness is the one deliberate ",
+                        "exception here [type.operators/ORD4]",
+                    ).to_string())
+                } else if r.contains(" or ") || r.ends_with('?') {
+                    // A `T or E` or a `T?` as an operand. "Give it the
+                    // operator" is nonsense for a wrapper — nobody extends
+                    // `i64 or ParseError`. The answer is always to extract the
+                    // value first, which is what these wrappers exist to make
+                    // you do.
+                    let inner = r
+                        .split(" or ")
+                        .next()
+                        .unwrap_or(&r)
+                        .trim_end_matches('?')
+                        .to_string();
+                    diag.with_fix(format!(
+                        "take the value out first — `try expr`, `expr!`, or a `match` \
+                         arm binding the `{inner}` — then apply `{op}` to that"
+                    ))
+                    .with_why(format!(
+                        "`{r}` wraps `{inner}`, it isn't one. The wrappers have no \
+                         operators at all, so the branch you didn't handle can't be \
+                         silently skipped — native computed on the wrapper's address \
+                         instead [type.errors/ER16]"
+                    ))
+                } else if is_primitive(&l) && !is_primitive(&r) {
+                    // A struct or enum on the right of a primitive operator.
+                    // "convert one side" is no help — there is nothing to
+                    // convert a `Meters` into. Either reach into it or give the
+                    // type the operator.
+                    diag.with_fix(format!(
+                        "reach into it — `{} {} value.field` — or give `{}` the operator: `extend {} {{ func {}(self, other: {}) -> … }}`",
+                        l, op, r, r,
+                        match op.as_str() {
+                            "+" => "add", "-" => "sub", "*" => "mul",
+                            "/" => "div", "%" => "rem",
+                            _ => "compare",
+                        },
+                        l,
+                    ))
+                    .with_why(format!(
+                        "`{}` has no `{}` with a `{}`, so nothing defines what the result would be. Native computed on the value's address instead of saying so [type.operators]",
+                        l, op, r
+                    ))
+                } else {
+                    diag.with_fix(format!(
+                        "convert one side, so both are `{}` or both are `{}`", l, r
+                    ))
+                    .with_why(concat!(
+                        "operands have to be the same type; two integers are the one ",
+                        "exception, so signedness can be mixed [type.operators/ORD4]",
+                    ).to_string())
+                }
+            }
+
             NoSuchMethod { ty, method, span } if method == "collect" => {
                 Diagnostic::error(format!("no method `collect` on `{}`", ty))
                     .with_code("E0313")
@@ -605,8 +689,22 @@ impl ToDiagnostic for rask_types::TypeError {
                      [std.fmt/D3, D4]",
                     if *interpolated { "`{}`" } else { "`print`" },
                 ));
-                // The two cases have genuinely different fixes.
-                if ty.ends_with('?') || ty.contains(" or ") {
+                // A container or tuple can't be extended, and doesn't want to
+                // be — `{v:debug}` already renders it (std.fmt/G2).
+                let is_container = ty.starts_with('(')
+                    || ty.starts_with('[')
+                    || ["Vec", "Map", "Set", "Pool", "Rack", "Iterator"]
+                        .iter()
+                        .any(|n| ty.starts_with(n) && ty[n.len()..].starts_with('<'));
+                // The cases have genuinely different fixes.
+                if is_container {
+                    diag = diag
+                        .with_help(format!(
+                            "a `{}` has no single sensible rendering, so `{{}}` won't invent one",
+                            ty
+                        ))
+                        .with_fix("ask for the debug view: `{value:debug}`");
+                } else if ty.ends_with('?') || ty.contains(" or ") {
                     diag = diag
                         .with_help(format!(
                             "{} holds a `{}`, which may not have a value to show",
@@ -639,7 +737,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "no method `{}` provided by the bounds on `{}`",
                     method, param
                 ))
-                .with_code("E0313")
+                .with_code("E0301")
                 .with_primary(*span, "method not found")
                 .with_help(format!(
                     "add a trait bound that declares `{}`, e.g. `where {}: SomeTrait`",
@@ -670,7 +768,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             InvalidTypeString(s) => {
                 Diagnostic::error(format!("invalid type: `{}`", s))
-                    .with_code("E0309")
+                    .with_code("E0300")
                     .with_primary(Span::new(0, 0), "invalid type expression")
                     .with_help("expected a type like `i32`, `string`, or a struct name")
                     .with_fix("use a type like `i32`, `string`, or a struct name")
@@ -767,7 +865,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             TryAbsenceIntoResult { return_ty, span } => {
                 Diagnostic::error("`try` here would propagate `none`, and this function has no absent branch")
-                    .with_code("E0360")
+                    .with_code("E0399")
                     .with_primary(*span, "`none` has nowhere to go")
                     .with_note(format!("this function returns `{}`", return_ty))
                     .with_fix("name the error instead: `x ?? return <error>`")
@@ -776,7 +874,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             TryErrorIntoOptional { return_ty, span } => {
                 Diagnostic::error("`try` here would propagate an error, and this function only returns absence")
-                    .with_code("E0361")
+                    .with_code("E0400")
                     .with_primary(*span, "the error has nowhere to go")
                     .with_note(format!("this function returns `{}`", return_ty))
                     .with_fix("drop the error where it happens: `r catch _ => return none`")
@@ -859,6 +957,28 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`T?` doesn't coerce to `T`; lifting `!` through the wrapper would be ambiguous — on a `bool?`, `!x` could mean negate the payload or test for absence, and `x!` already means force-unwrap [type.optionals/OPT5, OPT15]")
             }
 
+            PointeeMismatch { from, to, span } => {
+                let elem = |t: &rask_types::Type| match t {
+                    rask_types::Type::RawPtr(inner) => inner.to_string(),
+                    other => other.to_string(),
+                };
+                let (from_elem, to_elem) = (elem(from), elem(to));
+                Diagnostic::error(format!(
+                    "`{}` can't be used where `{}` is expected",
+                    from, to
+                ))
+                    .with_code("E0857")
+                    .with_primary(*span, format!(
+                        "this points at `{}`, the slot reads `{}`",
+                        from_elem, to_elem
+                    ))
+                    .with_fix(format!(
+                        "build the buffer at the element type the slot wants — a `Vec<{}>` here",
+                        to_elem
+                    ))
+                    .with_why("a pointer's element type is part of it: nothing converts the bytes, so the other side would read a different number of them at a different stride [mem.unsafe, struct.c-interop/TM2]")
+            }
+
             NarrowingNeedsPolicy { from, to, span } => {
                 Diagnostic::error(format!(
                     "`{}` doesn't fit in `{}` — some values would be lost",
@@ -884,7 +1004,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "`{}` between `{}` and `{}` — one is an integer, the other a float",
                     op, left, right
                 ))
-                    .with_code("E0371")
+                    .with_code("E0401")
                     .with_primary(*span, format!("`{}` on the left, `{}` on the right", left, right))
                     .with_fix(format!(
                         "bring the `{int_ty}` over and say what happens when it doesn't land exactly: `x.round<{float_ty}>()` is the usual one, and `x as {float_ty}` is only for the widths where it can't lose anything"
@@ -1088,7 +1208,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             MutateConst { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — declared `let`", name))
-                    .with_code("E0322")
+                    .with_code("E0302")
                     .with_primary(*span, format!("`{}` is a let binding — immutable", name))
                     .with_help(format!("change `let {}` to `mut {}` to allow mutation", name, name))
                     .with_fix(format!("replace `let {}` with `mut {}`", name, name))
@@ -1152,7 +1272,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
             StringNewRemoved { span } => {
                 Diagnostic::error("`string.new()` doesn't exist — an empty string is `\"\"`")
-                    .with_code("E0331")
+                    .with_code("E0387")
                     .with_primary(*span, "no such constructor".to_string())
                     .with_help("if this was the start of a string you meant to append to, use a StringBuilder — `string` can't be mutated")
                     .with_fix("let s = \"\"".to_string())
@@ -1175,7 +1295,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     source_var,
                     if *yields_sequence { "new strings" } else { "a new string" }
                 ))
-                    .with_code("E0324")
+                    .with_code("E0303")
                     .with_primary(*slice_span, format!(
                         "{} can't outlive the statement",
                         if *yields_sequence { "these views" } else { "this view" }
@@ -1245,7 +1365,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         box_name, binding,
                     ))
                     .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
-                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function if partial state is harmless here [tool.warnings/W9]")
+                    .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
             }
 
             StagedOutsideWith { name, span } => {
@@ -1296,25 +1416,17 @@ impl ToDiagnostic for rask_types::TypeError {
 
             GuardElseMustDiverge { found, span } => {
                 Diagnostic::error("guard pattern 'else' block must diverge")
-                    .with_code("E0325")
+                    .with_code("E0304")
                     .with_primary(*span, format!("'else' block has type `{}`, but must diverge", found))
                     .with_help("use 'return', 'break', 'continue', or 'panic' to ensure the block never completes normally")
                     .with_fix("add a 'return' statement at the end of the 'else' block")
                     .with_why("guard patterns bind variables in the outer scope — the 'else' path must exit to ensure the binding is always valid")
             }
 
-            MissingMutateAnnotation { param_name, param_index: _, span } => {
-                Diagnostic::error(format!("parameter `{}` requires `mutate` annotation at call site", param_name))
-                    .with_code("E0326")
-                    .with_primary(*span, format!("add `mutate` before this argument"))
-                    .with_help(format!("call with `mutate {}`", param_name))
-                    .with_fix(format!("add `mutate` annotation"))
-                    .with_why("mutable parameters require explicit annotation at call site for clarity")
-            }
 
             MissingOwnAnnotation { param_name, param_index: _, span } => {
                 Diagnostic::error(format!("parameter `{}` requires `own` annotation at call site", param_name))
-                    .with_code("E0327")
+                    .with_code("E0305")
                     .with_primary(*span, format!("add `own` before this argument"))
                     .with_help(format!("call with `own {}`", param_name))
                     .with_fix(format!("add `own` annotation"))
@@ -1323,7 +1435,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             UnexpectedAnnotation { annotation, param_name, param_index: _, span } => {
                 Diagnostic::error(format!("unexpected `{}` annotation for parameter `{}`", annotation, param_name))
-                    .with_code("E0328")
+                    .with_code("E0306")
                     .with_primary(*span, format!("remove this annotation"))
                     .with_help(format!("remove `{}` annotation — parameter does not expect it", annotation))
                     .with_fix("remove the annotation")
@@ -1354,8 +1466,38 @@ impl ToDiagnostic for rask_types::TypeError {
 
             TryOnNonResult { found, span } => {
                 Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
-                    .with_code("E0329")
+                    .with_code("E0369")
                     .with_primary(*span, "not a Result type")
+            }
+
+            DynamicFieldNameNotComptime { span } => {
+                Diagnostic::error("the field name in `value.(…)` isn\'t known at compile time")
+                    .with_code("E0385")
+                    .with_primary(*span, "this isn\'t a name the compiler can read")
+                    .with_fix(
+                        "write the name: `value.(\"field\")`, a `comptime { … }` block, \
+                         a `let` bound to either, or a `comptime for` binding\'s `.name`",
+                    )
+                    .with_why(
+                        "`value.(expr)` is rewritten to a direct field access while \
+                         compiling, so there has to be a name to rewrite it to. A string \
+                         that only exists once the program runs has nothing behind it \
+                         [ctrl.comptime/CT53]",
+                    )
+            }
+
+            AtomicPayload { ty, reason, span } => {
+                Diagnostic::error(format!("`Atomic<{}>` — {}", ty, reason))
+                    .with_code("E0384")
+                    .with_primary(*span, "payload doesn't fit an atomic")
+                    .with_why(
+                        "an atomic is one machine word the hardware reads and writes in a \
+                         single instruction; anything wider needs a lock [mem.atomics/GA2]",
+                    )
+                    .with_fix(
+                        "use `Shared<T, Mutex>` for a payload this size, or pack the fields \
+                         into one word yourself",
+                    )
             }
 
             NotIterable { found, span } => {
@@ -1375,11 +1517,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     "i8" | "i16" | "i32" | "i64" | "i128"
                         | "u8" | "u16" | "u32" | "u64" | "u128"
                 );
+                // A channel end has no elements to walk — you ask it for the
+                // next value, and it tells you when the channel closed.
+                let is_channel_end = ty.starts_with("Receiver<")
+                    || ty.starts_with("Sender<")
+                    || ty.starts_with("Channel<");
                 diag = match ty.as_str() {
                     // A string is a sequence, just not of itself.
                     "string" => diag.with_fix("ask for the elements: `for c in s.chars()`"),
                     // A count in the iterator position wants the range it counts.
                     _ if is_number => diag.with_fix("count with a range: `for i in 0..n`"),
+                    _ if is_channel_end => diag.with_fix(
+                        "receive in a loop and stop on the error branch: `loop { let r = rx.receive(); if r? as v { use(v) } else { break } }`",
+                    ),
                     _ => diag.with_fix(format!(
                         "iterate a collection — a `Vec<{}>`, or a field of `{}` that holds one",
                         ty, ty
@@ -1388,9 +1538,21 @@ impl ToDiagnostic for rask_types::TypeError {
                 diag
             }
 
+            CStructReturn { func, ty, span } => {
+                Diagnostic::error(format!(
+                    "`{}` returns the struct `{}` by value, which isn't supported yet",
+                    func, ty
+                ))
+                .with_code("E0858")
+                .with_primary(*span, "struct returned by value")
+                .with_help("take the struct through an out-parameter instead: declare the C side as `void f(Rect *out)` and pass a pointer")
+                .with_fix("pass a pointer to a struct you own instead of returning one")
+                .with_why("a C function handing back a struct uses its own ABI rule — registers for a small one, a hidden pointer for a large one — and the compiler doesn't implement it yet, so the value it read back would be wrong rather than absent")
+            }
+
             UnsafeRequired { operation, span } => {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
-                    .with_code("E0330")
+                    .with_code("E0386")
                     .with_primary(*span, "unsafe operation outside unsafe block")
             }
 
@@ -1403,7 +1565,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             TraitObjectGenericMethod { trait_name, method, span } => {
                 Diagnostic::error(format!("generic method `{}` — cannot be called through `any {}`", method, trait_name))
-                    .with_code("E0819")
+                    .with_code("E0852")
                     .with_primary(*span, "generic method")
                     .with_help("generic methods can't be dispatched dynamically: each instantiation needs its own code, but a trait object erases the concrete type. Call it on the concrete type instead (TR3)")
             }
@@ -1443,7 +1605,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     None => "the offending field".to_string(),
                 };
                 Diagnostic::error(format!("`{}` cannot be {}", ty, verb))
-                    .with_code("E0333")
+                    .with_code("E0388")
                     .with_primary(*span, label)
                     .with_fix(format!(
                         "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
@@ -1546,7 +1708,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
                 };
                 Diagnostic::error("nominal type mismatch")
-                    .with_code("E0340")
+                    .with_code("E0392")
                     .with_primary(*span, label)
                     .with_fix(fix)
                     .with_help(format!("`type {} = ...` creates a distinct type — use `{}(value)` to wrap, `.value` to unwrap", nominal_name, nominal_name))
@@ -1558,7 +1720,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "public function `{}` must declare error types explicitly",
                     function_name
                 ))
-                .with_code("E0335")
+                .with_code("E0390")
                 .with_primary(*span, "replace `_` with explicit error types")
                 .with_why("public functions are API contracts — callers need to see error types (ER21)")
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
@@ -1641,7 +1803,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             CyclicTypeAlias { cycle, span } => {
                 Diagnostic::error(format!("cyclic type alias: {}", cycle))
-                    .with_code("E0343")
+                    .with_code("E0395")
                     .with_primary(*span, "cycle detected here")
                     .with_help("break the cycle by removing one of the aliases")
                     .with_fix("break the cycle by removing one of the aliases")
@@ -1650,7 +1812,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             PrivateFieldAccess { ty, field, span } => {
                 Diagnostic::error(format!("field `{}` on `{}` is private", field, ty))
-                    .with_code("E0344")
+                    .with_code("E0396")
                     .with_primary(*span, "private field")
                     .with_help("private fields can only be accessed inside extend blocks for this type")
                     .with_fix("use a public method to access this field")
@@ -1719,13 +1881,13 @@ impl ToDiagnostic for rask_types::TypeError {
 
             DiscardCopyType { name, ty, span } => {
                 Diagnostic::warning(format!(
-                    "`discard {}` on Copy type `{}` has no effect",
+                    "`discard {}` frees nothing — `{}` is a Copy type",
                     name, ty
                 ))
                 .with_code("W0301")
-                .with_primary(*span, "Copy types are trivially cleaned up")
-                .with_help(format!("remove `discard {}` — Copy types don't need explicit cleanup", name))
-                .with_why("Copy types (primitives, small values) are cleaned up automatically — `discard` is only meaningful for heap-allocated or move-only types")
+                .with_primary(*span, "there is no allocation here to release")
+                .with_fix(format!("remove `discard {}`", name))
+                .with_why("`discard` exists to end a value's life before its scope does, which only means something when the value owns memory. A Copy type owns none, so the statement reads as a cost it doesn't pay. It does still put the name out of use, so if that was the point, say so with a comment [mem.ownership/D1, D2]")
             }
 
             DiscardResourceType { name, ty, span } => {
@@ -1733,7 +1895,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "cannot `discard` resource `{}` of type `{}`",
                     name, ty
                 ))
-                .with_code("E0335")
+                .with_code("E0389")
                 .with_primary(*span, "resource types must be consumed properly")
                 .with_help(format!("call `.close()` or another consuming method on `{}`", name))
                 .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
@@ -1770,42 +1932,37 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a positive step on a descending range (or negative step on ascending range) produces zero iterations [ctrl.ranges/SP1-SP2]")
             }
 
-            MessageCoverageMissing { variant, enum_name, span } => {
-                Diagnostic::error(format!(
-                    "@message variant `{}` on `{}` has no message template and cannot auto-delegate",
-                    variant, enum_name
-                ))
-                    .with_code("E0338")
-                    .with_primary(*span, "variant needs @message(\"...\") annotation")
-                    .with_help("add @message(\"template\") to this variant, or change the payload to an error type")
-                    .with_why("every variant in a @message enum must have an explicit template or a single Error payload that auto-delegates [type.errors/ER26]")
-            }
 
             BareSyncAccess { ty, method, span } => {
+                let recv = ty.to_lowercase();
                 Diagnostic::error(format!(
-                    "standalone `.{}()` on `{}` must be chained with field access",
+                    "standalone `.{}()` on `{}` has nothing chained onto it",
                     method, ty,
                 ))
                     .with_code("E0339")
-                    .with_primary(*span, format!("`.{}()` without field chain", method))
-                    .with_help(format!("use `{}.{}().field` for inline access, or `with {}.{}() as v {{ }}` for multi-statement access", ty.to_lowercase(), method, ty.to_lowercase(), method))
-                    .with_why(format!("sync inline access is expression-scoped — the lock is held only for the chain [mem.borrowing/E5]"))
+                    .with_primary(*span, format!("the lock this takes is released at the end of `.{}()`", method))
+                    .with_fix(format!("`{}.get()` to copy the value out, or `{}.{}().field` to read one field", recv, recv, method))
+                    .with_help(format!(
+                        "three forms, by what you need: `{recv}.get()` copies the whole value out (Copy types),                          `{recv}.{method}().field` reads or writes one field under the lock, and                          `with {recv}.{method}() as v {{ … }}` holds it across several statements.",
+                        recv = recv, method = method,
+                    ))
+                    .with_why("inline access is scoped to the chain it starts (conc.sync/R5), so a `.read()` with nothing chained takes a lock, releases it, and hands back a value that was only valid while it was held")
             }
             MixedDiscriminants { enum_name, span } => {
                 Diagnostic::error(format!("enum `{}` mixes explicit and auto-indexed discriminants", enum_name))
-                    .with_code("E0340")
+                    .with_code("E0391")
                     .with_primary(*span, "if any variant has `= N`, all must")
                     .with_why("mixed discriminants make variant ordering ambiguous [type.enums/E16]")
             }
             DiscriminantWithPayload { enum_name, variant, span } => {
                 Diagnostic::error(format!("variant `{}` on `{}` has fields and an explicit discriminant", variant, enum_name))
-                    .with_code("E0341")
+                    .with_code("E0393")
                     .with_primary(*span, format!("variant `{}` cannot have both", variant))
                     .with_why("enums with explicit discriminants are integer-backed and cannot carry payloads [type.enums/E17]")
             }
             DuplicateDiscriminant { enum_name, value, first, second, span } => {
                 Diagnostic::error(format!("duplicate discriminant value {} in `{}`", value, enum_name))
-                    .with_code("E0342")
+                    .with_code("E0394")
                     .with_primary(*span, format!("both `{}` and `{}` have value {}", first, second, value))
                     .with_why("each variant must have a unique discriminant value [type.enums/E15]")
             }
@@ -1867,7 +2024,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
             ElseBindingNotResult { name, span } => {
                 Diagnostic::error(format!("`else as {}` requires a Result condition", name))
-                    .with_code("E0345")
+                    .with_code("E0397")
                     .with_primary(*span, "the `if` condition has no error to bind")
                     .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
@@ -1881,13 +2038,13 @@ impl ToDiagnostic for rask_types::TypeError {
                         "`{}` is not a branch of `{}` — this test can never be true",
                         ty_name, found
                     ))
-                    .with_code("E0346")
+                    .with_code("E0398")
                     .with_primary(*span, "not one of its branches")
                     .with_fix("name one of the branches, or drop the test")
                     .with_why("`is` dispatches on the branches the scrutinee actually has [type.errors/ER23]")
                 } else {
                     Diagnostic::error(format!("`is {}` needs a two-branch scrutinee", ty_name))
-                        .with_code("E0346")
+                        .with_code("E0398")
                         .with_primary(*span, format!("found `{}`", found))
                         .with_fix("test a `T or E` or a `T?` — a plain value has no branch to pick")
                         .with_why("`is Type as name` dispatches on one branch of a two-branch value [type.errors/ER23]")
@@ -1910,10 +2067,43 @@ impl ToDiagnostic for rask_types::TypeError {
 
             BadAnnotation { name, problem, fix, why, span } => {
                 Diagnostic::error(format!("annotation `{}`: {}", name, problem))
-                    .with_code("E0843")
+                    .with_code("E0854")
                     .with_primary(*span, format!("`{}` here", name))
                     .with_fix(fix.clone())
                     .with_why(*why)
+            }
+
+            MutatePackageState { name, ty, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is package-level state — writing to it needs a sync box",
+                    name,
+                ))
+                    .with_code("E0856")
+                    .with_primary(*span, format!("this writes to a bare `const {}`", ty))
+                    .with_fix(format!(
+                        "hold it in a sync box — `const {n} = Shared.new(…)` — and write through `with {n}.write() as v {{ … }}`",
+                        n = name,
+                    ))
+                    .with_help("a module-level `const` is one instance for the whole program, so every task reaches the same value. `Shared.new(…)` gives it a read-write lock, `Shared.mutex(…)` an exclusive one, and `Atomic` covers a single word. There is no `mut` at package level to reach for instead [structure.modules/PS3]")
+                    .with_why("two tasks writing an unsynchronized collection is a data race, and it doesn't announce itself — a `Vec` hammered from two threads loses updates and corrupts the heap. Data races being impossible by construction is the safety property this rule holds up [structure.modules/PS2]")
+            }
+
+            UnknownAllowName { name, suggestion, span } => {
+                let diag = Diagnostic::error(format!("`@allow({})` names nothing", name))
+                    .with_code("E0855")
+                    .with_primary(*span, format!("`@allow({})` on this declaration", name))
+                    .with_why("an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever");
+                match suggestion {
+                    Some(s) => diag
+                        .with_fix(format!("did you mean `@allow({})`?", s))
+                        .with_help(format!("did you mean `@allow({})`?", s)),
+                    None => diag
+                        .with_fix("use a compiler warning name or a lint rule id".to_string())
+                        .with_help(format!(
+                            "`@allow` takes one warning name or one lint rule id. Known names: {}",
+                            rask_ast::allow_names::all().collect::<Vec<_>>().join(", ")
+                        )),
+                }
             }
 
             LegacyWrapperConstructor { name, span } => {
@@ -2062,7 +2252,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "`to_map` needs a sequence of pairs, got a sequence of `{}`",
                     elem
                 ))
-                .with_code("E0830")
+                .with_code("E0853")
                 .with_primary(*span, "each item must be a (K, V) tuple")
                 .with_fix(
                     "produce the pairs first — `.map(|u| (u.id, u))` — then `to_map()`".to_string(),
@@ -2172,6 +2362,28 @@ impl ToDiagnostic for rask_types::TypeError {
                 diag
             }
             FixedArrayGrowth { method, array, span } => {
+                // A slice reaches here too. Rendering one through the array
+                // template printed `[[i32]; 0]` and called it a fixed array,
+                // which is two wrong things about a type the author can see.
+                if let rask_types::Type::Slice(elem) = array {
+                    return Diagnostic::error(format!(
+                        "`{}` doesn't exist on a slice",
+                        method
+                    ))
+                    .with_code("E0843")
+                    .with_primary(
+                        *span,
+                        format!("`[{}]` is a view into storage it doesn't own", elem),
+                    )
+                    .with_fix(format!(
+                        "copy it first: `mut v: Vec<{}> = s.to_vec()`, then grow `v`",
+                        elem
+                    ))
+                    .with_why(
+                        "a slice borrows somebody else's elements and has no say over how many there are — growing one would have to move the storage out from under its owner [std.collections/V1]"
+                            .to_string(),
+                    );
+                }
                 let (elem, len) = match array {
                     rask_types::Type::Array { elem, len } => (elem.to_string(), *len),
                     other => (other.to_string(), 0),
@@ -2611,7 +2823,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "`{}` was consumed and never put back",
                     name
                 ))
-                .with_code("E0807")
+                .with_code("E0860")
                 .with_primary(self.span, format!("`{}` is still empty when this returns", name))
                 .with_secondary(*consumed_at, format!("`{}` was consumed here", name))
                 .with_help(format!(
@@ -2642,22 +2854,30 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
-            LinkOutlivesRack { link, rack, via } => {
+            LinkOutlivesRack { link, rack, via, carried } => {
+                let holds = if *carried { "holds links into" } else { "lives in" };
                 let (primary, fix) = match via {
                     rask_ownership::LinkEscape::Return => (
                         format!(
-                            "`{}` lives in `{}`, and `{}` dies when this function returns",
-                            link, rack, rack
+                            "`{}` {} `{}`, and `{}` dies when this function returns",
+                            link, holds, rack, rack
                         ),
-                        format!(
-                            "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
-                            rack
-                        ),
+                        if *carried {
+                            format!(
+                                "return the nodes' data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Vec<Link<…>>`",
+                                rack
+                            )
+                        } else {
+                            format!(
+                                "return the node's data instead, or take the rack as a parameter so it outlives the call: `func …(mutate {}: Rack<…>) -> Link<…>`",
+                                rack
+                            )
+                        },
                     ),
                     rask_ownership::LinkEscape::Assignment { target } => (
                         format!(
-                            "`{}` outlives `{}`, and the node `{}` points at dies with it",
-                            target, rack, link
+                            "`{}` outlives `{}`, and the node{} `{}` points at dies with it",
+                            target, rack, if *carried { "s" } else { "" }, link
                         ),
                         format!(
                             "move `{}` out to where `{}` lives, or copy the fields you need out of the node before the scope ends",
@@ -2665,7 +2885,12 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         ),
                     ),
                 };
-                Diagnostic::error(format!("`{}` would outlive the rack it points into", link))
+                let headline = if *carried {
+                    format!("`{}` holds links that would outlive the rack they point into", link)
+                } else {
+                    format!("`{}` would outlive the rack it points into", link)
+                };
+                Diagnostic::error(headline)
                     .with_code("E0379")
                     .with_primary(self.span, primary)
                     .with_fix(fix)
@@ -2836,7 +3061,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot {} in frozen context `{}`",
                     operation, context_ty
                 ))
-                .with_code("E0807")
+                .with_code("E0859")
                 .with_primary(self.span, format!("{} not allowed in frozen context", operation))
                 .with_help("remove `frozen` from the context clause, or remove the mutation")
                 .with_why("frozen contexts guarantee no structural mutations — this enables safe iteration without generation checks")
@@ -2877,7 +3102,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot clear `{}` inside `with` block",
                     collection
                 ))
-                .with_code("E0810")
+                .with_code("E0861")
                 .with_primary(self.span, "clear invalidates all elements")
                 .with_secondary(*binding_span, "element borrowed here")
                 .with_help("move the clear outside the with block")
@@ -2911,7 +3136,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "closure `{}` captures scoped borrow and cannot escape",
                     name
                 ))
-                .with_code("E0813")
+                .with_code("E0862")
                 .with_primary(self.span, "closure would outlive its captured borrow")
                 .with_fix("prefix the closure with `own` to move captures instead of borrowing them")
                 .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
@@ -2993,7 +3218,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
 
             RuntimeError::IntegerOverflow(msg) => {
                 Diagnostic::error(msg)
-                    .with_code("R0010")
+                    .with_code("R0018")
                     .with_primary(self.span, "arithmetic overflowed here")
                     .with_why("default arithmetic panics on overflow in all builds (type.overflow/OV1)")
                     .with_help("use `Wrapping<T>` from `num` for intentional wrapping, or widen the type")
@@ -3149,10 +3374,10 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_why("`!` takes the payload of a `T?` and panics when the value is absent [type.optionals/OPT13]")
             }
 
-            RuntimeError::ForcedError => {
-                Diagnostic::error("! on a value that was an error")
-                    .with_code("R0016")
-                    .with_primary(self.span, "this call returned its error branch")
+            RuntimeError::ForcedError(msg) => {
+                Diagnostic::error(format!("! on a value that was an error: {}", msg))
+                    .with_code("R0019")
+                    .with_primary(self.span, format!("this call returned `{}`", msg))
                     .with_help("`try` propagates the error, `catch e =>` handles it here")
                     .with_fix("replace `r!` with `try r`")
                     .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")

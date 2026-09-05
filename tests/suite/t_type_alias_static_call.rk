@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A transparent `type alias` is the same type under another spelling, so a
+// static call through it reaches the target's methods (#998).
+//
+// An instance call takes its prefix from the receiver's *type*, and by then the
+// alias has been resolved — `d.get()` was always fine. A static call takes it
+// from the spelling, and nothing resolved that: native mangled a call to
+// `Zwibble_make`, which nothing is named, and the interpreter had no variable
+// called `Zwibble` in scope.
+//
+// Native was fixed by the aliased-import work in #923, which taught the three
+// places that mangle a receiver's spelling to resolve it first. The interpreter
+// keys off the spelling in two more: the enum and `extend` tables, and — for a
+// stdlib type, whose statics live in the environment rather than in those
+// tables — the receiver lookup itself.
+
+import time.Duration
+
+struct Budget {
+    n: i64
+}
+
+extend Budget {
+    func make(v: i64) -> Budget {
+        return Budget { n: v }
+    }
+
+    func get(self) -> i64 {
+        return self.n
+    }
+}
+
+enum Colour {
+    Red
+    Green
+}
+
+type alias Zwibble = Budget
+type alias Span = Duration
+type alias Shade = Colour
+// A chain resolves the whole way down, not one hop.
+type alias Zwibble2 = Zwibble
+
+test "a static call on an alias of a user type" {
+    let d: Zwibble = Zwibble.make(7)
+    assert d.get() == 7
+}
+
+test "an instance call still works through the alias" {
+    // This half never broke — the receiver's type decides, and the alias is
+    // gone by then. Here so a fix that reaches static calls by breaking
+    // instance calls doesn't look like a pass.
+    let d: Zwibble = Budget.make(3)
+    assert d.get() == 3
+}
+
+test "a static call on an alias of a stdlib type" {
+    let s: Span = Span.from_millis(1500)
+    assert s.as_millis() == 1500
+}
+
+test "a variant call through an alias of an enum" {
+    let c: Shade = Shade.Red
+    assert c == Colour.Red
+}
+
+test "an alias of an alias" {
+    let d: Zwibble2 = Zwibble2.make(9)
+    assert d.get() == 9
+}

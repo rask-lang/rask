@@ -84,8 +84,24 @@ pub struct ConstDecl {
     pub ty: Option<String>,
     pub init: crate::expr::Expr,
     pub is_pub: bool,
+    /// Attributes (`@comptime_quota(50000)`), stored verbatim.
+    pub attrs: Vec<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+}
+
+impl ConstDecl {
+    /// The text inside `@comptime_quota(...)`, if the const carries it (CT35).
+    ///
+    /// Returned unparsed so the fold site can complain about `@comptime_quota(lots)`
+    /// instead of ignoring it — an attribute that silently does nothing is worse
+    /// than one that doesn't exist.
+    pub fn comptime_quota_arg(&self) -> Option<&str> {
+        self.attrs.iter().find_map(|a| {
+            let rest = a.trim().strip_prefix("comptime_quota")?.trim_start();
+            rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
+        })
+    }
 }
 
 /// A test block declaration.
@@ -94,6 +110,9 @@ pub struct TestDecl {
     pub name: String,
     pub body: Vec<Stmt>,
     pub is_comptime: bool,
+    /// `@allow(name)` and friends, same as `FnDecl::attrs`. A test body is
+    /// where a warning most often fires on purpose.
+    pub attrs: Vec<String>,
 }
 
 /// A benchmark block declaration.
@@ -101,6 +120,7 @@ pub struct TestDecl {
 pub struct BenchmarkDecl {
     pub name: String,
     pub body: Vec<Stmt>,
+    pub attrs: Vec<String>,
 }
 
 /// An external function declaration.

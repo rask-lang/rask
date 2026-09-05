@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // `.view()` — std.strings/V1–V6. The method was declared and left
 // `@unimplemented`, so `s.trim().view()` failed with E0353 plus a knock-on
-// E0361 about the binding, and E0324 couldn't offer the spec's FIX 1 for
+// E0361 about the binding, and E0303 couldn't offer the spec's FIX 1 for
 // storing a slice.
 //
 // A view is a `RaskStr` sharing the source's buffer and holding a refcount on

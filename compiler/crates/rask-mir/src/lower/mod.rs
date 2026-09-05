@@ -211,6 +211,13 @@ pub struct ComptimeGlobalMeta {
     /// What the elements are, for a Vec/Array global. Without it, indexing one
     /// had no element type to resolve and lowering fell back to a guess.
     pub elem_type: Option<String>,
+    /// What a folded `Map`'s keys and values are. Lowering needs both to size
+    /// the slots in the blob and to build the map they go into.
+    pub map_types: Option<(String, String)>,
+    /// `(byte offset, text)` for each element string too long to sit inline.
+    /// Codegen emits a static header for the text and writes its address at the
+    /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
+    pub string_relocs: Vec<(usize, String)>,
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
@@ -850,6 +857,19 @@ impl<'a> MirContext<'a> {
         if let Some(found) = self.find_enum(name) {
             return Some(found);
         }
+        // IM3, the same reason `resolve_type_str` follows aliases: a transparent
+        // alias is its target, so a variant reached through it is the target's
+        // variant. Without this `Shade.Red` under `type alias Shade = Colour`
+        // found no enum, fell through to a bare constant, and the comparison
+        // that followed read that integer as an address — a segfault, not a
+        // wrong answer (#998).
+        if let Some(target) = self.type_defs.alias_target(name) {
+            if target != name {
+                if let Some(found) = self.find_enum(target) {
+                    return Some(found);
+                }
+            }
+        }
         let base = name.split('<').next()?.trim();
         if base == name {
             return None;
@@ -947,8 +967,15 @@ impl<'a> MirContext<'a> {
                     } else {
                         name
                     };
-                    let parts = split_top_level_parens(bare, '|');
+                    let mut parts = split_top_level_parens(bare, '|');
                     if parts.len() > 1 {
+                        // Same order the checker canonicalizes to — by member
+                        // name. A union's member index is what says which member
+                        // is present, so the frame that writes one and the frame
+                        // that reads it have to agree, and this path reading the
+                        // written order while the checker read a sorted one is
+                        // how `AErr`'s slot came back as a `BErr` (#1103).
+                        parts.sort_by(|a, b| a.trim().cmp(b.trim()));
                         return MirType::Union(
                             parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
                         );
@@ -1057,13 +1084,40 @@ impl<'a> MirContext<'a> {
                     } else if let Some((idx, el)) = self.find_enum(base) {
                         MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                     } else {
-                        MirType::Ptr
+                        self.module_qualified_mir_type(name)
                     }
                 } else {
-                    MirType::Ptr
+                    self.module_qualified_mir_type(name)
                 }
             }
         }
+    }
+
+    /// A type reached through its module — `http.Response`, or `h.Response`
+    /// under `import http as h`.
+    ///
+    /// Layouts are filed under the bare name, and the checker's own
+    /// `resolve_named` has stripped the prefix like this since #915. MIR's
+    /// separate type-string parser never did, so an annotation written the
+    /// aliased way left the local a bare pointer and every field read off it
+    /// fell back to a machine word: `h.Response.status` is a `u16` and printed
+    /// through `i64_to_string`. Right only because the field sat in an 8-byte
+    /// slot that zero-extends it — and wrong the moment fields hold their real
+    /// widths (#1097, which is what blocks #1083).
+    fn module_qualified_mir_type(&self, name: &str) -> MirType {
+        let Some((_, bare)) = name.rsplit_once('.') else {
+            return MirType::Ptr;
+        };
+        if bare.is_empty() {
+            return MirType::Ptr;
+        }
+        if let Some((idx, sl)) = self.find_struct(bare) {
+            return self.struct_or_handle(bare, idx, sl);
+        }
+        if let Some((idx, el)) = self.find_enum(bare) {
+            return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
+        }
+        MirType::Ptr
     }
 
     /// The registration a whole container of links needs, or `None`.
@@ -1090,6 +1144,22 @@ impl<'a> MirContext<'a> {
         match head.as_str() {
             "Vec" => Some("Link_register_vec"),
             "Map" => Some("Link_register_map"),
+            _ => None,
+        }
+    }
+
+    /// The counterpart: what to call on the container a place *held*, when that
+    /// place is about to hold a different one.
+    ///
+    /// A container's records name it by address and live on the targets, which
+    /// have no way to hear that nobody holds the container any more. So
+    /// `old.children = old.children.filter(…)` left records for the vector it
+    /// replaced, and a later delete of one of those targets walked a record for
+    /// storage the program had finished with (#983).
+    pub(crate) fn container_link_forget(&self, ty: &Type) -> Option<&'static str> {
+        match self.container_link_registration(ty)? {
+            "Link_register_vec" => Some("Link_forget_vec"),
+            "Link_register_map" => Some("Link_forget_map"),
             _ => None,
         }
     }
@@ -1529,12 +1599,18 @@ pub(crate) struct LocalMeta {
     /// flow back through the param's pointer (mem.borrowing/M-rules), so
     /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
     pub is_mutate_param: bool,
-    /// #270: a scalar (Copy) `mutate` param passed by pointer. The local holds an
-    /// address; reads of the bare name load through it, writes store through it,
-    /// using this recorded scalar type for the access size. `None` for normal
-    /// locals and aggregate mutate params (which are already pointers used via
-    /// field access, not bare loads).
-    pub scalar_mutate_ptr: Option<MirType>,
+    /// This local holds an *address*, and the scalar at it has this type. Reads
+    /// of the bare name load through it, writes store through it, and the size
+    /// of the access comes from here. `None` for a normal local and for an
+    /// aggregate, whose MIR value is already an address used through field
+    /// access rather than a bare load.
+    ///
+    /// Two things produce one. A scalar (Copy) `mutate` parameter arrives by
+    /// pointer so the callee's writes reach the caller's storage (#270). And a
+    /// `mut` scalar that an `ensure` body reads and the function later writes
+    /// gets a stack cell of its own, so the cleanup hook can capture the cell
+    /// rather than a snapshot taken when the ensure was scheduled (#1011).
+    pub scalar_through_ptr: Option<MirType>,
     /// The value in this local is a heap box handed over by `own` (#739).
     ///
     /// `Owned<T>` erases to `T` in the checker (OW5), so nothing in the type says
@@ -1566,6 +1642,19 @@ pub struct MirLowerer<'a> {
     /// rather than a return value because the decision is made three call
     /// frames below the argument list it has to reach.
     spawn_result_boxed: bool,
+    /// Names bound to a closure that some `spawn(name)` in this function hands
+    /// to a task.
+    ///
+    /// A task hands back one word, so a closure whose result is wider than that
+    /// needs a wrapper that boxes it — and the wrapper is built while the
+    /// closure is lowered, which for `let g = own || { … }` happens at the
+    /// binding, several statements before the `spawn` that reveals why it
+    /// matters. Scanned up front for the same reason `ensure_read_names` is
+    /// (#1094).
+    spawned_closure_names: std::collections::HashSet<String>,
+    /// Which of those closures actually box, once lowered — `spawn` takes a
+    /// flag saying whether the word it gets back is a box the runtime owns.
+    spawn_boxed_bindings: HashMap<String, bool>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable names known to hold closure values
@@ -1581,6 +1670,12 @@ pub struct MirLowerer<'a> {
     /// same value at panic time as when the ensure was scheduled, which is what
     /// makes snapshotting a scalar into the hook's env exact instead of stale.
     reassigned_names: std::collections::HashSet<String>,
+    /// Every name that appears inside an `ensure` body in this function.
+    ///
+    /// Scanned up front, because whether a `mut` scalar needs a stack cell has
+    /// to be decided at its binding — which lowering reaches before it reaches
+    /// the `ensure` that reads it (#1011).
+    ensure_read_names: std::collections::HashSet<String>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
@@ -1969,6 +2064,25 @@ impl<'a> MirLowerer<'a> {
             rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
             _ => None,
         }
+    }
+
+    /// `Map<K, V>` → the two MIR types, when the checker settled both.
+    ///
+    /// An unresolved inference variable is not an answer, the same reason
+    /// `vec_elem_of_checker_type` refuses one: it lowers to `Ptr`, which is
+    /// indistinguishable from a real pointer-shaped type.
+    pub(crate) fn map_kv_of_checker_type(&self, ty: &Type) -> Option<(MirType, MirType)> {
+        let (name, args) = self.generic_head(ty)?;
+        if name != "Map" || args.len() < 2 {
+            return None;
+        }
+        let settled = |i: usize| match args.get(i) {
+            Some(rask_types::GenericArg::Type(inner)) if !matches!(**inner, Type::Var(_)) => {
+                Some(self.ctx.type_to_mir(inner))
+            }
+            _ => None,
+        };
+        Some((settled(0)?, settled(1)?))
     }
 
     /// The struct layout of whatever an expression evaluates to, when it's a
@@ -2595,6 +2709,23 @@ impl<'a> MirLowerer<'a> {
                 if src_ty == err {
                     return val;
                 }
+                // A union member is the err side too, and it is never *equal*
+                // to the union — `AErr` against `AErr | BErr` misses. It fell
+                // through and got wrapped as Ok, so `return AErr { … }` from an
+                // `i64 or (AErr | BErr)` came back to the caller as a success
+                // whose value was the error's payload bytes read as an integer
+                // (#1013). Not a crash, an answer, which is the worst thing
+                // `T or E` can do.
+                //
+                // The `try` path has always done this — `wrap_union_member` in
+                // lower/errors.rs — because propagation goes through a
+                // different producer. One shape, two producers, one of them
+                // covered.
+                if matches!(err, MirType::Union(_)) {
+                    if let Some(wrapped) = self.wrap_operand_into_union(&val, src_ty, err) {
+                        return wrapped;
+                    }
+                }
             }
         }
 
@@ -2830,39 +2961,195 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+    /// The expressions and nested bodies directly under a statement.
+    ///
+    /// One enumeration, three questions asked of it: which names this body
+    /// reassigns, which names its `ensure`s read, and where the `ensure`s are.
+    /// Keeping them on one walker is what stops the three drifting apart as
+    /// statement kinds are added.
+    fn stmt_children(
+        stmt: &rask_ast::stmt::Stmt,
+    ) -> (Vec<&Expr>, Vec<&Vec<rask_ast::stmt::Stmt>>) {
         use rask_ast::stmt::StmtKind as SK;
+        let mut kids: Vec<&Expr> = Vec::new();
+        let mut bodies: Vec<&Vec<rask_ast::stmt::Stmt>> = Vec::new();
         match &stmt.kind {
             SK::Assign { target, value, .. } => {
-                Self::note_place(target, out);
-                Self::scan_reassigned_expr(value, out);
+                kids.push(target);
+                kids.push(value);
             }
-            SK::Let { init, .. } | SK::Mut { init, .. } => Self::scan_reassigned_expr(init, out),
+            SK::Let { init, .. } | SK::Mut { init, .. } => kids.push(init),
             SK::LetTuple { init, .. } | SK::MutTuple { init, .. } | SK::LetStruct { init, .. } => {
-                Self::scan_reassigned_expr(init, out)
+                kids.push(init)
             }
-            SK::Expr(e) | SK::Return(Some(e)) => Self::scan_reassigned_expr(e, out),
-            SK::Break { value: Some(e), .. } => Self::scan_reassigned_expr(e, out),
+            SK::Expr(e) | SK::Return(Some(e)) => kids.push(e),
+            SK::Break { value: Some(e), .. } => kids.push(e),
             SK::While { cond, body, .. } => {
-                Self::scan_reassigned_expr(cond, out);
-                Self::scan_reassigned_body(body, out);
+                kids.push(cond);
+                bodies.push(body);
             }
             SK::WhileLet { expr, body, .. } => {
-                Self::scan_reassigned_expr(expr, out);
-                Self::scan_reassigned_body(body, out);
+                kids.push(expr);
+                bodies.push(body);
             }
             SK::For { iter, body, .. } | SK::ComptimeFor { iter, body, .. } => {
-                Self::scan_reassigned_expr(iter, out);
-                Self::scan_reassigned_body(body, out);
+                kids.push(iter);
+                bodies.push(body);
             }
-            SK::Loop { body, .. } | SK::Comptime(body) => Self::scan_reassigned_body(body, out),
+            SK::Loop { body, .. } | SK::Comptime(body) => bodies.push(body),
             SK::Ensure { body, else_handler } => {
-                Self::scan_reassigned_body(body, out);
+                bodies.push(body);
                 if let Some((_, handler)) = else_handler {
-                    Self::scan_reassigned_body(handler, out);
+                    bodies.push(handler);
                 }
             }
             _ => {}
+        }
+        (kids, bodies)
+    }
+
+    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+        use rask_ast::stmt::StmtKind as SK;
+        // The one thing a statement says on its own: an assignment rebinds the
+        // root of its target. Everything else is in the children.
+        if let SK::Assign { target, .. } = &stmt.kind {
+            Self::note_place(target, out);
+        }
+        let (kids, bodies) = Self::stmt_children(stmt);
+        for k in kids {
+            Self::scan_reassigned_expr(k, out);
+        }
+        for b in bodies {
+            Self::scan_reassigned_body(b, out);
+        }
+    }
+
+    /// Every name read inside an `ensure` in this body, nested scopes included.
+    ///
+    /// An over-approximation on purpose: it collects every identifier the ensure
+    /// mentions, bound or not, because the cost of a false positive is one
+    /// scalar getting a stack cell it didn't need, and the cost of a miss is an
+    /// ensure that silently doesn't run on a panic.
+    /// Every name handed to a `spawn` in this body — `spawn(g)`, or
+    /// `Thread.spawn(g)`.
+    ///
+    /// Only the bare-identifier form matters: an inline closure argument
+    /// already learns it is being spawned from the call that lowers it. This is
+    /// for the case where the closure was lowered at its binding, before
+    /// anything knew (#1094).
+    pub(crate) fn collect_spawned_names(
+        body: &[rask_ast::stmt::Stmt],
+    ) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        Self::find_spawned_body(body, &mut out);
+        out
+    }
+
+    fn find_spawned_body(
+        body: &[rask_ast::stmt::Stmt],
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        for stmt in body {
+            let (kids, bodies) = Self::stmt_children(stmt);
+            for k in kids {
+                Self::find_spawned_expr(k, out);
+            }
+            for b in bodies {
+                Self::find_spawned_body(b, out);
+            }
+        }
+    }
+
+    fn find_spawned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        let spawned_arg = match &expr.kind {
+            ExprKind::Call { func, args } => {
+                matches!(&func.kind, ExprKind::Ident(n) if n == "spawn")
+                    .then(|| args.first())
+                    .flatten()
+            }
+            ExprKind::MethodCall { method, args, .. } if method == "spawn" => args.first(),
+            _ => None,
+        };
+        if let Some(arg) = spawned_arg {
+            if let ExprKind::Ident(name) = &arg.expr.kind {
+                out.insert(name.clone());
+            }
+        }
+        let (kids, bodies) = Self::expr_children(expr);
+        for k in kids {
+            Self::find_spawned_expr(k, out);
+        }
+        for b in bodies {
+            Self::find_spawned_body(b, out);
+        }
+    }
+
+    pub(crate) fn collect_ensure_reads(
+        body: &[rask_ast::stmt::Stmt],
+    ) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        Self::find_ensures_body(body, &mut out);
+        out
+    }
+
+    fn find_ensures_body(
+        body: &[rask_ast::stmt::Stmt],
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        use rask_ast::stmt::StmtKind as SK;
+        for stmt in body {
+            if let SK::Ensure { body, else_handler } = &stmt.kind {
+                Self::note_idents_body(body, out);
+                if let Some((_, handler)) = else_handler {
+                    Self::note_idents_body(handler, out);
+                }
+            }
+            // Nested scopes can hold their own ensures.
+            let (kids, bodies) = Self::stmt_children(stmt);
+            for k in kids {
+                Self::find_ensures_expr(k, out);
+            }
+            for b in bodies {
+                Self::find_ensures_body(b, out);
+            }
+        }
+    }
+
+    fn find_ensures_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        let (kids, bodies) = Self::expr_children(expr);
+        for k in kids {
+            Self::find_ensures_expr(k, out);
+        }
+        for b in bodies {
+            Self::find_ensures_body(b, out);
+        }
+    }
+
+    fn note_idents_body(
+        body: &[rask_ast::stmt::Stmt],
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        for stmt in body {
+            let (kids, bodies) = Self::stmt_children(stmt);
+            for k in kids {
+                Self::note_idents_expr(k, out);
+            }
+            for b in bodies {
+                Self::note_idents_body(b, out);
+            }
+        }
+    }
+
+    fn note_idents_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        if let ExprKind::Ident(name) = &expr.kind {
+            out.insert(name.clone());
+        }
+        let (kids, bodies) = Self::expr_children(expr);
+        for k in kids {
+            Self::note_idents_expr(k, out);
+        }
+        for b in bodies {
+            Self::note_idents_body(b, out);
         }
     }
 
@@ -2872,7 +3159,8 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+    /// The sub-expressions and nested bodies directly under an expression.
+    fn expr_children(expr: &Expr) -> (Vec<&Expr>, Vec<&Vec<rask_ast::stmt::Stmt>>) {
         let mut kids: Vec<&Expr> = Vec::new();
         let mut bodies: Vec<&Vec<rask_ast::stmt::Stmt>> = Vec::new();
         match &expr.kind {
@@ -2880,26 +3168,17 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Call { func, args } => {
                 kids.push(func);
                 for a in args {
-                    if a.mode != rask_ast::expr::ArgMode::Default {
-                        Self::note_place(&a.expr, out);
-                    }
                     kids.push(&a.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 kids.push(object);
                 for a in args {
-                    if a.mode != rask_ast::expr::ArgMode::Default {
-                        Self::note_place(&a.expr, out);
-                    }
                     kids.push(&a.expr);
                 }
             }
             // OPT32: `take <place>` leaves `none` behind — a write to the place.
-            ExprKind::Take { place } => {
-                Self::note_place(place, out);
-                kids.push(place);
-            }
+            ExprKind::Take { place } => kids.push(place),
             ExprKind::Binary { left, right, .. } => {
                 kids.push(left);
                 kids.push(right);
@@ -2981,6 +3260,25 @@ impl<'a> MirLowerer<'a> {
             }
             _ => {}
         }
+        (kids, bodies)
+    }
+
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+        // What an expression says on its own: a call that can write an argument
+        // rebinds the caller's local, and `take <place>` leaves `none` behind
+        // (OPT32) — a write to the place.
+        match &expr.kind {
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+                for a in args {
+                    if a.mode != rask_ast::expr::ArgMode::Default {
+                        Self::note_place(&a.expr, out);
+                    }
+                }
+            }
+            ExprKind::Take { place } => Self::note_place(place, out),
+            _ => {}
+        }
+        let (kids, bodies) = Self::expr_children(expr);
         for k in kids {
             Self::scan_reassigned_expr(k, out);
         }
@@ -3102,7 +3400,20 @@ impl<'a> MirLowerer<'a> {
         let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
         let mut thunk_res_local: Option<LocalId> = None;
         for (i, cap) in caps.iter().enumerate() {
-            let dst = thunk_builder.alloc_local(cap.name.clone(), cap.ty.clone());
+            // A by-ref capture's local in the thunk is the same thing the outer
+            // local is, so it gets the same type. A `mut` scalar's stack cell is
+            // registered as `Ptr` by name — that is how the capture decision
+            // reads it as an address — but the local itself is a one-word array,
+            // and typing the thunk's copy `Ptr` made it look like a scalar's
+            // address instead of an aggregate. `addr_taken` then turned each
+            // read into a load through it, one dereference too many, and the
+            // hook read the value as if it were a pointer (#1011).
+            let cap_ty = self
+                .builder
+                .local_type(cap.outer)
+                .filter(|t| cap.by_ref && t.passed_by_address())
+                .unwrap_or_else(|| cap.ty.clone());
+            let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
                 env_ptr: env_param,
@@ -3116,6 +3427,9 @@ impl<'a> MirLowerer<'a> {
             if Some(i) == res_index {
                 thunk_res_local = Some(dst);
             } else {
+                // The body still resolves the name the way the outer function
+                // did — through the pointer for a cell — so the registered type
+                // stays `cap.ty`.
                 thunk_locals.insert(cap.name.clone(), (dst, cap.ty.clone()));
             }
         }
@@ -3558,10 +3872,13 @@ impl<'a> MirLowerer<'a> {
             synthesized_functions: Vec::new(),
             closure_counter: 0,
             spawn_result_boxed: false,
+            spawned_closure_names: std::collections::HashSet::new(),
+            spawn_boxed_bindings: HashMap::new(),
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
+            ensure_read_names: std::collections::HashSet::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -3587,6 +3904,8 @@ impl<'a> MirLowerer<'a> {
         // here rather than tracked as lowering goes, because the question is
         // about statements the ensure hasn't reached yet.
         lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
+        lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
+        lowerer.spawned_closure_names = Self::collect_spawned_names(&fn_decl.body);
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
         let self_type_name: Option<String> = fn_decl.params.iter()
@@ -3628,7 +3947,7 @@ impl<'a> MirLowerer<'a> {
                     meta.is_mutate_param = true;
                 }
                 if scalar_mutate {
-                    meta.scalar_mutate_ptr = Some(param_ty.clone());
+                    meta.scalar_through_ptr = Some(param_ty.clone());
                 }
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
@@ -4256,6 +4575,42 @@ impl<'a> MirLowerer<'a> {
         members
             .iter()
             .position(|m| self.mir_type_name(m).as_deref() == Some(name.as_str()))
+    }
+
+    /// Put a member value into its union's `[member index][payload]` layout.
+    ///
+    /// The operand twin of `wrap_union_member`, which takes a local because the
+    /// `try` path already has one. Returns `None` when the value isn't a member
+    /// of this union, so the caller can fall through to whatever it did before.
+    fn wrap_operand_into_union(
+        &mut self,
+        val: &MirOperand,
+        src_ty: &MirType,
+        union_ty: &MirType,
+    ) -> Option<MirOperand> {
+        let MirType::Union(members) = union_ty else {
+            return None;
+        };
+        if matches!(src_ty, MirType::Union(_)) {
+            return None;
+        }
+        let index = self.union_member_index(union_ty, src_ty)?;
+        let member_size = members.get(index).map(|m| m.size()).unwrap_or(8);
+
+        let slot = self.builder.alloc_temp(union_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_MEMBER_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(index as i64)),
+            store_size: Some(8),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::UNION_PAYLOAD_OFFSET,
+            value: val.clone(),
+            store_size: Some(member_size.max(8)),
+        }));
+        Some(MirOperand::Local(slot))
     }
 
     /// Which member of a union a *name* is, by position as written.
@@ -6640,6 +6995,7 @@ mod tests {
                         has_declared_default: false,
                             declared_default: None,
                         is_public: true,
+                        decl_index: 0,
                         is_type_param: false,
                     }],
                     attrs: vec![],
@@ -6659,6 +7015,7 @@ mod tests {
                         has_declared_default: false,
                             declared_default: None,
                         is_public: true,
+                        decl_index: 0,
                         is_type_param: false,
                     }],
                     attrs: vec![],
@@ -6816,9 +7173,9 @@ mod tests {
                     payload_size: 8,
                     fields: vec![
                         FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, is_type_param: false },
+                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
                         FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, is_type_param: false },
+                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
                     ],
                     attrs: vec![],
                 },

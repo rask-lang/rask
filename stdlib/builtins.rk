@@ -40,10 +40,6 @@ public func eprintln(msg: string) {}
 @native
 public func eprint(msg: string) {}
 
-/// Assert a condition is true. Panics with message if false.
-@native
-public func assert(condition: bool, msg: string?) {}
-
 /// Format values into a string.
 @native
 public func format(fmt: string) -> string {}

@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::addr_alias::AddrAliases;
 use crate::analysis::cfg;
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
@@ -576,6 +577,10 @@ fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // `s as i64` into an unsafe call hands out the address of `s`, and the
+    // native callee reads the buffer through it. Counting only the cast as a
+    // use released the buffer one statement before the call read it (#1036).
+    let aliases = AddrAliases::build(func);
     // A string parameter is borrowed from the caller, which keeps its own
     // reference and releases it at its own last use. Releasing here as well is
     // two releases for one reference:
@@ -659,7 +664,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // value it releases has been written. That freed whatever the
                 // uninitialized slot happened to point at.
                 let phi = matches!(stmt.kind, MirStmtKind::Phi { .. });
-                if !phi && uses::stmt_reads(stmt, *local) {
+                if !phi && aliases.stmt_reads(stmt, *local) {
                     last_use_idx = Some(si);
                 }
                 // If this statement defines the local, earlier uses are irrelevant
@@ -669,7 +674,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
             }
 
             // Check terminator
-            let term_reads = uses::terminator_reads(&func.blocks[block_idx].terminator, *local);
+            let term_reads = aliases.terminator_reads(&func.blocks[block_idx].terminator, *local);
 
             // A returned string is handed to the caller, not dropped. Decrementing
             // it here freed the buffer while the caller still held the only
@@ -864,6 +869,62 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
+    }
+
+    /// `unsafe { native_fn(fd, s as i64) }` — the release belongs after the
+    /// call, not after the cast.
+    ///
+    /// The cast is the last statement that names `s`, so the naive last-use
+    /// scan put the release between the cast and the call. The buffer hit zero
+    /// and the allocator wrote its free-list link into the first eight bytes,
+    /// which the native call then wrote to the socket: every HTTP response
+    /// started with eight bytes of garbage (#1036).
+    #[test]
+    fn release_follows_the_call_that_reads_the_address() {
+        let mut f = make_fn(
+            vec![
+                string_local(0, "s"),
+                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false },
+            ],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(0)),
+                        func: FunctionRef::internal("build".into()),
+                        args: vec![],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(1),
+                        rvalue: MirRValue::Cast {
+                            value: MirOperand::Local(local(0)),
+                            target_ty: MirType::I64,
+                        },
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::extern_c("rask_io_write_string".into()),
+                        args: vec![
+                            MirOperand::Constant(MirConst::Int(1)),
+                            MirOperand::Local(local(1)),
+                        ],
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f);
+
+        let stmts = &f.blocks[0].statements;
+        let dec = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::RcDec { local: l } if *l == local(0)))
+            .expect("string is released somewhere: {stmts:?}");
+        let write = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "rask_io_write_string"))
+            .unwrap();
+        assert!(dec > write, "release must follow the native write: {stmts:?}");
     }
 
     #[test]

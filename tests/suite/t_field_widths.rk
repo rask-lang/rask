@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct field is as wide as it says it is.
+//
+// Every field used to take a machine word, so `{ r: u8, g: u8, b: u8, a: u8 }`
+// was thirty-two bytes of which four were data (#1083). It wasn't an accident —
+// codegen stored every value as an i64 and the layout had to match — but it
+// leaked out of codegen in four places a user can see: `Atomic<T>` refused
+// payloads mem.atomics' own text uses, `@layout(C)` gave FFI the wrong offsets,
+// a `Vec<Rgba>` of a million pixels was 32 MB instead of 4, and the transparency
+// principle is about *visible* cost.
+//
+// Aggregate slots don't shrink with it: an `Option` payload, an enum tag and an
+// enum payload field are word slots by codegen's convention, and each says so
+// where it computes its own layout.
+//
+// The values here are chosen to show a read at the wrong width or offset: each
+// field holds its type's maximum, so a load that takes its neighbour's bytes
+// with it produces a different number.
+
+struct Rgba {
+    r: u8
+    g: u8
+    b: u8
+    a: u8
+}
+
+struct Pair {
+    x: i32
+    y: i32
+}
+
+struct Mixed {
+    flag: bool
+    count: i64
+    tag: u16
+    ratio: f32
+}
+
+test "a byte field holds a byte" {
+    let p = Rgba { r: 255u8, g: 1u8, b: 128u8, a: 0u8 }
+    assert p.r == 255u8
+    assert p.g == 1u8
+    assert p.b == 128u8
+    assert p.a == 0u8
+}
+
+test "two word-halves side by side" {
+    let q = Pair { x: 2147483647, y: -2147483648 }
+    assert q.x == 2147483647
+    assert q.y == -2147483648
+}
+
+test "mixed widths, each at its own" {
+    let m = Mixed {
+        flag: true,
+        count: 9223372036854775807i64,
+        tag: 65535u16,
+        ratio: 0.5f32,
+    }
+    assert m.flag
+    assert m.count == 9223372036854775807i64
+    assert m.tag == 65535u16
+    assert m.ratio == 0.5f32
+}
+
+// Derived equality walks the fields, and it read each one as a whole word — so
+// the first field's read took the second's bytes with it and two identical
+// `Pair`s compared unequal.
+test "derived equality reads each field at its width" {
+    let a = Pair { x: 1, y: 2 }
+    let b = Pair { x: 1, y: 2 }
+    let c = Pair { x: 1, y: 3 }
+    assert a == b
+    assert !(a == c)
+}
+
+test "and derived ordering" {
+    let a = Rgba { r: 1u8, g: 0u8, b: 0u8, a: 0u8 }
+    let b = Rgba { r: 2u8, g: 0u8, b: 0u8, a: 0u8 }
+    assert a < b
+    assert !(b < a)
+}
+
+test "elements of a container keep their widths" {
+    mut v: Vec<Rgba> = Vec.new()
+    v.push(Rgba { r: 9u8, g: 8u8, b: 7u8, a: 6u8 })
+    v.push(Rgba { r: 255u8, g: 0u8, b: 255u8, a: 0u8 })
+    assert v[0].r == 9u8
+    assert v[0].a == 6u8
+    assert v[1].r == 255u8
+    assert v[1].g == 0u8
+}
+
+// The slots that stay a word. A `bool?` is a tag plus a word, not a tag plus a
+// byte: codegen writes a scalar payload full-width.
+test "an optional of a narrow scalar" {
+    let yes: bool? = true
+    let no: bool? = none
+    assert yes?
+    assert no is none
+    if yes? as v {
+        assert v
+    }
+}
+
+enum Small {
+    A
+    B(u8)
+    C(i32, u16)
+}
+
+test "an enum payload is a word slot" {
+    let a = Small.A
+    let b = Small.B(255u8)
+    let c = Small.C(2147483647, 65535u16)
+    assert a == Small.A
+    assert !(a == b)
+    match b {
+        Small.B(n) => assert n == 255u8
+        _ => assert false, "expected B"
+    }
+    match c {
+        Small.C(x, y) => {
+            assert x == 2147483647
+            assert y == 65535u16
+        }
+        _ => assert false, "expected C"
+    }
+}
+
+// A struct element's strings are found by byte offset — the runtime is handed a
+// list of where they sit so it can release them. Narrow fields move those
+// offsets, so this is the case that would leak or free the wrong bytes if the
+// layout and the offset list disagreed.
+struct Tagged {
+    id: u16
+    name: string
+    level: u8
+    label: string
+}
+
+test "a container of structs holding strings" {
+    mut v: Vec<Tagged> = Vec.new()
+    v.push(Tagged { id: 65535u16, name: "first", level: 255u8, label: "one" })
+    v.push(Tagged { id: 1u16, name: "second", level: 0u8, label: "two" })
+    assert v[0].id == 65535u16
+    assert v[0].name == "first"
+    assert v[0].level == 255u8
+    assert v[0].label == "one"
+    assert v[1].name == "second"
+    assert v[1].label == "two"
+    assert v.len() == 2u64
+}

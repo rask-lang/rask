@@ -120,10 +120,27 @@ struct Desugarer {
     /// Set while walking one of those bodies.
     renumber: bool,
     errors: Vec<DesugarError>,
-    /// Type names known to implement `Error` (ER37): `@message` enums and
-    /// any type with a manual `message()` method. A single-payload `@message`
-    /// variant whose payload is in this set auto-delegates to `inner.message()`.
+    /// Type names known to implement `Error` (ER37). Every enum qualifies —
+    /// ER6 derives `message()` for all of them — plus any struct that writes
+    /// one by hand. A single-payload variant whose payload is in this set
+    /// auto-delegates to `inner.message()`.
     error_message_types: std::collections::HashSet<String>,
+    /// Types that spell out `message()` themselves, in the declaration body or
+    /// in an `extend` block. ER6's derive skips these: a hand-written message
+    /// is the override, so generating one alongside it would shadow the prose
+    /// the author wrote.
+    hand_written_message: std::collections::HashSet<String>,
+    /// Enum names that some signature uses as an error type — the `E` of a
+    /// `T or E` return, each component of a union `E`. ER6's derive runs for
+    /// these and leaves every other enum alone. See `used_as_an_error`.
+    error_positions: std::collections::HashSet<String>,
+    /// `@resource` type names, so ER6's derive can stand aside for an enum
+    /// carrying one. A generated `message()` has to match every variant, and a
+    /// payload variant's pattern must bind its payload — which for a resource
+    /// is a use the derived body can't consume (mem.linear/L2, ER42).
+    /// A payload variant has no bindingless pattern to reach for, so the whole
+    /// enum's derive is skipped rather than one arm's.
+    resource_types: std::collections::HashSet<String>,
 }
 
 impl Desugarer {
@@ -134,31 +151,133 @@ impl Desugarer {
             renumber: false,
             errors: Vec::new(),
             error_message_types: std::collections::HashSet::new(),
+            hand_written_message: std::collections::HashSet::new(),
+            error_positions: std::collections::HashSet::new(),
+            resource_types: std::collections::HashSet::new(),
         }
     }
 
-    /// Collect the type names that implement `Error` so single-payload
-    /// `@message` variants can decide whether to delegate. Purely syntactic:
-    /// a `@message` enum, or any struct/enum/impl that defines `message()`.
+    /// Work out, before anything is generated, which types will end up with a
+    /// `message()` and which of those wrote it themselves. Purely syntactic —
+    /// desugaring runs before there is a type table to ask.
+    ///
+    /// `error_message_types` has to be exactly the set that ends up with one,
+    /// because ER37 reads it to decide whether a single-payload variant
+    /// delegates: `Auth(AuthError)` renders as `inner.message()` only if
+    /// `AuthError` has one. Listing a type that never gets a `message()` would
+    /// generate a call to a method nobody declares.
     fn scan_error_message_types(&mut self, decls: &[Decl]) {
         let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
+        self.scan_error_positions(decls);
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Enum(e) => {
-                    if e.attrs.iter().any(|a| a == "message") || has_message(&e.methods) {
-                        self.error_message_types.insert(e.name.clone());
+                    if has_message(&e.methods) {
+                        self.hand_written_message.insert(e.name.clone());
+                    }
+                    if e.attrs.iter().any(|a| a == "resource") {
+                        self.resource_types.insert(e.name.clone());
                     }
                 }
                 DeclKind::Struct(s) => {
                     if has_message(&s.methods) {
                         self.error_message_types.insert(s.name.clone());
+                        self.hand_written_message.insert(s.name.clone());
+                    }
+                    if s.attrs.iter().any(|a| a == "resource") {
+                        self.resource_types.insert(s.name.clone());
                     }
                 }
                 DeclKind::Impl(i) => {
                     if has_message(&i.methods) {
                         self.error_message_types.insert(i.target_ty.clone());
+                        self.hand_written_message.insert(i.target_ty.clone());
                     }
                 }
+                _ => {}
+            }
+        }
+
+        // Second pass: an enum gets a `message()` if it wrote one, or if the
+        // derive will run for it. `derives_message` needs `hand_written_message`
+        // and `resource_types` filled, which is why it isn't the loop above.
+        for decl in decls {
+            if let DeclKind::Enum(e) = &decl.kind {
+                if self.hand_written_message.contains(&e.name) || self.derives_message(e) {
+                    self.error_message_types.insert(e.name.clone());
+                }
+            }
+        }
+    }
+
+    /// Should ER6's derive run for this enum?
+    ///
+    /// Two ways in. `@message` is the explicit request, and has been the only
+    /// one — the annotation's per-variant templates are how `examples/validation`
+    /// writes its error surface. The other is a signature naming the enum as an
+    /// error type, which is ER6 proper: that's the case where the `Error` bound
+    /// is about to be checked, and where a missing `message()` was E0344.
+    ///
+    /// Two ways out. A hand-written `message()` is the override, so the derive
+    /// stands aside rather than shadowing it. And an enum carrying a
+    /// `@resource` payload can't have one at all: every arm of the generated
+    /// match has to bind its payload, and a bound resource is a use the derived
+    /// body has no way to consume (mem.linear/L2, ER42).
+    fn derives_message(&self, e: &EnumDecl) -> bool {
+        let wanted =
+            e.attrs.iter().any(|a| a == "message") || self.error_positions.contains(&e.name);
+        wanted && !self.hand_written_message.contains(&e.name) && !self.carries_a_resource(e)
+    }
+
+    /// Which names a signature puts in an error position: the `E` of every
+    /// `T or E` return type in the program, and each component when that `E` is
+    /// a union. ER6's derive is limited to these.
+    ///
+    /// Deriving for *every* enum was the first shape, and it cost more than it
+    /// gave. `examples/cli_calculator.rk` stopped compiling: a derived
+    /// `message()` on its `Expr` tree drags the formatting machinery into
+    /// reachability, and one of the stdlib functions that comes with it,
+    /// `Metadata_compare`, is generated with a struct id whose layout was never
+    /// built — so it read its own fields as the program's first enum and
+    /// refused to order a `Heap<Expr>` (#1062). Beyond that specific bug, a
+    /// `message()` on every enum in every program is work nobody asked for.
+    ///
+    /// What the derive is *for* is ER4: an error enum satisfying the `Error`
+    /// bound with nothing written. A signature naming a type as an error is
+    /// exactly that, and the parser has already rendered `T or E` canonically,
+    /// so it can be read here without a type table.
+    ///
+    /// What this misses is an error type reached only through inference — a
+    /// private function with no declared error, or `or _`. Those still need a
+    /// hand-written `message()`, which is the state every error enum was in
+    /// before this.
+    fn scan_error_positions(&mut self, decls: &[Decl]) {
+        fn note(out: &mut std::collections::HashSet<String>, ret: &Option<String>) {
+            let Some(ret) = ret else { return };
+            let Some((_, err)) = rask_ast::type_str::result_parts(ret) else { return };
+            // A union error lists its components; `strip_generics` keeps the
+            // head so `ParseError<T>` still names `ParseError`.
+            for part in err.split('|') {
+                let name = rask_ast::type_str::bare_name(part.trim());
+                let head = name.split('<').next().unwrap_or(name).trim();
+                if !head.is_empty() {
+                    out.insert(head.to_string());
+                }
+            }
+        }
+        fn walk(out: &mut std::collections::HashSet<String>, methods: &[FnDecl]) {
+            for m in methods {
+                note(out, &m.ret_ty);
+            }
+        }
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Fn(f) => note(&mut self.error_positions, &f.ret_ty),
+                DeclKind::Struct(s) => walk(&mut self.error_positions, &s.methods),
+                DeclKind::Enum(e) => walk(&mut self.error_positions, &e.methods),
+                DeclKind::Impl(i) => walk(&mut self.error_positions, &i.methods),
+                DeclKind::Trait(t) => walk(&mut self.error_positions, &t.methods),
                 _ => {}
             }
         }
@@ -213,8 +332,9 @@ impl Desugarer {
     }
 
     fn desugar_enum(&mut self, e: &mut EnumDecl) {
-        // Generate message() method if @message attribute is present
-        if e.attrs.iter().any(|a| a == "message") {
+        // ER6: an error enum satisfies the `Error` bound with nothing written.
+        // See `derives_message` for which enums that means.
+        if self.derives_message(e) {
             if let Some(method) = self.generate_message_method(e) {
                 e.methods.push(method);
             }
@@ -222,6 +342,14 @@ impl Desugarer {
         for method in &mut e.methods {
             self.desugar_fn(method);
         }
+    }
+
+    /// Does any variant carry a `@resource` payload? See `resource_types`.
+    fn carries_a_resource(&self, e: &EnumDecl) -> bool {
+        e.variants
+            .iter()
+            .flat_map(|v| v.fields.iter())
+            .any(|f| self.resource_types.contains(f.ty.trim()))
     }
 
     /// Generate `func message(self) -> string` from @message annotations.
@@ -1175,8 +1303,19 @@ impl Desugarer {
                     });
                 }
                 InterpSegment::Expr(expr_str, offset_in_str) => {
-                    // Parse the expression using the real lexer/parser
-                    let lex = rask_lexer::Lexer::new_with_file_id(expr_str, span.file_id).tokenize();
+                    // `{p}` or `{p:debug}`, split the same way the parser does.
+                    // Dropping the spec here is what made a derived `message()`
+                    // demand `Displayable` of a struct payload: the generator
+                    // wrote `{p:debug}`, `parse_expr` read `p` and stopped, and
+                    // the `:debug` went nowhere.
+                    let (expr_text, spec) = match rask_ast::fmt_spec::split_spec(expr_str) {
+                        Some(pos) => (
+                            &expr_str[..pos],
+                            rask_ast::fmt_spec::parse_spec(&expr_str[pos + 1..]),
+                        ),
+                        None => (expr_str.as_str(), None),
+                    };
+                    let lex = rask_lexer::Lexer::new_with_file_id(expr_text, span.file_id).tokenize();
                     if !lex.errors.is_empty() {
                         return None; // Parse error — leave as raw string
                     }
@@ -1188,19 +1327,7 @@ impl Desugarer {
                     let abs_offset = span.start + 1 + *offset_in_str;
                     offset_expr_spans(&mut parsed, abs_offset);
 
-                    let expr_span = parsed.span;
-                    // Wrap in to_string() call
-                    let to_string_call = Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::MethodCall {
-                            object: Box::new(parsed),
-                            method: "to_string".to_string(),
-                            type_args: None,
-                            args: vec![],
-                        },
-                        span: expr_span,
-                    };
-                    exprs.push(to_string_call);
+                    exprs.push(self.render_expr(parsed, spec));
                 }
             }
         }
@@ -1265,8 +1392,42 @@ fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
     if fields.is_empty() {
         return base;
     }
-    let parts: Vec<String> = fields.iter().map(|f| format!("{{{}}}", f.name)).collect();
+    let parts: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            if renders_as_display(&f.ty) {
+                format!("{{{}}}", f.name)
+            } else {
+                format!("{{{}:debug}}", f.name)
+            }
+        })
+        .collect();
     format!("{}: {}", base, parts.join(", "))
+}
+
+/// Can a payload of this declared type go straight into `{…}`?
+///
+/// Only if it has `to_string`, and desugaring runs before there is a type table
+/// to ask — so this is the syntactic answer: the primitives and `string`, which
+/// always do. Everything else goes through `{…:debug}`, which every type has
+/// (std.fmt/G2).
+///
+/// The alternative was `{…}` for every payload, and that made ER6 a trap: an
+/// ordinary `enum Shape { Carries(p: Opaque) }` stopped compiling with
+/// "`Opaque` does not implement `Displayable`", pointing at the struct rather
+/// than at anything the author had written about messages. Debug for a string
+/// would quote it, which is why the primitives keep the plain form and the
+/// spec's own `unexpected end: {ctx}` still reads that way.
+fn renders_as_display(ty: &str) -> bool {
+    matches!(
+        ty.trim(),
+        "string"
+            | "char"
+            | "bool"
+            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+            | "f32" | "f64"
+    )
 }
 
 /// ER36: positional payload refs `{0}`/`{1}` name the auto-generated tuple
@@ -1320,40 +1481,15 @@ fn base_type_name(name: &str) -> &str {
 }
 
 /// Map binary operators to method names (if they should be desugared).
+/// The map itself lives in `rask_ast` — the checker reads it too, to tell a
+/// desugared operator apart from a real method call.
 fn binary_op_method(op: BinOp) -> Option<&'static str> {
-    match op {
-        // Arithmetic
-        BinOp::Add => Some("add"),
-        BinOp::Sub => Some("sub"),
-        BinOp::Mul => Some("mul"),
-        BinOp::Div => Some("div"),
-        BinOp::Mod => Some("rem"),
-        // Comparison
-        BinOp::Eq => Some("eq"),
-        BinOp::Ne => Some("eq"), // Handled specially: !a.eq(b)
-        BinOp::Lt => Some("lt"),
-        BinOp::Gt => Some("gt"),
-        BinOp::Le => Some("le"),
-        BinOp::Ge => Some("ge"),
-        // Bitwise
-        BinOp::BitAnd => Some("bit_and"),
-        BinOp::BitOr => Some("bit_or"),
-        BinOp::BitXor => Some("bit_xor"),
-        BinOp::Shl => Some("shl"),
-        BinOp::Shr => Some("shr"),
-        // Logical - keep as binary (short-circuiting)
-        BinOp::And | BinOp::Or => None,
-    }
+    rask_ast::expr::binary_op_method(op)
 }
 
 /// Map unary operators to method names (if they should be desugared).
 fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
-    match op {
-        UnaryOp::Neg => Some("neg"),
-        UnaryOp::BitNot => Some("bit_not"),
-        // Logical not, reference, deref, and own remain as unary operators
-        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => None,
-    }
+    rask_ast::expr::unary_op_method(op)
 }
 
 /// Shift all spans in an expression tree by `offset` bytes.

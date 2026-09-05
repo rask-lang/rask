@@ -148,6 +148,9 @@ RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 void     rask_vec_sort_f64(RaskVec *v);
+// Sort a Vec of (key, value) pairs by the key at offset 0. `key_kind` is one of
+// the RASK_DEBUG_ELEM_* codes below.
+void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
@@ -320,6 +323,9 @@ void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
 void        rask_f64_to_exp(RaskStr *out, double val);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
+void        rask_panic_forced_error(const RaskStr *msg);
+void        rask_panic_forced_error_at(const char *file, int32_t line, int32_t col,
+                                       const RaskStr *msg);
 void        rask_string_debug(RaskStr *out, const RaskStr *s);
 void        rask_char_debug(RaskStr *out, int32_t codepoint);
 
@@ -417,6 +423,17 @@ uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+
+// How `rask_vec_debug` reads one element. The vector header only carries a
+// width, and a four-byte slot could be an i32, a u32 or an f32 — all three
+// print differently — so the caller says which.
+#define RASK_DEBUG_ELEM_I64    0
+#define RASK_DEBUG_ELEM_U64    1
+#define RASK_DEBUG_ELEM_F64    2
+#define RASK_DEBUG_ELEM_BOOL   3
+#define RASK_DEBUG_ELEM_STRING 4
+#define RASK_DEBUG_ELEM_CHAR   5
+void     rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind);
 int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
 // ─── Map ────────────────────────────────────────────────────
@@ -511,6 +528,7 @@ int64_t     rask_pool_remove_out(RaskPool *p, int64_t packed, void *out);
 int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 RaskVec    *rask_pool_handles_packed(const RaskPool *p);
 RaskVec    *rask_pool_values(const RaskPool *p);
+RaskVec    *rask_pool_entries(const RaskPool *p);
 RaskVec    *rask_pool_drain(RaskPool *p);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
@@ -572,6 +590,8 @@ void      rask_link_set(void **slot, void *target);
 // re-splices in O(1) — no scan of the old target's incoming list.
 void      rask_link_set_node(void *payload, int64_t offset, void *target);
 void      rask_link_forget(void **slot);
+void      rask_link_forget_vec(RaskVec *v);
+void      rask_link_forget_map(RaskMap *m);
 // A link stored in a container. The record names the container, not a position:
 // pushes, removals and rehashing all move entries around.
 void      rask_link_register_element(RaskVec *v, void *target);
@@ -942,6 +962,9 @@ void rask_assert_fail_cmp_i64(int64_t left, int64_t right,
 void rask_assert_fail_cmp_char(int64_t left, int64_t right,
                                const char *op, const char *file,
                                int32_t line, int32_t col);
+void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
@@ -1136,8 +1159,18 @@ int64_t rask_sender_clone_i64(int64_t tx);
 int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_try_recv_i64(int64_t rx);
 int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr);
+int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
 int64_t rask_recver_close_i64(int64_t rx);
+
+// ─── Subprocess (std.os) ────────────────────────────────────
+// The builder lives in Rask; this is the part that needs the OS. The captured
+// output is thread-local and belongs to the most recent run on that thread.
+int64_t rask_process_run(const RaskStr *program, const RaskVec *args, const RaskVec *envs,
+                         const RaskStr *dir, int64_t stdin_mode, int64_t stdout_mode,
+                         int64_t stderr_mode);
+void    rask_process_stdout(RaskStr *out);
+void    rask_process_stderr(RaskStr *out);
 
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.

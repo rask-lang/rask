@@ -26,22 +26,21 @@ enum Node {
     Branch(Vec<i32>)
 }
 
-// The loops that sum a Branch payload live in helpers: `rask fmt` unwraps a match
-// arm whose body is a `for` loop into `Branch(vs) => for v in vs { … }`, which
-// doesn't parse (#925). With a call as the arm body there is nothing to unwrap.
-func sum_all(vs: Vec<i32>) -> i32 {
+// The loop lives in the arm, which is where it reads best. `rask fmt` used to
+// unwrap the arm's braces into `Branch(vs) => for v in vs { … }` and hand back
+// source the parser rejects (#925) — every arm body was spanned from the `match`
+// keyword, so the "did the source have braces?" test never saw one.
+func node_value(n: Node) -> i32 {
     mut total = 0
-    for v in vs {
-        total = total + v
+    match n {
+        Leaf(v) => total = v
+        Branch(vs) => {
+            for v in vs {
+                total = total + v
+            }
+        }
     }
     return total
-}
-
-func node_value(n: Node) -> i32 {
-    return match n {
-        Leaf(v) => v,
-        Branch(vs) => sum_all(vs),
-    }
 }
 
 func total_qty(o: Order) -> i32 {
@@ -162,21 +161,23 @@ test "writing three levels down" {
     assert inv.orders[0].id == 1
 }
 
-// The Vec is bound first: an array literal fills a `Vec<T>` slot in a struct
-// field or a function argument, but not in an enum payload (#922, which also has
-// expected/found swapped in its message).
+// C4: an array literal fills the `Vec<T>` a variant declares, same as it fills a
+// struct field or a function argument. The payload used to be inferred on its
+// own first, so the literal arrived as a `[i32; 3]` and was rejected — with
+// expected and found the wrong way round, which told the reader to write the
+// type they had already written (#922).
 test "an enum with a collection payload" {
     let leaf = Node.Leaf(7)
     assert leaf is Leaf
-    let ns: Vec<i32> = [1, 2, 3]
-    let branch = Node.Branch(ns)
+    let branch = Node.Branch([1, 2, 3])
     assert node_value(branch) == 6
     assert node_value(Node.Leaf(7)) == 7
+    let ns: Vec<i32> = [1, 2, 3]
+    assert node_value(Node.Branch(ns)) == 6
 }
 
 test "a Vec of enums with collection payloads" {
-    let pair: Vec<i32> = [2, 3]
-    let nodes: Vec<Node> = [Node.Leaf(1), Node.Branch(pair), Node.Leaf(4)]
+    let nodes: Vec<Node> = [Node.Leaf(1), Node.Branch([2, 3]), Node.Leaf(4)]
     assert nodes.len() == 3
     mut total = 0
     for n in nodes {

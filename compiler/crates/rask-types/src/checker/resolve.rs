@@ -109,6 +109,44 @@ impl TypeChecker {
         )
     }
 
+    /// An unsuffixed literal on the far side of an operator whose *other* side
+    /// only settled after the body was walked.
+    ///
+    /// `func double(x) { x * 2 }` called once, with an `f64`: the call pins `x`,
+    /// but the call comes after the body, so by then the `2` had been left to
+    /// default and came out `i32`. The body then reported `*` between `f64` and
+    /// `i32` for a program with no `i32` anywhere in it (#904) — and the spec
+    /// uses that exact function as its worked example of an inferred signature.
+    ///
+    /// Asked before literal defaulting and only where the settled side is a
+    /// numeric primitive, so a receiver that turns out to be a struct with its
+    /// own `mul` keeps whatever argument type that overload declares.
+    pub(super) fn settle_operator_literals(&mut self) {
+        let pending: Vec<TypeConstraint> = self.deferred_methods.clone();
+        for constraint in pending {
+            let TypeConstraint::HasMethod { ty, method, args, span, .. } = constraint else {
+                continue;
+            };
+            if !Self::is_homogeneous_operator(&method) {
+                continue;
+            }
+            let [arg] = args.as_slice() else { continue };
+            let recv = self.ctx.apply(&ty);
+            let arg_ty = self.ctx.apply(arg);
+            let bare_literal = |t: &Type, this: &Self| {
+                matches!(t, Type::Var(id) if this.ctx.literal_vars.contains_key(id))
+            };
+            let (open, settled) = if bare_literal(&arg_ty, self) && Self::is_numeric_primitive(&recv) {
+                (arg_ty.clone(), recv.clone())
+            } else if bare_literal(&recv, self) && Self::is_numeric_primitive(&arg_ty) {
+                (recv.clone(), arg_ty.clone())
+            } else {
+                continue;
+            };
+            let _ = self.unify(&open, &settled, span);
+        }
+    }
+
     /// The element type `T` of a `Handle<T>`, or `None` for anything else.
     /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
     pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
@@ -472,6 +510,16 @@ impl TypeChecker {
                 };
                 has("Displayable") || has("Error")
             }
+            // std.fmt/D3: a container has no `to_string`. `{v}` on one used to
+            // pass this gate and then print the buffer's address natively —
+            // the interpreter refused at run time with "no method to_string on
+            // type Vec", so the two backends disagreed about a program that
+            // shouldn't compile. `{v:debug}` renders it and needs nothing.
+            Type::Tuple(_) | Type::Array { .. } | Type::Slice(_) => false,
+            Type::UnresolvedGeneric { name, .. } => !matches!(
+                name.as_str(),
+                "Vec" | "Map" | "Set" | "Pool" | "Rack" | "Iterator"
+            ),
             _ => true,
         }
     }
@@ -509,7 +557,7 @@ impl TypeChecker {
 
     /// A type as the user wrote it. `Type`'s own Display can't name a
     /// registered type — it prints `<type#7>`.
-    fn render_type(&self, ty: &Type) -> String {
+    pub(super) fn render_type(&self, ty: &Type) -> String {
         match ty {
             Type::Result { ok, err } if **err == Type::None => {
                 format!("{}?", self.render_type(ok))
@@ -533,6 +581,12 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
+
+        // Type arguments the call wrote, if any. They bind the method's own type
+        // parameters where a stub signature has them (#1029).
+        let written: Vec<Type> = call_node
+            .and_then(|n| self.written_method_type_args.get(&n).cloned())
+            .unwrap_or_default();
 
         // CALL6: record the resolved receiver before any arm runs. Every path
         // below dispatches on this exact type, so recording once here covers
@@ -623,7 +677,13 @@ impl TypeChecker {
                 });
                 return Ok(progress);
             }
-            if !self.is_displayable(&ty) {
+            // `{:debug}` is the free half of the D3 split: developer-facing
+            // output for every type, no opt-in. Only `{}` and a bare
+            // `to_string()` need Displayable.
+            let is_debug = call_node
+                .map(|n| self.debug_fmt_calls.contains(&n))
+                .unwrap_or(false);
+            if !is_debug && !self.is_displayable(&ty) {
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
                     interpolated: method == "__fmt",
@@ -646,6 +706,32 @@ impl TypeChecker {
         // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
         if method == "origin" && args.is_empty() {
             return self.unify(&ret, &Type::String, span);
+        }
+
+        // `Vec.new<string>()` — a turbofish on a container constructor. The
+        // static resolvers below mint one fresh variable per parameter and never
+        // look at what the call wrote, so the binding stayed open and every
+        // later use widened it instead of being checked against it: `v.push(7)`
+        // on that line was accepted, and `{v:debug}` had no element type to
+        // render (#1084). Written arguments spell the container out, the same as
+        // an annotation would.
+        if !written.is_empty() && method == "new" && args.is_empty() {
+            let bare = match &ty {
+                Type::UnresolvedNamed(name) => Some(name.clone()),
+                Type::Named(_) => super::receiver_name(&ty, &self.types),
+                _ => None,
+            };
+            if let Some(name) = bare.filter(|n| matches!(n.as_str(), "Vec" | "Map" | "Set" | "Rack")) {
+                let spelled = Type::UnresolvedGeneric {
+                    name,
+                    args: written
+                        .iter()
+                        .cloned()
+                        .map(|t| GenericArg::Type(Box::new(t)))
+                        .collect(),
+                };
+                return self.unify(&ret, &spelled, span);
+            }
         }
 
         match &ty {
@@ -986,13 +1072,13 @@ impl TypeChecker {
                     }
                 }
             }
-            Type::String => self.resolve_string_method(&method, &args, &ret, span),
+            Type::String => self.resolve_string_method(&method, &args, &ret, &written, span),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
             // and used to miss the resolver above entirely.
             Type::UnresolvedNamed(ref name) if name == "string" => {
-                self.resolve_string_method(&method, &args, &ret, span)
+                self.resolve_string_method(&method, &args, &ret, &written, span)
             }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } | Type::Slice(_) => {
@@ -1120,9 +1206,10 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Random" => {
                 self.resolve_rng_method(&method, &args, &ret, span)
             }
-            // Atomic types (AtomicBool, AtomicI8..AtomicU64, AtomicUsize, AtomicIsize)
-            Type::UnresolvedNamed(name) if Self::is_atomic_type(name) => {
-                self.resolve_atomic_method(name, &method, &args, &ret, span)
+            // `Atomic<T>` — one type, one spelling (mem.atomics/GA1).
+            _ if self.atomic_payload(&ty).is_some() => {
+                let payload = self.atomic_payload(&ty).expect("just checked");
+                self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
             // Thread.spawn(closure) → ThreadHandle<T>
             Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
@@ -1820,6 +1907,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        written: &[Type],
         span: Span,
     ) -> Result<bool, TypeError> {
         if let Some(method_def) = rask_stdlib::lookup_method("string", method) {
@@ -1837,9 +1925,17 @@ impl TypeChecker {
             // every parse yield the literal type `T`, so `const x: f64 =
             // s.parse()` never learned the target and ran the integer parse
             // (#480). A fresh var lets the call site decide.
+            // A type argument written at the call binds the method's own
+            // parameter; `freshen_free_type_params` only invents a variable for
+            // the ones nothing named. `parse_stub_type` has already rewritten a
+            // single-uppercase name to `_Any`, so that is the key to seed.
+            let mut seen = std::collections::HashMap::new();
+            if let Some(first) = written.first() {
+                seen.insert("_Any".to_string(), first.clone());
+            }
             let ret_ty = self.freshen_free_type_params(
                 &super::builtins::parse_stub_type(&method_def.ret_ty),
-                &mut std::collections::HashMap::new(),
+                &mut seen,
             );
             return self.unify(ret, &ret_ty, span);
         }
@@ -1921,10 +2017,11 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        // A slice is a view and has no growth surface either, but it reaches
-        // this function as `Type::Slice` and never had the `Vec` fallback wired
-        // up, so only the fixed array needs rejecting here.
-        if matches!(array_ty, Type::Array { .. }) && Self::changes_length(method) {
+        // Neither a fixed array nor a slice has a growth surface: one has a
+        // length in its type, the other is a view into somebody else's storage.
+        if matches!(array_ty, Type::Array { .. } | Type::Slice(_))
+            && Self::changes_length(method)
+        {
             return Err(TypeError::FixedArrayGrowth {
                 method: method.to_string(),
                 array: array_ty.clone(),
@@ -1932,29 +2029,23 @@ impl TypeChecker {
             });
         }
 
-        if let Some(method_def) = rask_stdlib::lookup_method("Vec", method) {
-            let expected_params = method_def.params.len();
-            if args.len() != expected_params {
-                return Err(TypeError::ArityMismatch {
-                    expected: expected_params,
-                    found: args.len(),
-                    span,
-                });
-            }
-            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
-            return self.unify(ret, &ret_ty, span);
-        }
-
-        match method {
-            "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
-            "push" => self.unify(ret, &Type::Unit, span),
-            "pop" => {
-                let elem_ty = self.ctx.fresh_var();
-                self.unify(ret, &Type::option(elem_ty), span)
-            }
-            _ => Ok(false),
-        }
+        // An array reads like a `Vec` of its element type, so hand the whole
+        // question to the `Vec` resolver with that element as the type
+        // argument.
+        //
+        // It used to take the declared return type straight out of the stub
+        // instead, and a stub says `Iterator<T>` — with `T` the parameter name,
+        // nothing substituted. So `[1, 2, 3].iter()` produced an iterator whose
+        // element type was that dangling `T`, the closure parameter in the
+        // `.filter(|x| …)` after it had no type, and MIR gave up: "method `rem`
+        // on receiver of unresolved type". The same call on a `Vec<i64>` was
+        // always fine (#1026).
+        let elem = match array_ty {
+            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            _ => self.ctx.fresh_var(),
+        };
+        let type_args = vec![GenericArg::Type(Box::new(elem))];
+        self.resolve_vec_method(&type_args, method, args, ret, span)
     }
 
     pub(super) fn resolve_file_method(
@@ -3354,8 +3445,14 @@ impl TypeChecker {
                 Some(self.resolve_map_method(type_args, method, args, ret, span))
             }
             "Random" => Some(self.resolve_rng_method(method, args, ret, span)),
-            name if Self::is_atomic_type(name) => {
-                Some(self.resolve_atomic_method(name, method, args, ret, span))
+            "Atomic" => {
+                let payload = match type_args.first() {
+                    Some(GenericArg::Type(t)) => (**t).clone(),
+                    _ => self
+                        .atomic_payload(&Type::UnresolvedNamed(type_name.to_string()))
+                        .unwrap_or_else(|| self.ctx.fresh_var()),
+                };
+                Some(self.resolve_atomic_method(payload, method, args, ret, span))
             }
             name if Self::is_simd_type(name) => {
                 Some(self.resolve_simd_method(name, method, args, ret, span))
@@ -3419,59 +3516,142 @@ impl TypeChecker {
         }
     }
 
-    /// Check whether a type name is a concrete atomic type.
-    fn is_atomic_type(name: &str) -> bool {
-        matches!(
-            name,
-            "AtomicBool"
-                | "AtomicI8"
-                | "AtomicU8"
-                | "AtomicI16"
-                | "AtomicU16"
-                | "AtomicI32"
-                | "AtomicU32"
-                | "AtomicI64"
-                | "AtomicU64"
-                | "AtomicUsize"
-                | "AtomicIsize"
-        )
-    }
-
-    /// Map atomic type name to its value type.
-    fn atomic_value_type(name: &str) -> Type {
-        match name {
-            "AtomicBool" => Type::Bool,
-            "AtomicI8" => Type::I8,
-            "AtomicU8" => Type::U8,
-            "AtomicI16" => Type::I16,
-            "AtomicU16" => Type::U16,
-            "AtomicI32" => Type::I32,
-            "AtomicU32" => Type::U32,
-            "AtomicI64" => Type::I64,
-            "AtomicU64" => Type::U64,
-            "AtomicUsize" => Type::I64, // usize = i64 on 64-bit
-            "AtomicIsize" => Type::I64, // isize = i64 on 64-bit
-            _ => Type::I64,
+    /// The payload written in `Atomic<T>`, if this is one.
+    ///
+    /// mem.atomics/GA1: `Atomic<T>` is the only spelling. The eleven
+    /// `AtomicU64`-style names the registry used to carry are gone — the rule
+    /// exists so a reader never has to wonder whether a named form and the
+    /// generic form differ.
+    fn atomic_payload(&mut self, ty: &Type) -> Option<Type> {
+        match ty {
+            Type::UnresolvedGeneric { name, args } if name == "Atomic" => match args.first() {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => Some(self.ctx.fresh_var()),
+            },
+            // `Atomic.new(0)` with no written argument — the value settles it.
+            Type::UnresolvedNamed(name) if name == "Atomic" => Some(self.ctx.fresh_var()),
+            // A static call keeps its written arguments in the name.
+            Type::UnresolvedNamed(name) if name.starts_with("Atomic<") => {
+                let inner = name.strip_prefix("Atomic<")?.strip_suffix('>')?.trim();
+                Some(crate::checker::parse_type_string(inner, &self.types).ok()?)
+            }
+            _ => None,
         }
     }
 
-    /// True for integer atomic types (not AtomicBool).
-    fn is_integer_atomic(name: &str) -> bool {
-        name != "AtomicBool"
+    /// GA2: why this payload can't go in an atomic, or `None` when it can.
+    ///
+    /// "One machine word" is the whole rule, so what matters is how wide the
+    /// payload actually is. That used to be a field count times eight, because
+    /// every struct field was a word whatever it was written as — so
+    /// `Atomic<Slot>` over `{ index: i32, generation: i32 }` was rejected as two
+    /// words, and that struct is the example mem.atomics' own text uses. Fields
+    /// hold their declared widths now (#1083), so the rule reads the width.
+    fn atomic_payload_problem(&self, ty: &Type) -> Option<String> {
+        match self.resolve_named(ty) {
+            // Still open — the value that settles it decides, and rejecting on
+            // "don't know" would refuse code the checker later accepts.
+            Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            | Type::F32 | Type::F64 | Type::Bool | Type::Char => None,
+            Type::I128 | Type::U128 => Some(
+                "a 128-bit payload needs `target.has_atomic128`, which isn't wired up yet (AT7)"
+                    .to_string(),
+            ),
+            Type::Named(id) => match self.types.get(id) {
+                Some(TypeDef::Struct { fields, .. }) => {
+                    let fields: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                    for f in &fields {
+                        if let Some(why) = self.atomic_payload_problem(f) {
+                            return Some(format!("one of its fields can't either — {why}"));
+                        }
+                    }
+                    let widths: Option<Vec<u32>> = fields
+                        .iter()
+                        .map(|f| self.resolve_named(f).scalar_bytes())
+                        .collect();
+                    let Some(widths) = widths else {
+                        return Some(
+                            "only a struct of scalars can be a payload (GA2)".to_string(),
+                        );
+                    };
+                    let laid_out = Self::packed_scalar_bytes(&widths);
+                    let data: u32 = widths.iter().sum();
+                    if laid_out > 8 {
+                        return Some(format!(
+                            "it is {laid_out} bytes; an atomic is one machine word (GA2)"
+                        ));
+                    }
+                    if laid_out != data {
+                        // GA4: compare_exchange compares raw bytes, so two
+                        // logically equal values with different padding would
+                        // fail CAS for no reason the author can see.
+                        return Some(format!(
+                            "its fields are {data} bytes in a {laid_out}-byte layout, so it has \
+                             padding — and CAS compares raw bytes (GA2, GA4)"
+                        ));
+                    }
+                    None
+                }
+                _ => Some("only a struct of word-sized data can be a payload (GA2)".to_string()),
+            },
+            other => Some(format!(
+                "`{}` isn't something the hardware can read or write in one instruction (GA2)",
+                self.render_type(&other)
+            )),
+        }
     }
 
-    /// Resolve methods on atomic types (mem.atomics spec).
+    /// How many bytes a struct of scalars of these widths takes, laid out the
+    /// way `rask_mono` lays one out: largest alignment first, each field at its
+    /// own alignment, padded to the struct's (type.structs/S1, S3, S4).
+    fn packed_scalar_bytes(widths: &[u32]) -> u32 {
+        let mut widths = widths.to_vec();
+        widths.sort_by(|a, b| b.cmp(a));
+        let max_align = widths.first().copied().unwrap_or(1);
+        let mut offset = 0u32;
+        for w in widths {
+            offset = offset.div_ceil(w) * w;
+            offset += w;
+        }
+        offset.div_ceil(max_align) * max_align
+    }
+
+    /// GA3: the fetch family exists where the payload can do arithmetic.
+    fn is_countable_payload(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                | Type::F32 | Type::F64
+                | Type::Var(_)
+        )
+    }
+
+    /// Resolve methods on `Atomic<T>` (mem.atomics).
     pub(super) fn resolve_atomic_method(
         &mut self,
-        type_name: &str,
+        val_ty: Type,
         method: &str,
         args: &[Type],
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let val_ty = Self::atomic_value_type(type_name);
-        let self_ty = Type::UnresolvedNamed(type_name.to_string());
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Atomic".to_string(),
+            args: vec![GenericArg::Type(Box::new(val_ty.clone()))],
+        };
         let ordering_ty = self.ordering_type();
+        // GA2 is a rule about the type, so it's reported once at the type
+        // rather than at every operation on it.
+        if let Some(reason) = self.atomic_payload_problem(&val_ty) {
+            return Err(TypeError::AtomicPayload {
+                ty: val_ty,
+                reason,
+                span,
+            });
+        }
 
         match method {
             // ── Construction ────────────────────────────────
@@ -3505,16 +3685,23 @@ impl TypeChecker {
                 let _ = self.unify(&args[1], &val_ty, span);
                 let _ = self.unify(&args[2], &ordering_ty, span);
                 let _ = self.unify(&args[3], &ordering_ty, span);
+                // `T or CasFailed<T>`, not `T or T`. Both sides carry a `T` —
+                // the old value on success, the observed one on failure — so
+                // without the wrapper every match arm was ambiguous and `r is
+                // …` had no error type to name.
                 let result_ty = Type::Result {
                     ok: Box::new(val_ty.clone()),
-                    err: Box::new(val_ty),
+                    err: Box::new(Type::UnresolvedGeneric {
+                        name: "CasFailed".to_string(),
+                        args: vec![GenericArg::Type(Box::new(val_ty))],
+                    }),
                 };
                 self.unify(ret, &result_ty, span)
             }
 
             // ── Integer fetch operations ────────────────────
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if args.len() == 2 && Self::is_integer_atomic(type_name) =>
+                if args.len() == 2 && Self::is_countable_payload(&val_ty) =>
             {
                 let _ = self.unify(&args[0], &val_ty, span);
                 let _ = self.unify(&args[1], &ordering_ty, span);
@@ -3533,9 +3720,9 @@ impl TypeChecker {
                 self.unify(ret, &val_ty, span)
             }
 
-            // ── Integer-only fetch on AtomicBool → error ────
+            // GA3: adding two structs, or two bools, means nothing.
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if !Self::is_integer_atomic(type_name) =>
+                if !Self::is_countable_payload(&val_ty) =>
             {
                 Err(TypeError::NoSuchMethod {
                     ty: self_ty,
@@ -3809,6 +3996,69 @@ impl TypeChecker {
         Ok(())
     }
 
+    /// Reject an operand that isn't the same *kind* of thing as the receiver.
+    ///
+    /// The comparison arms unify the operand with the receiver and throw the
+    /// result away, deliberately — mixed signedness is allowed (ORD4) and would
+    /// fail that unification. Discarding it also discarded every real mismatch,
+    /// so `some_u8 == 'h'` type-checked and native compared the char as its
+    /// underlying scalar: `true`, because 104 is both a byte and `'h'` (#1034).
+    /// The interpreter refused the same program at runtime.
+    ///
+    /// Only concrete primitives are judged. Anything still settling is left to
+    /// the rest of inference.
+    fn reject_incomparable_operand(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<(), TypeError> {
+        let arg = self.resolve_named(&self.ctx.apply(arg));
+        let same_kind = match (&recv, &arg) {
+            _ if Self::integer_is_signed(recv).is_some()
+                && Self::integer_is_signed(&arg).is_some() => true,
+            (Type::F32 | Type::F64, Type::F32 | Type::F64) => true,
+            _ => *recv == arg,
+        };
+        if same_kind {
+            return Ok(());
+        }
+        // A *resolved* operand is judged whether it's a primitive or not.
+        // `f64 * Meters` type-checked and natively multiplied the struct's
+        // address — `2.0 * Meters { v: 3.0 }` printed 281465035398656 — because
+        // the unify that would have caught it was discarded (#978). A struct, an
+        // enum and a string are all as wrong here as a `char` is.
+        //
+        // `Named` is a resolved nominal type: a struct, an enum, an alias that
+        // has already been followed. `UnresolvedNamed` and `Generic` are not —
+        // they may still turn into something that fits — so they, and every
+        // inference variable, are left to the rest of inference.
+        //
+        // A `T or E` and a `T?` are resolved too, and they were the ones that
+        // survived the first pass: `total + rx.receive()` type-checked and
+        // added the *wrapper*, so a channel sum came out as `1422162048`. There
+        // is no reading of an operator where the wrapper is the operand —
+        // ER16's `try`, `!` or a `match` extracts first — so both are as wrong
+        // here as a struct is.
+        let arg_is_resolved = matches!(
+            arg,
+            Type::Bool | Type::Char | Type::String
+            | Type::F32 | Type::F64
+            | Type::Named(_) | Type::Tuple(_)
+            | Type::Result { .. } | Type::Union(_)
+        ) || Self::integer_is_signed(&arg).is_some();
+        if !arg_is_resolved {
+            return Ok(());
+        }
+        Err(TypeError::IncomparableOperands {
+            left: recv.clone(),
+            right: arg,
+            op: Self::operator_spelling(method).to_string(),
+            span,
+        })
+    }
+
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
@@ -3820,7 +4070,7 @@ impl TypeChecker {
 
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
-    fn operator_spelling(method: &str) -> &'static str {
+    pub(super) fn operator_spelling(method: &str) -> &'static str {
         match method {
             "add" => "+",
             "sub" => "-",
@@ -3865,6 +4115,7 @@ impl TypeChecker {
                 if let Err(mixed) = self
                     .reject_mixed_signedness(method, ty, &args[0], span)
                     .and_then(|()| self.reject_int_float_mix(method, ty, &args[0], span))
+                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
                 {
                     // Pin the result to the receiver on the way out. The
                     // operands are the complaint; leaving `ret` open turns one
@@ -3881,10 +4132,23 @@ impl TypeChecker {
             "bit_not" | "abs" if args.is_empty() => self.unify(ret, ty, span),
             // Comparison → bool
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                // The comparison answers `bool` whatever is wrong with the
+                // operands, so pin that before reporting. Returning first left
+                // the binding's type open and turned one error into two, the
+                // second blaming a `let` that is fine.
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let _ = self.unify(ret, &Type::Bool, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &Type::Bool, span)
             }
             "compare" if args.len() == 1 => {
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let ord = self.ordering_type();
+                    let _ = self.unify(ret, &ord, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }
@@ -4003,10 +4267,19 @@ impl TypeChecker {
             FloatSig::Unary => self.unify(ret, ty, span),
             FloatSig::BinaryFloat => {
                 // The other side of #816: `f64 + i64` was accepted too, and the
-                // discarded unify is why nothing said so.
-                if let Err(mixed) = self.reject_int_float_mix(method, ty, &args[0], span) {
+                // discarded unify is why nothing said so. #816 added the
+                // int/float guard and left the discard, so every *other* wrong
+                // operand still sailed through — `f64 * Meters` type-checked and
+                // multiplied the struct's address (#978).
+                if let Err(bad) = self
+                    .reject_int_float_mix(method, ty, &args[0], span)
+                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
+                {
+                    // Pin the result to the receiver on the way out, so one
+                    // error doesn't become two with the second blaming a
+                    // binding that is fine.
                     let _ = self.unify(ret, ty, span);
-                    return Err(mixed);
+                    return Err(bad);
                 }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
@@ -4017,11 +4290,22 @@ impl TypeChecker {
             }
             FloatSig::Predicate | FloatSig::Comparison => {
                 if entry.sig == FloatSig::Comparison {
+                    if let Err(bad) =
+                        self.reject_incomparable_operand(method, ty, &args[0], span)
+                    {
+                        let _ = self.unify(ret, &Type::Bool, span);
+                        return Err(bad);
+                    }
                     let _ = self.unify(&args[0], ty, span);
                 }
                 self.unify(ret, &Type::Bool, span)
             }
             FloatSig::Compare => {
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let ord = self.ordering_type();
+                    let _ = self.unify(ret, &ord, span);
+                    return Err(bad);
+                }
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }
@@ -4089,9 +4373,16 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             PtrSig::ToInt => self.unify(ret, &Type::I64, span),
+            // Same answer the eager path gives: the written `<U>` when the call
+            // had one, a fresh variable when it didn't (#986). The two paths
+            // disagreeing about a pointer method is how #696 got its "no method
+            // `offset` found for type `*u8`".
             PtrSig::Cast => {
-                let fresh = self.ctx.fresh_var();
-                self.unify(ret, &Type::RawPtr(Box::new(fresh)), span)
+                let target = match self.ptr_cast_targets.get(&span).cloned() {
+                    Some(t) => t,
+                    None => self.ctx.fresh_var(),
+                };
+                self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
     }

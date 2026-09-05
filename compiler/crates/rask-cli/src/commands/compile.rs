@@ -176,6 +176,24 @@ fn lower_to_mir(
         rask_mir::transform::ssa::destruct(func);
     }
 
+    // Every layout id has to name the layout it claims. One that doesn't sends
+    // codegen walking another type's fields — the error then names a type the
+    // program never mentions, and the version that doesn't error compares the
+    // wrong bytes (#1062). Cheap: one walk of each function's locals.
+    let mismatches = rask_mir::layout_check::check_layout_ids(
+        &mir_functions, &mono.struct_layouts, &mono.enum_layouts,
+    );
+    if !mismatches.is_empty() {
+        return Err(mismatches
+            .iter()
+            .map(|m| format!(
+                "MIR layout ids in '{}': {} — this is a compiler bug, not something \
+                 the program did; please report it with the source that produced it",
+                m.function, m.detail
+            ))
+            .collect());
+    }
+
     Ok((mir_functions, pipeline_result))
 }
 
@@ -234,7 +252,7 @@ fn setup_codegen(
     }).collect();
     // Add signatures from C header imports
     extern_sigs.extend(super::codegen::collect_c_import_extern_sigs(symbols));
-    codegen.declare_extern_functions(&extern_sigs)
+    codegen.declare_extern_functions(&extern_sigs, &mono.struct_layouts)
         .map_err(|e| vec![e.to_string()])?;
 
     codegen.declare_functions(mono, mir_functions)

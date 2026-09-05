@@ -213,6 +213,29 @@ impl TypeChecker {
                     }
                 }
             }
+            // `return try n` is often the only thing in a body that can pin a
+            // generic stub's success type — `let n = s.parse(); return try n`
+            // has nothing else to say what `n` is. The expectation never reached
+            // `try`, so the coercion queued behind the return waited on a
+            // variable that only that same coercion could ever bind. The solver
+            // stops when a pass makes no progress and drops what's left without
+            // a word, so the binding came out "type is still open here" (#961).
+            ExprKind::Try { .. } => {
+                let got = self.infer_expr(expr);
+                // `try` peels one branch, so what's expected of it is the
+                // success side of what's expected of the `return`.
+                let want = match expected {
+                    Type::Result { ok, .. } => (**ok).clone(),
+                    other => other.clone(),
+                };
+                if matches!(self.ctx.apply(&got), Type::Var(_))
+                    && !matches!(self.ctx.apply(&want), Type::Var(_))
+                {
+                    let _ = self.unify(&got, &want, expr.span);
+                }
+                self.note_trait_coercion(expr, expected, &got);
+                return got;
+            }
             // std.collections: `[1, 2, 3]` is a collection literal, and the slot
             // it lands in says which collection and what element type. Typed from
             // its own elements instead, `let xs: [i64?; 3] = [1, 2, 3]` reported
@@ -324,10 +347,40 @@ impl TypeChecker {
     /// that knows its expected type — an annotated binding, a struct field, a
     /// collection element, a return value — type-checked and then segfaulted
     /// at the first method call (#335, #474, #481).
+    /// An explicit `x as any Trait` boxes itself, so it needs no second box.
+    fn is_any_cast(expr: &Expr) -> bool {
+        matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any "))
+    }
+
+    /// The same question for a collection element whose container only settled
+    /// after the call was walked. Runs after solving, from the same list of
+    /// deferred checks as the rest.
+    pub(super) fn validate_pending_trait_elem_coercions(&mut self) {
+        let pending = std::mem::take(&mut self.pending_trait_elem_coercions);
+        for (node, is_any_cast, recv_ty, arg_ty) in pending {
+            let applied = self.ctx.apply(&arg_ty);
+            for elem in Self::trait_object_type_args(&self.ctx.apply(&recv_ty)) {
+                let Type::TraitObject { ref trait_name } = elem else { continue };
+                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
+                    self.note_trait_coercion_node(node, is_any_cast, &elem, &arg_ty);
+                }
+            }
+        }
+    }
+
     pub(super) fn note_trait_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
+        self.note_trait_coercion_node(expr.id, Self::is_any_cast(expr), expected, found)
+    }
+
+    fn note_trait_coercion_node(
+        &mut self,
+        node: rask_ast::NodeId,
+        is_any_cast: bool,
+        expected: &Type,
+        found: &Type,
+    ) {
         let Type::TraitObject { trait_name } = expected else { return };
-        // An explicit `x as any Trait` boxes itself.
-        if matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any ")) {
+        if is_any_cast {
             return;
         }
         if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
@@ -361,7 +414,7 @@ impl TypeChecker {
         if !undecided && !crate::traits::implements_trait(&self.types, &resolved, trait_name) {
             return;
         }
-        self.trait_coercions.insert(expr.id, trait_name.clone());
+        self.trait_coercions.insert(node, trait_name.clone());
     }
 
     /// True when the literal's own spelling doesn't pin a type, so the slot it
@@ -495,6 +548,18 @@ impl TypeChecker {
                         self.local_shared_uses.push((name.clone(), ty.clone(), expr.span));
                     }
                     ty
+                } else if let Some(type_id) = self
+                    .types
+                    .alias_target(name)
+                    .and_then(|target| self.types.get_type_id(target))
+                {
+                    // A transparent alias used where a type name goes — the
+                    // receiver of `Zwibble.make(7)`, say. The resolver points
+                    // the name at the alias declaration, whose symbol carries no
+                    // type, so the node came back a fresh variable and stayed
+                    // one. An alias is the target under another spelling, so
+                    // answer the target (#1026).
+                    Type::Named(type_id)
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
                 } else if let Some(type_id) = self.types.get_type_id(name) {
@@ -624,9 +689,23 @@ impl TypeChecker {
                 }
                 // Anything else — a `comptime for` binding's `.name`, a binding
                 // holding a comptime string — is only known once the loop is
-                // unrolled, which happens after this pass.
+                // unrolled, which happens after this pass. What *can* be
+                // decided here is whether it will ever be knowable: a name that
+                // came out of a call or an `if` never will (CT53). Native said
+                // so as a MIR lowering failure and the interpreter looked the
+                // field up at run time and carried on, so the same program ran
+                // on one backend and wouldn't build on the other (#996).
                 let _obj_ty = self.infer_expr(object);
                 let _field_ty = self.infer_expr(field_expr);
+                if !self.comptime_field_name_shape(field_expr) {
+                    // The whole access, not the name inside it: an
+                    // interpolation reparses its expression and the
+                    // sub-expressions come back without source spans, so a
+                    // caret on `field_expr` lands at the top of the file.
+                    self.errors.push(TypeError::DynamicFieldNameNotComptime {
+                        span: expr.span,
+                    });
+                }
                 Type::Error
             }
 
@@ -864,6 +943,7 @@ impl TypeChecker {
                     self.errors.push(TypeError::MatchOnOption { span: expr.span });
                 }
                 let result_ty = self.ctx.fresh_var();
+                let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
@@ -883,6 +963,7 @@ impl TypeChecker {
                     let resolved_arm_ty = self.ctx.apply(&arm_ty);
                     // In statement position, arm types don't need to agree.
                     if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
+                        every_arm_diverges = false;
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             result_ty.clone(),
                             arm_ty,
@@ -894,7 +975,17 @@ impl TypeChecker {
                 // Exhaustiveness check for enum scrutinees
                 self.check_match_exhaustiveness(&scrutinee_ty, arms, expr.span);
 
-                if is_stmt { Type::Unit } else { result_ty }
+                if is_stmt {
+                    Type::Unit
+                } else if every_arm_diverges {
+                    // Every arm returns, so nothing comes back out of the match
+                    // and no arm ever constrained the result. It stayed a fresh
+                    // variable, which is the same "no type" a genuine inference
+                    // failure leaves behind (#1026).
+                    Type::Never
+                } else {
+                    result_ty
+                }
             }
 
             ExprKind::Block(stmts) => {
@@ -1129,6 +1220,17 @@ impl TypeChecker {
             }
 
             ExprKind::Try { expr: inner } => {
+                // ER18: `try { … } catch e => …`. `catch` binds tighter than the
+                // `try` prefix, so the parse is `Try(Catch(Block))` — the arm
+                // below in `Catch` looks for the other nesting and never fired,
+                // which is how the handler ended up covering nothing (#950).
+                if let ExprKind::Catch { value: caught, clause } = &inner.kind {
+                    if matches!(caught.kind, ExprKind::Block(_)) {
+                        return self.check_try_block_with_handler(
+                            caught, clause, expr.span,
+                        );
+                    }
+                }
                 // ER17: `try { … }` block form. Inner `try`s propagate on their
                 // own; the block's value is this expression's.
                 if matches!(&inner.kind, ExprKind::Block(_)) {
@@ -1165,6 +1267,20 @@ impl TypeChecker {
                             });
                             return Type::Error;
                         }
+                        // ER18: inside `try { … } catch e => …` the handler
+                        // covers the block, so this error goes to it and not to
+                        // the enclosing function. It used to be matched against
+                        // the function's error type — `try { try s.parse<f64>() }
+                        // catch _e =>` in a `f64 or LowError` function propagated
+                        // a `ParseError` past its own handler — and the mismatch
+                        // was swallowed because a stdlib name deferred instead of
+                        // resolving (#950). The block can leave through the
+                        // handler whether or not the function has an error
+                        // branch, so `error_can_leave` doesn't apply either.
+                        if let Some(target) = self.try_block_errors.last().cloned() {
+                            self.propagate_try_error(expr.id, err, &target, expr.span);
+                            return *ok.clone();
+                        }
                         if !self.error_can_leave(expr.span) {
                             return Type::Error;
                         }
@@ -1189,6 +1305,21 @@ impl TypeChecker {
                         *ok.clone()
                     }
                     Type::Var(_) => {
+                        // ER18 again, for an operand whose own type hasn't
+                        // settled yet — `try s.parse<f64>()` inside a `try { … }
+                        // catch`. The block's handler is the target, the same as
+                        // in the resolved case above.
+                        if let Some(target) = self.try_block_errors.last().cloned() {
+                            let ok_ty = self.ctx.fresh_var();
+                            let err_ty = self.ctx.fresh_var();
+                            let result_ty = Type::Result {
+                                ok: Box::new(ok_ty.clone()),
+                                err: Box::new(err_ty.clone()),
+                            };
+                            let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                            self.propagate_try_error(expr.id, &err_ty, &target, expr.span);
+                            return ok_ty;
+                        }
                         if let Some(return_ty) = &self.current_return_type {
                             let resolved_ret = self.ctx.apply(return_ty);
                             match &resolved_ret {
@@ -1272,36 +1403,7 @@ impl TypeChecker {
                     _ => false,
                 };
                 if is_try_block {
-                    let block_ty = self.infer_expr(value);
-                    let err_ty = self
-                        .current_return_type
-                        .as_ref()
-                        .map(|t| self.ctx.apply(t))
-                        .and_then(|t| match t {
-                            Type::Result { err, .. } => Some(*err),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| self.ctx.fresh_var());
-                    self.push_scope();
-                    if !clause.is_discard() {
-                        self.define_local_bound(
-                            clause.binder.clone(),
-                            err_ty,
-                            super::BoundFrom::Payload,
-                        );
-                    }
-                    let handler_ty = self.infer_expr(&clause.body);
-                    self.pop_scope();
-                    // A diverging handler produces nothing, and constraining it
-                    // would drag the whole expression's type down to `!`.
-                    if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            block_ty.clone(),
-                            handler_ty,
-                            expr.span,
-                        ));
-                    }
-                    return block_ty;
+                    return self.check_try_block_with_handler(value, clause, expr.span);
                 }
 
                 let val_ty = self.infer_expr(value);
@@ -1552,6 +1654,7 @@ impl TypeChecker {
                 // Save enclosing return type — `return` inside a closure
                 // returns from the closure, not the enclosing function
                 let outer_return_type = self.current_return_type.take();
+                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
@@ -1562,6 +1665,7 @@ impl TypeChecker {
 
                 self.pop_scope();
                 self.current_return_type = outer_return_type;
+                self.try_block_errors = outer_try_blocks;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
 
@@ -1716,6 +1820,7 @@ impl TypeChecker {
 
                 // Spawn blocks are like anonymous functions - they have their own return type
                 let outer_return_type = self.current_return_type.take();
+                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
@@ -1754,6 +1859,7 @@ impl TypeChecker {
                 ));
 
                 self.current_return_type = outer_return_type;
+                self.try_block_errors = outer_try_blocks;
                 self.accumulate_errors = outer_accumulate;
                 self.inferred_errors = outer_inferred_errors;
 
@@ -2238,6 +2344,30 @@ impl TypeChecker {
     /// What `container[index]` yields, for the shapes it can be read off the
     /// container's type. `None` means "nothing to say" — an unresolved container,
     /// or a generic whose argument list doesn't carry the element.
+    /// The primitive a bare type name spells, for a receiver position.
+    ///
+    /// `string` is deliberately absent: the resolver already has a branch for
+    /// it that handles the namespace calls (`string.from_utf8`).
+    pub(super) fn primitive_type_named(name: &str) -> Option<Type> {
+        Some(match name {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "i128" => Type::I128,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
+            "u128" => Type::U128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
+            "bool" => Type::Bool,
+            "char" => Type::Char,
+            _ => return None,
+        })
+    }
+
     pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
         match obj_ty {
             Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
@@ -2840,6 +2970,111 @@ impl TypeChecker {
         }
     }
 
+    /// A call through an `import c` namespace, typed from the header.
+    ///
+    /// `None` when this isn't one, so the caller falls through to the ordinary
+    /// method-call path.
+    fn check_c_call(
+        &mut self,
+        call_id: NodeId,
+        object: &Expr,
+        args: &[CallArg],
+        span: Span,
+    ) -> Option<Type> {
+        // The receiver has to be the namespace itself. A local of the same name
+        // wins, the way it does for the builtin modules.
+        let ExprKind::Ident(ns) = &object.kind else { return None };
+        if self.lookup_local(ns).is_some() {
+            return None;
+        }
+        let &ns_sym = self.resolved.resolutions.get(&object.id)?;
+        if !matches!(
+            self.resolved.symbols.get(ns_sym).map(|s| &s.kind),
+            Some(SymbolKind::CNamespace { .. })
+        ) {
+            return None;
+        }
+        let &fn_sym = self.resolved.resolutions.get(&call_id)?;
+        let sym = self.resolved.symbols.get(fn_sym)?;
+        if !matches!(sym.kind, SymbolKind::ExternFunction { .. }) {
+            return None;
+        }
+        let fn_name = sym.name.clone();
+
+        // CI3: every C call is unsafe. The category is the same one a bare
+        // `extern "C"` call gets, so `rask` reports them the same way.
+        self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
+        if !self.in_unsafe {
+            self.errors.push(TypeError::UnsafeRequired {
+                operation: "extern function call".to_string(),
+                span,
+            });
+        }
+
+        let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
+            return None;
+        };
+        // The header spells its own struct types bare — `Rect` — and they are
+        // registered under the namespace, as `c.Rect`. Without this the
+        // argument checked against a name that resolves to nothing, so a
+        // `Vec<i64>` went in where a `Rect` was declared without complaint.
+        let params: Vec<Type> = params.iter().map(|p| self.qualify_c_type(ns, p)).collect();
+
+        // A struct handed *to* C rides in registers or on the stack; one handed
+        // *back* is a separate ABI rule that isn't built (#1101). Say so, rather
+        // than reading a value nobody wrote.
+        if let Some(name) = self.c_struct_name(ns, &ret) {
+            self.errors.push(TypeError::CStructReturn {
+                func: format!("{}.{}", ns, fn_name),
+                ty: name,
+                span,
+            });
+        }
+        let ret = self.qualify_c_type(ns, &ret);
+
+        if args.len() != params.len() {
+            for a in args {
+                self.infer_expr(&a.expr);
+            }
+            self.errors.push(TypeError::ArityMismatch {
+                expected: params.len(),
+                found: args.len(),
+                span,
+            });
+            return Some(ret);
+        }
+        for (arg, want) in args.iter().zip(params.iter()) {
+            let got = self.infer_expr_expecting(&arg.expr, want);
+            self.coerce_into(
+                rask_ast::coercion::CoercionSite::Argument,
+                got,
+                want.clone(),
+                arg.expr.span,
+            );
+        }
+        Some(ret)
+    }
+
+    /// A bare name out of a C header, read as the namespace's type when there
+    /// is one. `Rect` in `int area(Rect r)` is `c.Rect`.
+    fn qualify_c_type(&self, ns: &str, ty: &Type) -> Type {
+        match self.c_struct_name(ns, ty) {
+            Some(name) => match self.types.get_type_id(&name) {
+                Some(id) => Type::Named(id),
+                None => ty.clone(),
+            },
+            None => ty.clone(),
+        }
+    }
+
+    /// The qualified name of a header type, when the bare one names a struct
+    /// the namespace registered.
+    fn c_struct_name(&self, ns: &str, ty: &Type) -> Option<String> {
+        let Type::UnresolvedNamed(name) = ty else { return None };
+        let qualified = format!("{}.{}", ns, name);
+        self.types.get_type_id(&qualified).map(|_| qualified)
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         call_id: NodeId,
@@ -2868,6 +3103,34 @@ impl TypeChecker {
             }
         }
 
+        // What the call wrote between the angle brackets. `resolve_method` binds
+        // the method's own type parameters to these instead of freshening them,
+        // so `s.parse<i64>()` means i64 whether or not anything downstream would
+        // have pinned it (#1029).
+        //
+        // Recorded before any dispatch, because several paths below file their
+        // constraint and return. The type-namespace one is why `Vec.new<string>()`
+        // lost its `<string>` (#1084).
+        if let Some(ta) = type_args {
+            let written: Vec<Type> = ta
+                .iter()
+                .map(|name| self.resolve_type_name(name, span))
+                .collect();
+            self.written_method_type_args.insert(call_id, written);
+        }
+
+        // `c.strlen(p)` — a call into an `import c` namespace. The resolver
+        // already points the call node at the header's declaration, and nothing
+        // read it: the call came back a fresh variable, so every C call had to
+        // be annotated at its binding or MIR gave up on it. And CI3 — a C call
+        // needs `unsafe` — was checked only for a bare `extern "C" func` call,
+        // never for one reached through the namespace, so the spec's own error
+        // message had never fired (#947, #948 found the surface; nothing tests
+        // it, which is why).
+        if let Some(ret) = self.check_c_call(call_id, object, args, span) {
+            return ret;
+        }
+
         // Check if this is a builtin module method call (e.g., fs.open). A local
         // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
         // and routing `fs.len()` to the filesystem module reported "no method
@@ -2878,21 +3141,31 @@ impl TypeChecker {
             }
         }
 
-        // Primitive type namespace: char.from_u32(n). `char` is a type name here,
-        // not a variable — route to the primitive's method resolver.
+        // Primitive type namespace: `char.from_u32(n)`. The name is a type
+        // here, not a variable — route to the primitive's method resolver.
+        //
+        // Only `char` used to be recognized, so `i64.pow(10, n)` — which isn't
+        // an API; `pow` is a method on an f64 *value* (std.math/N1) — got a
+        // fresh variable for the receiver, another for the result, and no
+        // complaint. It failed much later, in MIR, as "unresolved variable
+        // `i64`", and only if that line was reached (#1026). raido's lexer has
+        // been carrying one of these.
         if let ExprKind::Ident(name) = &object.kind {
-            if name == "char" && self.lookup_local(name).is_none() {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
-                let ret_ty = self.ctx.fresh_var();
-                self.ctx.add_constraint(TypeConstraint::HasMethod {
-                    ty: Type::Char,
-                    method: method.to_string(),
-                    args: arg_types,
-                    ret: ret_ty.clone(),
-                    span,
-                    call_node: Some(call_id),
-                });
-                return ret_ty;
+            if let Some(prim) = Self::primitive_type_named(name) {
+                if self.lookup_local(name).is_none() {
+                    let arg_types: Vec<_> =
+                        args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                    let ret_ty = self.ctx.fresh_var();
+                    self.ctx.add_constraint(TypeConstraint::HasMethod {
+                        ty: prim,
+                        method: method.to_string(),
+                        args: arg_types,
+                        ret: ret_ty.clone(),
+                        span,
+                        call_node: Some(call_id),
+                    });
+                    return ret_ty;
+                }
             }
         }
 
@@ -2924,7 +3197,7 @@ impl TypeChecker {
             // `len` found for type `fs`".
             let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel")
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
@@ -2972,7 +3245,6 @@ impl TypeChecker {
                 }
             });
             if let Some((type_id, field_types)) = variant_fields {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 // A generic enum written without type arguments takes them from
                 // the payload: `GrowError.Full(item)` gives each declared
                 // parameter a fresh variable that the argument binds. Answering
@@ -3002,10 +3274,27 @@ impl TypeChecker {
                     };
                     (fields, ty)
                 };
+                // C4: the slot picks the shape, and a declared payload is a
+                // slot. Inferring the argument on its own first made
+                // `Node.Branch([1, 2, 3])` a `[i32; 3]` against a `Vec<i32>`
+                // payload and rejected it — while the same literal filled a
+                // struct field, an argument or a return with no trouble (#922).
+                let arg_types: Vec<Type> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| match instantiated.get(i) {
+                        Some(want) => self.infer_expr_expecting(&a.expr, want),
+                        None => self.infer_expr(&a.expr),
+                    })
+                    .collect();
+                // Declared type first: `Equal` reports its left as "expected",
+                // and the payload is what the reader has to match. Reversed, the
+                // fix line told them to change their expression to the type they
+                // had just written.
                 for (arg_ty, field_ty) in arg_types.iter().zip(instantiated.iter()) {
                     self.ctx.add_constraint(TypeConstraint::Equal(
-                        arg_ty.clone(),
                         field_ty.clone(),
+                        arg_ty.clone(),
                         span,
                     ));
                 }
@@ -3056,6 +3345,18 @@ impl TypeChecker {
                     Some(super::BindingKind::Let) => {
                         self.errors.push(TypeError::MutateConst {
                             name: var_name.clone(),
+                            span: object.span,
+                        });
+                    }
+                    // PS2: package-level state behind a sync box is the
+                    // sanctioned shape; a bare one is the data race.
+                    Some(super::BindingKind::ModuleConst)
+                        if !self.is_sync_box(&self.resolve_named(&self.ctx.apply(&recv_ty))) =>
+                    {
+                        let ty = self.render_type(&self.resolve_named(&self.ctx.apply(&recv_ty)));
+                        self.errors.push(TypeError::MutatePackageState {
+                            name: var_name.clone(),
+                            ty,
                             span: object.span,
                         });
                     }
@@ -3135,6 +3436,23 @@ impl TypeChecker {
         // argument can only be that element. Without this, push stored a bare
         // struct pointer into a 16-byte element slot and every element read
         // back through whichever vtable was written last (#335).
+        // The receiver reached through a *field* isn't resolved yet here — its
+        // type arrives from a deferred constraint — so there was no element type
+        // to compare against and the push went in unboxed. `h.shapes.push(Circle
+        // { r: 2 })` on a `Holder { shapes: Vec<any Shape> }` wrote eight bytes
+        // into a sixteen-byte slot and the first `area()` call read a vtable
+        // pointer out of whatever followed: SIGSEGV natively, right on the
+        // interpreter (#955). Ask again once the receiver has settled.
+        if matches!(self.ctx.apply(&obj_ty), Type::Var(_)) {
+            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+                self.pending_trait_elem_coercions.push((
+                    arg.expr.id,
+                    Self::is_any_cast(&arg.expr),
+                    obj_ty.clone(),
+                    arg_ty.clone(),
+                ));
+            }
+        }
         for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
             let applied = self.ctx.apply(arg_ty);
             for elem in Self::trait_object_type_args(&self.ctx.apply(&obj_ty)) {
@@ -3174,6 +3492,21 @@ impl TypeChecker {
             }
         }
 
+        // `p.cast<U>()` says what the result points at, and it used to be
+        // thrown away: the result got a fresh type variable instead, so the
+        // `*p` after it had no pointee width to read at and took a whole word.
+        // `*p.cast<u8>()` on "abc" answered 6513249 — 0x636261, three bytes read
+        // as one number — while the annotated `let q: *u8 = p.cast<u8>()` was
+        // right, because the annotation supplied what the call already knew
+        // (#986). Recorded before either path runs, since both need it.
+        if method == "cast" {
+            if let Some(first) = type_args.and_then(|a| a.first()) {
+                if let Ok(target) = parse_type_string(first, &self.types) {
+                    self.ptr_cast_targets.insert(span, target);
+                }
+            }
+        }
+
         // Raw pointer methods — resolve directly instead of through HasMethod constraints
         let resolved_obj = self.ctx.apply(&obj_ty);
         if let Type::RawPtr(ref inner) = resolved_obj {
@@ -3189,6 +3522,21 @@ impl TypeChecker {
         // applies (#696).
         if rask_stdlib::ptr_methods::lookup(method).is_some() {
             self.ptr_method_sites.insert(span, self.in_unsafe);
+        }
+
+        // `{:debug}` asks nothing of the value — every type derives Debug
+        // (std.fmt/G2) — while `{}` goes through Displayable. Both desugar to
+        // `__fmt`, and the spec's type code is the first argument, a literal
+        // the desugar pass put there. Recorded here because the resolver sees
+        // argument *types*, where a constant 1 and a constant 0 look the same.
+        if method == "__fmt" && args.len() == 5 {
+            if let ExprKind::Int(code, _) = &args[0].expr.kind {
+                if rask_ast::fmt_spec::SpecType::from_code(*code as i64)
+                    == rask_ast::fmt_spec::SpecType::Debug
+                {
+                    self.debug_fmt_calls.insert(call_id);
+                }
+            }
         }
 
         let ret_ty = self.ctx.fresh_var();
@@ -3279,10 +3627,25 @@ impl TypeChecker {
         &mut self,
         inner: &Type,
         method: &str,
-        _args: &[Type],
+        args: &[Type],
         span: Span,
     ) -> Option<Type> {
         let entry = rask_stdlib::ptr_methods::lookup(method)?;
+
+        // Tie the argument to the pointee, the way the deferred path in
+        // `resolve_raw_ptr_method` does. Only that path did it, so `ptr == null`
+        // on an already-known `*u8` left `null` as a `*_` — its pointee a
+        // variable nothing ever bound (#1026). `null` is deliberately typed
+        // `*_`; the comparison is what says what it's being compared against.
+        if let Some(arg) = args.first() {
+            if matches!(entry.sig, rask_stdlib::PtrSig::Comparison) {
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    arg.clone(),
+                    Type::RawPtr(Box::new(inner.clone())),
+                    span,
+                ));
+            }
+        }
 
         if entry.needs_unsafe {
             let category = match entry.sig {
@@ -3298,7 +3661,7 @@ impl TypeChecker {
             }
         }
 
-        Some(self.raw_ptr_method_return(entry, inner))
+        Some(self.raw_ptr_method_return(entry, inner, span))
     }
 
     /// The type a pointer method hands back, given the pointee.
@@ -3306,6 +3669,7 @@ impl TypeChecker {
         &mut self,
         entry: &rask_stdlib::PtrMethod,
         inner: &Type,
+        span: Span,
     ) -> Type {
         use rask_stdlib::PtrSig;
         match entry.sig {
@@ -3314,7 +3678,12 @@ impl TypeChecker {
             PtrSig::Arith => Type::RawPtr(Box::new(inner.clone())),
             PtrSig::Predicate | PtrSig::PredicateInt | PtrSig::Comparison => Type::Bool,
             PtrSig::ToInt => Type::I64,
-            PtrSig::Cast => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            // The written `<U>` when there is one. A bare `p.cast()` still gets
+            // a variable, and the annotation on its binding settles it.
+            PtrSig::Cast => match self.ptr_cast_targets.get(&span).cloned() {
+                Some(target) => Type::RawPtr(Box::new(target)),
+                None => Type::RawPtr(Box::new(self.ctx.fresh_var())),
+            },
         }
     }
 
@@ -3512,6 +3881,56 @@ impl TypeChecker {
     /// force: `try dto.validate()` inside a `-> Response or ApiError` handler
     /// would pin `validate`'s own error type to `ApiError` before method
     /// resolution ever ran, and the real signature then looks like the mistake.
+    /// ER18: `try { … } catch e => …`. The handler covers the whole block — the
+    /// first error any inner `try` raises goes to it — so the binder is whatever
+    /// the block propagates, not the enclosing function's error type.
+    fn check_try_block_with_handler(
+        &mut self,
+        block: &Expr,
+        clause: &rask_ast::expr::CatchClause,
+        span: Span,
+    ) -> Type {
+        let block_err = self.ctx.fresh_var();
+        self.try_block_errors.push(block_err.clone());
+        let block_ty = self.infer_expr(block);
+        self.try_block_errors.pop();
+        // A block with no `try` in it leaves the variable open; the enclosing
+        // function's error type is the only other thing the binder could stand
+        // for, and that's what this used to read in every case.
+        let err_ty = match self.ctx.apply(&block_err) {
+            Type::Var(_) => self
+                .current_return_type
+                .as_ref()
+                .map(|t| self.ctx.apply(t))
+                .and_then(|t| match t {
+                    Type::Result { err, .. } => Some(*err),
+                    _ => None,
+                })
+                .unwrap_or(block_err),
+            settled => settled,
+        };
+        self.push_scope();
+        if !clause.is_discard() {
+            self.define_local_bound(
+                clause.binder.clone(),
+                err_ty,
+                super::BoundFrom::Payload,
+            );
+        }
+        let handler_ty = self.infer_expr(&clause.body);
+        self.pop_scope();
+        // A diverging handler produces nothing, and constraining it would drag
+        // the whole expression's type down to `!`.
+        if !matches!(self.ctx.apply(&handler_ty), Type::Never) {
+            self.ctx.add_constraint(TypeConstraint::Equal(
+                block_ty.clone(),
+                handler_ty,
+                span,
+            ));
+        }
+        block_ty
+    }
+
     pub(super) fn propagate_try_error(
         &mut self,
         node: rask_ast::NodeId,
@@ -3643,6 +4062,25 @@ impl TypeChecker {
     /// literal, or a `comptime { … }` block whose value is one. Read off the
     /// syntax — this pass has no comptime evaluator, and doesn't need one for
     /// the shapes a reader actually writes.
+    /// Whether `expr` is a shape whose value the compiler will know, and so
+    /// can name a field in `value.(expr)`.
+    ///
+    /// The list is MIR's `comptime_field_name`, which is what does the rewrite:
+    /// a string literal, a `comptime { … }` block, a `let` bound to either, or
+    /// a `comptime for` binding's `.name`/`.serial_name`/`.type_name`. The last
+    /// of those only resolves when the loop unrolls, so it's accepted here on
+    /// its shape and settled in lowering.
+    pub(super) fn comptime_field_name_shape(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::String(_) | ExprKind::Comptime { .. } => true,
+            ExprKind::Ident(name) => self.is_comptime_string(name),
+            ExprKind::Field { field, .. } => {
+                matches!(field.as_str(), "name" | "serial_name" | "type_name")
+            }
+            _ => false,
+        }
+    }
+
     fn literal_field_name(expr: &Expr) -> Option<String> {
         match &expr.kind {
             ExprKind::String(s) => Some(s.clone()),
@@ -3696,17 +4134,30 @@ impl TypeChecker {
             }
         }
 
+        // Answer now when the receiver's type is already known, instead of
+        // handing back a variable and a constraint for later.
+        //
+        // `resolve_field` re-adds the constraint itself when the receiver is
+        // still open, so the deferred case is unchanged — but a field on a type
+        // the checker already knows shouldn't have to wait. It did, and a
+        // pattern checked against such a field saw a variable:
+        //
+        //     match self.current {          // self.current is a `Token`
+        //         Number(n) => "{n}"        // `n` had no type (#1026)
+        //     }
+        //
+        // The variant lookup needs the scrutinee to name its enum, and the
+        // scrutinee only named one after solving — by which time the pattern
+        // had already bound `n` to a fresh variable.
         let field_ty = self.ctx.fresh_var();
-
-        self.ctx.add_constraint(TypeConstraint::HasField {
-            ty: obj_ty,
-            field: field.to_string(),
-            expected: field_ty.clone(),
-            span,
-            self_type: self.current_self_type.clone(),
-        });
-
-        field_ty
+        let self_type = self.current_self_type.clone();
+        match self.resolve_field(obj_ty, field.to_string(), field_ty.clone(), span, self_type) {
+            Ok(_) => self.ctx.apply(&field_ty),
+            Err(e) => {
+                self.errors.push(e);
+                Type::Error
+            }
+        }
     }
 
     /// type.primitives/NT1 — `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type,
@@ -3955,9 +4406,22 @@ impl TypeChecker {
                 return;
             }
 
+            // A generic branch named without its arguments covers it —
+            // `CasFailed` for a `CasFailed<i64>` branch. Only when the base
+            // name picks out one branch; two instantiations of the same type
+            // would both answer to it and neither would be covered.
+            let base_of = |t: &str| t.split('<').next().unwrap_or(t).to_string();
             let missing: Vec<String> = required
-                .into_iter()
-                .filter(|r| !covered.contains(r))
+                .iter()
+                .filter(|r| {
+                    if covered.contains(*r) {
+                        return false;
+                    }
+                    let base = base_of(r);
+                    let same_base = required.iter().filter(|o| base_of(o) == base).count();
+                    !(same_base == 1 && covered.contains(&base))
+                })
+                .cloned()
                 .collect();
 
             if !missing.is_empty() {
@@ -4755,12 +5219,32 @@ impl TypeChecker {
                         }),
                         None => ContainerElem::Deferred,
                     },
+                    // A channel end isn't a sequence. There's no cursor to
+                    // advance and no end to reach — you ask it for the next
+                    // value and it tells you when the channel closed. `for v in
+                    // rx` type-checked on the deferred branch below and then
+                    // died in lowering with a type error about the element
+                    // (#1067).
+                    _ if matches!(
+                        self.generic_name_of(ty).as_deref(),
+                        Some("Receiver") | Some("Sender") | Some("Channel")
+                    ) => ContainerElem::NotIterable,
                     // A user generic may implement the iterator protocol, and
                     // its element type isn't readable from here.
                     _ => ContainerElem::Deferred,
                 }
             }
             _ => ContainerElem::NotIterable,
+        }
+    }
+
+    /// The head name of a generic type, whatever spelling it's in.
+    /// `generic_base_name` only answers for the six container names it knows.
+    fn generic_name_of(&self, ty: &Type) -> Option<String> {
+        match ty {
+            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+            Type::Generic { base, .. } => Some(self.types.type_name(*base)),
+            _ => None,
         }
     }
 
@@ -4808,11 +5292,21 @@ impl TypeChecker {
             if !self.method_mutates_self_ty(&ty, &pm.method) {
                 continue;
             }
+            // PS2: a module-level `const` holding a sync box is package state
+            // done right — the lock is what makes the write safe — so only a
+            // bare one is an error.
+            if matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&ty) {
+                continue;
+            }
             let name = pm.root;
             let span = pm.span;
             match pm.kind {
                 super::BindingKind::Let => {
                     self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::ModuleConst => {
+                    let ty = self.render_type(&ty);
+                    self.errors.push(TypeError::MutatePackageState { name, ty, span })
                 }
                 super::BindingKind::WithRead => {
                     self.errors.push(TypeError::MutateWithBinding { name, span })
@@ -4826,6 +5320,22 @@ impl TypeChecker {
                 _ => {}
             }
         }
+    }
+
+    /// PS2's sanctioned wrappers: the ones that carry their own synchronization,
+    /// so a module-level `const` holding one is package state done right rather
+    /// than package state got at. `Shared` covers `Shared.mutex` too — the
+    /// strategy is a type argument, not a different type (mem.boxes/BX2).
+    fn is_sync_box(&self, ty: &Type) -> bool {
+        let name = match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self.types.type_name(*id),
+            Type::UnresolvedNamed(n) => n.clone(),
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            _ => return false,
+        };
+        let base = name.split('<').next().unwrap_or(&name);
+        base.starts_with("Atomic")
+            || matches!(base, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
     }
 
     pub(super) fn validate_pending_mutations(&mut self) {
@@ -4845,11 +5355,18 @@ impl TypeChecker {
             if matches!(ty, Type::Var(_) | Type::Error) {
                 continue;
             }
+            if matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&ty) {
+                continue;
+            }
             let name = pm.root;
             let span = pm.span;
             match pm.kind {
                 super::BindingKind::Let => {
                     self.errors.push(TypeError::MutateConst { name, span })
+                }
+                super::BindingKind::ModuleConst => {
+                    let ty = self.render_type(&ty);
+                    self.errors.push(TypeError::MutatePackageState { name, ty, span })
                 }
                 super::BindingKind::WithRead => {
                     self.errors.push(TypeError::MutateWithBinding { name, span })
@@ -4962,9 +5479,14 @@ impl TypeChecker {
         }
     }
 
-    /// True if `index` can serve as a `Map<K, V>` key. A literal-integer index
-    /// adapts to an integer K (and is bound to it so codegen sees K); otherwise
-    /// the resolved index type must equal K. Unresolved sides are accepted.
+    /// True if `index` can serve as a `Map<K, V>` key.
+    ///
+    /// The match runs both ways. A literal-integer index adapts to an integer K
+    /// (bound, so codegen sees K rather than the default); and an open K takes
+    /// the index's type, because `mut m = Map.new()` has no other source for it
+    /// — the key comes from the first `m["a"] = 1` and nothing else says what it
+    /// is (#1026). Without that, K stayed a variable and every use of `m`
+    /// inherited it.
     fn index_matches_key(&mut self, index: &Type, key: &Type) -> bool {
         if let Type::Var(id) = index {
             let id = *id;
@@ -4975,19 +5497,54 @@ impl TypeChecker {
                     self.ctx.bind_var(id, key.clone());
                     return true;
                 }
-                return matches!(key, Type::Var(_)); // defer on unknown key, else reject
+                // Both open: make them one variable so the literal default
+                // settles the key too.
+                if let Type::Var(k) = key {
+                    if *k != id {
+                        self.ctx.bind_var(*k, index.clone());
+                    }
+                    return true;
+                }
+                return false;
             }
             if self.ctx.is_float_literal_var(id) {
                 if Self::is_float_type(key) {
                     self.ctx.bind_var(id, key.clone());
                     return true;
                 }
-                return matches!(key, Type::Var(_));
+                if let Type::Var(k) = key {
+                    if *k != id {
+                        self.ctx.bind_var(*k, index.clone());
+                    }
+                    return true;
+                }
+                return false;
             }
             return true; // genuinely unresolved index — don't guess
         }
-        if matches!(index, Type::Error) || matches!(key, Type::Var(_) | Type::Error) {
+        if matches!(index, Type::Error) {
             return true;
+        }
+        if let Type::Var(k) = key {
+            if !self.ctx.occurs_in(*k, index) {
+                self.ctx.bind_var(*k, index.clone());
+            }
+            return true;
+        }
+        if matches!(key, Type::Error) {
+            return true;
+        }
+        // A tuple key element by element, so the literal vars inside `m[(1, 2)]`
+        // adapt to the key's widths the same way a bare `m[1]` does. Comparing
+        // the two whole types instead rejected the index against its own key
+        // type — the error said `cannot index Map<(i32, i32), string> with
+        // (i32, i32)`, which reads like a compiler bug because it is one.
+        if let (Type::Tuple(ix), Type::Tuple(ky)) = (index, key) {
+            return ix.len() == ky.len()
+                && ix.iter().zip(ky.iter()).all(|(i, k)| {
+                    let (i, k) = (self.ctx.apply(i), self.ctx.apply(k));
+                    self.index_matches_key(&i, &k)
+                });
         }
         self.types.resolve_type_names(index) == self.types.resolve_type_names(key)
     }

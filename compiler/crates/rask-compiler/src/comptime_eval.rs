@@ -21,9 +21,18 @@ use rask_types::TypedProgram;
 use crate::{is_comptime_init, CfgConfig};
 
 /// Evaluate every comptime-initialized const. Returns the folded globals plus
-/// any hard-error diagnostics (empty on success). Soft failures — an
-/// expression that simply can't be folded at comptime — are not errors; that
-/// value is left to run at runtime.
+/// the diagnostics.
+///
+/// Two kinds come back. A **hard** failure is a compile error: the evaluator
+/// ran the block and the block panicked, ran past its branch quota, indexed off
+/// the end, or asked for something that only exists at run time. CT2 says the
+/// value is computed at compile time, so there is nothing to fall back to —
+/// running the same block at startup would reach the same panic.
+///
+/// A **soft** failure is the evaluator's own gap: a construct it can't model
+/// yet, like `Map.new`. The block runs at runtime instead and the const still
+/// works, but the guarantee `comptime` was written for is gone, so it warns
+/// (W0303) rather than saying nothing. It used to say nothing (#1072).
 pub fn evaluate_comptime_globals(
     decls: &[Decl],
     typed: &TypedProgram,
@@ -36,30 +45,64 @@ pub fn evaluate_comptime_globals(
     }
     comptime_interp.register_functions(decls);
 
-    // Collect (name, init) from top-level consts and function-body consts.
-    let mut comptime_consts: Vec<(String, &rask_ast::expr::Expr)> = Vec::new();
+    let mut diags = Vec::new();
+
+    // Collect (key, name, init, quota) from top-level consts, function bodies
+    // and test bodies. The key is what the globals map is looked up by; the
+    // name is what a diagnostic calls it, which is the local's own name and
+    // not the mangled key — nobody wrote `__test_3$local$which`.
+    //
+    // Only a top-level const can carry `@comptime_quota`: a `let … = comptime`
+    // inside a body has nowhere to write an attribute.
+    let mut comptime_consts: Vec<(String, String, &rask_ast::expr::Expr, Option<usize>)> = Vec::new();
     for decl in decls {
         match &decl.kind {
             DeclKind::Const(c) => {
                 if is_comptime_init(&c.init, decls) {
-                    comptime_consts.push((c.name.clone(), &c.init));
-                }
-            }
-            DeclKind::Fn(f) => {
-                for stmt in &f.body {
-                    if let StmtKind::Let { name, init, .. } = &stmt.kind {
-                        if is_comptime_init(init, decls) {
-                            // Keyed by the function it lives in. A bare local name
-                            // isn't unique across a program, and this map is shared
-                            // by the whole of it: two functions each with a
-                            // `let v = f()` collided, and one silently read the
-                            // other's value (#825).
-                            comptime_consts.push((
-                                rask_mir::lower::comptime_local_key(&f.name, name),
-                                init,
-                            ));
+                    let mut quota = None;
+                    if let Some(arg) = c.comptime_quota_arg() {
+                        match arg.replace('_', "").parse::<usize>() {
+                            Ok(n) if n > 0 => quota = Some(n),
+                            _ => diags.push(
+                                Diagnostic::error(format!(
+                                    "`@comptime_quota` wants a positive number of branches, found `{arg}`"
+                                ))
+                                .with_code("E0383")
+                                .with_primary(decl.span, "on this const")
+                                .with_why("the quota is a branch count (ctrl.comptime/CT35); the default is 1,000"),
+                            ),
                         }
                     }
+                    comptime_consts.push((c.name.clone(), c.name.clone(), &c.init, quota));
+                }
+            }
+            // Keyed by the body it lives in. A bare local name isn't unique
+            // across a program, and this map is shared by the whole of it: two
+            // functions each with a `let v = f()` collided, and one silently
+            // read the other's value (#825).
+            DeclKind::Fn(f) => {
+                for (name, init) in comptime_lets(&f.body, decls) {
+                    comptime_consts.push((
+                        rask_mir::lower::comptime_local_key(&f.name, name),
+                        name.clone(),
+                        init,
+                        None,
+                    ));
+                }
+            }
+            // A `test` block is a function by the time the compile path folds
+            // (the runner rewrites it to `__test_N`), but not yet on the check
+            // path — and check has to see the same consts or one backend warns
+            // and the other doesn't. The key here is never looked up: check
+            // throws the folded globals away and keeps the diagnostics.
+            DeclKind::Test(t) => {
+                for (name, init) in comptime_lets(&t.body, decls) {
+                    comptime_consts.push((
+                        rask_mir::lower::comptime_local_key(&format!("test${}", t.name), name),
+                        name.clone(),
+                        init,
+                        None,
+                    ));
                 }
             }
             _ => {}
@@ -67,47 +110,86 @@ pub fn evaluate_comptime_globals(
     }
 
     let mut globals = HashMap::new();
-    let mut diags = Vec::new();
 
-    for (name, init) in comptime_consts {
+    for (key, name, init, quota) in comptime_consts {
         // MIR/Miri fast path.
         let mut hard = None;
-        if let Some(meta) = try_eval_comptime_mir(&name, init, typed, mono, decls, &mut hard) {
-            globals.insert(name, meta);
+        if let Some(meta) = try_eval_comptime_mir(&key, init, typed, mono, decls, quota, &mut hard) {
+            globals.insert(key, meta);
             continue;
         }
         if let Some(err) = hard {
-            let div0 = matches!(err, rask_miri::MiriError::DivisionByZero);
-            diags.push(comptime_diagnostic(&err.to_string(), div0, init.span));
+            diags.push(comptime_diagnostic(&err.to_string(), miri_code(&err), init.span));
             continue;
         }
 
         // AST-interpreter fallback.
         comptime_interp.reset_branch_count();
+        comptime_interp.set_quota(quota.unwrap_or(DEFAULT_BRANCH_QUOTA));
         match comptime_interp.eval_expr(init) {
-            Ok(val) => {
-                if let Some(bytes) = val.serialize() {
-                    globals.insert(name, ComptimeGlobalMeta {
-                        bytes,
+            Ok(val) => match val.serialize() {
+                Some(ser) => {
+                    globals.insert(key, ComptimeGlobalMeta {
+                        bytes: ser.bytes,
+                        string_relocs: ser.string_relocs,
                         elem_count: val.elem_count(),
                         type_prefix: val.type_prefix().to_string(),
                         elem_type: val.elem_type_name().map(str::to_string),
+                        map_types: val
+                            .map_types()
+                            .map(|(k, v)| (k.to_string(), v.to_string())),
                     });
                 }
-            }
+                // Folded, but the value has no constant representation — a
+                // gap like any other, and the const runs at runtime.
+                None => diags.push(no_constant_form(&name, val.type_name(), init.span)),
+            },
             Err(e) if e.is_hard() => {
-                let div0 = matches!(e, rask_comptime::ComptimeError::DivisionByZero);
-                diags.push(comptime_diagnostic(&e.to_string(), div0, init.span));
+                diags.push(comptime_diagnostic(&e.to_string(), comptime_code(&e), init.span));
             }
-            Err(e) => {
-                if std::env::var_os("RASK_DBG_COMPTIME").is_some() {
-                    eprintln!("[comptime] AST path gave up on `{}`: {}", name, e);
-                }
-            } // soft: not foldable → runs at runtime
+            Err(e) => diags.push(fallback_warning(&name, &e, init.span)),
         }
     }
 
     (globals, diags)
+}
+
+/// Every `let x = comptime …` directly in a body, as (name, initializer).
+fn comptime_lets<'a>(
+    body: &'a [Stmt],
+    decls: &[Decl],
+) -> Vec<(&'a String, &'a rask_ast::expr::Expr)> {
+    body.iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::Let { name, init, .. } if is_comptime_init(init, decls) => Some((name, init)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// CT35: backwards branches allowed per fold unless `@comptime_quota` says more.
+const DEFAULT_BRANCH_QUOTA: usize = 1_000;
+
+/// Which code a hard AST-interpreter failure carries. Overflow and
+/// divide-by-zero keep the R-codes they share with the same check at runtime;
+/// everything else is a comptime-only compile error.
+fn comptime_code(e: &rask_comptime::ComptimeError) -> (&'static str, &'static str) {
+    use rask_comptime::ComptimeError as C;
+    match e {
+        C::DivisionByZero => ("R0001", "division by zero is undefined"),
+        C::IntegerOverflow(_) => ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"),
+        _ => ("E0383", "a `comptime` const is computed while compiling, so there is no runtime to retry on (ctrl.comptime/CT2)"),
+    }
+}
+
+/// Same, for the MIR/Miri path.
+fn miri_code(e: &rask_miri::MiriError) -> (&'static str, &'static str) {
+    use rask_miri::MiriError as M;
+    match e {
+        M::DivisionByZero => ("R0001", "division by zero is undefined"),
+        M::IntegerOverflow(_) => ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"),
+        _ => ("E0383", "a `comptime` const is computed while compiling, so there is no runtime to retry on (ctrl.comptime/CT2)"),
+    }
 }
 
 /// Run every `comptime test` in the program (std.testing/T11).
@@ -180,18 +262,43 @@ fn comptime_test_diagnostic(
         )
 }
 
-/// Build a diagnostic for a hard comptime error at `span`. Overflow shares the
-/// R0010 code with the interpreter's runtime check; divide-by-zero shares R0001.
-fn comptime_diagnostic(message: &str, div_by_zero: bool, span: Span) -> Diagnostic {
-    let (code, why) = if div_by_zero {
-        ("R0001", "division by zero is undefined")
-    } else {
-        ("R0010", "comptime overflow is a compile error (type.overflow/CT1)")
-    };
+/// Build a diagnostic for a hard comptime error at `span`.
+fn comptime_diagnostic(message: &str, (code, why): (&str, &str), span: Span) -> Diagnostic {
     Diagnostic::error(message.to_string())
         .with_code(code)
         .with_primary(span, "evaluated here")
         .with_why(why)
+}
+
+/// The evaluator couldn't model the block, so it runs at startup instead. Not
+/// an error — the program is correct — but the const isn't a compile-time
+/// constant any more, and saying nothing hid that for as long as it was true.
+fn fallback_warning(name: &str, e: &rask_comptime::ComptimeError, span: Span) -> Diagnostic {
+    use rask_comptime::ComptimeError as C;
+    let (message, why) = match e {
+        // `todo()` is deliberate — the block hasn't been written. Nothing is
+        // missing from the evaluator, so don't blame it.
+        C::Unimplemented(what) => (
+            format!("`{name}` is `todo(\"{what}\")`, so it can't fold"),
+            "the const runs at runtime instead, where the same `todo()` panics",
+        ),
+        _ => (
+            format!("`{name}` runs at runtime: {e}"),
+            "the comptime evaluator doesn't cover this yet; the value is still correct, it's just computed at startup",
+        ),
+    };
+    Diagnostic::warning(message)
+        .with_code("W0303")
+        .with_primary(span, "not folded")
+        .with_why(why)
+}
+
+/// Folded, but the result has no bytes to put in the binary.
+fn no_constant_form(name: &str, ty: &str, span: Span) -> Diagnostic {
+    Diagnostic::warning(format!("`{name}` folded to a `{ty}`, which has no constant form"))
+        .with_code("W0303")
+        .with_primary(span, "not stored as a constant")
+        .with_why("only values with a constant representation become const data; this one is rebuilt at startup")
 }
 
 /// Try to fold a comptime const via MIR lowering + MiriEngine. Returns None on
@@ -203,6 +310,7 @@ fn try_eval_comptime_mir(
     typed: &TypedProgram,
     mono: &MonoProgram,
     decls: &[Decl],
+    quota: Option<usize>,
     hard_err: &mut Option<rask_miri::MiriError>,
 ) -> Option<ComptimeGlobalMeta> {
     use rask_ast::expr::ExprKind;
@@ -319,6 +427,7 @@ fn try_eval_comptime_mir(
         .next()?;
 
     let mut engine = rask_miri::MiriEngine::new(Box::new(rask_miri::PureStdlib));
+    engine.set_branch_limit(quota.unwrap_or(DEFAULT_BRANCH_QUOTA) as u64);
     engine.set_struct_layouts(mono.struct_layouts.clone());
     engine.set_enum_layouts(mono.enum_layouts.clone());
 
@@ -358,5 +467,10 @@ fn try_eval_comptime_mir(
         elem_count: result.elem_count(),
         elem_type: result.elem_type_name().map(str::to_string),
         bytes: result.serialize()?,
+        // Miri hands back no strings — `MiriValue::serialize` says None for
+        // one, and the AST interpreter picks the block up instead. Same for a
+        // map: `MiriValue` has no map at all.
+        string_relocs: Vec::new(),
+        map_types: None,
     })
 }

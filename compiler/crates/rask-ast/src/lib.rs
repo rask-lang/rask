@@ -14,6 +14,7 @@ pub mod traits;
 pub mod fmt_spec;
 pub mod primitives;
 pub mod type_str;
+pub mod allow_names;
 
 pub use span::{Span, LineMap};
 

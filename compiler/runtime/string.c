@@ -1415,17 +1415,39 @@ void rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t alig
 
 // `{:debug}` on a string quotes it; on anything else debug and display agree
 // for the primitives, so only these two need a runtime of their own.
+//
+// The quoting escapes, which is the point of it: an unescaped `"` inside the
+// value produced output that can't be read back — `a"b` came out as `"a"b"`,
+// three quotes and no way to tell which one ended the string.
 void rask_string_debug(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
     const char *data = str_data(s);
-    char *buf = (char *)rask_alloc((size_t)len + 3);
+    // Worst case every byte needs two: `\n` and friends, and `\xNN` for the
+    // other control bytes, which is four.
+    char *buf = (char *)rask_alloc((size_t)len * 4 + 3);
     if (!buf) { *out = *s; rask_string_clone(out); return; }
-    buf[0] = '"';
-    memcpy(buf + 1, data, (size_t)len);
-    buf[len + 1] = '"';
-    buf[len + 2] = '\0';
-    str_make(out, buf, len + 2);
-    rask_realloc(buf, (size_t)len + 3, 0);
+    int64_t pos = 0;
+    buf[pos++] = '"';
+    for (int64_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)data[i];
+        switch (c) {
+            case '"':  buf[pos++] = '\\'; buf[pos++] = '"';  break;
+            case '\\': buf[pos++] = '\\'; buf[pos++] = '\\'; break;
+            case '\n': buf[pos++] = '\\'; buf[pos++] = 'n';  break;
+            case '\r': buf[pos++] = '\\'; buf[pos++] = 'r';  break;
+            case '\t': buf[pos++] = '\\'; buf[pos++] = 't';  break;
+            default:
+                if (c < 0x20 || c == 0x7f) {
+                    pos += (int64_t)snprintf(buf + pos, 5, "\\x%02x", c);
+                } else {
+                    buf[pos++] = (char)c;
+                }
+        }
+    }
+    buf[pos++] = '"';
+    buf[pos] = '\0';
+    str_make(out, buf, pos);
+    rask_realloc(buf, (size_t)len * 4 + 3, 0);
 }
 
 void rask_char_debug(RaskStr *out, int32_t codepoint) {

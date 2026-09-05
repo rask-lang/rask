@@ -333,11 +333,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
+        // how to read one element, since the header only carries its width.
+        StdlibEntry {
+            mir_name: "vec_debug", c_name: "rask_vec_debug",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         // Vec<f64> needs the float total order — the default compares elements
         // as int64_t, which orders negatives backwards (type.operators/ORD3).
         StdlibEntry::simple("Vec_sort_f64", "rask_vec_sort_f64", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_str", "rask_vec_sort_str", &[types::I64], None, false),
+        // `{m:debug}` sorting a map's entries by key — the key is at offset 0
+        // of each pair. Args: (vec, key kind, key size in bytes).
+        StdlibEntry::simple(
+            "Vec_sort_pairs", "rask_vec_sort_pairs",
+            &[types::I64, types::I64, types::I64], None, false,
+        ),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
@@ -881,6 +894,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Pool_index", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_handles", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_values", "rask_pool_values", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Pool_entries", "rask_pool_entries", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_len", "rask_pool_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_is_empty", "rask_pool_is_empty", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Pool_cursor", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
@@ -943,6 +957,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
+        StdlibEntry::simple("Link_forget_vec", "rask_link_forget_vec", &[types::I64], None, false),
+        StdlibEntry::simple("Link_forget_map", "rask_link_forget_map", &[types::I64], None, false),
 
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
@@ -1147,6 +1163,25 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
+        // Subprocess. The builder is Rask (stdlib/os.rk); only these three
+        // reach the OS. `process_run` takes the pieces and returns the exit
+        // status; the two readers hand back what it captured on this thread.
+        StdlibEntry::simple(
+            "os_process_run", "rask_process_run",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64), false,
+        ),
+        StdlibEntry {
+            mir_name: "os_process_stdout", c_name: "rask_process_stdout",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_stderr", c_name: "rask_process_stderr",
+            params: &[types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+
         // ── StringBuilder ───────────────────────────────────────────
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
@@ -1336,15 +1371,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
 
-        // Receiver methods
-        StdlibEntry::simple("Receiver_receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
+        // Receiver methods. Both receives are out-param recvs returning the
+        // channel status, which the Custom adapter turns into `T or E` — one
+        // shape for every element size, and a closed channel is a value rather
+        // than a panic (#1067).
         StdlibEntry {
-            mir_name: "Receiver_receive_struct", c_name: "rask_channel_recv_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            mir_name: "Receiver_receive", c_name: "rask_channel_recv_into",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        // try_receive() -> T or E: out-param recv (handles structs, distinguishes
-        // empty/closed from a real value); Custom adapter builds the Result.
         StdlibEntry {
             mir_name: "Receiver_try_receive", c_name: "rask_channel_try_recv_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -1522,65 +1557,39 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
     ];
 
     // ── Atomic operations ──────────────────────────────────
-    // All integer atomics (I8..U64, Usize, Isize) share rask_atomic_int_* C functions.
-    // AtomicBool uses rask_atomic_bool_* C functions.
-    // Entries generated per type name so MIR qualified names resolve correctly.
+    // mem.atomics/GA1: `Atomic<T>` is the only spelling, so there is one set of
+    // rows. Every payload — every integer width, `bool`, a word-sized struct —
+    // is a machine word to the runtime, which is why one C implementation
+    // covers them: `_Atomic(int64_t)`. The eleven `AtomicU64`-style names the
+    // table used to carry are gone with the types.
 
-    let int_atomic_types = [
-        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
-        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
-        "AtomicUsize", "AtomicIsize",
-    ];
-
-    for ty in &int_atomic_types {
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_new", ty)), "rask_atomic_int_new", &[types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_default", ty)), "rask_atomic_int_default", &[], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_load", ty)), "rask_atomic_int_load", &[types::I64, types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_store", ty)), "rask_atomic_int_store", &[types::I64, types::I64, types::I64], None, false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_swap", ty)), "rask_atomic_int_swap", &[types::I64, types::I64, types::I64], Some(types::I64), false));
-        // CAS — Custom adaptation (appends out_ok pointer)
-        entries.push(StdlibEntry {
-            mir_name: leak_str(&format!("{}_compare_exchange", ty)),
-            c_name: "rask_atomic_int_compare_exchange",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-        });
-        entries.push(StdlibEntry {
-            mir_name: leak_str(&format!("{}_compare_exchange_weak", ty)),
-            c_name: "rask_atomic_int_compare_exchange_weak",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-        });
-        for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", ty, op)), leak_str(&format!("rask_atomic_int_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_into_inner", ty)), "rask_atomic_int_into_inner", &[types::I64], Some(types::I64), false));
+    // Custom throughout: a word-sized struct payload (GA2) arrives as an
+    // address and has to travel as the word itself.
+    let atomic = |mir_name: &'static str, c_name: &'static str, params: &'static [types::Type], ret: Option<types::Type>| StdlibEntry {
+        mir_name, c_name, params, ret_ty: ret, can_panic: false,
+        arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+    };
+    entries.push(atomic("Atomic_new", "rask_atomic_int_new", &[types::I64], Some(types::I64)));
+    entries.push(StdlibEntry::simple("Atomic_default", "rask_atomic_int_default", &[], Some(types::I64), false));
+    entries.push(atomic("Atomic_load", "rask_atomic_int_load", &[types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_store", "rask_atomic_int_store", &[types::I64, types::I64, types::I64], None));
+    entries.push(atomic("Atomic_swap", "rask_atomic_int_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic(
+        "Atomic_compare_exchange", "rask_atomic_int_compare_exchange",
+        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+    ));
+    entries.push(atomic(
+        "Atomic_compare_exchange_weak", "rask_atomic_int_compare_exchange_weak",
+        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+    ));
+    for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
+        entries.push(StdlibEntry::simple(
+            leak_str(&format!("Atomic_{}", op)),
+            leak_str(&format!("rask_atomic_int_{}", op)),
+            &[types::I64, types::I64, types::I64], Some(types::I64), false,
+        ));
     }
-
-    // AtomicBool — separate C functions
-    entries.push(StdlibEntry::simple("AtomicBool_new", "rask_atomic_bool_new", &[types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_default", "rask_atomic_bool_default", &[], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_load", "rask_atomic_bool_load", &[types::I64, types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry::simple("AtomicBool_store", "rask_atomic_bool_store", &[types::I64, types::I64, types::I64], None, false));
-    entries.push(StdlibEntry::simple("AtomicBool_swap", "rask_atomic_bool_swap", &[types::I64, types::I64, types::I64], Some(types::I64), false));
-    entries.push(StdlibEntry {
-        mir_name: "AtomicBool_compare_exchange", c_name: "rask_atomic_bool_compare_exchange",
-        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-        ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-    });
-    entries.push(StdlibEntry {
-        mir_name: "AtomicBool_compare_exchange_weak", c_name: "rask_atomic_bool_compare_exchange_weak",
-        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-        ret_ty: Some(types::I64), can_panic: false,
-        arg_adapt: ArgAdapt::AtomicCas, ret_adapt: RetAdapt::None,
-    });
-    for op in &["fetch_and", "fetch_or", "fetch_xor", "fetch_nand"] {
-        entries.push(StdlibEntry::simple(leak_str(&format!("AtomicBool_{}", op)), leak_str(&format!("rask_atomic_bool_{}", op)), &[types::I64, types::I64, types::I64], Some(types::I64), false));
-    }
-    entries.push(StdlibEntry::simple("AtomicBool_into_inner", "rask_atomic_bool_into_inner", &[types::I64], Some(types::I64), false));
+    entries.push(atomic("Atomic_into_inner", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
@@ -1788,4 +1797,200 @@ mod tests {
             );
         }
     }
+
+    /// Every `@native("symbol")` in the stdlib names a symbol that exists.
+    ///
+    /// `@native` is an assertion, and nothing checked it. `os.exit` was declared
+    /// `@native` with no `os_exit` row anywhere, so it type-checked, ran on the
+    /// interpreter, and died at codegen with "Function not found: os_exit". The
+    /// same thing had already happened to `os.set_env` (#855) — twice is a
+    /// pattern, hence #1007.
+    ///
+    /// The failure mode is the worst one available: the program builds on one
+    /// backend and fails on the other with an internal message rather than a
+    /// diagnostic, which is exactly what ctrl.panic/S7 says not to do.
+    ///
+    /// A named symbol has to be reachable — a row in this table, or a
+    /// declaration in the runtime header. That covers 240 of the stubs and
+    /// needs no list to maintain.
+    #[test]
+    fn every_named_native_symbol_exists() {
+        let header = include_str!("../../../runtime/rask_runtime.h");
+        let declared: HashSet<&str> = header
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|w| w.starts_with("rask_"))
+            .collect();
+        let dispatched: HashSet<&str> =
+            stdlib_entries().iter().map(|e| e.c_name).collect();
+
+        let reg = rask_stdlib::StubRegistry::load();
+        let mut missing: Vec<String> = Vec::new();
+        for type_name in reg.type_names() {
+            let Some(t) = reg.get_type(&type_name) else { continue };
+            for m in &t.methods {
+                let Some(symbol) = m.native.as_deref().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                if declared.contains(symbol) || dispatched.contains(symbol) {
+                    continue;
+                }
+                missing.push(format!("{}.{} → {}", type_name, m.name, symbol));
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "{} stdlib declarations name a native symbol that doesn't exist. Either \
+             implement it (a row in `stdlib_entries()` plus the C function) or drop \
+             the symbol from the `@native` marker if the call is lowered some other \
+             way:\n  {}",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
+    /// `@native` with no symbol derives its name, and those are the ones that
+    /// go missing quietly. Each either has a dispatch row or is on this list.
+    ///
+    /// The list is a snapshot of the gap as it stands, and it may only shrink.
+    /// Two kinds of entry are mixed in it deliberately, because from here they
+    /// look the same and only trying one tells them apart:
+    ///
+    ///   - lowered somewhere bespoke: `Vec.fold` and friends are fused into an
+    ///     iterator chain, `reflect.*` is resolved at comptime, `math.*` goes to
+    ///     libm. These are fine and will stay listed.
+    ///   - no entry point at all, which is a bug: the call type-checks, runs on
+    ///     the interpreter, and dies at codegen with "Function not found". The
+    ///     list is where those stop being invisible. `Command.*` and `Timer.*`
+    ///     were the first two families confirmed that way (#1066); `Command` is
+    ///     implemented now and `Timer` says `@unimplemented`, so both are off.
+    ///
+    /// The test fails both ways. An unlisted name with no row is a new gap; a
+    /// listed name that has since gained a row is stale and must come off.
+    const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
+    "FieldInfo.get",
+    "FieldInfo.has",
+    "Map.capacity",
+    "Map.modify",
+    "Map.modify_with_default",
+    "Map.read",
+    "Map.with_capacity",
+    "Pool.capacity",
+    "Pool.clear",
+    "Pool.get_mut_unchecked",
+    "Pool.get_unchecked",
+    "Pool.modify",
+    "Pool.read",
+    "Pool.remaining",
+    "Pool.snapshot",
+    "Pool.weak",
+    "Pool.with_valid",
+    "Pool.with_valid_mut",
+    "TaskGroup.join_all",
+    "TaskGroup.new",
+    "Vec.all",
+    "Vec.any",
+    "Vec.find",
+    "Vec.fold",
+    "Vec.max",
+    "Vec.min",
+    "Vec.modify",
+    "Vec.position",
+    "Vec.push_with",
+    "Vec.read",
+    "Vec.reduce",
+    "Vec.sort_by_key",
+    "Vec.sum",
+    "Vec.zip",
+    "WeakHandle.upgrade",
+    "WeakHandle.valid",
+    "Wide.map",
+    "Wide.max",
+    "Wide.min",
+    "Wide.reduce",
+    "Wide.zip_with",
+    "cstring.to_string",
+    "json.encode_pretty",
+    "math.acos",
+    "math.asin",
+    "math.atan",
+    "math.atan2",
+    "math.cos",
+    "math.exp",
+    "math.hypot",
+    "math.ln",
+    "math.log10",
+    "math.log2",
+    "math.sin",
+    "math.tan",
+    "math.to_degrees",
+    "math.to_radians",
+    "os.signals",
+    "reflect.align_of",
+    "reflect.fields",
+    "reflect.is_copy",
+    "reflect.is_enum",
+    "reflect.is_flat",
+    "reflect.is_float",
+    "reflect.is_integer",
+    "reflect.is_map",
+    "reflect.is_optional",
+    "reflect.is_resource",
+    "reflect.is_struct",
+    "reflect.is_vec",
+    "reflect.name_of",
+    "reflect.size_of",
+    ];
+
+    #[test]
+    fn derived_native_names_are_listed_or_dispatched() {
+        let dispatched: HashSet<&str> =
+            stdlib_entries().iter().map(|e| e.mir_name).collect();
+        let listed: HashSet<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW.iter().copied().collect();
+
+        let reg = rask_stdlib::StubRegistry::load();
+        let mut unlisted: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for type_name in reg.type_names() {
+            let Some(t) = reg.get_type(&type_name) else { continue };
+            for m in &t.methods {
+                if !matches!(m.native.as_deref(), Some("")) {
+                    continue;
+                }
+                let key = format!("{}.{}", type_name, m.name);
+                if dispatched.contains(format!("{}_{}", type_name, m.name).as_str()) {
+                    continue;
+                }
+                seen.insert(key.clone());
+                if !listed.contains(key.as_str()) {
+                    unlisted.push(key);
+                }
+            }
+        }
+        unlisted.sort();
+        assert!(
+            unlisted.is_empty(),
+            "{} `@native` declarations have no dispatch row and aren't listed. If the \
+             call is lowered somewhere bespoke, add it to \
+             NATIVE_WITHOUT_A_DISPATCH_ROW; otherwise it needs an entry point:\n  {}",
+            unlisted.len(),
+            unlisted.join("\n  ")
+        );
+
+        let mut stale: Vec<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW
+            .iter()
+            .copied()
+            .filter(|k| !seen.contains(*k))
+            .collect();
+        stale.sort();
+        assert!(
+            stale.is_empty(),
+            "{} entries in NATIVE_WITHOUT_A_DISPATCH_ROW no longer describe anything — \
+             the declaration gained a row, changed its marker, or went away. Delete \
+             them; the list only shrinks:\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        );
+    }
 }
+

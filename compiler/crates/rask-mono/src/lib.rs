@@ -529,6 +529,20 @@ pub fn monomorphize(
     monomorphize_with_packages(program, decls, std::collections::HashSet::new())
 }
 
+/// Monomorphize a program that may have no `main` — a file of `test` blocks has
+/// none, and `rask check` still has to answer whether its comptime consts fold.
+/// Every non-generic top-level function is a root instead of the entry point,
+/// so layouts and call targets exist for whatever the file defines.
+///
+/// Only for analysis. The result is not a program you can run: nothing in it
+/// says which function starts.
+pub fn monomorphize_for_analysis(
+    program: &TypedProgram,
+    decls: &[Decl],
+) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, std::collections::HashSet::new(), true)
+}
+
 /// Monomorphize with cross-package module awareness.
 ///
 /// `package_modules` contains names of imported external packages so the
@@ -538,12 +552,41 @@ pub fn monomorphize_with_packages(
     decls: &[Decl],
     package_modules: std::collections::HashSet<String>,
 ) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, package_modules, false)
+}
+
+/// `entryless` seeds every plain function as a root when there's no `main`,
+/// for the analysis entry point above.
+fn monomorphize_inner(
+    program: &TypedProgram,
+    decls: &[Decl],
+    package_modules: std::collections::HashSet<String>,
+    entryless: bool,
+) -> Result<MonoProgram, MonomorphizeError> {
+    // A struct out of an `import c` header has no declaration in the source —
+    // the type checker synthesizes one so the header's structs get layouts,
+    // fields and codegen like any other struct (#948).
+    let with_c_types: Vec<Decl>;
+    let decls: &[Decl] = if program.c_type_decls.is_empty() {
+        decls
+    } else {
+        with_c_types = decls
+            .iter()
+            .cloned()
+            .chain(program.c_type_decls.iter().cloned())
+            .collect();
+        &with_c_types
+    };
+
     let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
     mono.set_trait_coercions(&program.trait_coercions);
 
     if !mono.add_entry("main") {
-        return Err(MonomorphizeError::NoEntryPoint);
+        if !entryless {
+            return Err(MonomorphizeError::NoEntryPoint);
+        }
+        mono.add_all_plain_fn_roots();
     }
     mono.add_module_const_roots();
     mono.add_exported_roots();
@@ -681,6 +724,13 @@ pub fn monomorphize_with_packages(
                 .node_types
                 .values()
                 .chain(mono.instantiated_node_types.values())
+                // A type argument is an instantiation even when nothing builds
+                // one. `reflect.fields<Box2<string>>()` names the type and never
+                // constructs it, so it appeared in no expression's type — and
+                // the layout that would have said `value` is sixteen bytes was
+                // never emitted. Reflection then read the shared layout and
+                // reported a `string` field as an eight-byte `i64` (#968).
+                .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
             {
                 collect_generic_instances(ty, &type_names, &mut instances);
             }
@@ -948,6 +998,7 @@ mod tests {
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
+            c_type_decls: Vec::new(),
             mutate_self_fns: std::collections::HashSet::new(),
             resolutions: std::collections::HashMap::new(),
             types: rask_types::TypeTable::new(),

@@ -103,6 +103,45 @@ mod tests {
             "should flag snake_case enum name");
     }
 
+    // ─── naming/as ──────────────────────────────────────────
+
+    #[test]
+    fn as_prefix_allows_a_raw_pointer() {
+        // The old test asked whether the return type started with `&`. No Rask
+        // type string ever does, so every `as_ptr` in the stdlib was reported
+        // as possibly allocating (#993). A pointer cast is as cheap as it gets.
+        let report = lint_default(
+            "struct Buf { }\nextend Buf {\n    func as_ptr(self) -> *u8 { return 0 }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "a raw pointer is a cheap cast");
+    }
+
+    #[test]
+    fn as_prefix_allows_an_optional_over_a_primitive() {
+        let report = lint_default(
+            "struct J { }\nextend J {\n    func as_bool(self) -> bool? { return none }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "the absence flag costs nothing");
+    }
+
+    #[test]
+    fn as_prefix_allows_handing_back_a_field() {
+        // The type is a container, but nothing is built — the value already
+        // holds it. That's what a view is.
+        let report = lint_default(
+            "struct H { items: Vec<i64> }\nextend H {\n    func as_items(self) -> Vec<i64> { return self.items }\n}"
+        );
+        assert!(!has_rule(&report, "naming/as"), "returning a field builds nothing");
+    }
+
+    #[test]
+    fn as_prefix_flags_a_clone() {
+        let report = lint_default(
+            "struct H { items: Vec<i64> }\nextend H {\n    func as_items(self) -> Vec<i64> { return self.items.clone() }\n}"
+        );
+        assert!(has_rule(&report, "naming/as"), "a clone allocates — that's `to_`");
+    }
+
     // ─── naming/is prefix ───────────────────────────────────
 
     #[test]
@@ -173,5 +212,36 @@ func main() {}
         let json = lint_json(&report);
         assert!(json.contains("style/snake-case-func"));
         assert!(json.contains("getData"));
+    }
+
+    // ─── `@allow` ───────────────────────────────────────────
+
+    /// The two lists are in different crates and can only be kept together by
+    /// something that fails when they part. A rule with no name here can't be
+    /// suppressed; a name with no rule suppresses nothing and would be accepted
+    /// by the checker anyway — the exact silence #1085 is about.
+    #[test]
+    fn every_rule_id_is_an_allow_name() {
+        let mut registry = crate::rules::rule_ids();
+        let mut names: Vec<&str> = rask_ast::allow_names::LINT_RULES.to_vec();
+        registry.sort_unstable();
+        names.sort_unstable();
+        assert_eq!(registry, names, "rules.rs and rask_ast::allow_names disagree");
+    }
+
+    #[test]
+    fn allow_suppresses_any_rule() {
+        let report = lint_default("@allow(style/snake-case-func)\nfunc getData() -> i32 { return 1 }");
+        assert!(report.diagnostics.is_empty(), "got {:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn allow_only_suppresses_the_rule_it_names() {
+        let report = lint_default("@allow(naming/as)\nfunc getData() -> i32 { return 1 }");
+        assert!(
+            report.diagnostics.iter().any(|d| d.rule == "style/snake-case-func"),
+            "got {:?}",
+            report.diagnostics
+        );
     }
 }

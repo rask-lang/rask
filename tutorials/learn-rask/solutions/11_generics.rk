@@ -32,7 +32,7 @@ func lerp(a: f64, b: f64, t: f64) -> f64 {
     return a + t * (b - a)
 }
 
-func contains<T: Comparable>(items: Vec<T>, target: T) -> bool {
+func contains<T: Equal>(items: Vec<T>, target: T) -> bool {
     for item in items {
         if item == target { return true }
     }

@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `{:debug}` on a type that never opted into Displayable (#1032).
+//
+// std.fmt/G2 says every type auto-derives Debug and D3 makes that the free
+// half of the split: user-facing output is opt-in, developer-facing output
+// isn't. One gate served both spellings, so a plain struct was rejected for
+// lacking a `to_string` it was never going to need — and the suggested fix
+// told the caller to add `Displayable` when they had asked for debug.
+//
+// The spec's own example was the failing case, and had never been run: the
+// block in specs/stdlib/fmt.md is `test: parse`, so `rask test-specs` only
+// checked that it parsed.
+
+struct Point {
+    x: f64
+    y: f64
+}
+
+struct Named {
+    label: string
+    at: Point
+}
+
+struct Empty {
+}
+
+enum Shape {
+    Nothing
+    Circle(f64)
+    Rect(f64, f64)
+}
+
+test "a struct with no Displayable renders its fields" {
+    let p = Point { x: 1.0, y: 2.0 }
+    assert format("{:debug}", p) == "Point {{ x: 1, y: 2 }}"
+}
+
+test "an empty struct renders as its name" {
+    assert format("{:debug}", Empty { }) == "Empty {{}}"
+}
+
+test "a nested struct recurses, and a string field is quoted" {
+    let n = Named { label: "hi", at: Point { x: 1.0, y: 2.0 } }
+    assert format("{:debug}", n) == "Named {{ label: \"hi\", at: Point {{ x: 1, y: 2 }} }}"
+}
+
+test "an enum renders its variant, with a payload when it has one" {
+    assert format("{:debug}", Shape.Nothing) == "Shape.Nothing"
+    assert format("{:debug}", Shape.Circle(1.5)) == "Shape.Circle(1.5)"
+    assert format("{:debug}", Shape.Rect(2.0, 3.0)) == "Shape.Rect(2, 3)"
+}
+
+test "debug quoting escapes, so the output can be read back" {
+    // `a"b` came out as `"a"b"` — three quotes and no way to tell which one
+    // closed the string. Quoting that doesn't escape is worse than none.
+    assert format("{:debug}", "a\"b") == "\"a\\\"b\""
+    assert format("{:debug}", "tab\there") == "\"tab\\there\""
+    assert format("{:debug}", "line\nbreak") == "\"line\\nbreak\""
+    assert format("{:debug}", "back\\slash") == "\"back\\\\slash\""
+    assert format("{:debug}", "plain") == "\"plain\""
+}
+
+test "a char is quoted too" {
+    assert format("{:debug}", 'c') == "'c'"
+}
+
+test "an interpolation spec reaches the same renderer" {
+    let p = Point { x: 1.0, y: 2.0 }
+    assert "{p:debug}" == "Point {{ x: 1, y: 2 }}"
+}

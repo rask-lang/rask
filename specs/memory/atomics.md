@@ -28,6 +28,8 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 |------|-------------|
 | **GA1: One type, one spelling** | `Atomic<T>` is the only atomic type and the only way to write it. There are no `AtomicU64`-style named types and no aliases — one pattern per operation (`CORE_DESIGN` principle 8) |
 | **GA2: Eligibility** | `T` must be Copy, contain no padding bytes, and be 1, 2, 4, or 8 bytes — or 16 with `target.has_atomic128` (AT7). Float payloads additionally require `target.has_atomic_float`. Violation is a compile error at the type, with the reason named |
+
+Rask gives every struct field its own word, so a struct payload is word-sized when it has *one* field: `{ index: i32, gen: i32 }` is 16 bytes however small the fields are written, and E0384 says so. That's a consequence of the layout model rather than of this rule, and it moves if the layout does.
 | **GA3: Ops follow the payload** | Every eligible payload gets `new`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`, `into_value`, `get_mut`. Integer payloads add the full fetch family; `bool` adds the logical fetches; floats add `fetch_add`/`fetch_sub`/`fetch_max`/`fetch_min`. Struct payloads get none — `fetch_add` on a struct is meaningless |
 | **GA4: CAS is bitwise** | `compare_exchange` compares raw bytes. This is why GA2 excludes padding: two logically equal values with different padding bytes would spuriously fail CAS. Same rule float CAS already follows (`NaN == NaN` when bit patterns match, `+0.0 != -0.0`) |
 | **GA5: Optional payloads** | `Atomic<T?>` is rejected in general — an arbitrary `T` has no spare bit pattern for `none`. The one exception is `Atomic<Handle<T>?>`, where the compiler owns the layout and reserves a sentinel (AH2) |
@@ -126,6 +128,9 @@ let slot = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `load(order)` | `self, Ordering -> T` | Atomically read the value |
+<!-- The examples write `Relaxed` bare; that's `import sync.Relaxed`, which
+     brings the ordering into scope under its own name. `Ordering.Relaxed`
+     is the same value and needs no import. -->
 | `store(v, order)` | `self, T, Ordering -> void` | Atomically write the value |
 | `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
 
@@ -147,6 +152,8 @@ let old = counter.swap(new_value, AcqRel)
 
 - `compare_exchange`: Must succeed if value matches. Use for single-attempt operations.
 - `compare_exchange_weak`: May fail spuriously even if value matches. More efficient in loops on some architectures.
+
+`CasFailed<T>` is one field — the value the atomic actually held — so it is the same word and costs nothing at run time. The wrapper is what separates the branches: both sides carry a `T`, and as `T or T` no pattern could tell success from failure. A branch written without its type argument (`CasFailed as e`) names the whole branch, so `e.found` reads.
 
 <!-- test: skip -->
 ```rask

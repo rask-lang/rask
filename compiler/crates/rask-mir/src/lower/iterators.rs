@@ -2075,12 +2075,12 @@ impl<'a> MirLowerer<'a> {
             &setup,
         )?;
 
-        // The Vec the closure hands back is not freed, so one allocation per
-        // element leaks (#943). It can't simply be freed here: the closure
-        // doesn't have to have allocated it — `|k| lookup()` can hand back a
-        // Vec that outlives the call, and freeing that is a use-after-free
-        // rather than a leak fix. Doing better needs to know whether the result
-        // is owned, which this lowering has no way to ask today.
+        // This lowering emits no free for the Vec the closure hands back, and
+        // doesn't need to: the drop pass reaches it and frees it once per
+        // element, inside the loop. It could not be freed from here anyway —
+        // the closure doesn't have to have allocated it, and `|k| lookup()`
+        // handing back a Vec that outlives the call would make the free a
+        // use-after-free rather than a leak fix (#943).
         let (sub_op, _) = self.inline_closure_body(closure, elem_op, elem_ty)?;
         let sub_vec = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2412,10 +2412,9 @@ impl<'a> MirLowerer<'a> {
         less
     }
 
-    /// `v.sort_by_key(f)` — in place. Not stable: the spec allows `sort` and
-    /// `sort_by_key` to use the platform sort since two elements with equal
-    /// keys but different other fields are indistinguishable from the
-    /// guarantee's point of view (only `sort_by` promises stability).
+    /// `v.sort_by_key(f)` — in place, and stable (SO1). Two elements whose keys
+    /// tie can differ in every other field, so their order is observable — the
+    /// argument that lets `sort` use the platform sort doesn't reach here.
     ///
     /// Extracts each element's key once into a parallel `keys` Vec, then
     /// selection-sorts on `keys`, swapping the same pair in both `vec` and

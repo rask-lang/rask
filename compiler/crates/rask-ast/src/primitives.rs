@@ -169,3 +169,45 @@ mod tests {
         }
     }
 }
+
+/// The C scalar type names, and what each one is on this target.
+///
+/// `import c` translates a header's `int` to `c_int`, `size_t` to `c_size` and
+/// so on (struct.c-interop/TM1), and until these were defined none of those
+/// names was a type at all. So `*i64` passed for a `const int *` with no
+/// complaint, and the C side read the 64-bit buffer as 32-bit ints: the airtight
+/// case is one element of 2^32, which sums to 0 (rask-lang/rask#947).
+///
+/// The widths follow the target's data model, and the target is the host — the
+/// same reasoning `pointer_bits` sets out. LP64 everywhere the compiler can
+/// currently link, so `long` is 64-bit; the Windows LLP64 case is a target that
+/// doesn't reach codegen yet.
+///
+/// `char` has no signedness in C. It is signed on x86-64 and unsigned on ARM,
+/// and the host says which.
+pub fn c_type_spelling(name: &str) -> Option<&'static str> {
+    let long = if pointer_bits() == 32 { "i32" } else { "i64" };
+    let ulong = if pointer_bits() == 32 { "u32" } else { "u64" };
+    Some(match name {
+        "c_char" => {
+            if cfg!(any(target_arch = "aarch64", target_arch = "arm")) { "u8" } else { "i8" }
+        }
+        "c_short" => "i16",
+        "c_ushort" => "u16",
+        "c_int" => "i32",
+        "c_uint" => "u32",
+        "c_long" => long,
+        "c_ulong" => ulong,
+        "c_longlong" => "i64",
+        "c_ulonglong" => "u64",
+        "c_size" => usize_spelling(),
+        "c_ssize" => isize_spelling(),
+        _ => return None,
+    })
+}
+
+/// Every `c_*` name, for the tables that enumerate primitives.
+pub const C_SCALARS: &[&str] = &[
+    "c_char", "c_short", "c_ushort", "c_int", "c_uint",
+    "c_long", "c_ulong", "c_longlong", "c_ulonglong", "c_size", "c_ssize",
+];

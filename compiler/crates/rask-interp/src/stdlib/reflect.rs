@@ -91,13 +91,25 @@ impl Interpreter {
     }
 
     /// reflect.fields<T>() → []FieldInfo
+    ///
+    /// A generic instantiation is written `Ring<i64>` and declared as `Ring`, so
+    /// the declaration is found under the base name and the type arguments are
+    /// substituted into the field types — otherwise every generic struct
+    /// answered "not a struct type" (#968).
     fn reflect_fields(&self, type_name: &str) -> Result<Value, RuntimeError> {
-        let decl = self.struct_decls.get(type_name).ok_or_else(|| {
-            RuntimeError::TypeError(format!(
-                "reflect.fields<{}>(): not a struct type",
-                type_name
-            ))
-        })?;
+        let base = rask_ast::type_str::generic_base_name(type_name);
+        let decl = self
+            .struct_decls
+            .get(type_name)
+            .or_else(|| base.as_deref().and_then(|b| self.struct_decls.get(b)))
+            .ok_or_else(|| {
+                RuntimeError::TypeError(format!(
+                    "reflect.fields<{}>(): not a struct type",
+                    type_name
+                ))
+            })?;
+        let params: Vec<String> = decl.type_params.iter().map(|p| p.name.clone()).collect();
+        let subst = rask_ast::type_str::generic_type_subst(type_name, &params);
 
         let field_infos: Vec<Value> = decl
             .fields
@@ -110,7 +122,7 @@ impl Interpreter {
                 );
                 fields.insert(
                     "type_name".to_string(),
-                    Value::String(Arc::new(Mutex::new(f.ty.clone()))),
+                    Value::String(Arc::new(Mutex::new(rask_ast::type_str::substitute_type_params(&f.ty, &subst)))),
                 );
                 fields.insert("offset".to_string(), Value::int(0));
                 fields.insert("size".to_string(), Value::int(0));
