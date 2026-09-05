@@ -439,6 +439,12 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    #[error("`{func}` returns the struct `{ty}` by value, which isn't supported yet")]
+    CStructReturn {
+        func: String,
+        ty: String,
+        span: Span,
+    },
     #[error("method `{method}` returns Self and cannot be called through `any {trait_name}`")]
     TraitObjectSelfReturn {
         trait_name: String,
@@ -1193,6 +1199,7 @@ impl TypeError {
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
             | UnsafeRequired { .. }
+            | CStructReturn { .. }
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
             | TraitNotSatisfied { .. }

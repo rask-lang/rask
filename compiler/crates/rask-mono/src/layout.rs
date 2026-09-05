@@ -232,6 +232,14 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // unknown-type branch and warned about a program with nothing wrong
         // with it.
         Type::UnresolvedNamed(name) if name.starts_with('*') => (8, 8),
+        // A `c_int` field out of an `import c` header is an `i32` — the widths
+        // live in one table (`c_type_spelling`) so the checker and the layout
+        // can't drift. Without this an imported C struct sized every field at a
+        // pointer and the offsets missed what C put there.
+        Type::UnresolvedNamed(name) if rask_ast::primitives::c_type_spelling(name).is_some() => {
+            let spelling = rask_ast::primitives::c_type_spelling(name).unwrap();
+            type_size_align(&Type::UnresolvedNamed(spelling.to_string()), cache)
+        }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
                 // A `StringView` is a `RaskStr` that shares the source's buffer

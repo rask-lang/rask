@@ -46,6 +46,130 @@ impl TypeChecker {
         }
     }
 
+    /// Synthesize a real struct declaration for every struct an `import c`
+    /// header brought in.
+    ///
+    /// `resolve_c_import` puts them in the namespace's `members` map, which is
+    /// enough for `c.Rect` to *resolve* in a signature and nothing else: there
+    /// was no type entry behind it, so `func f() -> c.Nonexistent` type-checked
+    /// too, and there was no way to build one (#948).
+    ///
+    /// A declaration rather than a type-table entry, because a type entry alone
+    /// stops at the type checker — monomorphization computes layouts from
+    /// declarations, so without one a `c.Rect` field read had no offset and
+    /// codegen guessed a machine word. One synthesized decl gives the checker,
+    /// mono, MIR and codegen the same struct every other struct gets.
+    ///
+    /// They take the qualified spelling — `c.Rect`, or `mylib.Rect` under
+    /// `import c "…" as mylib` — because that is how the program writes them,
+    /// and because a header's `Rect` must not claim the bare name a Rask
+    /// declaration might want. `@layout(C)` because it is one.
+    pub(super) fn collect_c_types(&mut self) {
+        use rask_ast::decl::{Field, FieldVisibility, StructDecl};
+        use rask_ast::decl::{Decl, DeclKind};
+        use rask_ast::Span;
+        use rask_resolve::SymbolKind;
+
+        // (namespace, member name, member symbol) for every C namespace.
+        let members: Vec<(String, String, rask_resolve::SymbolId)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                SymbolKind::CNamespace { members } => Some(
+                    members
+                        .iter()
+                        .map(|(name, id)| (sym.name.clone(), name.clone(), *id))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        self.c_namespaces.extend(
+            self.resolved
+                .symbols
+                .iter()
+                .filter(|sym| matches!(sym.kind, SymbolKind::CNamespace { .. }))
+                .map(|sym| sym.name.clone()),
+        );
+
+        let mut decls = Vec::new();
+        for (ns, name, id) in members {
+            let Some(field_syms) = self.c_struct_fields(id) else { continue };
+            let span = self.resolved.symbols.get(id).map_or(Span::new(0, 0), |s| s.span);
+            let fields: Vec<Field> = field_syms
+                .iter()
+                .filter_map(|(fname, fid)| {
+                    let f = self.resolved.symbols.get(*fid)?;
+                    Some(Field {
+                        name: fname.clone(),
+                        name_span: f.span,
+                        ty: f.ty.clone()?,
+                        visibility: FieldVisibility::Public,
+                        attrs: Vec::new(),
+                        default: None,
+                    })
+                })
+                .collect();
+            if fields.len() != field_syms.len() {
+                // A field whose C type didn't translate. Half a struct would
+                // put every later field at the wrong offset, so skip it and let
+                // the name stay unknown.
+                continue;
+            }
+
+            decls.push(Decl {
+                // A synthesized decl is never looked up by node id — nothing
+                // in the source points at it.
+                id: rask_ast::NodeId::DUMMY,
+                kind: DeclKind::Struct(StructDecl {
+                    name: format!("{}.{}", ns, name),
+                    type_params: Vec::new(),
+                    fields,
+                    methods: Vec::new(),
+                    is_pub: true,
+                    attrs: vec!["layout(C)".to_string()],
+                    doc: None,
+                }),
+                span,
+            });
+        }
+
+        self.collect_type_declarations(&decls);
+        self.c_type_decls = decls;
+    }
+
+    /// The field symbols of a C struct named in a namespace, following the
+    /// typedef if there is one.
+    ///
+    /// `typedef struct tag { … } Alias;` registers the struct under `tag` and
+    /// `Alias` beside it pointing at it, so a program that writes `c.Alias`
+    /// lands on the alias and has to hop.
+    fn c_struct_fields(
+        &self,
+        id: rask_resolve::SymbolId,
+    ) -> Option<Vec<(String, rask_resolve::SymbolId)>> {
+        use rask_resolve::SymbolKind;
+        let sym = self.resolved.symbols.get(id)?;
+        match &sym.kind {
+            SymbolKind::Struct { fields } => Some(fields.clone()),
+            SymbolKind::TypeAlias { target, .. } => {
+                let target = target.clone();
+                self.resolved
+                    .symbols
+                    .iter()
+                    .find(|s| s.name == target && matches!(s.kind, SymbolKind::Struct { .. }))
+                    .and_then(|s| match &s.kind {
+                        SymbolKind::Struct { fields } => Some(fields.clone()),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {

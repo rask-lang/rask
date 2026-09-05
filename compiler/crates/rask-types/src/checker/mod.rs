@@ -137,6 +137,15 @@ pub struct TypeChecker {
     pub(super) ctx: InferenceContext,
     /// Types assigned to nodes.
     pub(super) node_types: HashMap<NodeId, Type>,
+    /// Struct declarations synthesized from `import c` headers. They reach
+    /// monomorphization through `TypedProgram` so a C struct gets a layout like
+    /// any other (#948).
+    pub(super) c_type_decls: Vec<rask_ast::decl::Decl>,
+    /// The `import c` namespace names in this program (`c`, or the alias in
+    /// `import c "…" as mylib`). A dotted name under one of these is a C type
+    /// that must be registered — `c.Nonexistent` in a signature is an error,
+    /// where a module path like `time.Instant` resolves elsewhere.
+    pub(super) c_namespaces: std::collections::HashSet<String>,
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
     stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
@@ -443,6 +452,8 @@ impl TypeChecker {
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
+            c_type_decls: Vec::new(),
+            c_namespaces: std::collections::HashSet::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
@@ -559,6 +570,7 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
         }
         self.collect_import_aliases();
+        self.collect_c_types();
         self.collect_type_declarations(decls);
         self.check_user_annotations(decls);
         self.check_allow_names(decls);
@@ -840,6 +852,7 @@ impl TypeChecker {
 
         let program = TypedProgram {
             symbols: self.resolved.symbols,
+            c_type_decls: self.c_type_decls,
             resolutions: self.resolved.resolutions,
             types: self.types,
             node_types,

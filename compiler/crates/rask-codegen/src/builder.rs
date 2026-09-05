@@ -207,6 +207,9 @@ struct CodegenCtx<'a> {
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
     is_extern_c: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
+    /// How a C function's arguments cross the C ABI, for the ones with a struct
+    /// parameter. Absent means every argument is a plain scalar (#948).
+    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
 }
 
 /// How to compare one slot of an aggregate. Struct and enum-payload fields
@@ -333,7 +336,14 @@ pub struct FunctionBuilder<'a> {
 
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
+
+    /// C functions taking a struct by value, and how each argument goes.
+    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
 }
+
+/// No C function in this program takes a struct by value.
+static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<crate::c_abi::CArg>>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -375,7 +385,14 @@ impl<'a> FunctionBuilder<'a> {
             current_col: 0,
             line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
+            c_abi_args: &NO_C_ABI_ARGS,
         })
+    }
+
+    /// The C-ABI argument plans, when the program imports a header whose
+    /// functions take a struct by value.
+    pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<crate::c_abi::CArg>>) {
+        self.c_abi_args = plans;
     }
 
     /// Set the line map for converting byte offsets to line:col in assert messages.
@@ -560,6 +577,7 @@ impl<'a> FunctionBuilder<'a> {
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
+            c_abi_args: self.c_abi_args,
         };
 
         // ctrl.panic/A1: an exported symbol is entered from C, so the frames
@@ -4926,9 +4944,40 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or(false);
         let param_offset = usize::from(injects_out_param);
 
+        // A struct passed by value doesn't reach C as a pointer: it is cut into
+        // register-sized pieces, or copied onto the stack. The declared
+        // signature can't say which — a struct piece looks like any other
+        // `i64` there — so the plan is looked up by name (#948).
+        let abi_plan = ctx.c_abi_args.get(func.name.as_str());
+
         let mut arg_vals = Vec::with_capacity(args.len());
+        let mut slot = param_offset;
         for (i, a) in args.iter().enumerate() {
-            let expected = param_types.get(i + param_offset).copied();
+            match abi_plan.and_then(|p| p.get(i)) {
+                Some(crate::c_abi::CArg::Pieces(piece_tys)) => {
+                    let addr = Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?;
+                    for (n, piece_ty) in piece_tys.iter().enumerate() {
+                        let off = (n * 8) as i32;
+                        let raw = builder.ins().load(types::I64, MemFlags::new(), addr, off);
+                        arg_vals.push(if *piece_ty == types::F64 {
+                            builder.ins().bitcast(types::F64, MemFlags::new(), raw)
+                        } else {
+                            raw
+                        });
+                    }
+                    slot += piece_tys.len();
+                    continue;
+                }
+                Some(crate::c_abi::CArg::Memory(_)) => {
+                    // Cranelift copies it onto the stack from this address.
+                    arg_vals.push(Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?);
+                    slot += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let expected = param_types.get(slot).copied();
+            slot += 1;
             let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
             let actual = builder.func.dfg.value_type(val);
             if let Some(exp) = expected {

@@ -2982,6 +2982,7 @@ impl TypeChecker {
         if !matches!(sym.kind, SymbolKind::ExternFunction { .. }) {
             return None;
         }
+        let fn_name = sym.name.clone();
 
         // CI3: every C call is unsafe. The category is the same one a bare
         // `extern "C"` call gets, so `rask` reports them the same way.
@@ -2996,6 +2997,24 @@ impl TypeChecker {
         let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
             return None;
         };
+        // The header spells its own struct types bare — `Rect` — and they are
+        // registered under the namespace, as `c.Rect`. Without this the
+        // argument checked against a name that resolves to nothing, so a
+        // `Vec<i64>` went in where a `Rect` was declared without complaint.
+        let params: Vec<Type> = params.iter().map(|p| self.qualify_c_type(ns, p)).collect();
+
+        // A struct handed *to* C rides in registers or on the stack; one handed
+        // *back* is a separate ABI rule that isn't built (#1101). Say so, rather
+        // than reading a value nobody wrote.
+        if let Some(name) = self.c_struct_name(ns, &ret) {
+            self.errors.push(TypeError::CStructReturn {
+                func: format!("{}.{}", ns, fn_name),
+                ty: name,
+                span,
+            });
+        }
+        let ret = self.qualify_c_type(ns, &ret);
+
         if args.len() != params.len() {
             for a in args {
                 self.infer_expr(&a.expr);
@@ -3005,7 +3024,7 @@ impl TypeChecker {
                 found: args.len(),
                 span,
             });
-            return Some(*ret);
+            return Some(ret);
         }
         for (arg, want) in args.iter().zip(params.iter()) {
             let got = self.infer_expr_expecting(&arg.expr, want);
@@ -3016,7 +3035,27 @@ impl TypeChecker {
                 arg.expr.span,
             );
         }
-        Some(*ret)
+        Some(ret)
+    }
+
+    /// A bare name out of a C header, read as the namespace's type when there
+    /// is one. `Rect` in `int area(Rect r)` is `c.Rect`.
+    fn qualify_c_type(&self, ns: &str, ty: &Type) -> Type {
+        match self.c_struct_name(ns, ty) {
+            Some(name) => match self.types.get_type_id(&name) {
+                Some(id) => Type::Named(id),
+                None => ty.clone(),
+            },
+            None => ty.clone(),
+        }
+    }
+
+    /// The qualified name of a header type, when the bare one names a struct
+    /// the namespace registered.
+    fn c_struct_name(&self, ns: &str, ty: &Type) -> Option<String> {
+        let Type::UnresolvedNamed(name) = ty else { return None };
+        let qualified = format!("{}.{}", ns, name);
+        self.types.get_type_id(&qualified).map(|_| qualified)
     }
 
     pub(super) fn check_method_call(

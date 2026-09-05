@@ -248,7 +248,7 @@ fn setup_codegen(
     }).collect();
     // Add signatures from C header imports
     extern_sigs.extend(super::codegen::collect_c_import_extern_sigs(symbols));
-    codegen.declare_extern_functions(&extern_sigs)
+    codegen.declare_extern_functions(&extern_sigs, &mono.struct_layouts)
         .map_err(|e| vec![e.to_string()])?;
 
     codegen.declare_functions(mono, mir_functions)

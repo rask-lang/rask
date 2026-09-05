@@ -1538,6 +1538,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 diag
             }
 
+            CStructReturn { func, ty, span } => {
+                Diagnostic::error(format!(
+                    "`{}` returns the struct `{}` by value, which isn't supported yet",
+                    func, ty
+                ))
+                .with_code("E0858")
+                .with_primary(*span, "struct returned by value")
+                .with_help("take the struct through an out-parameter instead: declare the C side as `void f(Rect *out)` and pass a pointer")
+                .with_fix("pass a pointer to a struct you own instead of returning one")
+                .with_why("a C function handing back a struct uses its own ABI rule — registers for a small one, a hidden pointer for a large one — and the compiler doesn't implement it yet, so the value it read back would be wrong rather than absent")
+            }
+
             UnsafeRequired { operation, span } => {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0386")

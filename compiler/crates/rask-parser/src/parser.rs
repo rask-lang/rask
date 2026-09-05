@@ -45,6 +45,8 @@ pub struct Parser {
     /// and `cstring` is one the spec names in lowercase (#949). Collected in one
     /// token scan before parsing, so declaration order doesn't matter.
     declared_structs: std::collections::HashSet<String>,
+    /// Namespaces an `import c` declaration binds — see `scan_c_namespaces`.
+    c_namespaces: std::collections::HashSet<String>,
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
@@ -64,7 +66,8 @@ impl Parser {
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
         let declared_structs = Self::scan_declared_structs(&tokens);
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, loop_labels: Vec::new() }
+        let c_namespaces = Self::scan_c_namespaces(&tokens);
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, c_namespaces, loop_labels: Vec::new() }
     }
 
     /// Names following the `struct` keyword. One pass, before anything is
@@ -77,6 +80,45 @@ impl Parser {
                     names.insert(name.clone());
                 }
             }
+        }
+        names
+    }
+
+    /// The namespaces `import c` brings in — `c`, or whatever `as` renamed it
+    /// to. One token scan before parsing, the same way declared struct names
+    /// are found.
+    ///
+    /// A struct literal is recognised by a capitalised head, and `c.Rect { … }`
+    /// has a lowercase one, so the parser read it as a field access and choked
+    /// on the `{`. That left a C API taking a struct by value unreachable — and
+    /// every geometry, colour and vector type in C is one (#948).
+    fn scan_c_namespaces(tokens: &[Token]) -> std::collections::HashSet<String> {
+        let mut names = std::collections::HashSet::new();
+        for (i, t) in tokens.iter().enumerate() {
+            if !matches!(t.kind, TokenKind::Import) {
+                continue;
+            }
+            if !matches!(tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::Ident(s)) if s == "c")
+            {
+                continue;
+            }
+            // Walk to the `as` that renames it, stopping at the newline that
+            // ends the declaration. No `as` means the namespace is `c`.
+            let mut alias = "c".to_string();
+            let mut j = i + 2;
+            while let Some(tok) = tokens.get(j) {
+                match &tok.kind {
+                    TokenKind::Newline => break,
+                    TokenKind::As => {
+                        if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind) {
+                            alias = name.clone();
+                        }
+                        break;
+                    }
+                    _ => j += 1,
+                }
+            }
+            names.insert(alias);
         }
         names
     }
@@ -4455,7 +4497,12 @@ impl Parser {
                     // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
                     // literal and swallowed the if-block (#342).
                     if let ExprKind::Ident(base) = &lhs.kind {
-                        if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
+                        // A C namespace is lowercase by convention — `c.Rect { … }`
+                        // — so the capitalised-head rule doesn't reach it. Only a
+                        // namespace this file actually imports counts.
+                        let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
+                            || self.c_namespaces.contains(base);
+                        if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
                             self.parse_struct_literal(full_name, start)
                         } else {

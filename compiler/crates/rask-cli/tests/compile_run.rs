@@ -7139,3 +7139,83 @@ fn a_c_pointer_parameter_checks_its_element_type() {
         "expected the pointee-mismatch error naming both widths, got:\n{text}"
     );
 }
+
+/// Run a fixture that calls into a C object built from the matching `.c` file.
+///
+/// The linker takes its extra inputs from `RASK_EXTRA_CFLAGS` — the same door
+/// a sanitizer goes through. `rask build`'s `compile_c()` is the real answer,
+/// and an `import c` doesn't survive a package build yet (#1100), so a single
+/// file linked by hand is what can be tested today.
+fn run_with_c_object(stem: &str) -> (String, bool) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+    let obj = std::env::temp_dir().join(format!("rask_{}_{}.o", stem, std::process::id()));
+    let cc = Command::new("cc")
+        .arg("-c")
+        .arg(dir.join(format!("{}.c", stem)))
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .expect("failed to run cc");
+    assert!(
+        cc.status.success(),
+        "cc failed on {}.c:\n{}",
+        stem,
+        String::from_utf8_lossy(&cc.stderr)
+    );
+
+    let out = Command::new(rask_binary())
+        .arg("run")
+        .arg(format!("{}.rk", stem))
+        .current_dir(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .env("RASK_EXTRA_CFLAGS", &obj)
+        .output()
+        .expect("failed to run rask run");
+    let _ = std::fs::remove_file(&obj);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (text, out.status.success())
+}
+
+/// One line per System V argument class. A struct passed as a pointer, or cut
+/// into the wrong register class, gives a different number here.
+#[test]
+fn a_c_struct_goes_by_value() {
+    let (text, ok) = run_with_c_object("c_struct");
+    assert!(ok, "c_struct.rk should run:\n{text}");
+    for expected in [
+        "fields 6 7 4",
+        "area 42",
+        "vec2 3.75",
+        "vec2d 3.75",
+        "stamp 41.5",
+        "triple 321",
+        "rgba 4321",
+        "mixed 50",
+    ] {
+        assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
+    }
+}
+
+#[test]
+fn a_c_function_returning_a_struct_is_rejected() {
+    let (text, ok) = check_in_fixtures("c_struct_return.rk");
+    assert!(!ok, "a by-value struct return must be rejected:\n{text}");
+    assert!(
+        text.contains("E0858") && text.contains("c.Rect"),
+        "expected the struct-return error naming the type, got:\n{text}"
+    );
+}
+
+#[test]
+fn a_name_a_c_header_never_declared_is_not_a_type() {
+    let (text, ok) = check_in_fixtures("c_struct_unknown.rk");
+    assert!(!ok, "`c.Nonexistent` must be rejected:\n{text}");
+    assert!(
+        text.contains("c.Nonexistent"),
+        "expected the unknown-type error naming it, got:\n{text}"
+    );
+}

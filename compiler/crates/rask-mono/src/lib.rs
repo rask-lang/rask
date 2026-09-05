@@ -561,6 +561,21 @@ fn monomorphize_inner(
     package_modules: std::collections::HashSet<String>,
     entryless: bool,
 ) -> Result<MonoProgram, MonomorphizeError> {
+    // A struct out of an `import c` header has no declaration in the source —
+    // the type checker synthesizes one so the header's structs get layouts,
+    // fields and codegen like any other struct (#948).
+    let with_c_types: Vec<Decl>;
+    let decls: &[Decl] = if program.c_type_decls.is_empty() {
+        decls
+    } else {
+        with_c_types = decls
+            .iter()
+            .cloned()
+            .chain(program.c_type_decls.iter().cloned())
+            .collect();
+        &with_c_types
+    };
+
     let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
     mono.set_trait_coercions(&program.trait_coercions);
@@ -974,6 +989,7 @@ mod tests {
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
+            c_type_decls: Vec::new(),
             mutate_self_fns: std::collections::HashSet::new(),
             resolutions: std::collections::HashMap::new(),
             types: rask_types::TypeTable::new(),
