@@ -138,6 +138,20 @@ impl<'a> TraitChecker<'a> {
     /// require an explicit `extend T with Trait` conformance.
     fn is_nominal_user_trait(&self, trait_name: &str) -> bool {
         let base = trait_name.split('<').next().unwrap_or(trait_name);
+        // A compiler-provided trait is satisfied by shape, whether or not
+        // `stdlib/` also writes the declaration down. `Displayable` means "has
+        // `to_string`" — std.fmt/D5 says an error type gets it from `message()`
+        // alone — and `Error`, `Debug` and `Hashable` are the same kind of rule.
+        //
+        // The G1 gate below is for a trait a program *declares*, where a
+        // matching shape without `extend T with Trait` is deliberately rejected.
+        // Reading the name off a declaration alone conflated the two: putting
+        // `fmt.rk` in the stub set gave `Displayable` a declaration and every
+        // inherent `to_string` in the stdlib stopped counting — `StringView`
+        // declares one and was reported as not implementing the trait (#990).
+        if COMPILER_PROVIDED_TRAITS.contains(&base) {
+            return false;
+        }
         matches!(
             self.types.get_type_id(base).and_then(|id| self.types.get(id)),
             Some(TypeDef::Trait { is_duck: false, .. })

@@ -75,6 +75,8 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
+    ("fmt.rk", include_str!("../../../../stdlib/fmt.rk")),
+    ("encoding.rk", include_str!("../../../../stdlib/encoding.rk")),
 ];
 
 /// A method extracted from a stub file.
@@ -950,13 +952,14 @@ mod boundary_tests {
     /// failed loudly — the feature just half-worked.
     #[test]
     fn every_stdlib_file_is_listed_or_deliberately_left_out() {
-        // Left out on purpose (#990). Both declare a trait the compiler already
-        // provides — `Displayable` in fmt.rk, `Encode`/`Decode` in encoding.rk —
-        // and a declared `to_string` then wins method lookup over the inherent
-        // one, so `examples/package_manager.rk` stops building. Closing that
-        // means deciding whether these files are documentation or the source of
-        // truth; the entry here is so the answer stays a decision.
-        const DELIBERATELY_ABSENT: &[&str] = &["encoding.rk", "fmt.rk"];
+        // Empty, and the last two entries are worth the note: `fmt.rk` and
+        // `encoding.rk` were out because they declare a trait the compiler
+        // already provides, and a declaration made `Displayable` look like a
+        // trait a program had written — which is gated on `extend T with Trait`,
+        // so every inherent `to_string` in the stdlib stopped counting. The gate
+        // asks what kind of trait it is now rather than whether a declaration
+        // exists, so `stdlib/` is the source of truth for all 29 files (#990).
+        const DELIBERATELY_ABSENT: &[&str] = &[];
 
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../stdlib");
         let mut on_disk: Vec<String> = std::fs::read_dir(dir)
