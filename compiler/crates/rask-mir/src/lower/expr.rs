@@ -956,15 +956,28 @@ impl<'a> MirLowerer<'a> {
                     if let Some(r) = self.lower_elem_for_mutate(arg) {
                         return Ok(r);
                     }
-                    // A field does have storage — point at it.
+                    // A field does have storage — point at it, *if* pointing at
+                    // it is what the callee reads.
+                    //
+                    // A runtime handle is already an address: a `Pool`, `Vec`,
+                    // `Map` or `Rack` field holds the pointer, and the callee's
+                    // local is typed to be that pointer. Handing over the
+                    // field's address instead added a level nothing removes, so
+                    // `move(mutate state.entities)` gave the callee a pointer to
+                    // the *struct* and it read the struct's bytes as a
+                    // `RaskPool` header. That was benign only while it landed on
+                    // a zero field; real field widths moved it onto something
+                    // else and `examples/game_loop` segfaulted (#1083).
                     if matches!(&arg.kind, ExprKind::Field { .. }) {
-                        if let Some(addr) = self.place_address(arg) {
-                            let ty = self
-                                .ctx
-                                .lookup_raw_type(arg.id)
-                                .map(|t| self.ctx.type_to_mir(t))
-                                .unwrap_or(MirType::Ptr);
-                            return Ok((addr, ty));
+                        let field_ty = self
+                            .ctx
+                            .lookup_raw_type(arg.id)
+                            .map(|t| self.ctx.type_to_mir(t))
+                            .unwrap_or(MirType::Ptr);
+                        if field_ty.passed_by_address() {
+                            if let Some(addr) = self.place_address(arg) {
+                                return Ok((addr, field_ty));
+                            }
                         }
                     }
                 }

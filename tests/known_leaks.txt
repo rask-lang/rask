@@ -159,6 +159,7 @@ t_month_resource_ensure.rk  # 10
 t_month_staged.rk  # 4
 t_month_stdlib_modules.rk  # 14
 t_mutate_element_writeback.rk  # 1
+t_mutate_handle_field.rk  # 16
 t_mutate_param_refill.rk  # 7
 t_mutex_guard_exits.rk  # 12
 t_mutex_payload_kinds.rk  # 20

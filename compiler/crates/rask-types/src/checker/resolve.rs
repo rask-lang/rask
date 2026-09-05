@@ -3478,11 +3478,12 @@ impl TypeChecker {
 
     /// GA2: why this payload can't go in an atomic, or `None` when it can.
     ///
-    /// "One machine word" is the whole rule, and under Rask's layout that means
-    /// a primitive, or a struct with a single word-sized field. A two-field
-    /// struct is 16 bytes here however small its fields are written — every
-    /// field gets a word — so `Atomic<Slot>` over `{ index: i32, gen: i32 }` is
-    /// two words and the hardware has no single instruction for it.
+    /// "One machine word" is the whole rule, so what matters is how wide the
+    /// payload actually is. That used to be a field count times eight, because
+    /// every struct field was a word whatever it was written as — so
+    /// `Atomic<Slot>` over `{ index: i32, generation: i32 }` was rejected as two
+    /// words, and that struct is the example mem.atomics' own text uses. Fields
+    /// hold their declared widths now (#1083), so the rule reads the width.
     fn atomic_payload_problem(&self, ty: &Type) -> Option<String> {
         match self.resolve_named(ty) {
             // Still open — the value that settles it decides, and rejecting on
@@ -3496,15 +3497,40 @@ impl TypeChecker {
                     .to_string(),
             ),
             Type::Named(id) => match self.types.get(id) {
-                Some(TypeDef::Struct { fields, .. }) => match fields.len() {
-                    1 => self.atomic_payload_problem(&fields[0].1).map(|why| {
-                        format!("its one field can't go in an atomic either — {why}")
-                    }),
-                    n => Some(format!(
-                        "it is {n} fields, so {} bytes; an atomic is one machine word (GA2)",
-                        n * 8
-                    )),
-                },
+                Some(TypeDef::Struct { fields, .. }) => {
+                    let fields: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                    for f in &fields {
+                        if let Some(why) = self.atomic_payload_problem(f) {
+                            return Some(format!("one of its fields can't either — {why}"));
+                        }
+                    }
+                    let widths: Option<Vec<u32>> = fields
+                        .iter()
+                        .map(|f| self.resolve_named(f).scalar_bytes())
+                        .collect();
+                    let Some(widths) = widths else {
+                        return Some(
+                            "only a struct of scalars can be a payload (GA2)".to_string(),
+                        );
+                    };
+                    let laid_out = Self::packed_scalar_bytes(&widths);
+                    let data: u32 = widths.iter().sum();
+                    if laid_out > 8 {
+                        return Some(format!(
+                            "it is {laid_out} bytes; an atomic is one machine word (GA2)"
+                        ));
+                    }
+                    if laid_out != data {
+                        // GA4: compare_exchange compares raw bytes, so two
+                        // logically equal values with different padding would
+                        // fail CAS for no reason the author can see.
+                        return Some(format!(
+                            "its fields are {data} bytes in a {laid_out}-byte layout, so it has \
+                             padding — and CAS compares raw bytes (GA2, GA4)"
+                        ));
+                    }
+                    None
+                }
                 _ => Some("only a struct of word-sized data can be a payload (GA2)".to_string()),
             },
             other => Some(format!(
@@ -3512,6 +3538,21 @@ impl TypeChecker {
                 self.render_type(&other)
             )),
         }
+    }
+
+    /// How many bytes a struct of scalars of these widths takes, laid out the
+    /// way `rask_mono` lays one out: largest alignment first, each field at its
+    /// own alignment, padded to the struct's (type.structs/S1, S3, S4).
+    fn packed_scalar_bytes(widths: &[u32]) -> u32 {
+        let mut widths = widths.to_vec();
+        widths.sort_by(|a, b| b.cmp(a));
+        let max_align = widths.first().copied().unwrap_or(1);
+        let mut offset = 0u32;
+        for w in widths {
+            offset = offset.div_ceil(w) * w;
+            offset += w;
+        }
+        offset.div_ceil(max_align) * max_align
     }
 
     /// GA3: the fetch family exists where the payload can do arithmetic.

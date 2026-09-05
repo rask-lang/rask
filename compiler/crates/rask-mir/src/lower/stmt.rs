@@ -1218,9 +1218,15 @@ impl<'a> MirLowerer<'a> {
             )));
         };
 
-        Ok(layout
-            .fields
-            .iter()
+        // Declaration order, not layout order. `@layout(Rask)` reorders by
+        // alignment (S1/L4), and reflection reports what the author wrote —
+        // which is also what a serializer's key order follows. The two only
+        // agreed while every field had the same alignment (#1083).
+        let mut ordered: Vec<&rask_mono::FieldLayout> = layout.fields.iter().collect();
+        ordered.sort_by_key(|fl| fl.decl_index);
+
+        Ok(ordered
+            .into_iter()
             .map(|fl| {
                 let type_name = match &fl.ty {
                     rask_types::Type::Named(id) => self

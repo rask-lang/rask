@@ -56,6 +56,17 @@ pub struct FieldLayout {
     /// field, so a `private` one looked public there and not on the
     /// interpreter (std.encoding/E13).
     pub is_public: bool,
+    /// Where the field sits in the *declaration*, which is not where it sits in
+    /// memory: `@layout(Rask)` reorders by alignment (S1/L4).
+    ///
+    /// `reflect.fields<T>()` reports declaration order, because that is what the
+    /// author wrote and what a serializer's key order follows. It used to walk
+    /// the layout, and matched by accident: every field had the same alignment
+    /// while every scalar was a machine word, so the stable sort never moved
+    /// anything. Real field widths made the sort real, and native started
+    /// reporting `role` before `login_count` while the interpreter — the
+    /// reference — reported the declaration (#1083).
+    pub decl_index: u32,
     /// The field was declared with one of the type's parameters — `value: T` —
     /// so `ty` here is whatever got substituted in, not what the source said.
     ///
@@ -97,20 +108,35 @@ pub struct VariantLayout {
     pub attrs: Vec<String>,
 }
 
+/// The size and alignment of a scalar, by its type. Panics on anything else.
+fn scalar_by_name(ty: &Type) -> (u32, u32) {
+    let n = ty.scalar_bytes().expect("a scalar knows its width");
+    (n, n)
+}
+
 /// Get size and alignment for a type (after monomorphization).
 /// `cache` maps type names to already-computed (size, align) for user-defined types.
 pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
     match ty {
-        // All scalar types use 8-byte size/align because the codegen stores
-        // every value as i64. Using true type sizes (bool=1, i32=4) causes
-        // overlapping stores in struct fields.
+        // A struct field holds its declared width. Everything that reads one
+        // reads it at that width — `FieldLayout.size` is what says so, and
+        // `slot_scalar_bytes` turns it into a load.
+        //
+        // The aggregate *slots* below don't shrink with it: an `Option`
+        // payload, an enum tag and an enum payload field are word slots by
+        // codegen's convention, and each says so where it computes its own
+        // layout. That used to fall out of every scalar being eight bytes, so
+        // none of them had to state it (#1083).
         Type::Unit => (0, 1),
-        Type::Bool | Type::I8 | Type::U8 => (8, 8),
-        Type::I16 | Type::U16 => (8, 8),
-        Type::I32 | Type::U32 | Type::F32 => (8, 8),
-        Type::I64 | Type::U64 | Type::F64 => (8, 8),
-        Type::I128 | Type::U128 => (16, 16),
-        Type::Char => (8, 8),
+        // Widths live on the type (`Type::scalar_bytes`), so this pass and the
+        // atomic-payload rule read the same numbers. Natural alignment.
+        Type::Bool | Type::I8 | Type::U8 | Type::I16 | Type::U16
+        | Type::I32 | Type::U32 | Type::F32
+        | Type::I64 | Type::U64 | Type::F64 | Type::Char
+        | Type::I128 | Type::U128 => {
+            let n = ty.scalar_bytes().expect("a scalar knows its width");
+            (n, n)
+        }
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         ty if ty.is_option() => {
@@ -122,9 +148,14 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 return (8, 8);
             }
             let (size, align) = type_size_align(inner, cache);
+            // The payload sits in a word slot, the same convention the `Result`
+            // arm below states: codegen writes a scalar payload full-width, so
+            // the slot is floored at a word however narrow the value is.
+            let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
+            let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
             let tag_size = 1u32;
             let payload_offset = align_up(tag_size, align);
-            (payload_offset + size, align.max(1))
+            (payload_offset + size, align)
         }
         Type::Result { ok, err } => {
             let (ok_size, ok_align) = type_size_align(ok, cache);
@@ -206,12 +237,21 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 // A `StringView` is a `RaskStr` that shares the source's buffer
                 // (std.strings/V1) — same 16 bytes as a string.
                 "string" | "Path" | "StringView" => (16, 8),
-                "bool" => (1, 1),
-                "i8" | "u8" => (1, 1),
-                "i16" | "u16" => (2, 2),
-                "i32" | "u32" | "f32" => (4, 4),
-                "i64" | "u64" | "f64" => (8, 8),
-                "char" => (4, 4),
+                // A scalar written as a name is the same scalar. `char` used
+                // to answer 4 here and 8 through the typed arm above; one
+                // source now.
+                "bool" => scalar_by_name(&Type::Bool),
+                "i8" => scalar_by_name(&Type::I8),
+                "u8" => scalar_by_name(&Type::U8),
+                "i16" => scalar_by_name(&Type::I16),
+                "u16" => scalar_by_name(&Type::U16),
+                "i32" => scalar_by_name(&Type::I32),
+                "u32" => scalar_by_name(&Type::U32),
+                "f32" => scalar_by_name(&Type::F32),
+                "i64" => scalar_by_name(&Type::I64),
+                "u64" => scalar_by_name(&Type::U64),
+                "f64" => scalar_by_name(&Type::F64),
+                "char" => scalar_by_name(&Type::Char),
                 // Stdlib types backed by opaque runtime pointers
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
@@ -570,8 +610,9 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let is_binary = struct_decl.attrs.iter().any(|a| a == "binary");
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool)> = struct_decl.fields.iter()
-        .map(|field| {
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool, u32)> = struct_decl.fields.iter()
+        .enumerate()
+        .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
                 match rask_types::binary_field_runtime_type(&field.ty) {
                     Some(ty) => (ty, false),
@@ -591,6 +632,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
                 field.default.as_ref().and_then(literal_text),
                 field.visibility.is_pub(),
                 from_param,
+                decl_index as u32,
             )
         })
         .collect();
@@ -606,7 +648,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align, attrs, has_declared_default, declared_default, is_public, is_type_param) in resolved {
+    for (name, ty, size, align, attrs, has_declared_default, declared_default, is_public, is_type_param, decl_index) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -621,6 +663,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
             has_declared_default,
             declared_default,
             is_public,
+            decl_index,
             is_type_param,
         });
 
@@ -653,7 +696,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
     let mut max_size = 0u32;
     let mut max_align = 1u32;
 
-    for field in &union_decl.fields {
+    for (decl_index, field) in union_decl.fields.iter().enumerate() {
         let field_ty = parse_field_type(&field.ty);
         let (field_size, field_align) = type_size_align(&field_ty, cache);
         max_size = max_size.max(field_size);
@@ -670,6 +713,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             has_declared_default: field.default.is_some(),
             declared_default: field.default.as_ref().and_then(literal_text),
             is_public: field.visibility.is_pub(),
+            decl_index: decl_index as u32,
             is_type_param: false,
         });
     }
@@ -758,7 +802,14 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
     } else {
         Type::U16
     };
-    let (tag_size, tag_align) = type_size_align(&tag_ty, cache);
+    // The tag and every payload field sit in word slots, the same convention
+    // `Option` and `Result` state: codegen writes a scalar full-width and the
+    // match paths read a word. Struct fields hold their real widths (#1083);
+    // an enum's don't.
+    let (tag_size, tag_align) = {
+        let (s, a) = type_size_align(&tag_ty, cache);
+        (s.max(crate::abi::PAYLOAD_SLOT_BYTES), a.max(crate::abi::PAYLOAD_SLOT_BYTES))
+    };
 
     // Compute size and alignment of each variant payload
     let mut max_payload_size = 0u32;
@@ -774,9 +825,11 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
 
         if !variant.fields.is_empty() {
             let mut field_offset = 0u32;
-            for field in &variant.fields {
+            for (decl_index, field) in variant.fields.iter().enumerate() {
                 let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
                 let (size, align) = type_size_align(&field_ty, cache);
+                let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
+                let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
 
                 payload_align = payload_align.max(align);
                 field_offset = align_up(field_offset, align);
@@ -792,6 +845,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
                     declared_default: field.default.as_ref().and_then(literal_text),
                     // A variant's payload has no visibility of its own.
                     is_public: true,
+                    decl_index: decl_index as u32,
                     is_type_param: from_param,
                 });
 
@@ -961,18 +1015,21 @@ mod tests {
 
     #[test]
     fn primitive_sizes() {
-        // All scalars are 8 bytes — codegen stores everything as i64
-        assert_eq!(tsa(&Type::Bool), (8, 8));
-        assert_eq!(tsa(&Type::I8), (8, 8));
-        assert_eq!(tsa(&Type::U8), (8, 8));
-        assert_eq!(tsa(&Type::I16), (8, 8));
-        assert_eq!(tsa(&Type::U16), (8, 8));
-        assert_eq!(tsa(&Type::I32), (8, 8));
-        assert_eq!(tsa(&Type::U32), (8, 8));
-        assert_eq!(tsa(&Type::F32), (8, 8));
+        // A scalar is as wide as it says it is — the same answer
+        // `MirType::size` has always given (#1083).
+        assert_eq!(tsa(&Type::Bool), (1, 1));
+        assert_eq!(tsa(&Type::I8), (1, 1));
+        assert_eq!(tsa(&Type::U8), (1, 1));
+        assert_eq!(tsa(&Type::I16), (2, 2));
+        assert_eq!(tsa(&Type::U16), (2, 2));
+        assert_eq!(tsa(&Type::I32), (4, 4));
+        assert_eq!(tsa(&Type::U32), (4, 4));
+        assert_eq!(tsa(&Type::F32), (4, 4));
         assert_eq!(tsa(&Type::I64), (8, 8));
         assert_eq!(tsa(&Type::U64), (8, 8));
         assert_eq!(tsa(&Type::F64), (8, 8));
+        // `char` is a full word, not four bytes: the runtime carries a
+        // code point in one.
         assert_eq!(tsa(&Type::Char), (8, 8));
     }
 
@@ -1065,21 +1122,20 @@ mod tests {
 
     #[test]
     fn tuple_i8_i8() {
-        // All scalars stored as i64: two 8-byte fields
         let (size, align) = tsa(&Type::Tuple(vec![Type::I8, Type::I8]));
-        assert_eq!(align, 8);
-        assert_eq!(size, 16);
+        assert_eq!(align, 1);
+        assert_eq!(size, 2);
     }
 
     #[test]
     fn array_layout() {
-        // [i32; 5] → 8 * 5 = 40, align 8 (all scalars stored as i64)
+        // [i32; 5] → 4 * 5
         let (size, align) = tsa(&Type::Array {
             elem: Box::new(Type::I32),
             len: 5,
         });
-        assert_eq!(size, 40);
-        assert_eq!(align, 8);
+        assert_eq!(size, 20);
+        assert_eq!(align, 4);
     }
 
     #[test]
@@ -1133,22 +1189,22 @@ mod tests {
         let decl = make_struct("Point", vec![("x", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Point");
-        assert_eq!(layout.size, 8);
-        assert_eq!(layout.align, 8);
+        assert_eq!(layout.size, 4);
+        assert_eq!(layout.align, 4);
         assert_eq!(layout.fields.len(), 1);
         assert_eq!(layout.fields[0].name, "x");
         assert_eq!(layout.fields[0].offset, 0);
-        assert_eq!(layout.fields[0].size, 8);
+        assert_eq!(layout.fields[0].size, 4);
     }
 
     #[test]
     fn two_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32"), ("y", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &empty_cache());
-        assert_eq!(layout.size, 16);
-        assert_eq!(layout.align, 8);
+        assert_eq!(layout.size, 8);
+        assert_eq!(layout.align, 4);
         assert_eq!(layout.fields[0].offset, 0);
-        assert_eq!(layout.fields[1].offset, 8);
+        assert_eq!(layout.fields[1].offset, 4);
     }
 
     // ── compute_enum_layout ─────────────────────────────────────
@@ -1246,16 +1302,22 @@ mod tests {
 
     #[test]
     fn field_reorder_largest_alignment_first() {
-        // Source: a: u8, b: u64, c: u16
-        // Reordered: b (align 8), c (align 8*), a (align 8*)
-        // *note: codegen stores all scalars as 8 bytes
-        // All fields are 8-byte aligned in current codegen, so order is stable (source order preserved)
+        // Source: a: u8, b: u64, c: u16. S1/L4 sorts by alignment, largest
+        // first, so the word comes before the halfword before the byte. This
+        // used to assert source order, because every scalar had the same
+        // alignment and the stable sort never moved anything (#1083).
         let decl = make_struct("Mixed", vec![("a", "u8"), ("b", "u64"), ("c", "u16")]);
         let layout = compute_struct_layout(&decl, &[], &empty_cache());
-        // All 8-byte alignment — stable sort preserves source order
-        assert_eq!(layout.fields[0].name, "a");
-        assert_eq!(layout.fields[1].name, "b");
-        assert_eq!(layout.fields[2].name, "c");
+        assert_eq!(layout.fields[0].name, "b");
+        assert_eq!(layout.fields[1].name, "c");
+        assert_eq!(layout.fields[2].name, "a");
+        // Declaration order is still recorded — `reflect.fields<T>()` reports it.
+        assert_eq!(layout.fields[0].decl_index, 1);
+        assert_eq!(layout.fields[1].decl_index, 2);
+        assert_eq!(layout.fields[2].decl_index, 0);
+        // 8 + 2 + 1, padded to the struct's alignment.
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
     }
 
     #[test]

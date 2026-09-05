@@ -3750,14 +3750,41 @@ fn comptime_quota_annotation_raises_the_limit() {
 
 #[test]
 fn atomic_payload_wider_than_a_word_is_rejected() {
-    // GA2. Every struct field gets its own word here, so two i32 fields are 16
-    // bytes — there is no single instruction behind that, and an atomic that
-    // silently took a lock would be the one thing `Atomic` promises not to be.
+    // GA2. Three `i32` fields are twelve bytes — there is no single instruction
+    // behind that, and an atomic that silently took a lock would be the one
+    // thing `Atomic` promises not to be.
     let (ok, output) = compile_only_succeeds("atomic_wide_payload.rk");
-    assert!(!ok, "a two-word payload must be rejected: {}", output);
+    assert!(!ok, "a payload wider than a word must be rejected: {}", output);
     assert!(
         output.contains("one machine word"),
         "the message has to say what the rule is: {}",
+        output
+    );
+}
+
+#[test]
+fn a_two_word_sized_payload_fits_an_atomic() {
+    // The other half of GA2, and the case the rule used to get wrong: two `i32`
+    // fields are eight bytes, which is one machine word. `Atomic<Slot>` over
+    // `{ index, generation }` is mem.atomics' own example and it was a compile
+    // error, because the rule counted fields times eight rather than reading
+    // the width (#1083).
+    let (output, code) = compile_and_run("atomic_word_payload.rk");
+    assert_eq!(code, 0, "should compile and run: {}", output);
+    assert_eq!(output.trim(), "1 2\n7 9", "got: {}", output);
+}
+
+#[test]
+fn a_padded_atomic_payload_is_rejected() {
+    // GA2 excludes padding and GA4 says why: `compare_exchange` compares raw
+    // bytes, so two logically equal values whose padding differs would fail CAS
+    // for no reason the author can see. `{ a: i8, b: i32 }` is five bytes of
+    // data in an eight-byte layout.
+    let (ok, output) = compile_only_succeeds("atomic_padded_payload.rk");
+    assert!(!ok, "a padded payload must be rejected: {}", output);
+    assert!(
+        output.contains("padding"),
+        "the message has to name padding as the reason: {}",
         output
     );
 }

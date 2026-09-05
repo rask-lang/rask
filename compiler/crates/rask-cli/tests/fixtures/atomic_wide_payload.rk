@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// GA2: an atomic is one machine word. Rask gives every struct field its own
-// word, so two i32 fields are 16 bytes and there is no single instruction to
-// read or write them.
+// GA2: an atomic is one machine word, and the rule reads the payload's actual
+// width. Two `i32` fields are eight bytes and fit — that struct is the example
+// mem.atomics' own text uses, and it was rejected while every struct field took
+// a word regardless of what it was written as (#1083). Three of them don't.
 import sync.Atomic
 
-struct Slot {
+struct Wide {
     index: i32
-    gen: i32
+    generation: i32
+    epoch: i32
 }
 
 func main() {
-    let s = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+    let s = Atomic<Wide>.new(Wide { index: 0, generation: 0, epoch: 0 })
     println("{s.load(Ordering.SeqCst).index}")
 }

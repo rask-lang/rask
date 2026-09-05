@@ -3783,6 +3783,28 @@ impl<'a> FunctionBuilder<'a> {
     /// Struct and enum-payload fields sit in 8-byte slots, so scalars load as
     /// i64/f64 (see `lower_store`). `size` is the field's slot size, used for
     /// the byte-compare fallback.
+    /// The Cranelift type a struct field of `size` bytes is held in.
+    ///
+    /// Struct fields used to be word slots without exception, so every scalar
+    /// arm below loaded an i64 and one comparison shape covered all of them.
+    /// A field holds its real width now (#1083), and reading eight bytes out of
+    /// a four-byte field takes its neighbour with it — which is how two equal
+    /// `Vec2 { x: i32, y: i32 }` compared unequal.
+    fn field_scalar_type(is_float: bool, size: u32) -> Type {
+        let bytes = rask_mono::abi::slot_scalar_bytes(is_float, size, size);
+        if is_float {
+            if bytes >= 8 { types::F64 } else { types::F32 }
+        } else {
+            match bytes {
+                1 => types::I8,
+                2 => types::I16,
+                4 => types::I32,
+                16 => types::I128,
+                _ => types::I64,
+            }
+        }
+    }
+
     fn emit_field_eq_rask(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
@@ -3793,17 +3815,18 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         match ty {
             RaskType::F32 | RaskType::F64 => {
-                // Stored promoted to f64 in the 8-byte slot.
-                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(true, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
             }
             RaskType::Bool
             | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64
             | RaskType::Char => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().icmp(IntCC::Equal, a, b))
             }
             RaskType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
@@ -4032,8 +4055,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         match ty {
             RaskType::F32 | RaskType::F64 => {
-                let a = builder.ins().load(types::F64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::F64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(true, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, b);
                 let lt = builder.ins().fcmp(FloatCC::LessThan, a, b);
                 let gt = builder.ins().uextend(types::I64, gt);
@@ -4041,8 +4065,19 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().isub(gt, lt))
             }
             RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                // The compare works at a word; a narrower field is zero-extended
+                // so the ordering is the field type's, not its bits'.
+                let (a, b) = if lty == types::I64 {
+                    (a, b)
+                } else {
+                    (
+                        builder.ins().uextend(types::I64, a),
+                        builder.ins().uextend(types::I64, b),
+                    )
+                };
                 let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
                 let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
                 let gt = builder.ins().uextend(types::I64, gt);
@@ -4052,8 +4087,18 @@ impl<'a> FunctionBuilder<'a> {
             RaskType::Bool
             | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
             | RaskType::Char => {
-                let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
+                let lty = Self::field_scalar_type(false, size);
+                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
+                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
+                // Sign-extended for the same reason, at the field's signedness.
+                let (a, b) = if lty == types::I64 {
+                    (a, b)
+                } else {
+                    (
+                        builder.ins().sextend(types::I64, a),
+                        builder.ins().sextend(types::I64, b),
+                    )
+                };
                 Ok(Self::emit_signed_three_way(builder, a, b))
             }
             // Every arm above reads its field as an i64, because a scalar

@@ -141,6 +141,25 @@ impl Type {
         if rask_ast::primitives::pointer_bits() == 32 { Type::U32 } else { Type::U64 }
     }
 
+    /// How many bytes a scalar of this type occupies, or `None` if it isn't a
+    /// scalar.
+    ///
+    /// The one place the widths are written down. `rask_mono`'s layout pass and
+    /// the atomic-payload check both read them here, so a struct's size and the
+    /// rule about what fits a machine word can't drift apart (#1083).
+    ///
+    /// `char` is a full word: the runtime carries a code point in one.
+    pub fn scalar_bytes(&self) -> Option<u32> {
+        Some(match self {
+            Type::Bool | Type::I8 | Type::U8 => 1,
+            Type::I16 | Type::U16 => 2,
+            Type::I32 | Type::U32 | Type::F32 => 4,
+            Type::I64 | Type::U64 | Type::F64 | Type::Char => 8,
+            Type::I128 | Type::U128 => 16,
+            _ => return None,
+        })
+    }
+
     /// P2: what `isize` is on this target.
     pub fn isize_ty() -> Type {
         if rask_ast::primitives::pointer_bits() == 32 { Type::I32 } else { Type::I64 }
