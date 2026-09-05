@@ -109,6 +109,44 @@ impl TypeChecker {
         )
     }
 
+    /// An unsuffixed literal on the far side of an operator whose *other* side
+    /// only settled after the body was walked.
+    ///
+    /// `func double(x) { x * 2 }` called once, with an `f64`: the call pins `x`,
+    /// but the call comes after the body, so by then the `2` had been left to
+    /// default and came out `i32`. The body then reported `*` between `f64` and
+    /// `i32` for a program with no `i32` anywhere in it (#904) — and the spec
+    /// uses that exact function as its worked example of an inferred signature.
+    ///
+    /// Asked before literal defaulting and only where the settled side is a
+    /// numeric primitive, so a receiver that turns out to be a struct with its
+    /// own `mul` keeps whatever argument type that overload declares.
+    pub(super) fn settle_operator_literals(&mut self) {
+        let pending: Vec<TypeConstraint> = self.deferred_methods.clone();
+        for constraint in pending {
+            let TypeConstraint::HasMethod { ty, method, args, span, .. } = constraint else {
+                continue;
+            };
+            if !Self::is_homogeneous_operator(&method) {
+                continue;
+            }
+            let [arg] = args.as_slice() else { continue };
+            let recv = self.ctx.apply(&ty);
+            let arg_ty = self.ctx.apply(arg);
+            let bare_literal = |t: &Type, this: &Self| {
+                matches!(t, Type::Var(id) if this.ctx.literal_vars.contains_key(id))
+            };
+            let (open, settled) = if bare_literal(&arg_ty, self) && Self::is_numeric_primitive(&recv) {
+                (arg_ty.clone(), recv.clone())
+            } else if bare_literal(&recv, self) && Self::is_numeric_primitive(&arg_ty) {
+                (recv.clone(), arg_ty.clone())
+            } else {
+                continue;
+            };
+            let _ = self.unify(&open, &settled, span);
+        }
+    }
+
     /// The element type `T` of a `Handle<T>`, or `None` for anything else.
     /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
     pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {

@@ -604,6 +604,12 @@ impl TypeChecker {
         // once the type args are known.
         self.validate_pending_disjointness();
 
+        // An operator whose other side settled after the body was walked —
+        // `func double(x) { x * 2 }` called with an f64. The literal has to hear
+        // about it before defaulting, or the body reports `f64 * i32` for a
+        // program with no i32 in it (#904).
+        self.settle_operator_literals();
+
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
 
