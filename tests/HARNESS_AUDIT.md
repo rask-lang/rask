@@ -5,10 +5,21 @@ specs and the compiler disagree. Each entry says what the spec says, what the
 compiler does, and what the test claims — deciding which of the three is wrong
 is a separate call.
 
-Most of it is still findings-only. Two entries have been decided and fixed on
-this branch and say so in place: **3.1 (CV1)** — spec kept, compiler now
-enforces it — and **3.2 (P2)** — rule built, in the parser. Everything else
-stands as written.
+Most of it has since been decided and fixed on this branch; each entry says so
+in place, and keeps the original finding above the fix so the reasoning stays
+readable. What's left needs a call that isn't the compiler's to make:
+
+- **A4** — `assert_eq(got, expected)`: two positional arguments distinguished
+  only by remembering which is which. Keep, rename, or delete in favour of
+  `assert` growing a better failure message?
+- **T10 (nested)** — `test` inside a `@test` function, reported as
+  `PASS: parent > child`. Nothing in the tree uses it and it's a parse error
+  today. Build it, or delete the rule?
+- **T14/T15** — doc-comment code blocks extracted and run. Deferred.
+- **T7** — parallel test execution, wanted but not now.
+
+One entry is fixed on another branch and deliberately not duplicated here: 1.7,
+the leak gate, is #1042's.
 
 Measured on `e68e957` (main with #1057 merged) with a release build of the
 compiler. The numbers were re-taken after that merge; where a finding changed,
@@ -544,3 +555,16 @@ doesn't pick:
    determinism the harness depends on; nested `test` blocks may not be worth it),
 3. the test is wrong (`t_day_casts.rk` asserting `i64 as f64`, and every
    `compile-fail` block that passes at resolve).
+
+Working through them, the split came out roughly even, and the third case was
+the most common by a distance — a test that had never verified what it claimed.
+The two that turned out to be case 2, where the spec described something we
+don't want, are the ones still open at the top of this file.
+
+One pattern ran through nearly every entry: **the check was looking somewhere
+the evidence couldn't be.** `compile_error()` satisfied by any non-zero exit.
+`compile-fail` satisfied by a resolve error. `leak_gate.sh` grepping stdout for
+a message written to stderr. A marker anchored to a line the diagnostic doesn't
+point at. The HTTP harness in no CI job at all. None of these were wrong about
+the thing they measured; they measured the wrong thing, and reported green for
+it.
