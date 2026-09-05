@@ -136,20 +136,15 @@ test "concurrent fetch joins all workers" {
 
 ## Subtests
 
-| Rule | Description |
-|------|-------------|
-| **T10: Nested blocks** | `test` blocks nest for grouping. Output: `PASS: parent > child` |
+There are none. `test` blocks don't nest — a `test` inside a `test` is a parse
+error, and grouping is what the name is for: `test "parser — numbers"` and
+`test "parser — invalid"` sort together, filter together under `-f parser`, and
+each fails on its own.
 
-```rask
-test "parser" {
-    test "numbers" {
-        check parse("42")! == 42
-    }
-    test "invalid" {
-        check parse("abc") == none
-    }
-}
-```
+T10 said they nested and printed `PASS: parent > child`. Nothing ever built it,
+nothing in the tree wanted it, and it would need its own reporting, its own
+filtering and its own answer to what a failed parent means for its children —
+for grouping a naming convention already gives.
 
 ## Comptime Tests
 
@@ -282,7 +277,7 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 |------|----------|------|
 | `test` block in release build | Stripped entirely | T1 |
 | `@test` function in release build | Function compiled; not invoked by runner | T2 |
-| Nested `test` inside `@test` function | Allowed | T10 |
+| Nested `test` inside a `test` or `@test` function | Parse error — see Subtests |
 | `check` failure in table loop | All iterations run; test marked failed | A2 |
 | `assert` failure in table loop | Test stops at failing iteration | A1 |
 | `comptime test` uses I/O | Compile error (comptime subset only) | T11 |
