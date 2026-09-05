@@ -53,16 +53,21 @@ from `ensure`) produce no diagnostic at all.
 
 ### 1.2 A parse error hides every later marker in the same file
 
-`syntax_rejected.rk` has 12 markers and produces 8 diagnostics. The four that
-never fire are all *semantic* checks sitting below parse errors, so the pipeline
-stops before the checker ever sees them:
+`syntax_rejected.rk` has 12 markers and produces 9 diagnostics — it was 8 until
+P2 moved into the parser. The three that still never fire are *semantic* checks
+sitting below parse errors, so the pipeline stops before the checker ever sees
+them:
 
 | Line | Claim | What happens |
 |---|---|---|
 | 48 | `?` for propagation is rejected | never reached |
 | 66 | `let` reassignment | never reached |
 | 71 | missing return | never reached |
-| 78 | comparison chaining | ~~never reached~~ — fires since `1d54fbd` moved P2 into the parser |
+| 78 | comparison chaining | ~~never reached~~ — fires since `1d54fbd`, because P2 is a parse error now and reaches the same pass as the rest |
+
+That is the whole shape of this finding, incidentally: nothing about the marker
+changed, only which pass its rule runs in. A checker rule in a file that fails
+at parse is a rule nobody is testing.
 
 Three more fire with a different message than the marker claims: `impl` gets
 "Expected ';' or newline after statement" rather than "did you mean 'extend'";
