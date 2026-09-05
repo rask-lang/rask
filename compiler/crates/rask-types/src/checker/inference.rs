@@ -354,6 +354,17 @@ impl InferenceContext {
                 len: *len,
             },
             Type::Slice(inner) => Type::Slice(Box::new(self.apply(inner))),
+            // These three carry a type and used to fall through to the clone,
+            // so a variable inside one stayed spelled as a variable even after
+            // it was solved. `let b = unsafe v.as_ptr()` on an inferred `Vec`
+            // came back "type is still open here" (#970) — the element had
+            // settled, the `*T` around it just never heard.
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(self.apply(inner))),
+            Type::Union(members) => Type::Union(members.iter().map(|t| self.apply(t)).collect()),
+            Type::SimdVector { elem, lanes } => Type::SimdVector {
+                elem: Box::new(self.apply(elem)),
+                lanes: *lanes,
+            },
             Type::Result { ok, err } if **err == Type::None => Type::option(self.apply(ok)),
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(self.apply(ok)),
@@ -390,7 +401,9 @@ impl InferenceContext {
             }
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Type::Array { elem, .. } => self.occurs_in(var, elem),
-            Type::Slice(inner) => self.occurs_in(var, inner),
+            Type::Slice(inner) | Type::RawPtr(inner) => self.occurs_in(var, inner),
+            Type::Union(members) => members.iter().any(|t| self.occurs_in(var, t)),
+            Type::SimdVector { elem, .. } => self.occurs_in(var, elem),
             Type::Result { ok, err } => self.occurs_in(var, ok) || self.occurs_in(var, err),
             _ => false,
         }
