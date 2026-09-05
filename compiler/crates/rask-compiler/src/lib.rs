@@ -331,10 +331,18 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
     // into every program, so their names have to bind for anything downstream
     // to know what a call inside them refers to (#425).
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib_and_cfg(
+    // `import c "x.h"` looks beside the file that imports it, so resolution has
+    // to know where each file came from (#1096). `file_id` is the index above.
+    let source_dirs: HashMap<u16, PathBuf> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
+        .collect();
+    let resolved = match rask_resolve::resolve_with_stdlib_cfg_and_dirs(
         &parse_result.decls,
         &stdlib_bodies,
         config.cfg.to_cfg_values(),
+        source_dirs,
     ) {
         Ok(r) => r,
         Err(errors) => {

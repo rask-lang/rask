@@ -19,7 +19,7 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 
 | Syntax | Effect |
 |--------|--------|
-| `import c "header.h"` | Parse header, expose as `c.symbol` |
+| `import c "header.h"` | Parse header, expose as `c.symbol`. A quoted path is relative to the importing file, then the system include paths — same as `#include "…"` |
 | `import c "header.h" as name` | Parse header, expose as `name.symbol` |
 | `import c { "a.h", "b.h" }` | Multiple headers, unified namespace |
 

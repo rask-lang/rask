@@ -7266,15 +7266,19 @@ fn nothing_leaks_at_exit() {
 /// buffer as 32-bit ints, which is arithmetic that looks fine (#947).
 ///
 /// Checked, not run: the point is the signatures, and linking a C object is the
-/// build system's business. The cwd is the fixture directory because
-/// `import c "x.h"` resolves relative to the current directory rather than to
-/// the importing file (#1096).
+/// build system's business. Run from the repository root rather than the
+/// fixture directory — a header is found next to the file that imports it, so
+/// where the compiler is invoked from doesn't come into it (#1096).
 fn check_in_fixtures(name: &str) -> (String, bool) {
     let rask = rask_binary();
     let out = Command::new(&rask)
         .arg("check")
-        .arg(name)
-        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures"))
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join(name),
+        )
         .env("RASK_RUNTIME_DIR", runtime_dir())
         .output()
         .expect("failed to run rask check");
@@ -7337,8 +7341,7 @@ fn run_with_c_object(stem: &str) -> (String, bool) {
 
     let out = Command::new(rask_binary())
         .arg("run")
-        .arg(format!("{}.rk", stem))
-        .current_dir(&dir)
+        .arg(dir.join(format!("{}.rk", stem)))
         .env("RASK_RUNTIME_DIR", runtime_dir())
         .env("RASK_EXTRA_CFLAGS", &obj)
         .output()
@@ -7379,6 +7382,39 @@ fn a_c_function_returning_a_struct_is_rejected() {
     assert!(
         text.contains("E0858") && text.contains("c.Rect"),
         "expected the struct-return error naming the type, got:\n{text}"
+    );
+}
+
+/// A header is found next to the file that imports it, not next to wherever the
+/// compiler happens to be run from.
+///
+/// The quoted path used to be resolved against the process's current directory,
+/// so `rask check tests/fixtures/c_interop.rk` failed with "header not found"
+/// while `cd tests/fixtures && rask check c_interop.rk` worked — on the same
+/// two files (#1096). Every other quoted path in the language means "relative
+/// to this file", and `#include "…"` means it in C.
+#[test]
+fn a_c_header_is_found_beside_the_file_that_imports_it() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("c_interop.rk");
+    // A directory with nothing of ours in it, so nothing can be found by luck.
+    let out = Command::new(rask_binary())
+        .arg("check")
+        .arg(&fixture)
+        .current_dir(std::env::temp_dir())
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "the header sits beside the file that imports it:\n{text}"
     );
 }
 

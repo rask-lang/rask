@@ -37,6 +37,13 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 pub struct Resolver {
     symbols: SymbolTable,
+    /// Where each source file lives, by its `file_id`.
+    ///
+    /// Only `import c` reads this: a header written `"mylib.h"` is looked for
+    /// next to the file that imports it, the way `#include "…"` works in C.
+    /// Empty when the caller doesn't know the paths — the header then has to be
+    /// on a system include path.
+    source_dirs: HashMap<u16, std::path::PathBuf>,
     scopes: ScopeTree,
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
@@ -89,6 +96,7 @@ impl Resolver {
     pub fn new() -> Self {
         let mut resolver = Self {
             symbols: SymbolTable::new(),
+            source_dirs: HashMap::new(),
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
             errors: Vec::new(),
@@ -522,8 +530,23 @@ impl Resolver {
         stdlib_decls: &[Decl],
         cfg_values: HashMap<String, String>,
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_with_stdlib_cfg_and_dirs(decls, stdlib_decls, cfg_values, HashMap::new())
+    }
+
+    /// `resolve_with_stdlib_and_cfg`, told where each file lives.
+    ///
+    /// Only `import c` needs it, to look for a header beside the file that
+    /// imports it (#1096). A caller that doesn't know the paths passes an empty
+    /// map and the header has to be on a system include path.
+    pub fn resolve_with_stdlib_cfg_and_dirs(
+        decls: &[Decl],
+        stdlib_decls: &[Decl],
+        cfg_values: HashMap<String, String>,
+        source_dirs: HashMap<u16, std::path::PathBuf>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
+        resolver.source_dirs = source_dirs;
 
         if !stdlib_decls.is_empty() {
             resolver.stdlib_mode = true;
@@ -591,6 +614,20 @@ impl Resolver {
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
+        // Where each file lives, so `import c "x.h"` can look beside the file
+        // that imports it (#1096). Read off the declarations rather than
+        // tracked separately: a file's decls all carry its `file_id`, so the
+        // first one names it and there is no second bookkeeping to drift.
+        for pkg in registry.packages() {
+            for file in &pkg.files {
+                let Some(dir) = file.path.parent() else { continue };
+                if let Some(decl) = file.decls.first() {
+                    resolver
+                        .source_dirs
+                        .insert(decl.span.file_id, dir.to_path_buf());
+                }
+            }
+        }
 
         resolver.current_package = Some(current_package);
 
@@ -1459,7 +1496,7 @@ impl Resolver {
         let mut all_decls = Vec::new();
 
         for header_path in &c_import.headers {
-            let source = match self.read_c_header(header_path) {
+            let source = match self.read_c_header(header_path, span.file_id) {
                 Ok(s) => s,
                 Err(msg) => {
                     self.errors.push(ResolveError::c_header_not_found(
@@ -1638,13 +1675,31 @@ impl Resolver {
     }
 
     /// Read a C header file, searching standard include paths.
-    fn read_c_header(&self, path: &str) -> Result<String, String> {
-        // Try relative to current directory first
+    /// Read a C header, C's own way: next to the file that imports it, then the
+    /// system include paths.
+    ///
+    /// The importing file's directory used to be the one place nothing looked.
+    /// A quoted path was resolved against the process's *current directory*, so
+    /// a header sitting beside its `.rk` was found only when the compiler
+    /// happened to be run from that directory — `rask check tests/fixtures/x.rk`
+    /// failed where `cd tests/fixtures && rask check x.rk` worked (#1096).
+    /// Every other quoted path in the language means "relative to this file".
+    ///
+    /// The current directory stays as a fallback, because a header at a project
+    /// root imported from `src/` is a real shape and there is no `-I` yet. The
+    /// system list is fixed at two Linux triples with no `CC` input, which is
+    /// the other half of #1096.
+    fn read_c_header(&self, path: &str, file_id: u16) -> Result<String, String> {
+        if let Some(dir) = self.source_dirs.get(&file_id) {
+            if let Ok(contents) = std::fs::read_to_string(dir.join(path)) {
+                return Ok(contents);
+            }
+        }
+
         if let Ok(contents) = std::fs::read_to_string(path) {
             return Ok(contents);
         }
 
-        // Search standard include paths
         let search_paths = [
             "/usr/include",
             "/usr/local/include",
