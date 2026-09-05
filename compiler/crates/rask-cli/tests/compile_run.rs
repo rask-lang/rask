@@ -7166,3 +7166,76 @@ fn companion_test_file_sees_the_module_it_tests() {
          own:\n{combined}"
     );
 }
+
+/// `s as i64` hands out the address of a string's buffer, and the string has to
+/// stay alive until the address is done with.
+///
+/// The RC pass read the cast as the string's last use — nothing after it names
+/// the string, only the integer holding its address — and put the release
+/// directly after. The buffer was freed, the allocator wrote its free-list link
+/// into the first eight bytes, and the callee wrote those out. `write_raw` in
+/// `stdlib/http.rk` is exactly this shape, so the flagship HTTP server answered
+/// every request with eight bytes of garbage where `HTTP/1.1` should be —
+/// caught by nothing, because `tests/http_api_harness.sh` runs in no CI job.
+#[test]
+fn a_string_cast_to_an_address_outlives_the_cast() {
+    let src = "\
+import string.StringBuilder
+
+extern \"C\" {
+    func rask_io_write_string(fd: i64, str_ptr: i64) -> i64
+}
+
+func write_raw(fd: i64, data: string) {
+    unsafe {
+        rask_io_write_string(fd, data as i64)
+    }
+}
+
+func build() -> string {
+    mut out = StringBuilder.new()
+    out.push(\"HTTP/1.1 200 OK\")
+    out.push(\"\\r\\n\")
+    return out.build()
+}
+
+func main() {
+    let built = build()
+    write_raw(1, built)
+
+    let n = 7
+    let interpolated = \"interpolated {n}, and long enough to be on the heap\\n\"
+    write_raw(1, interpolated)
+}
+";
+    let id = next_tmp_id();
+    let tmp = std::env::temp_dir();
+    let src_path = tmp.join(format!("rask_cast_{}_{}.rk", std::process::id(), id));
+    let bin_path = tmp.join(format!("rask_cast_{}_{}", std::process::id(), id));
+    std::fs::write(&src_path, src).unwrap();
+
+    let compile = Command::new(rask_binary())
+        .arg("compile")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile.status.success(),
+        "compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let out = Command::new(&bin_path).output().expect("failed to run the binary");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&bin_path);
+
+    assert_eq!(
+        stdout,
+        "HTTP/1.1 200 OK\r\ninterpolated 7, and long enough to be on the heap\n",
+        "the first bytes of each string were freed before the write read them"
+    );
+}

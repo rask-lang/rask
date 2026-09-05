@@ -195,7 +195,7 @@ Native's `check` is the one that matters: it loses the expression, both values,
 and the count. A test with three failing checks reports the same two words as a
 test with one.
 
-### 1.7 The leak gate greps for a line that can't reach it
+### 1.7 The leak gate greps for a line that can't reach it — FIXED ELSEWHERE
 
 `leak_gate.sh` runs each suite file under `RASK_LEAK_CHECK=1` and decides by
 grepping the output for `never released`:
@@ -252,6 +252,14 @@ run before just moves it into the leaking column.
 The absence of `tests/known_leaks.txt` reads as "nothing leaks" and means
 "nothing has ever been recorded".
 
+**Not fixed here.** Both halves are already built on
+`claude/sequence-protocol-design-maakls` ([#1042](https://github.com/rask-lang/rask/pull/1042)):
+`forward_test_stderr` and `test_exit_code` pass the binary's stderr through and
+let 97 survive, `leak_gate.sh` reads the exit code, and `known_leaks.txt` there
+carries 174 entries — the same set of files, seen through a gate that can see
+them. #1053 was closed on that basis. Building it a second time on this branch
+would be two registries of the same 190 files to reconcile at merge.
+
 ### 1.9 The spec-test runner isn't running the same compiler — FIXED
 
 `run_compile_fail_test` and its `compile` sibling drove the front end directly —
@@ -284,12 +292,41 @@ typestate ones are `compile-fail: unbuilt` — they compile, the harness holds
 them to that, and the day TS8 lands the annotation is what fails. 195 → 200
 executed spec blocks.
 
-### 1.8 Ungated corners
+### 1.8 Ungated corners — FIXED
 
-- `tests/http_api_harness.sh` runs in **no CI job**, and if its golden is
-  missing it writes one from the backend under test and passes.
+- ~~`tests/http_api_harness.sh` runs in **no CI job**, and if its golden is
+  missing it writes one from the backend under test and passes.~~ Both fixed:
+  it's a CI step now, and a missing golden fails instead of being written —
+  `--bless` writes it deliberately. **Turning it on found a use-after-free that
+  was corrupting every response the native server sent** (below).
 - `tests/matrix/run.sh` exits 0 always — documented as a survey, not a gate.
-- Companion `*_test.rk` files (T3/T4) exist nowhere in the repo.
+- ~~Companion `*_test.rk` files (T3/T4) exist nowhere in the repo.~~ Added, as
+  `tests/fixtures/companion_tests/`.
+
+**What the ungated harness was hiding.** With it in CI, native fails and interp
+passes. The server's replies start with eight bytes of garbage where `HTTP/1.1`
+should be:
+
+```
+b'\xae\xc1\xe7\x0f)sd\x83 200 OK\r\nContent-Length: 2\r\n\r\nok'
+```
+
+The garbage is a pointer, different every run, and valgrind names it: the
+buffer is freed before `write` reads it, and the allocator's free-list link
+lands in the first eight bytes. `write_raw` in `stdlib/http.rk` takes the
+address of a string with `data as i64`, and the RC pass read that cast as the
+string's last use — nothing after it names the string, only the integer holding
+its address — so it released there:
+
+```
+_6 = _5 as i64
+rc_dec(_5)                        <- freed here
+_7 = rask_io_write_string(1, _6)  <- read here
+```
+
+Fixed by holding the reference to the end of the block when the last use is a
+cast to an integer. A `rask-cli` test covers the shape; the harness covers the
+server.
 
 ---
 

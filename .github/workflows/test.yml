@@ -143,6 +143,16 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/projects_gate.sh
 
+    # The flagship HTTP server, driven over a real socket on both backends. It
+    # never exits, so the examples gate can't diff its stdout — and this harness
+    # ran in no job at all, which is how the native server came to answer every
+    # request with eight bytes of allocator free-list where `HTTP/1.1` should
+    # be. A string cast to an address was released at the cast, so the buffer
+    # was freed before the write read it.
+    - name: HTTP server harness (both backends)
+      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      run: tests/http_api_harness.sh
+
     # The multi-file validation program. Nothing built it before, which is how
     # a package-wide `catch` migration (#607) and the span mis-attribution
     # (#621) both shipped — every other gate runs single files.

@@ -12,8 +12,14 @@
 # Responses are normalised before the diff: uptime_ms is wall-clock, so the
 # value is replaced with a placeholder while the field itself stays asserted.
 #
-# Usage:  tests/http_api_harness.sh [--backend native|interp|both]
-# Exit:   0 = every response matched, 1 = a mismatch or the server didn't come up.
+# Usage:  tests/http_api_harness.sh [--backend native|interp|both] [--bless]
+# Exit:   0 = every response matched, 1 = a mismatch, a missing golden, or the
+#         server didn't come up.
+#
+# A missing golden is a failure, not a licence to write one. It used to copy the
+# backend's own output into place and pass, which means a deleted golden would
+# be silently re-created from whatever the compiler did that day. `--bless`
+# writes it deliberately.
 
 set -u
 
@@ -27,8 +33,15 @@ BASE="http://127.0.0.1:$PORT"
 [ -x "$RASK" ] || { echo "error: build with 'cargo build --release -p rask-cli'" >&2; exit 2; }
 export RASK_RUNTIME_DIR="${RASK_RUNTIME_DIR:-$ROOT/compiler/runtime}"
 
-WANT_BACKEND="${2:-both}"
-case "${1:-}" in --backend) ;; "") WANT_BACKEND=both ;; esac
+WANT_BACKEND=both
+BLESS=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --backend) WANT_BACKEND="${2:-both}"; shift 2 ;;
+        --bless)   BLESS=1; shift ;;
+        *) echo "usage: $0 [--backend native|interp|both] [--bless]" >&2; exit 2 ;;
+    esac
+done
 
 WORK="$(mktemp -d)"
 SERVER_PID=""
@@ -112,9 +125,15 @@ run_backend() {
     sleep 0.3
 
     if [ ! -f "$EXPECTED" ]; then
-        echo "note: no golden yet — writing $EXPECTED from $backend"
-        cp "$out" "$EXPECTED"
-        return 0
+        if [ "$BLESS" -eq 1 ]; then
+            echo "note: --bless — writing $EXPECTED from $backend"
+            cp "$out" "$EXPECTED"
+            return 0
+        fi
+        echo "FAIL: $backend — no golden at $EXPECTED"
+        echo "    a gate that writes its own answer verifies nothing: run with"
+        echo "    --bless once, read the file, and commit it."
+        return 1
     fi
     if diff -u "$EXPECTED" "$out" > "$WORK/$backend.diff"; then
         echo "ok: $backend"
