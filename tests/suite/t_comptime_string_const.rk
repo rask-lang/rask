@@ -14,8 +14,10 @@
 // header, so nothing here needs to know the `RaskStr` layout and there is no
 // 15-byte cliff.
 //
-// A `Vec<string>` still doesn't fold — that needs sixteen bytes per slot and a
-// relocation each, and it warns (W0303) rather than saying nothing.
+// A string *element* is different: it sits in a slot beside its neighbours, so
+// it has to be a real sixteen-byte `RaskStr`. Short ones are written inline;
+// a longer one leaves its first eight bytes zero and records a relocation, and
+// codegen points it at the same static header a literal of that text uses.
 
 comptime func banner(width: i64) -> string {
     return "a banner {width} columns wide, comfortably past the inline limit"
@@ -31,6 +33,16 @@ const EXACTLY_FIFTEEN = comptime { "123456789012345" }
 const SIXTEEN = comptime { "1234567890123456" }
 const LONG = comptime { banner(80) }
 const SHOUTED = comptime { shout("rask") }
+
+const NAMES = comptime {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("")
+    v.push("123456789012345")
+    v.push("1234567890123456")
+    v.push(banner(80))
+    v.freeze()
+}
 
 test "a short string folds and reads back" {
     assert SHORT == "hi"
@@ -66,4 +78,22 @@ test "a folded string works where any string does" {
     m.insert(SHORT.clone(), 1)
     assert m[SHORT] == 1
     assert "{SHORT}-{SIXTEEN.len()}" == "hi-16"
+}
+
+test "a Vec of strings folds, inline and heap elements alike" {
+    assert NAMES.len() == 5
+    assert NAMES[0] == "alpha"
+    assert NAMES[1] == ""
+    assert NAMES[2] == "123456789012345"
+    assert NAMES[3] == "1234567890123456"
+    assert NAMES[4] == LONG
+}
+
+test "a folded string element is a string like any other" {
+    mut joined = ""
+    for n in NAMES.iter() {
+        joined = "{joined}{n.len()}:"
+    }
+    assert joined == "5:0:15:16:59:"
+    assert NAMES[0].to_uppercase() == "ALPHA"
 }

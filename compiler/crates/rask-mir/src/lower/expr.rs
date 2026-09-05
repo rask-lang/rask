@@ -1275,7 +1275,18 @@ impl<'a> MirLowerer<'a> {
                     }));
 
                     if meta.type_prefix == "Vec" {
-                        // Array global: wrap raw data into a Vec
+                        // Array global: wrap raw data into a Vec.
+                        //
+                        // Elements are machine words, except strings — a
+                        // `RaskStr` is sixteen bytes, and the vector has to be
+                        // told it holds strings so that what it hands out is
+                        // retained and released like one.
+                        let holds_strings = meta.elem_type.as_deref() == Some("string");
+                        let (elem_size, elem_tag) = if holds_strings {
+                            (16, crate::elem_strs::ELEM_STRING)
+                        } else {
+                            (8, crate::elem_strs::ELEM_NONE)
+                        };
                         let vec_local = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(vec_local),
@@ -1283,8 +1294,8 @@ impl<'a> MirLowerer<'a> {
                             args: vec![
                                 MirOperand::Local(global_local),
                                 MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
-                                // Comptime array globals hold i64 elements.
-                                MirOperand::Constant(MirConst::Int(8)),
+                                MirOperand::Constant(MirConst::Int(elem_size)),
+                                MirOperand::Constant(MirConst::Int(elem_tag)),
                             ],
                         }));
                         self.meta_mut(&name).type_prefix = Some("Vec".to_string());

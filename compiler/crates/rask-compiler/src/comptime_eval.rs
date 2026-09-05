@@ -128,9 +128,10 @@ pub fn evaluate_comptime_globals(
         comptime_interp.set_quota(quota.unwrap_or(DEFAULT_BRANCH_QUOTA));
         match comptime_interp.eval_expr(init) {
             Ok(val) => match val.serialize() {
-                Some(bytes) => {
+                Some(ser) => {
                     globals.insert(key, ComptimeGlobalMeta {
-                        bytes,
+                        bytes: ser.bytes,
+                        string_relocs: ser.string_relocs,
                         elem_count: val.elem_count(),
                         type_prefix: val.type_prefix().to_string(),
                         elem_type: val.elem_type_name().map(str::to_string),
@@ -393,5 +394,8 @@ fn try_eval_comptime_mir(
         elem_count: result.elem_count(),
         elem_type: result.elem_type_name().map(str::to_string),
         bytes: result.serialize()?,
+        // Miri hands back no strings — `MiriValue::serialize` says None for
+        // one, and the AST interpreter picks the block up instead.
+        string_relocs: Vec::new(),
     })
 }

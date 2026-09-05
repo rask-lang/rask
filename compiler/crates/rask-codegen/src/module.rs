@@ -1230,6 +1230,14 @@ impl CodeGenerator {
         globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
     ) -> CodegenResult<()> {
         for (name, meta) in globals {
+            // A string element too long to sit inline is a pointer to a static
+            // header, so the header has to exist before the blob that points at
+            // it. Registering it here also shares one copy with every literal
+            // of the same text elsewhere in the program.
+            for (_, text) in &meta.string_relocs {
+                self.register_string(text)?;
+            }
+
             let data_name = format!(".comptime.{}", name);
             let data_id = self.module
                 .declare_data(&data_name, Linkage::Local, false, false)
@@ -1237,6 +1245,20 @@ impl CodeGenerator {
 
             let mut desc = DataDescription::new();
             desc.define(meta.bytes.clone().into_boxed_slice());
+            // Elements are read as words and as `RaskStr` values, both of which
+            // want the blob eight-byte aligned.
+            desc.set_align(8);
+
+            for (offset, text) in &meta.string_relocs {
+                let Some(&header_id) = self.string_header_data.get(text) else {
+                    return Err(CodegenError::CraneliftError(format!(
+                        "comptime global `{name}` wants a string header for a {}-byte element that was never registered",
+                        text.len()
+                    )));
+                };
+                let gv = self.module.declare_data_in_data(header_id, &mut desc);
+                desc.write_data_addr(*offset as u32, gv, 0);
+            }
 
             self.module
                 .define_data(data_id, &desc)

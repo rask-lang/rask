@@ -337,6 +337,20 @@ fn extract_cfg_field(expr: &Expr) -> Option<&str> {
 // Comptime Values
 // ============================================================================
 
+/// What a folded const becomes in the binary: its bytes, plus the addresses
+/// that only the linker can fill in.
+///
+/// A string element inside an array is the case that needs the second half. It
+/// occupies sixteen bytes like any other, and when the characters don't fit in
+/// them the slot holds a pointer to a static header instead. `string_relocs`
+/// says "at this byte offset goes the address of the header for this text";
+/// codegen emits the header and writes the relocation.
+#[derive(Debug, Clone, Default)]
+pub struct SerializedConst {
+    pub bytes: Vec<u8>,
+    pub string_relocs: Vec<(usize, String)>,
+}
+
 /// A value that exists at compile time.
 #[derive(Debug, Clone)]
 pub enum ComptimeValue {
@@ -557,26 +571,55 @@ impl ComptimeValue {
         }
     }
 
-    /// Serialize to a flat byte array for embedding in Cranelift data sections.
-    /// Only supports primitive arrays — the main use case for comptime globals.
-    pub fn serialize(&self) -> Option<Vec<u8>> {
+    /// Serialize to bytes for embedding in Cranelift data sections.
+    ///
+    /// Primitives, strings, and arrays of either. Anything else has no constant
+    /// form and the const is left to run where it's used.
+    pub fn serialize(&self) -> Option<SerializedConst> {
+        let mut out = SerializedConst::default();
         match self {
             ComptimeValue::Array(elems) => {
-                let mut bytes = Vec::new();
                 for elem in elems {
-                    bytes.extend(elem.serialize_element()?);
+                    elem.write_element(&mut out)?;
                 }
-                Some(bytes)
             }
-            // The characters, not a `RaskStr`. Lowering turns them back into a
-            // string literal, which is already emitted as const data with a
-            // sentinel refcount — so a folded string const costs nothing at
-            // startup and needs no layout knowledge here. A string *element*
-            // still can't (`serialize_element` says so): a `Vec<string>` needs
-            // sixteen bytes per slot and a relocation each.
-            ComptimeValue::String(s) => Some(s.as_bytes().to_vec()),
-            _ => self.serialize_element().map(|b| b.to_vec()),
+            // The characters, not a `RaskStr`. Lowering turns a whole-value
+            // string back into a string literal, which is already emitted as
+            // const data with a sentinel refcount — so a folded string const
+            // costs nothing at startup and needs no layout knowledge here. An
+            // *element* is different: it sits in a slot next to its neighbours,
+            // so it has to be a real `RaskStr` (see `write_element`).
+            ComptimeValue::String(s) => out.bytes.extend_from_slice(s.as_bytes()),
+            _ => out.bytes.extend(self.serialize_element()?),
         }
+        Some(out)
+    }
+
+    /// Append one array element to `out`.
+    ///
+    /// A string element is a full sixteen-byte `RaskStr`: up to fifteen
+    /// characters inline with `15 - len` in the last byte, or — when it doesn't
+    /// fit — a header address and the length with the heap bit set. The address
+    /// isn't known until link time, so it's left zero and recorded as a
+    /// relocation for codegen to fill in.
+    fn write_element(&self, out: &mut SerializedConst) -> Option<()> {
+        const SSO_MAX: usize = 15;
+        const HEAP_FLAG: u64 = 1 << 63;
+        match self {
+            ComptimeValue::String(s) if s.len() <= SSO_MAX => {
+                let mut slot = [0u8; 16];
+                slot[..s.len()].copy_from_slice(s.as_bytes());
+                slot[15] = (SSO_MAX - s.len()) as u8;
+                out.bytes.extend_from_slice(&slot);
+            }
+            ComptimeValue::String(s) => {
+                out.string_relocs.push((out.bytes.len(), s.clone()));
+                out.bytes.extend_from_slice(&0u64.to_le_bytes());
+                out.bytes.extend_from_slice(&(s.len() as u64 | HEAP_FLAG).to_le_bytes());
+            }
+            _ => out.bytes.extend(self.serialize_element()?),
+        }
+        Some(())
     }
 
     /// Serialize a single element to its native byte representation.
