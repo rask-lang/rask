@@ -381,6 +381,22 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     }
     display_test_results(&json_lines, path, format, test_results.len());
 
+    // Same rule as native: asked for one file by name and finding nothing in it
+    // is a mistake, not a pass. Both halves matter — `differential.sh` compares
+    // the two backends and calls a file green when both exit 0 with matching
+    // output, so an empty file has to fail on both or it stays green on the
+    // strength of them agreeing about nothing.
+    if test_results.is_empty() {
+        if format == Format::Human {
+            eprintln!(
+                "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                output::error_label(),
+                path,
+            );
+        }
+        process::exit(1);
+    }
+
     if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
         process::exit(1);
     }
@@ -396,7 +412,9 @@ pub fn cmd_test_native_with_opts(path: &str, filter: Option<String>, format: For
 }
 
 pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
-    if !run_test_file_native(path, filter.as_deref(), format) {
+    // A named file with no tests is a mistake worth an exit code — see
+    // `run_test_file_native`.
+    if !run_test_file_native_req(path, filter.as_deref(), format, true) {
         process::exit(1);
     }
 }
@@ -406,11 +424,29 @@ pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
 /// reported via diagnostics and the return value, so callers can iterate over
 /// multiple files without aborting on the first failure. Panics anywhere in
 /// the pipeline are caught and reported as a per-file failure.
+///
+/// `require_tests` decides what an empty file means. Asked to test one file by
+/// name, finding no tests in it is a mistake — the name was wrong, the blocks
+/// were renamed, a `cfg` took them out — and it used to exit 0, which is how a
+/// suite file could lose its tests and stay green on both backends
+/// (`differential.sh` calls a file green when both exit 0 with the same output,
+/// and "No tests found." satisfies that on both). Walking a directory is the
+/// other case: modules sit next to their test files and having no tests is
+/// ordinary, so that path passes `false`.
 pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) -> bool {
+    run_test_file_native_req(path, filter, format, false)
+}
+
+pub fn run_test_file_native_req(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+) -> bool {
     let path_owned = path.to_string();
     let filter_owned = filter.map(|s| s.to_string());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format)
+        run_test_file_native_inner(&path_owned, filter_owned.as_deref(), format, require_tests)
     }));
     match result {
         Ok(success) => success,
@@ -421,7 +457,12 @@ pub fn run_test_file_native(path: &str, filter: Option<&str>, format: Format) ->
     }
 }
 
-fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) -> bool {
+fn run_test_file_native_inner(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+) -> bool {
     // One frontend, shared with `rask build` — the test runner is the decl
     // rewrite handed to it, not a second copy of the pipeline (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -454,8 +495,15 @@ fn run_test_file_native_inner(path: &str, filter: Option<&str>, format: Format) 
         if format == Format::Human {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
+            if require_tests {
+                eprintln!(
+                    "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                    output::error_label(),
+                    path,
+                );
+            }
         }
-        return true;
+        return !require_tests;
     }
 
     let mono = result.mono;

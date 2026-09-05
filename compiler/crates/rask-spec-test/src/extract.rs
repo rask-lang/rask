@@ -31,6 +31,15 @@ pub enum Expectation {
     Run(String),
     /// Run through interpreter only — escape hatch for unimplemented codegen
     RunInterpOnly(String),
+    /// A `<!-- test: … -->` comment naming something that isn't an annotation.
+    ///
+    /// Unknown spellings used to return `None`, which is how the extractor says
+    /// "not a test annotation" — so a typo'd marker was indistinguishable from
+    /// ordinary prose and the block went untested in silence. Four blocks in
+    /// `specs/compiler/advanced-analyses.md` sat on `<!-- test: pass -->` that
+    /// way. Carrying the bad spelling through as a test that fails is what makes
+    /// it say so.
+    Invalid(String),
 }
 
 /// A single test case extracted from a spec file.
@@ -133,7 +142,9 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
             "parse-fail" => Expectation::ParseFail,
             "skip" => Expectation::Skip,
             "pending" => Expectation::Pending,
-            _ => return None,
+            // Reached only once the comment has already said `test:`, so this is
+            // a marker someone meant, not prose that happens to look like one.
+            other => Expectation::Invalid(other.to_string()),
         };
         return Some((expectation, 1));
     }
@@ -149,7 +160,7 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
     let interp_only = match test_spec {
         "run" => false,
         "run-interp" => true,
-        _ => return None,
+        other => return Some((Expectation::Invalid(other.to_string()), 1)),
     };
 
     // Collect expected output until -->

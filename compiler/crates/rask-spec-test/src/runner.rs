@@ -59,6 +59,16 @@ pub fn run_test_with_config(test: SpecTest, config: &RunConfig) -> TestResult {
             message: "skipped".to_string(),
             native_result: None,
         },
+        Expectation::Invalid(spec) => TestResult {
+            test,
+            passed: false,
+            message: format!(
+                "`<!-- test: {spec} -->` is not an annotation — the block is untested. \
+                 Use one of: compile, compile-fail, parse, parse-fail, skip, pending, \
+                 `run | expected`, `run-interp | expected`",
+            ),
+            native_result: None,
+        },
         Expectation::Pending => run_pending_test(test),
         Expectation::Run(expected) => run_run_test(test, &expected, config),
         Expectation::RunInterpOnly(expected) => run_run_test_interp_only(test, &expected),

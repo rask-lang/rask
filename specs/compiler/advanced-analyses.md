@@ -86,7 +86,7 @@ func alias_example() using Pool<Player> {
 | **FN3: Mutation widens** | Pool structural mutation (insert/remove of other handles) widens to Unknown |
 | **FN4: Loop reset** | Each loop iteration resets to pre-loop state |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func safe_access(h: Handle<Player>) using Pool<Player> {
     // h: Unknown (parameter)
@@ -114,7 +114,7 @@ Demand-driven value range propagation to eliminate bounds checks and catch overf
 | **IV6: Eliminate provable checks** | If range proves `i < array.len()`, eliminate the bounds check |
 | **IV7: Local analysis** | Per-function with interprocedural summaries for known stdlib functions |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func process(pool: Pool<Entity>) {
     for i in 0..pool.len() {       // i: [0, pool.len())
@@ -143,10 +143,10 @@ func process(pool: Pool<Entity>) {
 | **BE3: Handle index bounds** | `pool.handles()[i]` eliminates check if `i in [0, pool.len())` |
 | **BE4: Slice bounds** | `array[start..end]` eliminates checks if `0 <= start <= end <= len` |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 func safe_slice(data: Vec<i32>, start: usize, end: usize) -> Vec<i32> {
-    if start > end or end > data.len() {
+    if start > end || end > data.len() {
         panic("invalid range")
     }
     // Compiler knows: start <= end <= data.len()
@@ -197,7 +197,7 @@ func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
 | `Grow<Pool<T>>` | Insert new elements | Widens to Unknown |
 | `Shrink<Pool<T>>` | Remove elements | Invalidates removed handle |
 
-<!-- test: pass -->
+<!-- test: parse -->
 ```rask
 // Effect-polymorphic: works with frozen or mutable
 func count_alive(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> -> usize {
