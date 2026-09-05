@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// Where the two backends still disagree about `{x:debug}`. Tracked, not fixed.
+// `{x:debug}` on the containers, on both backends (#1064).
 //
-// One shape left: a `Map`. Native renders it `{…}` — the shape without the
-// contents — because walking a map's entries needs an iteration order the
-// runtime doesn't expose, and the interpreter walks values so it prints them.
+// A `Vec` of aggregates is walked in MIR, one element at a time through the
+// same renderer a struct field goes through. A tuple is a real value in the
+// interpreter (#1063) rather than a `Vec`, so it renders positionally.
 //
-// The other two converged. A `Vec` of aggregates is walked in MIR now, one
-// element at a time through the same renderer a struct field goes through, so
-// native prints its contents; and a tuple is a real value in the interpreter
-// (#1063) rather than a `Vec`, so it renders positionally on both.
+// A `Map` was the last shape left, and its difficulty was the order. There
+// isn't one to print: iteration order is unspecified and seeded per process
+// (std.collections, determinism/D7), and *both* backends honour that — native
+// from the hash seed mixed into bucket placement, the interpreter by sorting
+// against a seed of its own. Printing the table's order would print something
+// different on every run, which is worse in a debug line than the `{…}` it
+// replaces.
 //
-// Neither backend is wrong about anything it prints. Native is incomplete, and
-// the interpreter is the reference for what the answer should be.
+// So the renderer imposes an order rather than reading one: sorted by key.
+// That is what a reader expects, and it's the same on both backends and every
+// run. A key with no ordering — a struct, a tuple — falls back to sorting the
+// rendered entries, which is still one fixed order, just not the key's.
 
 struct Point {
     x: i64
@@ -26,7 +31,7 @@ func main() {
     let nested: Vec<Vec<i64>> = [].iter().to_vec()
     println("{nested:debug}")
 
-    mut m = Map.new<string, i64>()
+    mut m: Map<string, i64> = Map.new()
     m.insert("k", 1)
     println("{m:debug}")
 
@@ -46,10 +51,32 @@ test "a Vec of Vecs recurses" {
     assert "{outer:debug}" == "[[1, 2]]"
 }
 
-test "a Map shows its shape" {
-    mut m = Map.new<string, i64>()
-    m.insert("k", 1)
-    assert "{m:debug}" == "{{…}}"
+test "a Map shows its entries, sorted by key" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("gamma", 3)
+    m.insert("alpha", 1)
+    m.insert("beta", 2)
+    assert "{m:debug}" == "Map {{ \"alpha\": 1, \"beta\": 2, \"gamma\": 3 }}"
+}
+
+test "an integer key sorts as a number, not as its text" {
+    mut m: Map<i64, string> = Map.new()
+    m.insert(10, "ten")
+    m.insert(2, "two")
+    m.insert(1, "one")
+    assert "{m:debug}" == "Map {{ 1: \"one\", 2: \"two\", 10: \"ten\" }}"
+}
+
+test "an empty Map has no space inside its braces" {
+    let m: Map<string, i64> = Map.new()
+    assert "{m:debug}" == "Map {{}}"
+}
+
+test "a Map of aggregates renders them" {
+    mut m: Map<string, Point> = Map.new()
+    m.insert("b", Point { x: 3, y: 4 })
+    m.insert("a", Point { x: 1, y: 2 })
+    assert "{m:debug}" == "Map {{ \"a\": Point {{ x: 1, y: 2 }}, \"b\": Point {{ x: 3, y: 4 }} }}"
 }
 
 test "a tuple renders positionally" {

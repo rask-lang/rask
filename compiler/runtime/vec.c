@@ -745,6 +745,69 @@ void rask_vec_sort_f64(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
 }
 
+// sort a Vec of (key, value) pairs by the key, which sits at offset 0.
+//
+// `{m:debug}` needs an order, and a map has none to give: iteration order is
+// unspecified and seeded per process (std.collections, determinism/D7), so
+// printing the table's order would print something different on every run.
+// Sorting by key is the order a reader expects, and it costs nothing outside a
+// debug render.
+//
+// The kind codes are the `RASK_DEBUG_ELEM_*` ones, so lowering says what a key
+// is once and both the renderer and this agree. `qsort` takes no context
+// argument portably, hence the thread-locals; a sort is not reentrant here.
+static _Thread_local int64_t tl_pair_key_kind;
+static _Thread_local int64_t tl_pair_key_size;
+
+static int64_t pair_key_signed(const void *p) {
+    switch (tl_pair_key_size) {
+        case 1:  return *(const int8_t *)p;
+        case 2:  return *(const int16_t *)p;
+        case 4:  return *(const int32_t *)p;
+        default: return *(const int64_t *)p;
+    }
+}
+
+static uint64_t pair_key_unsigned(const void *p) {
+    switch (tl_pair_key_size) {
+        case 1:  return *(const uint8_t *)p;
+        case 2:  return *(const uint16_t *)p;
+        case 4:  return *(const uint32_t *)p;
+        default: return *(const uint64_t *)p;
+    }
+}
+
+static int rask_pair_key_compare(const void *a, const void *b) {
+    switch (tl_pair_key_kind) {
+        case RASK_DEBUG_ELEM_STRING:
+            return rask_str_compare_elem(a, b);
+        case RASK_DEBUG_ELEM_F64: {
+            if (tl_pair_key_size == 4) {
+                double da = *(const float *)a, db = *(const float *)b;
+                return rask_f64_compare(&da, &db);
+            }
+            return rask_f64_compare(a, b);
+        }
+        case RASK_DEBUG_ELEM_U64:
+        case RASK_DEBUG_ELEM_CHAR:
+        case RASK_DEBUG_ELEM_BOOL: {
+            uint64_t va = pair_key_unsigned(a), vb = pair_key_unsigned(b);
+            return va < vb ? -1 : (va > vb ? 1 : 0);
+        }
+        default: {
+            int64_t va = pair_key_signed(a), vb = pair_key_signed(b);
+            return va < vb ? -1 : (va > vb ? 1 : 0);
+        }
+    }
+}
+
+void rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size) {
+    if (!v || v->len <= 1) return;
+    tl_pair_key_kind = key_kind;
+    tl_pair_key_size = key_size;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_pair_key_compare);
+}
+
 // compare(a, b) on f64 — the same total order, returning an Ordering *tag*.
 //
 // Less=0, Equal=1, Greater=2, from rask_stdlib::ORDERING_VARIANTS. Not -1/0/1:

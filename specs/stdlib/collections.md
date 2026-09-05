@@ -320,7 +320,7 @@ for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```
 
-**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().to_vec().sort()`. See `determinism/D7`.
+**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().to_vec().sort()`. See `determinism/D7`. `{m:debug}` is the one place that can't ask you to sort, so it sorts by key itself (`std.fmt/G5`).
 
 ## Shrinking
 

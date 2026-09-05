@@ -133,8 +133,14 @@ extend AppError {
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
+| **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
 
 The verb matches the trait and the specifier — `Debug`, `{:debug}`, `debug()`.
+
+G5 exists because a map has no order to report. Iteration order is unspecified
+and seeded per process (`std.collections`, `determinism/D7`), so printing the
+table's order would print something different on every run. The renderer picks
+one instead, and sorted-by-key is the one a reader expects.
 
 <!-- test: run | Point { x: 1, y: 2 } -->
 ```rask

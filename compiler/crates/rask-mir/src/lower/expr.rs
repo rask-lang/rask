@@ -8017,10 +8017,16 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
-                    // Shape without contents, when the shape is at least known.
-                    // A Map needs its entries walked, which needs an iteration
-                    // order the runtime doesn't expose; that reads better as an
-                    // elided container than as a bare ellipsis.
+                    // A Map, walked through the (key, value) pairs
+                    // `Map_entries` builds.
+                    if depth + 1 < MAX_DEPTH {
+                        if let Some((k, v)) = decl.and_then(|d| self.map_kv_of_checker_type(d)) {
+                            return self.debug_render_map_loop(op, &k, &v, decl, depth + 1);
+                        }
+                    }
+                    // Shape without contents, when the shape is at least known
+                    // — a Map whose key or value type didn't survive to here,
+                    // or one nested past the depth cap.
                     let shape = match decl.and_then(|d| self.generic_head(d)) {
                         Some((name, _)) if name == "Vec" => Some("[…]"),
                         Some((name, _)) if name == "Map" => Some("{…}"),
@@ -8189,6 +8195,241 @@ impl<'a> MirLowerer<'a> {
         }));
     }
 
+    /// `Map { "a": 1, "b": 2 }` — the entries, in sorted order.
+    ///
+    /// The order is the whole difficulty. A map's iteration order is
+    /// unspecified and seeded per process (`std.collections`, determinism/D7),
+    /// and *both* backends honour that — native from the hash seed mixed into
+    /// bucket placement, the interpreter by sorting its entries against the
+    /// same kind of seed. So there is no runtime order to print: walking the
+    /// table would give a different answer on every run, which is worse in a
+    /// debug print than the `{…}` it replaces.
+    ///
+    /// So the renderer imposes its own: sorted by key, which is the order a
+    /// reader expects and the same one on both backends and every run. A key
+    /// the runtime can't read a slot of — a struct, a tuple — has no ordering
+    /// to sort on, so those entries are sorted by their rendered text instead.
+    /// Still one fixed order, just not the key's.
+    ///
+    /// `Map_entries` hands back a Vec of `(key, value)` pairs laid out the way
+    /// codegen lays out a tuple, so the pair is read with the same field
+    /// projection `debug_render_tuple` uses.
+    fn debug_render_map_loop(
+        &mut self,
+        map_op: &MirOperand,
+        key_ty: &MirType,
+        val_ty: &MirType,
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let (key_decl, val_decl) = match decl.and_then(|d| self.generic_head(d)) {
+            Some((_, args)) => {
+                let at = |i: usize| match args.get(i) {
+                    Some(rask_types::GenericArg::Type(t)) => Some(&**t),
+                    _ => None,
+                };
+                (at(0), at(1))
+            }
+            None => (None, None),
+        };
+
+        let entries = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(entries),
+            func: FunctionRef::internal("Map_entries".to_string()),
+            args: vec![map_op.clone()],
+        }));
+
+        // The rendered entries, one string each, so they can be sorted.
+        let rendered = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(rendered),
+            func: FunctionRef::internal("Vec_new".to_string()),
+            args: vec![
+                MirOperand::Constant(MirConst::Int(16)),
+                MirOperand::Constant(MirConst::Int(crate::elem_strs::ELEM_STRING)),
+            ],
+        }));
+
+        let len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![MirOperand::Local(entries)],
+        }));
+
+        // Sort by key where the runtime can read one — every scalar and
+        // string, which is every key a map is normally keyed by. A key it
+        // can't read (a struct, a tuple) has no ordering to sort on, so those
+        // entries are sorted by their rendered text at the end instead: still
+        // one fixed order, just not the key's.
+        let key_kind = Self::debug_elem_kind(key_ty);
+        if let Some(kind) = key_kind {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_sort_pairs".to_string()),
+                args: vec![
+                    MirOperand::Local(entries),
+                    MirOperand::Constant(MirConst::Int(kind)),
+                    MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
+                ],
+            }));
+        }
+
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+
+        let head = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        self.builder.switch_to_block(head);
+        let more = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: more,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(more),
+            then_block: body,
+            else_block: exit,
+        }));
+
+        self.builder.switch_to_block(body);
+        let pair_ty = MirType::Tuple(vec![key_ty.clone(), val_ty.clone()]);
+        let pair = self.builder.alloc_temp(pair_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(pair),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(entries), MirOperand::Local(idx)],
+        }));
+
+        let key_slot = self.builder.alloc_temp(key_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: key_slot,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(pair),
+                field_index: 0,
+                byte_offset: Some(0),
+                access: FieldAccess::for_field(key_ty, key_ty.size()),
+            },
+        }));
+        let val_slot = self.builder.alloc_temp(val_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: val_slot,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(pair),
+                field_index: 1,
+                byte_offset: Some(key_ty.size()),
+                access: FieldAccess::for_field(val_ty, val_ty.size()),
+            },
+        }));
+
+        let key_text =
+            self.debug_render_value(&MirOperand::Local(key_slot), key_ty, key_decl, depth)?;
+        let val_text =
+            self.debug_render_value(&MirOperand::Local(val_slot), val_ty, val_decl, depth)?;
+        let entry = self.concat_all(vec![
+            key_text,
+            MirOperand::Constant(MirConst::String(": ".to_string())),
+            val_text,
+        ]);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Vec_push".to_string()),
+            args: vec![MirOperand::Local(rendered), entry],
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: idx,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: head }));
+
+        self.builder.switch_to_block(exit);
+        if key_kind.is_none() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_sort_str".to_string()),
+                args: vec![MirOperand::Local(rendered)],
+            }));
+        }
+        let joined = self.builder.alloc_temp(MirType::String);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(joined),
+            func: FunctionRef::internal("Vec_join".to_string()),
+            args: vec![
+                MirOperand::Local(rendered),
+                MirOperand::Constant(MirConst::String(", ".to_string())),
+            ],
+        }));
+
+        // An empty map is `Map {}`, not `Map {  }` — the braces-with-a-space
+        // template leaves two spaces around nothing, the same wart the struct
+        // renderer already avoids.
+        let out = self.builder.alloc_temp(MirType::String);
+        let empty_block = self.builder.create_block();
+        let filled_block = self.builder.create_block();
+        let merge = self.builder.create_block();
+        let is_empty = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_empty,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(len),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(is_empty),
+            then_block: empty_block,
+            else_block: filled_block,
+        }));
+
+        self.builder.switch_to_block(empty_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String("Map {}".to_string()))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+        self.builder.switch_to_block(filled_block);
+        let text = self.concat_all(vec![
+            MirOperand::Constant(MirConst::String("Map { ".to_string())),
+            MirOperand::Local(joined),
+            MirOperand::Constant(MirConst::String(" }".to_string())),
+        ]);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::Use(text),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+
+        self.builder.switch_to_block(merge);
+        // Both vectors are this renderer's own — `Map_entries` builds a fresh
+        // one and `Vec_new` above is the other — so nothing else can be holding
+        // either after the text is built.
+        for v in [entries, rendered] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_free".to_string()),
+                args: vec![MirOperand::Local(v)],
+            }));
+        }
+        Ok(MirOperand::Local(out))
+    }
+
     /// `(1, "x", true)` — positional, so no field names.
     fn debug_render_tuple(
         &mut self,
@@ -8286,7 +8527,14 @@ impl<'a> MirLowerer<'a> {
     /// can read on its own, or `None` when it can't — a Vec of structs, of
     /// Vecs, of tuples. Kept next to the C `switch` it feeds.
     fn debug_vec_elem_kind(&self, decl: &rask_types::Type) -> Option<i64> {
-        Some(match self.vec_elem_of_checker_type(decl)? {
+        Self::debug_elem_kind(&self.vec_elem_of_checker_type(decl)?)
+    }
+
+    /// How the runtime should read a slot of this type: the `RASK_DEBUG_ELEM_*`
+    /// codes, shared by `vec_debug` and by the map renderer's key sort. `None`
+    /// for anything the runtime can't read a slot at a time.
+    fn debug_elem_kind(ty: &MirType) -> Option<i64> {
+        Some(match ty {
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 | MirType::I128 => 0,
             MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 | MirType::U128 => 1,
             MirType::F64 | MirType::F32 => 2,

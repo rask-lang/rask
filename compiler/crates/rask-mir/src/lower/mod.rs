@@ -1951,6 +1951,25 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// `Map<K, V>` → the two MIR types, when the checker settled both.
+    ///
+    /// An unresolved inference variable is not an answer, the same reason
+    /// `vec_elem_of_checker_type` refuses one: it lowers to `Ptr`, which is
+    /// indistinguishable from a real pointer-shaped type.
+    pub(crate) fn map_kv_of_checker_type(&self, ty: &Type) -> Option<(MirType, MirType)> {
+        let (name, args) = self.generic_head(ty)?;
+        if name != "Map" || args.len() < 2 {
+            return None;
+        }
+        let settled = |i: usize| match args.get(i) {
+            Some(rask_types::GenericArg::Type(inner)) if !matches!(**inner, Type::Var(_)) => {
+                Some(self.ctx.type_to_mir(inner))
+            }
+            _ => None,
+        };
+        Some((settled(0)?, settled(1)?))
+    }
+
     /// The struct layout of whatever an expression evaluates to, when it's a
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.

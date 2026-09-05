@@ -118,7 +118,9 @@
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
 
-# `{x:debug}` landed on this branch. One shape left where native renders less
-# than the interpreter: a Map, whose entries need an iteration order the runtime
-# doesn't expose. The Vec case is walked in MIR now and the tuple case agrees.
-t_debug_container_elision.rk  # `{x:debug}` on a Map renders `{…}` natively and its entries on the interpreter — #1064 (interp run)
+# `{x:debug}` landed on this branch and all three container shapes now agree.
+# Pruned 2026-09-05:
+#   t_debug_container_elision.rk — #1064. The Map half turned out not to need an
+#     iteration order from the runtime, because there isn't one to have: order
+#     is unspecified and seeded per process on both backends. The renderer sorts
+#     by key instead, which is the same on every run and on both sides.

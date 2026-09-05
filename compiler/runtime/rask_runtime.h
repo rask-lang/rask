@@ -145,6 +145,9 @@ RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 void     rask_vec_sort_f64(RaskVec *v);
+// Sort a Vec of (key, value) pairs by the key at offset 0. `key_kind` is one of
+// the RASK_DEBUG_ELEM_* codes below.
+void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
