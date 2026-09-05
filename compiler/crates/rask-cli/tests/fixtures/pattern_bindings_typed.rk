@@ -154,3 +154,48 @@ func second_of(l: List) -> i64 {
     }
     return 0
 }
+
+// A field access answered with a variable even when the receiver's type was
+// already known, so a pattern checked against one saw nothing. `self.current`
+// is a `Token`; the variant lookup needs the scrutinee to name its enum, and it
+// only did after solving — by which time `n` was bound to a fresh variable.
+enum Token {
+    Number(f64)
+    Plus
+}
+
+struct Parser {
+    current: Token
+}
+
+extend Parser {
+    func token_string(self) -> string {
+        match self.current {
+            Number(n) => return "{n}"
+            Plus => return "+"
+        }
+    }
+}
+
+// A body has to say what it returns for there to be anything to infer. `todo()`
+// leaves the function for certain and says nothing, so this signature got a
+// fresh variable for its return that nothing ever solved — and every call to it
+// came out untyped.
+func record_altitude(mutate log: Vec<i32>, altitude: i32) {
+    todo()
+}
+
+// `null` is deliberately typed `*_`; the comparison says what it's compared
+// against. Only the deferred path tied the two, so a comparison against an
+// already-known pointer left the `null` with a pointee nothing bound.
+extern "C" func allocate(size: usize) -> *u8
+
+func allocated() -> bool {
+    unsafe {
+        let p = allocate(16)
+        if p == null {
+            return false
+        }
+        return true
+    }
+}

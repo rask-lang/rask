@@ -168,7 +168,13 @@ impl TypeChecker {
             for f in fns {
                 let has_inferred_params = f.params.iter().any(|p| p.name != "self" && p.ty.is_empty());
                 let has_inferred_error = f.ret_ty.as_ref().is_some_and(|t| t.ends_with(", _>"));
-                let has_inferred_return = (f.ret_ty.is_none() && !f.is_pub && self.has_explicit_return(&f.body))
+                // A body has to *say* what it returns for there to be
+                // anything to infer. `todo()` leaves the function for certain
+                // and says nothing, so a `func record(…) { todo() }` got a
+                // fresh variable for its return that nothing ever solved.
+                let has_inferred_return = (f.ret_ty.is_none()
+                    && !f.is_pub
+                    && Self::body_returns_a_value(&f.body))
                     || has_inferred_error;
                 if !has_inferred_params && !has_inferred_return {
                     continue;

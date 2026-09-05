@@ -3466,10 +3466,25 @@ impl TypeChecker {
         &mut self,
         inner: &Type,
         method: &str,
-        _args: &[Type],
+        args: &[Type],
         span: Span,
     ) -> Option<Type> {
         let entry = rask_stdlib::ptr_methods::lookup(method)?;
+
+        // Tie the argument to the pointee, the way the deferred path in
+        // `resolve_raw_ptr_method` does. Only that path did it, so `ptr == null`
+        // on an already-known `*u8` left `null` as a `*_` — its pointee a
+        // variable nothing ever bound (#1026). `null` is deliberately typed
+        // `*_`; the comparison is what says what it's being compared against.
+        if let Some(arg) = args.first() {
+            if matches!(entry.sig, rask_stdlib::PtrSig::Comparison) {
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    arg.clone(),
+                    Type::RawPtr(Box::new(inner.clone())),
+                    span,
+                ));
+            }
+        }
 
         if entry.needs_unsafe {
             let category = match entry.sig {
@@ -3958,17 +3973,30 @@ impl TypeChecker {
             }
         }
 
+        // Answer now when the receiver's type is already known, instead of
+        // handing back a variable and a constraint for later.
+        //
+        // `resolve_field` re-adds the constraint itself when the receiver is
+        // still open, so the deferred case is unchanged — but a field on a type
+        // the checker already knows shouldn't have to wait. It did, and a
+        // pattern checked against such a field saw a variable:
+        //
+        //     match self.current {          // self.current is a `Token`
+        //         Number(n) => "{n}"        // `n` had no type (#1026)
+        //     }
+        //
+        // The variant lookup needs the scrutinee to name its enum, and the
+        // scrutinee only named one after solving — by which time the pattern
+        // had already bound `n` to a fresh variable.
         let field_ty = self.ctx.fresh_var();
-
-        self.ctx.add_constraint(TypeConstraint::HasField {
-            ty: obj_ty,
-            field: field.to_string(),
-            expected: field_ty.clone(),
-            span,
-            self_type: self.current_self_type.clone(),
-        });
-
-        field_ty
+        let self_type = self.current_self_type.clone();
+        match self.resolve_field(obj_ty, field.to_string(), field_ty.clone(), span, self_type) {
+            Ok(_) => self.ctx.apply(&field_ty),
+            Err(e) => {
+                self.errors.push(e);
+                Type::Error
+            }
+        }
     }
 
     /// type.primitives/NT1 — `ZERO`, `ONE`, `MIN`, `MAX` on every numeric type,

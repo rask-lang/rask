@@ -554,6 +554,88 @@ impl TypeChecker {
         }
     }
 
+    /// Does this body contain a `return <value>` anywhere?
+    ///
+    /// Different question from `has_explicit_return`, which asks whether
+    /// control definitely leaves. A `todo()` body definitely leaves and says
+    /// nothing about what the function returns — so treating it as an inferred
+    /// return handed the signature a fresh variable that nothing ever solved,
+    /// and every call to a `func record(…) { todo() }` came out untyped
+    /// (#1026). A function with no `->` and no value return is `void`.
+    ///
+    /// A closure or `spawn` body has its own return, so the walk stops there.
+    pub(super) fn body_returns_a_value(body: &[Stmt]) -> bool {
+        body.iter().any(Self::stmt_returns_a_value)
+    }
+
+    fn stmt_returns_a_value(stmt: &Stmt) -> bool {
+        use rask_ast::stmt::StmtKind as SK;
+        match &stmt.kind {
+            SK::Return(Some(_)) => true,
+            SK::Return(None) | SK::Continue(_) | SK::Discard { .. } => false,
+            SK::Expr(e)
+            | SK::Let { init: e, .. }
+            | SK::Mut { init: e, .. }
+            | SK::LetTuple { init: e, .. }
+            | SK::MutTuple { init: e, .. }
+            | SK::LetStruct { init: e, .. }
+            | SK::Assign { value: e, .. } => Self::expr_returns_a_value(e),
+            SK::Break { value, .. } => value.as_ref().is_some_and(Self::expr_returns_a_value),
+            SK::While { cond, body, .. } => {
+                Self::expr_returns_a_value(cond) || Self::body_returns_a_value(body)
+            }
+            SK::For { iter, body, .. } => {
+                Self::expr_returns_a_value(iter) || Self::body_returns_a_value(body)
+            }
+            SK::Loop { body, .. } | SK::Comptime(body) => Self::body_returns_a_value(body),
+            SK::WhileLet { expr, body, .. } => {
+                Self::expr_returns_a_value(expr) || Self::body_returns_a_value(body)
+            }
+            SK::ComptimeFor { iter, body, .. } => {
+                Self::expr_returns_a_value(iter) || Self::body_returns_a_value(body)
+            }
+            SK::Ensure { body, .. } => Self::body_returns_a_value(body),
+        }
+    }
+
+    fn expr_returns_a_value(expr: &rask_ast::expr::Expr) -> bool {
+        use rask_ast::expr::ExprKind as EK;
+        match &expr.kind {
+            // Its own frame, its own return.
+            EK::Closure { .. } | EK::Spawn { .. } => false,
+            EK::Block(body)
+            | EK::Unsafe { body }
+            | EK::Comptime { body }
+            | EK::UsingBlock { body, .. }
+            | EK::WithAs { body, .. }
+            | EK::Loop { body, .. } => Self::body_returns_a_value(body),
+            EK::If { cond, then_branch, else_branch, .. } => {
+                Self::expr_returns_a_value(cond)
+                    || Self::expr_returns_a_value(then_branch)
+                    || else_branch.as_ref().is_some_and(|e| Self::expr_returns_a_value(e))
+            }
+            EK::IfLet { expr: scrut, then_branch, else_branch, .. } => {
+                Self::expr_returns_a_value(scrut)
+                    || Self::expr_returns_a_value(then_branch)
+                    || else_branch.as_ref().is_some_and(|e| Self::expr_returns_a_value(e))
+            }
+            EK::Match { scrutinee, arms } => {
+                Self::expr_returns_a_value(scrutinee)
+                    || arms.iter().any(|a| Self::expr_returns_a_value(&a.body))
+            }
+            EK::Catch { value, clause } => {
+                Self::expr_returns_a_value(value) || Self::expr_returns_a_value(&clause.body)
+            }
+            EK::NullCoalesce { value, default } => {
+                Self::expr_returns_a_value(value) || Self::expr_returns_a_value(default)
+            }
+            EK::GuardPattern { expr: inner, else_branch, .. } => {
+                Self::expr_returns_a_value(inner) || Self::expr_returns_a_value(else_branch)
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn has_explicit_return(&self, body: &[Stmt]) -> bool {
         // Any statement in the body that always returns means the function returns
         body.iter().any(|stmt| self.stmt_always_returns(stmt))
