@@ -483,9 +483,13 @@ distinguish the two policies. The implementation does get it right — `2.5 → 
   every other site in the checker; `assert 1` read correctly by luck, because an
   unsolved literal is filled in from the other side. The message argument had
   the same inversion (`assert x, 42` blamed `string`).
-- **Two error-code schemes in one compiler.** Most diagnostics are `E0817`-style;
-  the context ones are `error[mem.context/CC8]`. Anything grepping for `^error\[E`
-  misses the second family.
+- ~~**Two error-code schemes in one compiler.**~~ **Fixed.** Three diagnostics
+  carried a spec rule id where the code goes — `mem.context/CC8`, `CC10`,
+  `comp.advanced/TS8` — so anything grepping for `E0` missed a family, and
+  `rask explain mem.context/CC8` was never going to answer. They are E0849–E0851
+  now, registered with the rest, and the rule id moved to the `why`, which is
+  where the rule gets said in words. A test walks the tree and fails on a
+  fourth.
 - **One error degrades the next into a wrong one.** With an `E0357` (single-letter
   type name) in the file, `?` applied to a `T or E` came out as "expected i32,
   found bool" at the *use* site instead of `E0368`/ER12 at the `?`. Remove the

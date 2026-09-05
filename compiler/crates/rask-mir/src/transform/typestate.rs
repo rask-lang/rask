@@ -52,7 +52,7 @@ fn error_to_diagnostic(error: &typestate::TypestateError) -> Diagnostic {
     };
 
     let mut diag = Diagnostic::error("stale handle access")
-        .with_code("comp.advanced/TS8");
+        .with_code("E0851");
 
     // Only add span labels if we have real spans (not dummy 0..0)
     if error.invalidation_span.start != 0 || error.invalidation_span.end != 0 {
@@ -68,7 +68,8 @@ fn error_to_diagnostic(error: &typestate::TypestateError) -> Diagnostic {
 
     diag = diag
         .with_why(
-            "Handle typestate analysis proves this handle was removed and is no longer valid.",
+            "Handle typestate analysis proves this handle was removed and is no \
+             longer valid [comp.advanced/TS8].",
         )
         .with_fix(format!(
             "Check validity before access:\n\n  if pool.get({}) is Some {{\n      pool[{}].field\n  }}",

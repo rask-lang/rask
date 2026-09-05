@@ -2452,7 +2452,13 @@ fn error_context_ambiguous_cc8() {
     // context is a real diagnostic, not the old unresolved-variable failure.
     let (failed, out) = compile_error_output("context_ambiguous_min.rk");
     assert!(failed, "ambiguous context must be rejected: {}", out);
-    assert!(out.contains("CC8"), "should carry the CC8 code: {}", out);
+    assert!(out.contains("E0849"), "should carry the code: {}", out);
+    assert!(
+        out.contains("mem.context/CC8"),
+        "and cite the rule in the why — the code is what `rask explain` takes, \
+         the rule id is what the spec calls it: {}",
+        out,
+    );
     assert!(
         out.contains("ambiguous context"),
         "should name the ambiguity, not a var lookup failure: {}", out,
@@ -2465,7 +2471,8 @@ fn error_context_closure_storable_cc10() {
     // take as a parameter is rejected — it can't inherit ambient contexts.
     let (failed, out) = compile_error_output("context_closure_storable.rk");
     assert!(failed, "storable closure needing context must be rejected: {}", out);
-    assert!(out.contains("CC10"), "should carry the CC10 code: {}", out);
+    assert!(out.contains("E0850"), "should carry the code: {}", out);
+    assert!(out.contains("mem.context/CC10"), "and cite the rule: {}", out);
 }
 
 #[test]
@@ -7271,4 +7278,51 @@ fn assert_says_which_side_wanted_a_bool() {
         out.contains("expected `string`") && out.contains("found `i64`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
+}
+
+/// Every user-facing code is an E-number, so `rask explain` can be asked about
+/// any of them.
+///
+/// Three diagnostics carried a spec rule id instead — `error[mem.context/CC8]`,
+/// `CC10`, `comp.advanced/TS8`. Two schemes in one compiler means anything
+/// grepping for `E0` misses a family, and `rask explain mem.context/CC8` was
+/// never going to work. They're E0849–E0851 now, with the rule id where it
+/// belongs: in the `why`, which is what says the rule in words.
+#[test]
+fn every_diagnostic_code_is_an_e_number() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders = Vec::new();
+    for entry in walk_rs_files(&root) {
+        let text = std::fs::read_to_string(&entry).unwrap_or_default();
+        for (n, line) in text.lines().enumerate() {
+            let Some(rest) = line.split_once(".with_code(\"") else { continue };
+            let code = rest.1.split('"').next().unwrap_or("");
+            if code.starts_with('E') || code.starts_with('W') || code.starts_with('R') {
+                continue;
+            }
+            offenders.push(format!("{}:{}: {code}", entry.display(), n + 1));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these emit a spec rule id as the diagnostic code — give them an \
+         E-number and cite the rule in the `why` instead:\n{offenders:#?}"
+    );
+}
+
+fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target" || n == ".git") {
+                continue;
+            }
+            out.extend(walk_rs_files(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
 }
