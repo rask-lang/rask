@@ -668,6 +668,32 @@ impl TypeChecker {
             return self.unify(&ret, &Type::String, span);
         }
 
+        // `Vec.new<string>()` — a turbofish on a container constructor. The
+        // static resolvers below mint one fresh variable per parameter and never
+        // look at what the call wrote, so the binding stayed open and every
+        // later use widened it instead of being checked against it: `v.push(7)`
+        // on that line was accepted, and `{v:debug}` had no element type to
+        // render (#1084). Written arguments spell the container out, the same as
+        // an annotation would.
+        if !written.is_empty() && method == "new" && args.is_empty() {
+            let bare = match &ty {
+                Type::UnresolvedNamed(name) => Some(name.clone()),
+                Type::Named(_) => super::receiver_name(&ty, &self.types),
+                _ => None,
+            };
+            if let Some(name) = bare.filter(|n| matches!(n.as_str(), "Vec" | "Map" | "Set" | "Rack")) {
+                let spelled = Type::UnresolvedGeneric {
+                    name,
+                    args: written
+                        .iter()
+                        .cloned()
+                        .map(|t| GenericArg::Type(Box::new(t)))
+                        .collect(),
+                };
+                return self.unify(&ret, &spelled, span);
+            }
+        }
+
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),
