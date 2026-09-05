@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `return try n` is often the only thing in a body that says what a generic
+// stub returned (#961):
+//
+//     func parse_num(s: string) -> i64 or ParseError {
+//         let n = s.parse()          // error: couldn't work out the type of `n`
+//         return try n
+//     }
+//
+// `parse<T>` leaves `T` open, and nothing else in the function touches `n`. The
+// return's expectation never reached `try`, so the coercion queued behind it sat
+// waiting for a variable that only that same coercion could ever bind. The
+// solver stops when a pass makes no progress and drops what's left in silence,
+// so the binding came out "type is still open here".
+//
+// Annotating `n` always worked, which is what said the checker had the answer
+// and just wasn't asking.
+
+import string.ParseError
+
+func parse_num(s: string) -> i64 or ParseError {
+    let n = s.parse()
+    return try n
+}
+
+func parse_float(s: string) -> f64 or ParseError {
+    let n = s.parse()
+    return try n
+}
+
+func first_of(v: Vec<i64>) -> i64? {
+    let x = v.first()
+    return try x
+}
+
+func annotated(s: string) -> i64 or ParseError {
+    let n: i64 or ParseError = s.parse()
+    return try n
+}
+
+test "the return type pins an integer parse" {
+    assert (parse_num("3") catch _ => -1) == 3
+    assert (parse_num("nope") catch _ => -1) == -1
+}
+
+test "and a float one" {
+    assert (parse_float("1.5") catch _ => -1.0) == 1.5
+}
+
+test "an optional propagates the same way" {
+    assert (first_of([7, 8]) ?? -1) == 7
+    let empty: Vec<i64> = []
+    assert (first_of(empty) ?? -1) == -1
+}
+
+test "the annotated spelling still agrees" {
+    assert (annotated("42") catch _ => -1) == 42
+}

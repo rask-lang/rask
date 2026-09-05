@@ -213,6 +213,29 @@ impl TypeChecker {
                     }
                 }
             }
+            // `return try n` is often the only thing in a body that can pin a
+            // generic stub's success type — `let n = s.parse(); return try n`
+            // has nothing else to say what `n` is. The expectation never reached
+            // `try`, so the coercion queued behind the return waited on a
+            // variable that only that same coercion could ever bind. The solver
+            // stops when a pass makes no progress and drops what's left without
+            // a word, so the binding came out "type is still open here" (#961).
+            ExprKind::Try { .. } => {
+                let got = self.infer_expr(expr);
+                // `try` peels one branch, so what's expected of it is the
+                // success side of what's expected of the `return`.
+                let want = match expected {
+                    Type::Result { ok, .. } => (**ok).clone(),
+                    other => other.clone(),
+                };
+                if matches!(self.ctx.apply(&got), Type::Var(_))
+                    && !matches!(self.ctx.apply(&want), Type::Var(_))
+                {
+                    let _ = self.unify(&got, &want, expr.span);
+                }
+                self.note_trait_coercion(expr, expected, &got);
+                return got;
+            }
             // std.collections: `[1, 2, 3]` is a collection literal, and the slot
             // it lands in says which collection and what element type. Typed from
             // its own elements instead, `let xs: [i64?; 3] = [1, 2, 3]` reported
