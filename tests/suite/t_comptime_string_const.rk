@@ -34,6 +34,16 @@ const SIXTEEN = comptime { "1234567890123456" }
 const LONG = comptime { banner(80) }
 const SHOUTED = comptime { shout("rask") }
 
+// The pure string methods fold too. Each is the same Rust std call the
+// interpreter makes, and native's case tables are generated from Rust's, so
+// the folded answer and the runtime answer are the same by construction — the
+// tests below check that rather than trusting it.
+const TRIMMED = comptime { "  padded  ".trim() }
+const SWAPPED = comptime { "a-b-c".replace("-", "+") }
+const BAR = comptime { "=".repeat(12) }
+const GREEK = comptime { "\u{3c3}\u{3b9}\u{3c3}".to_uppercase() }
+const SHARP = comptime { "stra\u{df}e".to_uppercase() }
+
 const NAMES = comptime {
     mut v = Vec.new()
     v.push("alpha")
@@ -96,4 +106,19 @@ test "a folded string element is a string like any other" {
     }
     assert joined == "5:0:15:16:59:"
     assert NAMES[0].to_uppercase() == "ALPHA"
+}
+
+test "the pure string methods fold" {
+    assert TRIMMED == "padded"
+    assert SWAPPED == "a+b+c"
+    assert BAR.len() == 12
+    assert BAR.starts_with("==")
+}
+
+test "a folded case conversion is what the runtime would have said" {
+    // Not an ASCII check: ß uppercases to two characters and Greek sigma has a
+    // final form. If the fold and the runtime ever disagreed, this is where.
+    assert GREEK == "\u{3c3}\u{3b9}\u{3c3}".to_uppercase()
+    assert SHARP == "stra\u{df}e".to_uppercase()
+    assert SHARP.len() == 7
 }

@@ -2601,6 +2601,53 @@ impl ComptimeInterpreter {
             // number in it — `"banner {n}"` — fell out of folding on the
             // rendering rather than on anything it was doing.
             "to_string" if args.is_empty() => Ok(ComptimeValue::String(obj.to_display_string())),
+            // The string methods that are a pure function of their input, so a
+            // fold and a run give the same answer. Each one is the same Rust
+            // std call the interpreter makes — the interpreter is the
+            // reference, and native's Unicode case tables are generated from
+            // Rust's for exactly that reason (`runtime/unicode_case.c`).
+            //
+            // Without them an ordinary `const NAME = comptime { … }` fell out
+            // of folding on the rendering rather than on anything it computed:
+            // `shout("rask")` warned "not supported at comptime: method
+            // to_uppercase on String" and ran at startup.
+            "to_uppercase" | "to_lowercase" | "trim" | "trim_start" | "trim_end"
+            | "repeat" | "replace" | "is_empty" | "is_ascii" | "starts_with"
+            | "ends_with" | "contains"
+                if matches!(obj, ComptimeValue::String(_)) =>
+            {
+                let ComptimeValue::String(text) = obj else { unreachable!() };
+                let str_arg = |i: usize| match args.get(i) {
+                    Some(ComptimeValue::String(s)) => Ok(s.as_str()),
+                    _ => Err(ComptimeError::TypeMismatch {
+                        expected: "string".to_string(),
+                        found: args.get(i).map_or("nothing", |v| v.type_name()).to_string(),
+                    }),
+                };
+                Ok(match method {
+                    "to_uppercase" => ComptimeValue::String(text.to_uppercase()),
+                    "to_lowercase" => ComptimeValue::String(text.to_lowercase()),
+                    "trim" => ComptimeValue::String(text.trim().to_string()),
+                    "trim_start" => ComptimeValue::String(text.trim_start().to_string()),
+                    "trim_end" => ComptimeValue::String(text.trim_end().to_string()),
+                    "is_empty" => ComptimeValue::Bool(text.is_empty()),
+                    "is_ascii" => ComptimeValue::Bool(text.is_ascii()),
+                    "starts_with" => ComptimeValue::Bool(text.starts_with(str_arg(0)?)),
+                    "ends_with" => ComptimeValue::Bool(text.ends_with(str_arg(0)?)),
+                    "contains" => ComptimeValue::Bool(text.contains(str_arg(0)?)),
+                    "repeat" => {
+                        let n = args.first().and_then(|v| v.as_i64()).unwrap_or(0);
+                        // A count that would blow past the memory limit is a
+                        // comptime error, not a compiler that stops responding.
+                        let total = text.len().saturating_mul(n.max(0) as usize);
+                        if total > 1 << 24 {
+                            return Err(ComptimeError::MemoryLimitExceeded);
+                        }
+                        ComptimeValue::String(text.repeat(n.max(0) as usize))
+                    }
+                    _ => ComptimeValue::String(text.replace(str_arg(0)?, str_arg(1)?)),
+                })
+            }
             // What string interpolation desugars to — there is no public
             // `concat`, so this is the one way two strings join (std.strings).
             "__concat" => match (obj, args.first()) {
