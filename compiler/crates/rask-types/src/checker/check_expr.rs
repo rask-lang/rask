@@ -5211,9 +5211,14 @@ impl TypeChecker {
         }
     }
 
-    /// True if `index` can serve as a `Map<K, V>` key. A literal-integer index
-    /// adapts to an integer K (and is bound to it so codegen sees K); otherwise
-    /// the resolved index type must equal K. Unresolved sides are accepted.
+    /// True if `index` can serve as a `Map<K, V>` key.
+    ///
+    /// The match runs both ways. A literal-integer index adapts to an integer K
+    /// (bound, so codegen sees K rather than the default); and an open K takes
+    /// the index's type, because `mut m = Map.new()` has no other source for it
+    /// — the key comes from the first `m["a"] = 1` and nothing else says what it
+    /// is (#1026). Without that, K stayed a variable and every use of `m`
+    /// inherited it.
     fn index_matches_key(&mut self, index: &Type, key: &Type) -> bool {
         if let Type::Var(id) = index {
             let id = *id;
@@ -5224,18 +5229,41 @@ impl TypeChecker {
                     self.ctx.bind_var(id, key.clone());
                     return true;
                 }
-                return matches!(key, Type::Var(_)); // defer on unknown key, else reject
+                // Both open: make them one variable so the literal default
+                // settles the key too.
+                if let Type::Var(k) = key {
+                    if *k != id {
+                        self.ctx.bind_var(*k, index.clone());
+                    }
+                    return true;
+                }
+                return false;
             }
             if self.ctx.is_float_literal_var(id) {
                 if Self::is_float_type(key) {
                     self.ctx.bind_var(id, key.clone());
                     return true;
                 }
-                return matches!(key, Type::Var(_));
+                if let Type::Var(k) = key {
+                    if *k != id {
+                        self.ctx.bind_var(*k, index.clone());
+                    }
+                    return true;
+                }
+                return false;
             }
             return true; // genuinely unresolved index — don't guess
         }
-        if matches!(index, Type::Error) || matches!(key, Type::Var(_) | Type::Error) {
+        if matches!(index, Type::Error) {
+            return true;
+        }
+        if let Type::Var(k) = key {
+            if !self.ctx.occurs_in(*k, index) {
+                self.ctx.bind_var(*k, index.clone());
+            }
+            return true;
+        }
+        if matches!(key, Type::Error) {
             return true;
         }
         // A tuple key element by element, so the literal vars inside `m[(1, 2)]`
