@@ -1371,7 +1371,7 @@ fn error_decode_bound_not_satisfied() {
     let (failed, out) = compile_error_output("decode_bound_not_satisfied.rk");
     assert!(failed, "a non-Decode type argument must be rejected: {}", out);
     assert!(
-        out.contains("E0333") && out.contains("cannot be decoded"),
+        out.contains("E0388") && out.contains("cannot be decoded"),
         "should say the type can't be decoded, not that it's missing methods: {}", out,
     );
 }
@@ -6149,7 +6149,7 @@ fn generic_struct_with_an_aggregate_type_arg_and_methods() {
 fn error_int_float_arithmetic() {
     let (failed, out) = compile_error_output("int_float_arithmetic.rk");
     assert!(failed, "mixing an integer and a float must be rejected: {}", out);
-    assert_eq!(out.matches("E0371").count(), 4, "one per operator: {}", out);
+    assert_eq!(out.matches("E0401").count(), 4, "one per operator: {}", out);
     assert!(
         out.contains("one is an integer, the other a float"),
         "should say which is which: {}", out,

@@ -2320,7 +2320,7 @@ impl<'a> MirLowerer<'a> {
                             // takes a half-open pair. Dropping the flag here
                             // made `s[0..=4]` four bytes on native and five on
                             // the interpreter — the same `Range { .., .. }`
-                            // slip that made the E0324 message quote `s[0..4]`
+                            // slip that made the E0303 message quote `s[0..4]`
                             // for code that said `s[0..=4]` (#694).
                             self.bump_inclusive_end(op, *inclusive)
                         } else {

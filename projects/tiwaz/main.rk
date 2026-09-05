@@ -24,7 +24,7 @@ func main() -> void or Error {
                     // The four counters are copied out of the guard rather than
                     // rendered inside it: a `with` guard is access for the
                     // block's duration, and anything derived from it can't be
-                    // captured by the surrounding spawn closure (E0813).
+                    // captured by the surrounding spawn closure (E0851).
                     mut requests: u64 = 0
                     mut errors: u64 = 0
                     mut sent: u64 = 0

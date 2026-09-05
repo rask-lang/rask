@@ -120,9 +120,9 @@ impl Default for ErrorCodeRegistry {
                 "E0209" => ("shadows built-in", Resolution,
                     "A definition has the same name as a built-in type or function. This can cause confusing errors later. Choose a different name.",
                     "struct Vec { }  // error: shadows built-in Vec"),
-                "E0210" => ("unknown break target", Resolution,
-                    "`break x` means one of two things: break out with the value in `x`, or jump to the loop labelled `x`. This name is neither — no variable `x` is in scope and no enclosing loop carries that label.",
-                    "outer: loop {\n    break outr  // error: did you mean the label `outer`?\n}"),
+                "E0210" => ("name is not in scope — it needs an import", Resolution,
+                    "Nothing in Rask comes pre-imported. A stdlib name is in scope where the program asked for it and nowhere else, which is also what leaves the name free for a program that wants it for something of its own (structure.modules/IM1).\n\nThe import can name the module (`import math`, then `math.sin`) or the member (`import math.sin`, then `sin`) — the second is for names used often enough that the qualifier is noise.",
+                    "let d = Duration.seconds(3)   // error: `Duration` is not in scope\n// fix: ask for it\nimport time.Duration\nlet d = Duration.seconds(3)"),
 
                 // Type errors (E03xx)
                 "E0308" => ("mismatched types", Type,
@@ -497,6 +497,135 @@ impl Default for ErrorCodeRegistry {
                 "E0385" => ("the field name in `value.(…)` isn\'t known at compile time", Type,
                     "`value.(expr)` is not dynamic field access — it is a compile-time rewrite to a direct field access, which is why it costs nothing at run time (ctrl.comptime/CT53). The name therefore has to be one the compiler can read: a string literal, a `comptime { … }` block, a `let` bound to either, or a `comptime for` binding\'s `.name`. A string that only exists once the program is running has nothing to rewrite to.\n\nA `mut` binding never qualifies, however it was initialised — it can be reassigned, so the name it holds at the access isn\'t decidable here.",
                     "let which = pick(n)          // a runtime string\nprintln(\"{b.(which)}\")       // error: not known at compile time\n// fix: name it, or fold it\nlet which = comptime { \"limit\" }\nprintln(\"{b.(which)}\")"),
+                "E0214" => ("C header not found", Resolution,
+                    "`import c \"header.h\"` reads a real file: the compiler parses the header to learn the declarations it is being asked to trust, so a header it can't open is a hard stop rather than a name it can guess at. The path is searched the same way a C compiler searches it — system include directories plus the project's own — so a missing one usually means the library's development package isn't installed, or the include path doesn't reach it.",
+                    "import c \"sqlite3.h\"          // error: C header not found\n// fix: install the dev package, or point at the header\n// apt install libsqlite3-dev"),
+                "E0215" => ("`break` names neither a value nor a label", Resolution,
+                    "`break` does two jobs and the name after it says which: `break x` leaves the loop carrying `x`, and `break 'outer` jumps out of the loop wearing that label. A name that is neither a variable in scope nor a label on an enclosing loop can't be either, and guessing between them would silently turn a value into a jump.\n\nThe message lists the labels the enclosing loops do carry, which is usually enough to spot a typo.",
+                    "loop {\n    break total          // error: `total` is neither\n}\n// fix: bind it first, or label the loop\nmut total = 0\nloop { break total }"),
+                "E0300" => ("type expression isn't a type", Type,
+                    "A type annotation has to name something the compiler can resolve: a primitive, a declared struct or enum, or one of those with generic arguments. This text isn't any of them — usually a typo, a Rust spelling (`Vec<u8>` is right, `&[u8]` isn't), or a value used where a type belongs.",
+                    "let xs: vec<i64> = []        // error: invalid type `vec<i64>`\n// fix: types are PascalCase\nlet xs: Vec<i64> = []"),
+                "E0301" => ("the type parameter's bounds don't declare this method", Type,
+                    "Inside a generic function the only thing known about `T` is what its bounds say, so a call has to be one of the methods a bound declares. This one isn't — which means either the bound is missing or the method belongs on a different type.\n\nThis is the deliberate half of Rask's generics: a body is checked once, against the bounds, rather than re-checked per instantiation. The cost is that a method has to be promised before it can be called.",
+                    "func largest<T>(xs: Vec<T>) -> T {\n    return xs.max()          // error: no `max` in T's bounds\n}\n// fix: promise it\nfunc largest<T: Comparable>(xs: Vec<T>) -> T { return xs.max() }"),
+                "E0302" => ("cannot mutate a `let` binding", Type,
+                    "`let` and `mut` are the whole of Rask's mutability story: a `let` name can't be reassigned and can't have a mutating method called on it. That's not ceremony — it is what makes a reader able to tell, from the declaration alone, whether a name's value can change under them.",
+                    "let count = 0\ncount = count + 1            // error: `count` is a let binding\n// fix: say it changes\nmut count = 0\ncount = count + 1"),
+                "E0303" => ("a string view can't outlive the statement that made it", Type,
+                    "Slicing a string gives a view: sixteen bytes pointing into the source's buffer, with no copy. That's the point — it costs nothing — and it's also why it can't be stored. The moment the source is reassigned or goes out of scope, a stored view points at bytes that no longer exist.\n\nUse the view where it is made, or call `.to_string()` to take a copy that owns its own buffer and can be kept.",
+                    "let head = text[0..4]        // error: this view can't outlive the line\n// fix: copy it out\nlet head = text[0..4].to_string()"),
+                "E0304" => ("a guard's `else` block has to leave", Type,
+                    "`if x? as v else { … }` binds `v` for everything after the `if`, not just inside it. That is only sound when the `else` path never reaches the code that uses the binding, so the block has to end in `return`, `break`, `continue`, or a panic. A block that falls through would leave `v` naming nothing.",
+                    "if parse(s)? as n else { log(\"bad\") }   // error: `else` falls through\nprintln(\"{n}\")\n// fix: leave\nif parse(s)? as n else { return }\nprintln(\"{n}\")"),
+                "E0305" => ("an argument being given away is marked `own` at the call", Type,
+                    "A parameter declared `own` takes the value: the caller can't use it afterwards. That's visible in the signature but not at the call site, so Rask makes the call site say it too. The same reasoning as `mutate` (mem.parameters/PM4): a misread move is caught by the compiler later, but the reader shouldn't have to look up the signature to see that a value is being handed over.",
+                    "consume(buffer)              // error: `buffer` needs `own`\n// fix: say it\nconsume(own buffer)"),
+                "E0306" => ("a parameter marked with something it doesn't declare", Type,
+                    "`mutate`, `own` and `deleting` at a call site each match a parameter that declares them. Writing one the signature doesn't ask for is a lie in the other direction — it reads as though the callee does something it doesn't — so it's rejected rather than ignored.",
+                    "func log(msg: string) { … }\nlog(mutate msg)              // error: `msg` isn't a `mutate` parameter\n// fix: drop the marker\nlog(msg)"),
+                "E0329" => ("a function that deletes nodes has to declare `deleting`", Ownership,
+                    "Deleting from a rack revokes every link into it, including links the caller is holding and never passed in. A signature that doesn't say so leaves the caller with names that quietly stop being valid, which is precisely the thing links are supposed to make impossible.\n\n`deleting r: Rack<…>` is the declaration. The alternative, when the function only ever deletes what it was handed, is to take those links as `take` parameters instead — then nothing outside the call is affected.",
+                    "func prune(r: Rack<Node>, n: Link<Node>) {\n    r.delete(n)              // error: this can delete nodes the caller never named\n}\n// fix: declare it\nfunc prune(deleting r: Rack<Node>, n: Link<Node>) { r.delete(n) }"),
+                "E0330" => ("a `deleting` parameter is marked `deleting`, not `mutate`", Type,
+                    "A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, so your links into that rack are revoked at this call. Those are different contracts, and printing them the same at the call site would hide the more serious one.\n\nThe fix is one token, and it's worth seeing here rather than discovering at the next read (mem.parameters/PM4, PM5).",
+                    "prune(mutate scene, doomed)  // error: `prune` can delete from `scene`\n// fix: say which contract\nprune(deleting scene, doomed)"),
+                "E0388" => ("this type can't be encoded or decoded", Type,
+                    "`Encode`/`Decode` aren't written by hand — a type has them when its fields do, all the way down (std.encoding/E12). So this error names the field that stops it: something with no wire representation, like a file handle, a channel or a function.\n\nEither give the field a serializable type, or mark it `@no_serialize` to leave it out of the format and fill it in after decoding.",
+                    "struct Session { id: i64, conn: TcpStream }\n// error: `Session` cannot be encoded — `conn`\n// fix: leave it out\nstruct Session { id: i64, @no_serialize conn: TcpStream }"),
+                "E0335" => ("`+` doesn't join strings", Type,
+                    "Joining strings allocates, and Rask keeps allocation visible at the call. `+` reads as free, so it isn't the spelling: interpolation shows the whole result being built in one place, and `StringBuilder` shows one allocation reused across many appends.\n\nThere is no `concat` either — one spelling per operation (std.api/SD5).",
+                    "let full = first + \" \" + last      // error: `+` on strings\n// fix: write the pieces\nlet full = \"{first} {last}\""),
+                "E0340" => ("`match` doesn't cover every case", Type,
+                    "A `match` has to account for every value the scrutinee can be. The message names the variants that are missing — add an arm for each, or a `_` arm for the rest.\n\nExhaustiveness is what makes adding a variant to an enum a compile error at every place that has to change, instead of a silent fall-through at run time.",
+                    "match state {\n    Idle => …\n    Running => …            // error: missing `Done`\n}\n// fix: cover it, or say you don't care\nmatch state {\n    Idle => …\n    Running => …\n    _ => …\n}"),
+                "E0341" => ("name isn't defined", Type,
+                    "Nothing by this name is in scope — check the spelling, or import it. Nothing in Rask comes pre-imported (structure.modules/IM1), so a stdlib name needs the import that brings it in even when it feels built in.",
+                    "println(\"{PI}\")              // error: undefined name `PI`\n// fix: bring it in\nimport math\nprintln(\"{math.PI}\")"),
+                "E0343" => ("`T or E` needs two different types", Type,
+                    "A result's branch is picked by the value's type, so `i64 or i64` has nothing to pick with — a caller could not tell success from failure. The two sides have to differ.\n\nA newtype is the usual fix when both really are the same underlying type: `type ParseError = string` is a distinct type, so `i64 or ParseError` reads apart.",
+                    "func find(k: string) -> string or string   // error: both sides are `string`\n// fix: newtype one side\ntype NotFound = string\nfunc find(k: string) -> string or NotFound"),
+                "E0344" => ("an error type needs a `message`", Type,
+                    "Anything on the error side of a `T or E` has to be able to say what went wrong, which means one method: `func message(self) -> string`. An enum gets it derived from its variants, so this usually means the error is a primitive — and a bare `string` or `i64` carries no meaning to a reader of the failure. Newtype it and give it a message.",
+                    "func read(p: string) -> string or i64      // error: `i64` has no `message`\n// fix: give the error a name and words\ntype ReadError = i64\nextend ReadError { func message(self) -> string { return \"read failed: {self.value}\" } }"),
+                "E0369" => ("`try` on something that isn't a result", Type,
+                    "`try` takes the success side of a `T or E` (or the value of a `T?`) and sends the other branch out to the caller. A value with only one branch has nothing to propagate, so there is nothing for `try` to do.",
+                    "let n = try compute()        // error: `compute()` returns `i64`\n// fix: drop the `try`\nlet n = compute()"),
+                "E0386" => ("this needs an `unsafe` block", Type,
+                    "Raw pointers, C calls and reinterpreting memory are the operations the compiler can't check for you, so they're written inside `unsafe { … }`. The block isn't permission — it's a marker that says \"the invariant here is mine, not the compiler's\", which is what makes it findable later.",
+                    "let v = *p                   // error: dereference requires `unsafe`\n// fix: mark the region\nunsafe { let v = *p }"),
+                "E0387" => ("`string.new()` doesn't exist", Type,
+                    "An empty string is `\"\"`. `string.new()` only ever made sense as the start of a sequence of pushes, and `string` can't be mutated — one spelling per operation (std.api/SD5).\n\nIf that *was* what you wanted, `StringBuilder` is the type that owns its buffer and can be appended to.",
+                    "mut s = string.new()         // error: no such constructor\n// fix: an empty string, or a builder\nmut b = StringBuilder.new()"),
+                "E0333" => ("type doesn't implement the trait a bound requires", Trait,
+                    "A bound is a promise the caller has to keep. This type doesn't keep it — either it's missing the methods the trait declares, or the trait covers a fixed set of types (like the numeric ones) and this isn't one of them.\n\nConformance is nominal (#283): a type has a trait because an `extend T with Trait` block says so, not because its methods happen to line up.",
+                    "func total<T: Numeric>(xs: Vec<T>) -> T { … }\ntotal(names)                 // error: `string` does not implement `Numeric`\n// fix: pass numbers, or widen the bound"),
+                "E0389" => ("a resource can't be discarded", Type,
+                    "`discard` throws a value away. A `@resource` has to be consumed exactly once by something that closes it, and throwing it away is the leak the linearity rules exist to prevent — a file that's never closed, a transaction that's never committed or rolled back.",
+                    "discard file                 // error: `File` is a resource\n// fix: consume it properly\nfile.close()"),
+                "E0390" => ("a public function has to name its error types", Type,
+                    "A `_` error type is inferred from the body, which is fine inside a package but not across its edge: the signature is the contract, and a caller can't see a union that only exists after the body is checked. Write the errors out (ER21).",
+                    "public func load(p: string) -> Config or _    // error: `_` in a public signature\n// fix: name them\npublic func load(p: string) -> Config or (IoError or ParseError)"),
+                "E0391" => ("an enum mixes explicit and automatic discriminants", Type,
+                    "Either every variant gets a `= N` or none does. Mixing them makes the numbering of the unnumbered ones depend on where they sit in the list, which is a silent trap when a variant is inserted (type.enums/E16).",
+                    "enum Status { Ok = 200, NotFound, Error = 500 }   // error: mixed\n// fix: number them all\nenum Status { Ok = 200, NotFound = 404, Error = 500 }"),
+                "E0392" => ("a nominal type doesn't convert on its own", Type,
+                    "`type Meters = f64` makes a distinct type, not an alias — that's the whole point, so a length can't be passed where a duration is wanted. It doesn't convert implicitly in either direction: `Meters(x)` wraps, `.value` unwraps (type.aliases/T9).",
+                    "let d: f64 = distance        // error: `Meters` is not `f64`\n// fix: unwrap it\nlet d: f64 = distance.value"),
+                "E0393" => ("a variant can't have both a payload and a discriminant", Type,
+                    "An enum with explicit discriminants is integer-backed — its values *are* those numbers, which is what lets it cross a wire or an FFI boundary. A variant carrying fields has more than a number in it, so the two can't be combined (type.enums/E17).",
+                    "enum Msg { Ping = 1, Data(Vec<u8>) = 2 }   // error: `Data` has both\n// fix: pick one\nenum Msg { Ping = 1, Pong = 2 }"),
+                "E0394" => ("two variants share a discriminant", Type,
+                    "Explicit discriminants have to be unique — two variants with the same number can't be told apart once the enum is written out and read back (type.enums/E15).",
+                    "enum Code { Ok = 0, Done = 0 }   // error: both are 0\n// fix: give them different numbers\nenum Code { Ok = 0, Done = 1 }"),
+                "E0395" => ("type aliases form a cycle", Type,
+                    "Each alias has to bottom out in a concrete type. A cycle never does, so there is nothing to resolve it to (T6).",
+                    "type A = B\ntype B = A                   // error: cyclic\n// fix: break it\ntype A = i64\ntype B = A"),
+                "E0396" => ("field is private", Type,
+                    "A field with no `public` is reachable only from `extend` blocks on its own type. That's the boundary a struct draws around its invariants — a public method is how the outside asks for the value (V5).",
+                    "let n = account.balance      // error: `balance` is private\n// fix: ask for it\nlet n = account.current_balance()"),
+                "E0397" => ("`else as e` needs a result to bind", Type,
+                    "`else as e` names the error the condition produced, so the condition has to have one — `if r?` on a `T or E`. An optional's absence carries no payload, so there is nothing for `e` to be (type.errors/ER22).",
+                    "if find(k)? as v else as e { … }   // error: `find` returns `T?`\n// fix: nothing to bind on an optional\nif find(k)? as v else { … }"),
+                "E0398" => ("`is` names something the value can't be", Type,
+                    "`is T as name` picks one branch of a two-branch value — a `T or E` or a `T?`. Either the scrutinee has only one branch, in which case the test can never be false, or the type named isn't one of the branches it does have, in which case it can never be true (type.errors/ER23).",
+                    "let n: i64 = 3\nif n is string as s { … }    // error: `i64` has no branches\n// fix: test something with two"),
+                "E0399" => ("`try` would propagate an absence into a function that returns an error", Type,
+                    "Bare `try` sends the operand's other branch out unchanged, so that branch has to fit the return type. Here the operand is a `T?` and the function returns `T or E` — `none` isn't an error, and inventing one would be the compiler choosing what went wrong (type.errors/ER47).",
+                    "func load() -> Config or IoError {\n    let raw = try cache[key]     // error: `none` has nowhere to go\n}\n// fix: name the error\nlet raw = cache[key] ?? return IoError.NotFound"),
+                "E0400" => ("`try` would propagate an error into a function that returns an optional", Type,
+                    "The mirror of E0399. The operand is a `T or E`, the function returns `T?`, and an error doesn't fit an absent branch — the information in it would be thrown away silently (type.errors/ER47).",
+                    "func lookup() -> Config? {\n    let raw = try read(path)     // error: the error has nowhere to go\n}\n// fix: drop it where it happens\nlet raw = read(path) catch _ => return none"),
+                "E0401" => ("arithmetic between an integer and a float", Type,
+                    "An integer and a float in the same operation is a conversion, and a conversion that can lose the value isn't implicit (type.primitives/CV1a). Which loss is acceptable is the program's decision, so it's written at the site: `.round<f64>()` for the usual one, `as f64` only at widths where nothing can be lost.\n\nAn unsuffixed literal is not affected — it takes the other operand's type, so `x + 1` on an `f64` is `x + 1.0`.",
+                    "let avg = total / count      // error: `f64` and `i64`\n// fix: say what happens to the integer\nlet avg = total / count.round<f64>()"),
+                "E0848" => ("mutation in a frozen context", Ownership,
+                    "A `frozen` context clause promises the structure won't change for the duration, which is what lets iteration run without a generation check on every step. A structural mutation inside one would break that promise — remove `frozen`, or move the mutation out.",
+                    "func draw(frozen scene: Rack<Node>) {\n    scene.delete(n)          // error: cannot delete in frozen context\n}"),
+                "E0849" => ("a `take` parameter was consumed and never replaced", Ownership,
+                    "`take x: T` hands the value over for the duration of the call and expects one back — the caller's name still refers to the slot afterwards. Consuming the value and returning without assigning a new one leaves that slot empty.",
+                    "func swap(take buf: Buffer) {\n    buf.close()              // error: `buf` is still empty when this returns\n}\n// fix: put one back\nfunc swap(take buf: Buffer) { buf.close(); buf = Buffer.new() }"),
+                "E0850" => ("clearing a collection that has a live binding into it", Ownership,
+                    "`with xs[i] as e { … }` borrows an element in place. Clearing the collection frees every element, including that one, so the binding would point at freed memory for the rest of the block. Move the clear out of the block.",
+                    "with xs[0] as e {\n    xs.clear()               // error: clear invalidates all elements\n}"),
+                "E0851" => ("a closure holding a scoped borrow can't escape", Ownership,
+                    "A closure that captures a block-scoped borrow lives as long as that block and no longer. Returning it, or storing it somewhere that outlives the block, would leave it holding a reference to something already gone.\n\n`own ||` is the escape hatch: it moves what it captures instead of borrowing, so the closure owns everything it needs.",
+                    "with data.read() as d {\n    return || { d.len() }    // error: closure would outlive the borrow\n}\n// fix: move the captures\nreturn own || { d.len() }"),
+                "E0852" => ("a generic method can't be called through a trait object", Trait,
+                    "`any Trait` erases the concrete type, and a generic method needs one — each instantiation is separate code, and there is nothing left to pick which. Call it on the concrete type instead (TR3).",
+                    "func run(x: any Shape) { x.scale<f32>(2.0) }   // error: generic method\n// fix: take the concrete type\nfunc run<S: Shape>(x: S) { x.scale<f32>(2.0) }"),
+                "E0853" => ("`to_map` needs pairs", Type,
+                    "`to_map` turns a sequence of `(K, V)` tuples into a map. A sequence of anything else has no key to put things under — produce the pairs first.",
+                    "users.to_map()               // error: a sequence of `User`\n// fix: say what the key is\nusers.map(|u| (u.id, u)).to_map()"),
+                "E0854" => ("annotation used wrongly", Type,
+                    "The annotation is real but this use of it isn't — a missing argument, an argument of the wrong shape, or an attachment point it doesn't cover. The message names which. An annotation the compiler can't act on is worse than one it rejects, because the source would say something the program doesn't do.",
+                    "@tag struct Msg { … }        // error: `@tag` needs a name\n// fix: give it one\n@tag(\"kind\") struct Msg { … }"),
+                "E0807" => ("a resource consumed twice", Ownership,
+                    "Linearity: a `@resource` is consumed exactly once. The second use is a use of something that no longer exists — a file closed twice, a transaction committed and then rolled back.\n\nThe message points at both places, so the one to delete is usually obvious.",
+                    "file.close()\nfile.close()                 // error: `file` already consumed"),
+                "E0810" => ("a captured resource isn't consumed on every path", Ownership,
+                    "A resource captured by a closure or a task is that body's to finish with, and \"exactly once\" has to hold on every path through it — including the ones that return early or raise.\n\n`ensure` at the top of the body is the usual answer: it runs at every exit, including a panic.",
+                    "spawn(own || {\n    if bad { return }        // error: `conn` not consumed here\n    conn.close()\n})\n// fix: one exit for all paths\nspawn(own || { ensure conn.close(); … })"),
                 "W0303" => ("comptime const could not be folded, so it runs at runtime", Type,
                     "The comptime evaluator doesn't cover the whole language yet, and this block reached a corner it can't model — a static method it has no implementation for, a value it can't represent. The program still works: the block is evaluated at startup instead. What's lost is the guarantee `comptime` was written for, so this is worth knowing about rather than silent. The warning names what stopped it.",
                     "const SPRITES = comptime {\n    mut v = Vec.new()\n    v.push(load_atlas())        // warning: I/O isn't available at comptime\n    v.freeze()\n}"),
@@ -537,12 +666,28 @@ mod registry_audit {
     const CODES_RS: &str = include_str!("codes.rs");
 
     /// Every `with_code("…")` in `convert.rs`, with the match arm it sits under.
+    ///
+    /// A `with_code` inside a free helper function belongs to that helper, not
+    /// to whichever arm happened to be last: attributing one to the arm above
+    /// it reported E0328 as shared with `ConflictingMethods`, which never
+    /// emitted it (#992).
     fn emitted_codes() -> Vec<(String, String, usize)> {
         let mut out = Vec::new();
         let mut arm = String::from("<none>");
         for (n, line) in CONVERT_RS.lines().enumerate() {
             let indent = line.len() - line.trim_start().len();
             let head = line.trim_start();
+            if head.starts_with("fn ")
+                || head.starts_with("pub fn ")
+                || head.starts_with("pub(crate) fn ")
+                || head.starts_with("pub(super) fn ")
+            {
+                let name: String = head
+                    .rsplit_once("fn ")
+                    .map(|(_, r)| r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
+                    .unwrap_or_default();
+                arm = format!("fn {name}");
+            }
             // Match arms sit at 8–16 spaces and start with the variant name.
             if (8..=16).contains(&indent) {
                 let name: String = head
@@ -641,10 +786,8 @@ mod registry_audit {
     ///  - Match arms that are declared and formatted but never constructed.
     ///    Unreachable today, so there is no error to explain (#992).
     const UNEXPLAINED: &[&str] = &[
-        // Shared — see SHARED_CODES.
-        "E0329", "E0330", "E0333", "E0335", "E0340",
-        "E0341", "E0343", "E0344", "E0807", "E0810",
-        // Never constructed.
+        // Never constructed. Nothing can reach these, so there is no error to
+        // explain — wire them up or delete them (#992).
         "E0326", // MissingMutateAnnotation — superseded by E0373
         "E0338", // MessageCoverageMissing
         "W0301", // DiscardCopyType
@@ -674,16 +817,17 @@ mod registry_audit {
     ///
     /// A code is supposed to identify one error, so a shared code makes
     /// `rask explain` wrong for every meaning but one, and makes the code
-    /// useless for searching. Fixing these means renumbering, and 21 codes are
-    /// cited by name in `specs/` — so which meaning keeps the number is a
-    /// documentation decision, not a mechanical one. Pinned here so the count
-    /// can only go down. See #992 for the full table.
-    const SHARED_CODES: &[&str] = &[
-        "E0210", "E0309", "E0313", "E0322", "E0324", "E0325", "E0327", "E0328",
-        "E0329", "E0330", "E0331", "E0333", "E0335", "E0340", "E0341", "E0342",
-        "E0343", "E0344", "E0345", "E0346", "E0360", "E0361", "E0371", "E0805",
-        "E0806", "E0807", "E0810", "E0813", "E0819", "E0830", "E0843",
-    ];
+    /// useless for searching. Thirty-one codes were shared; twenty-nine were
+    /// split in #992. Which meaning kept the number was decided in this order:
+    /// a citation by name in `specs/` pins it, otherwise the meaning the
+    /// registry entry already described, otherwise the one a user hits most.
+    ///
+    /// The two left are one error each, spelled two ways for the reader's
+    /// sake: a resource that wasn't consumed, named or opaque, and a borrowed
+    /// parameter given away, phrased as a consume or as a move. Splitting them
+    /// would make `rask explain` answer half a question. Pinned here so the
+    /// count can only go down.
+    const SHARED_CODES: &[&str] = &["E0805", "E0806"];
 
     #[test]
     fn no_new_code_serves_two_errors() {

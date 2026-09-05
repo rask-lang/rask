@@ -11,7 +11,7 @@ func main() {
     let i: i64 = 5
     let f: f64 = 0.5
 
-    // ERROR: `+` between an integer and a float [E0371, CV1a]
+    // ERROR: `+` between an integer and a float [E0401, CV1a]
     let a = i + f
     // ERROR: the other way round is the same answer [E0371]
     let b = f - i

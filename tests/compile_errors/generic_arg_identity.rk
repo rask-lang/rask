@@ -19,9 +19,9 @@ struct Key {
 
 func main() {
     mut ids = Map<TaskId, string>.new()
-    // ERROR: a raw `i32` doesn't convert to a nominal type [E0340, type.aliases/T9]
+    // ERROR: a raw `i32` doesn't convert to a nominal type [E0392, type.aliases/T9]
     ids.insert(1, "a")
-    // ERROR: same for a read [E0340]
+    // ERROR: same for a read [E0392]
     let found = ids.get(2) ?? "none"
 
     mut keyed = Map<Key, string>.new()

@@ -12,7 +12,7 @@
 //
 // The fix each form actually has is different, which is why they don't share one
 // message: `for mutate x in xs` for an element, write-back through the original
-// for a payload. "Add `mut`" is what E0322 used to suggest, and it isn't
+// for a payload. "Add `mut`" is what E0302 used to suggest, and it isn't
 // writable at any of these sites — `if opt? as mut t` doesn't parse.
 
 struct Counter { n: i32 }

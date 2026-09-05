@@ -26,7 +26,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [non_optional_link.rk](non_optional_link.rk) | A required edge (`Link<T>`, no `?`) is unsupported for now (E0327) — it needs a batch to construct and a cascade/restrict policy to destroy, neither built. Bare links inside `Vec`/`Map` stay legal |
 | [not_iterable.rk](not_iterable.rk) | `for` over something with no elements — an integer, a string, a struct (E0827), and an index type check that only reaches a container arrived at through a field (#632) |
 | [implicit_widening_limits.rk](implicit_widening_limits.rk) | The int→int pairs CV1a does *not* make implicit: `u64`→`i64`, `i64`→`u64`, `u32`→`i32`, `u8`→`i8`, and plain narrowing (CV1a, CV2) |
-| [int_float_arithmetic.rk](int_float_arithmetic.rk) | `+ - * /` between an integer and a float variable (CV1a, E0371, #816) — native used to drop the float operand and answer with an integer. An unsuffixed literal still takes the float slot |
+| [int_float_arithmetic.rk](int_float_arithmetic.rk) | `+ - * /` between an integer and a float variable (CV1a, E0401, #816) — native used to drop the float operand and answer with an integer. An unsuffixed literal still takes the float slot |
 | [mixed_signedness_arithmetic.rk](mixed_signedness_arithmetic.rk) | `+ - * / %` and `& \| ^ << >>` between a signed and an unsigned integer (ORD4, E0371) — comparison is the exception and stays legal (#778) |
 | [int_literal_range.rk](int_literal_range.rk) | An integer literal past the slot it lands in: needs 128 bits in an `i64`, one past `i128::MAX`, negative in a `u128` (E0825, #800) |
 | [int_literal_unwritable.rk](int_literal_unwritable.rk) | The two ends no type holds — digits past `u128::MAX` (lexer) and a negative below `i128::MIN` (parser sign fold) (#800) |
@@ -35,12 +35,12 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [bare_shared_with.rk](bare_shared_with.rk) | Bare `with shared as v` — the lock has to be named `.read()` or `.write()` (conc.sync/R4, E0839, #880). Nothing enforced it: the interpreter hit a self-contradictory runtime error and native read the wrong bytes |
 | [local_shared_sent.rk](local_shared_sent.rk) | A `Shared.new` box — the `Local` strategy, no lock — captured by a spawned task (`conc.sync/SH7`, E0346). Both locking strategies in the same file must still compile |
 | [map_key_hashable.rk](map_key_hashable.rk) | A Map key that isn't Hashable (E0834, HA1/HA4, #812) — a nominal newtype with no `with (…)` clause, a float, a struct with a float field; each gets the way out that fits it |
-| [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0340/E0308, #812) |
+| [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0392/E0308, #812) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
-| [try_shape_rule.rk](try_shape_rule.rk) | Bare `try` whose other branch doesn't fit the return (ER47, E0360/E0361) — an absence in a `T or E` function, an error in a `T?` function (#598) |
+| [try_shape_rule.rk](try_shape_rule.rk) | Bare `try` whose other branch doesn't fit the return (ER47, E0399/E0400) — an absence in a `T or E` function, an error in a `T?` function (#598) |
 | [ambiguous_error_wrap.rk](ambiguous_error_wrap.rk) | Two variants of the error enum wrap the same error (ER31a, E0359) — `try` asks which instead of picking |
 | [optional_operators_need_optionals.rk](optional_operators_need_optionals.rk) | `??`, `!` and `take` on something that can never be absent (OPT3/OPT11/OPT13/OPT32, E0831/E0832/E0365) — including `m[k] ?? d`, which points at `.get(k)` |
 | [trait_bound_messages.rk](trait_bound_messages.rk) | What a failed trait requirement says, per source: a numeric bound (E0333, members not methods), an ordinary generic bound, a conformance header, an `as any Trait` cast, and a bound naming a trait nobody declared (E0833, did-you-mean) |
@@ -67,7 +67,7 @@ Each `// ERROR:` comment indicates the expected error. If the compiler accepts a
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
 | [borrow_stored.rk](borrow_stored.rk) | Storing a string slice in a struct |
-| [mutate_marker_required.rk](mutate_marker_required.rk) | An argument to a `mutate` parameter with no `mutate` marker (PM4/PM5, E0373) — a Copy argument and a field path are no exception; a method receiver is exempt; the marker on a non-`mutate` parameter is E0328 (#530) |
+| [mutate_marker_required.rk](mutate_marker_required.rk) | An argument to a `mutate` parameter with no `mutate` marker (PM4/PM5, E0373) — a Copy argument and a field path are no exception; a method receiver is exempt; the marker on a non-`mutate` parameter is E0306 (#530) |
 | [mutate_through_binding.rk](mutate_through_binding.rk) | Writing through a name a test or a pattern introduced (E0372, #788) — `if x? as v`, a `mutate` argument, a plain `for` element, a match-arm payload, `while x? as v`. `for mutate` and write-back through the original stay legal |
 | [mutate_param_left_empty.rk](mutate_param_left_empty.rk) | A `mutate` parameter consumed and not replaced (PM2, E0836, #815) — outright and on one path only; consume-and-replace stays legal, and `take` is how a function says it keeps the value |
 | [heap_not_consumed.rk](heap_not_consumed.rk) | A `Heap(…)` value that nothing consumes, one consumed twice, one handed to a `take` parameter and then dropped, and one consumed on only one branch (mem.linear/L1, L3, E0837, E0800, #819) |
