@@ -2953,6 +2953,72 @@ impl TypeChecker {
         }
     }
 
+    /// A call through an `import c` namespace, typed from the header.
+    ///
+    /// `None` when this isn't one, so the caller falls through to the ordinary
+    /// method-call path.
+    fn check_c_call(
+        &mut self,
+        call_id: NodeId,
+        object: &Expr,
+        args: &[CallArg],
+        span: Span,
+    ) -> Option<Type> {
+        // The receiver has to be the namespace itself. A local of the same name
+        // wins, the way it does for the builtin modules.
+        let ExprKind::Ident(ns) = &object.kind else { return None };
+        if self.lookup_local(ns).is_some() {
+            return None;
+        }
+        let &ns_sym = self.resolved.resolutions.get(&object.id)?;
+        if !matches!(
+            self.resolved.symbols.get(ns_sym).map(|s| &s.kind),
+            Some(SymbolKind::CNamespace { .. })
+        ) {
+            return None;
+        }
+        let &fn_sym = self.resolved.resolutions.get(&call_id)?;
+        let sym = self.resolved.symbols.get(fn_sym)?;
+        if !matches!(sym.kind, SymbolKind::ExternFunction { .. }) {
+            return None;
+        }
+
+        // CI3: every C call is unsafe. The category is the same one a bare
+        // `extern "C"` call gets, so `rask` reports them the same way.
+        self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
+        if !self.in_unsafe {
+            self.errors.push(TypeError::UnsafeRequired {
+                operation: "extern function call".to_string(),
+                span,
+            });
+        }
+
+        let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
+            return None;
+        };
+        if args.len() != params.len() {
+            for a in args {
+                self.infer_expr(&a.expr);
+            }
+            self.errors.push(TypeError::ArityMismatch {
+                expected: params.len(),
+                found: args.len(),
+                span,
+            });
+            return Some(*ret);
+        }
+        for (arg, want) in args.iter().zip(params.iter()) {
+            let got = self.infer_expr_expecting(&arg.expr, want);
+            self.coerce_into(
+                rask_ast::coercion::CoercionSite::Argument,
+                got,
+                want.clone(),
+                arg.expr.span,
+            );
+        }
+        Some(*ret)
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         call_id: NodeId,
@@ -2995,6 +3061,18 @@ impl TypeChecker {
                 .map(|name| self.resolve_type_name(name, span))
                 .collect();
             self.written_method_type_args.insert(call_id, written);
+        }
+
+        // `c.strlen(p)` — a call into an `import c` namespace. The resolver
+        // already points the call node at the header's declaration, and nothing
+        // read it: the call came back a fresh variable, so every C call had to
+        // be annotated at its binding or MIR gave up on it. And CI3 — a C call
+        // needs `unsafe` — was checked only for a bare `extern "C" func` call,
+        // never for one reached through the namespace, so the spec's own error
+        // message had never fired (#947, #948 found the surface; nothing tests
+        // it, which is why).
+        if let Some(ret) = self.check_c_call(call_id, object, args, span) {
+            return ret;
         }
 
         // Check if this is a builtin module method call (e.g., fs.open). A local

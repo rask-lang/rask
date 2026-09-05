@@ -7054,3 +7054,61 @@ fn nothing_leaks_at_exit() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// What `import c` makes of a header.
+///
+/// Nothing tested this surface at all, which is how three things stayed broken
+/// at once. A `c.f(…)` call's return type never reached the checker, so every
+/// call had to be annotated at its binding or MIR gave up on it. CI3 — a C call
+/// needs `unsafe` — was enforced only for a bare `extern "C" func` call, never
+/// for one reached through the namespace, so the spec's own error message had
+/// never fired. And a header's `int` becomes the name `c_int`, which wasn't a
+/// type: `*i64` passed for a `const int *` and the C side read the 64-bit
+/// buffer as 32-bit ints, which is arithmetic that looks fine (#947).
+///
+/// Checked, not run: the point is the signatures, and linking a C object is the
+/// build system's business. The cwd is the fixture directory because
+/// `import c "x.h"` resolves relative to the current directory rather than to
+/// the importing file (#1096).
+fn check_in_fixtures(name: &str) -> (String, bool) {
+    let rask = rask_binary();
+    let out = Command::new(&rask)
+        .arg("check")
+        .arg(name)
+        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (text, out.status.success())
+}
+
+#[test]
+fn c_header_signatures_reach_the_checker() {
+    let (text, ok) = check_in_fixtures("c_interop.rk");
+    assert!(ok, "c_interop.rk should type-check:\n{text}");
+}
+
+#[test]
+fn a_c_call_requires_unsafe() {
+    let (text, ok) = check_in_fixtures("c_interop_unsafe.rk");
+    assert!(!ok, "a C call outside `unsafe` must be rejected:\n{text}");
+    assert!(
+        text.contains("E0386") && text.contains("extern function call"),
+        "expected CI3's unsafe error, got:\n{text}"
+    );
+}
+
+#[test]
+fn a_c_pointer_parameter_checks_its_element_type() {
+    let (text, ok) = check_in_fixtures("c_interop_width.rk");
+    assert!(!ok, "`*i64` for a `const int *` must be rejected:\n{text}");
+    assert!(
+        text.contains("E0857") && text.contains("`*i64`") && text.contains("`*i32`"),
+        "expected the pointee-mismatch error naming both widths, got:\n{text}"
+    );
+}

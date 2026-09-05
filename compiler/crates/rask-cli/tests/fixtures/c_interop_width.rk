@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A header's `int` is `c_int` — 32-bit. Handing it a `Vec<i64>` buffer used to
+// pass in silence, and the C side then read twice as many half-width numbers:
+// one element of 2^32 sums to 0 (#947).
+import c "c_interop.h"
+
+func main() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(4294967296)
+    unsafe {
+        println("{c.c_sum(v.as_ptr(), 1)}")
+    }
+}

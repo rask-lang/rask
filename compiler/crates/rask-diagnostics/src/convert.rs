@@ -957,6 +957,28 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`T?` doesn't coerce to `T`; lifting `!` through the wrapper would be ambiguous — on a `bool?`, `!x` could mean negate the payload or test for absence, and `x!` already means force-unwrap [type.optionals/OPT5, OPT15]")
             }
 
+            PointeeMismatch { from, to, span } => {
+                let elem = |t: &rask_types::Type| match t {
+                    rask_types::Type::RawPtr(inner) => inner.to_string(),
+                    other => other.to_string(),
+                };
+                let (from_elem, to_elem) = (elem(from), elem(to));
+                Diagnostic::error(format!(
+                    "`{}` can't be used where `{}` is expected",
+                    from, to
+                ))
+                    .with_code("E0857")
+                    .with_primary(*span, format!(
+                        "this points at `{}`, the slot reads `{}`",
+                        from_elem, to_elem
+                    ))
+                    .with_fix(format!(
+                        "build the buffer at the element type the slot wants — a `Vec<{}>` here",
+                        to_elem
+                    ))
+                    .with_why("a pointer's element type is part of it: nothing converts the bytes, so the other side would read a different number of them at a different stride [mem.unsafe, struct.c-interop/TM2]")
+            }
+
             NarrowingNeedsPolicy { from, to, span } => {
                 Diagnostic::error(format!(
                     "`{}` doesn't fit in `{}` — some values would be lost",

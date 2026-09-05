@@ -186,6 +186,13 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// A pointer whose element type isn't the one the slot declares.
+    ///
+    /// Nothing converts here: the pointer is an address, and the reader decides
+    /// the stride from its own type. So `*i64` where `*i32` is wanted isn't a
+    /// narrowing with a policy to pick — it's a different pointer.
+    #[error("`{from}` can't be used where `{to}` is expected")]
+    PointeeMismatch { from: Type, to: Type, span: Span },
     /// ORD4: arithmetic between a signed and an unsigned integer. Comparison is
     /// the one operator family that crosses signedness, because it has an
     /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
@@ -1109,6 +1116,10 @@ impl TypeError {
                 *found = f(found);
             }
 
+            PointeeMismatch { from, to, .. } => {
+                *from = f(from);
+                *to = f(to);
+            }
             NarrowingNeedsPolicy { from, to, .. } => {
                 *from = f(from);
                 *to = f(to);

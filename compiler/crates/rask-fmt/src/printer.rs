@@ -341,6 +341,13 @@ impl<'a> Printer<'a> {
         if ty == "()" {
             return "void".to_string();
         }
+        // A pointer's element type goes through the same rewrites, and only the
+        // bare case was handled: `*void` came back as `*()`, which doesn't parse
+        // either. `*void` is the untyped pointer and the spelling the C header
+        // translator produces, so it has to survive a round trip.
+        if let Some(inner) = ty.strip_prefix('*') {
+            return format!("*{}", self.format_type(inner));
+        }
         if let Some(inner) = ty.strip_prefix("Result<") {
             if let Some(inner) = inner.strip_suffix('>') {
                 // The top-level comma is the one separating value from error.

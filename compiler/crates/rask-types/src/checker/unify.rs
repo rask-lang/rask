@@ -1445,6 +1445,19 @@ impl TypeChecker {
 
             (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
 
+            // `*void` is the untyped pointer — an address with no element type,
+            // which is what an opaque C handle and every `void *` parameter is.
+            // It unified like any other pointee, so `memcpy(dst, src, n)` and
+            // anything else taking a `void *` rejected every pointer anyone had.
+            // Direction is `check_fits`'s job: `*T` goes in where `*void` is
+            // declared, and coming back out needs `cast<T>()`.
+            (Type::RawPtr(inner1), Type::RawPtr(inner2))
+                if matches!(self.ctx.apply(inner1), Type::Unit)
+                    || matches!(self.ctx.apply(inner2), Type::Unit) =>
+            {
+                Ok(false)
+            }
+
             (Type::RawPtr(inner1), Type::RawPtr(inner2)) => self.unify(inner1, inner2, span),
 
             // Union types: exact match element-wise, or subset widening for try propagation (ER31).
@@ -1723,6 +1736,39 @@ impl TypeChecker {
     ) -> Result<(), TypeError> {
         let source = self.ctx.apply(source);
         let target = self.ctx.apply(target);
+
+        // A pointer's element type is part of it (mem.unsafe, struct.c-interop/
+        // TM2). Nothing converts here — the pointer is an address and the reader
+        // picks the stride from its own type — so `*i64` where `*i32` is wanted
+        // is a different pointer, not a narrowing with a policy to choose.
+        //
+        // Only checked at a position that knows which side is the source, same
+        // as the integer rule below. `import c` translates `int` to `c_int`, and
+        // handing `Vec<i64>.as_ptr()` to a `const int *` parameter used to pass
+        // in silence: the C side then read the 64-bit buffer as 32-bit ints and
+        // returned arithmetic that looked fine (#947).
+        if let (Type::RawPtr(from), Type::RawPtr(to)) = (&source, &target) {
+            let from_inner = self.resolve_named(&self.ctx.apply(from));
+            let to_inner = self.resolve_named(&self.ctx.apply(to));
+            // An open pointee has nothing to compare yet.
+            let open = matches!(from_inner, Type::Var(_) | Type::Error)
+                || matches!(to_inner, Type::Var(_) | Type::Error);
+            // `*T` into a `*void` slot is the whole point of `*void`. The other
+            // direction isn't: an address with no element type doesn't become
+            // one by being assigned somewhere, so it needs `cast<T>()`.
+            if to_inner == Type::Unit {
+                return Ok(());
+            }
+            if !open && from_inner != to_inner {
+                return Err(TypeError::PointeeMismatch {
+                    from: source,
+                    to: target,
+                    span,
+                });
+            }
+            return Ok(());
+        }
+
         if Self::int_shape(&source).is_none() || Self::int_shape(&target).is_none() {
             return Ok(());
         }
