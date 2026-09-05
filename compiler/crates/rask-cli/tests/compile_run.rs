@@ -6427,6 +6427,69 @@ fn run_rask_test_source(src: &str, interp: bool) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+const TRY_IN_TEST_SRC: &str = r#"
+enum OpenErr { Denied }
+extend OpenErr with Error {
+    func message(self) -> string { return "denied" }
+}
+func might_fail(ok: bool) -> i64 or OpenErr {
+    if !ok: return OpenErr.Denied
+    return 7
+}
+
+test "try that succeeds" {
+    let v = try might_fail(true)
+    assert v == 7
+}
+
+test "try that propagates" {
+    let v = try might_fail(false)
+    assert v == 7
+}
+
+test "a later test still runs" {
+    assert true
+}
+
+func main() {}
+"#;
+
+// std.testing/T20: a test block is the error branch for `try`.
+//
+// The suite can't hold this half — a failing test fails the file — so the
+// error path lives here, where a program's output is the assertion. Without
+// it the only thing pinned is `try` succeeding, which is the half that was
+// already fine.
+//
+// T20 replaced a rule saying the opposite: bare `try` in a test body was an
+// ER47 compile error, because a test block supposedly had nowhere to
+// propagate to and the failure would say nothing useful. It has somewhere to
+// go and it says what happened, so the rule went.
+#[test]
+fn try_in_a_test_block_fails_that_test_and_names_the_error() {
+    for interp in [true, false] {
+        let out = run_rask_test_source(TRY_IN_TEST_SRC, interp);
+        let backend = if interp { "interp" } else { "native" };
+
+        assert!(
+            out.contains("try propagated an error out of a test block"),
+            "{backend}: a propagating `try` should say so: {out}",
+        );
+        // The failure is that test's, not the file's: the one before it passed
+        // and the one after it still ran.
+        assert!(
+            out.contains("try that succeeds"), "{backend}: {out}",
+        );
+        assert!(
+            out.contains("a later test still runs"), "{backend}: {out}",
+        );
+        assert!(
+            out.contains("3 tests, 2 passed, 1 failed"),
+            "{backend}: exactly one test should fail: {out}",
+        );
+    }
+}
+
 const STRING_ASSERT_SRC: &str = r#"
 test "two string variables" {
     let a = "abc"

@@ -70,19 +70,32 @@ test "add cases" {
 | **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential` |
 | **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X` |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |
-| **T10: No `try` in a test body** | A test block has no error branch to propagate to, so bare `try` is a `type.errors/ER47` compile error like anywhere else. Fallible setup is `catch`, and the handler says why — an assertion that swallows the error reports "assertion failed" and nothing else |
+| **T20: `try` propagates to the runner** | A test block is the error branch: `try` on a failing step ends that test as a failure, naming it and reporting the error, and later tests still run. Fallible setup needs no handler — use `catch` when you want to *test* the failure rather than be stopped by it |
 
 <!-- test: skip -->
 ```rask
 test "file processing" {
-    let file = fs.open("test.txt") catch e => {
-        assert false, "open failed: {e.message()}"
-        return
-    }
+    let file = try fs.open("test.txt")
     ensure file.close()
     assert file.read() == "expected"
 }
 ```
+
+A `try` that does propagate reads like any other failed test:
+
+```
+✗ file processing
+    main.rk:2: try propagated an error out of a test block
+✓ the next test still runs
+```
+
+This rule used to say the opposite — bare `try` was an `ER47` compile error,
+on the grounds that a test block had nowhere to propagate to, so the failure
+would be uninformative ("an assertion that swallows the error reports
+'assertion failed' and nothing else"). [#1057](https://github.com/rask-lang/rask/pull/1057)
+gave it somewhere to go and made the message say what happened, which retired
+the argument. The `catch` spelling above cost four lines per fallible step and
+a hand-written message at each one.
 
 ## Concurrency in Tests
 
