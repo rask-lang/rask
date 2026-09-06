@@ -311,6 +311,16 @@ fn insert_aggregate_release(func: &mut MirFunction) {
                 if matches!(stmt.kind, MirStmtKind::Phi { .. }) {
                     continue;
                 }
+                // A store *into* the aggregate is one field of a value being
+                // built, not the end of one — and a release placed right after
+                // it runs on a slot whose other fields nobody has written yet.
+                // `try dto.validate()` in a `-> string or ApiError` function
+                // released between the tag store and the payload store, so
+                // `release_either` took the err branch and freed a string
+                // header made of stack garbage (#1122).
+                if matches!(&stmt.kind, MirStmtKind::Store { addr, .. } if group.contains(addr)) {
+                    continue;
+                }
                 for id in group {
                     if uses::stmt_reads(stmt, *id) || uses::stmt_def(stmt) == Some(*id) {
                         last = Some(si);
@@ -1087,6 +1097,76 @@ mod tests {
         assert!(
             !has_rc_dec(surviving, local(1)),
             "the branch that carries on never had the string: {surviving:?}",
+        );
+    }
+
+    /// A half-built aggregate is not a dead one.
+    ///
+    /// `insert_aggregate_release` puts the release after the group's last use
+    /// in a block, and a `Store` into the aggregate was counted as one — so a
+    /// `try` that wraps its error released the outer Result after its tag had
+    /// been written and before its payload had. `release_either` read the tag,
+    /// took the err branch, and freed a string header made of stack garbage
+    /// (#1122).
+    #[test]
+    fn a_store_into_an_aggregate_is_not_a_place_to_release_it() {
+        let mut f = make_fn(
+            vec![
+                MirLocal {
+                    id: local(0),
+                    name: Some("r".into()),
+                    ty: MirType::Result {
+                        ok: Box::new(MirType::String),
+                        err: Box::new(MirType::String),
+                    },
+                    is_param: false,
+                },
+                string_local(1, "payload"),
+            ],
+            vec![
+                MirBlock {
+                    id: BlockId(0),
+                    statements: vec![
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(local(1)),
+                            func: FunctionRef::internal("build".into()),
+                            args: vec![],
+                        }),
+                        // The tag, and nothing else — the payload lands in the
+                        // next block.
+                        MirStmt::dummy(MirStmtKind::Store {
+                            addr: local(0),
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(1)),
+                            store_size: None,
+                        }),
+                    ],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
+                        target: BlockId(1),
+                    }),
+                },
+                MirBlock {
+                    id: BlockId(1),
+                    statements: vec![MirStmt::dummy(MirStmtKind::Store {
+                        addr: local(0),
+                        offset: 24,
+                        value: MirOperand::Local(local(1)),
+                        store_size: None,
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
+                        value: Some(MirOperand::Local(local(0))),
+                    }),
+                },
+            ],
+        );
+        insert_rc_ops(&mut f);
+
+        let building = &f.blocks[0].statements;
+        assert!(
+            !building
+                .iter()
+                .any(|s| matches!(&s.kind, MirStmtKind::RcDecContents { local: l } if *l == local(0))),
+            "nothing may release a Result whose payload isn't written yet: {building:?}",
         );
     }
 

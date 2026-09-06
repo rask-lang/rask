@@ -6506,12 +6506,34 @@ impl<'a> FunctionBuilder<'a> {
         let Some(dst) = ctx.dst_param else {
             return Ok(produced);
         };
-        if let Some(src) = produced {
-            let size = Self::resolve_type_alloc_size(
-                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
-            )
-            .unwrap_or(ctx.ret_ty.size());
-            Self::copy_aggregate_to_ptr(builder, src, dst, size);
+        match produced {
+            Some(src) => {
+                let size = Self::resolve_type_alloc_size(
+                    ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
+                )
+                .unwrap_or(ctx.ret_ty.size());
+                Self::copy_aggregate_to_ptr(builder, src, dst, size);
+            }
+            // A bare `return` out of a `void or E` function. There is no value
+            // to copy and the answer is still Ok, so say so — leaving the
+            // destination untouched meant the caller read a tag nobody had
+            // written, and `try f()` on the success path branched on it
+            // (#1122). The old convention returned nothing and let the caller
+            // read whatever was in the return register, which was the same
+            // hole one register along.
+            None if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), zero, dst, crate::layouts::TAG_OFFSET);
+                if matches!(ctx.ret_ty, MirType::Result { .. }) {
+                    for off in [
+                        crate::layouts::ORIGIN_FILE_OFFSET,
+                        crate::layouts::ORIGIN_LINE_OFFSET,
+                    ] {
+                        builder.ins().store(MemFlags::new(), zero, dst, off);
+                    }
+                }
+            }
+            None => {}
         }
         // Nothing goes back in a register: the answer is already where the
         // caller asked for it, and Cranelift rejects a `StructReturn` signature
