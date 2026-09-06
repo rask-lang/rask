@@ -1525,6 +1525,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Mutex_try_lock", "rask_mutex_try_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_clone", "rask_mutex_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Mutex_drop", "rask_mutex_drop", &[types::I64], None, false),
+        // The `Local` strategy's release. `rask_cell_free` has been in the
+        // runtime all along with nothing calling it — the same shape
+        // `rask_shared_free` was in before #1099, and the reason
+        // `Shared.local(0)` leaked its cell and its payload.
+        StdlibEntry::simple("Cell_drop", "rask_cell_free", &[types::I64], None, false),
 
         // ── Char predicates ───────────────────────────────────
         StdlibEntry::simple("char_is_digit", "rask_char_is_digit", &[types::I32], Some(types::I64), false),

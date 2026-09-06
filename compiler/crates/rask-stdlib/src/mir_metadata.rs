@@ -374,6 +374,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // if nobody else holds one (#1099).
     ("Shared_drop", Internal::ConsumesReceiver),
     ("Mutex_drop", Internal::ConsumesReceiver),
+    ("Cell_drop", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];

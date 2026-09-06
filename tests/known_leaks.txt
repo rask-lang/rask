@@ -79,7 +79,6 @@ t40_stdlib_renames.rk  # 8 allocations
 t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
 t41_os.rk  # 149 allocations
 t42_flatten_shaped_header.rk  # 26 allocations — flatten's per-element inner sequences, #1045
-t50_boxes.rk  # 4 allocations
 t54_strings.rk  # 8 allocations
 t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
 t57_spawn.rk  # 24 allocations
@@ -90,7 +89,6 @@ t_any_error_boxing.rk  # 5 allocations
 t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
 t_module_qualified_variants.rk  # 9 allocations — trait boxes again
 t_array_method_surface.rk  # 10 allocations
-t_assert_side_effects.rk  # 12 allocations
 t_atomic_across_tasks.rk  # 6 allocations
 t_bare_lock_value.rk  # 21 allocations
 t_binding_types.rk  # 4 allocations
@@ -118,7 +116,6 @@ t_day_vec.rk  # 4 allocations
 t_debug_container_elision.rk  # 2 allocations
 t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 26 allocations
-t_float_payloads.rk  # 4 allocations
 t_for_mutate_early_exit.rk  # 2 allocations
 t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
 t_fs_open_failure.rk  # 4 allocations
@@ -126,7 +123,6 @@ t_generic_clone_any_t.rk  # 8 allocations
 t_generic_index_clone.rk  # 4 allocations
 t_generic_method_return.rk  # 4 allocations
 t_generic_optional_field.rk  # 6 allocations
-t_implicit_widening.rk  # 2 allocations
 t_index_through_field.rk  # 64 allocations
 t_io_buffer.rk  # 71 allocations
 t_iterate_field_collection.rk  # 29 allocations
@@ -153,7 +149,6 @@ t_month_resource_ensure.rk  # 10 allocations
 t_month_staged.rk  # 4 allocations
 t_month_stdlib_modules.rk  # 14 allocations
 t_mutate_handle_field.rk  # 12 allocations
-t_mutex_guard_exits.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
 t_named_context_resolves_by_type.rk  # 4 allocations
 t_nested_with_return.rk  # 12 allocations
@@ -190,7 +185,6 @@ t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 4 allocations
 t_subprocess.rk  # 24 allocations
 t_supertrait_dispatch.rk  # 4 allocations
-t_sync_box_payloads.rk  # 10 allocations
 t_test_const_init.rk  # 4 allocations
 t_test_isolation.rk  # 2 allocations — a module-level Shared box, the half of #1099 still open
 t_text_units.rk  # 9 allocations

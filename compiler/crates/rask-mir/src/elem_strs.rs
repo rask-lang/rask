@@ -104,6 +104,13 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
     ("Shared_new", 0, 0, "Shared_drop"),
+    // The other two strategies build their own runtime object, so each needs
+    // its own release: `Shared.mutex(0)` is `Mutex_new` and `Shared.local(0)`
+    // is `Cell_new`, and neither is `Shared_new`. Only the third was listed, so
+    // two of the three constructors leaked the box and its payload — the same
+    // two allocations #1099 measured, for the two spellings it didn't test.
+    ("Mutex_new", 0, 0, "Mutex_drop"),
+    ("Cell_new", 0, 0, "Cell_drop"),
     // The clones. These were absent because `clone_elision` can decide a clone
     // is unnecessary and leave the caller's own container in the slot, and
     // freeing that is a double free — `return v.clone()` printed the right
