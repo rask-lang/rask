@@ -23,24 +23,42 @@ use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// `dst = <local> as <int>` — the cast that turns a string into the address of
-/// its buffer, which only `unsafe` code can ask for.
+/// The runtime entry points that answer with the address of a string's own
+/// buffer rather than with a value.
 ///
-/// It reads as the string's last use because nothing afterwards names the
-/// string; what continues is the integer holding its address. Releasing on that
-/// reading frees the buffer while the address is still in flight.
-fn casts_to_int(stmt: &MirStmt, local: LocalId) -> bool {
-    let MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } = &stmt.kind
-    else {
-        return false;
-    };
-    matches!(value, MirOperand::Local(id) if *id == local)
-        && matches!(
-            target_ty,
-            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
-                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
-                | MirType::Ptr
-        )
+/// Everything else a string method returns is either a scalar or a string of
+/// its own; these two hand out an interior pointer, and the string is what
+/// keeps the storage behind it alive.
+const HANDS_OUT_THE_BUFFER: &[&str] = &["string_as_ptr", "string_as_mut_ptr"];
+
+/// Does this statement hand out the address of `local`'s buffer?
+///
+/// Two spellings, one meaning. `s as i64` is the cast only `unsafe` code can
+/// ask for; `s.as_ptr()` is the method, and it lowers to a call. Both read as
+/// the string's last use, because nothing afterwards names the string — what
+/// continues is the address. Releasing on that reading frees the buffer while
+/// the address is still in flight.
+fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } => {
+            matches!(value, MirOperand::Local(id) if *id == local)
+                && matches!(
+                    target_ty,
+                    MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+                        | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                        | MirType::U128 | MirType::Ptr
+                )
+        }
+        // `let p = unsafe s.as_ptr()` — the method form, which the cast rule
+        // never covered. `strlen(s.as_ptr())` in a frame that doesn't name `s`
+        // again read the buffer after it had been freed, and got a wrong answer
+        // out of libc whenever the free had written over the bytes (#1118).
+        MirStmtKind::Call { func, args, .. } => {
+            HANDS_OUT_THE_BUFFER.contains(&func.name.as_str())
+                && args.iter().any(|a| matches!(a, MirOperand::Local(id) if *id == local))
+        }
+        _ => false,
+    }
 }
 
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
@@ -708,16 +726,16 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 )));
             } else if let Some(si) = last_use_idx {
                 let span = func.blocks[block_idx].statements[si].span;
-                // A cast to an integer hands out the buffer's address and
-                // nothing after that mentions the string, so the naive spot is
-                // directly after the cast — the release runs, the buffer is
-                // freed, and the raw address the callee dereferences is
-                // dangling. `write_raw` in `stdlib/http.rk` is exactly this
+                // Handing out the buffer's address is not the end of the
+                // string's usefulness, but nothing after it mentions the string,
+                // so the naive spot is directly after — the release runs, the
+                // buffer is freed, and the raw address the callee dereferences
+                // is dangling. `write_raw` in `stdlib/http.rk` is exactly this
                 // shape, which is how the HTTP server answered with eight bytes
                 // of allocator free-list where `HTTP/1.1` should be. Hold the
                 // reference to the end of the block, so every use of the
                 // address it produced is covered.
-                if casts_to_int(&func.blocks[block_idx].statements[si], *local) {
+                if hands_out_the_buffer(&func.blocks[block_idx].statements[si], *local) {
                     let span = func.blocks[block_idx].terminator.span;
                     insertions.push((stmts_len, MirStmt::new(
                         MirStmtKind::RcDec { local: *local },
@@ -925,6 +943,57 @@ mod tests {
             .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "rask_io_write_string"))
             .unwrap();
         assert!(dec > write, "release must follow the native write: {stmts:?}");
+    }
+
+    /// `unsafe { strlen(s.as_ptr()) }` — the method form of the same thing.
+    ///
+    /// `as_ptr` is a call, not a cast, so the rule above never covered it: the
+    /// release landed between taking the address and using it, and libc read a
+    /// freed buffer. Most of the time freed memory still holds the same bytes,
+    /// which is why this went unseen — `strlen` on a string with a NUL at byte
+    /// 3 answered 21 (#1118).
+    #[test]
+    fn release_follows_the_call_that_reads_a_pointer_from_as_ptr() {
+        let mut f = make_fn(
+            vec![
+                string_local(0, "s"),
+                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false },
+                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false },
+            ],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(0)),
+                        func: FunctionRef::internal("build".into()),
+                        args: vec![],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(1)),
+                        func: FunctionRef::internal("string_as_ptr".into()),
+                        args: vec![MirOperand::Local(local(0))],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(2)),
+                        func: FunctionRef::extern_c("strlen".into()),
+                        args: vec![MirOperand::Local(local(1))],
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f);
+
+        let stmts = &f.blocks[0].statements;
+        let dec = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::RcDec { local: l } if *l == local(0)))
+            .expect("string is released somewhere");
+        let read = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "strlen"))
+            .unwrap();
+        assert!(dec > read, "release must follow the read through the pointer: {stmts:?}");
     }
 
     #[test]
