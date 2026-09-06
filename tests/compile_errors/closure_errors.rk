@@ -5,23 +5,31 @@
 //
 // Everything below is a parse error, and a parse error stops the pipeline
 // before the checker runs — so the markers here can only claim rules the
-// *parser* enforces. That is the whole of what this file can test today,
-// because the two closure features it was written for don't exist:
+// *parser* enforces.
 //
-//   - mutable capture (`|mutate x|`, MC1–MC4) — #1087. The capture syntax is
-//     rejected outright, so MC2's "already mutably captured" can never fire.
+// Two closure rules still have no diagnostic anywhere, and neither can be
+// written down here:
+//
+//   - MC2, "variable already mutably captured". Two closures may both write
+//     the same local today and nothing objects. The case needs the checker,
+//     not the parser — there is no syntax to reject, because a capture is
+//     inferred from the body writing the variable (#1087).
 //   - a closure type in a signature (`-> ||`) — the parser wants a name there,
 //     so the SL2 escape case can't be written down either.
 //
 // When either lands, the case moves to a file whose errors come from the pass
 // that rejects it, the way `?`-propagation moved to rust_error_propagation.rk.
 
-// --- mutable capture is capture syntax, not a parameter (CP3) ---
+// --- `mutate` on a capture names neither feature (MC1, CP3) ---
+//
+// Captures are inferred: writing `x` in the body is what makes the capture
+// mutable, so there is nothing to annotate. Only parameters go between the
+// pipes, and a `mutate` parameter names its type. `|mutate x|` is neither.
 func test_mutable_capture() {
     mut x = 0
-    // ERROR: capturing `x` by `mutate` isn't implemented yet [mem.closures/CP3]
+    // ERROR: `mutate` on the capture `x` [mem.closures/MC1]
     let a = |mutate x| { x += 1 }
-    // ERROR: capturing `x` by `mutate` isn't implemented yet [mem.closures/CP3]
+    // ERROR: `mutate` on the capture `x` [mem.closures/MC1]
     let b = |mutate x| { x += 2 }
 }
 

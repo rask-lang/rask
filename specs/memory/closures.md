@@ -90,6 +90,7 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
 | **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
 
+<!-- test: parse -->
 ```rask
 // Borrow parameter (default)
 let print_name = |u: User| print(u.name)
@@ -122,12 +123,15 @@ inferred from the body, exactly as a read capture already is.
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
 | **MC3: Scope-limited** | Closure can't outlive the captured variable |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
+<!-- test: parse -->
 ```rask
-mut total = 0
-let add = |x| { total = total + x }   // `total` captured mutably, inferred
-add(5)
-add(3)
-// total == 8
+func run() {
+    mut total = 0
+    let add = |x| { total = total + x }   // `total` captured mutably, inferred
+    add(5)
+    add(3)
+    // total == 8
+}
 ```
 
 **Why inferred, when `ensure`, `take` and `mutate`-on-a-parameter are all explicit.** Those three
@@ -204,10 +208,10 @@ FIX: use own closure:
 ```
 ERROR [mem.closures/MC2]: variable already mutably captured
    |
-3  |  let a = |mutate x| { x += 1 }
-   |             ^^^^^^^^^ x mutably captured here
-4  |  let b = |mutate x| { x += 2 }
-   |             ^^^^^^^^^ cannot capture x again
+3  |  let a = || { x += 1 }
+   |               ^ x mutably captured here — the body writes it
+4  |  let b = || { x += 2 }
+   |               ^ cannot capture x again
 
 FIX: Use Shared<T> for shared mutable state:
 
@@ -226,7 +230,7 @@ FIX: Use Shared<T> for shared mutable state:
 | Non-`own` closure captures resource type | Resource borrowed; can't escape scope |
 | Nested closures | Each level borrows/moves from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; `own` is redundant but allowed |
-| `mutate` capture of Copy type | Borrows mutably (not copied), mutations visible to caller |
+| Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
 
 ---
 

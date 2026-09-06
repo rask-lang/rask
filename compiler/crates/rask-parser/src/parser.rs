@@ -4345,24 +4345,33 @@ impl Parser {
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
             } else if is_mutate {
-                // CP3 says the untyped form is a mutable capture, and nothing
-                // implements those yet. The old message asked for a type, which
-                // turns it into the parameter form — a different thing that
-                // writes to an argument instead of the enclosing variable, and
-                // compiles without saying so.
+                // Everything between the pipes is a parameter, and a `mutate`
+                // one names the type it writes back (CP2). Captures are not
+                // written down at all — the closure body writing a variable is
+                // what makes the capture mutable (MC1), so there is nothing to
+                // annotate and `|mutate x|` names neither feature.
+                //
+                // Two earlier messages here were worse than this one. The first
+                // asked for a type, which silently turns it into the parameter
+                // form — a different thing, writing to an argument instead of
+                // the enclosing variable. The second called mutable capture
+                // unimplemented and pointed at a `Shared` box; it is
+                // implemented, by inference, and the box is a real cost to pay
+                // for a feature the program already has.
                 return Err(ParseError {
                     span: mutate_span,
-                    message: format!("capturing `{}` by `mutate` isn't implemented yet", name),
+                    message: format!("`mutate` on the capture `{}`", name),
                     hint: Some(format!(
-                        "pass it instead — `func bump(mutate {}: T) {{ … }}` — or hold the \
-                         state in a `Shared` box and write through that inside the closure",
-                        name
+                        "drop it — `|| {{ {} = … }}` captures `{}` mutably because the \
+                         body writes it. Add a type instead (`|mutate {}: T|`) only if \
+                         you meant a parameter the *caller* passes",
+                        name, name, name
                     )),
                     why: Some(format!(
-                        "`|mutate {}|` is capture syntax, not a parameter (mem.closures/CP3): \
-                         `{}` is the enclosing variable and the closure writes through to it. \
-                         The typed form `|mutate {}: T|` is the parameter, and that one works",
-                        name, name, name
+                        "a closure's captures are inferred, not declared (mem.closures/MC1): \
+                         reading `{}` borrows it, writing it borrows it mutably. Only \
+                         parameters go between the pipes (CP3)",
+                        name
                     )),
                 });
             } else {

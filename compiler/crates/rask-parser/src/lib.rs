@@ -1367,19 +1367,28 @@ mod tests {
         }
     }
 
-    // mem.closures/CP3: `|mutate x|` without a type is a mutable capture, not a
-    // parameter — and mutable captures aren't implemented, so it's rejected as
-    // the missing feature it is. The message used to ask for a type, which
-    // turns it into the parameter form: a different thing, accepted in silence.
+    // `|mutate x|` names neither feature. Captures are inferred from the body
+    // (MC1), so there is nothing to annotate; only parameters go between the
+    // pipes (CP3), and a `mutate` parameter names its type (CP2).
+    //
+    // Two earlier messages here were worse. The first asked for a type, which
+    // turns it into the parameter form — a different thing, accepted in
+    // silence. The second called mutable capture unimplemented and pointed at
+    // a `Shared` box; it is implemented, by inference, and the box is a real
+    // cost for something the program already has.
     #[test]
-    fn closure_mutate_capture_says_it_is_not_implemented() {
+    fn closure_mutate_on_a_capture_points_at_the_inferred_form() {
         let result = parse_body_err("let f = |mutate x| { x }");
         let e = result.errors.iter()
-            .find(|e| e.message.contains("capturing `x` by `mutate`"))
-            .unwrap_or_else(|| panic!("expected the CP3 message, got {:?}", result.errors));
+            .find(|e| e.message.contains("`mutate` on the capture `x`"))
+            .unwrap_or_else(|| panic!("expected the capture message, got {:?}", result.errors));
         assert!(
-            e.why.as_deref().is_some_and(|w| w.contains("mem.closures/CP3")),
-            "should cite the rule that says this is capture syntax: {:?}", e.why
+            e.hint.as_deref().is_some_and(|h| h.contains("drop it")),
+            "the fix is to write nothing, not to add a type: {:?}", e.hint
+        );
+        assert!(
+            e.why.as_deref().is_some_and(|w| w.contains("mem.closures/MC1")),
+            "should cite the rule that says captures are inferred: {:?}", e.why
         );
     }
 
