@@ -45,8 +45,10 @@ pub struct Parser {
     /// and `cstring` is one the spec names in lowercase (#949). Collected in one
     /// token scan before parsing, so declaration order doesn't matter.
     declared_structs: std::collections::HashSet<String>,
-    /// Namespaces an `import c` declaration binds — see `scan_c_namespaces`.
-    c_namespaces: std::collections::HashSet<String>,
+    /// Every name an `import` puts in scope — see `scan_import_namespaces`.
+    /// A dotted head is only a struct literal's when one of these is on the
+    /// left of the dot.
+    import_namespaces: std::collections::HashSet<String>,
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
@@ -66,8 +68,8 @@ impl Parser {
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
         let declared_structs = Self::scan_declared_structs(&tokens);
-        let c_namespaces = Self::scan_c_namespaces(&tokens);
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, c_namespaces, loop_labels: Vec::new() }
+        let import_namespaces = Self::scan_import_namespaces(&tokens);
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new() }
     }
 
     /// Names following the `struct` keyword. One pass, before anything is
@@ -92,33 +94,46 @@ impl Parser {
     /// has a lowercase one, so the parser read it as a field access and choked
     /// on the `{`. That left a C API taking a struct by value unreachable — and
     /// every geometry, colour and vector type in C is one (#948).
-    fn scan_c_namespaces(tokens: &[Token]) -> std::collections::HashSet<String> {
+    ///
+    /// Every import, not only `import c`: a module import binds the module and
+    /// its types are reached through it (IM1), so `http.Response { … }` and
+    /// `libpkg.Dog { … }` have the same lowercase head and hit the same wall —
+    /// `let r = http.Response` parsed as a complete expression and the `{`
+    /// opened a block (#1113).
+    ///
+    /// Deliberately a superset: every identifier anywhere in an import path,
+    /// plus what `as` renames it to. Telling a module segment from a named
+    /// type inside one needs to know which names are modules, which the parser
+    /// doesn't. Being generous costs nothing — a capitalised field after the
+    /// dot is still required, and `allow_brace_expr` is already false in a
+    /// condition, which is where a wrong guess would swallow an `if` body.
+    fn scan_import_namespaces(tokens: &[Token]) -> std::collections::HashSet<String> {
         let mut names = std::collections::HashSet::new();
         for (i, t) in tokens.iter().enumerate() {
             if !matches!(t.kind, TokenKind::Import) {
                 continue;
             }
-            if !matches!(tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::Ident(s)) if s == "c")
-            {
-                continue;
-            }
-            // Walk to the `as` that renames it, stopping at the newline that
-            // ends the declaration. No `as` means the namespace is `c`.
-            let mut alias = "c".to_string();
-            let mut j = i + 2;
+            // Walk the declaration to its newline, taking every identifier. An
+            // `as` rename ends it — what follows is the only name in scope.
+            let mut j = i + 1;
+            let mut segments: Vec<String> = Vec::new();
             while let Some(tok) = tokens.get(j) {
                 match &tok.kind {
                     TokenKind::Newline => break,
                     TokenKind::As => {
                         if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind) {
-                            alias = name.clone();
+                            segments = vec![name.clone()];
                         }
                         break;
+                    }
+                    TokenKind::Ident(name) => {
+                        segments.push(name.clone());
+                        j += 1;
                     }
                     _ => j += 1,
                 }
             }
-            names.insert(alias);
+            names.extend(segments);
         }
         names
     }
@@ -4522,11 +4537,12 @@ impl Parser {
                     // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
                     // literal and swallowed the if-block (#342).
                     if let ExprKind::Ident(base) = &lhs.kind {
-                        // A C namespace is lowercase by convention — `c.Rect { … }`
-                        // — so the capitalised-head rule doesn't reach it. Only a
-                        // namespace this file actually imports counts.
+                        // A module namespace is lowercase by convention —
+                        // `c.Rect { … }`, `http.Response { … }` — so the
+                        // capitalised-head rule doesn't reach it. Only a name
+                        // this file actually imports counts.
                         let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
-                            || self.c_namespaces.contains(base);
+                            || self.import_namespaces.contains(base);
                         if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
                             self.parse_struct_literal(full_name, start)

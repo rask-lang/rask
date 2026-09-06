@@ -19,6 +19,11 @@
 
 import io
 import time
+// Both spellings of `http`. The alias alone would not do: `import http as h`
+// puts `h` in scope and not `http` (IM3), and the parser's list of names a
+// dotted head may use is exactly what the imports bind — so `http.Response { … }`
+// under an alias-only import is still a field access followed by a block.
+import http
 import http as h
 
 // A program enum whose name is the *middle* segment of nothing, to keep the
@@ -88,6 +93,45 @@ extend Local {
 test "a method on a variant value is not a module path" {
     assert Local.Second.to_i() == 2
     assert Local.First.to_i() == 1
+}
+
+// A struct built through the module that exports it (#1113). It didn't parse:
+// `let r = http.Response` is a complete expression and the `{` opened a block,
+// because the parser only took a dotted head for a literal when it started
+// uppercase or named an `import c` namespace. Once it parsed, native
+// segfaulted — layouts are filed under the bare name, so the whole spelling
+// missed and every field store went through an address nobody had written.
+test "a struct literal through its module" {
+    let r = http.Response { status: 201, body: "made" }
+    assert r.status == 201
+    assert r.body == "made"
+}
+
+test "and through an alias" {
+    let r = h.Response { status: 202, body: "aliased" }
+    assert r.status == 202
+    assert r.body == "aliased"
+}
+
+struct Crate {
+    n: i64
+}
+
+test "an unqualified literal is unaffected" {
+    let c = Crate { n: 5 }
+    assert c.n == 5
+}
+
+// What the capitalised-head rule was guarding: in a condition the brace opens
+// the body, not a literal. `allow_brace_expr` is false there, and widening the
+// head rule must not reach past it (#342).
+test "a dotted name in a condition still starts the body" {
+    mut hit = 0
+    let m = Local.Second
+    if m == Local.Second {
+        hit = 1
+    }
+    assert hit == 1
 }
 
 // A static method through a module still flattens the way it always did.

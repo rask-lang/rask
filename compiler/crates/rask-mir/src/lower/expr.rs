@@ -2805,6 +2805,16 @@ impl<'a> MirLowerer<'a> {
                         (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
                     } else if let Some((idx, sl)) = self.ctx.find_struct_written(name) {
                         (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
+                    } else if let Some((idx, sl)) = self.ctx.find_struct_written(variant_name) {
+                        // `http.Response { … }` — the struct reached through the
+                        // module that exports it, which is what IM1 asks for.
+                        // Layouts are filed under the bare name, so the whole
+                        // spelling misses and the literal fell through to a bare
+                        // pointer with no layout: every field store went through
+                        // an address nobody had written, and the program
+                        // segfaulted (#1113, the same last-segment rule as #1097
+                        // and #1108).
+                        (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                     } else {
                         (MirType::Ptr, None, None)
                     }
