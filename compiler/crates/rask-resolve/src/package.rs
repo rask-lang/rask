@@ -680,7 +680,16 @@ impl PackageRegistry {
             name: name.clone(),
             path: path.clone(),
             root_dir: root_dir.clone(),
-            files: vec![SourceFile { path: root_dir.join("lib.rk"), source: String::new(), decls }],
+            files: vec![SourceFile {
+                path: root_dir.join("lib.rk"),
+                source: String::new(),
+                decls,
+                file_id: {
+                    let id = self.next_file_id;
+                    self.next_file_id += 1;
+                    id
+                },
+            }],
             imports: Vec::new(),
             manifest: None,
             build_decls: Vec::new(),
