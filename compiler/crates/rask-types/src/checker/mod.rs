@@ -164,6 +164,15 @@ pub struct TypeChecker {
     /// was a fresh variable nothing ever wrote to, so `let found = loop { … }`
     /// stayed open however the breaks were typed.
     pub(super) loop_value_types: Vec<Type>,
+    /// The form of each enclosing loop, innermost last — "while", "for" or
+    /// "loop", plus where its header is.
+    ///
+    /// `loop` is the form that produces a value; the other two are statements
+    /// and have none to give when their condition goes false (ctrl.flow/CF20,
+    /// CF21). `break 42` inside a `while` was accepted silently, because the
+    /// only question anyone asked was whether `loop_value_types` had a top —
+    /// and it only ever does for a `loop` in expression position (#1090).
+    pub(super) loop_forms: Vec<(&'static str, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Trait bounds on the current function's type params (name → trait names).
@@ -361,6 +370,17 @@ pub struct TypeChecker {
     /// `let n = 7` is an unsolved integer var while the body is walked, so
     /// asking at the statement missed the commonest spelling of the case.
     pub(super) pending_discards: Vec<(String, Type, rask_ast::Span)>,
+    /// Matches whose scrutinee was still an open variable when the arms were
+    /// walked, and that have no arm for the values the others don't name.
+    ///
+    /// `let x = 5` is an unsuffixed literal, so its type isn't `i32` until
+    /// defaults land — and asking then is the whole point, since a match on an
+    /// integer is exactly the shape that needs a wildcard (#1090).
+    pub(super) pending_match_wildcards: Vec<(Type, rask_ast::Span)>,
+    /// `b.(comptime { … })` blocks whose value was still open when the access
+    /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
+    /// is the case worth catching (#1090).
+    pub(super) pending_comptime_field_names: Vec<(Type, rask_ast::Span)>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
@@ -460,6 +480,7 @@ impl TypeChecker {
             errors: Vec::new(),
             current_return_type: None,
             loop_value_types: Vec::new(),
+            loop_forms: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
@@ -502,6 +523,8 @@ impl TypeChecker {
             pending_casts: Vec::new(),
             pending_int_literals: Vec::new(),
             pending_discards: Vec::new(),
+            pending_match_wildcards: Vec::new(),
+            pending_comptime_field_names: Vec::new(),
             deferred_methods: Vec::new(),
             deferred_fields: Vec::new(),
             pending_index: Vec::new(),
@@ -660,6 +683,11 @@ impl TypeChecker {
         // D2: `discard` on a Copy type frees nothing. Asked here because an
         // unsuffixed literal has a type only after defaulting.
         self.validate_pending_discards();
+
+        // A match whose scrutinee only became a number here, and a `comptime`
+        // field name whose block did.
+        self.validate_pending_match_wildcards();
+        self.validate_pending_comptime_field_names();
 
         // ER14a: a void-bodied `catch` whose scrutinee's success type was still
         // open when it ran — check it against whatever that type settled to

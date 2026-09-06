@@ -696,7 +696,19 @@ impl TypeChecker {
                 // field up at run time and carried on, so the same program ran
                 // on one backend and wouldn't build on the other (#996).
                 let _obj_ty = self.infer_expr(object);
-                let _field_ty = self.infer_expr(field_expr);
+                let field_ty = self.infer_expr(field_expr);
+                // A `comptime` block names a field, so it has to produce a
+                // name. `b.(comptime { 42 })` is an i64, and saying "has to be
+                // known at compile time" to someone who has already written a
+                // `comptime` block is no help — the block ran fine, it just
+                // didn't answer with a string (#1090). Only when the type is
+                // settled: the other spellings this position allows are open
+                // here and resolve later.
+                if matches!(field_expr.kind, ExprKind::Comptime { .. }) {
+                    // An unsuffixed literal has no type until defaults land, so
+                    // ask again after solving rather than guessing now.
+                    self.pending_comptime_field_names.push((field_ty, field_expr.span));
+                }
                 if !self.comptime_field_name_shape(field_expr) {
                     // The whole access, not the name inside it: an
                     // interpolation reparses its expression and the
@@ -1790,9 +1802,11 @@ impl TypeChecker {
                 // `break v` unifies into this.
                 let result = self.ctx.fresh_var();
                 self.loop_value_types.push(result.clone());
+                self.loop_forms.push(("loop", expr.span));
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
+                self.loop_forms.pop();
                 self.loop_value_types.pop();
                 result
             }
@@ -4497,6 +4511,39 @@ impl TypeChecker {
             return;
         }
 
+        // A scrutinee whose values can't be listed — an integer, a float, a
+        // string, a char — needs a wildcard, because no set of arms covers it.
+        // Nothing checked that, and the two backends did different things with
+        // what fell through: native produced no value at all and carried on,
+        // the interpreter panicked with "no matching arm" (#1090).
+        //
+        //     func pick(x: i32) -> string {
+        //         return match x { 1 => "one", 2 => "two" }
+        //     }
+        //     pick(9)   native: prints nothing, exit 0
+        //               interp: panic, exit 101
+        if Self::match_needs_wildcard(&resolved) || matches!(resolved, Type::Var(_)) {
+            let mut has_wildcard = false;
+            for arm in arms {
+                Self::collect_open_pattern(&arm.pattern, &mut has_wildcard);
+            }
+            if has_wildcard {
+                return;
+            }
+            // An unsuffixed literal scrutinee — `let x = 5` — has no type until
+            // defaults land, and that is the case this check is for. Ask again
+            // after solving rather than guessing now.
+            if matches!(resolved, Type::Var(_)) {
+                self.pending_match_wildcards.push((resolved, span));
+                return;
+            }
+            self.errors.push(TypeError::MatchNeedsWildcard {
+                ty: self.fmt_ty(&resolved),
+                span,
+            });
+            return;
+        }
+
         // Only check enums for the Named case
         let type_id = match &resolved {
             Type::Named(id) => *id,
@@ -4531,6 +4578,76 @@ impl TypeChecker {
                 missing,
                 span,
             });
+        }
+    }
+
+    /// `b.(comptime { … })` blocks, once their value has a type.
+    pub(super) fn validate_pending_comptime_field_names(&mut self) {
+        for (ty, span) in std::mem::take(&mut self.pending_comptime_field_names) {
+            let ty = self.ctx.apply(&ty);
+            // `Error` has already been reported as something else, and `Unit`
+            // is a block that ends in a statement — CT53's own "has to be
+            // knowable" error covers that shape.
+            if matches!(ty, Type::String | Type::Error | Type::Unit | Type::Var(_)) {
+                continue;
+            }
+            self.errors.push(TypeError::ComptimeFieldNameNotString {
+                ty: self.fmt_ty(&ty),
+                span,
+            });
+        }
+    }
+
+    /// The deferred half: matches whose scrutinee settled into a number, a
+    /// string or a char after the body was walked.
+    pub(super) fn validate_pending_match_wildcards(&mut self) {
+        for (ty, span) in std::mem::take(&mut self.pending_match_wildcards) {
+            let ty = self.ctx.apply(&ty);
+            if Self::match_needs_wildcard(&ty) {
+                self.errors.push(TypeError::MatchNeedsWildcard {
+                    ty: self.fmt_ty(&ty),
+                    span,
+                });
+            }
+        }
+    }
+
+    /// Is this a type whose values no list of arms can exhaust?
+    ///
+    /// Deliberately a list of the ones that are, not "anything that isn't an
+    /// enum". A type variable still being solved, a generic parameter, a struct
+    /// with no arms that could match it — all answer "no" and leave the check
+    /// to whatever else has something to say, because a wrong "yes" here is a
+    /// compile error on code that is fine.
+    ///
+    /// `bool` is absent on purpose: `true` and `false` are two arms that do
+    /// cover it, and the pattern side has no notion of a literal covering a
+    /// type, so asking for a wildcard there would reject an exhaustive match.
+    fn match_needs_wildcard(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                | Type::F32 | Type::F64
+                | Type::String | Type::Char
+        )
+    }
+
+    /// Does this pattern match anything the arms above it didn't?
+    ///
+    /// A wildcard does. So does a bare name, which binds rather than tests —
+    /// `match n { 1 => …, other => … }` has no gap even though nothing wrote
+    /// `_`. A literal, a range and a constructor all test, so none of them
+    /// closes the match on their own.
+    fn collect_open_pattern(pattern: &Pattern, has_wildcard: &mut bool) {
+        match pattern {
+            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    Self::collect_open_pattern(alt, has_wildcard);
+                }
+            }
+            _ => {}
         }
     }
 

@@ -316,9 +316,11 @@ impl TypeChecker {
                 if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
                     self.define_local_bound(name, payload_ty, super::BoundFrom::Payload);
                 }
+                self.loop_forms.push(("while", stmt.span));
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.loop_forms.pop();
                 self.pop_scope();
             }
             StmtKind::For { binding, iter, body, mutate, .. } => {
@@ -372,13 +374,34 @@ impl TypeChecker {
                         }
                     }
                 }
+                self.loop_forms.push(("for", stmt.span));
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.loop_forms.pop();
                 self.pop_scope();
             }
-            StmtKind::Break { value, .. } => {
+            StmtKind::Break { label, value, .. } => {
                 if let Some(v) = value {
+                    // CF20/CF21: `loop` is the form that produces a value.
+                    // A `while` or a `for` is a statement — there is nowhere
+                    // for the value to go when the condition goes false.
+                    //
+                    // Only for an unlabelled break, which is the innermost
+                    // loop. A labelled one names an outer loop this stack
+                    // doesn't identify, and guessing the innermost would blame
+                    // a `while` for a `break outer 42` aimed past it.
+                    if let (None, Some((form, header))) =
+                        (label.as_ref(), self.loop_forms.last().copied())
+                    {
+                        if form != "loop" {
+                            self.errors.push(TypeError::BreakValueFromStatementLoop {
+                                form,
+                                header,
+                                span: v.span,
+                            });
+                        }
+                    }
                     let ty = self.infer_expr(v);
                     if let Some(loop_ty) = self.loop_value_types.last().cloned() {
                         if let Err(e) = self.unify(&ty, &loop_ty, v.span) {
@@ -480,16 +503,20 @@ impl TypeChecker {
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
+                self.loop_forms.push(("while", stmt.span));
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.loop_forms.pop();
                 self.pop_scope();
             }
             StmtKind::Loop { body, .. } => {
                 self.push_scope();
+                self.loop_forms.push(("loop", stmt.span));
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.loop_forms.pop();
                 self.pop_scope();
             }
             StmtKind::Discard { name, name_span } => {

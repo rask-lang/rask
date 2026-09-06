@@ -470,6 +470,40 @@ pub enum TypeError {
         member: String,
         span: Span,
     },
+    /// `match n { 1 => …, 2 => … }` on an integer, with nothing to catch the
+    /// rest. No list of arms exhausts an integer, a float, a string or a char,
+    /// and nothing said so: native produced no value and carried on, the
+    /// interpreter panicked with "no matching arm" (#1090).
+    #[error("this `match` on `{ty}` has no arm for the values the others don't name")]
+    MatchNeedsWildcard {
+        ty: String,
+        span: Span,
+    },
+    /// `break 42` from a `while` or a `for` (ctrl.flow/CF20, CF21).
+    ///
+    /// Those forms are statements — when the condition goes false there is
+    /// nowhere for a value to go. `loop` is the one that produces one. Nothing
+    /// checked it: the only question asked was whether the loop-value stack had
+    /// a top, and it only ever does for a `loop` in expression position
+    /// (#1090).
+    #[error("cannot break with a value from a `{form}` loop")]
+    BreakValueFromStatementLoop {
+        form: &'static str,
+        /// The loop's header, so the message can point at both.
+        header: Span,
+        span: Span,
+    },
+    /// `b.(comptime { 42 })` — the block names a field, so it has to produce a
+    /// name. This one produced a number.
+    ///
+    /// It used to fall into "the field name has to be known at compile time",
+    /// which tells someone who has already written a `comptime` block to write
+    /// a `comptime` block (#1090).
+    #[error("a `comptime` block naming a field has to produce a string — this one produced `{ty}`")]
+    ComptimeFieldNameNotString {
+        ty: String,
+        span: Span,
+    },
     #[error("`{ty}` does not implement `{trait_name}`")]
     TraitNotSatisfied {
         ty: String,
@@ -1221,6 +1255,9 @@ impl TypeError {
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
             | ErrorTraitMember { .. }
+            | MatchNeedsWildcard { .. }
+            | BreakValueFromStatementLoop { .. }
+            | ComptimeFieldNameNotString { .. }
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
             | NotSerializable { .. }

@@ -1750,6 +1750,48 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("match expressions must cover all possible values")
             }
 
+            MatchNeedsWildcard { ty, span } => {
+                Diagnostic::error(format!(
+                    "this `match` on `{}` has no arm for the values the others don't name",
+                    ty
+                ))
+                .with_code("E0864")
+                .with_primary(*span, "not every value has an arm")
+                .with_fix("add a final `_ => …` arm, or name the rest: `other => …`")
+                .with_why(format!(
+                    "`{}` has more values than a list of arms can name, so a `match` on one \
+                     needs an arm that takes whatever is left. Without it there is no answer \
+                     for the values nobody wrote down",
+                    ty
+                ))
+            }
+
+            BreakValueFromStatementLoop { form, header, span } => {
+                Diagnostic::error(format!("cannot break with a value from a `{}` loop", form))
+                    .with_code("E0865")
+                    .with_primary(*span, "value not allowed here")
+                    .with_secondary(*header, format!("`{}` loop", form))
+                    .with_fix("drop the value, or use `loop` and put the test inside it: `loop { if done { break v } … }`")
+                    .with_why(format!(
+                        "a `{}` loop is a statement — when its condition goes false it ends with \
+                         no value, so there is nowhere for a break value to go. `loop` is the form \
+                         that produces one [ctrl.flow/CF20, CF21]",
+                        form
+                    ))
+            }
+
+            ComptimeFieldNameNotString { ty, span } => {
+                Diagnostic::error(format!(
+                    "a `comptime` block naming a field has to produce a string — \
+                     this one produced `{}`",
+                    ty
+                ))
+                .with_code("E0866")
+                .with_primary(*span, format!("produces `{}`", ty))
+                .with_fix("end the block with the field's name as a string")
+                .with_why("`value.(expr)` reads the field `expr` names, so the block has to answer with a name [ctrl.comptime/CT53]")
+            }
+
             UndefinedName { name, span } => {
                 Diagnostic::error(format!("undefined name `{}`", name))
                     .with_code("E0341")

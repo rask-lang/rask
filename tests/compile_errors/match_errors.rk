@@ -61,13 +61,26 @@ func test_or_pattern_mismatch() {
 }
 
 // --- match expression missing else/wildcard ---
-// ERROR: match expression requires exhaustive arms
+// ERROR: no arm for the values the others don't name [E0864]
+// An integer has more values than a list of arms can write down, so nothing
+// short of a wildcard covers it. Nothing said so, and the two backends did
+// different things with what fell through: native produced no value and
+// carried on, the interpreter panicked with "no matching arm".
 func test_match_expr_missing_arm() -> string {
     let x = 5
     return match x {
         1 => "one",
         2 => "two",
         // missing wildcard — not exhaustive for i32
+    }
+}
+
+// A bare name is a binding, not a test, so it closes the match the same way a
+// wildcard does. This one is accepted.
+func test_match_named_rest(n: i64) -> string {
+    return match n {
+        1 => "one"
+        other => "many"
     }
 }
 
