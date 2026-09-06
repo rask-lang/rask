@@ -347,6 +347,32 @@ fn insert_aggregate_release(func: &mut MirFunction) {
     }
 }
 
+/// Is every definition of `local` on the aborting side?
+///
+/// The edge release below exists for a value the aborting branch is the only
+/// remaining reader of — so it releases on the branch that carries on. That is
+/// wrong for a value the aborting branch also *builds*: on the surviving branch
+/// the slot was never written. `combined("42", 2)!` succeeded and still handed
+/// `rask_string_free` a header nobody had written, because the panic branch's
+/// `"parse error: …"` was released on the success branch (#1121).
+fn defined_only_where_it_aborts(
+    func: &MirFunction,
+    aborting: &HashSet<BlockId>,
+    local: LocalId,
+) -> bool {
+    let mut any = false;
+    for b in &func.blocks {
+        if !b.statements.iter().any(|st| uses::stmt_def(st) == Some(local)) {
+            continue;
+        }
+        any = true;
+        if !aborting.contains(&b.id) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Group the aggregate locals that name one value.
 ///
 /// Three things put two names on the same bytes: an SSA copy (`b = a`), a phi,
@@ -655,6 +681,10 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // A successor reached from anywhere else could arrive with the
                 // value still live, and releasing at its top would run twice.
                 if preds.get(succ).map(|p| p.len()) != Some(1) {
+                    continue;
+                }
+                // And the value has to exist by the time control gets there.
+                if defined_only_where_it_aborts(func, &aborting, *local) {
                     continue;
                 }
                 edge_releases.push((*succ, *local));
@@ -994,6 +1024,70 @@ mod tests {
             .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "strlen"))
             .unwrap();
         assert!(dec > read, "release must follow the read through the pointer: {stmts:?}");
+    }
+
+    /// A string the aborting branch builds is not the surviving branch's to
+    /// release.
+    ///
+    /// The edge release exists for a value whose only remaining reader is a
+    /// branch that panics — releasing it on the branch that carries on is the
+    /// point. It is wrong when that branch is also where the value is *built*:
+    /// on the surviving side the slot was never written, and
+    /// `rask_string_free` read an uninitialised header. `combined("42", 2)!`
+    /// succeeded and still did it, because the panic branch's
+    /// `"parse error: …"` was released on the success branch (#1121).
+    #[test]
+    fn a_string_built_only_where_it_panics_is_not_released_where_it_does_not() {
+        let mut f = make_fn(
+            vec![
+                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false },
+                string_local(1, "msg"),
+            ],
+            vec![
+                MirBlock {
+                    id: BlockId(0),
+                    statements: vec![MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(0),
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(local(0)),
+                        then_block: BlockId(1),
+                        else_block: BlockId(2),
+                    }),
+                },
+                // Carries on. Never sees `msg`.
+                MirBlock {
+                    id: BlockId(1),
+                    statements: vec![],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+                },
+                // Builds the message and dies.
+                MirBlock {
+                    id: BlockId(2),
+                    statements: vec![
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(local(1)),
+                            func: FunctionRef::internal("build_message".into()),
+                            args: vec![],
+                        }),
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("panic_forced_error".into()),
+                            args: vec![MirOperand::Local(local(1))],
+                        }),
+                    ],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Unreachable),
+                },
+            ],
+        );
+        insert_rc_ops(&mut f);
+
+        let surviving = &f.blocks[1].statements;
+        assert!(
+            !has_rc_dec(surviving, local(1)),
+            "the branch that carries on never had the string: {surviving:?}",
+        );
     }
 
     #[test]

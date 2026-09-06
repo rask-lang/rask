@@ -17,9 +17,13 @@
 //   is the part that used to fail loudly: MIR lowering couldn't pick a target and
 //   the whole file failed to compile on native.
 //
-// Still open: a function returning `i32 or (A | B)`, compiled alongside other
-// code, has been seen to corrupt memory — every test passes but the process
-// exits non-zero, order- and layout-dependent (#375, since closed).
+// This file used to die with SIGSEGV in about two CI runs in five, and never
+// once locally — 59 valgrind errors, identical on `main` and on every branch.
+// Two bugs, neither of them about unions: an aggregate return handed back the
+// address of the callee's dead frame (#1109), and a string built only on the
+// panic branch was released on the branch that carries on (#1121). It valgrinds
+// clean now. Neither shows in the output, so nothing here checks for them
+// directly — `tests/suite/t_aggregate_returns.rk` is the file that does.
 //
 // And the shape this file does NOT cover, which is where three native bugs live
 // (#1013): `combined` reaches its error side only through `try` propagation from
