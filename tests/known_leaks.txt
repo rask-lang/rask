@@ -30,6 +30,9 @@
 #   - a closure made on one branch of an `if` has no point where freeing it is
 #     unconditionally safe (#1045)
 #   - a const string built by interpolation is never released (#1048)
+#   - a `Shared` box a module-level `const` holds is never released — the
+#     drop pass sees it escape into the const and leaves it (the half of
+#     #1099 that stays open; a local one is freed now)
 #
 # Format: one basename per line, then `# N allocations`.
 
@@ -138,7 +141,7 @@ t_modify_writeback.rk  # 15 allocations
 t_module_exports.rk  # 12 allocations
 t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 13 allocations
-t_month_boxes.rk  # 26 allocations
+t_month_boxes.rk  # 20 allocations
 t_month_concurrency.rk  # 61 allocations
 t_month_ensure_block_scope.rk  # 22 allocations
 t_month_io.rk  # 7 allocations
@@ -169,8 +172,9 @@ t_runtime_handle_out_of_result.rk  # 1 allocation
 t_select.rk  # 74 allocations
 t_sequence_join.rk  # 25 allocations
 t_set.rk  # 28 allocations
-t_shared_inline_access.rk  # 11 allocations
-t_shared_strategies.rk  # 23 allocations
+t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
+t_shared_inline_access.rk  # 1 allocation
+t_shared_strategies.rk  # 15 allocations
 t_sort_by_closure.rk  # 3 allocations
 t_sort_contracts.rk  # 7 allocations
 t_spawn_join_result.rk  # 2 allocations
@@ -184,9 +188,9 @@ t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 4 allocations
 t_subprocess.rk  # 24 allocations
 t_supertrait_dispatch.rk  # 4 allocations
-t_sync_box_payloads.rk  # 14 allocations
+t_sync_box_payloads.rk  # 10 allocations
 t_test_const_init.rk  # 4 allocations
-t_test_isolation.rk  # 2 allocations — a module-level Shared box, #1099
+t_test_isolation.rk  # 2 allocations — a module-level Shared box, the half of #1099 still open
 t_text_units.rk  # 9 allocations
 t_trait_object_in_field_container.rk  # 24 allocations
 t_trait_object_optional_payload.rk  # 6 allocations

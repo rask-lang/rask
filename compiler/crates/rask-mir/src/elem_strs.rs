@@ -94,6 +94,16 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Pool_handles", 0, 0, "Vec_free"),
     ("Pool_drain", 0, 0, "Vec_free"),
     ("Pool_values", 0, 0, "Vec_free"),
+    // A `Shared` box carries no element tag — its payload is opaque bytes it
+    // was handed, the same as a pool slot. It is here for the same reason
+    // `Rack_new` is: `rask_shared_free` has existed all along with nothing
+    // calling it, so `Shared.new(0)` and nothing else leaked the box and its
+    // payload — two allocations, whatever the payload was (#1099).
+    //
+    // The free is a release, not a free: `Shared_drop` decrements and frees at
+    // zero, and `Shared_clone` is what incremented. So a box handed to a task
+    // outlives the frame that made it, which is the point of the type.
+    ("Shared_new", 0, 0, "Shared_drop"),
     // `Vec_clone` and `Map_clone` are absent on purpose. `clone_elision` can
     // decide a clone is unnecessary and leave the caller's own container in the
     // slot, and freeing that is a double free — `return v.clone()` printed the

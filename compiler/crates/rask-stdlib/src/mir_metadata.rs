@@ -369,6 +369,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
     ("Pool_free", Internal::ConsumesReceiver),
+    // A box's release, which is the same thing one refcount down: the handle
+    // is gone as far as this frame is concerned, and the storage goes with it
+    // if nobody else holds one (#1099).
+    ("Shared_drop", Internal::ConsumesReceiver),
+    ("Mutex_drop", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];
