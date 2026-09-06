@@ -540,20 +540,14 @@ pub fn check_package(
             continue;
         }
         package_names.push(pkg.name.clone());
+        // Every declaration, not just the public ones. A package's own
+        // bodies call its private helpers by their bare names, so leaving
+        // those out means the package can't be resolved at all — and they
+        // reached MIR anyway, through a separate list merged *after* resolve.
+        // A subdirectory is a package (modules/PO1), so this is what made the
+        // ordinary `src/` layout fail: `func main()` in `src/main.rk` is a
+        // private declaration by this rule (#1100).
         for decl in pkg.all_decls() {
-            let is_pub = match &decl.kind {
-                DeclKind::Fn(f) => f.is_pub,
-                DeclKind::Struct(s) => s.is_pub,
-                DeclKind::Enum(e) => e.is_pub,
-                DeclKind::Trait(t) => t.is_pub,
-                DeclKind::Const(c) => c.is_pub,
-                DeclKind::Impl(_) => true,
-                _ => false,
-            };
-            if !is_pub {
-                continue;
-            }
-
             // One program, one namespace — for now. A dependency's public
             // declarations are merged into the consumer's, so two `Cat`s are
             // one `Cat` and whichever lands second silently loses. That used
@@ -574,8 +568,8 @@ pub fn check_package(
                         .with_primary(decl.span, format!("`{}` declares `{}` here", pkg.name, name))
                         .with_secondary(*first, "and it is already declared here")
                         .with_help(format!(
-                            "rename one of them — a dependency's public names share \
-                             one namespace with the program that uses it, so `{}` \
+                            "rename one of them — every package's declarations share \
+                             one namespace with the program that uses them, so `{}` \
                              can only mean one thing here",
                             name
                         )),
@@ -700,10 +694,9 @@ pub fn check_package(
 /// Returns everything codegen needs. Does NOT emit object files.
 pub fn compile_file(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
-    compile_file_with(path, dep_decls, config, |_, _| {})
+    compile_file_with(path, config, |_, _| {})
 }
 
 /// `compile_file`, with a chance to rewrite the declarations first.
@@ -720,38 +713,34 @@ pub fn compile_file(
 /// #697).
 pub fn compile_file_with(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     if let Some(mut pkg_ctx) = detect_package(path) {
-        return compile_package_with(&mut pkg_ctx, dep_decls, config, transform);
+        return compile_package_with(&mut pkg_ctx, config, transform);
     }
-    compile_single(path, dep_decls, config, transform)
+    compile_single(path, config, transform)
 }
 
 fn compile_single(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let check_output = check_single(path, config);
-    finalize_compile(check_output, dep_decls, HashSet::new(), config, transform)
+    finalize_compile(check_output, HashSet::new(), config, transform)
 }
 
 pub fn compile_package(
     pkg_ctx: &mut PackageContext,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
-    compile_package_with(pkg_ctx, dep_decls, config, |_, _| {})
+    compile_package_with(pkg_ctx, config, |_, _| {})
 }
 
 /// `compile_package`, with the same decl hook as `compile_file_with`.
 pub fn compile_package_with(
     pkg_ctx: &mut PackageContext,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
@@ -774,7 +763,7 @@ pub fn compile_package_with(
     }
 
     let check_output = check_package(pkg_ctx, config);
-    finalize_compile(check_output, dep_decls, package_modules, config, transform)
+    finalize_compile(check_output, package_modules, config, transform)
 }
 
 /// Fill in the parameter types `type.gradual` let the author leave out.
@@ -808,7 +797,6 @@ fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
 /// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
 fn finalize_compile(
     check_output: PipelineOutput<CheckResult>,
-    dep_decls: Vec<Decl>,
     package_modules: HashSet<String>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
@@ -847,14 +835,13 @@ fn finalize_compile(
     check.decls.extend(stdlib_fn_decls);
     check.decls.extend(stdlib_struct_defs);
 
-    // --- Merge dependency declarations ---
-    if !dep_decls.is_empty() {
-        let mut dep_decls_desugared = dep_decls;
-        // A dependency's own attachments are filled from its own declarations —
-        // that's the same compilation unit, so nothing extra is needed here.
-        rask_desugar::desugar(&mut dep_decls_desugared);
-        check.decls.extend(dep_decls_desugared);
-    }
+    // A second copy of every dependency declaration used to be merged here,
+    // after the check. It existed because `check_package` merged only the
+    // *public* ones, so the private helpers had to reach MIR some other way —
+    // and they arrived having never been in a resolve scope, which is why a
+    // package with a subdirectory couldn't call its own helpers (#1100).
+    // `check_package` merges all of them now, before resolve, so this list was
+    // the same declarations a second time.
 
     // --- Caller's decl rewrite (test/bench runners) ---
     transform(&mut check.decls, &check.typed);

@@ -199,26 +199,20 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         }
     };
 
-    let source_files: Vec<_> = root_pkg.files.iter()
-        .map(|f| (f.path.clone(), f.source.clone()))
-        .collect();
-    let root_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
-
-    // Dependency declarations, the way `rask build` collects them.
-    let mut dep_decls = Vec::new();
+    // Indexed by file id, across every package — a span carries the id, and
+    // the ids run across the whole registry, so a list holding only the root's
+    // files renders a sub-package's error against the wrong source.
+    let mut source_files: Vec<(std::path::PathBuf, String)> = Vec::new();
     for pkg in prepared.registry.packages() {
-        if pkg.id == prepared.root_id { continue; }
-        for decl in pkg.all_decls() {
-            match &decl.kind {
-                rask_ast::decl::DeclKind::Fn(_)
-                | rask_ast::decl::DeclKind::Struct(_)
-                | rask_ast::decl::DeclKind::Enum(_)
-                | rask_ast::decl::DeclKind::Impl(_)
-                | rask_ast::decl::DeclKind::Const(_) => dep_decls.push(decl.clone()),
-                _ => {}
+        for f in &pkg.files {
+            let slot = f.file_id as usize;
+            if source_files.len() <= slot {
+                source_files.resize(slot + 1, (std::path::PathBuf::new(), String::new()));
             }
+            source_files[slot] = (f.path.clone(), f.source.clone());
         }
     }
+    let root_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
 
     // One frontend, shared with `rask build`. This used to be a hand-rolled
     // copy of resolve → typecheck → ownership → hidden-params → derive → mono,
@@ -237,7 +231,6 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     let mut tests = Vec::new();
     let output = rask_compiler::compile_package_with(
         &mut pkg_ctx,
-        dep_decls,
         &config,
         |decls, _typed| {
             tests = super::compile::extract_tests(decls, filter.as_deref());
@@ -566,7 +559,7 @@ fn run_test_file_native_inner(
     let mut tests = Vec::new();
     let mut comptime_records = String::new();
     let mut comptime_count = 0;
-    let output = rask_compiler::compile_file_with(path, Vec::new(), &config, |decls, _typed| {
+    let output = rask_compiler::compile_file_with(path, &config, |decls, _typed| {
         (comptime_records, comptime_count) = comptime_test_records(decls, filter);
         tests = super::compile::extract_tests(decls, filter);
     });
@@ -1454,7 +1447,6 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         let mut benchmarks = Vec::new();
         let output = rask_compiler::compile_file_with(
             &path_owned,
-            Vec::new(),
             &config,
             |decls, _typed| {
                 benchmarks = super::compile::extract_benchmarks(decls, filter_owned.as_deref());

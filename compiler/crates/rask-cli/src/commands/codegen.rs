@@ -24,7 +24,7 @@ fn run_pipeline(path: &str, format: Format) -> PipelineResult {
     let config = rask_compiler::CompilerConfig {
         cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
     };
-    let output = rask_compiler::compile_file(path, vec![], &config);
+    let output = rask_compiler::compile_file(path, &config);
 
     // Build source_files for display
     let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {

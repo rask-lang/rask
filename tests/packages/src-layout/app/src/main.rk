@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The whole program under `src/`, which makes `src` a package and `main` one
+// of its private declarations — so this layout didn't build at all, and how it
+// failed depended on what the file happened to use (#1100). Self-contained
+// code compiled by accident, because it needed nothing resolved.
+
+import time
+
+func delay_ms() -> u64 {
+    let d = time.Duration.from_millis(250)
+    return d.as_millis()
+}
+
+func main() {
+    println("src layout ok: {delay_ms()}")
+    return
+}

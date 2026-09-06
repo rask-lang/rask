@@ -149,7 +149,7 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
             println("{a} {b}")
         }
     "#);
-    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
 
     let checker_max = result.typed.node_types.keys().map(|n| n.0).max().unwrap_or(0);
@@ -295,7 +295,7 @@ fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
             println(e.message())
         }
     "#);
-    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
 
     let body = result.mono.functions.iter()
@@ -333,7 +333,7 @@ fn resolved_dispatch_does_not_drag_in_every_same_named_method() {
             println(error.message())
         }
     "#);
-    let output = compile_file(path.to_str().unwrap(), Vec::new(), &default_config());
+    let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
     let names: Vec<&str> = result.mono.functions.iter()
         .map(|f| f.name.as_str())

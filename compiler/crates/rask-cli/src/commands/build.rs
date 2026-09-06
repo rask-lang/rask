@@ -666,7 +666,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     // Compile root package (full pipeline, with compilation cache XC1-XC5)
     if total_errors == 0 {
         // Extract data from registry before moving it into PackageContext.
-        let (source_files, all_decls, dep_decls, pkg_path_string) = {
+        let (source_files, all_decls, pkg_path_string) = {
             let root_pkg = match registry.get(root_id) {
                 Some(p) => p,
                 None => {
@@ -691,31 +691,21 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             //   - `show_diagnostic_multi` renders the snippet under a
             //     diagnostic from it, so an error pointing into a sub-package
             //     had no source to show.
-            let source_files: Vec<_> = registry
-                .packages()
-                .iter()
-                .flat_map(|pkg| pkg.files.iter())
-                .map(|f| (f.path.clone(), f.source.clone()))
-                .collect();
-
-            // All dependency decls (public and private) for cross-package resolution.
-            let mut dep_decls = Vec::new();
+            // Indexed by file id, not by iteration order: a span carries the
+            // id, and the ids run across the whole registry.
+            let mut source_files: Vec<(std::path::PathBuf, String)> = Vec::new();
             for pkg in registry.packages() {
-                if pkg.id == root_id { continue; }
-                for decl in pkg.all_decls() {
-                    match &decl.kind {
-                        rask_ast::decl::DeclKind::Fn(_)
-                        | rask_ast::decl::DeclKind::Struct(_)
-                        | rask_ast::decl::DeclKind::Enum(_)
-                        | rask_ast::decl::DeclKind::Impl(_)
-                        | rask_ast::decl::DeclKind::Const(_) => {
-                            dep_decls.push(decl.clone());
-                        }
-                        _ => {}
+                for f in &pkg.files {
+                    let slot = f.file_id as usize;
+                    if source_files.len() <= slot {
+                        source_files
+                            .resize(slot + 1, (std::path::PathBuf::new(), String::new()));
                     }
+                    source_files[slot] = (f.path.clone(), f.source.clone());
                 }
             }
-            (source_files, all_decls, dep_decls, pkg_path_string)
+
+            (source_files, all_decls, pkg_path_string)
         };
 
         let source_hash = super::cache::hash_source_files(&source_files);
@@ -781,7 +771,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             root_id,
             all_decls,
         };
-        let output = rask_compiler::compile_package(&mut pkg_ctx, dep_decls, &config);
+        let output = rask_compiler::compile_package(&mut pkg_ctx, &config);
 
         for d in &output.diagnostics {
             crate::show_diagnostic_multi(d, &source_files);
