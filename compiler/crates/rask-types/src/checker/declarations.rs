@@ -1546,25 +1546,13 @@ impl TypeChecker {
                     let pkg_name = &imp.path[0];
                     let module_name = imp.alias.as_ref().unwrap_or(pkg_name).clone();
 
-                    // Register public types from external packages so
-                    // qualified access (pkg.Type) resolves through the type table.
-                    if let Some(ext_decls) = self.resolved.external_decls.get(pkg_name).cloned() {
-                        for ext_decl in &ext_decls {
-                            match &ext_decl.kind {
-                                DeclKind::Struct(s) => {
-                                    let id = self.register_struct(s);
-                                    self.types.record_method_decl(id, ext_decl.id);
-                                }
-                                DeclKind::Enum(e) => {
-                                    let id = self.register_enum(e, ext_decl.span);
-                                    self.types.record_method_decl(id, ext_decl.id);
-                                }
-                                DeclKind::Trait(t) => self.register_trait(t),
-                                DeclKind::TypeAlias(a) => self.register_type_alias(a, ext_decl.span),
-                                _ => {}
-                            }
-                        }
-                    }
+                    // A dependency's public types used to be registered here,
+                    // from `external_decls`. They are merged into the program
+                    // under their own names now (#1112), so registering them
+                    // again minted a *second* TypeId for the same type: the
+                    // methods attached to one and `Counter { n: 4 }` resolved
+                    // to the other, so `c.bump()` came back "no method `bump`
+                    // found for type `Counter`" (#1124).
 
                     if !self.types.builtin_modules.is_module(&module_name) {
                         self.define_local(

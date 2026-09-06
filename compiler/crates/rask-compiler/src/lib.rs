@@ -496,10 +496,21 @@ pub fn check_package(
 ) -> PipelineOutput<CheckResult> {
     let mut diags = Vec::new();
 
-    let source_files: Vec<(PathBuf, String)> = pkg_ctx.registry
-        .get(pkg_ctx.root_id)
-        .map(|pkg| pkg.files.iter().map(|f| (f.path.clone(), f.source.clone())).collect())
-        .unwrap_or_default();
+    // Every package's files, placed at the slot its spans name. The list used
+    // to hold only the root's, so a diagnostic about a dependency's
+    // declaration was rendered against whichever of the consumer's files sat
+    // in that slot — `Colour is a built-in type` pointed at a line of main.rk
+    // that doesn't exist (#1126).
+    let mut source_files: Vec<(PathBuf, String)> = Vec::new();
+    for pkg in pkg_ctx.registry.packages() {
+        for f in &pkg.files {
+            let slot = f.file_id as usize;
+            if source_files.len() <= slot {
+                source_files.resize(slot + 1, (PathBuf::new(), String::new()));
+            }
+            source_files[slot] = (f.path.clone(), f.source.clone());
+        }
+    }
 
     // --- Comptime cfg elimination (CC1) ---
     rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);

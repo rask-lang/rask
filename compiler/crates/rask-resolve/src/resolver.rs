@@ -92,6 +92,13 @@ pub struct Resolver {
     stdlib_mode: bool,
     /// Symbols defined during stdlib_mode — imports may override these.
     stdlib_symbols: HashSet<SymbolId>,
+    /// Enums (and their variants) the compiler puts in scope itself: the
+    /// prelude's, and the ones a module import carries. Span (0,0) used to
+    /// stand in for this, which was wrong the moment anything else synthesised
+    /// a symbol — a dependency's `public enum Colour` is recorded as an export
+    /// with no span, so declaring it was reported as shadowing a built-in
+    /// type that doesn't exist (#1126).
+    builtin_enums: HashSet<SymbolId>,
     /// Compile-time cfg values for dead branch elimination in `comptime if`.
     /// Maps field names (os, arch, env, profile) to their values.
     cfg_values: HashMap<String, String>,
@@ -118,6 +125,7 @@ impl Resolver {
             package_exports: HashMap::new(),
             stdlib_mode: false,
             stdlib_symbols: HashSet::new(),
+            builtin_enums: HashSet::new(),
             cfg_values: HashMap::new(),
         };
 
@@ -283,6 +291,7 @@ impl Resolver {
             true,
         );
         let _ = self.scopes.define(name.to_string(), enum_sym_id, Span::new(0, 0));
+        self.builtin_enums.insert(enum_sym_id);
 
         let mut variant_syms = Vec::new();
         for variant_name in variants {
@@ -294,6 +303,7 @@ impl Resolver {
                 true,
             );
             let _ = self.scopes.define(variant_name.to_string(), variant_sym_id, Span::new(0, 0));
+            self.builtin_enums.insert(variant_sym_id);
             variant_syms.push((variant_name.to_string(), variant_sym_id));
         }
 
@@ -466,7 +476,7 @@ impl Resolver {
             if let Some(sym) = self.symbols.get(sym_id) {
                 return matches!(sym.kind, SymbolKind::BuiltinModule { .. })
                     || (matches!(sym.kind, SymbolKind::Enum { .. })
-                        && sym.span == Span::new(0, 0));
+                        && self.builtin_enums.contains(&sym_id));
             }
         }
         false
@@ -1304,13 +1314,11 @@ impl Resolver {
                     // atomic orderings are variants of `Ordering`, which the
                     // resolver puts in scope itself, so `import sync.Relaxed`
                     // met a name that was already there and was reported as
-                    // shadowing an import that doesn't exist. Span (0,0) is how
-                    // the rest of the resolver tells a registered builtin from
-                    // a declaration with real source behind it.
+                    // shadowing an import that doesn't exist.
                     || (matches!(
                             sym.kind,
                             SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. }
-                        ) && sym.span == Span::new(0, 0))
+                        ) && self.builtin_enums.contains(&existing_id))
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);

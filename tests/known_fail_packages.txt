@@ -5,20 +5,7 @@
 # The gate reports a fixture that starts working, so a fix can't be made and
 # left unrecorded.
 #
-# Every one of these is the same root: `check_package` flattens a dependency's
-# public declarations into the root's and renames each through `prefix_decl`,
-# which renames the declaration's own name and nothing that refers to it — and
-# then pushes a *second*, unprefixed copy when the consumer imported the name,
-# giving the type two declarations and two TypeIds.
-
-const-export             # #1123 — an exported `const` reads as 0. Builds fine;
-                         # the answer is just wrong, for an i64 and a string
-                         # alike.
-method-export            # #1124 — a method on an exported struct isn't found.
-                         # The `extend` block attaches to the prefixed type.
-vec-return               # #1125 — a function returning `Vec<T>` loses its type
-                         # across the boundary; `v.len()` fails MIR dispatch.
-                         # A `string` return is fine.
-enum-export              # #1126 — `import libpkg.Colour` is reported as
-                         # "`Colour` is a built-in type". It isn't; the duplicate
-                         # copy collides and BI2's check is what notices.
+# Empty: every fixture builds and matches. #1112, #1123, #1124, #1125 and #1126
+# were all the same root — a dependency's declarations were renamed halfway
+# into the consumer's program, and each package's node and file ids restarted
+# at zero so two packages' nodes collided.

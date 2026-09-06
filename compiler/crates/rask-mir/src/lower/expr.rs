@@ -2116,6 +2116,17 @@ impl<'a> MirLowerer<'a> {
                 // enum variant resolution on the resolved type.
                 if let ExprKind::Ident(name) = &object.kind {
                     if self.ctx.package_modules.contains(name) {
+                        // A value first. `libpkg.LIMIT` names the dependency's
+                        // `public const LIMIT`, and everything below this reads
+                        // the field as a *type* — so the const fell through to
+                        // the opaque fallback and every reference to one came
+                        // out as an uninitialised i64, which prints 0 whatever
+                        // the const's type is (#1123).
+                        if self.name_holds_a_value(field) {
+                            if let Some((local_id, ty)) = self.materialize_module_const(field)? {
+                                return Ok((MirOperand::Local(local_id), ty));
+                            }
+                        }
                         // Look up the field as an enum type
                         if let Some((idx, layout)) = self.ctx.find_enum(field) {
                             let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
