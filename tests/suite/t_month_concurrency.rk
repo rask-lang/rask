@@ -10,10 +10,12 @@
 // what it produced, so output is identical on both backends and in any scheduling
 // order.
 //
-// Two things are deliberately not here. Bare `spawn { … }` — green tasks — is
-// interp-undefined (#267); SYNTAX.md still shows that form but CLAUDE.md's Decided
-// table settles it as `spawn(|| {})`, and `Thread.spawn` is what works on both
-// backends today. `select` is covered by `t_select.rk` and `p06_select.rk`.
+// Two things are deliberately not here. Bare `spawn { … }` — green tasks —
+// doesn't parse at all: nothing in the compiler builds the AST node it would
+// need, and `ExprKind::Spawn`'s ten consumer arms have no producer (#1115).
+// SYNTAX.md still shows the form; CLAUDE.md's Decided table settles it as
+// `spawn(|| {})`, and `Thread.spawn` is what works on both backends today.
+// `select` is covered by `t_select.rk` and `p06_select.rk`.
 
 import thread.Thread
 import sync.Mutex
