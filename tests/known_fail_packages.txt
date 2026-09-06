@@ -11,9 +11,6 @@
 # then pushes a *second*, unprefixed copy when the consumer imported the name,
 # giving the type two declarations and two TypeIds.
 
-constructor              # #1112 — a package can't export a function that
-                         # constructs its own struct. Declaring one breaks every
-                         # consumer, called or not.
 const-export             # #1123 — an exported `const` reads as 0. Builds fine;
                          # the answer is just wrong, for an i64 and a string
                          # alike.

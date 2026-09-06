@@ -504,22 +504,13 @@ pub fn check_package(
     // --- Comptime cfg elimination (CC1) ---
     rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);
 
-    // --- Desugar ---
-    // A dependency's public annotations come along: defaults are filled into
-    // attachment text here, before name resolution, so they can't be looked up
-    // later (type.annotations/AN3).
-    let dep_annotations = pkg_ctx.dependency_annotations();
-    let desugar_errors =
-        rask_desugar::desugar_package(&mut pkg_ctx.all_decls, &dep_annotations);
-    for e in &desugar_errors {
-        diags.push(
-            Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
-        );
-    }
-
     // --- Merge external package declarations ---
+    //
+    // Before desugaring, not after. A dependency's bodies are ordinary Rask and
+    // need the same rewrites the root's do — merged afterwards, `Dog { age: 7 }`
+    // in a library reached the checker as a call and came back "`Dog` is a
+    // struct, so calling it doesn't construct one", in a file the consumer
+    // never wrote (#1112).
     let mut package_names = Vec::new();
     let unqualified_imports = collect_unqualified_imports(&pkg_ctx.all_decls);
 
@@ -542,28 +533,24 @@ pub fn check_package(
                 continue;
             }
 
-            pkg_ctx.all_decls.push(prefix_decl(&decl, &pkg.name));
-
-            let decl_name = match &decl.kind {
-                DeclKind::Fn(f) => Some(f.name.as_str()),
-                DeclKind::Struct(s) => Some(s.name.as_str()),
-                DeclKind::Enum(e) => Some(e.name.as_str()),
-                DeclKind::Trait(t) => Some(t.name.as_str()),
-                DeclKind::Const(c) => Some(c.name.as_str()),
-                _ => None,
-            };
-            if let Some(name) = decl_name {
-                let needs_unprefixed = unqualified_imports
-                    .iter()
-                    .any(|(p, s)| p == &pkg.name && (s == name || s == "*"));
-                if needs_unprefixed {
-                    pkg_ctx.all_decls.push(decl.clone());
-                }
-            }
-            if matches!(&decl.kind, DeclKind::Impl(_)) {
-                pkg_ctx.all_decls.push(decl.clone());
-            }
+            pkg_ctx.all_decls.push(decl.clone());
+            let _ = &unqualified_imports;
         }
+    }
+
+    // --- Desugar ---
+    // A dependency's public annotations come along: defaults are filled into
+    // attachment text here, before name resolution, so they can't be looked up
+    // later (type.annotations/AN3).
+    let dep_annotations = pkg_ctx.dependency_annotations();
+    let desugar_errors =
+        rask_desugar::desugar_package(&mut pkg_ctx.all_decls, &dep_annotations);
+    for e in &desugar_errors {
+        diags.push(
+            Diagnostic::error(e.message.clone())
+                .with_code("E0338")
+                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+        );
     }
 
     // --- Resolve ---

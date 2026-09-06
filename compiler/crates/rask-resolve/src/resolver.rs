@@ -711,10 +711,32 @@ impl Resolver {
             match &decl.kind {
                 DeclKind::Fn(f) if f.is_pub => {
                     let base = Self::base_name(&f.name).to_string();
+                    // The parameters too, not just the return type. An export
+                    // with an empty list reads as taking none, so the first
+                    // consumer to pass an argument was told "expected 0
+                    // arguments, found 1" — for a function it can see the
+                    // declaration of (#1112).
+                    let params: Vec<crate::SymbolId> = f
+                        .params
+                        .iter()
+                        .map(|p| {
+                            self.symbols.insert(
+                                p.name.clone(),
+                                SymbolKind::Parameter {
+                                    is_take: p.is_take,
+                                    is_mutate: p.is_mutate,
+                                    is_deleting: p.is_deleting,
+                                },
+                                Some(p.ty.clone()),
+                                Span::new(0, 0),
+                                false,
+                            )
+                        })
+                        .collect();
                     let sym_id = self.symbols.insert(
                         base.clone(),
                         SymbolKind::Function {
-                            params: vec![],
+                            params,
                             ret_ty: f.ret_ty.clone(),
                             context_clauses: f.context_clauses.clone(),
                             is_unsafe: f.is_unsafe,

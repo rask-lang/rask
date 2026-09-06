@@ -3079,6 +3079,57 @@ impl TypeChecker {
         }
     }
 
+    /// A call into a dependency — `libpkg.make()`.
+    ///
+    /// The resolver already points the call node at the exported declaration's
+    /// symbol; this reads it. `None` when the receiver isn't a package, so the
+    /// caller falls through to the ordinary method-call path.
+    fn check_package_call(
+        &mut self,
+        call_id: NodeId,
+        object: &Expr,
+        args: &[CallArg],
+        span: Span,
+    ) -> Option<Type> {
+        let ExprKind::Ident(ns) = &object.kind else { return None };
+        if self.local_shadows_namespace(ns) {
+            return None;
+        }
+        let &ns_sym = self.resolved.resolutions.get(&object.id)?;
+        if !matches!(
+            self.resolved.symbols.get(ns_sym).map(|s| &s.kind),
+            Some(SymbolKind::ExternalPackage { .. })
+        ) {
+            return None;
+        }
+        let &fn_sym = self.resolved.resolutions.get(&call_id)?;
+        let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
+            return None;
+        };
+
+        if args.len() != params.len() {
+            for a in args {
+                self.infer_expr(&a.expr);
+            }
+            self.errors.push(TypeError::ArityMismatch {
+                expected: params.len(),
+                found: args.len(),
+                span,
+            });
+            return Some(*ret);
+        }
+        for (arg, want) in args.iter().zip(params.iter()) {
+            let got = self.infer_expr_expecting(&arg.expr, want);
+            self.coerce_into(
+                rask_ast::coercion::CoercionSite::Argument,
+                got,
+                want.clone(),
+                arg.expr.span,
+            );
+        }
+        Some(*ret)
+    }
+
     /// A call through an `import c` namespace, typed from the header.
     ///
     /// `None` when this isn't one, so the caller falls through to the ordinary
@@ -3237,6 +3288,18 @@ impl TypeChecker {
         // message had never fired (#947, #948 found the surface; nothing tests
         // it, which is why).
         if let Some(ret) = self.check_c_call(call_id, object, args, span) {
+            return ret;
+        }
+
+        // `libpkg.make()` — a call into a dependency. Same shape as the C
+        // namespace above and it had no path at all: the call fell through to
+        // the ordinary method resolver, which asked what methods
+        // `__module_libpkg` has, found none, and left a fresh variable behind.
+        // One variable per *module local*, so two calls on the same package
+        // that answer different types fought over it — `libpkg.twice(21)` then
+        // `libpkg.make()` reported "couldn't work out the type of `d`", and
+        // annotating `d` moved the complaint to `t` (#1112).
+        if let Some(ret) = self.check_package_call(call_id, object, args, span) {
             return ret;
         }
 
