@@ -104,18 +104,27 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
     ("Shared_new", 0, 0, "Shared_drop"),
-    // `Vec_clone` and `Map_clone` are absent on purpose. `clone_elision` can
-    // decide a clone is unnecessary and leave the caller's own container in the
-    // slot, and freeing that is a double free — `return v.clone()` printed the
-    // right length and died on the way out. It needs the drop pass and the
-    // elision to agree on what an elided clone left behind (#1050, #1045).
+    // The clones. These were absent because `clone_elision` can decide a clone
+    // is unnecessary and leave the caller's own container in the slot, and
+    // freeing that is a double free — `return v.clone()` printed the right
+    // length and died on the way out. The drop pass now runs *after* elision,
+    // so what it sees is what runs: an elided clone is an assignment, not a
+    // call, and never looks like a fresh container at all (#1050, #1045).
+    ("Vec_clone", 0, 0, "Vec_free"),
+    ("Map_clone", 0, 0, "Map_free"),
+    // `bytes()` builds a fresh Vec of the string's bytes and hands it over —
+    // no view into the source, so nothing reads it after the frame ends. The
+    // splitters below are the family it belongs to and stay out for the reason
+    // written there; this one was measured on its own.
+    ("string_bytes", 0, 0, "Vec_free"),
     //
-    // The string splitters — `string_split`, `string_lines`, `string_bytes`
-    // and friends — are absent for a nearer reason: each does hand back a
-    // fresh Vec, and registering them clears the leak, but `simple_grep` then
-    // finds nothing and `markdown_renderer` aborts on `malloc(): unaligned
-    // tcache chunk`. Their result is read after the drop pass frees it.
-    // Measured both ways on #1050.
+    // The string splitters — `string_split`, `string_lines` and friends — are
+    // absent for a nearer reason: each does hand back a fresh Vec, and
+    // registering them clears the leak, but `simple_grep` then finds nothing
+    // and `markdown_renderer` aborts on `malloc(): unaligned tcache chunk`.
+    // Their result is a Vec of *views into the source string*, so the elements
+    // outlive the free. `bytes()` copies instead, which is why it is listed
+    // above and they are not. Measured both ways on #1050.
 ];
 
 /// `(leading sizes, element tags)` for a container constructor, by the name MIR
