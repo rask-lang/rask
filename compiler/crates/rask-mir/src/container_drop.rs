@@ -212,8 +212,8 @@ fn call_keeps_argument(
 /// this pass can see count: a container from the runtime (`split`, `map.keys`)
 /// still has no owner named here, because reading an element out of one
 /// doesn't take a reference — #1035.
-fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, &'static str> {
-    let mut handing: HashMap<String, &'static str> = HashMap::new();
+fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, HandBack> {
+    let mut handing: HashMap<String, HandBack> = HashMap::new();
     loop {
         let mut grew = false;
         for func in fns {
@@ -231,22 +231,40 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
             // frees a vector the map still holds.
             let mut free_fn: Option<&'static str> = None;
             let mut all_fresh = true;
+            let mut wrapped = false;
             let mut any = false;
             for b in &func.blocks {
                 let MirTerminatorKind::Return { value: Some(v), .. } = &b.terminator.kind else {
                     continue;
                 };
                 any = true;
-                match v {
-                    MirOperand::Local(id) => match fresh.get(id) {
-                        Some(f) => free_fn = Some(f),
-                        None => all_fresh = false,
-                    },
-                    _ => all_fresh = false,
+                let MirOperand::Local(id) = v else {
+                    all_fresh = false;
+                    continue;
+                };
+                if let Some(f) = fresh.get(id) {
+                    free_fn = Some(f);
+                    continue;
+                }
+                // The container may be *inside* what is returned. `-> Vec<i64>?`
+                // and `-> Vec<i64> or E` return the wrapper aggregate, and the
+                // vector is a slot in it — so the returned local is never the
+                // fresh one, `all_fresh` was false, and nobody freed the vector
+                // the caller unwrapped and used (#1117).
+                match container_stored_into(func, *id, &fresh) {
+                    WrapperHoldings::Fresh(f) => {
+                        free_fn = Some(f);
+                        wrapped = true;
+                    }
+                    // The error path of a `T or E` stores no container at all.
+                    // That is not a path handing one back, and not a path
+                    // handing back somebody else's either.
+                    WrapperHoldings::None => {}
+                    WrapperHoldings::Foreign => all_fresh = false,
                 }
             }
             if let (true, true, Some(free)) = (any, all_fresh, free_fn) {
-                handing.insert(func.name.clone(), free);
+                handing.insert(func.name.clone(), HandBack { free, wrapped });
                 grew = true;
             }
         }
@@ -256,10 +274,71 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
     }
 }
 
+/// How a function hands a container to its caller.
+#[derive(Clone, Copy)]
+struct HandBack {
+    /// What frees it.
+    free: &'static str,
+    /// The container is a slot inside what is returned (`-> Vec<i64>?`), not
+    /// the returned value itself. The caller owns what it reads out of that
+    /// slot, not the wrapper.
+    wrapped: bool,
+}
+
+/// What the aggregate `wrapper` holds in its container-shaped slots.
+enum WrapperHoldings {
+    /// A container this frame made — the caller's to free.
+    Fresh(&'static str),
+    /// Nothing container-shaped was written into it here.
+    None,
+    /// Something whose owner is elsewhere. Freeing it would be a double free.
+    Foreign,
+}
+
+/// Read the stores into `wrapper` and say whose container came out of them.
+///
+/// A pointer-typed value stored into the aggregate being returned is the
+/// payload; anything else in there (a tag, a scalar) is not a container and
+/// says nothing. `Foreign` wins over `Fresh` — one store of somebody else's
+/// container is enough to make the whole answer unsafe.
+fn container_stored_into(
+    func: &MirFunction,
+    wrapper: LocalId,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> WrapperHoldings {
+    let mut found: Option<&'static str> = None;
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
+            continue;
+        };
+        if *addr != wrapper || !is_container_shaped(func, *v) {
+            continue;
+        }
+        match fresh.get(v) {
+            Some(f) => found = Some(f),
+            None => return WrapperHoldings::Foreign,
+        }
+    }
+    match found {
+        Some(f) => WrapperHoldings::Fresh(f),
+        None => WrapperHoldings::None,
+    }
+}
+
+/// A container handle is an opaque pointer, and so is nothing else this pass
+/// tracks. Asked of the declared local type rather than guessed from the name.
+fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
+    func.locals
+        .iter()
+        .chain(func.params.iter())
+        .find(|l| l.id == local)
+        .is_some_and(|l| matches!(l.ty, MirType::Ptr))
+}
+
 fn insert_for_function(
     func: &mut MirFunction,
     all: &[MirFunction],
-    handing_over: &HashMap<String, &'static str>,
+    handing_over: &HashMap<String, HandBack>,
     kept: &HashMap<String, Vec<bool>>,
 ) {
     let fresh = collect_fresh_containers_with(func, all, handing_over);
@@ -298,6 +377,34 @@ fn insert_for_function(
     // back-edge, which it no longer qualifies for; counting it anyway made the
     // group look like it fanned out and `v` was freed nowhere at all (#1071).
     let groups = value_groups(func, &fresh);
+
+    // A container packed into the aggregate this function returns is gone to
+    // the caller, under every name it has here. `for x in v` copies the vector
+    // into a loop-local, and one line later the original is stored into the
+    // `T or E` being returned — so one name was marked escaping and the other
+    // wasn't, and the free landed on the one that wasn't. It freed the vector
+    // the caller was then handed, and `v.len()` on it read whatever the
+    // allocator had written there (#1119).
+    //
+    //     func build(n: i64) -> Vec<i64> or Refused {
+    //         …
+    //         for x in v { total = total + x }   // _36 = _27
+    //         return v                           // *(_23+24) = _27
+    //     }                                      // Vec_free(_36)  ← the same one
+    //
+    // The same body returning a plain `Vec<i64>` was fine, which is what made
+    // this look like a wrapper bug rather than a grouping one. Only this
+    // relation propagates across a group; escaping in general does not, because
+    // most of what it marks is a store into an aggregate that never leaves.
+    let handed_over = packed_into_a_returned_aggregate(func, &fresh);
+    for group in &groups {
+        if group.iter().any(|id| handed_over.contains(id)) {
+            for id in group {
+                droppable.remove(id);
+            }
+        }
+    }
+
     let placed = placed_locals(func, &droppable, &groups);
     for group in &groups {
         let survivors = group
@@ -324,9 +431,12 @@ fn insert_for_function(
 fn collect_fresh_containers_with(
     func: &MirFunction,
     all: &[MirFunction],
-    handing_over: &HashMap<String, &'static str>,
+    handing_over: &HashMap<String, HandBack>,
 ) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
+    // Calls whose result is a wrapper holding the container, rather than the
+    // container: the caller owns what it unwraps, and the wrapper is a value.
+    let mut unwrap_for: HashMap<LocalId, &'static str> = HashMap::new();
     for block in &func.blocks {
         for stmt in &block.statements {
             if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
@@ -335,9 +445,32 @@ fn collect_fresh_containers_with(
                 let base = head.split('$').next().unwrap_or(head);
                 if let Some(free) = free_for(base) {
                     fresh.insert(*dst, free);
-                } else if let Some(free) = handing_over.get(&fref.name) {
+                } else if let Some(back) = handing_over.get(&fref.name) {
                     // The callee's own constructor decided which free this is.
+                    if back.wrapped {
+                        unwrap_for.insert(*dst, back.free);
+                    } else {
+                        fresh.insert(*dst, back.free);
+                    }
+                }
+            }
+        }
+    }
+    // What comes out of such a wrapper is the container, and it is this frame's
+    // now. Read as a field of the returned aggregate — the tag beside it is not
+    // pointer-shaped, so the payload is the only slot this can pick up (#1117).
+    let mut unwrapped: HashSet<LocalId> = HashSet::new();
+    if !unwrap_for.is_empty() {
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            let MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } = &stmt.kind
+            else {
+                continue;
+            };
+            let MirOperand::Local(src) = base else { continue };
+            if let Some(free) = unwrap_for.get(src) {
+                if is_container_shaped(func, *dst) {
                     fresh.insert(*dst, free);
+                    unwrapped.insert(*dst);
                 }
             }
         }
@@ -377,6 +510,11 @@ fn collect_fresh_containers_with(
         })
         .filter(|id| fresh.contains_key(id))
         .chain(from_cells)
+        // A container read out of the wrapper a callee handed back is reached
+        // without a copy too. The pruning below asks how a *copy* was reached,
+        // and the answer for these is "it wasn't" — a Field read is the
+        // definition, not a copy of some other name.
+        .chain(unwrapped)
         .collect();
 
     // A name is only this frame's if *every* way of reaching it is. Following
@@ -668,6 +806,40 @@ fn find_already_freed(
         }
     }
     freed
+}
+
+/// Containers written into an aggregate that one of this function's `return`s
+/// hands back.
+///
+/// Distinct from `find_escaping`'s general store rule, which fires for a store
+/// into any aggregate — most of which stay in the frame and are freed here.
+fn packed_into_a_returned_aggregate(
+    func: &MirFunction,
+    containers: &HashMap<LocalId, &'static str>,
+) -> HashSet<LocalId> {
+    let returned: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)), .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if returned.is_empty() {
+        return HashSet::new();
+    }
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
+                if returned.contains(addr) && containers.contains_key(v) =>
+            {
+                Some(*v)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The names that hold one value: copies and phi merges.

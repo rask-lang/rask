@@ -87,6 +87,9 @@ t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
 t_any_error_boxing.rk  # 5 allocations
 t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
+t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
+                             # small enough to inline, so there is no call left
+                             # to read a handoff off (#1117's other half)
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
                   # `cstring or NullByteError`, and a container returned in a
                   # `T or E` is freed by nobody (#1117)

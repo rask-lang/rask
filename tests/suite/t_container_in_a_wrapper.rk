@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container handed back inside a `T or E` belongs to the caller (#1117).
+//
+// The drop pass decides "this function hands a container to its caller" by
+// reading each `return` and asking whether the local being returned is one this
+// frame made. With an error union in the signature the local being returned is
+// the *wrapper*, and the vector is a slot inside it — so the answer was no, the
+// caller saw an ordinary call result, which is somebody else's by default, and
+// nobody freed it:
+//
+//     func build(n: i64) -> Vec<i64> or Refused    // 2 allocations, every call
+//     func build(n: i64) -> Vec<i64>               // clean
+//
+// Same body, same call site. Only the return type differed.
+//
+// It reads the payload slot now. The guard is that one store of somebody
+// else's container into that slot is enough to refuse the whole answer —
+// `index.get(word) ?? Vec.new()` wrapped in an optional is a fresh vector on
+// one path and the map's own on the other, and freeing that one is a double
+// free rather than a leak.
+//
+// The other half of #1117 is still open: when the callee is small enough to be
+// inlined, there is no call left to read a handoff off, and the wrapper is an
+// ordinary local of the caller's own frame. That is the same missing relation
+// as #1035/#1047 — the pass can't follow a value across a store into an
+// aggregate and back out — so the files here are deliberately not tiny.
+
+import string.NullByteError
+
+enum Refused {
+    Negative
+    TooBig
+}
+
+extend Refused {
+    public func message(self) -> string {
+        match self {
+            Refused.Negative => return "negative"
+            Refused.TooBig => return "too big"
+        }
+    }
+}
+
+// Big enough that the inliner leaves it alone, which is what keeps this file
+// measuring the thing it is named for.
+func build(n: i64) -> Vec<i64> or Refused {
+    if n < 0 {
+        return Refused.Negative
+    }
+    if n > 100 {
+        return Refused.TooBig
+    }
+    mut v: Vec<i64> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push(i * 3)
+        i = i + 1
+        if i > 1000 {
+            return Refused.TooBig
+        }
+    }
+    mut total = 0
+    for x in v {
+        total = total + x
+    }
+    if total < 0 {
+        return Refused.Negative
+    }
+    return v
+}
+
+test "the caller owns what came out of the wrapper" {
+    let v = build(4) catch e => {
+        assert false
+        return
+    }
+    assert v.len() == 4.wrap<usize>()
+    assert v[0] == 0
+    assert v[3] == 9
+}
+
+test "and the error path carries no container at all" {
+    let v = build(-1) catch e => {
+        assert e.message() == "negative"
+        return
+    }
+    assert false
+}
+
+test "called twice, freed twice" {
+    let a = build(3) catch e => {
+        assert false
+        return
+    }
+    let b = build(5) catch e => {
+        assert false
+        return
+    }
+    assert a.len() + b.len() == 8.wrap<usize>()
+}
+
+// A cstring is the same shape with a different payload — `to_cstring` returns
+// `cstring or NullByteError`, and its terminated copy is a container too. This
+// one is still leaked, because `to_cstring` is small enough to inline; it is
+// here so the day the inlined half lands, this file says so.
+test "the same shape carries a cstring" {
+    let c = "hei".to_cstring() catch e => {
+        assert false
+        return
+    }
+    assert (c.to_string() catch _ => "") == "hei"
+}
+
+func main() {
+    let v = build(6) catch e => {
+        println("refused: {e.message()}")
+        return
+    }
+    println("container in a wrapper ok: {v.len()}")
+    return
+}

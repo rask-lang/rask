@@ -128,6 +128,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // splitters below are the family it belongs to and stay out for the reason
     // written there; this one was measured on its own.
     ("string_bytes", 0, 0, "Vec_free"),
+    // Same shape on the C side: the bytes up to the terminator, copied into a
+    // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
+    ("cstring_bytes", 0, 0, "Vec_free"),
     //
     // The string splitters — `string_split`, `string_lines` and friends — are
     // absent for a nearer reason: each does hand back a fresh Vec, and
