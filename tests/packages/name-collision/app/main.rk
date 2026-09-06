@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+
+// The consumer's own Cat. Nothing here imports libpkg's, and it still loses:
+// a dependency's public names occupy the consumer's namespace whether or not
+// anyone asked for them.
+struct Cat {
+    legs: i64
+}
+
+func main() {
+    let c = Cat { legs: 4 }
+    println("{c.legs}")
+    return
+}

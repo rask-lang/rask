@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 // Public because `rask test` and `rask bench` assemble the back half of the
@@ -523,7 +524,16 @@ pub fn check_package(
     // struct, so calling it doesn't construct one", in a file the consumer
     // never wrote (#1112).
     let mut package_names = Vec::new();
-    let unqualified_imports = collect_unqualified_imports(&pkg_ctx.all_decls);
+
+    // What each declared name belongs to, so a second claim on it can say
+    // where the first one came from. The consumer's own declarations go in
+    // first — they are the ones a reader is holding in their head.
+    let mut claimed: HashMap<String, (String, Span)> = HashMap::new();
+    for decl in &pkg_ctx.all_decls {
+        if let Some(name) = declared_name(decl) {
+            claimed.entry(name).or_insert((String::from("this program"), decl.span));
+        }
+    }
 
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
@@ -544,9 +554,42 @@ pub fn check_package(
                 continue;
             }
 
+            // One program, one namespace — for now. A dependency's public
+            // declarations are merged into the consumer's, so two `Cat`s are
+            // one `Cat` and whichever lands second silently loses. That used
+            // to produce a nonsense error inside a file the consumer never
+            // wrote ("no field `legs` on type `Cat`"), or worse, no error at
+            // all. modules/RE2 says the two are different types — a type's
+            // identity is where it was declared — and giving each package its
+            // own scope is what makes that true. Until then, say so at the
+            // collision rather than compiling one of them wrong (#1129).
+            if let Some(name) = declared_name(decl) {
+                if let Some((owner, first)) = claimed.get(&name) {
+                    diags.push(
+                        Diagnostic::error(format!(
+                            "`{}` is declared by both `{}` and {}",
+                            name, pkg.name, owner
+                        ))
+                        .with_code("E0876")
+                        .with_primary(decl.span, format!("`{}` declares `{}` here", pkg.name, name))
+                        .with_secondary(*first, "and it is already declared here")
+                        .with_help(format!(
+                            "rename one of them — a dependency's public names share \
+                             one namespace with the program that uses it, so `{}` \
+                             can only mean one thing here",
+                            name
+                        )),
+                    );
+                    continue;
+                }
+                claimed.insert(name, (format!("`{}`", pkg.name), decl.span));
+            }
+
             pkg_ctx.all_decls.push(decl.clone());
-            let _ = &unqualified_imports;
         }
+    }
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
     // --- Desugar ---
@@ -906,34 +949,22 @@ fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
     names
 }
 
-fn collect_unqualified_imports(decls: &[Decl]) -> Vec<(String, String)> {
-    decls.iter()
-        .filter_map(|d| {
-            if let DeclKind::Import(imp) = &d.kind {
-                if imp.path.len() == 2 {
-                    return Some((imp.path[0].clone(), imp.path[1].clone()));
-                }
-                if imp.is_glob && imp.path.len() == 1 {
-                    return Some((imp.path[0].clone(), "*".to_string()));
-                }
-            }
-            None
-        })
-        .collect()
-}
-
-fn prefix_decl(decl: &Decl, pkg_name: &str) -> Decl {
-    let mut d = decl.clone();
-    match &mut d.kind {
-        DeclKind::Fn(f) => f.name = format!("{}${}", pkg_name, f.name),
-        DeclKind::Struct(s) => s.name = format!("{}${}", pkg_name, s.name),
-        DeclKind::Enum(e) => e.name = format!("{}${}", pkg_name, e.name),
-        DeclKind::Trait(t) => t.name = format!("{}${}", pkg_name, t.name),
-        DeclKind::Const(c) => c.name = format!("{}${}", pkg_name, c.name),
-        DeclKind::Impl(i) => i.target_ty = format!("{}${}", pkg_name, i.target_ty),
-        _ => {}
+/// The name a declaration puts in scope, if it puts one there.
+///
+/// `extend` blocks have none — they attach to a type that is named elsewhere —
+/// and neither do imports, exports or the package block itself.
+fn declared_name(decl: &Decl) -> Option<String> {
+    match &decl.kind {
+        DeclKind::Fn(f) => Some(f.name.clone()),
+        DeclKind::Struct(s) => Some(s.name.clone()),
+        DeclKind::Enum(e) => Some(e.name.clone()),
+        DeclKind::Trait(t) => Some(t.name.clone()),
+        DeclKind::Const(c) => Some(c.name.clone()),
+        DeclKind::TypeAlias(a) => Some(a.name.clone()),
+        DeclKind::Annotation(a) => Some(a.name.clone()),
+        DeclKind::Union(u) => Some(u.name.clone()),
+        _ => None,
     }
-    d
 }
 
 fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {

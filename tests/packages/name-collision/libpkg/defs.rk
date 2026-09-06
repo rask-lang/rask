@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1129 — this `Cat` and the consumer's are two types by modules/RE2, and one
+// namespace by implementation. E0876 says so at the collision; the fixture
+// exists so the day scoping lands, the gate notices the error stopped firing.
+
+public struct Cat {
+    name: string
+}
+
+public func greet(c: Cat) -> string {
+    return "hei {c.name}"
+}
