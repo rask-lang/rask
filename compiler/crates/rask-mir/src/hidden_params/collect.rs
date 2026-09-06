@@ -33,6 +33,20 @@ impl HiddenParamPass<'_> {
                         self.collect_fn_context(&qname, method, Some(&i.target_ty));
                     }
                 }
+                // A `test` or `benchmark` block has a body and a scope but no
+                // signature, so it can never take a hidden parameter — it is an
+                // entry point like `main`. Recording its locals is what lets
+                // CC4 resolve a context from a pool the block itself owns;
+                // without it every call needing one fell through to the hidden
+                // param name and failed MIR lowering.
+                DeclKind::Test(t) => {
+                    let qname = super::block_scope_name("test", &t.name);
+                    self.collect_block_scope(&qname, &t.body);
+                }
+                DeclKind::Benchmark(b) => {
+                    let qname = super::block_scope_name("benchmark", &b.name);
+                    self.collect_block_scope(&qname, &b.body);
+                }
                 DeclKind::Trait(t) => {
                     for method in &t.methods {
                         let qname = format!("{}.{}", t.name, method.name);
@@ -42,6 +56,22 @@ impl HiddenParamPass<'_> {
                 _ => {}
             }
         }
+    }
+
+    fn collect_block_scope(&mut self, qname: &str, body: &[Stmt]) {
+        let mut locals = Vec::new();
+        for stmt in body {
+            self.collect_locals_from_stmt(stmt, &mut locals);
+        }
+        self.func_info.insert(
+            qname.to_string(),
+            FuncInfo {
+                reqs: Vec::new(),
+                params: Vec::new(),
+                self_fields: Vec::new(),
+                locals,
+            },
+        );
     }
 
     fn collect_fn_context(&mut self, qname: &str, f: &FnDecl, self_type: Option<&str>) {

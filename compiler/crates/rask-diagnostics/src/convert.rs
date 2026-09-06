@@ -147,6 +147,27 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why(why)
             }
 
+            // CC2: the clause enables `h.field` and binds nothing, so the
+            // receiver of a structural call has no name behind it.
+            UnnamedContextBinding { name, ty } => {
+                let head = ty.split('<').next().unwrap_or(ty).trim().to_lowercase();
+                let suggested = if head.is_empty() { "ctx" } else { head.as_str() };
+                Diagnostic::error(format!(
+                    "`{}` is not a binding — `using {}` doesn't create one",
+                    name, ty
+                ))
+                .with_code("E0869")
+                .with_primary(self.span, "not found in this scope")
+                .with_fix(format!("name the context: `using {}: {}`", suggested, ty))
+                .with_why(format!(
+                    "an unnamed `using {}` only resolves handle field access — `h.field` \
+                     finds the pool without ever naming it. Structural operations like \
+                     `insert` and `remove` are calls on the pool itself, so they need a \
+                     name to call them on [mem.context/CC2]",
+                    ty
+                ))
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")

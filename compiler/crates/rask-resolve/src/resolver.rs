@@ -48,6 +48,11 @@ pub struct Resolver {
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
     current_function: Option<SymbolId>,
+    /// CC2: the types of the enclosing function's *unnamed* `using` clauses.
+    /// An unnamed clause enables `h.field` auto-resolution and binds nothing,
+    /// so a structural call through a name reads as an undefined symbol — this
+    /// is what lets the message say which clause to name instead.
+    current_unnamed_contexts: Vec<String>,
 
     current_package: Option<PackageId>,
     package_bindings: HashMap<String, PackageId>,
@@ -101,6 +106,7 @@ impl Resolver {
             resolutions: HashMap::new(),
             errors: Vec::new(),
             current_function: None,
+            current_unnamed_contexts: Vec::new(),
             current_package: None,
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
@@ -1867,6 +1873,13 @@ impl Resolver {
             }
         }
 
+        self.current_unnamed_contexts = fn_decl
+            .context_clauses
+            .iter()
+            .filter(|c| c.name.is_none())
+            .map(|c| c.ty.clone())
+            .collect();
+
         // Register named context clauses as bindings
         for clause in &fn_decl.context_clauses {
             if let Some(name) = &clause.name {
@@ -1890,6 +1903,7 @@ impl Resolver {
         self.pop_type_params();
         self.scopes.pop();
         self.current_function = None;
+        self.current_unnamed_contexts.clear();
     }
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
@@ -2582,6 +2596,25 @@ impl Resolver {
                                 }
                                 return;
                             }
+                        }
+                    }
+                }
+                // CC2: `pool.remove(h)` under `using Pool<Entity>`. The clause
+                // resolves `h.field` and binds no name, so the receiver is a
+                // plain undefined symbol — and "check spelling or add an
+                // import" is neither of the two things that would fix it.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if self.scopes.lookup(name).is_none() {
+                        if let Some(ty) = self.current_unnamed_contexts.first().cloned() {
+                            self.errors.push(ResolveError::unnamed_context(
+                                name.clone(),
+                                ty,
+                                object.span,
+                            ));
+                            for arg in args {
+                                self.resolve_expr(&arg.expr);
+                            }
+                            return;
                         }
                     }
                 }

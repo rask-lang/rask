@@ -20,6 +20,16 @@ impl ResolveError {
         }
     }
 
+    /// CC2: a method called on a name the enclosing function's unnamed `using`
+    /// clause never bound. `ty` is the clause's type, so the message can show
+    /// the named form to write instead.
+    pub fn unnamed_context(name: String, ty: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::UnnamedContextBinding { name, ty },
+            span,
+        }
+    }
+
     /// A stdlib module used without importing it (structure.modules/IM1).
     /// IM1. `source` is the module the name would come from, so the message can
     /// name the import to add rather than the name that's missing one.
@@ -153,6 +163,9 @@ impl ResolveError {
 pub enum ResolveErrorKind {
     #[error("undefined symbol: {name}")]
     UndefinedSymbol { name: String },
+
+    #[error("`{name}` is not a binding — `using {ty}` doesn't create one")]
+    UnnamedContextBinding { name: String, ty: String },
     /// A stdlib module or type name used with no `import` for it (IM1).
     #[error("`{name}` is used but never imported")]
     ModuleNotImported { name: String, module: Option<String> },

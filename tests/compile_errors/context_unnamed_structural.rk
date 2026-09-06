@@ -11,7 +11,8 @@ struct Entity {
     active: bool,
 }
 
-// ERROR: Can't do structural operations with unnamed context
+// Structural operations need a name to call them on. The marker is on the call
+// below — the signature is legal, it just binds nothing.
 func cleanup(h: Handle<Entity>) using Pool<Entity> {
     h.active = false       // ✅ Field access works
 

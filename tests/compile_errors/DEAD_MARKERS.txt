@@ -33,7 +33,14 @@
 #
 # Everything left here is the first kind, and filed:
 #   #1088  the five mem.borrowing rules (borrow_errors.rk)
-#   #1089  the four pool-context rules (context_*.rk)
+# #1089 is done: a public function that reads through a handle must name its
+# pool (E0867), a pool context that reaches a public function or the entry point
+# with nowhere left to come from is rejected there instead of segfaulting
+# (E0868), and a structural call through an unnamed `using` clause says the
+# clause binds nothing rather than suggesting a spelling fix (E0869). Two of
+# those four fixtures also had bugs of their own that stopped the pipeline
+# before the context pass ran, and two carried a second `// ERROR` header for a
+# rejection their inline marker already anchored — the second kind, removed.
 # #1090 is done: break-with-value from `while` is E0865, a `match` expression
 # over an integer with no arm for the rest is E0864, a `value.(comptime …)`
 # block that answers with something other than a name is E0866, and one that
@@ -43,7 +50,3 @@
 # Format: <file> <count of dead markers>
 
 borrow_errors.rk                         5
-context_ambiguous.rk                     1
-context_missing.rk                       1
-context_unavailable.rk                   1
-context_unnamed_structural.rk            1

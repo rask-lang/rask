@@ -46,10 +46,12 @@ pub fn rewrite_decls(pass: &mut HiddenParamPass, decls: &mut [rask_ast::decl::De
                 }
             }
             DeclKind::Test(t) => {
-                rewrite_stmts(pass, "", &mut t.body);
+                let qname = super::block_scope_name("test", &t.name);
+                rewrite_stmts(pass, &qname, &mut t.body);
             }
             DeclKind::Benchmark(b) => {
-                rewrite_stmts(pass, "", &mut b.body);
+                let qname = super::block_scope_name("benchmark", &b.name);
+                rewrite_stmts(pass, &qname, &mut b.body);
             }
             _ => {}
         }

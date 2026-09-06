@@ -8,7 +8,6 @@ import memory.Pool
 
 struct Enemy {
     health: i32,
-    position: Vec3,
 }
 
 // This function requires Pool<Enemy> context
@@ -16,8 +15,10 @@ public func damage(h: Handle<Enemy>, amount: i32) using Pool<Enemy> {
     h.health -= amount
 }
 
-// ERROR: No Pool<Enemy> in scope
-func process_damage(h: Handle<Enemy>) {
+// A public function is where propagation stops: the signature is what a caller
+// in another module reads, so the compiler won't add a hidden parameter behind
+// it (CC6). A private function here would have the context propagated instead.
+public func process_damage(h: Handle<Enemy>) {
     damage(h, 10)    // ERROR: cannot satisfy Pool<Enemy> requirement
 }
 
@@ -38,20 +39,20 @@ func process_damage(h: Handle<Enemy>) {
 //    help: or pass pool explicitly:
 //          func process_damage(enemies: Pool<Enemy>, h: Handle<Enemy>)
 
-// FIX 1: Propagate context requirement
-func process_damage_fixed(h: Handle<Enemy>) using Pool<Enemy> {
+// FIX 1: Declare the context — it propagates on to `damage`
+public func process_damage_fixed(h: Handle<Enemy>) using Pool<Enemy> {
     damage(h, 10)    // ✅ Context propagates
 }
 
 // FIX 2: Take pool as explicit parameter
-func process_damage_explicit(enemies: Pool<Enemy>, h: Handle<Enemy>) {
+public func process_damage_explicit(mutate enemies: Pool<Enemy>, h: Handle<Enemy>) {
     enemies[h].health -= 10
 }
 
 // FIX 3: Have pool in scope via local variable
 func game_loop() {
-    let enemies = Pool.new()
-    let h = enemies.insert(Enemy { health: 100, position: Vec3.zero() })
+    mut enemies: Pool<Enemy> = Pool.new()
+    let h = enemies.insert(Enemy { health: 100 })
 
     damage(h, 10)    // ✅ Compiler passes enemies implicitly
 }

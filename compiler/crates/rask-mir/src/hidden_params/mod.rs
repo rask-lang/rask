@@ -16,6 +16,7 @@ mod callgraph;
 mod collect;
 mod resolve;
 mod rewrite;
+mod verify;
 
 use std::collections::{HashMap, HashSet};
 
@@ -363,6 +364,11 @@ impl<'a> HiddenParamPass<'a> {
         // that access handle fields without a `using` clause
         resolve::infer_private_contexts(self, decls);
 
+        // Phase 3c: CC6/CC11 — a requirement that reached a public function or
+        // the entry point has nowhere left to come from. Report it before the
+        // rewrite emits a hidden argument naming a variable that doesn't exist.
+        verify::verify_contexts(self, decls);
+
         // Phase 4-6: Rewrite signatures, call sites, using blocks
         rewrite::rewrite_decls(self, decls);
     }
@@ -417,6 +423,13 @@ impl HiddenParamPass<'_> {
             _ => None,
         }
     }
+}
+
+/// The scope key for a `test`/`benchmark` block. Quoted so it can't collide
+/// with a function name — a block has a body and a scope, but no signature to
+/// hang a hidden parameter on.
+pub(crate) fn block_scope_name(kind: &str, name: &str) -> String {
+    format!("{kind} {name:?}")
 }
 
 /// Extract the function name from a Call expression's func field.
