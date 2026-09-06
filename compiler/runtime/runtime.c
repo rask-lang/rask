@@ -225,6 +225,30 @@ static void forced_error_text(char *buf, size_t cap, const RaskStr *msg) {
     snprintf(buf, cap, "! on a value that was an error: %.*s", (int)len, text);
 }
 
+/* Panic with a Rask string as-is. `rask_panic` takes a C string, so a message
+ * the compiled program built at run time — a `try` in a test block reporting
+ * the error's own `message()` — had no way in. */
+static void panic_str_text(char *buf, size_t cap, const RaskStr *msg) {
+    const char *text = msg ? rask_string_ptr(msg) : NULL;
+    int64_t len = msg ? rask_string_len(msg) : 0;
+    // Same reason as `forced_error_text`: the pointer isn't NUL-terminated for
+    // every representation, so the length travels with it.
+    snprintf(buf, cap, "%.*s", (int)(len > 0 ? len : 0), text ? text : "");
+}
+
+void rask_panic_str(const RaskStr *msg) {
+    char buf[512];
+    panic_str_text(buf, sizeof(buf), msg);
+    rask_panic(buf);
+}
+
+void rask_panic_str_at(const char *file, int32_t line, int32_t col,
+                       const RaskStr *msg) {
+    char buf[512];
+    panic_str_text(buf, sizeof(buf), msg);
+    rask_panic_at(file, line, col, buf);
+}
+
 void rask_panic_forced_error(const RaskStr *msg) {
     char buf[512];
     forced_error_text(buf, sizeof(buf), msg);

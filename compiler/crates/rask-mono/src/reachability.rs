@@ -124,6 +124,10 @@ pub struct Monomorphizer<'a> {
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
     next_instantiated_id: u32,
+    /// True while walking a `test`/`benchmark` block's synthesized body. A `try`
+    /// there ends the test rather than propagating (std.testing/T20), and the
+    /// message it reports needs its `message()` body queued like `r!` does.
+    in_test_body: bool,
     /// Per-node facts carried onto the instantiated copies: the checker keys
     /// everything by node id, and a copy's nodes are new. Populated from the
     /// origin map each instantiation reports.
@@ -554,6 +558,7 @@ impl<'a> Monomorphizer<'a> {
             results: Vec::new(),
             call_rewrites: HashMap::new(),
             next_instantiated_id: 0,
+            in_test_body: false,
             instantiated_node_types: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
@@ -1032,9 +1037,11 @@ impl<'a> Monomorphizer<'a> {
             // Walk the concrete body to discover more calls (M4: transitive)
             if let DeclKind::Fn(fn_decl) = &concrete.kind {
                 self.mark_erased_error_methods(fn_decl);
+                self.in_test_body = fn_decl.attrs.iter().any(|a| a == "test_body");
                 for stmt in &fn_decl.body {
                     self.visit_stmt(stmt);
                 }
+                self.in_test_body = false;
             }
 
             let mangled = mangle_name(&item.name, &item.type_args);
@@ -1692,7 +1699,25 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            ExprKind::Try { expr: e } | ExprKind::Take { place: e } => self.visit_expr(e),
+            ExprKind::Try { expr: e } => {
+                // T20: a `try` in a test block ends that test rather than
+                // propagating, and what it reports is the error's own
+                // `message()`. Same shape as `r!` above — the name is decided
+                // here, where bodies are queued, and MIR reads the rewrite.
+                // Only in a test body: anywhere else the error goes to the
+                // caller and nothing here needs to print it.
+                if self.in_test_body {
+                    let names = self.forced_error_message_fns(e.id);
+                    if !names.is_empty() {
+                        self.call_rewrites.insert(expr.id, names.join("|"));
+                        for name in names {
+                            self.enqueue(name, Vec::new());
+                        }
+                    }
+                }
+                self.visit_expr(e)
+            }
+            ExprKind::Take { place: e } => self.visit_expr(e),
             ExprKind::Catch { value, ref clause } => {
                 self.visit_expr(value);
                 self.visit_expr(&clause.body);

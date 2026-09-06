@@ -13,6 +13,7 @@ pub mod stubs;
 pub mod modules;
 pub mod mir_metadata;
 pub mod ordering;
+pub mod panic_messages;
 
 pub use ordering::{
     ordering_tag, ORDERING_EQUAL, ORDERING_GREATER, ORDERING_LESS, ORDERING_VARIANTS,

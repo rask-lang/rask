@@ -540,6 +540,36 @@ impl Interpreter {
                     Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
                         break;
                     }
+                    // T20: the test block is the error branch. Report the
+                    // error, not only that there was one — `Display` on the
+                    // variant can't call `message()`, so it says the fixed half
+                    // and the value's own half is added here. Native prints the
+                    // same words with the same `file:line` in front.
+                    Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
+                        let origin = self.origin_string(diag.span);
+                        if let RuntimeError::TryError(v) = diag.error {
+                            // What `try` raises is the whole `Result.Err(e)` —
+                            // that is what a caller would have received. The
+                            // error itself is what has a `message()`.
+                            let err = match &v {
+                                Value::Enum { name, variant, fields, .. }
+                                    if name == "Result" && variant == "Err" =>
+                                {
+                                    fields.first().cloned().unwrap_or(v.clone())
+                                }
+                                _ => v.clone(),
+                            };
+                            let detail = self.describe_error_value(&err);
+                            errors.push(prefix_origin(
+                                &origin,
+                                format!(
+                                    "{}: {}",
+                                    rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                                ),
+                            ));
+                        }
+                        break;
+                    }
                     Err(e) => {
                         errors.push(format!("{}", e));
                         break;

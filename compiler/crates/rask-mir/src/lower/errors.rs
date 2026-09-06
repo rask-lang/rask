@@ -12,8 +12,8 @@ use crate::{
 use rask_ast::expr::{CallArg, CatchClause, Expr, ExprKind};
 
 /// What a `try` says when it has nowhere to propagate to. Both backends print
-/// this, so a test that hits an error reads the same either way.
-pub const TRY_PROPAGATED_NOWHERE: &str = "try propagated an error out of a test block";
+/// it, so it is declared once where both can see it.
+pub use rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE;
 
 /// ER31a: where a propagated error goes inside the caller's error enum.
 struct ErrorWrapTarget {
@@ -304,13 +304,50 @@ impl<'a> MirLowerer<'a> {
         // message about test blocks. Those are a compile error now (E0316), and
         // this arm is only for the one case that isn't.
         if self.in_test_body {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("panic".to_string()),
-                args: vec![MirOperand::Constant(MirConst::String(
-                    TRY_PROPAGATED_NOWHERE.to_string(),
-                ))],
-            }));
+            // T20 asks for the error to be *reported*, not only for the test to
+            // end. The value is right here and its type is known, so call its
+            // `message()` the same way `r!` does — reachability queued the body
+            // and left the name on this node. Without it a failing setup step
+            // said only that something had failed, and finding out what meant
+            // bisecting the test.
+            let text = self
+                .ctx
+                .call_rewrites
+                .get(&try_id)
+                .cloned()
+                .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
+            match text {
+                Some(text) => {
+                    let joined = self.builder.alloc_temp(MirType::String);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(joined),
+                        func: FunctionRef::internal("concat".to_string()),
+                        args: vec![
+                            MirOperand::Constant(MirConst::String(format!(
+                                "{TRY_PROPAGATED_NOWHERE}: "
+                            ))),
+                            MirOperand::Local(text),
+                        ],
+                    }));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic_str".to_string()),
+                        args: vec![MirOperand::Local(joined)],
+                    }));
+                }
+                // No `message()` to call — an optional's `none`, or an error
+                // type whose body nothing queued. The bare line still names the
+                // test and the line it failed on.
+                None => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic".to_string()),
+                        args: vec![MirOperand::Constant(MirConst::String(
+                            TRY_PROPAGATED_NOWHERE.to_string(),
+                        ))],
+                    }));
+                }
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
         }

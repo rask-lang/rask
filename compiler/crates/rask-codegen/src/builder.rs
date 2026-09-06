@@ -4970,6 +4970,32 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().call(*func_ref, &call_args);
                 }
             }
+        } else if func.name == "panic_str" {
+            // A message the program built at run time, so it arrives as a Rask
+            // string rather than a C literal — `panic` takes the latter, which
+            // is why a `try` reporting an error's `message()` printed the
+            // pointer's bytes until this existed (std.testing/T20).
+            let msg = match args.first() {
+                Some(op) => Self::lower_operand(builder, op, ctx)?,
+                None => return Err(CodegenError::UnsupportedFeature(
+                    "panic_str with no message operand".into(),
+                )),
+            };
+            let located = ctx.source_file.and_then(|file_str| {
+                let f = ctx.func_refs.get("panic_str_at")?;
+                let gv = ctx.string_globals.get(file_str)?;
+                Some((*f, *gv))
+            });
+            if let Some((func_ref, gv)) = located {
+                let file_ptr = builder.ins().global_value(types::I64, gv);
+                let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+                builder.ins().call(func_ref, &[file_ptr, line_val, col_val, msg]);
+            } else {
+                let plain = ctx.func_refs.get("panic_str")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("panic_str".into()))?;
+                builder.ins().call(*plain, &[msg]);
+            }
         } else if func.name == "panic_forced_error" {
             // `r!` on the error branch, with the error's `message()` already
             // rendered into the one argument (#1009). Same shape as

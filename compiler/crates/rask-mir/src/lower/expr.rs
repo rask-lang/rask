@@ -706,15 +706,37 @@ impl<'a> MirLowerer<'a> {
             },
         }));
 
-        // The rewrite carries every body reachability queued for this `!`,
-        // joined by `|`. One name is a concrete error type; several is a
-        // union, where which member is present isn't known until run time.
+        let Some(text) = self.emit_error_message_text(&msg_fn, payload, &err_ty) else {
+            return Ok(false);
+        };
+
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic_forced_error".to_string()),
+            args: vec![MirOperand::Local(text)],
+        }));
+        Ok(true)
+    }
+
+    /// Call the error's `message()` and hand back the string local.
+    ///
+    /// `msg_fn` is the rewrite reachability recorded: every `{Type}_message`
+    /// body it queued for this site, joined by `|`. One name is a concrete
+    /// error type; several is a union, where which member is present isn't
+    /// known until run time, so the calls sit behind a switch on the member
+    /// index. `None` when the set doesn't match the type — a switch missing an
+    /// arm would call a function nothing emits.
+    pub(super) fn emit_error_message_text(
+        &mut self,
+        msg_fn: &str,
+        payload: crate::LocalId,
+        err_ty: &MirType,
+    ) -> Option<crate::LocalId> {
         let queued: Vec<&str> = msg_fn.split('|').collect();
+        let err_ty = err_ty.clone();
         let text = self.builder.alloc_temp(MirType::String);
         if let MirType::Union(members) = err_ty.clone() {
-            let Some(arms) = self.union_message_arms(&members, &queued) else {
-                return Ok(false);
-            };
+            let arms = self.union_message_arms(&members, &queued)?;
             // A union discriminates by the member index it carries at offset
             // 0, not by a one-byte tag — the same read `match` does.
             let idx = self.builder.alloc_temp(MirType::I64);
@@ -765,20 +787,14 @@ impl<'a> MirLowerer<'a> {
             }
             self.builder.switch_to_block(merge);
         } else {
-            let [only] = queued[..] else { return Ok(false) };
+            let [only] = queued[..] else { return None };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(text),
                 func: FunctionRef::internal(only.to_string()),
                 args: vec![MirOperand::Local(payload)],
             }));
         }
-
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("panic_forced_error".to_string()),
-            args: vec![MirOperand::Local(text)],
-        }));
-        Ok(true)
+        Some(text)
     }
 
     /// `(member type, message fn)` per union member, in member-index order.

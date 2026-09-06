@@ -6993,6 +6993,14 @@ fn try_in_a_test_block_fails_that_test_and_names_the_error() {
             out.contains("3 tests, 2 passed, 1 failed"),
             "{backend}: exactly one test should fail: {out}",
         );
+        // T20 asks for the error to be *reported*, not only for the test to
+        // end. Both backends call the error's own `message()` and append it, so
+        // a failing setup step says which step and why rather than leaving the
+        // reader to bisect the body (#976).
+        assert!(
+            out.contains("try propagated an error out of a test block: denied"),
+            "{backend}: the error's own message should follow: {out}",
+        );
     }
 }
 

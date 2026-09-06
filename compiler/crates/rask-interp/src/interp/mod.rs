@@ -1155,8 +1155,10 @@ pub enum RuntimeError {
 
     /// Error propagation via try operator. The text only shows when one escapes
     /// uncaught — a `try` in a `test` block, which has no caller to hand the
-    /// error to. Native panics with the same words there (#932).
-    #[error("try propagated an error out of a test block")]
+    /// error to (std.testing/T20). The test runner appends the error's own
+    /// `message()`; `Display` can't, having no interpreter to call it with.
+    /// Native prints the same words (#932).
+    #[error("{}", rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE)]
     TryError(Value),
 
     /// `x!` on an absent optional (type.optionals/OPT13).
