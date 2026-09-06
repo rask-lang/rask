@@ -3365,15 +3365,20 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                 )
             }
 
-            RuntimeError::AssertionFailed(msg) => {
-                Diagnostic::error(format!("assertion failed: {}", msg))
+            // The detail says whether it wants framing. A comparison reads as
+            // "assertion failed: 1 == 2 (…)"; a hand-written message stands on
+            // its own, which is what native prints. Prefixing both gave the one
+            // form the words twice and the other a prefix native never uses
+            // (#1098).
+            RuntimeError::AssertionFailed(detail) => {
+                Diagnostic::error(detail.framed("assertion failed"))
                     .with_code("R0014")
                     .with_primary(self.span, "assertion failed here")
                     .with_why("assertion detected a violated invariant")
             }
 
-            RuntimeError::CheckFailed(msg) => {
-                Diagnostic::error(format!("check failed: {}", msg))
+            RuntimeError::CheckFailed(detail) => {
+                Diagnostic::error(detail.framed("check failed"))
                     .with_code("R0015")
                     .with_primary(self.span, "check failed here")
                     .with_why("check detected a test failure")

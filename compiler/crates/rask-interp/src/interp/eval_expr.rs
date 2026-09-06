@@ -8,7 +8,7 @@ use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
 use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
-use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
+use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
 /// CC3 runtime panic message for spawn() without an active `using Multitasking` block.
 const SPAWN_NO_RUNTIME_MSG: &str =
@@ -222,11 +222,16 @@ fn assert_operand(v: &Value) -> String {
 /// `differential.sh` compares the two backends' output byte for byte, so a
 /// suite file with a failing string comparison used to diverge on formatting
 /// alone.
-fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> String {
+/// How the comparison read, or the empty string when there is nothing to say.
+///
+/// The caller supplies "assertion failed" / "check failed" — this is only the
+/// detail after it, so a form with no detail can come back empty rather than
+/// repeating the caller's own words back at it (#1098).
+fn format_comparison(left: &Value, op: &str, right: &Value) -> String {
     // Same order as the MIR side picks its helper: string wins over everything,
     // then char when both sides are chars, then the plain form.
     if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
-        return format!("{}: \"{}\" {} \"{}\"", prefix, left, op, right);
+        return format!("\"{}\" {} \"{}\"", left, op, right);
     }
     // Anything native has no rendering for gets none here either. It compares
     // an aggregate by address, so printing the operands there gave two pointer
@@ -234,15 +239,15 @@ fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> Str
     // `Point { x: 1, y: 2 }`. Both are "correct" and they are not the same
     // line, which is the one thing the two backends may not be.
     if !renders_as_operand(left) || !renders_as_operand(right) {
-        return prefix.to_string();
+        return String::new();
     }
     if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
         return format!(
-            "{}: '{}' {} '{}' (left: '{}', right: '{}')",
-            prefix, left, op, right, left, right,
+            "'{}' {} '{}' (left: '{}', right: '{}')",
+            left, op, right, left, right,
         );
     }
-    format!("{}: {} {} {} (left: {}, right: {})", prefix, left, op, right, left, right)
+    format!("{} {} {} (left: {}, right: {})", left, op, right, left, right)
 }
 
 /// Has a one-line rendering both backends agree on.
@@ -263,7 +268,11 @@ fn renders_as_operand(v: &Value) -> bool {
     )
 }
 
-fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: &str) -> String {
+/// The detail line for a failed `assert`/`check` with no hand-written message.
+///
+/// Empty when the operands can't be read back — the caller's "assertion
+/// failed" then stands alone.
+fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> String {
     match &condition.kind {
         // Desugared comparison: a.eq(b), a.lt(b), etc.
         ExprKind::MethodCall { object, method, args, .. }
@@ -273,8 +282,8 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(object).ok();
             let right_val = interp.eval_expr(&args[0].expr).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
-                _ => prefix.to_string(),
+                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                _ => String::new(),
             }
         }
         // Desugared != : !(a.eq(b))
@@ -286,15 +295,15 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
                     let left_val = interp.eval_expr(object).ok();
                     let right_val = interp.eval_expr(&args[0].expr).ok();
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => format_comparison(prefix, &l, "!=", &r),
-                        _ => prefix.to_string(),
+                        (Some(l), Some(r)) => format_comparison(&l, "!=", &r),
+                        _ => String::new(),
                     }
                 }
                 _ => {
                     let val = interp.eval_expr(operand).ok();
                     match val {
-                        Some(v) => format!("{}: !({}) — value was {}", prefix, v, v),
-                        None => prefix.to_string(),
+                        Some(v) => format!("!({}) — value was {}", v, v),
+                        None => String::new(),
                     }
                 }
             }
@@ -315,8 +324,8 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(left).ok();
             let right_val = interp.eval_expr(right).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
-                _ => prefix.to_string(),
+                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                _ => String::new(),
             }
         }
         // is pattern: assert x is Some
@@ -329,11 +338,11 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             };
             let val = interp.eval_expr(expr).ok();
             match val {
-                Some(v) => format!("{}: {} is not {}", prefix, v, pat_name),
-                None => prefix.to_string(),
+                Some(v) => format!("{} is not {}", v, pat_name),
+                None => String::new(),
             }
         }
-        _ => prefix.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -2868,13 +2877,13 @@ impl Interpreter {
                 if self.is_truthy(&cond_val) {
                     Ok(Value::Unit)
                 } else {
-                    let msg = if let Some(msg_expr) = message {
+                    let detail = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
-                        format!("{}", v)
+                        AssertDetail::Message(format!("{}", v))
                     } else {
-                        build_comparison_message(self, condition, "assertion failed")
+                        AssertDetail::Comparison(build_comparison_message(self, condition))
                     };
-                    Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(msg), expr.span))
+                    Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(detail), expr.span))
                 }
             }
 
@@ -2888,18 +2897,18 @@ impl Interpreter {
                     // like an ordinary `print`. The comparison form already
                     // says "check failed: a == b (…)" and carries no location
                     // on either backend, so it goes in as it is.
-                    let msg = if let Some(msg_expr) = message {
+                    let detail = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
                         let origin = self.origin_string(expr.span);
-                        if origin.is_empty() {
+                        AssertDetail::Message(if origin.is_empty() {
                             format!("{}", v)
                         } else {
                             format!("{}: {}", origin, v)
-                        }
+                        })
                     } else {
-                        build_comparison_message(self, condition, "check failed")
+                        AssertDetail::Comparison(build_comparison_message(self, condition))
                     };
-                    Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(msg), expr.span))
+                    Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(detail), expr.span))
                 }
             }
 

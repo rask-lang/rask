@@ -7030,6 +7030,112 @@ fn scalar_assertion_messages_agree_across_backends() {
     );
 }
 
+/// Run a source string through `rask run` and give back stdout + stderr.
+fn run_rask_run_source(src: &str, interp: bool) -> String {
+    let rask = rask_binary();
+    let path = std::env::temp_dir().join(format!(
+        "rask_runassert_{}_{}.rk",
+        std::process::id(),
+        next_tmp_id(),
+    ));
+    std::fs::write(&path, src).expect("write fixture");
+
+    let mut cmd = Command::new(&rask);
+    cmd.arg("run");
+    if interp {
+        cmd.arg("--interp");
+    }
+    let out = cmd
+        .arg(&path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+
+    let _ = std::fs::remove_file(&path);
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+const RUN_ASSERT_COMPARISON_SRC: &str = r#"
+func main() {
+    assert 1 == 2
+}
+"#;
+
+const RUN_ASSERT_MESSAGE_SRC: &str = r#"
+func main() {
+    assert 1 == 2, "the widget was not frobnicated"
+}
+"#;
+
+const RUN_ASSERT_OPAQUE_SRC: &str = r#"
+struct Pt { x: i64, y: i64 }
+
+func main() {
+    let a = Pt { x: 1, y: 2 }
+    let b = Pt { x: 3, y: 4 }
+    assert a == b
+}
+"#;
+
+/// A failed `assert` outside a `test` block says it failed exactly once.
+///
+/// The payload used to be one `String` for both forms of `assert`, so nothing
+/// downstream could tell the compiler's rendering of a comparison — which
+/// already reads "assertion failed: 1 == 2 (…)" — from a message the program
+/// wrote. The `run` path prefixed both: the comparison form printed the words
+/// twice and a hand-written message gained a prefix native never uses (#1098).
+///
+/// The `test` path was right and stays that way; `differential.sh` compares it
+/// byte for byte.
+#[test]
+fn a_failed_assert_outside_a_test_says_it_once() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+
+        let out = run_rask_run_source(RUN_ASSERT_COMPARISON_SRC, interp);
+        assert!(
+            out.contains("assertion failed: 1 == 2 (left: 1, right: 2)"),
+            "{backend}: the comparison form reports its operands:\n{out}"
+        );
+        // Counting bare occurrences would count the caret label
+        // ("assertion failed here") the interpreter draws under the source
+        // line, which is annotation and not a second report. The prefix is
+        // what was doubled.
+        assert!(
+            !out.contains("assertion failed: assertion failed"),
+            "{backend}: the words appear once, not twice:\n{out}"
+        );
+
+        // The author already said what went wrong. Native prints the message
+        // alone, and so does this.
+        let out = run_rask_run_source(RUN_ASSERT_MESSAGE_SRC, interp);
+        assert!(
+            out.contains("the widget was not frobnicated"),
+            "{backend}: the message survives:\n{out}"
+        );
+        assert!(
+            !out.contains("assertion failed: the widget"),
+            "{backend}: a hand-written message gets no prefix:\n{out}"
+        );
+
+        // Neither backend renders struct operands — native compares by address
+        // — so the detail is empty and the words stand alone.
+        let out = run_rask_run_source(RUN_ASSERT_OPAQUE_SRC, interp);
+        assert!(
+            out.contains("assertion failed"),
+            "{backend}: an unrenderable comparison still reports:\n{out}"
+        );
+        assert!(
+            !out.contains("assertion failed:"),
+            "{backend}: and adds no empty detail after a colon:\n{out}"
+        );
+    }
+}
+
 #[test]
 fn float_assertion_message_keeps_every_digit() {
     for interp in [false, true] {

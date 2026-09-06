@@ -1133,12 +1133,12 @@ pub enum RuntimeError {
     ForcedError(String),
 
     /// Assertion failed (assert expr) — stops test immediately
-    #[error("assertion failed: {0}")]
-    AssertionFailed(String),
+    #[error("{}", .0.framed("assertion failed"))]
+    AssertionFailed(AssertDetail),
 
     /// Check failed (check expr) — test continues, marked failed
-    #[error("check failed: {0}")]
-    CheckFailed(String),
+    #[error("{}", .0.framed("check failed"))]
+    CheckFailed(AssertDetail),
 
     /// Test skipped via skip("reason")
     #[error("skipped: {0}")]
@@ -1147,6 +1147,39 @@ pub enum RuntimeError {
     /// Test expects failure via expect_fail()
     #[error("expect_fail")]
     TestExpectFail,
+}
+
+/// What a failed `assert` or `check` has to say, and who gets to frame it.
+///
+/// The two forms are different things. A comparison is the compiler's own
+/// account of operands it read — `1 == 2 (left: 1, right: 2)` — and reads as
+/// "assertion failed: …". A hand-written message is the programmer's, and
+/// native prints it alone: prefixing it says something the author already said
+/// better.
+///
+/// One `String` for both meant no consumer could tell which it had, so the
+/// `run` path prefixed unconditionally. The comparison form came out
+/// "assertion failed: assertion failed: 1 == 2 (left: 1, right: 2)" and the
+/// message form gained a prefix native never prints (#1098).
+#[derive(Debug, Clone)]
+pub enum AssertDetail {
+    /// How the comparison read, or empty when the operands couldn't be
+    /// evaluated a second time to report them.
+    Comparison(String),
+    /// The message the program wrote.
+    Message(String),
+}
+
+impl AssertDetail {
+    /// The whole line, with `kind` — "assertion failed" or "check failed" —
+    /// supplied only where it belongs.
+    pub fn framed(&self, kind: &str) -> String {
+        match self {
+            AssertDetail::Comparison(d) if d.is_empty() => kind.to_string(),
+            AssertDetail::Comparison(d) => format!("{}: {}", kind, d),
+            AssertDetail::Message(m) => m.clone(),
+        }
+    }
 }
 
 impl RuntimeError {

@@ -504,8 +504,8 @@ impl Interpreter {
                 match self.exec_stmt(stmt) {
                     Ok(_) => {}
                     Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_)) => {
-                        if let RuntimeError::CheckFailed(msg) = diag.error {
-                            errors.push(msg);
+                        if let RuntimeError::CheckFailed(detail) = diag.error {
+                            errors.push(detail.framed("check failed"));
                         }
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::AssertionFailed(_)) => {
@@ -515,8 +515,8 @@ impl Interpreter {
                         // deliberately, asymmetry included — `differential.sh`
                         // compares the two backends' output byte for byte.
                         let origin = self.origin_string(diag.span);
-                        if let RuntimeError::AssertionFailed(msg) = diag.error {
-                            errors.push(prefix_origin(&origin, msg));
+                        if let RuntimeError::AssertionFailed(detail) = diag.error {
+                            errors.push(prefix_origin(&origin, detail.framed("assertion failed")));
                         }
                         break;
                     }
@@ -580,8 +580,10 @@ impl Interpreter {
                 let origin = self.origin_string(diag.span);
                 let msg = match diag.error {
                     // Assert carries `file:line`, check doesn't — see above.
-                    RuntimeError::AssertionFailed(m) => prefix_origin(&origin, m),
-                    RuntimeError::CheckFailed(m) => m,
+                    RuntimeError::AssertionFailed(d) => {
+                        prefix_origin(&origin, d.framed("assertion failed"))
+                    }
+                    RuntimeError::CheckFailed(d) => d.framed("check failed"),
                     _ => unreachable!(),
                 };
                 errors.push(msg);
