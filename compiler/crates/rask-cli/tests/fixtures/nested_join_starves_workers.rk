@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task that joins another task, with one worker to run both (#1130).
+//
+// A worker that calls `join` blocks on the target's condvar and stops taking
+// work, so with one worker the inner task never gets picked up and the program
+// hangs — no output, no exit, deterministically. The runtime says so and aborts
+// instead of sitting there.
+//
+// Raising the worker count above the join depth is what makes this run: the
+// same file with `workers: 2` prints `got 7`.
+
+func main() {
+    using Multitasking(workers: 1) {
+        let outer = spawn(|| {
+            let inner = spawn(|| {
+                return 7
+            })
+            let v = inner.join() catch e => {
+                return 0
+            }
+            return v
+        })
+        let r = outer.join() catch e => {
+            println("outer failed")
+            return
+        }
+        println("got {r}")
+    }
+    return
+}

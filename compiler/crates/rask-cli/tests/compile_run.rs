@@ -133,6 +133,58 @@ fn compile_with_c_and_run(fixture_name: &str, c_driver: &str) -> (String, String
     )
 }
 
+/// A nested `join` with one worker deadlocks — and says so (#1130).
+///
+/// A worker that joins blocks on the target's condvar and stops taking work,
+/// so once every worker is blocked in a join there is nothing left to run the
+/// tasks they wait for. `using Multitasking(workers: 1)` plus one nested
+/// spawn+join reaches that on every run, and the program used to hang with no
+/// output and no exit — the worst way for a scheduling bug to present.
+///
+/// Suspending the joining task and letting its worker take other work is the
+/// actual fix and needs the fiber switch that isn't built. Reporting the state
+/// is what this pins: a timed wait, and a worker that finds every other worker
+/// blocked with nothing completed since its last look.
+#[test]
+fn nested_join_with_one_worker_reports_the_deadlock() {
+    let rask = rask_binary();
+    let tmp = std::env::temp_dir();
+    let bin_path = tmp.join(format!("rask_test_nested_join_{}", std::process::id()));
+
+    let compile_out = Command::new(&rask)
+        .arg("compile")
+        .arg(fixture("nested_join_starves_workers.rk"))
+        .arg("-o")
+        .arg(&bin_path)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask compile");
+    assert!(
+        compile_out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile_out.stderr),
+    );
+
+    let run_out = Command::new(&bin_path).output().expect("failed to run binary");
+    let _ = std::fs::remove_file(&bin_path);
+
+    let stderr = String::from_utf8_lossy(&run_out.stderr);
+    assert!(
+        stderr.contains("deadlock") && stderr.contains("blocked in join"),
+        "the abort names what is stuck: {:?}",
+        stderr,
+    );
+    assert!(
+        stderr.contains("raise the worker count"),
+        "and what to do about it: {:?}",
+        stderr,
+    );
+    assert!(
+        !run_out.status.success(),
+        "a deadlock is not a successful run",
+    );
+}
+
 #[test]
 fn extern_c_export_returns_through_c_frames() {
     // The export form (`public extern "C" func name() { ... }`) had no working

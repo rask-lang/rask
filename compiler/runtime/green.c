@@ -26,6 +26,7 @@
 #include <sched.h>
 #include <sys/socket.h>
 #include <errno.h>
+#include <time.h>
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -227,6 +228,18 @@ typedef struct {
     atomic_int       active_tasks;
     atomic_int       shutdown;
 
+    // Deadlock watch. A worker that calls `join` blocks on the target's
+    // condvar and stops taking work — so when every worker is blocked in a
+    // join, nothing can run the tasks they are waiting for and the program
+    // hangs with no output. `using Multitasking(workers: 1)` plus one nested
+    // spawn+join is enough to do it, deterministically.
+    //
+    // `completions` moves whenever any task finishes, so a worker that times
+    // out can tell a real deadlock ("every worker blocked and nothing has
+    // completed since") from a slow task.
+    atomic_int       blocked_in_join;
+    atomic_uint      completions;
+
     // Parking: workers sleep here when no work found
     pthread_mutex_t  park_lock;
     pthread_cond_t   park_cond;
@@ -313,6 +326,9 @@ static void task_mark_complete(GreenTask *t) {
     }
     pthread_cond_broadcast(&t->done_cond);
     pthread_mutex_unlock(&t->done_lock);
+    if (g_sched) {
+        atomic_fetch_add_explicit(&g_sched->completions, 1, memory_order_relaxed);
+    }
 }
 
 // Enqueue task to the scheduler.
@@ -536,6 +552,8 @@ void rask_runtime_init(int64_t worker_count) {
     gq_init(&s->global);
     atomic_init(&s->active_tasks, 0);
     atomic_init(&s->shutdown, 0);
+    atomic_init(&s->blocked_in_join, 0);
+    atomic_init(&s->completions, 0);
     pthread_mutex_init(&s->park_lock, NULL);
     pthread_cond_init(&s->park_cond, NULL);
     pthread_mutex_init(&s->done_lock, NULL);
@@ -625,6 +643,62 @@ void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
     return h;
 }
 
+// Wait for `t`, and say so instead of hanging when nobody can finish it.
+//
+// A worker that joins blocks here and stops taking work, so once every worker
+// is blocked in a join there is nothing left to run the tasks they are waiting
+// for. `using Multitasking(workers: 1)` with one nested spawn+join reaches that
+// state on every run, and the program hung with no output and no exit — the
+// worst way for a scheduling bug to present.
+//
+// Suspending the joining task and letting its worker pick up other work is the
+// actual fix, and it needs the fiber switch that isn't built yet (#1130). Until
+// then this reports the state rather than sitting in it.
+//
+// Called with `t->done_lock` held and `t->done` false.
+static void join_wait(GreenTask *t) {
+    GreenScheduler *s = g_sched;
+    // The main thread joining is not a worker, so it blocking costs nothing.
+    if (!s || tl_worker_id < 0) {
+        while (!t->done) {
+            pthread_cond_wait(&t->done_cond, &t->done_lock);
+        }
+        return;
+    }
+
+    int blocked = atomic_fetch_add_explicit(&s->blocked_in_join, 1,
+                                            memory_order_acq_rel) + 1;
+    unsigned seen = atomic_load_explicit(&s->completions, memory_order_acquire);
+
+    while (!t->done) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += 2;
+        int rc = pthread_cond_timedwait(&t->done_cond, &t->done_lock, &deadline);
+        if (rc != ETIMEDOUT || t->done) {
+            continue;
+        }
+        // Timed out. Every worker blocked *and* nothing finished in the
+        // meantime means no one is left who could finish anything. A slow task
+        // doesn't reach here: a worker running it is not blocked.
+        blocked = atomic_load_explicit(&s->blocked_in_join, memory_order_acquire);
+        unsigned now = atomic_load_explicit(&s->completions, memory_order_acquire);
+        if (blocked >= s->worker_count && now == seen) {
+            fprintf(stderr,
+                    "rask: deadlock — all %d worker(s) of `using Multitasking` are "
+                    "blocked in join, so nothing is left to run the tasks they wait "
+                    "for.\n"
+                    "  a task that joins another task needs a worker free to run it; "
+                    "raise the worker count above the depth of nested joins.\n",
+                    s->worker_count);
+            abort();
+        }
+        seen = now;
+    }
+
+    atomic_fetch_sub_explicit(&s->blocked_in_join, 1, memory_order_acq_rel);
+}
+
 int64_t rask_green_join(void *handle, char **msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
@@ -635,8 +709,8 @@ int64_t rask_green_join(void *handle, char **msg_out) {
 
     // Block until task completes
     pthread_mutex_lock(&t->done_lock);
-    while (!t->done) {
-        pthread_cond_wait(&t->done_cond, &t->done_lock);
+    if (!t->done) {
+        join_wait(t);
     }
     pthread_mutex_unlock(&t->done_lock);
 
