@@ -104,6 +104,10 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
     ("Shared_new", 0, 0, "Shared_drop"),
+    // A cstring owns the NUL-terminated copy it made, and it is the caller's to
+    // free — that is what makes it different from `string.as_ptr()`, which
+    // points into a buffer the string still holds (#949).
+    ("string_copy_terminated", 0, 0, "cstring_free"),
     // The other two strategies build their own runtime object, so each needs
     // its own release: `Shared.mutex(0)` is `Mutex_new` and `Shared.local(0)`
     // is `Cell_new`, and neither is `Shared_new`. Only the third was listed, so

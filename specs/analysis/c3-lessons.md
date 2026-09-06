@@ -208,15 +208,17 @@ So the retention feature isn't the gap. What's behind it is:
 | Scalar calls, own static lib | works |
 | Pointer/buffer args from a `Vec` | works (but see the width bug) |
 | System headers (`stdio.h`) | parses and links; ~40 warning lines of skipped macros |
-| Passing a `string` to `const char*` | **no working path** — `to_cstring()` is `@unimplemented` (#949) |
+| Passing a `string` to `const char*` | works — `to_cstring()` makes the terminated copy, `as_ptr()` hands it over (#949) |
 | Constructing an imported C struct | **impossible** — `c.Rect { … }` won't parse (#948) |
 | `[T; N].as_ptr()` | **segfault** — resolves to the Vec native (#946) |
 | `*i64` where the header says `int*` | **silently wrong** — no diagnostic (#947) |
 
-`const char*` and by-value structs are most of a real C API's surface, so the plumbing
-being finished doesn't yet mean a real library is reachable. There is also no `.rk` file in
-`tests/` or `examples/` that uses `import c` at all, which is why none of the four was
-already known.
+By-value structs are most of what's left of a real C API's surface, so the plumbing being
+finished doesn't yet mean a real library is reachable. `const char*` was the other half and
+is done: `examples/19_unsafe.rk` passes a Rask string to libc's `strlen` and gets 9.
+
+There was also no `.rk` file in `tests/` or `examples/` using the C surface at all, which is
+why none of the four was already known.
 
 The lesson from C3 survives in a smaller form: not "close the ceremony gap" — there isn't
 one — but "the ceremony being zero is worth nothing until the type bridges work."

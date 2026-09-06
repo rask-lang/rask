@@ -364,6 +364,12 @@ impl Interpreter {
             // reachable. Nothing was until `Vec.as_sequence` — the chain head a
             // collection stands for (SEQ48) — so the fallback below had never
             // been asked for a Vec and these arms were simply missing.
+            // A Rask-bodied method on `extend string` had no way to be reached:
+            // the Rust arms answer every string method the primitive layer
+            // knows and this table had no arm for a string, so the fallback
+            // that finds Rask bodies was never consulted for one.
+            // `string.to_cstring()` is the first such method (#949).
+            Value::String(_) => "string".to_string(),
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Pool(_) => "Pool".to_string(),
@@ -393,6 +399,10 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "Metadata" => {
                 let guard = s.lock().unwrap();
                 self.call_metadata_method(&guard.fields, method)
+            }
+            Value::Struct(ref s) if s.lock().unwrap().name == "cstring" => {
+                let guard = s.lock().unwrap();
+                self.call_cstring_method(&guard.fields, method)
             }
             Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
                 let guard = s.lock().unwrap();

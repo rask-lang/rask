@@ -2408,7 +2408,7 @@ impl<'a> Printer<'a> {
             ExprKind::Unsafe { body } => {
                 // `unsafe expr` and `unsafe { expr }` parse to the same node, and
                 // the printer only knew the braced form — so `unsafe
-                // path.as_c_str()` grew braces, and inside a condition the result
+                // path.as_ptr()` grew braces, and inside a condition the result
                 // read as `if unsafe { … } { … }`, two braces for one `if`. The
                 // source says which was written (#805).
                 if self.wrote_braces(expr.span) {

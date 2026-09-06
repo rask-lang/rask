@@ -1462,16 +1462,19 @@ impl<'a> MirContext<'a> {
         if let Some(s) = Self::stdlib_type_prefix(ty) {
             return Some(s.to_string());
         }
+        // A resolved name is a dispatch prefix if it names a type. Capitalization
+        // was the whole test, which is right for user types — they must start
+        // uppercase — and wrong for the two stdlib types spelled lowercase,
+        // `string` and `cstring`. `string` never came through here because
+        // `Type::String` is its own variant; `cstring` did, and lost its prefix.
+        let names_a_type = |name: &std::string::String| {
+            name.chars().next().map_or(false, |c| c.is_uppercase())
+                || rask_stdlib::mir_metadata::stdlib_type_names().contains(name.as_str())
+        };
         match ty {
-            Type::Named(id) => {
-                type_names.get(id)
-                    .filter(|name| name.chars().next().map_or(false, |c| c.is_uppercase()))
-                    .cloned()
-            }
+            Type::Named(id) => type_names.get(id).filter(|n| names_a_type(n)).cloned(),
             Type::Generic { base, .. } => {
-                type_names.get(base)
-                    .filter(|name| name.chars().next().map_or(false, |c| c.is_uppercase()))
-                    .cloned()
+                type_names.get(base).filter(|n| names_a_type(n)).cloned()
             }
             Type::UnresolvedNamed(name)
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) =>

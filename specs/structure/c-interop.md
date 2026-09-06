@@ -109,19 +109,22 @@ out-parameter instead.
 
 | Rule | Description |
 |------|-------------|
-| **ST1: as_c_str** | `.as_c_str()` returns null-terminated `*u8` — zero-cost if already null-terminated, copies otherwise |
-| **ST2: ptr + len** | `.ptr` + `.len` for pointer+length APIs — NOT null-terminated |
-| **ST3: from_c** | `string.from_c(ptr)` copies from null-terminated C string (unsafe) |
-| **ST4: Lifetime** | `.as_c_str()` pointer invalidated if string dropped (refcount reaches zero) |
+| **ST1: to_cstring** | `s.to_cstring()` returns `cstring or NullByteError` — an owned, NUL-terminated copy. Refuses a string holding an interior `\0`, since C would read that as a shorter string |
+| **ST2: ptr + len** | `.as_ptr()` + `.len()` for pointer+length APIs. Borrowed, not owned, and unchecked |
+| **ST3: back again** | `cstring.to_string()` returns `string or Utf8Error` — the bytes came from C, which promises nothing about encoding |
+| **ST4: Lifetime** | A `cstring` owns its buffer and frees it when it goes. A pointer from `.as_ptr()` owns nothing and is invalid once its source is dropped |
+
+Full method list: [std.strings](../stdlib/strings.md#c-interop).
 
 <!-- test: skip -->
 ```rask
-func call_c_string_api(name: string) {
+func call_c_string_api(name: string) -> void or NullByteError {
+    let c_name = try name.to_cstring()
     unsafe {
-        c.printf("Hello %s\n".as_c_str(), name.as_c_str())
-        c.write(fd, name.ptr, name.len)
-        let rask_name = string.from_c(c.get_name())
+        c.puts(c_name.as_ptr())
+        c.write(fd, name.as_ptr(), name.len())
     }
+    return
 }
 ```
 
@@ -219,7 +222,7 @@ public struct Database { handle: *sql.sqlite3 }
 public func open(path: string) -> Database or Error {
     mut db: *sql.sqlite3 = null
     unsafe {
-        mut rc = sql.sqlite3_open(path.as_c_str(), &db)
+        mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {
             return Error.new("sqlite open failed")
         }

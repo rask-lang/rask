@@ -347,6 +347,26 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
 }
 
 impl Interpreter {
+    /// A condition's truth, with any `is` bindings in it visible to the rest of
+    /// the condition.
+    ///
+    /// `if` and `while` have gone through `eval_cond_bindings` since #256;
+    /// `assert` and `check` evaluated their condition as an ordinary expression,
+    /// so `assert e is Bad.FoundAt(at) && at == 2` failed with "undefined
+    /// variable `at`" while the same test under `if` worked, and native ran both.
+    /// The bindings live for the condition and no longer — there is no branch
+    /// here for them to be visible in.
+    fn eval_cond_scoped(&mut self, cond: &Expr) -> Result<bool, RuntimeDiagnostic> {
+        if !cond_binds_pattern(cond) {
+            let value = self.eval_expr(cond)?;
+            return Ok(self.is_truthy(&value));
+        }
+        self.env.push_scope();
+        let taken = self.eval_cond_bindings(cond);
+        self.env.pop_scope();
+        taken
+    }
+
     /// Evaluate a condition, defining each `is` pattern's bindings in the
     /// current scope as it matches, so later `&&` operands can use them.
     /// Callers push the scope that holds them.
@@ -2886,8 +2906,7 @@ impl Interpreter {
             }
 
             ExprKind::Assert { condition, message } => {
-                let cond_val = self.eval_expr(condition)?;
-                if self.is_truthy(&cond_val) {
+                if self.eval_cond_scoped(condition)? {
                     Ok(Value::Unit)
                 } else {
                     let detail = if let Some(msg_expr) = message {
@@ -2901,8 +2920,7 @@ impl Interpreter {
             }
 
             ExprKind::Check { condition, message } => {
-                let cond_val = self.eval_expr(condition)?;
-                if self.is_truthy(&cond_val) {
+                if self.eval_cond_scoped(condition)? {
                     Ok(Value::Unit)
                 } else {
                     // A hand-written message gets `file:line:`, the same as

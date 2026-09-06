@@ -477,7 +477,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // covers a 1-byte bool through a 16-byte u128 (#813).
         StdlibEntry::simple("int_hash", "rask_int_hash", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("string_as_c_str", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
         // find/rfind return `usize?` and the runtime signals "not found" with -1.
         // Wrapped as a plain value it came back as `some(-1)`, so `?? ...` never
@@ -1183,6 +1182,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── StringBuilder ───────────────────────────────────────────
+        // cstring: the `const char*` half of the C surface (#949). The handle is
+        // the malloc'd buffer, so `as_ptr` and `from_ptr` are both the identity
+        // — the type is what carries the ownership, not the representation.
+        StdlibEntry::simple("cstring_as_ptr", "rask_cstring_as_ptr", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("cstring_from_ptr", "rask_cstring_as_ptr", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("cstring_free", "rask_cstring_free", &[types::I64], None, false),
+        StdlibEntry::simple("string_first_nul", "rask_string_first_nul", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("string_copy_terminated", "rask_cstring_from_string", &[types::I64], Some(types::I64), false),
+        // The way back is a `Vec<u8>` that `string.from_utf8` validates, so
+        // there is no native `cstring_to_string` — the Rask body is the whole
+        // of it.
+        StdlibEntry::simple("cstring_bytes", "rask_cstring_bytes", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_new", "rask_string_builder_new", &[], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_with_capacity", "rask_string_builder_with_capacity", &[types::I64], Some(types::I64), false),
         // push/push_char are the names stdlib/string.rk declares (and `Vec.push`
@@ -1914,7 +1925,6 @@ mod tests {
     "Wide.min",
     "Wide.reduce",
     "Wide.zip_with",
-    "cstring.to_string",
     "json.encode_pretty",
     "math.acos",
     "math.asin",

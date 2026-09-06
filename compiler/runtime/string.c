@@ -1928,3 +1928,64 @@ void rask_string_normalized(RaskStr *out, const RaskStr *s) {
     rask_realloc(bytes, outn * 4, 0);
     rask_realloc(buf, cap * (int64_t)sizeof(uint32_t), 0);
 }
+
+// ─── cstring (std.strings, structure.c-interop) ─────────────────────────────
+//
+// An owned NUL-terminated copy of a Rask string, for the `const char*` half of
+// the C surface — which is most of it: `fopen`, `dlopen`, `getenv`,
+// `sqlite3_open`. There was no way to make one at all: `to_cstring` was
+// `@unimplemented` and the alternative people reached for was writing `"…\0"`
+// by hand (#949).
+//
+// A whole string's buffer does end in a NUL — `str_alloc_header` takes cap + 1
+// and writes it — so `as_ptr` is not nonsense. What it can't do is refuse a
+// string with an interior NUL, which C would silently read as a shorter string,
+// and it owns nothing, so the pointer dies when the string does (#1118).
+//
+// The handle is a pointer to the malloc'd bytes, so `as_ptr` is the identity
+// and the free is one call.
+
+/// Byte offset of the first interior NUL, or -1 when there is none.
+int64_t rask_string_first_nul(const RaskStr *s) {
+    if (!s) return -1;
+    const char *p = rask_string_ptr(s);
+    int64_t n = rask_string_len(s);
+    for (int64_t i = 0; i < n; i++) {
+        if (p[i] == '\0') return i;
+    }
+    return -1;
+}
+
+/// Copy the bytes and terminate. The caller has checked for an interior NUL —
+/// this is the half that allocates, so the check stays where the error type is.
+int64_t rask_cstring_from_string(const RaskStr *s) {
+    int64_t n = s ? rask_string_len(s) : 0;
+    const char *p = s ? rask_string_ptr(s) : "";
+    char *buf = (char *)rask_alloc((size_t)n + 1);
+    if (n > 0) memcpy(buf, p, (size_t)n);
+    buf[n] = '\0';
+    return (int64_t)(uintptr_t)buf;
+}
+
+/// The `const char*` C sees. The handle already is one.
+int64_t rask_cstring_as_ptr(int64_t cs) {
+    return cs;
+}
+
+void rask_cstring_free(int64_t cs) {
+    if (cs) rask_free((void *)(uintptr_t)cs);
+}
+
+/// The bytes up to the terminator. C promises nothing about their encoding, so
+/// this is where the trip back stops being native: `string.from_utf8` validates
+/// them, and it is one implementation both backends run.
+RaskVec *rask_cstring_bytes(int64_t cs) {
+    const char *p = (const char *)(uintptr_t)cs;
+    int64_t n = p ? (int64_t)strlen(p) : 0;
+    RaskVec *v = rask_vec_new(n < 8 ? 8 : n, NULL, 0);
+    for (int64_t i = 0; i < n; i++) {
+        int64_t b = (int64_t)(unsigned char)p[i];
+        rask_vec_push(v, &b);
+    }
+    return v;
+}

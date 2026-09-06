@@ -21,7 +21,19 @@ impl TypeChecker {
     /// index-based path and walked a closure as if it were a Vec (#1046).
     pub(super) fn resolve_impl_self_type(&self, target_ty: &str) -> Option<Type> {
         let base_name = target_ty.split('<').next().unwrap_or(target_ty);
-        let type_id = self.types.get_type_id(base_name)?;
+        let Some(type_id) = self.types.get_type_id(base_name) else {
+            // `extend string` and `extend char` have no TypeId to find — a
+            // primitive is its own `Type` variant, not an entry in the table.
+            // This answered `None` for them, so `self` inside such a body was
+            // never given a type and every `self.other()` call recorded its
+            // receiver as the literal name `Self`. Dispatch then mangled
+            // `Self_first_nul`, which nothing declares. Only stdlib bodies can
+            // extend a primitive, and until `string.to_cstring()` there wasn't
+            // one that called a sibling (#949).
+            return crate::parse_type_string(base_name, &self.types)
+                .ok()
+                .filter(|t| !matches!(t, Type::UnresolvedNamed(_) | Type::Error));
+        };
 
         let declared = self.declared_type_params(type_id).len();
         let header_args = Self::target_type_args(target_ty);

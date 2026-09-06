@@ -358,9 +358,60 @@ impl Interpreter {
             // C interop. The pointer keeps hold of this string's buffer, so
             // `*p` reads its first byte and `p.offset(n)` walks it — the same
             // answers native gives, which used to be a flat 0 here (#935).
-            "as_c_str" | "as_ptr" => Ok(Value::RawPtr(RawPtr::bytes(s))),
+            "as_ptr" => Ok(Value::RawPtr(RawPtr::bytes(s))),
+            // The two halves of `to_cstring` (#949). A cstring is a
+            // NUL-terminated copy of the bytes; here that is a second `String`,
+            // since the interpreter has no buffer to terminate — what the two
+            // backends have to agree about is which strings convert and what
+            // comes back, not the representation.
+            "first_nul" => Ok(Value::int(
+                s.lock().unwrap().find('\0').map(|i| i as i64).unwrap_or(-1),
+            )),
+            "copy_terminated" => Ok(Self::cstring_value(&s.lock().unwrap())),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "string".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// A cstring, as the interpreter holds one: the terminated bytes in a
+    /// one-field struct.
+    ///
+    /// It has to be nominally distinct from a `string`, not just equal to one —
+    /// `cstring.to_string()` is a Rask body that validates, and a plain
+    /// `Value::String` receiver would be answered by the Rust `to_string` arm
+    /// above before the Rask lookup ever ran (#949).
+    pub(crate) fn cstring_value(bytes: &str) -> Value {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert(
+            "bytes".to_string(),
+            Value::String(Arc::new(Mutex::new(bytes.to_string()))),
+        );
+        Value::new_struct("cstring".to_string(), fields, None)
+    }
+
+    /// The native half of `cstring`. Everything else about it is Rask.
+    pub(crate) fn call_cstring_method(
+        &self,
+        fields: &indexmap::IndexMap<String, Value>,
+        method: &str,
+    ) -> Result<Value, RuntimeError> {
+        let Some(Value::String(s)) = fields.get("bytes") else {
+            return Err(RuntimeError::Generic("cstring holds no bytes".to_string()));
+        };
+        match method {
+            // Native reads back up to the terminator; here the bytes are what
+            // was put in, and `to_cstring` refused any string with a NUL in it,
+            // so the two agree on where the string ends.
+            "bytes" => {
+                let bytes: Vec<Value> =
+                    s.lock().unwrap().bytes().map(|b| Value::int(b as i64)).collect();
+                Ok(Value::vec(bytes))
+            }
+            "as_ptr" => Ok(Value::RawPtr(RawPtr::bytes(s))),
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "cstring".to_string(),
                 method: method.to_string(),
             }),
         }

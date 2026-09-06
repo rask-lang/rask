@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Unsafe blocks and C FFI
 
+import string.NullByteError
+
 // External C functions must be declared. Match the real C signature —
 // strlen, malloc and memcpy all deal in size_t, which is usize here. An
 // `extern "C"` name is global, so declaring `strlen` with a different return
@@ -13,9 +15,15 @@ extern "C" func malloc(size: usize) -> *u8
 
 extern "C" func free(ptr: *u8)
 
-// Wrapper for C strlen — expression form for single operations
-func c_string_length(s: string) -> u64 {
-    let ptr = s.as_ptr()
+// Wrapper for C strlen — expression form for single operations.
+//
+// `to_cstring()` makes the owned, NUL-terminated copy C expects. `s.as_ptr()`
+// looks like it would do — a whole string's buffer does end in a NUL — but it
+// hands over a pointer into a buffer the string still owns, and it can't say no
+// to a string with an interior \0, which C would read as a shorter string.
+func c_string_length(s: string) -> u64 or NullByteError {
+    let terminated = try s.to_cstring()
+    let ptr = unsafe terminated.as_ptr()
     return unsafe strlen(ptr)
 }
 
@@ -76,7 +84,10 @@ func main() {
     print("=== C FFI Example ===\n")
 
     let test_str = "Hello, C!"
-    let len = c_string_length(test_str)
+    let len = c_string_length(test_str) catch e => {
+        print("String holds a NUL, so C can't take it\n")
+        return
+    }
 
     print("String: ")
     print(test_str)

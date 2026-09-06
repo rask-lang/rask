@@ -324,6 +324,11 @@ void        rask_f64_to_exp(RaskStr *out, double val);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
 void        rask_panic_forced_error(const RaskStr *msg);
+int64_t     rask_string_first_nul(const RaskStr *s);
+int64_t     rask_cstring_from_string(const RaskStr *s);
+int64_t     rask_cstring_as_ptr(int64_t cs);
+void        rask_cstring_free(int64_t cs);
+RaskVec    *rask_cstring_bytes(int64_t cs);
 void        rask_panic_str(const RaskStr *msg);
 void        rask_panic_str_at(const char *file, int32_t line, int32_t col,
                               const RaskStr *msg);

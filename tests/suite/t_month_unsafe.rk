@@ -222,7 +222,7 @@ test "mem.unsafe — string.from_raw and from_c copy back out through a pointer"
         // Offsetting first starts the copy further in.
         assert string.from_raw(s.as_ptr().offset(3), 2) == "lo"
         // from_c walks to the terminator instead.
-        assert string.from_c(s.as_c_str()) == "hello"
+        assert string.from_c(s.as_ptr()) == "hello"
     }
 }
 

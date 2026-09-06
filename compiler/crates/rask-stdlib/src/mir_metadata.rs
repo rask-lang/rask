@@ -138,9 +138,18 @@ fn build_cache() -> MetadataCache {
     let mut method_metas = Vec::new();
 
     for type_name in reg.type_names() {
-        // Module-like types start lowercase (fs, cli, io, etc.)
-        // Actual types start uppercase (Vec, Map, File, etc.) or are "string"
-        let is_type = type_name == "string"
+        // `fs`, `io`, `cli` are namespaces of free functions; `string`,
+        // `cstring`, `Vec` are types you can hold a value of. Capitalization
+        // used to be the whole test, with `string` written in as the one
+        // exception — so the second lowercase type, `cstring`, was filed as a
+        // module and dispatch had no prefix to mangle `c.to_string()` with.
+        //
+        // The difference that actually matters is whether there is a receiver:
+        // a module's functions all take their arguments, a type's methods take
+        // `self`. Capitalization stays as the answer for a type that happens to
+        // declare only constructors.
+        let has_a_receiver = reg.methods(type_name).iter().any(|m| m.takes_self);
+        let is_type = has_a_receiver
             || type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
         if is_type {
             type_names.insert(type_name.to_string());
@@ -337,6 +346,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("string_le", Internal::FreshFromReceiver),
     ("string_index", Internal::FreshFromReceiver),
     ("string_debug", Internal::FreshFromReceiver),
+    // A char is a scalar — there is nothing in it to own — and both of these
+    // hand back a freshly allocated string. `stdlib/char.rk` declares neither:
+    // rendering is `{}` and `{:debug}`, which every type gets without asking.
+    ("char_to_string", Internal::FreshFromReceiver),
+    ("char_debug", Internal::FreshFromReceiver),
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
     ("string_new", Internal::NoReceiver),
@@ -375,6 +389,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Shared_drop", Internal::ConsumesReceiver),
     ("Mutex_drop", Internal::ConsumesReceiver),
     ("Cell_drop", Internal::ConsumesReceiver),
+    // The free for the NUL-terminated copy `to_cstring` makes. Nothing declares
+    // it — a cstring is released by going out of scope, never by a call the
+    // user writes — so this is the only place its name appears beside the
+    // `CTORS` line that emits it (#949).
+    ("cstring_free", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];

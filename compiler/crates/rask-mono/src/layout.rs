@@ -263,7 +263,12 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 // Stdlib types backed by opaque runtime pointers
                 "TcpListener" | "TcpConnection" | "File" | "ThreadHandle"
                 | "TaskHandle" | "Sender" | "Receiver" | "ThreadPool"
-                | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder" => (8, 8),
+                | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder"
+                // `cstring` is the malloc'd NUL-terminated buffer itself, so
+                // the handle *is* the `const char*` C receives (#949). Without
+                // a line here its empty declaration sized it at zero and every
+                // call returning one gave MIR nothing to work out a type from.
+                | "cstring" => (8, 8),
                 // A word, but not for the reason the line above is: these two
                 // are an `int64_t` of nanoseconds in the runtime, not a pointer
                 // to anything. Their Rask declarations are empty structs, so

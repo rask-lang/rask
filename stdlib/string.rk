@@ -281,11 +281,13 @@ extend string {
 
     // ── C interop ───────────────────────────────────────────
 
-    /// Null-terminated pointer for C APIs. Valid while string is alive.
-    @native("rask_string_ptr")
-    public unsafe func as_c_str(self) -> *u8 {}
-
-    /// Raw data pointer. Use with .len() for pointer+length C APIs.
+    /// The buffer's address, for pointer+length C APIs and for the ones that
+    /// read to a terminator — a whole string's buffer ends in a NUL.
+    ///
+    /// Borrowed, not owned: the pointer is only valid while the string is, and
+    /// nothing here refuses a string with an interior NUL. `to_cstring()` is
+    /// the owned, checked conversion. `as_c_str` was a second name for this
+    /// exact function, and the name promised a guarantee it wasn't giving.
     @native("rask_string_ptr")
     public unsafe func as_ptr(self) -> *u8 {}
 
@@ -391,22 +393,58 @@ public struct cstring { }
 
 extend cstring {
     /// Raw pointer. Unsafe context only.
-    @unimplemented
+    @native("rask_cstring_as_ptr")
     public unsafe func as_ptr(self) -> *u8 {}
 
-    /// Take ownership from a C pointer. Unsafe — caller must ensure validity.
-    @unimplemented
+    /// Take ownership from a C pointer. Unsafe — caller must ensure validity:
+    /// the pointer has to be NUL-terminated and to outlive nothing else, since
+    /// the cstring frees it.
+    @native("rask_cstring_as_ptr")
     public unsafe func from_ptr(ptr: *u8) -> cstring {}
 
-    /// Convert to Rask string. Fails if not valid UTF-8.
-    @native
-    public func to_string(self) -> string or Utf8Error {}
+    /// Back to a Rask string, reading up to the terminator.
+    ///
+    /// Fallible because C promises nothing about encoding — the bytes may be
+    /// anything at all. `from_utf8` is the validator both backends already
+    /// share, so the trip back stops being native here rather than growing a
+    /// second copy of it in the runtime.
+    public func to_string(self) -> string or Utf8Error {
+        return string.from_utf8(self.bytes())
+    }
+
+    /// The bytes up to the terminator, unvalidated. `to_string` is the public
+    /// way back; this is the half of it that reads.
+    @native("rask_cstring_bytes")
+    func bytes(self) -> Vec<u8> {}
 }
 
 extend string {
-    /// Convert to null-terminated cstring. Fails if string contains \0.
-    @unimplemented
-    public func to_cstring(self) -> cstring or NullByteError {}
+    /// Convert to null-terminated cstring. Fails if the string contains \0 —
+    /// C has no way to represent one, so the conversion says where it is
+    /// rather than truncating there.
+    ///
+    /// Written here rather than in the runtime so both backends make the same
+    /// call about which strings are convertible; only the copy is native.
+    public func to_cstring(self) -> cstring or NullByteError {
+        let at = self.first_nul()
+        if at >= 0 {
+            return NullByteError.FoundAt(at.wrap<usize>())
+        }
+        return self.copy_terminated()
+    }
+
+    /// Byte offset of the first interior NUL, or -1.
+    ///
+    /// Public because "where does C stop reading this" is a real question about
+    /// a string, and answering it costs no allocation. `to_cstring` asks it too.
+    @native("rask_string_first_nul")
+    public func first_nul(self) -> i64 {}
+
+    /// The allocating half of `to_cstring`, once the check has passed. Not
+    /// public either — reaching it directly is how you get an unterminated
+    /// `const char*` past the check that exists to prevent one.
+    @native("rask_cstring_from_string")
+    func copy_terminated(self) -> cstring {}
 }
 
 // ─── Parsing and encoding errors ───────────────────────────────

@@ -488,6 +488,24 @@ impl TypeChecker {
         }
     }
 
+    /// Does this type's own `to_string` answer something other than a string?
+    ///
+    /// Only `cstring` does today (`string or Utf8Error`). The question is asked
+    /// of the declaration rather than of a name list so the next such type needs
+    /// no line here.
+    fn declares_a_fallible_to_string(&self, ty: &Type) -> bool {
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else {
+            return false;
+        };
+        let methods = match self.types.get(*id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+            _ => return false,
+        };
+        methods
+            .iter()
+            .any(|m| m.name == "to_string" && !matches!(m.ret, Type::String))
+    }
+
     /// std.fmt/D2–D5: can `{}` render this on its own?
     ///
     /// Primitives can (D2). Structs and enums opt in with `to_string`, or get
@@ -656,9 +674,19 @@ impl TypeChecker {
         // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have
         // it, aggregates opt in. `{x}` desugars to this call, so both forms are
         // checked in one place.
-        if (method == "to_string" && args.is_empty())
-            || (method == "__fmt" && args.len() == 5)
-        {
+        // A receiver that declares a `to_string` answering something other than
+        // a string is not making this call. On `cstring` the conversion is
+        // fallible — the bytes came from C, which promises nothing about
+        // encoding — so it reads `string or Utf8Error`, and pinning `string`
+        // here rejected every correct call to it. (std.fmt names exactly this
+        // collision as the reason rendering and conversion want separate verbs;
+        // until that split lands, one verb has to step aside for the other.)
+        // Nothing else moves: a `to_string` that does answer a string gets the
+        // same result either way, and a primitive declares none at all.
+        let renders_here = ((method == "to_string" && args.is_empty())
+            || (method == "__fmt" && args.len() == 5))
+            && !self.declares_a_fallible_to_string(&ty);
+        if renders_here {
             // The answer is a string either way, so pin that now — deferring it
             // as well would leave the interpolation's own type open and produce
             // a second, unrelated error about it.

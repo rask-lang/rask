@@ -436,9 +436,15 @@ composed correctly, so the stdlib does it once.
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
 | `s.to_cstring()` | `cstring or NullByteError` (fails if `\0` present) |
+| `s.first_nul()` | Byte offset of the first interior `\0`, or -1 |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
 | `cstring.to_string()` | `string or Utf8Error` |
+
+`c"literal"` is the one line above that isn't built yet. Everything else is,
+on both backends — the round trip and the refusal are in
+`tests/suite/t_cstring_ffi.rk`, and `examples/19_unsafe.rk` hands the pointer to
+a real `strlen`.
 
 <!-- test: skip -->
 ```rask
