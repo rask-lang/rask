@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Passing a container to a plain function, and who frees it afterwards (#1047).
+//
+// Move a container into a function and nobody freed it: the caller saw it
+// handed away, the callee saw a parameter rather than something it built.
+//
+//     func first(v: Vec<i32>) -> i32 { return v[0] }
+//     mut v: Vec<i32> = Vec.new()
+//     v.push(7)
+//     println("x={first(v)}")     // 96 bytes, every call
+//
+// Keeping the same vector in `main` and never passing it anywhere was clean.
+// One call was the whole difference.
+//
+// The rule the drop pass was missing is `mem.parameters/PM1`: borrow is the
+// default, so `first(v)` reads the vector and `main` still owns it. Every
+// argument was being treated as given away, which left the vector to nobody.
+//
+// The leak gate was green at 377 files while this was true, because nothing in
+// the suite passed a container by value to a plain function — container
+// *methods* are exempt on purpose (a method borrows its receiver), and that is
+// what most suite code goes through. This file is the coverage that was
+// missing, so it goes back to leaking if the rule does.
+
+struct Holder {
+    items: Vec<i32>
+}
+
+func first(v: Vec<i32>) -> i32 {
+    return v[0]
+}
+
+func total(v: Vec<i32>) -> i32 {
+    mut t = 0
+    for x in v {
+        t = t + x
+    }
+    return t
+}
+
+// Two at once, and neither is the receiver of anything.
+func longest(a: Vec<string>, b: Vec<string>) -> usize {
+    if a.len() > b.len() {
+        return a.len()
+    }
+    return b.len()
+}
+
+// The other side of PM1: `take` says the callee owns it, so the drop belongs
+// there and the caller must not also emit one.
+func swallow(take v: Vec<i32>) -> i32 {
+    mut t = 0
+    for x in v {
+        t = t + x
+    }
+    return t
+}
+
+test "a borrowed vector is still the caller's afterwards" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(7)
+    assert first(v) == 7
+    assert v.len() == 1.wrap<usize>()
+}
+
+test "and can be passed again" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(3)
+    v.push(4)
+    assert total(v) == 7
+    assert total(v) == 7
+    assert first(v) == 3
+}
+
+test "two vectors in one call" {
+    let a: Vec<string> = ["x"]
+    let b: Vec<string> = ["y", "z"]
+    assert longest(a, b) == 2.wrap<usize>()
+}
+
+test "a taken vector is the callee's" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(5)
+    v.push(6)
+    assert swallow(v) == 11
+}
+
+// A container that reaches a struct field is a different question and still
+// open: nothing drops what a struct holds, so `keep` below would leak. That is
+// #1035's shape rather than this one, and it stays out so this file can be
+// measured for what it is named for.
+
+func main() {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    v.push(2)
+    println("container by value ok: {total(v)} {first(v)}")
+    return
+}
