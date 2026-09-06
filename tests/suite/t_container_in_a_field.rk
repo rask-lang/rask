@@ -53,12 +53,13 @@ test "read the handle out, then use it" {
     assert h.items[1] == 2
 }
 
-// Not here, and still open: `for x in h.items`. The loop takes the handle and
-// the iteration machinery keeps it in ways this analysis blocks on, so the
-// vector is still leaked — the same shape `t_iterate_field_collection.rk`
-// carries on `known_leaks.txt`. Reading the field and indexing it, above, is
-// what works. Putting the loop here would put this file on that list too, and
-// then it would stop guarding anything.
+// Not here, and still open: `for x in h.items` (#1131). The group is not
+// blocked there — nothing marks it escaping — but it dies on the block the loop
+// exits to, which never mentions it, so there is no last use to hang a release
+// off. An edge release at the top of that block takes five more files off
+// `known_leaks.txt` and then frees an uninitialised string header on a `match`
+// arm the value was never built on, because liveness alone can't say the value
+// exists on that path. Reading the field and indexing it, above, is what works.
 
 // A string beside the container: both fields are the struct's, and the walk has
 // to do each in its own shape — the string's slot *is* the header, the
