@@ -4473,6 +4473,24 @@ impl<'a> FunctionBuilder<'a> {
         acc
     }
 
+    /// The MIR type of a scalar field, for the one question the widening at the
+    /// end of `field_address_and_load` asks: is it unsigned?
+    fn rask_scalar_to_mir(ty: &RaskType) -> Option<MirType> {
+        Some(match ty {
+            RaskType::U8 => MirType::U8,
+            RaskType::U16 => MirType::U16,
+            RaskType::U32 => MirType::U32,
+            RaskType::U64 => MirType::U64,
+            RaskType::U128 => MirType::U128,
+            // Both are unsigned as far as the widening is concerned: a bool is
+            // 0 or 1, and a char is a Unicode scalar, so neither ever has its
+            // top bit set — but saying so beats relying on it.
+            RaskType::Bool => MirType::U8,
+            RaskType::Char => MirType::U32,
+            _ => return None,
+        })
+    }
+
     fn field_address_and_load(
         builder: &mut ClifFunctionBuilder,
         base: &MirOperand,
@@ -4485,6 +4503,10 @@ impl<'a> FunctionBuilder<'a> {
         let base_val = Self::lower_operand(builder, base, ctx)?;
         let base_ty = Self::operand_mir_type(base, ctx.locals);
         let mut load_ty = expected_ty.unwrap_or(types::I64);
+        // The field's own declared type, where the layout says. Only the
+        // struct arm below fills it in, and only the widening at the end reads
+        // it — an unsigned field loaded narrow has to zero-extend.
+        let mut from_mir: Option<MirType> = None;
         let offset = match &base_ty {
             Some(MirType::Struct(id)) => {
                 if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
@@ -4546,13 +4568,27 @@ impl<'a> FunctionBuilder<'a> {
                             // How wide the slot holds this is the ABI's answer
                             // for an integer too, not just a float — that is
                             // where the i128 case lives.
+                            //
+                            // And the narrow answers are answers. Every size
+                            // but sixteen collapsed to a word here, so a `bool`
+                            // field was read eight bytes wide: harmless in the
+                            // middle of a struct, an out-of-bounds read at the
+                            // end of an allocation. `examples/game_loop.rk`
+                            // does it 406 times a run — `entities[h].active` on
+                            // the last slot of a pool block reads four bytes
+                            // past it (#1127). Since #1083 a field holds its
+                            // declared width, so the width is the load's.
                             match rask_mono::abi::slot_scalar_bytes(
                                 false, field.size, field.size,
                             ) {
                                 16 => types::I128,
+                                0 | 1 => types::I8,
+                                2 => types::I16,
+                                3 | 4 => types::I32,
                                 _ => types::I64,
                             }
                         };
+                        from_mir = Self::rask_scalar_to_mir(&field.ty);
                         field.offset as i32
                     } else {
                         0
@@ -4717,10 +4753,16 @@ impl<'a> FunctionBuilder<'a> {
 
         // Narrow from storage type to declared type when needed.
         // E.g., f32 field stored as f64 in 8-byte slot → fdemote.
+        //
+        // The other direction matters now that a narrow field is loaded at its
+        // own width: widening an unsigned one has to zero-extend, or a `u8`
+        // holding 200 comes back as -56 (#326's shape, one load down). The
+        // field's own declared type is what says which, so hand it over rather
+        // than letting the default sign-extend.
         let result = if let Some(exp) = expected_ty {
             let loaded_ty = builder.func.dfg.value_type(loaded);
             if loaded_ty != exp {
-                Self::convert_value(builder, loaded, loaded_ty, exp, None)
+                Self::convert_value(builder, loaded, loaded_ty, exp, from_mir.as_ref())
             } else {
                 loaded
             }
