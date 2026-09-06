@@ -12,6 +12,12 @@
 # Each fixture in tests/packages/ is a `libpkg/` and an `app/` that depends on it
 # by path. This builds `app/`, runs it, and diffs against `expected.txt`.
 #
+# A fixture that must be *rejected* carries `expected_error.txt` instead of
+# `expected.txt`: the build has to fail and its output has to contain that text.
+# Without it the harness could only say "this builds and prints X", so a rule
+# that exists to reject something across a package boundary had nowhere to be
+# tested.
+#
 # A fixture that isn't expected to build goes in tests/known_fail_packages.txt
 # with its tracking issue — same shape as tests/known_fail_examples.txt. One that
 # starts working is reported so the line can be deleted.
@@ -50,6 +56,7 @@ for app in "$PKG_DIR"/*/app; do
     [ -d "$app" ] || continue
     name="$(basename "$(dirname "$app")")"
     expected_out="$(dirname "$app")/expected.txt"
+    expected_err="$(dirname "$app")/expected_error.txt"
 
     # No build directory and no lockfile: the dependency is a relative path in
     # this same tree, so a committed lockfile pins nothing and its checksum goes
@@ -68,6 +75,20 @@ for app in "$PKG_DIR"/*/app; do
             got="$("$bin" 2>&1)"
             run_rc=$?
         fi
+    fi
+
+    # A fixture that must not build: the error is the expected output.
+    if [ -f "$expected_err" ]; then
+        if [ $build_rc -eq 0 ]; then
+            failed=$((failed + 1))
+            failures+=("$name — built, and it is meant to be rejected")
+        elif echo "$build_out" | grep -qF "$(cat "$expected_err")"; then
+            ok=$((ok + 1))
+        else
+            failed=$((failed + 1))
+            failures+=("$name — rejected, but not with $(cat "$expected_err")")
+        fi
+        continue
     fi
 
     if [ $build_rc -ne 0 ] || [ $run_rc -ne 0 ]; then

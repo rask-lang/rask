@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Merging every declaration of a package is what lets `answer()` call its own
+// private helper (#1100). It also puts `private_delay` in the program's
+// namespace, where nothing objected — so the consumer could call it, and a
+// library's internals were part of its API by accident (E0877, #1129).
+
+func private_delay() -> i64 {
+    return 250
+}
+
+public func answer() -> i64 {
+    return private_delay()
+}

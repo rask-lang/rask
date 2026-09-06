@@ -535,6 +535,13 @@ pub fn check_package(
         }
     }
 
+    // Names another package declared but did not make public, and where. A
+    // package's own declarations are all merged now (#1100), so nothing stops
+    // the program naming a dependency's internals — checked after resolve,
+    // where the use sites are.
+    let mut private_elsewhere: HashMap<String, (rask_resolve::PackageId, String, Span)> =
+        HashMap::new();
+
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
             continue;
@@ -557,6 +564,13 @@ pub fn check_package(
             // identity is where it was declared — and giving each package its
             // own scope is what makes that true. Until then, say so at the
             // collision rather than compiling one of them wrong (#1129).
+            if !is_public_decl(decl) {
+                if let Some(name) = declared_name(decl) {
+                    private_elsewhere
+                        .insert(name, (pkg.id, pkg.name.clone(), decl.span));
+                }
+            }
+
             if let Some(name) = declared_name(decl) {
                 if let Some((owner, first)) = claimed.get(&name) {
                     diags.push(
@@ -624,6 +638,52 @@ pub fn check_package(
             return PipelineOutput::fail(diags);
         }
     };
+
+    // --- A dependency's internals are not the program's to name ---
+    //
+    // Merging every declaration is what lets a package call its own private
+    // helpers (#1100); it also puts those helpers in the program's namespace,
+    // where nothing else would object. The use sites are here, so the check is
+    // here: a resolution that reaches a name another package kept to itself,
+    // from a file that isn't that package's.
+    if !private_elsewhere.is_empty() {
+        let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
+        for pkg in pkg_ctx.registry.packages() {
+            for f in &pkg.files {
+                file_owner.insert(f.file_id, pkg.id);
+            }
+        }
+        let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
+        rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
+            where_used.insert(e.id, e.span);
+        });
+
+        for (node, sym_id) in &resolved.resolutions {
+            let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
+            let base = sym.name.split('<').next().unwrap_or(&sym.name);
+            let Some((owner, owner_name, decl_span)) = private_elsewhere.get(base) else {
+                continue;
+            };
+            let Some(use_span) = where_used.get(node) else { continue };
+            if file_owner.get(&use_span.file_id) == Some(owner) {
+                continue;
+            }
+            diags.push(
+                Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
+                    .with_code("E0877")
+                    .with_primary(*use_span, format!("`{}` can't be named from here", base))
+                    .with_secondary(*decl_span, format!("declared here, without `public`"))
+                    .with_help(format!(
+                        "mark it `public func {}` (or `public struct`, …) in `{}` if it \
+                         is meant to be part of that package's API",
+                        base, owner_name
+                    )),
+            );
+        }
+        if diags.iter().any(|d| d.severity == Severity::Error) {
+            return PipelineOutput::fail_with_sources(diags, source_files);
+        }
+    }
 
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
@@ -934,6 +994,25 @@ fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
         }
     }
     names
+}
+
+/// Does this declaration say `public`?
+///
+/// `extend` blocks carry their own visibility through the methods in them, so
+/// they are treated as public here and the methods are checked by the type
+/// their receiver names.
+fn is_public_decl(decl: &Decl) -> bool {
+    match &decl.kind {
+        DeclKind::Fn(f) => f.is_pub,
+        DeclKind::Struct(s) => s.is_pub,
+        DeclKind::Enum(e) => e.is_pub,
+        DeclKind::Trait(t) => t.is_pub,
+        DeclKind::Const(c) => c.is_pub,
+        DeclKind::TypeAlias(a) => a.is_pub,
+        DeclKind::Annotation(a) => a.is_pub,
+        DeclKind::Impl(_) => true,
+        _ => true,
+    }
 }
 
 /// The name a declaration puts in scope, if it puts one there.
