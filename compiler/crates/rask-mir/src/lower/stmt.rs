@@ -828,11 +828,30 @@ impl<'a> MirLowerer<'a> {
                                 tmp
                             }
                         };
+                        // How wide the write is, when the pointee says. A raw
+                        // pointer's MIR type is a bare `Ptr` — the pointee only
+                        // survives in the checker's type — so this was `None`
+                        // and codegen stored a whole word: `*p = i.wrap<u8>()`
+                        // through a `*u8` wrote eight bytes, clobbering the
+                        // seven after it and running off the end of the
+                        // allocation on the last one (#1128). Only the narrow
+                        // widths are named; a word or wider keeps the store it
+                        // already had.
+                        let store_size = self
+                            .ctx
+                            .lookup_raw_type(operand.id)
+                            .and_then(|t| match t {
+                                rask_types::Type::RawPtr(inner) => {
+                                    Some(self.ctx.type_to_mir(inner).size())
+                                }
+                                _ => None,
+                            })
+                            .filter(|w| matches!(w, 1 | 2 | 4));
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
                             offset: 0,
                             value: val_op,
-                            store_size: None,
+                            store_size,
                         }));
                     }
                     // CT49 is a read — `value.("x")` resolves to a field access

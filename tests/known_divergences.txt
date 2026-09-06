@@ -133,3 +133,14 @@
 # tests in the file pass on both; this is the one that needs a lazy value's
 # writeback deferred to when the value is actually driven.
 p08_sequence.rk  # sequence — #1046 (interp run)
+
+# `extern "C"` needs dlsym and a C ABI, which a tree walker doesn't have — the
+# same reason `examples/19_unsafe.rk` is on known_fail_examples.txt. Not a bug
+# in either backend and not a roadmap item; the interpreter is never going to
+# call libc. The file is here for the native half, which is what #1128 was about:
+# a write through a `*u8` used to store eight bytes.
+#
+# The Rask-only way to get a `*u8` — `Vec<u8>.as_mut_ptr()` — can't stand in for
+# it: `p.offset(1)` on one steps eight bytes rather than one, which is #985 and
+# a design call rather than a bug.
+t_raw_pointer_width.rk  # extern "C" is native-only — #1128 (interp run)

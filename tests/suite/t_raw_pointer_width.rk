@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A write through a raw pointer is as wide as the pointee, not a word (#1128).
+//
+// `*p = v` used a 64-bit store whatever `p` pointed at, so writing one byte
+// through a `*u8` scribbled over the seven after it:
+//
+//     let ptr = malloc(16)
+//     for i in 0..16 {
+//         *ptr.offset(i) = i.wrap<u8>()      // eight bytes, every time
+//     }
+//
+// `examples/19_unsafe.rk` does exactly that, and valgrind called it: "Invalid
+// write of size 8 — address is 9 bytes inside a block of size 16". Each
+// iteration destroyed what the last one wrote and the loop only printed the
+// right numbers because the next one put them back; the final write ran off the
+// end of the allocation.
+//
+// A raw pointer's MIR type is a bare `Ptr` — the pointee survives only in the
+// checker's type — so lowering had nothing to set the store width from and left
+// it open, which codegen reads as "a word".
+//
+// The values here are all above 127, so a byte that came back sign-extended
+// would show as negative rather than as itself. That is the other half of the
+// same rule (#326, #1127): a narrow read of an unsigned value zero-extends.
+
+extern "C" func malloc(size: usize) -> *u8
+
+extern "C" func free(ptr: *u8)
+
+/// U4 wants an unsafe block kept small, so the pointer work lives in wrappers
+/// and the tests below read as ordinary code.
+func fill_bytes(p: *u8, count: i64) -> void {
+    mut i = 0
+    while i < count {
+        unsafe {
+            let q = p.offset(i)
+            *q = (200 + i).wrap<u8>()
+        }
+        i = i + 1
+    }
+    return
+}
+
+func byte_at(p: *u8, i: i64) -> u8 {
+    return unsafe *p.offset(i)
+}
+
+test "mem.unsafe — a byte write through a *u8 writes one byte" {
+    let p = unsafe malloc(4)
+    fill_bytes(p, 4)
+
+    // Every one still holds what it was given: an 8-byte store would have left
+    // only the last write standing.
+    assert byte_at(p, 0) == 200.wrap<u8>()
+    assert byte_at(p, 1) == 201.wrap<u8>()
+    assert byte_at(p, 2) == 202.wrap<u8>()
+    assert byte_at(p, 3) == 203.wrap<u8>()
+    unsafe free(p)
+}
+
+// The neighbour test: a write to one byte leaves the next one alone. The
+// clobbering is what the loop above hides by rewriting.
+func put_byte(p: *u8, i: i64, v: u8) -> void {
+    unsafe {
+        let q = p.offset(i)
+        *q = v
+    }
+    return
+}
+
+test "mem.unsafe — a byte write leaves its neighbours alone" {
+    let p = unsafe malloc(2)
+    put_byte(p, 0, 1.wrap<u8>())
+    put_byte(p, 1, 2.wrap<u8>())
+    put_byte(p, 0, 9.wrap<u8>())
+    assert byte_at(p, 1) == 2.wrap<u8>()
+    assert byte_at(p, 0) == 9.wrap<u8>()
+    unsafe free(p)
+}
+
+func main() {
+    let p = unsafe malloc(3)
+    put_byte(p, 0, 250.wrap<u8>())
+    put_byte(p, 1, 251.wrap<u8>())
+    put_byte(p, 2, 252.wrap<u8>())
+    println("raw pointer width ok: {byte_at(p, 0)} {byte_at(p, 2)}")
+    unsafe free(p)
+    return
+}
