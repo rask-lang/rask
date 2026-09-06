@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+import libpkg.Counter
+
+func main() {
+    let c = Counter { n: 4 }
+    println("{c.bump()}")
+    return
+}

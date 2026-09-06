@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1126 — `import libpkg.Colour` is rejected as "`Colour` is a built-in
+// type", which it isn't. Without that import it's #1112 instead: `label`'s
+// body names a `Colour` the merged program doesn't declare.
+
+public enum Colour {
+    Red
+    Green
+}
+
+public func label(c: Colour) -> string {
+    match c {
+        Colour.Red => return "red"
+        Colour.Green => return "green"
+    }
+}

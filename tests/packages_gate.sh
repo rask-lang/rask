@@ -92,6 +92,11 @@ for app in "$PKG_DIR"/*/app; do
         if known_fail "$name"; then
             fixed+=("$name")
         fi
+    elif known_fail "$name"; then
+        # A listed fixture may fail either way — #1123 builds and links and
+        # then prints 0 for every constant it was handed. "Doesn't build" is
+        # not the only way a package boundary goes wrong.
+        expected=$((expected + 1))
     else
         failed=$((failed + 1))
         failures+=("$name — output differs from expected.txt")

@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1123 — a `const` exported from a dependency reads as 0, silently,
+// whatever its type. This one builds; it just gives the wrong answer.
+
+public const LIMIT: i64 = 99
+public const GREETING: string = "hei"
