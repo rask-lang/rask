@@ -67,6 +67,14 @@ fn elide_clones_in_function(func: &mut MirFunction) {
     // For each clone site, check if the source local is used anywhere after
     // the clone, on any control flow path.
     for (block_idx, stmt_idx, _dst, source) in &clone_sites {
+        // CE3: a projection is a view, not the value. `r.values.clone()` reads
+        // the field into a fresh temp, and that temp is never read again — so
+        // last-use said "move" and the clone was dropped, leaving `y` and
+        // `r.values` as one Vec: a `push` through either grew both. The temp
+        // dying says nothing about the struct that still holds the field.
+        if source_is_a_projection(func, *source) {
+            continue;
+        }
         if is_last_use_with_liveness(func, *block_idx, *stmt_idx, *source, &live) {
             // CE1: Replace clone call with move (simple copy of the operand).
             let stmt = &mut func.blocks[*block_idx].statements[*stmt_idx];
@@ -80,6 +88,22 @@ fn elide_clones_in_function(func: &mut MirFunction) {
             }
         }
     }
+}
+
+/// True when the local was written by reading through something else — a struct
+/// field, an array element, a dereference. Such a local holds a view whose owner
+/// outlives it, so its own death is not the value's death.
+///
+/// A local assigned more than once is treated as a projection if any assignment
+/// is one: elision has to hold on every path.
+fn source_is_a_projection(func: &MirFunction, source: LocalId) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| match &stmt.kind {
+        MirStmtKind::Assign { dst, rvalue } if *dst == source => matches!(
+            rvalue,
+            MirRValue::Field { .. } | MirRValue::ArrayIndex { .. } | MirRValue::Deref(_)
+        ),
+        _ => false,
+    })
 }
 
 /// Check whether `source` has no uses after position (block_idx, stmt_idx).

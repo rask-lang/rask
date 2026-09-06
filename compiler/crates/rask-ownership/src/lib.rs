@@ -789,12 +789,120 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// E4: `let x = collection[key]` copies when the element is Copy and is a
+    /// compile error when it isn't.
+    ///
+    /// Indexing hands back the element in place, so a non-Copy binding is a
+    /// second name for storage the collection still owns — writing through
+    /// either writes both, on both backends. `with` is the form that says the
+    /// access is scoped; `.clone()` is the form that says a second value is
+    /// wanted and pays for it.
+    ///
+    /// A field projection is a different rule and stays allowed: a view into a
+    /// struct field lives until the block ends (S1), and the field's owner is
+    /// right there in the same scope.
+    fn check_index_binding(&mut self, name: &str, init: &Expr, is_mut: bool) {
+        if let ExprKind::Field { .. } = &init.kind {
+            self.check_mutable_field_view(name, init, is_mut);
+            return;
+        }
+        if !matches!(init.kind, ExprKind::Index { .. }) {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        let collection = match &init.kind {
+            ExprKind::Index { object, .. } => Self::render_place(object),
+            _ => None,
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::NonCopyElementCopiedOut {
+                binding: name.to_string(),
+                elem_ty: self.resource_type_display(&ty),
+                collection,
+            },
+            span: init.span,
+        });
+    }
+
+    /// S5: `mut x = value.field` on a field that isn't Copy.
+    ///
+    /// A field read is a view that lives until the block ends (S1), and a
+    /// read-only view is fine — the source stays readable beside it. Binding one
+    /// as `mut` asks for something else: S5 says a mutable borrow excludes all
+    /// other access to the source, and a plain binding has no way to say for how
+    /// long. So the two names stay live together and a write through either is a
+    /// write through both — `escaped.push(1)` puts an element in `h.data`.
+    /// `with` is the form that scopes the exclusion; `.clone()` is the form that
+    /// asks for a separate value.
+    fn check_mutable_field_view(&mut self, name: &str, init: &Expr, is_mut: bool) {
+        if !is_mut {
+            return;
+        }
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) else {
+            return;
+        };
+        if fields.is_empty() {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::MutableFieldView {
+                binding: name.to_string(),
+                path: format!("{}.{}", root, fields.join(".")),
+                field_ty: self.resource_type_display(&ty),
+            },
+            span: init.span,
+        });
+    }
+
+    /// `is_copy` answers "treat this as a move", so a type it can't place — a
+    /// name the type table never resolved, an inference variable, a generic it
+    /// has no declaration for — comes back non-Copy. That is the safe direction
+    /// for a move analysis and the wrong one for a rejection: it would reject on
+    /// "couldn't tell". This asks the narrower question, and says yes only for a
+    /// type the pass can actually look up.
+    fn definitely_not_copy(&self, ty: &Type) -> bool {
+        let placed = match ty {
+            Type::Result { .. } | Type::Union(_) => true,
+            Type::Named(id) => self.program.types.get(*id).is_some(),
+            Type::Generic { base, .. } => {
+                let name = self.program.types.type_name(*base);
+                Self::is_native_opaque_generic(&name) || self.program.types.get(*base).is_some()
+            }
+            _ => false,
+        };
+        placed && !self.is_copy(ty)
+    }
+
+    /// A place expression rendered back to source, for a message. `None` for
+    /// anything that isn't a plain name or field chain.
+    fn render_place(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::render_place(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
                 // `mut` is what makes a rack's nodes writable here.
                 self.writable_racks.insert(name.clone());
                 self.check_expr(init);
+                self.check_index_binding(name, init, true);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
@@ -847,6 +955,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
+                self.check_index_binding(name, init, false);
                 // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
@@ -1079,6 +1188,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
+                    self.check_borrowed_field_escape(expr);
                     self.check_link_escape(expr, LinkEscape::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -2982,6 +3092,45 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => (None, None),
         }
+    }
+
+    /// S3: a view into a borrowed parameter's field, handed back to the caller.
+    ///
+    /// A parameter without `take` is on loan (PM1), and a field of it is a view
+    /// that lives until the block ends (S1). Returning that view gives the
+    /// caller a second name for the field: `return self.value` on a `Vec` hands
+    /// back the same buffer, so a `push` through the returned value is a `push`
+    /// into the struct — identically on both backends. Nothing said so, and
+    /// whoever frees it second frees it twice.
+    ///
+    /// Only a field of a *borrowed* root: a local you own is yours to take
+    /// apart, and a `take` parameter was given to you.
+    fn check_borrowed_field_escape(&mut self, expr: &Expr) {
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+            return;
+        };
+        if fields.is_empty() {
+            return; // whole-value return is `consume_binding`'s rule
+        }
+        let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&root) else {
+            return;
+        };
+        let Some(ty) = self.program.node_types.get(&expr.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::BorrowedFieldEscapes {
+                path: format!("{}.{}", root, fields.join(".")),
+                root,
+                field_ty: self.resource_type_display(&ty),
+                declared_at,
+                is_mutate,
+            },
+            span: expr.span,
+        });
     }
 
     /// LP14: Extract the collection name from a for-loop iterator expression.

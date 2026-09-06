@@ -58,10 +58,10 @@ extend World {
         return out
     }
 
-    // index into a Vec field, bare binding
+    // index into a Vec field, reaching a field of the element. A binding for the
+    // whole element would be a silent 24-byte copy — E0871, mem.borrowing/E4.
     func row_at(self, i: u64) -> string {
-        let r = self.rows[i]
-        return r.key
+        return self.rows[i].key
     }
 
     // index into a Map field, bare binding

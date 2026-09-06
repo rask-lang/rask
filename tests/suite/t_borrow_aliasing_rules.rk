@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The four aliasing rules E0870–E0873 now enforce, written the way they have to
+// be written instead (#1088).
+//
+// All four are the same mistake seen from four sides: a second name for storage
+// something else still owns. Both backends agreed about what happened, so
+// nothing looked broken — the write just landed twice:
+//
+//     mut h = Holder { data: Vec.new() }
+//     h.data.push(10)
+//     mut escaped = h.data       // reads like a copy
+//     escaped.push(99)
+//     println("{h.data.len()}")  // 2, not 1
+//
+//   E0870  two arguments of one call reaching the same storage, one writing
+//   E0871  `let x = collection[key]` where the element isn't Copy
+//   E0872  returning a borrowed parameter's non-Copy field
+//   E0873  `mut x = value.field` where the field isn't Copy
+
+struct Player {
+    health: i32
+    score: i32
+}
+
+struct Row {
+    key: string
+    values: Vec<i64>
+}
+
+struct Holder {
+    data: Vec<i64>
+}
+
+// F2: two arguments naming *different* fields never meet, so this is fine and
+// stays fine. Passing `p` beside `mutate p.health` is the one that isn't.
+func bump_and_read(mutate a: i32, b: i32) -> i32 {
+    a += 1
+    return b
+}
+
+test "disjoint fields of one value can go into one call" {
+    mut p = Player { health: 50, score: 10 }
+    let seen = bump_and_read(mutate p.health, p.score)
+    assert seen == 10
+    assert p.health == 51
+}
+
+// E4: the element stays where it lives, so reach the field through the index
+// rather than binding the whole element.
+extend Holder {
+    func first(self) -> i64 {
+        return self.data[0]
+    }
+}
+
+test "a field of an element comes out by chaining, not by binding" {
+    mut rows: Vec<Row> = Vec.new()
+    mut vals: Vec<i64> = Vec.new()
+    vals.push(7)
+    rows.push(Row { key: "a", values: vals })
+    // `let r = rows[0]` would be E0871 — `Row` holds a Vec, so the binding
+    // would share its buffer.
+    assert rows[0].key == "a"
+    assert rows[0].values[0] == 7
+}
+
+// S3: a `take` receiver says the value goes, so returning the field is honest.
+// Without it the caller keeps the struct and gets a second name for its Vec.
+extend Row {
+    func into_values(take self) -> Vec<i64> {
+        return self.values
+    }
+
+    // Borrowed receiver, so what comes back is a copy and the cost shows.
+    func values_copy(self) -> Vec<i64> {
+        return self.values.clone()
+    }
+}
+
+test "a take receiver hands the field over, a borrow hands over a copy" {
+    mut a: Vec<i64> = Vec.new()
+    a.push(1)
+    a.push(2)
+    let owner = Row { key: "k", values: a }
+    let moved = owner.into_values()
+    assert moved.len() == 2
+
+    mut b: Vec<i64> = Vec.new()
+    b.push(3)
+    mut lender = Row { key: "k", values: b }
+    mut copied = lender.values_copy()
+    copied.push(4)
+    assert copied.len() == 2
+    // The point of the clone: the source didn't grow.
+    assert lender.values.len() == 1
+}
+
+// S5: there is no second name to make. The field is reachable where it lives,
+// and `mut escaped = h.data` would only be another way to say `h.data`.
+test "a field is written where it lives" {
+    mut h = Holder { data: Vec<i64>.new() }
+    h.data.push(10)
+    h.data.push(99)
+    assert h.data.len() == 2
+    assert h.data[1] == 99
+}
+
+// The other half: `.clone()` is what buys a separate value, and it really is
+// separate — clone elision used to drop this one, because the temp holding the
+// field read dies at the call and that read as a last use of the Vec.
+test "cloning a field gives a value the source doesn't share" {
+    mut h = Holder { data: Vec<i64>.new() }
+    h.data.push(1)
+    mut copy = h.data.clone()
+    copy.push(2)
+    assert copy.len() == 2
+    assert h.data.len() == 1
+}
+
+test "and a read of the same field is still just a read" {
+    mut h = Holder { data: Vec<i64>.new() }
+    h.data.push(5)
+    let n = h.data.len()
+    let holder = Holder { data: Vec<i64>.new() }
+    assert n == 1
+    assert holder.data.len() == 0
+    assert h.first() == 5
+}
+
+func main() {
+    mut p = Player { health: 1, score: 2 }
+    let seen = bump_and_read(mutate p.health, p.score)
+    println("borrow aliasing rules ok: {p.health} {seen}")
+    return
+}

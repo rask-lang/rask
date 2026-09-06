@@ -31,8 +31,13 @@
 # should go, usually because it sits below a parse error that stops the pipeline
 # before the checker ever runs (see audit 1.2).
 #
-# Everything left here is the first kind, and filed:
-#   #1088  the five mem.borrowing rules (borrow_errors.rk)
+# Nothing is left. #1088 is done: an argument that reaches the same storage as
+# another argument of the same call, where one of them writes, is E0870; binding
+# a non-Copy element out of a collection is E0871; returning a borrowed
+# parameter's non-Copy field is E0872; and `mut x = value.field` on a non-Copy
+# field is E0873. The fifth marker was a fixture bug — `Player` is 8 bytes, so
+# `let stored = p` copied it and the rule it claimed (moving out of a borrow)
+# was already enforced for everything the copy threshold doesn't cover.
 # #1089 is done: a public function that reads through a handle must name its
 # pool (E0867), a pool context that reaches a public function or the entry point
 # with nowhere left to come from is rejected there instead of segfaulting
@@ -48,5 +53,3 @@
 # not only at MIR.
 #
 # Format: <file> <count of dead markers>
-
-borrow_errors.rk                         5

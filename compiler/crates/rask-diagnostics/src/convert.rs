@@ -1485,6 +1485,39 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]")
             }
 
+            OverlappingArgumentBorrow { callee, written, other, span } => {
+                let same = written == other;
+                let headline = if same {
+                    format!("`{}` gets `{}` twice, and writes through one of them", callee, written)
+                } else {
+                    format!(
+                        "`{}` gets `{}` while `{}` is borrowed for writing",
+                        callee, other, written
+                    )
+                };
+                let label = if same {
+                    format!("both arguments are `{}`", written)
+                } else {
+                    format!("`{}` and `{}` are the same storage", written, other)
+                };
+                Diagnostic::error(headline)
+                .with_code("E0870")
+                .with_primary(*span, label)
+                .with_fix(format!(
+                    "pass the fields the callee actually needs — `{}` alongside \
+                     another field of the same value is fine, the whole value isn't",
+                    written
+                ))
+                .with_why(
+                    "borrows are tracked per field, so two arguments naming different \
+                     fields of one value never conflict. These two do: one path \
+                     contains the other, so the callee holds a write and a second \
+                     reference to the same memory at once and has no way to tell \
+                     [mem.borrowing/F3]"
+                        .to_string(),
+                )
+            }
+
             TryOnNonResult { found, span } => {
                 Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
                     .with_code("E0369")
@@ -2613,6 +2646,85 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 if matches!(reason, rask_ownership::MoveReason::LinkDeleted) =>
             {
                 link_deleted_diagnostic(name, *moved_at, self.span, true)
+            }
+
+            MutableFieldView { binding, path, field_ty } => {
+                Diagnostic::error(format!(
+                    "`{}` and `{}` would be the same `{}`, both writable",
+                    binding, path, field_ty
+                ))
+                .with_code("E0873")
+                .with_primary(self.span, "a field read is a view, not a copy")
+                .with_fix(format!(
+                    "work through the field — `{}.push(…)` reaches the same storage \
+                     without a second name — or ask for a separate value with \
+                     `mut {} = {}.clone()`",
+                    path, binding, path
+                ))
+                .with_why(
+                    "reading a field gives a view that lives until the block ends, \
+                     and a read-only one sits happily beside the source. `mut` asks \
+                     for exclusive access instead, and a plain binding can't say for \
+                     how long — so both names stay live and a write through either \
+                     is a write through both [mem.borrowing/S1, S5]"
+                        .to_string(),
+                )
+            }
+
+            BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate } => {
+                let mode = if *is_mutate { "`mutate` borrow" } else { "borrow" };
+                Diagnostic::error(format!(
+                    "`{}` belongs to the caller — returning it hands out a second name for it",
+                    path
+                ))
+                .with_code("E0872")
+                .with_primary(self.span, format!("`{}` isn't Copy, so this is a view, not a copy", field_ty))
+                .with_secondary(*declared_at, format!("`{}` is a {} — the caller keeps it", root, mode))
+                .with_fix(format!(
+                    "return a copy — `{}.clone()` — or take the receiver: `{}`, \
+                     so the call site shows the value going",
+                    path,
+                    if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
+                ))
+                .with_why(
+                    "a parameter without `take` is the caller's value on loan, and a \
+                     field of it is a view that lives until the block ends. Handing \
+                     that view back leaves the caller and the callee's caller both \
+                     holding the same storage: a write through one is a write \
+                     through the other, and whoever frees it second frees it twice \
+                     [mem.borrowing/S3, mem.parameters/PM1]"
+                        .to_string(),
+                )
+            }
+
+            NonCopyElementCopiedOut { binding, elem_ty, collection } => {
+                let from = collection
+                    .as_deref()
+                    .map(|c| format!("`{}`", c))
+                    .unwrap_or_else(|| "the collection".to_string());
+                Diagnostic::error(format!(
+                    "`{}` isn't Copy, so `{}` would be a second name for the same element",
+                    elem_ty, binding
+                ))
+                .with_code("E0871")
+                .with_primary(
+                    self.span,
+                    format!("this element stays owned by {}", from),
+                )
+                .with_fix(format!(
+                    "scope the access — `with {}[…] as {} {{ … }}` — or ask for a \
+                     separate value with `.clone()`",
+                    collection.as_deref().unwrap_or("collection"),
+                    binding
+                ))
+                .with_why(
+                    "indexing hands the element back where it lives rather than \
+                     copying it out, so a binding of a non-Copy element is a second \
+                     name for storage the collection still owns — a write through \
+                     either one is a write through both. A Copy element is copied \
+                     and has no such tie [mem.borrowing/E4]"
+                        .to_string(),
+                )
             }
 
             SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {

@@ -2970,6 +2970,81 @@ impl TypeChecker {
                 _ => {}
             }
         }
+
+        self.check_overlapping_argument_borrows(&callee_name, args, &param_ids);
+    }
+
+    /// F1-F3: two arguments of one call that reach the same storage, where at
+    /// least one of them writes.
+    ///
+    /// Borrows are tracked per field, so `f(mutate p.health, p.score)` is fine —
+    /// the two paths never meet (F2). What isn't fine is a path that contains
+    /// another: `f(mutate p.health, p)` hands the callee a write to one field
+    /// and a read of the whole struct at the same time, so `b.score` and `a` are
+    /// two names for overlapping memory and the callee has no way to tell (F3).
+    fn check_overlapping_argument_borrows(
+        &mut self,
+        callee: &str,
+        args: &[CallArg],
+        param_ids: &[rask_resolve::SymbolId],
+    ) {
+        use rask_resolve::SymbolKind;
+
+        // (path, writes, span) for every argument that names a place.
+        let mut places: Vec<(Vec<String>, bool, Span)> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let Some(path) = Self::access_path(&arg.expr) else { continue };
+            let writes = matches!(
+                arg.mode,
+                rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting
+            ) || param_ids.get(i).and_then(|&id| self.resolved.symbols.get(id)).is_some_and(
+                |p| matches!(
+                    p.kind,
+                    SymbolKind::Parameter { is_mutate: true, .. }
+                        | SymbolKind::Parameter { is_deleting: true, .. }
+                ),
+            );
+            places.push((path, writes, arg.expr.span));
+        }
+
+        for (i, (path, writes, span)) in places.iter().enumerate() {
+            for (other, other_writes, _) in places.iter().skip(i + 1) {
+                if !writes && !other_writes {
+                    continue; // two reads never conflict
+                }
+                if !paths_overlap(path, other) {
+                    continue;
+                }
+                let (write_path, read_path) = if *writes {
+                    (path, other)
+                } else {
+                    (other, path)
+                };
+                self.errors.push(TypeError::OverlappingArgumentBorrow {
+                    callee: callee.to_string(),
+                    written: write_path.join("."),
+                    other: read_path.join("."),
+                    span: *span,
+                });
+                return; // one report per call is enough to act on
+            }
+        }
+    }
+
+    /// The place an expression names, as a root plus field chain: `p.pos.x` is
+    /// `["p", "pos", "x"]`. `None` for anything that isn't a place — a literal,
+    /// a call, an index (the subscript decides which element at run time, so two
+    /// index expressions can't be told apart here).
+    fn access_path(expr: &Expr) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(vec![name.clone()]),
+            ExprKind::Field { object, field } => {
+                let mut path = Self::access_path(object)?;
+                path.push(field.clone());
+                Some(path)
+            }
+            _ => None,
+        }
     }
 
     /// True when a variable of this name is in scope and holds an ordinary
@@ -5973,4 +6048,10 @@ fn body_returns_a_value(body: &Expr) -> bool {
         }
     }
     in_expr(body)
+}
+
+/// Two access paths reach the same storage when one is a prefix of the other.
+/// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
+fn paths_overlap(a: &[String], b: &[String]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }

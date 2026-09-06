@@ -408,6 +408,10 @@ extend Map<K, V> {
     @native("rask_map_clear")
     public func clear(mutate self) {}
 
+    /// Clone the map.
+    @native("rask_map_clone")
+    public func clone(self) -> Map<K, V> {}
+
     /// Get value for key (borrows).
     @native("rask_map_get")
     public func get(self, key: K) -> Option<V> {}

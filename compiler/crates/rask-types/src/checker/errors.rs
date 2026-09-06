@@ -424,6 +424,16 @@ pub enum TypeError {
         param_name: String,
         span: Span,
     },
+    /// F3: two arguments of one call reach the same storage and one of them
+    /// writes. `written` is the path going in as `mutate`, `other` the path it
+    /// overlaps.
+    #[error("`{callee}` gets `{other}` while `{written}` is borrowed for writing")]
+    OverlappingArgumentBorrow {
+        callee: String,
+        written: String,
+        other: String,
+        span: Span,
+    },
     #[error("`try` requires a Result or Option type, found {found}")]
     TryOnNonResult {
         found: Type,
@@ -1250,6 +1260,7 @@ impl TypeError {
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
+            | OverlappingArgumentBorrow { .. }
             | UnsafeRequired { .. }
             | CStructReturn { .. }
             | TraitObjectSelfReturn { .. }

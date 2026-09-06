@@ -163,6 +163,8 @@ t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 157 allocations
 t_package_state.rk  # 12 allocations
 t_path_module.rk  # 11 allocations
+t_borrow_aliasing_rules.rk  # 17 allocations — Vec fields (#1035, #1047) plus
+                            # the clones themselves, which have no free (#1050)
 t_pool_context_rules.rk  # 4 allocations
 t_pool_entries.rk  # 7 allocations
 t_pool_iter_handles.rk  # 20 allocations
