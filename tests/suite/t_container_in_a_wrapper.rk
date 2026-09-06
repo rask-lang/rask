@@ -20,11 +20,19 @@
 // one path and the map's own on the other, and freeing that one is a double
 // free rather than a leak.
 //
-// The other half of #1117 is still open: when the callee is small enough to be
-// inlined, there is no call left to read a handoff off, and the wrapper is an
-// ordinary local of the caller's own frame. That is the same missing relation
-// as #1035/#1047 — the pass can't follow a value across a store into an
-// aggregate and back out — so the files here are deliberately not tiny.
+// The other half of #1117 is still open, and not for the reason first written
+// here. It is not inlining: `string_to_cstring` is a plain call in the MIR.
+// It is that a `cstring` handle comes back `i64`-shaped —
+//
+//     let _11: i64 or enum#3
+//     _13 = _11.0          // let _13: i64
+//
+// — and the pass that decides an aggregate still owns what a field read handed
+// out tells a container handle from an ordinary scalar field *by MIR width*.
+// A `Vec` handle is `ptr` and is followed; a `cstring` handle is `i64` and is
+// indistinguishable from `m.size`, which can't be followed because admitting it
+// blocks releases elsewhere. The two sides need to agree on which slots hold
+// containers, which is the same missing relation as #1035.
 
 import string.NullByteError
 
@@ -102,8 +110,9 @@ test "called twice, freed twice" {
 
 // A cstring is the same shape with a different payload — `to_cstring` returns
 // `cstring or NullByteError`, and its terminated copy is a container too. This
-// one is still leaked, because `to_cstring` is small enough to inline; it is
-// here so the day the inlined half lands, this file says so.
+// one is still leaked: `cstring` is not in the container free table, and adding
+// it needs the analysis above to recognise an `i64`-shaped handle. It is here
+// so the day that lands, this file says so.
 test "the same shape carries a cstring" {
     let c = "hei".to_cstring() catch e => {
         assert false
