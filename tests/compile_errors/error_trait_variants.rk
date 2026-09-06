@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `Error` is a trait, so it has no variants to pick (#1095, E0863).
+//
+// `Error` is the trait every error type implements, and `any Error` — which the
+// bare name is short for — is the erased box that holds one. Neither declares
+// variants; those belong to the concrete error enum.
+//
+// Every spelling used to be accepted. The name resolved to a builtin symbol
+// with no type behind it, so the access handed back an open type variable that
+// then unified with whatever the surrounding code wanted. `Error.MadeUpNonsense`
+// type-checked, ran to `0` natively, and died on the interpreter with
+// "undefined variable `Error`".
+
+enum LookupError {
+    NotFound
+}
+
+extend LookupError {
+    func message(self) -> string {
+        return "not found"
+    }
+}
+
+func by_name(n: i64) -> i64 or Error {
+    // ERROR: `Error` is a trait, not an enum — `NotFound` is not one of its variants
+    if n < 0 { return Error.NotFound }
+    return n
+}
+
+func invented(n: i64) -> i64 or Error {
+    // ERROR: a name nobody declared anywhere is caught for the same reason
+    if n < 0 { return Error.CompletelyMadeUpNonsense }
+    return n
+}
+
+// The fix: name the error you mean.
+func fixed(n: i64) -> i64 or Error {
+    if n < 0 { return LookupError.NotFound }
+    return n
+}
+
+func main() {
+    let a = fixed(-1) catch e => {
+        println("{e.message()}")
+        return
+    }
+    println("{a}")
+    return
+}

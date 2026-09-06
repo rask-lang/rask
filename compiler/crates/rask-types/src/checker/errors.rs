@@ -457,6 +457,19 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// `Error.NotFound` — picking a variant off the erased error type.
+    ///
+    /// `Error` is a trait, so it has no variants to pick. Nothing said so: the
+    /// name resolved to a builtin symbol with no type behind it, the access
+    /// handed back an open type variable, and the variable then unified with
+    /// whatever the surrounding code expected. `Error.CompletelyMadeUp` passed
+    /// the checker, ran to `0` natively and died on the interpreter with
+    /// "undefined variable `Error`" (#1095).
+    #[error("`Error` is a trait, not an enum — `{member}` is not one of its variants")]
+    ErrorTraitMember {
+        member: String,
+        span: Span,
+    },
     #[error("`{ty}` does not implement `{trait_name}`")]
     TraitNotSatisfied {
         ty: String,
@@ -1207,6 +1220,7 @@ impl TypeError {
             | CStructReturn { .. }
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
+            | ErrorTraitMember { .. }
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
             | NotSerializable { .. }

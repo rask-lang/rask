@@ -4114,6 +4114,19 @@ impl TypeChecker {
                     }
                 }
             }
+
+            // `Error.NotFound` — the trait has no variants (#1095). Without
+            // this the name handed back an open type variable, which then
+            // unified with whatever the surrounding code wanted, so any
+            // spelling at all type-checked and the two backends disagreed
+            // about what it meant at runtime.
+            if name == "Error" && self.types.get_type_id("Error").is_none() {
+                self.errors.push(TypeError::ErrorTraitMember {
+                    member: field.to_string(),
+                    span,
+                });
+                return Type::Error;
+            }
         }
 
         let obj_ty_raw = self.infer_expr(object);

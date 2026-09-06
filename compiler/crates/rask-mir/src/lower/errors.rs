@@ -177,13 +177,33 @@ impl<'a> MirLowerer<'a> {
         // then read its first two words as {data, vtable} and called through
         // whatever the second one happened to be, which is a segfault as soon
         // as anyone asks for `.message()`.
+        //
+        // Unless it arrived erased already: `try g(n)` inside a
+        // `-> i64 or any Error` whose `g` returns one too. Boxing a box asks
+        // for the concrete type's name and a trait object hasn't got one, so
+        // the vtable came out `.vtable.unknown__Error` and the first
+        // `.message()` on it failed to link (#1106). The value is forwarded
+        // whole instead — it already carries the right vtable.
+        let already_boxed = |err: &MirType| matches!(
+            (&err_ty, err),
+            (MirType::TraitObject { trait_name: have }, MirType::TraitObject { trait_name: want })
+                if have == want
+        );
         let box_trait: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
             (None, None, MirType::Result { err, .. }) => match &**err {
-                MirType::TraitObject { trait_name } => Some(trait_name.clone()),
+                MirType::TraitObject { trait_name } if !already_boxed(err) => {
+                    Some(trait_name.clone())
+                }
                 _ => None,
             },
             _ => None,
         };
+        // A forwarded box is 16 bytes, so it comes back as an address to copy
+        // from for the same reason a wrapped or freshly boxed error does.
+        let forwarding_box = matches!(
+            (&err_ty, self.builder.ret_ty()),
+            (MirType::TraitObject { .. }, MirType::Result { err, .. }) if already_boxed(err)
+        );
         let err_val = match &handler {
             Some(frame) => frame.err_val,
             None => self.builder.alloc_temp(err_ty.clone()),
@@ -201,7 +221,7 @@ impl<'a> MirLowerer<'a> {
                 // Wrapping copies the error into an enum slot and boxing
                 // memcpies it onto the heap, so an aggregate one has to come
                 // back as an address either way.
-                access: if wrap.is_some() || box_trait.is_some() {
+                access: if wrap.is_some() || box_trait.is_some() || forwarding_box {
                     aggregate_payload_access(&err_ty)
                 } else {
                     FieldAccess::Word

@@ -956,6 +956,33 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
+    /// ER32: a function whose error side is `any Trait` boxes every error that
+    /// leaves it, and the box needs a vtable whether or not anyone calls
+    /// through it.
+    ///
+    /// Nothing in the call graph says which concrete errors those are. The
+    /// program need never name the type: `func main() -> void or Error` with a
+    /// `try io.read_line()` in it boxes an `IoError` that appears nowhere in
+    /// the source, so `IoError_message` was never queued and codegen stopped at
+    /// "vtable method IoError.message" (#1107). Cast sites have had the same
+    /// answer since TR5 — mark every method of that name — so this uses it.
+    fn mark_erased_error_methods(&mut self, f: &rask_ast::decl::FnDecl) {
+        let Some(ret_ty) = f.ret_ty.as_deref() else { return };
+        let err: &str = match ret_ty.split_once(" or ") {
+            Some((_, e)) => e.trim(),
+            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
+                Some((_, e)) => e.trim(),
+                None => return,
+            },
+        };
+        let trait_name = match rask_ast::traits::trait_object_name(err) {
+            Some(t) => t.to_string(),
+            None if rask_ast::traits::is_bare_error(err) => "Error".to_string(),
+            None => return,
+        };
+        self.mark_trait_object_methods(&trait_name);
+    }
+
     /// Run until fixpoint: process queue, instantiate, discover more calls
     pub fn run(&mut self) {
         while let Some(item) = self.queue.pop_front() {
@@ -1004,6 +1031,7 @@ impl<'a> Monomorphizer<'a> {
 
             // Walk the concrete body to discover more calls (M4: transitive)
             if let DeclKind::Fn(fn_decl) = &concrete.kind {
+                self.mark_erased_error_methods(fn_decl);
                 for stmt in &fn_decl.body {
                     self.visit_stmt(stmt);
                 }

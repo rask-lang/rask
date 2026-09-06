@@ -581,8 +581,14 @@ impl Interpreter {
             _ => return false,
         };
         names.iter().any(|n| {
-            let Some(trait_name) = rask_ast::traits::trait_object_name(n) else {
-                return false;
+            // `Error` and `any Error` are one type written two ways (#1095).
+            // Only the long spelling matched, so an `i64 or Error` function
+            // returning a concrete error handed it back as the *ok* branch —
+            // the same #708 bug, in the spelling most of the corpus uses.
+            let trait_name = match rask_ast::traits::trait_object_name(n) {
+                Some(t) => t,
+                None if rask_ast::traits::is_bare_error(n) => "Error",
+                None => return false,
             };
             let required = rask_types::builtin_trait_method_names(trait_name);
             if required.is_empty() {

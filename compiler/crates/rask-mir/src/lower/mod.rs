@@ -1033,6 +1033,13 @@ impl<'a> MirContext<'a> {
                 if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
                     return MirType::TraitObject { trait_name: trait_name.to_string() };
                 }
+                // Bare `Error` is the same type written short (#1095). Nothing
+                // named `Error` reaches here but the trait — BI2 reserves the
+                // name and monomorphization has already substituted any type
+                // parameter — so this needs none of the checker's ordering care.
+                if rask_ast::traits::is_bare_error(name) {
+                    return MirType::TraitObject { trait_name: "Error".to_string() };
+                }
                 // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
                 if name.starts_with("Vec<") || name == "Vec" {
                     return MirType::Ptr; // Vec handle (opaque pointer)

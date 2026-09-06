@@ -1563,6 +1563,20 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("Self-returning methods are incompatible with trait objects because the concrete type is erased (TR2)")
             }
 
+            ErrorTraitMember { member, span } => {
+                Diagnostic::error(format!(
+                    "`Error` is a trait, not an enum — `{}` is not one of its variants",
+                    member
+                ))
+                .with_code("E0863")
+                .with_primary(*span, "no such variant")
+                .with_fix(format!(
+                    "declare the error you mean — `enum MyError {{ {} }}` — and return `MyError.{}`",
+                    member, member
+                ))
+                .with_why("`Error` is the trait every error type implements, and `any Error` is the erased box holding one. Neither has variants of its own — the variants belong to the concrete error enum")
+            }
+
             TraitObjectGenericMethod { trait_name, method, span } => {
                 Diagnostic::error(format!("generic method `{}` — cannot be called through `any {}`", method, trait_name))
                     .with_code("E0852")
