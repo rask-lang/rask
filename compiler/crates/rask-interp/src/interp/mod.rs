@@ -332,9 +332,19 @@ impl Interpreter {
     /// you want when a background task dies, so that's what it carries —
     /// `file:line:col: boom`, matching native.
     pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
-        let RuntimeError::Panic(msg) = &diag.error else {
-            return format!("{}", diag);
+        // Every way the program can panic, not the `Panic` variant alone.
+        // `is_panic` is the same question the exit code asks — OV1–OV4 and
+        // OPT13 say an overflow and a forced `x!` panic, whatever enum variant
+        // carries the message — and only `Panic` got a location here, so a task
+        // that died on `v!` reported "! on a value that was absent" with no file
+        // or line while native said `f.rk:7:`.
+        let msg = match &diag.error {
+            RuntimeError::Panic(m) => m.clone(),
+            e => format!("{}", e),
         };
+        if !diag.error.is_panic() {
+            return msg;
+        }
         match &self.source_info {
             Some(info) => {
                 // file:line, no column — see the note in the runtime's
@@ -343,7 +353,7 @@ impl Interpreter {
                 let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
                 format!("{}:{}: {}", info.file_name, line, msg)
             }
-            None => msg.clone(),
+            None => msg,
         }
     }
 
@@ -465,6 +475,14 @@ impl Interpreter {
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
+        // The same capture buffer, not a fresh one. A `test` block's runner
+        // captures the main thread's output and prints it under the test's
+        // name; a task writing to the real stdout instead put its lines
+        // somewhere the runner never looked, so `println` inside a spawned task
+        // was lost — and a task that panicked was invisible for the same
+        // reason, which is the failure std.testing/T19 exists to surface
+        // (#1093). Shared rather than copied, because there is one report.
+        child.output_buffer = self.output_buffer.clone();
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);
         }

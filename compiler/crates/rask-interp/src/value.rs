@@ -828,13 +828,29 @@ impl MultitaskingRuntime {
         }
     }
 
-    /// Shut down the pool: drop sender, join all workers.
+    /// Shut down the pool: drop sender, join all workers, then wait for every
+    /// task the block started.
+    ///
+    /// conc.async/C4 and std.testing/T19 say the block waits at exit — that is
+    /// what makes a task that hangs or panics fail the test that spawned it,
+    /// under that test's name. Joining the pool threads isn't enough, because
+    /// `spawn(|| …)` doesn't use the pool: it starts a thread of its own and
+    /// leaves its result to a reaper. Those reapers were joined once, at
+    /// process exit, so a task's output arrived after the block had returned —
+    /// and inside a `test` block it was lost outright, the runner having
+    /// restored the captured output before the task ever wrote (#1093).
+    ///
+    /// Draining the whole list is right because C1 allows one block per
+    /// process: every reaper standing at this point belongs to this block.
     pub fn shutdown(&self) {
         *self.sender.lock().unwrap() = None;
         let mut threads = self.pool_threads.lock().unwrap();
         for t in threads.drain(..) {
             let _ = t.join();
         }
+        // After the pool, not before: a reaper for a pool task is blocked on a
+        // result its worker hasn't sent yet.
+        crate::join_detached_reapers();
     }
 }
 

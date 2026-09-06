@@ -4,29 +4,72 @@
 //
 // That is what makes a leaked or hung task fail *the test that spawned it*,
 // under that test's name, instead of surfacing somewhere later or not at all.
-// Native gets it right. The interpreter's `shutdown()` drops the sender and
-// joins the pool threads, but the task's output lands after the block exits —
-// on `rask run --interp` the two lines come out in the wrong order, and inside
-// a `test` block the task's output never arrives at all.
+// The interpreter didn't wait, and its `shutdown()` looked like it did:
 //
-// Nothing in the suite exercised block exit against a task slow enough to
-// notice, so the differential harness had nothing to compare.
+//     $ rask run --interp t.rk        $ rask run t.rk
+//     block exited                    task done
+//     task done                       block exited
+//
+// It dropped the sender and joined the pool threads — and `spawn(|| …)` never
+// used the pool. It starts a thread of its own and leaves the result to a
+// reaper, and the reapers were joined once, at process exit.
+//
+// Inside a `test` block the task's output was gone rather than late: a spawned
+// task got a fresh `Interpreter` with no output buffer, so it wrote to the real
+// stdout while the runner was capturing, and the runner printed what it had
+// captured. A task that panicked was invisible for the same reason, which is
+// the failure T19 exists to surface (#1093).
+//
+// The tasks are slow on purpose. With a short body the race isn't visible
+// either way, which is why nothing in the suite had caught this.
 
-func work() -> i64 {
+func work(tag: string) -> i64 {
     mut i: i64 = 0
     mut total: i64 = 0
-    while i < 3000000 {
+    while i < 2000000 {
         total = total + i
         i = i + 1
     }
-    println("task done")
+    println("task {tag} done")
     return total
 }
 
 test "block exit waits for a detached task" {
     using Multitasking {
-        let h = spawn(|| { return work() })
+        let h = spawn(|| { return work("a") })
         h.detach()
     }
     println("block exited")
+}
+
+// Every task, not just the last one registered. Both print the same line, so
+// which of the two finishes first doesn't decide what the output says — the
+// two backends have to agree byte for byte and nothing orders these.
+test "block exit waits for several detached tasks" {
+    using Multitasking {
+        let h1 = spawn(|| { return work("x") })
+        let h2 = spawn(|| { return work("x") })
+        h1.detach()
+        h2.detach()
+    }
+    println("all done")
+}
+
+// A joined task was already waited for; the point here is that adding the
+// block's own wait doesn't join it twice or lose its output.
+test "a joined task still reports its own result" {
+    mut got = 0
+    using Multitasking {
+        let h = spawn(|| { return work("j") })
+        if h.join() is i64 as v {
+            got = v
+        }
+    }
+    assert got == 1999999000000
+    println("joined")
+}
+
+func main() {
+    println("block exit drains tasks ok")
+    return
 }
