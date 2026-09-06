@@ -113,7 +113,7 @@ Fixed-point iteration handles mutual recursion (same mechanism as `comp.hidden-p
 | Rule | Description |
 |------|-------------|
 | **PU1: Pure definition** | A function is pure if it has no IO, no Async, and no Mutation effects |
-| **PU2: Comptime is pure** | `comptime func` is pure by definition (`ctrl.comptime/CT6-CT7`). Effect inference confirms this — the restriction set matches |
+| **PU2: Comptime is pure** | `comptime func` is pure by definition (`ctrl.comptime/CT6-CT7`). Effect inference confirms it by measuring the body like any other function's: a marking the body doesn't earn is `ctrl.comptime/CT60`'s error, not a fact inference grants |
 | **PU3: No pure keyword** | There's no `pure` keyword in the language. Purity is an inferred property. `@pure` is a lint annotation (see `tool.lint`) |
 
 <!-- test: skip -->
@@ -235,7 +235,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | Closure captures IO function | FX2 | Closure inherits effects of captured calls |
 | Generic function | INF1 | Effects inferred per monomorphized instance (post-monomorphization) |
 | `unsafe` block with no C calls | IO3 | Still conservative (IO assumed). Suppress with `@no_io` on the function |
-| `comptime func` | PU2 | Always pure — `ctrl.comptime/CT6-CT7` enforces this structurally |
+| `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a pool insert is rejected at its definition |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
 | `extern` function | INF5 | Conservative IO unless `@no_io` annotated |
 | Function pointer / `any Trait` call | INF1 | Conservative: assumed IO + Async (dynamic dispatch prevents static analysis) |

@@ -380,6 +380,11 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
         diags.push(frozen_to_diagnostic(d));
     }
 
+    // --- CT60: a `comptime func` keeps its promise where it is written ---
+    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
+        diags.push(comptime_purity_to_diagnostic(&e));
+    }
+
     // --- Cleanup order (mem.resource-types/EO1) ---
     for w in rask_effects::ensure_order::check(&parse_result.decls) {
         diags.push(ensure_order_to_diagnostic(&w));
@@ -608,6 +613,11 @@ pub fn check_package(
     let frozen_diagnostics = rask_effects::frozen::check(&pkg_ctx.all_decls, &effects);
     for d in &frozen_diagnostics {
         diags.push(frozen_to_diagnostic(d));
+    }
+
+    // --- CT60: a `comptime func` keeps its promise where it is written ---
+    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
+        diags.push(comptime_purity_to_diagnostic(&e));
     }
 
     // --- Cleanup order (mem.resource-types/EO1) ---
@@ -1003,6 +1013,38 @@ fn ensure_order_to_diagnostic(w: &rask_effects::ensure_order::EnsureOrderWarning
     )
     .with_fix(w.fixed_order.clone())
     .with_why("`ensure` bodies run LIFO — the last one registered runs first. A resource derived from another has to be cleaned up first, which means its `ensure` comes second. Registered the other way round, the cleanup calls into a dependency that's already torn down; across an FFI boundary that's undefined behaviour the language otherwise makes impossible [mem.resource-types/EO1]")
+}
+
+/// CT60: the promise `comptime func` makes, checked at the definition.
+fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePurityError) -> Diagnostic {
+    let via = match &e.via {
+        Some(call) => format!(" — `{}` does", call),
+        None => String::new(),
+    };
+    let diag = Diagnostic::error(format!(
+        "`comptime func {}` reaches {} at compile time{}",
+        e.func, e.effect, via
+    ))
+    .with_code("E0875")
+    .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+    .with_fix(format!(
+        "drop `comptime` from `{}` and let its callers decide, or move the \
+         {} out and pass the result in",
+        e.func, e.effect
+    ))
+    .with_why(
+        "`comptime func` asserts at the definition what CT6 otherwise checks at \
+         each call: that the body stays inside the compile-time subset, \
+         transitively. Without the check the keyword bought nothing — the \
+         failure surfaced later and elsewhere, as the evaluator not finding a \
+         function it had never registered [ctrl.comptime/CT7, CT60]"
+            .to_string(),
+    );
+    if e.via.is_some() && e.span != e.decl_span {
+        diag.with_secondary(e.decl_span, "declared `comptime` here")
+    } else {
+        diag
+    }
 }
 
 fn frozen_to_diagnostic(d: &FrozenDiagnostic) -> Diagnostic {

@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What `comptime func` promises, and that a body which keeps it still runs at
+// compile time (#1086, CT60).
+//
+// CT7 rules out I/O, spawning and pool structural changes at compile time. CT6
+// says a call in comptime position is legal iff the callee stays inside that
+// subset, transitively, with no marking required on the callee. CT60 is what
+// the keyword buys: the guarantee lands at the definition instead of at a call
+// site three packages away.
+//
+// It bought nothing. Effect inference stamped `pure` on anything wearing the
+// keyword and never read the body — so the one thing that could have caught a
+// `comptime func` doing I/O was reading its answer off the marking it was meant
+// to verify:
+//
+//     comptime func noisy(n: i64) -> i64 {
+//         println("computing {n}")     // compiled fine
+//         return n * 2
+//     }
+//
+// It's E0875 now, at the definition. The rejections live in
+// `tests/compile_errors/comptime_func_does_io.rk`; this file is the other side
+// — the bodies that keep the promise, and the folding that is the point of
+// making it.
+
+import memory.Pool
+import memory.Handle
+
+comptime func fact(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+// CT6: an unmarked callee is fine, and needs no keyword of its own — being
+// callable at comptime is a property of what a function does.
+func double(n: i64) -> i64 {
+    return n * 2
+}
+
+comptime func doubled_fact(n: i64) -> i64 {
+    return double(fact(n))
+}
+
+// A comptime test runs during compilation, so this failing would be a compile
+// error rather than a test failure (T11, E0848).
+comptime test "the factorial folds at compile time" {
+    assert fact(5) == 120
+    assert fact(1) == 1
+}
+
+comptime test "and so does one that goes through an unmarked helper" {
+    assert doubled_fact(4) == 48
+}
+
+// The same functions are ordinary functions at run time — `comptime func` is a
+// promise about where they *can* run, not a restriction to only there.
+test "the same body answers at run time" {
+    assert fact(6) == 720
+    assert doubled_fact(3) == 12
+}
+
+// Pool structural changes are CT7's third case. This one is a run-time
+// function precisely because it inserts, and nothing marks it comptime.
+struct Node {
+    n: i64
+}
+
+func build(count: i64) -> i64 {
+    mut p: Pool<Node> = Pool.new()
+    mut i = 0
+    while i < count {
+        let h = p.insert(Node { n: i })
+        i = i + 1
+    }
+    return p.len().wrap<i64>()
+}
+
+test "a pool insert is a run-time thing" {
+    assert build(3) == 3
+}
+
+func main() {
+    println("comptime func promise ok: {fact(5)} {doubled_fact(4)}")
+    return
+}

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `comptime func` that reaches outside the compile-time subset
+//
+// Spec: ctrl.comptime (CT6, CT7, CT60), comp.effects (PU2)
+//
+// CT7 rules out I/O, spawning and pool structural changes at compile time, and
+// CT6 says a call in comptime position is legal iff the callee stays inside
+// that subset — transitively, with no marking required on the callee. CT60 is
+// what `comptime func` buys: the guarantee lands at the definition, where the
+// author is, rather than at a call site three packages away.
+//
+// It bought nothing. Effect inference stamped `pure` on anything wearing the
+// keyword and never read the body, so the one thing that could have caught this
+// was reading its answer off the marking it was meant to verify. The failure
+// came later and elsewhere, as the evaluator not finding a function it had
+// never registered.
+
+// ERROR: `comptime func` reaching I/O [E0875]
+comptime func noisy(n: i64) -> i64 {
+    println("computing {n}")
+    return n * 2
+}
+
+// The transitive case: `helper` isn't marked and doesn't need to be — CT6 is
+// about what a body reaches, not what it is labelled.
+func helper(n: i64) -> i64 {
+    println("helping {n}")
+    return n + 1
+}
+
+// ERROR: reached through a call [E0875]
+comptime func indirect(n: i64) -> i64 {
+    return helper(n) * 2
+}
+
+// FIX 1: drop `comptime` and let each caller decide (CT6 checks it there)
+func noisy_fixed(n: i64) -> i64 {
+    println("computing {n}")
+    return n * 2
+}
+
+// FIX 2: move the effect out, keep the computation comptime
+comptime func doubled(n: i64) -> i64 {
+    return n * 2
+}
+
+func main() {
+    println("{doubled(4)}")
+    return
+}
