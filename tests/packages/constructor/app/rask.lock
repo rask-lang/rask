@@ -1,9 +1,0 @@
-# rask.lock — auto-generated, do not edit
-lockfile-version = 1
-
-[[package]]
-name = "libpkg"
-version = "0.1.0"
-source = "path+../libpkg"
-checksum = "sha256:cbcfbe36f013b6b9a2da17c9e222286954463e6e7a58962d587fba70f00943cd"
-

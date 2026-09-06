@@ -51,7 +51,11 @@ for app in "$PKG_DIR"/*/app; do
     name="$(basename "$(dirname "$app")")"
     expected_out="$(dirname "$app")/expected.txt"
 
-    rm -rf "$app/build"
+    # No build directory and no lockfile: the dependency is a relative path in
+    # this same tree, so a committed lockfile pins nothing and its checksum goes
+    # stale the moment anyone edits the fixture's library — "dependency 'libpkg'
+    # has changed" is a confusing way to report a change you just made on purpose.
+    rm -rf "$app/build" "$app/rask.lock"
     build_out="$(cd "$app" && "$RASK" build 2>&1)"
     build_rc=$?
 
