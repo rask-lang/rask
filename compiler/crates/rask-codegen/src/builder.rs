@@ -7170,9 +7170,39 @@ impl<'a> FunctionBuilder<'a> {
 
     /// The same question about a field's declared type. Layouts record fields
     /// as `rask_types::Type`, so the walk crosses between the two languages.
+    /// The release for a container a field holds, if the field holds one.
+    ///
+    /// A container field's slot holds the *handle*, not the container, so
+    /// freeing it means loading the pointer and passing it — the opposite shape
+    /// from a string field, whose slot is the header and whose release takes
+    /// the slot's address.
+    ///
+    /// A field's type in a layout is a resolved `Type::Generic`, which carries a
+    /// TypeId and no name, and there is no table here to look one up in.
+    /// Rendering it and taking the head is what works.
+    fn container_free_for(ty: &RaskType) -> Option<&'static str> {
+        let rendered = format!("{}", ty);
+        // Only the container itself. `Vec<i64>?` renders with the same head and
+        // is a different thing: the slot holds a tag and a payload, the handle
+        // is behind the tag, and MIR reaches it through the wrapper rather than
+        // straight off the struct — so freeing it here ran before the reads
+        // (`h.v!.len()` gave 1361822157891490808).
+        if rendered.ends_with('?') || rendered.contains(" or ") {
+            return None;
+        }
+        let head = rendered.split('<').next().unwrap_or(&rendered).trim();
+        match head {
+            "Vec" => Some("rask_vec_free"),
+            _ => None,
+        }
+    }
+
     fn holds_string_ty(ty: &RaskType, ctx: &CodegenCtx, depth: u32) -> bool {
         if depth > Self::RC_WALK_DEPTH {
             return false;
+        }
+        if Self::container_free_for(ty).is_some() {
+            return true;
         }
         match ty {
             RaskType::String => true,
@@ -7231,6 +7261,12 @@ impl<'a> FunctionBuilder<'a> {
                     .map(|f| (f.offset as i32, f.ty.clone()))
                     .collect();
                 for (field_offset, field_ty) in fields {
+                    if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                        Self::emit_container_release(
+                            builder, base, offset + field_offset, free_fn, ctx,
+                        )?;
+                        continue;
+                    }
                     Self::release_strings_ty(
                         builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
                     )?;
@@ -7298,6 +7334,18 @@ impl<'a> FunctionBuilder<'a> {
                     let fields: Vec<_> =
                         l.fields.iter().map(|f| (f.offset as i32, f.ty.clone())).collect();
                     for (field_offset, field_ty) in fields {
+                        // A struct's own container field, and only that. The
+                        // handle comes out of the struct in one `Field` read,
+                        // which is the shape MIR's own analysis follows — a
+                        // container behind an `Option`'s tag is reached through
+                        // the wrapper instead, and freeing it here ran before
+                        // the reads (`h.v!.len()` gave 1361822157891490808).
+                        if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                            Self::emit_container_release(
+                                builder, base, offset + field_offset, free_fn, ctx,
+                            )?;
+                            continue;
+                        }
                         Self::release_strings_ty(
                             builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
                         )?;
@@ -7334,6 +7382,31 @@ impl<'a> FunctionBuilder<'a> {
             builder.ins().iadd_imm(base, offset as i64)
         };
         builder.ins().call(*free_ref, &[addr]);
+        Ok(())
+    }
+
+    /// Free the container whose handle sits at `base + offset`.
+    ///
+    /// The slot holds the handle, so this loads it and passes the pointer —
+    /// where a string's slot *is* the header and its release takes the address.
+    fn emit_container_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        free_fn: &str,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let free_ref = ctx
+            .func_refs
+            .get(free_fn)
+            .ok_or_else(|| CodegenError::FunctionNotFound(free_fn.to_string()))?;
+        let handle = builder.ins().load(
+            cranelift_codegen::ir::types::I64,
+            cranelift_codegen::ir::MemFlags::new(),
+            base,
+            offset,
+        );
+        builder.ins().call(*free_ref, &[handle]);
         Ok(())
     }
 

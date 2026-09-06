@@ -65,21 +65,25 @@ fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
 pub fn insert_rc_ops(func: &mut MirFunction) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
-    if string_locals.is_empty() {
-        return;
+    // The three string steps only have work when there is a string. The
+    // aggregate walk does not: a struct holding a `Vec` and no string needs its
+    // release just the same, and bailing out here meant whether that happened
+    // depended on whether the function *happened* to mention a string —
+    // `println("{h.items[0]}")` released the vector and
+    // `assert h.items[0] == 7` leaked it, in bodies that are otherwise the same.
+    if !string_locals.is_empty() {
+        // Insert RcInc after string copies
+        insert_rc_inc(func, &string_locals);
+
+        // Insert RcDec at last-use points
+        insert_rc_dec(func, &string_locals);
+
+        // A returned parameter is handed out, not owned — take a reference for it.
+        retain_returned_params(func, &string_locals);
     }
 
-    // Insert RcInc after string copies
-    insert_rc_inc(func, &string_locals);
-
-    // Insert RcDec at last-use points
-    insert_rc_dec(func, &string_locals);
-
-    // A returned parameter is handed out, not owned — take a reference for it.
-    retain_returned_params(func, &string_locals);
-
-    // And the aggregates: a struct field or a wrapper's payload owns a string
-    // just as much as a local does.
+    // And the aggregates: a struct field or a wrapper's payload owns a string —
+    // or a container — just as much as a local does.
     insert_aggregate_release(func);
 }
 
@@ -166,6 +170,69 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// is returned, stored, or handed to a call may be keeping the string alive
 /// somewhere this pass can't see, and releasing it there is a use-after-free
 /// rather than a leak. Only a local nothing else can reach gets the release.
+/// Container handles this frame read out of an aggregate, and their copies.
+///
+/// A `Vec` field's slot holds the handle, so reading it gives a bare `Ptr` that
+/// the aggregate analysis can't see: it isn't an aggregate, and the group
+/// union's `Field` arm skips it because a `Ptr` can't hold a string. But it
+/// names storage the aggregate owns — releasing the aggregate frees what the
+/// handle points at — so the two die together and liveness has to know it.
+///
+/// They join the group; they never become the release *target*, because the
+/// release walks an aggregate apart field by field and a bare handle is not one.
+fn container_handles_from(
+    func: &MirFunction,
+    aggregates: &HashSet<LocalId>,
+    ty_of: &HashMap<LocalId, MirType>,
+) -> HashMap<LocalId, LocalId> {
+    let mut from: HashMap<LocalId, LocalId> = HashMap::new();
+    // A fixpoint: `_29 = _27` after `_27 = _25.0` is still the same handle.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    // The read itself has to be `Ptr` — that is what tells a
+                    // container handle from an ordinary scalar field. A plain
+                    // `m.size` admitted here joins the group and can block its
+                    // release, which turns this into a leak somewhere else.
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } }
+                        if matches!(ty_of.get(dst), Some(MirType::Ptr)) =>
+                    {
+                        if let Some(base) = uses::operand_local(base) {
+                            if aggregates.contains(&base) && from.insert(*dst, base).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                    MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Use(MirOperand::Local(src)),
+                    // A *copy* of a known handle stays one whatever MIR types
+                    // it: `_43: ptr` then `_45 = _43` with `_45: i64` is what
+                    // gets emitted. Requiring `Ptr` here dropped the copy out of
+                    // the group, so the release landed before its own uses —
+                    //
+                    //     _43 = _40.1
+                    //     _45 = _43
+                    //     rc_dec_contents(_40)     // frees the Vec
+                    //     _46 = Vec_len(_45)       // reads it: 0
+                    } => {
+                        if let Some(&root) = from.get(src) {
+                            if from.insert(*dst, root).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    from
+}
+
 fn insert_aggregate_release(func: &mut MirFunction) {
     let ty_of: HashMap<LocalId, MirType> =
         func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
@@ -178,13 +245,22 @@ fn insert_aggregate_release(func: &mut MirFunction) {
     if aggregates.is_empty() {
         return;
     }
+    let handles = container_handles_from(func, &aggregates, &ty_of);
 
     // One group per value. SSA renames an aggregate at every copy, and a
     // payload read out of a wrapper names the same bytes rather than copying
     // them — so `r`, `r.0`, and every SSA name of either are one thing that
     // dies once. Splitting them was how the wrapper's release ended up running
     // while a view into its payload was still live.
-    let groups = aggregate_value_groups(func, &aggregates, &ty_of);
+    let mut groups = aggregate_value_groups(func, &aggregates, &ty_of);
+    for (handle, base) in &handles {
+        for g in groups.iter_mut() {
+            if g.contains(base) {
+                g.insert(*handle);
+                break;
+            }
+        }
+    }
 
     // Anything that might keep the value alive elsewhere disqualifies its whole
     // group. Releasing there is a use-after-free rather than a leak, and this
@@ -245,11 +321,20 @@ fn insert_aggregate_release(func: &mut MirFunction) {
         for stmt in &block.statements {
             match &stmt.kind {
                 // Handed to something else, which may keep it.
-                MirStmtKind::Call { args, .. } => {
-                    for arg in args {
-                        if let Some(id) = uses::operand_local(arg) {
-                            block_local(&mut blocked, &id);
+                MirStmtKind::Call { func: fref, args, .. } => {
+                    let borrows_recv =
+                        rask_stdlib::mir_metadata::borrows_receiver(&fref.name);
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        // `h.items[0]` is `Vec_index(items, 0)`: the receiver is
+                        // borrowed, so the call keeps nothing. Only for a
+                        // handle read out of an aggregate — a *struct* reaching
+                        // a call is one whose fields might now be somebody
+                        // else's, whatever the callee does with argument zero.
+                        if i == 0 && borrows_recv && handles.contains_key(&id) {
+                            continue;
                         }
+                        block_local(&mut blocked, &id);
                     }
                 }
                 // Copied whole into memory — the destination owns it now.
@@ -324,7 +409,14 @@ fn insert_aggregate_release(func: &mut MirFunction) {
                 for id in group {
                     if uses::stmt_reads(stmt, *id) || uses::stmt_def(stmt) == Some(*id) {
                         last = Some(si);
-                        local = Some(*id);
+                        // The release walks an aggregate apart field by field,
+                        // so a bare handle is never the thing to name — but its
+                        // use still moves the release later.
+                        if !handles.contains_key(id) {
+                            local = Some(*id);
+                        } else if local.is_none() {
+                            local = group.iter().find(|l| !handles.contains_key(l)).copied();
+                        }
                     }
                 }
             }

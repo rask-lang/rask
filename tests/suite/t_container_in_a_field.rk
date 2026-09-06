@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container a struct field holds is freed when the struct dies (#1120).
+//
+// Put a `Vec` in a struct and nothing freed it. The vector was fresh, storing it
+// into the struct counted as handing it away, and a struct local going out of
+// scope released nothing:
+//
+//     let h = Holder { items: v }
+//     rask: 2 allocations never released (96 bytes, undercounted)
+//
+// A `string` field in the same struct *was* released, so this was specifically
+// containers — one missing case in a walk that already existed.
+//
+// The hard part is not the free, it is knowing the struct still owns the
+// container when the release runs. A `Vec` field's slot holds the *handle*, so
+// reading it gives a bare pointer that the aggregate analysis couldn't see: not
+// an aggregate itself, and skipped by the group union because a pointer can't
+// hold a string. It named storage the struct owns all the same, so the two die
+// together and liveness has to know it. Two earlier attempts freed the field
+// without that and turned sixteen files, then one, into use-after-frees.
+//
+// The tests below are all about the container still being there — a release
+// placed too early shows up as a wrong length or a segfault, not as a leak. The
+// leak gate is the other half: this file must stay off `known_leaks.txt`.
+
+struct Holder {
+    items: Vec<i32>
+}
+
+struct Labelled {
+    name: string
+    items: Vec<i32>
+}
+
+test "a vector in a struct field reads back" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(7)
+    let h = Holder { items: v }
+    assert h.items[0] == 7
+    assert h.items.len() == 1.wrap<usize>()
+}
+
+// The read and the use are separated, which is where a release placed at the
+// read itself would land in between.
+test "read the handle out, then use it" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    v.push(2)
+    let h = Holder { items: v }
+    let n = h.items.len()
+    assert n == 2.wrap<usize>()
+    assert h.items[1] == 2
+}
+
+// Not here, and still open: `for x in h.items`. The loop takes the handle and
+// the iteration machinery keeps it in ways this analysis blocks on, so the
+// vector is still leaked — the same shape `t_iterate_field_collection.rk`
+// carries on `known_leaks.txt`. Reading the field and indexing it, above, is
+// what works. Putting the loop here would put this file on that list too, and
+// then it would stop guarding anything.
+
+// A string beside the container: both fields are the struct's, and the walk has
+// to do each in its own shape — the string's slot *is* the header, the
+// container's holds a handle.
+test "a string and a container in the same struct" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(5)
+    let l = Labelled { name: "with {v.len()} item", items: v }
+    assert l.name == "with 1 item"
+    assert l.items[0] == 5
+}
+
+// Across a call boundary: the callee builds the struct and hands it back, so
+// the caller is the one who owes the release.
+func keep(take v: Vec<i32>) -> Holder {
+    return Holder { items: v }
+}
+
+test "a struct built by a callee" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(9)
+    let h = keep(v)
+    assert h.items[0] == 9
+}
+
+// Handed on: only the last name may free it. Two names for one struct must not
+// mean two frees.
+test "a struct copied to a second name" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(3)
+    let a = Holder { items: v }
+    let b = a
+    assert b.items[0] == 3
+}
+
+func main() {
+    mut v: Vec<i32> = Vec.new()
+    v.push(42)
+    let h = Holder { items: v }
+    println("container in a field ok: {h.items[0]} {h.items.len()}")
+    return
+}
