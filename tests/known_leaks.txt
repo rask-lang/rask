@@ -198,6 +198,8 @@ t_trait_object_in_field_container.rk  # 24 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_try_coalesce_diverge.rk  # 2 allocations
 t_try_payload_type.rk  # 6 allocations
+t_user_iterator_method.rk  # 12 allocations — Maps inside struct fields
+                           # (#1035) and the keys() Vec each loop builds
 t_vec_elem_from_call.rk  # 2 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 16 allocations

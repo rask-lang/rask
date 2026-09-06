@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Iterating what a user-defined method hands back, when the method is declared
+// `-> Iterator<T>` (#1070).
+//
+// This used to lower on the interpreter and not natively:
+//
+//     for k in w.iter() { … }
+//
+//     native   error: MIR lowering 'main': couldn't work out a type here
+//                     … Gave up in: lower/stmt:for_loop_elem
+//     interp   3
+//
+// The type recorded against the `w.iter()` call node was the *receiver's* —
+// `Holder`, or `Wrap<i64>` for the generic form — not the method's return type.
+// `collection_elem_of_checker_type` has no arm for a user struct, so the loop
+// fell through every fallback to the i64 guess and refused. The same shape
+// returning `Vec<i64>` always worked, and `for k in m.keys()` directly is fused
+// by the iterator pipeline and never reaches that path at all.
+//
+// Both forms run on both backends now. This file is here so the difference
+// between "the node carries the return type" and "the node carries the
+// receiver" stays visible: it is the generic case that would break first.
+
+struct Holder {
+    m: Map<i64, bool>
+}
+
+extend Holder {
+    public func new() -> Holder {
+        return Holder { m: Map.new() }
+    }
+
+    public func add(mutate self, take v: i64) -> void {
+        self.m.insert(v, true)
+        return
+    }
+
+    public func iter(self) -> Iterator<i64> {
+        return self.m.keys()
+    }
+}
+
+test "a method returning Iterator<T> can be iterated" {
+    mut w = Holder.new()
+    w.add(1)
+    w.add(2)
+    mut total = 0
+    for k in w.iter() {
+        total = total + k
+    }
+    assert total == 3
+}
+
+// The generic receiver is the case that carried `Wrap<i64>` on the call node —
+// a `Generic` rather than a `Named`, resolving to a head with no element arm.
+struct Wrap<T> {
+    m: Map<T, bool>
+}
+
+extend Wrap<T> {
+    public func new() -> Wrap<T> {
+        return Wrap { m: Map.new() }
+    }
+
+    public func add(mutate self, take v: T) -> void {
+        self.m.insert(v, true)
+        return
+    }
+
+    public func iter(self) -> Iterator<T> {
+        return self.m.keys()
+    }
+}
+
+test "and through a generic receiver" {
+    mut w: Wrap<i64> = Wrap.new()
+    w.add(10)
+    w.add(20)
+    w.add(30)
+    mut total = 0
+    for k in w.iter() {
+        total = total + k
+    }
+    assert total == 60
+}
+
+// The shape that always worked, kept as the control: if this one ever breaks,
+// the cause is somewhere else entirely.
+extend Holder {
+    public func to_vec(self) -> Vec<i64> {
+        return self.m.keys().to_vec()
+    }
+}
+
+test "the Vec-returning form still works" {
+    mut w = Holder.new()
+    w.add(4)
+    w.add(5)
+    mut total = 0
+    for k in w.to_vec() {
+        total = total + k
+    }
+    assert total == 9
+}
+
+func main() {
+    mut w = Holder.new()
+    w.add(7)
+    mut total = 0
+    for k in w.iter() {
+        total = total + k
+    }
+    println("user iterator method ok: {total}")
+    return
+}
