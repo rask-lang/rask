@@ -674,11 +674,29 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                     process::exit(1);
                 }
             };
-            let source_files: Vec<_> = root_pkg.files.iter()
-                .map(|f| (f.path.clone(), f.source.clone()))
-                .collect();
             let all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
             let pkg_path_string = root_pkg.path_string();
+
+            // Every file that goes into this binary, not just the root
+            // package's. Two things read this list, and both were wrong for a
+            // package with a subdirectory in it:
+            //
+            //   - the compilation cache keys on it. A package root holding no
+            //     `.rk` files at all hashed nothing, so `rask build` reported
+            //     "Finished" and ran the previous binary however the code under
+            //     `src/` had changed. Even with files at the root, editing a
+            //     sub-package left the key untouched — `helpers.answer()`
+            //     going 99 → 7 rebuilt to a binary that still printed 99 (#1100).
+            //
+            //   - `show_diagnostic_multi` renders the snippet under a
+            //     diagnostic from it, so an error pointing into a sub-package
+            //     had no source to show.
+            let source_files: Vec<_> = registry
+                .packages()
+                .iter()
+                .flat_map(|pkg| pkg.files.iter())
+                .map(|f| (f.path.clone(), f.source.clone()))
+                .collect();
 
             // All dependency decls (public and private) for cross-package resolution.
             let mut dep_decls = Vec::new();

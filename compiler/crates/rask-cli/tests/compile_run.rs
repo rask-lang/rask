@@ -4961,6 +4961,73 @@ fn build_and_run_package(tag: &str, files: &[(&str, &str)]) -> (bool, String) {
     (ok, format!("{}\n{}", build_out, run_out))
 }
 
+/// Editing a file in a sub-package rebuilds the binary.
+///
+/// The compilation cache keyed on the *root* package's files alone, and a
+/// subdirectory is a package of its own (structure.modules/PO1). So changing
+/// code under it left the key untouched: `rask build` printed "Finished" and
+/// the previous binary stayed in place, still running the old answer. A
+/// package root holding no `.rk` files at all hashed nothing, which made every
+/// build of a `src/`-shaped layout a cache hit forever (#1100).
+#[test]
+fn editing_a_sub_package_invalidates_the_build_cache() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_subpkg_{}", next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("helpers")).unwrap();
+
+    std::fs::write(
+        dir.join("build.rk"),
+        "package \"subpkg\" \"0.1.0\" {\n    description: \"cache keying\"\n    license: \"MIT OR Apache-2.0\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import helpers\n\nfunc main() {\n    println(\"value {helpers.answer()}\")\n    return\n}\n",
+    )
+    .unwrap();
+
+    let build_and_run = |expected: &str| {
+        let build = Command::new(&rask)
+            .arg("build")
+            .arg(&dir)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask build");
+        let build_out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr),
+        );
+        assert!(build.status.success(), "build failed:\n{build_out}");
+        let run = Command::new(dir.join("build").join("debug").join("subpkg"))
+            .output()
+            .expect("failed to run built binary");
+        let out = String::from_utf8_lossy(&run.stdout).to_string();
+        assert!(
+            out.contains(expected),
+            "expected `{expected}` in the output, got:\n{out}\nbuild said:\n{build_out}"
+        );
+    };
+
+    std::fs::write(
+        dir.join("helpers").join("lib.rk"),
+        "public func answer() -> i64 {\n    return 42\n}\n",
+    )
+    .unwrap();
+    build_and_run("value 42");
+
+    // Same root files, different sub-package. The key has to move.
+    std::fs::write(
+        dir.join("helpers").join("lib.rk"),
+        "public func answer() -> i64 {\n    return 7\n}\n",
+    )
+    .unwrap();
+    build_and_run("value 7");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn newtype_value_survives_cross_module_mutex_method() {
     let (ok, out) = build_and_run_package("nt", &[
