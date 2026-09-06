@@ -24,11 +24,13 @@ mod types;
 pub mod hidden_params;
 pub mod layout_check;
 pub mod lower;
+mod const_free;
 mod container_drop;
 mod trait_drop;
 
 pub use builder::BlockBuilder;
 pub use closures::{insert_all_closure_drops, optimize_all_closures};
+pub use const_free::{add_const_free, CONST_FREE_FN};
 pub use container_drop::insert_container_drops;
 pub use trait_drop::insert_trait_drops;
 pub use transform::clone_elision::elide_clones;

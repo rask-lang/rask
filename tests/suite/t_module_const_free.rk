@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a module-level `const` holds is freed when the program is done (#1116).
+//
+// The drop pass places a release at the end of the scope that owns a value. A
+// module const has no such scope — its initializer runs before `main` and its
+// lifetime is the process — so nothing was ever released:
+//
+//     const NAMES: Vec<i64> = [1, 2, 3]
+//     rask: 2 allocations never released (88 bytes, undercounted)
+//
+// The handle plus its storage, for every const holding a container or a box,
+// and one 16-byte block for every `string` const (the slot holds a heap copy of
+// the string header, which readers share rather than own).
+//
+// The frees go in a generated `rask_const_free`. The runtime calls it after
+// `rask_main` returns *and after detached tasks have been awaited* — a detached
+// task can still be reading a const while main is returning, so main's own exit
+// would be too early.
+//
+// This file's job is the leak gate, not its assertions: it must stay off
+// `known_leaks.txt`. Run it directly to see what it is measuring:
+//
+//     RASK_LEAK_CHECK=1 rask test tests/suite/t_module_const_free.rk
+
+import sync.Shared
+import sync.Local
+import sync.Mutex
+
+const NUMBERS: Vec<i64> = [1, 2, 3]
+const WORDS: Vec<string> = ["hei", "der"]
+
+// A const built from another one, through interpolation — the string is made at
+// run time, so there is a buffer and a header behind it.
+const COUNT: i64 = 3
+const LABEL: string = "count is {COUNT}"
+
+// One declared type over three runtime objects, each with its own release.
+const BOX: Shared<i64> = Shared.new(10)
+const CELL: Shared<i64, Local> = Shared.local(20)
+const LOCK: Shared<i64, Mutex> = Shared.mutex(30)
+
+test "a const vector reads back" {
+    assert NUMBERS.len() == 3.wrap<usize>()
+    assert NUMBERS[0] == 1
+    assert NUMBERS[2] == 3
+}
+
+test "and one holding strings" {
+    assert WORDS.len() == 2.wrap<usize>()
+    assert WORDS[1] == "der"
+}
+
+test "a const string built by interpolation" {
+    assert LABEL == "count is 3"
+}
+
+test "each box strategy" {
+    with BOX.read() as n {
+        assert n == 10
+    }
+    with CELL.read() as n {
+        assert n == 20
+    }
+    with LOCK.read() as n {
+        assert n == 30
+    }
+}
+
+// Read twice, so a release placed per *reference* rather than once at exit
+// would free the first read's value and leave the second reading freed memory.
+test "reading a const twice is still one value" {
+    assert NUMBERS.len() == 3.wrap<usize>()
+    assert NUMBERS.len() == 3.wrap<usize>()
+    assert LABEL.len() == 10.wrap<usize>()
+    assert LABEL.len() == 10.wrap<usize>()
+}
+
+func main() {
+    println("module const free ok: {NUMBERS.len()} {WORDS[0]} {LABEL}")
+    return
+}

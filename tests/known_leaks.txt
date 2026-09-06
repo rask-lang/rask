@@ -29,10 +29,13 @@
 #     didn't reach)
 #   - a closure made on one branch of an `if` has no point where freeing it is
 #     unconditionally safe (#1045)
-#   - a const string built by interpolation is never released (#1048)
-#   - a `Shared` box a module-level `const` holds is never released — the
-#     drop pass sees it escape into the const and leaves it (the half of
-#     #1099 that stays open; a local one is freed now)
+#
+# Eight files came off in one go when module-level consts started being freed:
+# a const has no scope to end, so the drop pass had nowhere to put a release,
+# and the frees now happen in a generated `rask_const_free` the runtime calls
+# after main returns and after detached tasks are awaited (#1116). That covers
+# the containers and boxes a const holds, and the heap block a `string` or
+# struct const's slot points at.
 #
 # Format: one basename per line, then `# N allocations`.
 
@@ -101,7 +104,6 @@ t_module_qualified_variants.rk  # 9 allocations — trait boxes again
 t_array_method_surface.rk  # 10 allocations
 t_atomic_across_tasks.rk  # 6 allocations
 t_bare_lock_value.rk  # 21 allocations
-t_binding_types.rk  # 4 allocations
 t_borrow_param_consume.rk  # 7 allocations
 t_box_replace_payload.rk  # 9 allocations
 t_card_method_surface.rk  # 9 allocations
@@ -118,8 +120,6 @@ t_container_result_freed.rk  # 2 allocations — the Vec inside a struct
                              # field (#1035, #1047); the clones themselves are freed
 t_container_through_field.rk  # 32 allocations
 t_container_turbofish.rk  # 4 allocations
-t_day_const.rk  # 1 allocation
-t_day_const_string_array.rk  # 2 allocations — main leaks 3 here; main's `rask test` discarded the report
 t_day_map.rk  # 8 allocations
 t_day_strings.rk  # 7 allocations
 t_day_vec.rk  # 4 allocations
@@ -143,7 +143,6 @@ t_json_roundtrip.rk  # 15 allocations
 t_link_in_collection.rk  # 2 allocations
 t_local_box_payload.rk  # 19 allocations
 t_map_struct_values.rk  # 16 allocations
-t_match_scrutinee_brace.rk  # 1 allocation
 t_modify_writeback.rk  # 15 allocations
 t_module_exports.rk  # 12 allocations
 t_month_atomics.rk  # 8 allocations
@@ -156,7 +155,6 @@ t_month_json.rk  # 6 allocations
 t_month_panic_observed.rk  # 15 allocations
 t_month_qualified_module_types.rk  # 16 allocations
 t_month_resource_ensure.rk  # 10 allocations
-t_month_staged.rk  # 4 allocations
 t_month_stdlib_modules.rk  # 14 allocations
 t_mutate_handle_field.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 20 allocations
@@ -195,8 +193,6 @@ t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 4 allocations
 t_subprocess.rk  # 24 allocations
 t_supertrait_dispatch.rk  # 4 allocations
-t_test_const_init.rk  # 4 allocations
-t_test_isolation.rk  # 2 allocations — a module-level Shared box, the half of #1099 still open
 t_text_units.rk  # 9 allocations
 t_trait_object_in_field_container.rk  # 24 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
@@ -221,6 +217,5 @@ t_week_sorting.rk  # 15 allocations
 t_week_traits.rk  # 5 allocations
 t_while_presence_binding.rk  # 8 allocations
 t_with_collection_field_writes.rk  # 14 allocations
-t_with_mutex_value.rk  # 4 allocations
 t_with_sources.rk  # 6 allocations — the Shared box (#1099's other half) and
                    # the Vec/Pool of structs holding strings (#1035)

@@ -113,12 +113,25 @@ impl PassManager {
         pm.add(TypestatePass);
         pm.add(BoundsCheckElimPass);
         pm.add(GenerationCoalescingPass);
+        // Last: it reads what the const init thunks build, and the passes
+        // above are what settle that (clone elision in particular).
+        pm.add(ConstFreePass);
         pm.add(DeadCodeEliminationPass);
         pm
     }
 }
 
 // Wrapper structs for existing passes
+
+/// Free what module-level consts hold, after the program is done (#1116).
+pub struct ConstFreePass;
+
+impl MirPass for ConstFreePass {
+    fn name(&self) -> &str { "const_free" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::add_const_free(fns);
+    }
+}
 
 /// Free a container this function built and never handed on (#1027).
 pub struct ContainerDropInsertionPass;

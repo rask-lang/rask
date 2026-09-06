@@ -16,6 +16,11 @@
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
 
+// Free what module-level consts hold. Generated alongside `rask_main`, empty
+// when the program has no const worth freeing — so this is one symbol to link
+// against rather than a conditional one (#1116).
+extern void rask_const_free(void);
+
 // ─── Print functions ──────────────────────────────────────────────
 
 // One implementation per type, parameterized on the stream; the stdout and
@@ -2258,6 +2263,9 @@ int main(int argc, char **argv) {
     rask_main();
     // O4: a detached task's panic report can't be lost to process exit.
     rask_await_detached_tasks();
+    // After the tasks, not before: a detached task can still be reading a
+    // module-level const while main is returning.
+    rask_const_free();
     rask_leak_check();
     return 0;
 }
