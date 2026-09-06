@@ -34,17 +34,15 @@
 # Everything left here is the first kind, and filed:
 #   #1088  the five mem.borrowing rules (borrow_errors.rk)
 #   #1089  the four pool-context rules (context_*.rk)
-#   #1090  one `value.(comptime …)` failure — the block that runs past its
-#          branch quota, which needs the evaluator run at check time and not
-#          only at MIR. Its other three are done: break-with-value from
-#          `while` is E0865, a `match` expression over an integer with no arm
-#          for the rest is E0864, and a block that answers with something
-#          other than a name is E0866
+# #1090 is done: break-with-value from `while` is E0865, a `match` expression
+# over an integer with no arm for the rest is E0864, a `value.(comptime …)`
+# block that answers with something other than a name is E0866, and one that
+# runs past its branch quota is E0383 — the evaluator runs at check time now,
+# not only at MIR.
 #
 # Format: <file> <count of dead markers>
 
 borrow_errors.rk                         5
-comptime_field_name.rk                   1
 context_ambiguous.rk                     1
 context_missing.rk                       1
 context_unavailable.rk                   1

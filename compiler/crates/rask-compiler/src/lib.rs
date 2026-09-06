@@ -455,7 +455,20 @@ fn comptime_diagnostics_for(
         DeclKind::Test(t) => has_comptime_let(&t.body, decls),
         _ => false,
     });
-    if !any_comptime_init {
+    // A `value.(comptime { … })` naming a field is neither a const nor a let,
+    // and the block still has to finish for the program to compile (CT53). A
+    // program whose only comptime code was one of these skipped the whole stage
+    // and type-checked clean, then failed at the end of a build (#1090).
+    let any_field_name_block = {
+        let mut found = false;
+        rask_ast::visit::walk_decls(decls, &mut |e| {
+            if let rask_ast::expr::ExprKind::DynamicField { field_expr, .. } = &e.kind {
+                found |= matches!(field_expr.kind, rask_ast::expr::ExprKind::Comptime { .. });
+            }
+        });
+        found
+    };
+    if !any_comptime_init && !any_field_name_block {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks

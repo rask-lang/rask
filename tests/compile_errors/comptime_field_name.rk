@@ -26,20 +26,15 @@ func typo(b: Budget9) -> i64 {
     return b.("nope")
 }
 
-// A `comptime` block that doesn't finish, or finishes with something that
-// isn't a name, reports what actually happened. Telling someone who already
-// wrote a `comptime` block to write a `comptime` block is no help, which is
-// what the generic "has to be known at compile time" error did until the
-// evaluator's own error was allowed through.
+// A `comptime` block that finishes with something that isn't a name reports
+// what actually happened. Telling someone who already wrote a `comptime` block
+// to write a `comptime` block is no help, which is what the generic "has to be
+// known at compile time" error did until the block's own type was checked.
 
-// ERROR: the block runs past the branch quota — say so, don't call it unknown.
-func over_quota(b: Budget9) -> i64 {
-    return b.(comptime {
-        mut s = ""
-        for i in 0..1500 { s = "spent" }
-        s
-    })
-}
+// The block that runs past its branch quota lives in
+// `comptime_field_name_quota.rk`, alone. Running it needs monomorphization,
+// which bails once a program has type errors — and this file has two by
+// design, so the quota error could never land here however well it worked.
 
 // ERROR: it finished, it just didn't produce a name.
 func not_a_name(b: Budget9) -> i64 {

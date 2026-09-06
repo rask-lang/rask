@@ -151,7 +151,58 @@ pub fn evaluate_comptime_globals(
         }
     }
 
+    check_comptime_field_names(decls, &mut comptime_interp, &mut diags);
+
     (globals, diags)
+}
+
+/// CT53: `value.(comptime { … })` names a field, so the block has to finish and
+/// answer with a string.
+///
+/// MIR said both of those things and said them well — "the `comptime` block
+/// naming a field didn't finish: … branch quota (1000)" — but as a lowering
+/// failure, which carries no span, no error code, and doesn't happen during
+/// `rask check` at all. So a program with a field-name block that runs forever
+/// type-checked clean and failed at the end of a build (#1090).
+///
+/// The block runs here instead, where a const's does, and a failure becomes the
+/// same E0383 a const's failure is. The type half — a block that finishes and
+/// answers with a number — is the checker's (E0866); this is the half that
+/// needs the block actually run.
+///
+/// Evaluating twice on the happy path is deliberate: MIR still evaluates it to
+/// get the name, and a field name is a small block. Reusing the answer would
+/// mean threading a map from here to lowering for no benefit either can see.
+fn check_comptime_field_names(
+    decls: &[Decl],
+    interp: &mut rask_comptime::ComptimeInterpreter,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let mut blocks: Vec<&rask_ast::expr::Expr> = Vec::new();
+    rask_ast::visit::walk_decls(decls, &mut |e| {
+        if let rask_ast::expr::ExprKind::DynamicField { field_expr, .. } = &e.kind {
+            if matches!(field_expr.kind, rask_ast::expr::ExprKind::Comptime { .. }) {
+                blocks.push(field_expr);
+            }
+        }
+    });
+
+    for block in blocks {
+        let rask_ast::expr::ExprKind::Comptime { body } = &block.kind else { continue };
+        interp.reset_branch_count();
+        interp.set_quota(DEFAULT_BRANCH_QUOTA);
+        match interp.eval_block_to_value(body) {
+            // A string is the answer. Anything else is E0866, reported by the
+            // checker from the block's type without running it.
+            Ok(_) => {}
+            Err(e) if e.is_hard() => {
+                diags.push(comptime_diagnostic(&e.to_string(), comptime_code(&e), block.span));
+            }
+            // A gap in the evaluator rather than a failing block — the same
+            // soft case a const gets, and MIR will say so if it matters.
+            Err(_) => {}
+        }
+    }
 }
 
 /// Every `let x = comptime …` directly in a body, as (name, initializer).
