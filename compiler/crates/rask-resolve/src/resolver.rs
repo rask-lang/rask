@@ -1706,21 +1706,20 @@ impl Resolver {
             return Ok(contents);
         }
 
-        let search_paths = [
-            "/usr/include",
-            "/usr/local/include",
-            "/usr/include/x86_64-linux-gnu",
-            "/usr/include/aarch64-linux-gnu",
-        ];
-
-        for base in &search_paths {
-            let full = format!("{}/{}", base, path);
+        let mut looked: Vec<String> = Vec::new();
+        for base in c_include_search_dirs() {
+            let full = base.join(path);
             if let Ok(contents) = std::fs::read_to_string(&full) {
                 return Ok(contents);
             }
+            looked.push(base.display().to_string());
         }
 
-        Err(format!("header not found in search paths: {}", path))
+        Err(format!(
+            "header not found: {}\n  looked in: {}",
+            path,
+            looked.join(", ")
+        ))
     }
 
     // =========================================================================
@@ -3990,4 +3989,102 @@ mod tests {
             sym.kind
         );
     }
+}
+
+/// Where `import c "header.h"` looks, after the importing file's own directory
+/// and the path as written.
+///
+/// Asking the C compiler is the point: `compile_c` builds the C side with `CC`
+/// (or `cc`), and if the header parser reads a different `<stdint.h>` than that
+/// compiler will, the layouts it derives are for the wrong headers — and the
+/// by-value struct ABI reads its field offsets from those layouts. The two lists
+/// used to be unrelated, one of them four hardcoded Linux paths.
+///
+/// `CPATH` and `C_INCLUDE_PATH` come first because that is what they mean to
+/// the compiler itself; this is not a new interface, it is the existing one.
+/// The hardcoded list stays as a last resort for when the compiler can't be
+/// reached at all.
+///
+/// Computed once — the answer can't change inside a compilation, and each query
+/// is a process spawn.
+///
+/// Still host-only: the target's headers are a separate question (#1102), and
+/// this asks the host compiler because the resolver has no target to ask about.
+fn c_include_search_dirs() -> &'static [std::path::PathBuf] {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut push = |d: PathBuf| {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        };
+        for var in ["CPATH", "C_INCLUDE_PATH"] {
+            if let Ok(val) = std::env::var(var) {
+                for part in val.split(':').filter(|p| !p.is_empty()) {
+                    push(PathBuf::from(part));
+                }
+            }
+        }
+        let from_cc = cc_system_include_dirs();
+        let asked = !from_cc.is_empty();
+        for d in from_cc {
+            push(d);
+        }
+        if !asked {
+            for d in ["/usr/include", "/usr/local/include",
+                      "/usr/include/x86_64-linux-gnu", "/usr/include/aarch64-linux-gnu"] {
+                push(PathBuf::from(d));
+            }
+        }
+        dirs
+    })
+}
+
+/// The C compiler's own system header list, from `cc -E -Wp,-v` on empty input.
+/// Every compiler that matters prints it to stderr between two fixed lines.
+/// Empty when the compiler isn't there or answers in a shape this doesn't read,
+/// which is the caller's signal to fall back.
+fn cc_system_include_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // `-` reads the translation unit from stdin, so this needs no temp file and
+    // no `/dev/null` (which isn't one on every host).
+    let Ok(mut child) = Command::new(&cc)
+        .args(["-E", "-Wp,-v", "-xc", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    drop(child.stdin.take());
+    let Ok(out) = child.wait_with_output() else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stderr);
+    let mut dirs = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("#include <...> search starts here:") {
+            inside = true;
+            continue;
+        }
+        if line.starts_with("End of search list.") {
+            break;
+        }
+        if inside {
+            let d = line.trim();
+            // clang appends " (framework directory)" to framework entries, which
+            // are not header directories in this sense.
+            if !d.is_empty() && !d.ends_with("(framework directory)") {
+                dirs.push(PathBuf::from(d));
+            }
+        }
+    }
+    dirs
 }

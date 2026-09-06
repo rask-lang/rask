@@ -7666,6 +7666,58 @@ fn a_c_header_is_found_beside_the_file_that_imports_it() {
     );
 }
 
+/// A header anywhere else is reached the way the C compiler reaches one: the
+/// search list comes from `CPATH`/`C_INCLUDE_PATH` and then from `cc` itself,
+/// rather than from four hardcoded Linux paths (#1102). The hardcoded list
+/// never had `/usr/lib/gcc/.../include`, so `<stdbool.h>` and friends were only
+/// findable by luck of distribution layout.
+#[test]
+fn a_c_header_is_found_through_cpath() {
+    let dir = std::env::temp_dir().join("rask_cpath_header_test");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("vendored_widget.h"), "int widget_area(int w, int h);\n")
+        .expect("write header");
+
+    let src_dir = std::env::temp_dir().join("rask_cpath_header_src");
+    let _ = std::fs::create_dir_all(&src_dir);
+    let src = src_dir.join("uses_widget.rk");
+    std::fs::write(
+        &src,
+        "import c \"vendored_widget.h\"\n\nfunc main() {\n    return\n}\n",
+    )
+    .expect("write source");
+
+    let run = |cpath: Option<&std::path::Path>| {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("check").arg(&src).env("RASK_RUNTIME_DIR", runtime_dir());
+        match cpath {
+            Some(p) => { cmd.env("CPATH", p); }
+            None => { cmd.env_remove("CPATH"); }
+        }
+        let out = cmd.output().expect("failed to run rask check");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (text, out.status.success())
+    };
+
+    let (missing, ok) = run(None);
+    assert!(!ok, "the header is nowhere on the default list:\n{missing}");
+    // The failure says where it looked, so "not found" is actionable.
+    assert!(
+        missing.contains("looked in:"),
+        "the error should list the directories searched:\n{missing}"
+    );
+
+    let (found, ok) = run(Some(&dir));
+    assert!(ok, "CPATH should put the header in reach:\n{found}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&src_dir);
+}
+
 #[test]
 fn a_name_a_c_header_never_declared_is_not_a_type() {
     let (text, ok) = check_in_fixtures("c_struct_unknown.rk");

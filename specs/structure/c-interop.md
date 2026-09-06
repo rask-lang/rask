@@ -11,7 +11,7 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 
 | Rule | Description |
 |------|-------------|
-| **CI1: Auto-parse** | `import c "header.h"` parses header with built-in C parser, exposes as `c.symbol` |
+| **CI1: Auto-parse** | `import c "header.h"` parses header with built-in C parser, exposes as `c.symbol`. Searched for beside the importing file, then as written, then along `CPATH`/`C_INCLUDE_PATH`, then along the C compiler's own system list (asked of `CC`, per XC3) |
 | **CI2: Explicit binding** | `extern "C" { }` declares C functions/types manually |
 | **CI3: Unsafe required** | All C function calls require `unsafe` context |
 | **CI4: Override** | Explicit bindings override auto-parsed declarations per-symbol |
