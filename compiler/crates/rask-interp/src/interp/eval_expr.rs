@@ -919,8 +919,12 @@ impl Interpreter {
                         }
                     }
 
-                    return self.call_method(obj_val, field, arg_vals)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    let outer = self.failed_call_span.take();
+                    let result = self.call_method(obj_val, field, arg_vals);
+                    let inner = self.failed_call_span.take();
+                    self.failed_call_span = outer;
+                    return result
+                        .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
                 }
 
                 // A bare name in call position is a function, not a variable —
@@ -956,8 +960,11 @@ impl Interpreter {
                     ExprKind::Ident(written) => written_type_args(written),
                     _ => None,
                 };
-                let result = self.call_value(func_val, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                // The callee's own line when it has one — a panic several
+                // frames down belongs where it happened, not at the outermost
+                // call (#1110).
+                let result = self.call_value_spanned(func_val, arg_vals)
+                    .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)));
                 self.pending_type_args = outer_type_args;
                 let result = result?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
@@ -1313,8 +1320,14 @@ impl Interpreter {
                 // "3.5" came back as an error (#480).
                 let method = self.parse_target_method(method, type_args, expr.id);
 
-                self.call_method(receiver, &method, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
+                // Blame the line the callee failed on, not this call. Taken
+                // and restored around the call so an error swallowed inside it
+                // can't leave a stale span for something later (#1110).
+                let outer = self.failed_call_span.take();
+                let result = self.call_method(receiver, &method, arg_vals);
+                let inner = self.failed_call_span.take();
+                self.failed_call_span = outer;
+                result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
             }
 
             ExprKind::Binary { op, left, right } => match op {

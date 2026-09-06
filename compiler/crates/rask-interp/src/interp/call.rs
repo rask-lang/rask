@@ -55,6 +55,16 @@ impl Interpreter {
         self.call_depth += 1;
         let result = self.call_function_at_depth(func, args);
         self.call_depth -= 1;
+        // Where it actually happened, for the callers that lose it. Everything
+        // between a method call and this point hands back a bare
+        // `RuntimeError`, so the span is gone by the time anyone rebuilds a
+        // diagnostic and each frame re-attached its own — leaving the outermost
+        // call in `main` as the reported line (#1110). Read and restored around
+        // the call in `eval_expr`, so a swallowed error can't leave a stale one
+        // for something later.
+        if let Err(diag) = &result {
+            self.failed_call_span = Some(diag.span);
+        }
         result
     }
 

@@ -59,6 +59,32 @@ impl Interpreter {
         Ok((value, written))
     }
 
+    /// Call a value, keeping where the failure happened.
+    ///
+    /// `Some(span)` is a line inside the callee; `None` means the call
+    /// machinery itself refused — an undefined function, a wrong argument
+    /// count — and the caller's own span is the right one.
+    ///
+    /// The distinction is the whole point. `call_value` hands back a bare
+    /// `RuntimeError`, so every frame re-attached its own span on the way out
+    /// and the surviving one was the outermost call in `main`: a panic in
+    /// `inner()` two frames down was reported at `println("{middle()}")`
+    /// (#1110).
+    pub(crate) fn call_value_spanned(
+        &mut self,
+        func: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, (RuntimeError, Option<rask_ast::Span>)> {
+        if let Value::Function { name } = &func {
+            if let Some(decl) = self.functions.get(name).cloned() {
+                return self
+                    .call_function(&decl, args)
+                    .map_err(|diag| (diag.error, Some(diag.span)));
+            }
+        }
+        self.call_value(func, args).map_err(|e| (e, None))
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name } => {

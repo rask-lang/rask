@@ -4961,6 +4961,73 @@ fn build_and_run_package(tag: &str, files: &[(&str, &str)]) -> (bool, String) {
     (ok, format!("{}\n{}", build_out, run_out))
 }
 
+const PANIC_IN_A_CALLEE_SRC: &str = r#"
+func inner() -> i64 {
+    let v: i64? = none
+    return v!
+}
+
+func middle() -> i64 {
+    return inner()
+}
+
+func main() {
+    println("{middle()}")
+    return
+}
+"#;
+
+const PANIC_IN_A_METHOD_SRC: &str = r#"
+struct Box9 {
+    n: i64
+}
+
+extend Box9 {
+    func boom(self) -> i64 {
+        let v: i64? = none
+        return v!
+    }
+}
+
+func main() {
+    let b = Box9 { n: 1 }
+    println("{b.boom()}")
+    return
+}
+"#;
+
+/// A panic several frames down names the line it happened on.
+///
+/// Every `call_*` helper below `call_function` hands back a bare
+/// `RuntimeError`, so the callee's span was dropped and each frame re-attached
+/// its own on the way out — the surviving one being whichever was outermost.
+/// A `v!` on line 4 was reported at the `println` on line 12, two frames away,
+/// while native named line 4 (#1110).
+///
+/// Both spellings: a plain call and a method call, which reach `call_function`
+/// through different helpers and lost the span in different places.
+#[test]
+fn panic_reports_the_line_it_happened_on() {
+    // The line each source panics on, and the line its `main` calls from.
+    for (src, want, not_want) in [
+        (PANIC_IN_A_CALLEE_SRC, 4, 12),
+        (PANIC_IN_A_METHOD_SRC, 9, 14),
+    ] {
+        for interp in [false, true] {
+            let backend = if interp { "interp" } else { "native" };
+            let out = run_rask_run_source(src, interp);
+            assert!(
+                out.contains(&format!(":{want}:")) || out.contains(&format!(":{want}\n")),
+                "{backend}: expected the panic at line {want}:\n{out}"
+            );
+            assert!(
+                !out.contains(&format!(":{not_want}:")),
+                "{backend}: line {not_want} is the call site, not where it failed:\n{out}"
+            );
+        }
+    }
+}
+
 /// Editing a file in a sub-package rebuilds the binary.
 ///
 /// The compilation cache keyed on the *root* package's files alone, and a

@@ -78,6 +78,14 @@ pub struct Interpreter {
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// Where the innermost `call_function` failed, when one did.
+    ///
+    /// The method-dispatch path hands back a bare `RuntimeError`, so a
+    /// diagnostic rebuilt at the call site gets the call site's own span — and
+    /// a panic several frames down was reported at the outermost call in
+    /// `main` (#1110). Taken and restored around each call, never read as
+    /// ambient state.
+    pub(crate) failed_call_span: Option<Span>,
     /// The whole declaration list, kept so a layout can be computed from it.
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
@@ -213,6 +221,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -244,6 +253,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -277,6 +287,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
