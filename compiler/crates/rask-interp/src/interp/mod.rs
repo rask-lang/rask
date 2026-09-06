@@ -78,6 +78,16 @@ pub struct Interpreter {
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// The whole declaration list, kept so a layout can be computed from it.
+    ///
+    /// `reflect.fields<T>()` reports each field's offset and size, and there was
+    /// nothing here to compute them from — the interpreter answered 0 for both
+    /// while native answered the truth (#1104). `rask_mono::compute_struct_layout`
+    /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
+    pub(crate) type_decls: Vec<Decl>,
+    /// Size and alignment of every declared type, so a struct holding another
+    /// sees its real size. Computed once, when the declarations are registered.
+    pub(crate) layout_cache: rask_mono::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -203,6 +213,8 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -232,6 +244,8 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -263,6 +277,8 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),

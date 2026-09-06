@@ -128,6 +128,14 @@ impl Interpreter {
 
         self.register_stdlib_enums();
 
+        // Field offsets and sizes for `reflect.fields<T>()`, from the one
+        // implementation both backends read (#1104). Kept alongside the
+        // declarations because a generic instantiation's layout is computed on
+        // demand, with the arguments the call site wrote.
+        self.type_decls = decls.to_vec();
+        let (_, _, cache) = rask_mono::compute_declared_layouts(decls);
+        self.layout_cache = cache;
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {

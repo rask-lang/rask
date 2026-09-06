@@ -11,6 +11,7 @@ rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
 rask-stdlib = { path = "../rask-stdlib" }
+rask-mono = { path = "../rask-mono" }
 indexmap = "2"
 thiserror.workspace = true
 # Text units (std.strings/U1-U5). The interpreter is the reference, so it uses

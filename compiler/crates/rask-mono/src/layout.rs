@@ -364,7 +364,10 @@ fn is_typevar_name(name: &str) -> bool {
 }
 
 /// Parse a field type string (from AST) to a Type for layout computation.
-pub(crate) fn parse_field_type(s: &str) -> Type {
+/// Public because the interpreter parses the same strings for the same reason:
+/// a type argument written in a `reflect.fields<Pair<string>>()` call has to
+/// become the `Type` the layout pass expects (#1104).
+pub fn parse_field_type(s: &str) -> Type {
     // `d: time.Duration` on a field. Left dotted it fell through to the unknown
     // name at the bottom of `type_size_align`, and the field got pointer-sized
     // room by default — right for `Duration` by luck, and for anything wider a

@@ -1480,6 +1480,7 @@ dependencies = [
  "rask-ast",
  "rask-comptime",
  "rask-lexer",
+ "rask-mono",
  "rask-parser",
  "rask-stdlib",
  "rask-types",
@@ -1558,7 +1559,6 @@ name = "rask-mono"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
- "rask-diagnostics",
  "rask-resolve",
  "rask-stdlib",
  "rask-types",

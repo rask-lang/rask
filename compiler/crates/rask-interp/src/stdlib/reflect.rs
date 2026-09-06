@@ -90,6 +90,36 @@ impl Interpreter {
         }
     }
 
+    /// The layout of the struct `type_name` names, with its type arguments
+    /// substituted.
+    ///
+    /// A generic instantiation gets its own: `Pair<string>` puts 16 bytes where
+    /// `Pair<i64>` puts 8, and reading the shared layout — where every
+    /// parameter stands in as a word — would report the field after it at the
+    /// wrong offset. Same rule native follows, for the same reason (#781, #968).
+    fn struct_layout_of(
+        &self,
+        decl: &rask_ast::decl::StructDecl,
+        type_name: &str,
+        params: &[String],
+    ) -> Option<rask_mono::StructLayout> {
+        let args: Vec<&str> = rask_ast::type_str::split_generic_name(type_name)
+            .map(|(_, written)| written)
+            .unwrap_or_default();
+        if args.len() != params.len() {
+            return None;
+        }
+        let type_args: Vec<rask_types::Type> =
+            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
+        // `compute_struct_layout` wants the declaration in its `Decl` wrapper,
+        // which is why the list is kept: the span decides whether the type
+        // counts as stdlib, and a synthesized one would answer that wrong.
+        let owner = self.type_decls.iter().find(|d| {
+            matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
+        })?;
+        Some(rask_mono::compute_struct_layout(owner, &type_args, &self.layout_cache))
+    }
+
     /// reflect.fields<T>() → []FieldInfo
     ///
     /// A generic instantiation is written `Ring<i64>` and declared as `Ring`, so
@@ -110,6 +140,7 @@ impl Interpreter {
             })?;
         let params: Vec<String> = decl.type_params.iter().map(|p| p.name.clone()).collect();
         let subst = rask_ast::type_str::generic_type_subst(type_name, &params);
+        let layout = self.struct_layout_of(decl, type_name, &params);
 
         let field_infos: Vec<Value> = decl
             .fields
@@ -124,8 +155,16 @@ impl Interpreter {
                     "type_name".to_string(),
                     Value::String(Arc::new(Mutex::new(rask_ast::type_str::substitute_type_params(&f.ty, &subst)))),
                 );
-                fields.insert("offset".to_string(), Value::int(0));
-                fields.insert("size".to_string(), Value::int(0));
+                // Both were 0 here while native reported the truth (#1104).
+                // The numbers come from the layout pass mono already runs, so
+                // the two backends can't drift into two answers.
+                let (offset, size) = layout
+                    .as_ref()
+                    .and_then(|l| l.fields.iter().find(|fl| fl.name == f.name))
+                    .map(|fl| (fl.offset as i64, fl.size as i64))
+                    .unwrap_or((0, 0));
+                fields.insert("offset".to_string(), Value::int(offset));
+                fields.insert("size".to_string(), Value::int(size));
                 fields.insert(
                     "is_public".to_string(),
                     Value::Bool(f.visibility.is_pub()),

@@ -17,9 +17,10 @@
 // types name the type parameter rather than the argument, which is a wrong
 // answer that reads like a right one. The arguments are substituted back in.
 //
-// Offsets and sizes are deliberately not asserted here: the interpreter reports
-// 0 for both, on every struct, generic or not (#1104). This file is about the
-// half where the two backends agree.
+// Offsets and sizes are asserted too. They used to be unassertable — the
+// interpreter answered 0 for both, on every struct, generic or not, because it
+// had no layouts to read (#1104). It runs mono's layout pass now, so there is
+// one set of numbers rather than two.
 
 import std.reflect
 
@@ -50,6 +51,14 @@ func describe<T>() -> string {
     mut out = ""
     comptime for f in reflect.fields<T>() {
         out = "{out}{f.name}:{f.type_name} "
+    }
+    return out
+}
+
+func layout_of<T>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name}@{f.offset}+{f.size} "
     }
     return out
 }
@@ -100,6 +109,19 @@ struct Tag {
 
 test "substitution replaces whole names only" {
     assert describe<Holder<i64>>() == "item:i64 label:Tag "
+}
+
+// The type argument decides where the field after it starts. Reading the
+// shared layout — where every parameter stands in as a word — would put `tag`
+// at 8 for all three.
+test "an instantiation's offsets follow its own argument" {
+    assert layout_of<Pair<i64>>() == "value@0+8 tag@8+8 "
+    assert layout_of<Pair<string>>() == "value@0+16 tag@16+8 "
+}
+
+test "and a plain struct packs to its declared widths" {
+    assert layout_of<Plain>() == "a@0+8 b@8+16 "
+    assert layout_of<Tag>() == "n@0+8 "
 }
 
 test "a non-generic struct still reads the same" {
