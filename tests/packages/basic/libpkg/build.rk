@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "libpkg" "0.1.0" {
+    description: "A dependency, for testing that there can be one"
+    license: "MIT OR Apache-2.0"
+}

@@ -1,0 +1,12 @@
+# Multi-package fixtures that don't build yet, and the issue tracking each.
+# One name per line — the directory under tests/packages/. `#` comments ignored.
+#
+# The gate reports a fixture that starts working, so a fix can't be made and
+# left unrecorded.
+
+constructor              # #1112 — a package can't export a function that
+                         # constructs its own struct. `prefix_decl` renames the
+                         # declaration and not the references to it, so
+                         # `libpkg$make`'s return type is still the string "Dog"
+                         # and its body still says `Dog { … }`. Declaring such a
+                         # function breaks every consumer, called or not.

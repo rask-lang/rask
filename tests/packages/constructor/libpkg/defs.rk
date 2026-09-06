@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The shape a library is mostly made of, and the one that doesn't work (#1112).
+//
+// `check_package` merges a dependency's public declarations into the root's and
+// renames each through `prefix_decl` — the declaration's own name and nothing
+// else. So `Dog` becomes `libpkg$Dog` while `libpkg$make`'s return type is still
+// the string "Dog" and its body still says `Dog { … }`, a name nothing in the
+// merged program declares.
+//
+// Note what that costs: the consumer below never calls `make`. Declaring it is
+// enough to make every consumer of this package fail to build.
+
+public struct Dog {
+    public age: i64
+}
+
+public func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+public func make() -> Dog {
+    return Dog { age: 7 }
+}

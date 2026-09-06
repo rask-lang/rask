@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a dependency can export today. The one shape missing here — a function
+// that constructs `Dog` and hands it back — is `../../constructor/`, and #1112.
+
+public struct Dog {
+    public age: i64
+    public name: string
+}
+
+/// A scalar in, a scalar out. Nothing crosses but numbers.
+public func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+/// The library reads a value the caller built.
+public func years(d: Dog) -> i64 {
+    return d.age
+}
+
+/// And one that reads a string out of it, so the crossing isn't only integers.
+public func describe(d: Dog) -> string {
+    return "{d.name} is {d.age}"
+}
