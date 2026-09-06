@@ -1956,7 +1956,7 @@ impl TypeChecker {
                         Some(GenericArg::Type(inner)) => Some((**inner).clone()),
                         _ => None,
                     };
-                    let elem_ty = match &source_ty {
+                    let unwrapped = match &source_ty {
                         Type::Generic { base, args } if !args.is_empty() => {
                             let base_name = self.types.type_name(*base);
                             unwraps(&base_name).then(|| inner_of(args)).flatten()
@@ -1965,8 +1965,9 @@ impl TypeChecker {
                             unwraps(name).then(|| inner_of(args)).flatten()
                         }
                         _ => None,
-                    }
-                    .unwrap_or_else(|| source_ty.clone());
+                    };
+                    let is_box = unwrapped.is_some();
+                    let elem_ty = unwrapped.unwrap_or_else(|| source_ty.clone());
                     // conc.sync/R4: bare `with shared as v` names no lock, and the
                     // two locks don't behave the same — a read binding permits
                     // other readers and never writes back, a write binding blocks
@@ -2018,6 +2019,25 @@ impl TypeChecker {
                     // error there (ST3a), so the suggestion would be one.
                     self.check_torn_lock_update(binding, body);
 
+                    // The three sources `with` has: an element reached by key,
+                    // a box's payload, and the lock a box hands out. A plain
+                    // place is none of them — there is no key to re-resolve
+                    // (W2a-W2d) and no lock to hold, so the block does nothing
+                    // the field access already does. The interpreter said so at
+                    // run time and native compiled it, which is the divergence
+                    // in #1114; the grammar in mem.borrowing takes an index.
+                    let indexes = matches!(&binding.source.kind, ExprKind::Index { .. });
+                    let calls_a_method =
+                        matches!(&binding.source.kind, ExprKind::MethodCall { .. });
+                    if !indexes && !is_box && !calls_a_method {
+                        self.errors.push(TypeError::WithNeedsElementOrBox {
+                            place: Self::source_text_for(&binding.source)
+                                .unwrap_or_else(|| "this".to_string()),
+                            ty: self.render_type(&self.ctx.apply(&source_ty)),
+                            binding: binding.name.clone(),
+                            span: binding.source.span,
+                        });
+                    }
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {
                             name: Self::source_text_for(&binding.source)

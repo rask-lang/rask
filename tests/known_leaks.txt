@@ -216,3 +216,5 @@ t_week_traits.rk  # 5 allocations
 t_while_presence_binding.rk  # 8 allocations
 t_with_collection_field_writes.rk  # 14 allocations
 t_with_mutex_value.rk  # 4 allocations
+t_with_sources.rk  # 6 allocations — the Shared box (#1099's other half) and
+                   # the Vec/Pool of structs holding strings (#1035)

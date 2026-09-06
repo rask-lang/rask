@@ -1485,6 +1485,29 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]")
             }
 
+            WithNeedsElementOrBox { place, ty, binding, span } => {
+                Diagnostic::error(format!(
+                    "`with` needs an element or a box, and `{}` is a `{}`",
+                    place, ty
+                ))
+                .with_code("E0874")
+                .with_primary(*span, "no element to scope and no lock to hold")
+                .with_fix(format!(
+                    "name the element — `with {}[…] as {}` — or write through it \
+                     where it lives: `{}.method(…)`",
+                    place, binding, place
+                ))
+                .with_why(
+                    "a `with` block scopes access to one element of a collection, \
+                     reached by key, or to a box's payload. It re-resolves the key \
+                     after a structural change and holds the lock for the block; a \
+                     plain place has neither, so the block does nothing the access \
+                     itself doesn't already do. The interpreter said so at run time \
+                     and native compiled it [mem.borrowing/W1-W7, conc.sync/R4]"
+                        .to_string(),
+                )
+            }
+
             OverlappingArgumentBorrow { callee, written, other, span } => {
                 let same = written == other;
                 let headline = if same {

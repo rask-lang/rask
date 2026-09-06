@@ -424,6 +424,19 @@ pub enum TypeError {
         param_name: String,
         span: Span,
     },
+    /// mem.borrowing/W1: a `with` source that is neither an element reached by
+    /// key nor a box.
+    #[error("`with` needs an element or a box, and `{place}` is a `{ty}`")]
+    WithNeedsElementOrBox {
+        /// Not called `source`: `thiserror` reads that name as the error cause.
+        place: String,
+        /// Rendered through the type table — `Display` on a `Type` prints a
+        /// `Named` id as `<type#3>`.
+        ty: String,
+        binding: String,
+        span: Span,
+    },
+
     /// F3: two arguments of one call reach the same storage and one of them
     /// writes. `written` is the path going in as `mutate`, `other` the path it
     /// overlaps.
@@ -1261,6 +1274,7 @@ impl TypeError {
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
             | OverlappingArgumentBorrow { .. }
+            | WithNeedsElementOrBox { .. }
             | UnsafeRequired { .. }
             | CStructReturn { .. }
             | TraitObjectSelfReturn { .. }
