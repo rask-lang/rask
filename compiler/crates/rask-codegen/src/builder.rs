@@ -182,6 +182,8 @@ struct CodegenCtx<'a> {
     params: &'a [rask_mir::MirLocal],
     /// Declared param types of every Rask function, by MIR name
     fn_param_types: &'a HashMap<String, Vec<MirType>>,
+    /// Return types of every Rask function, by MIR name (#1109).
+    fn_ret_types: &'a HashMap<String, MirType>,
     func_refs: &'a HashMap<String, FuncRef>,
     struct_layouts: &'a [StructLayout],
     enum_layouts: &'a [EnumLayout],
@@ -205,6 +207,9 @@ struct CodegenCtx<'a> {
     /// Byte offset of the current MIR statement being lowered
     current_span_start: u32,
     ret_ty: &'a MirType,
+    /// The caller's destination for an aggregate return, when the return goes
+    /// through one. Block param zero of the entry block (#1109).
+    dst_param: Option<Value>,
     is_main: bool,
     /// An `extern "C"` export: its body is bracketed with the FFI panic
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
@@ -317,6 +322,8 @@ pub struct FunctionBuilder<'a> {
     internal_fns: &'a HashSet<String>,
     /// Declared param types of every Rask function, by MIR name
     fn_param_types: &'a HashMap<String, Vec<MirType>>,
+    /// Declared return types, same keying (#1109).
+    fn_ret_types: &'a HashMap<String, MirType>,
     /// Debug vs Release — controls whether pool access is inlined
     build_mode: BuildMode,
 
@@ -363,6 +370,7 @@ impl<'a> FunctionBuilder<'a> {
         panicking_fns: &'a HashSet<String>,
         internal_fns: &'a HashSet<String>,
         fn_param_types: &'a HashMap<String, Vec<MirType>>,
+        fn_ret_types: &'a HashMap<String, MirType>,
         build_mode: BuildMode,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
@@ -380,6 +388,7 @@ impl<'a> FunctionBuilder<'a> {
             panicking_fns,
             internal_fns,
             fn_param_types,
+            fn_ret_types,
             build_mode,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
@@ -559,6 +568,18 @@ impl<'a> FunctionBuilder<'a> {
         // Append parameters to the entry block. Binding them is a separate step
         // below: an address-taken parameter has to be stored into its slot, and
         // the slot doesn't exist until the loop after this one has run.
+        // The destination pointer, when the caller supplies one, is block param
+        // zero — the same position the signature puts it in (#1109).
+        let dst_param = if self.mir_fn.name != "main"
+            && Self::returns_through_dst(
+                &self.mir_fn.ret_ty, self.struct_layouts, self.enum_layouts,
+            )
+        {
+            Some(builder.append_block_param(*entry_block, types::I64))
+        } else {
+            None
+        };
+
         let mut incoming: Vec<(LocalId, Value)> = Vec::with_capacity(self.mir_fn.params.len());
         for param in &self.mir_fn.params {
             let param_ty = mir_to_cranelift_type(&param.ty)?;
@@ -614,6 +635,7 @@ impl<'a> FunctionBuilder<'a> {
             locals: &self.mir_fn.locals,
             params: &self.mir_fn.params,
             fn_param_types: self.fn_param_types,
+            fn_ret_types: self.fn_ret_types,
             func_refs: self.func_refs,
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
@@ -634,6 +656,7 @@ impl<'a> FunctionBuilder<'a> {
             current_col: self.current_col,
             current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
+            dst_param,
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
@@ -727,7 +750,14 @@ impl<'a> FunctionBuilder<'a> {
             // Add return value as block parameter if function returns a value
             // (main is called from C as void — never returns a value)
             let is_main = self.mir_fn.name == "main";
-            let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void) && !is_main {
+            let through_dst = !is_main
+                && Self::returns_through_dst(
+                    &self.mir_fn.ret_ty, self.struct_layouts, self.enum_layouts,
+                );
+            let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void)
+                && !is_main
+                && !through_dst
+            {
                 let ret_cl_ty = mir_to_cranelift_type(&self.mir_fn.ret_ty)?;
                 Some(builder.append_block_param(shared_block, ret_cl_ty))
             } else {
@@ -2964,20 +2994,27 @@ impl<'a> FunctionBuilder<'a> {
             sig.params.push(AbiParam::new(ty));
         }
 
+        let mut dst_ptr = None;
         if let Some(dst_id) = dst {
             let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
             if let Some(local) = dst_local {
                 let cl_ret_ty = mir_to_cranelift_type(&local.ty)?;
                 sig.returns.push(AbiParam::new(cl_ret_ty));
+                // The closure body was declared with a destination parameter if
+                // its answer is wider than a word, so the call has to supply one
+                // (#1109). The destination's type is the closure's return type.
+                if Self::returns_through_dst(&local.ty, ctx.struct_layouts, ctx.enum_layouts) {
+                    dst_ptr = Some(Self::call_dst_ptr(builder, Some(dst_id), &local.ty, ctx));
+                }
             }
         }
 
         let call_inst = crate::closures::call_closure(
-            builder, closure_val, sig, &arg_vals,
+            builder, closure_val, sig, &arg_vals, dst_ptr,
         );
 
         if let Some(dst_id) = dst {
-            let result = builder.inst_results(call_inst).first().copied();
+            let result = dst_ptr.or_else(|| builder.inst_results(call_inst).first().copied());
             if let Some(result) = result {
                 let var = ctx.var_map.get(dst_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -3008,7 +3045,13 @@ impl<'a> FunctionBuilder<'a> {
                             let scratch_ptr = builder.ins().stack_addr(types::I64, scratch, 0);
                             Self::copy_aggregate(builder, scratch_ptr, *ss, n);
                         }
-                        n => { Self::copy_aggregate(builder, result, *ss, n); }
+                        n => {
+                            // Already in this slot when the closure wrote
+                            // through the pointer we handed it.
+                            if dst_ptr.is_none() {
+                                Self::copy_aggregate(builder, result, *ss, n);
+                            }
+                        }
                     }
                     let addr = builder.ins().stack_addr(types::I64, *ss, 0);
                     builder.def_var(*var, addr);
@@ -3143,7 +3186,31 @@ impl<'a> FunctionBuilder<'a> {
             }
         };
 
+        let ret_mir = dst
+            .as_ref()
+            .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+            .map(|l| l.ty.clone());
+        // The implementing method was declared with a destination parameter if
+        // its answer is wider than a word, so the dispatch has to supply one —
+        // ahead of `self`, which is the order the declaration puts it in.
+        // Getting this wrong is not a wrong value, it is the callee writing
+        // through a pointer nobody passed (#1109).
+        let dst_ptr = match &ret_mir {
+            Some(ty)
+                if Self::returns_through_dst(ty, ctx.struct_layouts, ctx.enum_layouts) =>
+            {
+                Some(Self::call_dst_ptr(builder, dst.as_ref(), ty, ctx))
+            }
+            _ => None,
+        };
+
         let mut sig = Signature::new(isa::CallConv::SystemV);
+        if dst_ptr.is_some() {
+            sig.params.push(AbiParam::special(
+                types::I64,
+                cranelift_codegen::ir::ArgumentPurpose::StructReturn,
+            ));
+        }
         sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
         let arg_tys: Vec<MirType> = args
             .iter()
@@ -3152,16 +3219,15 @@ impl<'a> FunctionBuilder<'a> {
         for ty in &arg_tys {
             sig.params.push(AbiParam::new(abi_ty(Some(ty))));
         }
-        let ret_mir = dst
-            .as_ref()
-            .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| l.ty.clone());
-        if !matches!(ret_mir, Some(MirType::Void)) {
+        if !matches!(ret_mir, Some(MirType::Void)) && dst_ptr.is_none() {
             sig.returns.push(AbiParam::new(abi_ty(ret_mir.as_ref())));
         }
 
         // Build argument values
-        let mut call_args = Vec::with_capacity(1 + args.len());
+        let mut call_args = Vec::with_capacity(2 + args.len());
+        if let Some(addr) = dst_ptr {
+            call_args.push(addr);
+        }
         call_args.push(data_ptr);
         for (arg, want) in args.iter().zip(arg_tys.iter()) {
             let want_cl = abi_ty(Some(want));
@@ -3179,7 +3245,10 @@ impl<'a> FunctionBuilder<'a> {
         let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
 
         if let Some(dst_id) = dst {
-            let result = builder.inst_results(call_inst)[0];
+            let result = match dst_ptr {
+                Some(addr) => addr,
+                None => builder.inst_results(call_inst)[0],
+            };
             let var = ctx.var_map.get(dst_id)
                 .ok_or_else(|| CodegenError::UnsupportedFeature(
                     format!("TraitCall destination for '{}' not found", method_name)
@@ -3193,7 +3262,7 @@ impl<'a> FunctionBuilder<'a> {
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
                 if *dst_size <= 8 {
                     builder.ins().stack_store(result, *dst_ss, 0);
-                } else {
+                } else if dst_ptr.is_none() {
                     Self::copy_aggregate(builder, result, *dst_ss, *dst_size);
                 }
                 let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
@@ -5291,6 +5360,21 @@ impl<'a> FunctionBuilder<'a> {
         let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
         let sig = &builder.func.dfg.signatures[ext_func.signature];
         let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+        // #1109: the callee's own signature says whether it writes its answer
+        // through a pointer we supply. Asking it rather than re-deriving the
+        // size rule here is what keeps the two sides from ever disagreeing.
+        let wants_dst = sig
+            .params
+            .first()
+            .is_some_and(|p| p.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn);
+        let dst_ptr = if wants_dst {
+            let ret_ty = ctx.fn_ret_types.get(&func.name).cloned().unwrap_or(MirType::Void);
+            let addr = Self::call_dst_ptr(builder, dst, &ret_ty, ctx);
+            arg_vals.insert(0, addr);
+            Some(addr)
+        } else {
+            None
+        };
 
         // Convert arg types to match the declared signature
         for (i, val) in arg_vals.iter_mut().enumerate() {
@@ -5717,11 +5801,18 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().iconst(types::I64, 0)
                 }
                 _ => {
-                    let results = builder.inst_results(call_inst);
-                    if !results.is_empty() {
-                        results[0]
+                    // A call that answered through the pointer we passed has no
+                    // result register — the destination we supplied is where
+                    // the value already is (#1109).
+                    if let Some(addr) = dst_ptr {
+                        addr
                     } else {
-                        builder.ins().iconst(types::I64, 0)
+                        let results = builder.inst_results(call_inst);
+                        if !results.is_empty() {
+                            results[0]
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        }
                     }
                 }
             };
@@ -5767,8 +5858,12 @@ impl<'a> FunctionBuilder<'a> {
                             Self::copy_aggregate(builder, scratch_ptr, *ss, n);
                         }
                         n => {
-                            // Larger aggregates: copy from returned pointer
-                            Self::copy_aggregate(builder, final_val, *ss, n);
+                            // Larger aggregates: copy from returned pointer.
+                            // Unless the callee wrote through this very slot —
+                            // then the copy would be the slot onto itself.
+                            if dst_ptr.is_none() {
+                                Self::copy_aggregate(builder, final_val, *ss, n);
+                            }
                         }
                     }
                 } else if ctx.adapt_table.get(&func.name)
@@ -5917,7 +6012,10 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().jump(shared_block, &[]);
                         } else if let Some(val) = Self::exit_value(builder, value, ctx)? {
                             builder.ins().jump(shared_block, &[val]);
-                        } else if matches!(ctx.ret_ty, MirType::Void) {
+                        } else if matches!(ctx.ret_ty, MirType::Void) || ctx.dst_param.is_some() {
+                            // A function answering through the caller's pointer
+                            // has already written it, so the shared block takes
+                            // no value and there is none to pass (#1109).
                             builder.ins().jump(shared_block, &[]);
                         } else {
                             // A bare `return` in a value-returning function, e.g.
@@ -6326,14 +6424,14 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
-    /// Call `{ErrType}_message(err) -> string` and copy the 16 bytes out.
+    /// Call `{ErrType}_message(err) -> string` and get the 16 bytes into a slot
+    /// this frame owns.
     ///
-    /// An aggregate return is a pointer to the callee's own storage, so the
-    /// convention everywhere is: copy before doing anything else. Calls with a
-    /// MIR destination get that copy for free — `stack_slot_map` gives them a
-    /// caller-owned slot. This one is hand-rolled and has no destination local,
-    /// so it does its own copy; the next call would otherwise reuse the frame
-    /// the pointer names, and the next call here is the one that prints it.
+    /// A string is wider than a word, so `message()` writes through a
+    /// destination pointer — this supplies one, and there is nothing to copy
+    /// afterwards. A `message()` compiled before that convention hands back a
+    /// pointer to its own frame instead, and the copy is what keeps the next
+    /// call from reusing it; the next call here is the one that prints it.
     ///
     /// Returns a null pointer when the error type has no `message()`.
     fn call_message(
@@ -6344,16 +6442,28 @@ impl<'a> FunctionBuilder<'a> {
         let Some(fr) = msg_fr else {
             return builder.ins().iconst(types::I64, 0);
         };
-        let call = builder.ins().call(fr, &[err_ptr]);
-        let src = builder.inst_results(call)[0];
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, 16, 0,
         ));
+        let dst = builder.ins().stack_addr(types::I64, ss, 0);
+        let wants_dst = {
+            let ext_func = &builder.func.dfg.ext_funcs[fr];
+            let sig = &builder.func.dfg.signatures[ext_func.signature];
+            sig.params
+                .first()
+                .is_some_and(|p| p.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn)
+        };
+        if wants_dst {
+            builder.ins().call(fr, &[dst, err_ptr]);
+            return dst;
+        }
+        let call = builder.ins().call(fr, &[err_ptr]);
+        let src = builder.inst_results(call)[0];
         for off in [0i32, 8] {
             let word = builder.ins().load(types::I64, MemFlags::new(), src, off);
             builder.ins().stack_store(word, ss, off);
         }
-        builder.ins().stack_addr(types::I64, ss, 0)
+        dst
     }
 
     /// The declared name behind a struct or enum MIR type, for mangled-name
@@ -6380,7 +6490,36 @@ impl<'a> FunctionBuilder<'a> {
     /// raw operand: `return content` from a `string or IoError` function with
     /// an `ensure` in scope handed the caller the bare string pointer, and the
     /// caller read a Result tag out of the first bytes of the text.
+    /// The value a `return` hands back, with the destination pointer honoured.
+    ///
+    /// `exit_value_in_frame` builds the answer in this frame and gives back its
+    /// address, which is what every caller read — after `ret`, out of a frame
+    /// that no longer existed (#1109). When the caller supplied a destination,
+    /// the bytes are copied into it here, before the return, and that pointer
+    /// is what goes back.
     fn exit_value(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Option<Value>> {
+        let produced = Self::exit_value_in_frame(builder, value, ctx)?;
+        let Some(dst) = ctx.dst_param else {
+            return Ok(produced);
+        };
+        if let Some(src) = produced {
+            let size = Self::resolve_type_alloc_size(
+                ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
+            )
+            .unwrap_or(ctx.ret_ty.size());
+            Self::copy_aggregate_to_ptr(builder, src, dst, size);
+        }
+        // Nothing goes back in a register: the answer is already where the
+        // caller asked for it, and Cranelift rejects a `StructReturn` signature
+        // that also returns a value.
+        Ok(None)
+    }
+
+    fn exit_value_in_frame(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
@@ -6617,11 +6756,64 @@ impl<'a> FunctionBuilder<'a> {
         None
     }
 
+    /// The address a call's aggregate answer should be written into.
+    ///
+    /// The destination local's own slot when it has one, so the copy that used
+    /// to follow the call becomes nothing; a scratch slot otherwise. Both sides
+    /// of the call decide with `returns_through_dst`, so a caller can never
+    /// supply a pointer the callee doesn't expect or leave one out that it does
+    /// (#1109).
+    fn call_dst_ptr(
+        builder: &mut ClifFunctionBuilder,
+        dst: Option<&LocalId>,
+        ret_ty: &MirType,
+        ctx: &CodegenCtx,
+    ) -> Value {
+        if let Some((ss, _)) = dst.and_then(|d| ctx.stack_slot_map.get(d)) {
+            return builder.ins().stack_addr(types::I64, *ss, 0);
+        }
+        let size = Self::resolve_type_alloc_size(ret_ty, ctx.struct_layouts, ctx.enum_layouts)
+            .unwrap_or(ret_ty.size())
+            .max(8);
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, size, 0,
+        ));
+        builder.ins().stack_addr(types::I64, ss, 0)
+    }
+
+    /// Does a function returning `ret_ty` hand its answer back through a
+    /// destination pointer the caller supplies?
+    ///
+    /// Anything wider than a machine word used to be returned as *the address
+    /// of the callee's own stack slot*, and the caller copied out of it after
+    /// `ret`. Nothing normally writes below the stack pointer in that window,
+    /// so the bytes were usually still intact and the program was right by
+    /// luck; a signal delivered there lands its frame exactly on them, which is
+    /// why `t19b_union_method_dispatch.rk` died in about two CI runs in five
+    /// and never once locally (#1109).
+    ///
+    /// The rule lives here and nowhere else. Six places build a signature for a
+    /// Rask function — the declaration, the definition, the entry block, the
+    /// cleanup block, the call, and the by-hand ones for closures and trait
+    /// dispatch — and a caller that disagrees with its callee writes through a
+    /// pointer the other side never passed.
+    pub(crate) fn returns_through_dst(
+        ret_ty: &MirType,
+        struct_layouts: &[StructLayout],
+        enum_layouts: &[EnumLayout],
+    ) -> bool {
+        if matches!(ret_ty, MirType::Void) {
+            return false;
+        }
+        Self::resolve_type_alloc_size(ret_ty, struct_layouts, enum_layouts)
+            .is_some_and(|size| size > 8)
+    }
+
     /// Compute the actual allocation size for a MirType, resolving struct/enum
     /// sizes from layouts. Unlike MirType::size() which returns 8 for Struct/Enum
     /// (pointer size), this returns the true layout size. Needed for stack slots
     /// that store aggregate values inline (Result<Struct, Enum>, Option<Struct>, etc.).
-    fn resolve_type_alloc_size(
+    pub(crate) fn resolve_type_alloc_size(
         ty: &MirType,
         struct_layouts: &[StructLayout],
         enum_layouts: &[EnumLayout],

@@ -55,6 +55,10 @@ pub struct CodeGenerator {
     /// Declared param types per Rask function. Call sites need these to pass
     /// aggregates by pointer even when the caller's own local is a scalar.
     fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
+    /// Return types of every Rask function, by MIR name. The caller of a
+    /// function that answers through a destination pointer needs its size
+    /// before the call, and only the callee's declaration knows it (#1109).
+    fn_ret_types: HashMap<String, rask_mir::MirType>,
     /// Debug or Release — controls inlining of pool checks
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
@@ -108,6 +112,7 @@ impl CodeGenerator {
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
+            fn_ret_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             drop_glue_fns: HashMap::new(),
@@ -161,6 +166,7 @@ impl CodeGenerator {
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
+            fn_ret_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
             drop_glue_fns: HashMap::new(),
@@ -1072,11 +1078,25 @@ impl CodeGenerator {
     /// return type even when the Rask source returns a `T or E`.
     fn rask_fn_signature(&mut self, mir_fn: &MirFunction) -> CodegenResult<Signature> {
         let mut sig = self.module.make_signature();
+        let is_main = mir_fn.name == "main";
+        // The destination pointer goes first, so the ordinary arguments keep
+        // the positions everything else counts on. Cranelift requires a
+        // `StructReturn` signature to return nothing — the pointer the caller
+        // passed *is* the answer, so there is nothing left to hand back (#1109).
+        let through_dst = !is_main
+            && crate::builder::FunctionBuilder::returns_through_dst(
+                &mir_fn.ret_ty, &self.struct_layouts, &self.enum_layouts,
+            );
+        if through_dst {
+            sig.params.push(AbiParam::special(
+                cranelift_codegen::ir::types::I64,
+                cranelift_codegen::ir::ArgumentPurpose::StructReturn,
+            ));
+        }
         for param in &mir_fn.params {
             sig.params.push(AbiParam::new(mir_to_cranelift_type(&param.ty)?));
         }
-        let is_main = mir_fn.name == "main";
-        if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) && !is_main {
+        if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) && !is_main && !through_dst {
             sig.returns.push(AbiParam::new(mir_to_cranelift_type(&mir_fn.ret_ty)?));
         }
         Ok(sig)
@@ -1117,6 +1137,7 @@ impl CodeGenerator {
                 mir_fn.name.clone(),
                 mir_fn.params.iter().map(|p| p.ty.clone()).collect(),
             );
+            self.fn_ret_types.insert(mir_fn.name.clone(), mir_fn.ret_ty.clone());
         }
         Ok(())
     }
@@ -1662,6 +1683,7 @@ impl CodeGenerator {
             &self.panicking_fns,
             &self.internal_fns,
             &self.fn_param_types,
+            &self.fn_ret_types,
             self.build_mode,
         )?;
         if let Some(lm) = &self.line_map {

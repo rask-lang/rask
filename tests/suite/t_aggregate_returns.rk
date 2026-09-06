@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Returning something wider than a machine word, through every kind of call
+// (#1109).
+//
+// A function whose return doesn't fit a register used to build the value in its
+// own frame and return *the address of that frame slot*; the caller copied out
+// of it after `ret`. Nothing normally writes below the stack pointer in that
+// window, so the bytes were usually still there and the program was right by
+// luck. A signal delivered in that window lands its frame exactly on them,
+// which is why `t19b_union_method_dispatch.rk` died about two CI runs in five
+// and never once locally.
+//
+//     403a1b:  call   parse_number
+//     403a20:  mov    (%rax),%r9        ; the dead frame
+//
+// The caller allocates the destination now and passes its address, so the
+// callee writes where the value is going to live.
+//
+// Value-correctness is what this file checks, and it is *not* what makes the
+// bug visible — the old code produced right answers almost always. Valgrind is
+// the real gate:
+//
+//     rask compile tests/suite/t_aggregate_returns.rk -o /tmp/agg && valgrind /tmp/agg
+//
+// 156 errors before the fix, 0 after. The union-dispatch file this came from
+// went 59 to 1, and that one is a different bug (#1121).
+//
+// Three call kinds have to agree about the convention, because each builds the
+// signature in its own place: a direct call, a closure through a function
+// pointer, and a trait method through a vtable. A caller that disagrees with its
+// callee doesn't produce a wrong value — it makes the callee write through a
+// pointer nobody passed.
+
+struct Wide {
+    a: i64
+    b: i64
+    c: i64
+    label: string
+}
+
+struct Small {
+    n: i64
+}
+
+enum Refused {
+    Because(string)
+}
+
+extend Refused {
+    public func message(self) -> string {
+        match self {
+            Refused.Because(why) => return why
+        }
+    }
+}
+
+// ── 1. a direct call ────────────────────────────────────────────
+
+func build_wide(n: i64) -> Wide {
+    return Wide { a: n, b: n * 2, c: n * 3, label: "w{n}" }
+}
+
+func maybe_wide(n: i64) -> Wide or Refused {
+    if n < 0 {
+        return Refused.Because("negative")
+    }
+    return build_wide(n)
+}
+
+test "a direct call returning a struct wider than a word" {
+    let w = build_wide(4)
+    assert w.a == 4
+    assert w.b == 8
+    assert w.c == 12
+    assert w.label == "w4"
+}
+
+test "and one wrapped in an error union" {
+    let w = maybe_wide(5) catch e => {
+        assert false
+        return
+    }
+    assert w.c == 15
+    let bad = maybe_wide(-1) catch e => {
+        assert e.message() == "negative"
+        return
+    }
+    assert false
+}
+
+// A string is 16 bytes, so it takes the same path.
+func joined(a: string, b: string) -> string {
+    return "{a}-{b}"
+}
+
+test "a string comes back whole" {
+    assert joined("left", "right") == "left-right"
+}
+
+// ── 2. a closure ────────────────────────────────────────────────
+//
+// The closure body is an ordinary Rask function, so it was declared with a
+// destination parameter — and the call site builds its signature by hand, which
+// is the second of the three places that have to agree.
+
+test "a closure returning a wide struct" {
+    let make = |n: i64| -> Wide {
+        return Wide { a: n, b: n + 1, c: n + 2, label: "c{n}" }
+    }
+    let w = make(10)
+    assert w.a == 10
+    assert w.c == 12
+    assert w.label == "c10"
+}
+
+test "a closure returning a string" {
+    let shout = |s: string| -> string {
+        return "{s}!"
+    }
+    assert shout("hei") == "hei!"
+}
+
+// The small case is the control: it fits a word and goes back in a register,
+// the way it always did.
+test "a closure returning something that fits a word" {
+    let one = |n: i64| -> Small {
+        return Small { n: n }
+    }
+    assert one(7).n == 7
+}
+
+// ── 3. a trait method through a vtable ──────────────────────────
+//
+// The third place, and the one with no way to notice a mistake from the output:
+// get the signature wrong and the callee writes through a pointer the caller
+// never passed, which is the same class of bug as the one being fixed.
+
+trait Describes {
+    func describe(self) -> Wide
+    func name(self) -> string
+}
+
+struct Alpha {
+    seed: i64
+}
+
+extend Alpha with Describes {
+    public func describe(self) -> Wide {
+        return Wide { a: self.seed, b: self.seed * 10, c: self.seed * 100, label: "alpha" }
+    }
+
+    public func name(self) -> string {
+        return "alpha({self.seed})"
+    }
+}
+
+struct Beta {}
+
+extend Beta with Describes {
+    public func describe(self) -> Wide {
+        return Wide { a: -1, b: -2, c: -3, label: "beta" }
+    }
+
+    public func name(self) -> string {
+        return "beta"
+    }
+}
+
+func describe_all(items: Vec<any Describes>) -> i64 {
+    mut total = 0
+    for d in items {
+        let w = d.describe()
+        total = total + w.a + w.b + w.c
+    }
+    return total
+}
+
+test "a trait method returning a wide struct, through a vtable" {
+    let a = Alpha { seed: 2 }
+    let boxed = a as any Describes
+    let w = boxed.describe()
+    assert w.a == 2
+    assert w.b == 20
+    assert w.c == 200
+    assert w.label == "alpha"
+}
+
+test "a trait method returning a string" {
+    let b = Beta {}
+    let boxed = b as any Describes
+    assert boxed.name() == "beta"
+}
+
+test "several implementations behind one trait" {
+    let items: Vec<any Describes> = [Alpha { seed: 1 } as any Describes, Beta {} as any Describes]
+    assert describe_all(items) == 105
+}
+
+func main() {
+    let w = build_wide(3)
+    let a = Alpha { seed: 1 }
+    let boxed = a as any Describes
+    let d = boxed.describe()
+    let make = |n: i64| -> Wide {
+        return Wide { a: n, b: n, c: n, label: "c" }
+    }
+    let c = make(9)
+    println("aggregate returns ok: {w.label} {d.label} {c.label} {joined("x", "y")}")
+    return
+}

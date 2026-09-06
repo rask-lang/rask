@@ -85,6 +85,10 @@ t57_spawn.rk  # 24 allocations
 t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
+t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
+                        # same trait-box leak as the two lines below. Nothing to
+                        # do with the aggregate return the file is named for:
+                        # every other test in it is clean.
 t_any_error_boxing.rk  # 5 allocations
 t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
