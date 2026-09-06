@@ -3233,7 +3233,8 @@ impl TypeChecker {
         // The name might be shadowed in scope by a same-named variant from
         // another enum (e.g. CompileError { LexError(LexError) }). Check the
         // type table directly — it's authoritative for type names.
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = self.path_type_name(object) {
+            let name = &name;
             // Look up the type table (not scope) to avoid variant-name shadowing.
             let variant_fields = self.types.get_type_id(name).and_then(|type_id| {
                 if let Some(TypeDef::Enum { variants, .. }) = self.types.get(type_id) {
@@ -4115,6 +4116,27 @@ impl TypeChecker {
                 }
             }
 
+            // `io.IoError` — a type reached through the module that exports
+            // it, which is what IM1 asks for. Only *method* calls through a
+            // module were handled, so this was an ordinary field access on a
+            // name with no type: `io.IoError.BrokenPipe` came back as an open
+            // variable, MIR read the last segment as a field, warned, defaulted
+            // it to `i64` and the program segfaulted (#1108).
+            //
+            // The head isn't checked against a module list — `import http as
+            // h` gives a name no list knows, and what a type is reached through
+            // says nothing about which type it is. What it must not be is a
+            // local, or a type that already answers to this field:
+            // `Method.Patch` is a variant of `Method`, and there is a `Patch`
+            // type in scope for it to be mistaken for.
+            if self.lookup_local(name).is_none() && !self.type_owns_member(name, field) {
+                if let Some(type_id) = self.types.get_type_id(field) {
+                    if self.types.get(type_id).is_some() {
+                        return Type::Named(type_id);
+                    }
+                }
+            }
+
             // `Error.NotFound` — the trait has no variants (#1095). Without
             // this the name handed back an open type variable, which then
             // unified with whatever the surrounding code wanted, so any
@@ -4170,6 +4192,38 @@ impl TypeChecker {
                 self.errors.push(e);
                 Type::Error
             }
+        }
+    }
+
+    /// The type a path names, when it is a type it names: `IoError`, or
+    /// `io.IoError` reached through the module that exports it (#1108).
+    ///
+    /// The head of the qualified form isn't checked against a module list —
+    /// `import http as h` gives a name no list knows. It must name no local,
+    /// and no type that already answers to this member, so `Method.Patch` stays
+    /// a variant of `Method` rather than becoming the `Patch` type.
+    fn path_type_name(&self, e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Field { object, field } => {
+                let ExprKind::Ident(head) = &object.kind else { return None };
+                (self.lookup_local(head).is_none() && !self.type_owns_member(head, field))
+                    .then(|| field.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Does a declared type named `name` have a variant or field called
+    /// `member`? Asked of the head of a two-segment path, to tell
+    /// `Method.Patch` — a variant — from `io.IoError`, a type reached through
+    /// the module that exports it.
+    fn type_owns_member(&self, name: &str, member: &str) -> bool {
+        let Some(id) = self.types.get_type_id(name) else { return false };
+        match self.types.get(id) {
+            Some(TypeDef::Enum { variants, .. }) => variants.iter().any(|(n, _)| n == member),
+            Some(TypeDef::Struct { fields, .. }) => fields.iter().any(|(n, _)| n == member),
+            _ => false,
         }
     }
 

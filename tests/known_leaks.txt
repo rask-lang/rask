@@ -86,6 +86,7 @@ t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 20 allocations
 t_any_error_boxing.rk  # 5 allocations
 t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
+t_module_qualified_variants.rk  # 9 allocations — trait boxes again
 t_array_method_surface.rk  # 10 allocations
 t_assert_side_effects.rk  # 12 allocations
 t_atomic_across_tasks.rk  # 6 allocations

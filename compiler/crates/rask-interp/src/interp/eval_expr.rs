@@ -600,6 +600,35 @@ impl Interpreter {
         }
     }
 
+    /// `io.IoError` as a method receiver, when `method` names one of its
+    /// variants — the enum's own name, or `None` if this isn't that shape.
+    ///
+    /// The head isn't checked against a module list: `import http as h` gives a
+    /// name no list knows, and a module the program imported is bound in the
+    /// environment like anything else, so "is it a variable?" answers nothing
+    /// either. What rules this shape out is the head already owning the middle
+    /// name — a value with a field by that name, or an enum with a variant by
+    /// it, which is what `Level.Low.label()` is: a method on the *value*
+    /// `Level.Low`, not a variant of a type called `Low`.
+    fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
+        let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
+        let ExprKind::Ident(head_name) = &head.kind else { return None };
+        if let Some(Value::Struct(s)) = self.env.get(head_name) {
+            if s.lock().unwrap().fields.contains_key(type_name.as_str()) {
+                return None;
+            }
+        }
+        let head_owns_it = self
+            .enums
+            .get(head_name)
+            .is_some_and(|e| e.variants.iter().any(|v| v.name == *type_name));
+        if head_owns_it {
+            return None;
+        }
+        let decl = self.enums.get(type_name)?;
+        decl.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
+    }
+
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
@@ -935,6 +964,25 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
+                // `io.IoError.NotFound("x")` — a payload-carrying variant
+                // reached through the module that exports its enum, which is
+                // the spelling IM1 asks for. Everything below reads the enum's
+                // name off an `Ident`, so a qualified receiver never matched
+                // and the call failed with "type IoError has no method
+                // 'NotFound'" (#1108). Rewritten to the bare name here, once,
+                // rather than in each of the branches that key off it.
+                let rewritten;
+                let object = match self.module_qualified_enum_receiver(object, method) {
+                    Some(bare) => {
+                        rewritten = Expr {
+                            id: object.id,
+                            span: object.span,
+                            kind: ExprKind::Ident(bare),
+                        };
+                        &rewritten
+                    }
+                    None => object,
+                };
                 if let ExprKind::Ident(ident) = &object.kind {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One

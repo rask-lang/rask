@@ -815,6 +815,27 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// A fieldless variant named through its enum: `Color.Red`, and the same
+    /// through a module — `io.IoError.BrokenPipe`.
+    ///
+    /// `find_enum_written` rather than `find_enum` so `Holder<i64>.Empty`
+    /// resolves too: the parser folds the written type arguments into the name
+    /// (#782).
+    fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
+        let (idx, layout) = self.ctx.find_enum_written(enum_name)?;
+        let v = layout.variants.iter().find(|v| v.name == variant)?;
+        let (tag, tag_offset) = (v.tag as i64, layout.tag_offset);
+        let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
+        let result_local = self.builder.alloc_temp(enum_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset: tag_offset,
+            value: MirOperand::Constant(MirConst::Int(tag)),
+            store_size: None,
+        }));
+        Some((MirOperand::Local(result_local), enum_ty))
+    }
+
     /// Emit a TraitBox instruction: heap-allocate `value` and produce a trait object.
     /// Used for both explicit `as any Trait` casts and implicit TR5 coercions.
     pub(super) fn emit_trait_box(
@@ -2104,24 +2125,32 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // `io.IoError.BrokenPipe` — a variant reached through the
+                // module that exports its enum, which is the spelling IM1 asks
+                // for. MIR's path handling stopped at two segments, so the
+                // third was read as a field: it warned, defaulted the type to
+                // `i64`, and the program segfaulted (#1108).
+                //
+                // The head isn't checked against a module list, for the same
+                // reason `module_qualified_mir_type` doesn't — `import http as
+                // h` gives a name no list knows. What makes this a variant path
+                // is the middle segment naming an enum that has this variant,
+                // with the head naming no local.
+                if let ExprKind::Field { object: head, field: type_name } = &object.kind {
+                    if matches!(&head.kind, ExprKind::Ident(n) if !self.locals.contains_key(n)) {
+                        if let Some(op) = self.lower_enum_variant_path(type_name, field) {
+                            return Ok(op);
+                        }
+                    }
+                }
+
                 // Enum variant access: Color.Red (no parens, fieldless variant).
                 // `find_enum_written` so `Holder<i64>.Empty` resolves too — the
                 // parser folds the written type arguments into the name (#782).
                 if let ExprKind::Ident(name) = &object.kind {
                     if !self.locals.contains_key(name) {
-                        if let Some((idx, layout)) = self.ctx.find_enum_written(name) {
-                            if let Some(variant) = layout.variants.iter().find(|v| v.name == *field) {
-                                let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
-                                let result_local = self.builder.alloc_temp(enum_ty.clone());
-                                // Store discriminant tag
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: result_local,
-                                    offset: layout.tag_offset,
-                                    value: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
-                                    store_size: None,
-                                }));
-                                return Ok((MirOperand::Local(result_local), enum_ty));
-                            }
+                        if let Some(op) = self.lower_enum_variant_path(name, field) {
+                            return Ok(op);
                         }
                         // Unknown enum type (built-in Error, etc.) — produce a
                         // tag-only stub so codegen can proceed.
@@ -4495,6 +4524,22 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let method = method.to_string();
         let method = &method;
+
+        // `io.IoError.NotFound("x")` — a payload-carrying variant reached
+        // through the module that exports its enum, which is the spelling IM1
+        // asks for. The `module.Type.method()` flattening below turned it into
+        // a call to `IoError_NotFound`, which nobody declares; the variant
+        // constructor is the two-segment path, and it reads the enum's name off
+        // an `Ident`. So the receiver is rewritten to the bare enum name and
+        // the whole dispatch runs again on it (#1108).
+        //
+        // Keeping the object's own node id, so anything the checker recorded
+        // about the receiver stays reachable.
+        if let Some(bare) = self.module_qualified_enum_receiver(object, method) {
+            let receiver = Expr { id: object.id, span: object.span, kind: ExprKind::Ident(bare) };
+            return self.lower_method_call(expr, &receiver, method, args, type_args);
+        }
+
         // AN6: `field.has<A>()` on a comptime-for binding is a constant.
         if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
             return Ok(r);
@@ -6710,6 +6755,30 @@ impl<'a> MirLowerer<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// `io.IoError` as a method receiver, when `method` names one of its
+    /// variants — the enum's own name, or `None` if this isn't that shape.
+    ///
+    /// The head isn't checked against a module list: `import http as h` gives a
+    /// name no list knows. It must name no local, and no enum that already has
+    /// a variant by the middle name — `Level.Low.label()` is a method on the
+    /// *value* `Level.Low`, not a variant of a type called `Low` (#400).
+    fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
+        let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
+        let ExprKind::Ident(head_name) = &head.kind else { return None };
+        if self.locals.contains_key(head_name) {
+            return None;
+        }
+        let head_owns_it = self
+            .ctx
+            .find_enum(head_name)
+            .is_some_and(|(_, l)| l.variants.iter().any(|v| v.name == *type_name));
+        if head_owns_it {
+            return None;
+        }
+        let (_, layout) = self.ctx.find_enum(type_name)?;
+        layout.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
     }
 
     /// `module.Type.method()` → flattened `Type_method` qualified call.
