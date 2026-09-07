@@ -4,7 +4,7 @@
 // `let h = Handle.open(i)` then `h.close()` is fine at the top level of a function
 // and rejected inside a loop body:
 //
-//     error[E0322]: cannot mutate `h` — declared `let`
+//     error[E0302]: cannot mutate `h` — declared `let`
 //         = fix: replace `let h` with `mut h`
 //
 // `close(take self)` consumes; it doesn't mutate. SYNTAX.md's `let` section says

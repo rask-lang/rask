@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a pointer's element type is part of it (mem.unsafe,
+// struct.c-interop/TM2).
+//
+// Nothing converts through a pointer — it's an address, and whoever reads it
+// picks the stride from its own element type. So `*i64` where `*i32` is
+// declared isn't a narrowing with a policy to choose, it's a different pointer,
+// and the two ends would disagree about how far apart the elements are.
+//
+// The check only ran on integers, so a mismatch behind a `*` went through in
+// silence. `import c` is where that bit: a header's `int` is `c_int` (32-bit),
+// and a `Vec<i64>` buffer handed to one reads as twice as many half-width
+// numbers — arithmetic that looks fine and isn't (#947).
+//
+// `*void` is the untyped pointer and still takes anything.
+
+func take_i32(p: *i32) -> i32 {
+    unsafe { return *p }
+}
+
+func take_u8(p: *u8) -> u8 {
+    unsafe { return *p }
+}
+
+// ERROR: `*i64` can't be used where `*i32` is expected [E0857]
+func wrong_width() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    unsafe {
+        println("{take_i32(v.as_ptr())}")
+    }
+}
+
+// ERROR: `*i32` can't be used where `*u8` is expected [E0857]
+func wrong_signedness() {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    unsafe {
+        println("{take_u8(v.as_ptr())}")
+    }
+}
+
+// ERROR: `*u8` can't be used where `*i32` is expected [E0857]
+func wrong_element_on_return() -> *i32 {
+    let s = "abc"
+    unsafe { return s.as_ptr() }
+}
+
+func main() {
+    wrong_width()
+    wrong_signedness()
+    unsafe {
+        let p = wrong_element_on_return()
+        println("{*p}")
+    }
+}
+
+// `*void` is an address with no element type. A typed pointer goes into one
+// freely — that is what makes it the spelling for an opaque C handle — but it
+// doesn't grow an element type by being assigned somewhere, so coming back out
+// needs `cast<T>()`.
+//
+// ERROR: `*void` can't be used where `*i32` is expected [E0857]
+func from_opaque(p: *void) -> i32 {
+    unsafe { return *takes_i32(p) }
+}
+
+func takes_i32(p: *i32) -> *i32 {
+    return p
+}

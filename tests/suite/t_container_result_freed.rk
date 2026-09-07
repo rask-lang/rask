@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A runtime call that hands back a fresh container is the caller's to free
+// (#1050). The drop pass decides that by looking the callee up in
+// `elem_strs::CTORS`, and the clones weren't there — they couldn't be:
+//
+//     let c = v.clone()      RASK_LEAK_CHECK=1  →  2 allocations never released
+//     let c = m.clone()                            4 allocations never released
+//     let c = s.bytes()                            2 allocations never released
+//
+// Clone elision turns a clone into a move when the source is dead afterwards,
+// so a registered `Vec_clone` would sometimes free the caller's own container
+// instead of a fresh one — a double free. The drop pass ran first and saw the
+// call; elision then removed it. Running the drop pass *after* elision is what
+// makes the two agree: an elided clone is an assignment, not a call, and never
+// looks like a fresh container at all.
+//
+// This file is about the values still being right — the leak gate measures the
+// allocations. What would break if the ordering were wrong is a use-after-free,
+// so every case here reads the container after the point the free lands.
+
+struct Row {
+    key: string
+    n: i64
+}
+
+test "a cloned Vec outlives the clone and stays separate" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    mut c = v.clone()
+    c.push(3)
+    assert c.len() == 3
+    assert v.len() == 2
+    assert c[0] == 1
+    assert v[1] == 2
+}
+
+test "a cloned Map too" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    mut c = m.clone()
+    c.insert("b", 2)
+    assert c.len() == 2
+    assert m.len() == 1
+    assert c["a"] == 1
+}
+
+// The elision case: `v` is dead after the clone, so the clone becomes a move.
+// What comes back is the caller's own Vec, and freeing it twice is what the old
+// ordering did.
+func build_and_clone() -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    v.push(7)
+    return v.clone()
+}
+
+test "a clone that elides still returns a usable Vec" {
+    let v = build_and_clone()
+    assert v.len() == 1
+    assert v[0] == 7
+}
+
+// A clone whose source is a field can't elide — the temp holding the field read
+// dies at the call, and that says nothing about the struct that still holds it.
+struct Holder {
+    rows: Vec<Row>
+}
+
+extend Holder {
+    func rows_copy(self) -> Vec<Row> {
+        return self.rows.clone()
+    }
+}
+
+test "a field clone is a real copy, and both sides survive" {
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(Row { key: "a", n: 1 })
+    mut h = Holder { rows: rows }
+    mut copy = h.rows_copy()
+    copy.push(Row { key: "b", n: 2 })
+    assert copy.len() == 2
+    assert h.rows.len() == 1
+    assert h.rows[0].key == "a"
+    assert copy[1].key == "b"
+}
+
+test "bytes() hands over a fresh Vec, not a view" {
+    let s = "abc"
+    let b = s.bytes().to_vec()
+    assert b.len() == 3
+    assert b[0] == 97
+    // The source is still readable afterwards — nothing was taken from it.
+    assert s.len() == 3
+}
+
+func main() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    let c = v.clone()
+    println("container result freed ok: {c.len()}")
+    return
+}

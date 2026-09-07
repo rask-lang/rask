@@ -16,8 +16,10 @@
 //   Shared<T, Mutex> — exclusive access (like a bathroom key)
 //     counter.lock(|c| c += 1)          // only one thread at a time
 //
-//   AtomicI64, AtomicBool — lock-free single values (for simple counters)
+//   Atomic<T> — lock-free single values (for simple counters and flags)
 //     counter.fetch_add(1, Relaxed)     // hardware-level atomic increment
+//     There is one atomic type and one way to spell it. The payload has to fit
+//     one machine word: an integer, a bool, a float.
 //
 // Both Shared and Mutex use closures — the lock is held only while
 // the closure runs and automatically released when it returns.
@@ -30,34 +32,43 @@
 //
 
 import async.spawn
-import sync.AtomicI64
+import sync.Atomic
+import sync.Relaxed
+import sync.SeqCst
+import sync.Shared
 
 // --- Example ---
 
-func example_shared() -> () or Error {
+func example_shared() -> void or Error {
     using Multitasking {
         mut counter = Shared.new(0)
 
-        let h1 = spawn(|| {
+        // Each task gets its own handle on the same cell. `own` moves the
+        // capture into the closure — a spawned task outlives the block that
+        // made it, so borrowing wouldn't be safe — and `clone` is what gives
+        // the second task something to move.
+        let c1 = counter.clone()
+        let c2 = counter.clone()
+
+        let h1 = spawn(own || {
             for i in 0..1000 {
-                counter.write(|c| {
+                with c1.write() as c {
                     c = c + 1
-                })
+                }
             }
         })
-        let h2 = spawn(|| {
+        let h2 = spawn(own || {
             for i in 0..1000 {
-                counter.write(|c| {
+                with c2.write() as c {
                     c = c + 1
-                })
+                }
             }
         })
 
         try h1.join()
         try h2.join()
 
-        let final_count = counter.read(|c| c)
-        println("counter: {final_count}")
+        println("counter: {counter.get()}")
         // always 2000, never wrong
     }
 }
@@ -86,13 +97,17 @@ func flight_tracker() -> i32 {
 }
 
 // --- Puzzle 2: Atomic flight counter ---
-// Count total flights across multiple tasks using AtomicI64.
+// Count total flights across multiple tasks using an `Atomic<i64>`.
 // Spawn num_tasks tasks, each incrementing the counter count_per_task times.
 // Return the final count.
 //
 // Atomics are the fastest synchronization — no locks, just a single
 // CPU instruction. The tradeoff: they only work for simple values
 // (integers, booleans), not complex data structures.
+//
+// One thing to work out: `spawn` needs `own ||`, which moves what the closure
+// captures, so a counter declared inside the function can only reach one task.
+// Where does it have to live instead?
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     todo()
 }

@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 // Public because `rask test` and `rask bench` assemble the back half of the
@@ -331,10 +332,18 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
     // into every program, so their names have to bind for anything downstream
     // to know what a call inside them refers to (#425).
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib_and_cfg(
+    // `import c "x.h"` looks beside the file that imports it, so resolution has
+    // to know where each file came from (#1096). `file_id` is the index above.
+    let source_dirs: HashMap<u16, PathBuf> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
+        .collect();
+    let resolved = match rask_resolve::resolve_with_stdlib_cfg_and_dirs(
         &parse_result.decls,
         &stdlib_bodies,
         config.cfg.to_cfg_values(),
+        source_dirs,
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -370,6 +379,11 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
     let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
     for d in &frozen_diagnostics {
         diags.push(frozen_to_diagnostic(d));
+    }
+
+    // --- CT60: a `comptime func` keeps its promise where it is written ---
+    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
+        diags.push(comptime_purity_to_diagnostic(&e));
     }
 
     // --- Cleanup order (mem.resource-types/EO1) ---
@@ -416,6 +430,19 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
 /// Monomorphization is what `evaluate_comptime_globals` needs and nothing else
 /// here does, so it's built and thrown away. A program with no comptime const
 /// pays for it and gets nothing; that's the price of check and run agreeing.
+fn has_comptime_let(body: &[rask_ast::stmt::Stmt], decls: &[Decl]) -> bool {
+    body.iter().any(|st| match &st.kind {
+        rask_ast::stmt::StmtKind::Let { init, .. } => is_comptime_init(init, decls),
+        _ => false,
+    })
+}
+
+/// Identity of a diagnostic for de-duplication: its code and message. Two
+/// passes reporting the same unfoldable const produce byte-identical text.
+fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
+    (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
+}
+
 fn comptime_diagnostics_for(
     decls: &[Decl],
     typed: &rask_types::TypedProgram,
@@ -425,10 +452,36 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, Some(cfg));
 
-    if !decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls))) {
+    let any_comptime_init = decls.iter().any(|d| match &d.kind {
+        DeclKind::Const(c) => is_comptime_init(&c.init, decls),
+        // A function-local `let x = comptime { … }` folds the same way, and
+        // check has to see it too or its warning would only appear on the
+        // compile path — which is one backend reporting and the other not.
+        DeclKind::Fn(f) => has_comptime_let(&f.body, decls),
+        DeclKind::Test(t) => has_comptime_let(&t.body, decls),
+        _ => false,
+    });
+    // A `value.(comptime { … })` naming a field is neither a const nor a let,
+    // and the block still has to finish for the program to compile (CT53). A
+    // program whose only comptime code was one of these skipped the whole stage
+    // and type-checked clean, then failed at the end of a build (#1090).
+    let any_field_name_block = {
+        let mut found = false;
+        rask_ast::visit::walk_decls(decls, &mut |e| {
+            if let rask_ast::expr::ExprKind::DynamicField { field_expr, .. } = &e.kind {
+                found |= matches!(field_expr.kind, rask_ast::expr::ExprKind::Comptime { .. });
+            }
+        });
+        found
+    };
+    if !any_comptime_init && !any_field_name_block {
         return diags;
     }
-    let Ok(mono) = rask_mono::monomorphize(typed, decls) else {
+    // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
+    // has no `main`, and the plain one calls that a fatal error — so check said
+    // nothing at all about the comptime consts in every test file we have,
+    // including ones that would fail to compile.
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
         return diags;
@@ -444,13 +497,108 @@ pub fn check_package(
 ) -> PipelineOutput<CheckResult> {
     let mut diags = Vec::new();
 
-    let source_files: Vec<(PathBuf, String)> = pkg_ctx.registry
-        .get(pkg_ctx.root_id)
-        .map(|pkg| pkg.files.iter().map(|f| (f.path.clone(), f.source.clone())).collect())
-        .unwrap_or_default();
+    // Every package's files, placed at the slot its spans name. The list used
+    // to hold only the root's, so a diagnostic about a dependency's
+    // declaration was rendered against whichever of the consumer's files sat
+    // in that slot — `Colour is a built-in type` pointed at a line of main.rk
+    // that doesn't exist (#1126).
+    let mut source_files: Vec<(PathBuf, String)> = Vec::new();
+    for pkg in pkg_ctx.registry.packages() {
+        for f in &pkg.files {
+            let slot = f.file_id as usize;
+            if source_files.len() <= slot {
+                source_files.resize(slot + 1, (PathBuf::new(), String::new()));
+            }
+            source_files[slot] = (f.path.clone(), f.source.clone());
+        }
+    }
 
     // --- Comptime cfg elimination (CC1) ---
     rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);
+
+    // --- Merge external package declarations ---
+    //
+    // Before desugaring, not after. A dependency's bodies are ordinary Rask and
+    // need the same rewrites the root's do — merged afterwards, `Dog { age: 7 }`
+    // in a library reached the checker as a call and came back "`Dog` is a
+    // struct, so calling it doesn't construct one", in a file the consumer
+    // never wrote (#1112).
+    let mut package_names = Vec::new();
+
+    // What each declared name belongs to, so a second claim on it can say
+    // where the first one came from. The consumer's own declarations go in
+    // first — they are the ones a reader is holding in their head.
+    let mut claimed: HashMap<String, (String, Span)> = HashMap::new();
+    for decl in &pkg_ctx.all_decls {
+        if let Some(name) = declared_name(decl) {
+            claimed.entry(name).or_insert((String::from("this program"), decl.span));
+        }
+    }
+
+    // Names another package declared but did not make public, and where. A
+    // package's own declarations are all merged now (#1100), so nothing stops
+    // the program naming a dependency's internals — checked after resolve,
+    // where the use sites are.
+    let mut private_elsewhere: HashMap<String, (rask_resolve::PackageId, String, Span)> =
+        HashMap::new();
+
+    for pkg in pkg_ctx.registry.packages() {
+        if pkg.id == pkg_ctx.root_id {
+            continue;
+        }
+        package_names.push(pkg.name.clone());
+        // Every declaration, not just the public ones. A package's own
+        // bodies call its private helpers by their bare names, so leaving
+        // those out means the package can't be resolved at all — and they
+        // reached MIR anyway, through a separate list merged *after* resolve.
+        // A subdirectory is a package (modules/PO1), so this is what made the
+        // ordinary `src/` layout fail: `func main()` in `src/main.rk` is a
+        // private declaration by this rule (#1100).
+        for decl in pkg.all_decls() {
+            // One program, one namespace — for now. A dependency's public
+            // declarations are merged into the consumer's, so two `Cat`s are
+            // one `Cat` and whichever lands second silently loses. That used
+            // to produce a nonsense error inside a file the consumer never
+            // wrote ("no field `legs` on type `Cat`"), or worse, no error at
+            // all. modules/RE2 says the two are different types — a type's
+            // identity is where it was declared — and giving each package its
+            // own scope is what makes that true. Until then, say so at the
+            // collision rather than compiling one of them wrong (#1129).
+            if !is_public_decl(decl) {
+                if let Some(name) = declared_name(decl) {
+                    private_elsewhere
+                        .insert(name, (pkg.id, pkg.name.clone(), decl.span));
+                }
+            }
+
+            if let Some(name) = declared_name(decl) {
+                if let Some((owner, first)) = claimed.get(&name) {
+                    diags.push(
+                        Diagnostic::error(format!(
+                            "`{}` is declared by both `{}` and {}",
+                            name, pkg.name, owner
+                        ))
+                        .with_code("E0876")
+                        .with_primary(decl.span, format!("`{}` declares `{}` here", pkg.name, name))
+                        .with_secondary(*first, "and it is already declared here")
+                        .with_help(format!(
+                            "rename one of them — every package's declarations share \
+                             one namespace with the program that uses them, so `{}` \
+                             can only mean one thing here",
+                            name
+                        )),
+                    );
+                    continue;
+                }
+                claimed.insert(name, (format!("`{}`", pkg.name), decl.span));
+            }
+
+            pkg_ctx.all_decls.push(decl.clone());
+        }
+    }
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        return PipelineOutput::fail_with_sources(diags, source_files);
+    }
 
     // --- Desugar ---
     // A dependency's public annotations come along: defaults are filled into
@@ -465,53 +613,6 @@ pub fn check_package(
                 .with_code("E0338")
                 .with_primary(e.span, "variant needs @message(\"...\") annotation"),
         );
-    }
-
-    // --- Merge external package declarations ---
-    let mut package_names = Vec::new();
-    let unqualified_imports = collect_unqualified_imports(&pkg_ctx.all_decls);
-
-    for pkg in pkg_ctx.registry.packages() {
-        if pkg.id == pkg_ctx.root_id {
-            continue;
-        }
-        package_names.push(pkg.name.clone());
-        for decl in pkg.all_decls() {
-            let is_pub = match &decl.kind {
-                DeclKind::Fn(f) => f.is_pub,
-                DeclKind::Struct(s) => s.is_pub,
-                DeclKind::Enum(e) => e.is_pub,
-                DeclKind::Trait(t) => t.is_pub,
-                DeclKind::Const(c) => c.is_pub,
-                DeclKind::Impl(_) => true,
-                _ => false,
-            };
-            if !is_pub {
-                continue;
-            }
-
-            pkg_ctx.all_decls.push(prefix_decl(&decl, &pkg.name));
-
-            let decl_name = match &decl.kind {
-                DeclKind::Fn(f) => Some(f.name.as_str()),
-                DeclKind::Struct(s) => Some(s.name.as_str()),
-                DeclKind::Enum(e) => Some(e.name.as_str()),
-                DeclKind::Trait(t) => Some(t.name.as_str()),
-                DeclKind::Const(c) => Some(c.name.as_str()),
-                _ => None,
-            };
-            if let Some(name) = decl_name {
-                let needs_unprefixed = unqualified_imports
-                    .iter()
-                    .any(|(p, s)| p == &pkg.name && (s == name || s == "*"));
-                if needs_unprefixed {
-                    pkg_ctx.all_decls.push(decl.clone());
-                }
-            }
-            if matches!(&decl.kind, DeclKind::Impl(_)) {
-                pkg_ctx.all_decls.push(decl.clone());
-            }
-        }
     }
 
     // --- Resolve ---
@@ -538,6 +639,52 @@ pub fn check_package(
         }
     };
 
+    // --- A dependency's internals are not the program's to name ---
+    //
+    // Merging every declaration is what lets a package call its own private
+    // helpers (#1100); it also puts those helpers in the program's namespace,
+    // where nothing else would object. The use sites are here, so the check is
+    // here: a resolution that reaches a name another package kept to itself,
+    // from a file that isn't that package's.
+    if !private_elsewhere.is_empty() {
+        let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
+        for pkg in pkg_ctx.registry.packages() {
+            for f in &pkg.files {
+                file_owner.insert(f.file_id, pkg.id);
+            }
+        }
+        let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
+        rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
+            where_used.insert(e.id, e.span);
+        });
+
+        for (node, sym_id) in &resolved.resolutions {
+            let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
+            let base = sym.name.split('<').next().unwrap_or(&sym.name);
+            let Some((owner, owner_name, decl_span)) = private_elsewhere.get(base) else {
+                continue;
+            };
+            let Some(use_span) = where_used.get(node) else { continue };
+            if file_owner.get(&use_span.file_id) == Some(owner) {
+                continue;
+            }
+            diags.push(
+                Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
+                    .with_code("E0877")
+                    .with_primary(*use_span, format!("`{}` can't be named from here", base))
+                    .with_secondary(*decl_span, format!("declared here, without `public`"))
+                    .with_help(format!(
+                        "mark it `public func {}` (or `public struct`, …) in `{}` if it \
+                         is meant to be part of that package's API",
+                        base, owner_name
+                    )),
+            );
+        }
+        if diags.iter().any(|d| d.severity == Severity::Error) {
+            return PipelineOutput::fail_with_sources(diags, source_files);
+        }
+    }
+
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
@@ -561,6 +708,11 @@ pub fn check_package(
     let frozen_diagnostics = rask_effects::frozen::check(&pkg_ctx.all_decls, &effects);
     for d in &frozen_diagnostics {
         diags.push(frozen_to_diagnostic(d));
+    }
+
+    // --- CT60: a `comptime func` keeps its promise where it is written ---
+    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
+        diags.push(comptime_purity_to_diagnostic(&e));
     }
 
     // --- Cleanup order (mem.resource-types/EO1) ---
@@ -602,10 +754,9 @@ pub fn check_package(
 /// Returns everything codegen needs. Does NOT emit object files.
 pub fn compile_file(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
-    compile_file_with(path, dep_decls, config, |_, _| {})
+    compile_file_with(path, config, |_, _| {})
 }
 
 /// `compile_file`, with a chance to rewrite the declarations first.
@@ -622,38 +773,34 @@ pub fn compile_file(
 /// #697).
 pub fn compile_file_with(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     if let Some(mut pkg_ctx) = detect_package(path) {
-        return compile_package_with(&mut pkg_ctx, dep_decls, config, transform);
+        return compile_package_with(&mut pkg_ctx, config, transform);
     }
-    compile_single(path, dep_decls, config, transform)
+    compile_single(path, config, transform)
 }
 
 fn compile_single(
     path: &str,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
     let check_output = check_single(path, config);
-    finalize_compile(check_output, dep_decls, HashSet::new(), config, transform)
+    finalize_compile(check_output, HashSet::new(), config, transform)
 }
 
 pub fn compile_package(
     pkg_ctx: &mut PackageContext,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
 ) -> PipelineOutput<CompileResult> {
-    compile_package_with(pkg_ctx, dep_decls, config, |_, _| {})
+    compile_package_with(pkg_ctx, config, |_, _| {})
 }
 
 /// `compile_package`, with the same decl hook as `compile_file_with`.
 pub fn compile_package_with(
     pkg_ctx: &mut PackageContext,
-    dep_decls: Vec<Decl>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
@@ -676,7 +823,7 @@ pub fn compile_package_with(
     }
 
     let check_output = check_package(pkg_ctx, config);
-    finalize_compile(check_output, dep_decls, package_modules, config, transform)
+    finalize_compile(check_output, package_modules, config, transform)
 }
 
 /// Fill in the parameter types `type.gradual` let the author leave out.
@@ -710,7 +857,6 @@ fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
 /// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
 fn finalize_compile(
     check_output: PipelineOutput<CheckResult>,
-    dep_decls: Vec<Decl>,
     package_modules: HashSet<String>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
@@ -749,14 +895,13 @@ fn finalize_compile(
     check.decls.extend(stdlib_fn_decls);
     check.decls.extend(stdlib_struct_defs);
 
-    // --- Merge dependency declarations ---
-    if !dep_decls.is_empty() {
-        let mut dep_decls_desugared = dep_decls;
-        // A dependency's own attachments are filled from its own declarations —
-        // that's the same compilation unit, so nothing extra is needed here.
-        rask_desugar::desugar(&mut dep_decls_desugared);
-        check.decls.extend(dep_decls_desugared);
-    }
+    // A second copy of every dependency declaration used to be merged here,
+    // after the check. It existed because `check_package` merged only the
+    // *public* ones, so the private helpers had to reach MIR some other way —
+    // and they arrived having never been in a resolve scope, which is why a
+    // package with a subdirectory couldn't call its own helpers (#1100).
+    // `check_package` merges all of them now, before resolve, so this list was
+    // the same declarations a second time.
 
     // --- Caller's decl rewrite (test/bench runners) ---
     transform(&mut check.decls, &check.typed);
@@ -776,8 +921,9 @@ fn finalize_compile(
     };
 
     // --- Evaluate comptime globals (single source of truth) ---
-    // Hard errors (overflow, divide-by-zero) become pipeline diagnostics and
-    // fail the build like any other pass — no separate handling downstream.
+    // Hard errors (a panic, the branch quota, overflow, divide-by-zero) become
+    // pipeline diagnostics and fail the build like any other pass. Warnings —
+    // a const the evaluator couldn't fold, so it runs at startup — ride along.
     //
     // Comptime *tests* are not run here: `check_sources` / `check_package`
     // already ran them, and every path into this function comes through one of
@@ -786,8 +932,16 @@ fn finalize_compile(
     // and `rask build`.
     let (comptime_globals, ct_diags) =
         evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
-    if !ct_diags.is_empty() {
-        diags.extend(ct_diags);
+    // Check folded these same consts a moment ago, so anything it already
+    // reported is in `diags` and would print twice. Both passes fold by
+    // design — check has to answer "does this compile" without building the
+    // program — but check gives up when there's no entry point to monomorphize
+    // from, and a test-only file has none. So drop the repeats rather than the
+    // warnings, or a `rask test` on such a file would say nothing at all.
+    let ct_failed = ct_diags.iter().any(|d| matches!(d.severity, Severity::Error));
+    let seen: Vec<(Option<String>, String)> = diags.iter().map(diag_key).collect();
+    diags.extend(ct_diags.into_iter().filter(|d| !seen.contains(&diag_key(d))));
+    if ct_failed {
         return PipelineOutput::fail_with_sources(diags, pkg_source_files);
     }
 
@@ -842,34 +996,41 @@ fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
     names
 }
 
-fn collect_unqualified_imports(decls: &[Decl]) -> Vec<(String, String)> {
-    decls.iter()
-        .filter_map(|d| {
-            if let DeclKind::Import(imp) = &d.kind {
-                if imp.path.len() == 2 {
-                    return Some((imp.path[0].clone(), imp.path[1].clone()));
-                }
-                if imp.is_glob && imp.path.len() == 1 {
-                    return Some((imp.path[0].clone(), "*".to_string()));
-                }
-            }
-            None
-        })
-        .collect()
+/// Does this declaration say `public`?
+///
+/// `extend` blocks carry their own visibility through the methods in them, so
+/// they are treated as public here and the methods are checked by the type
+/// their receiver names.
+fn is_public_decl(decl: &Decl) -> bool {
+    match &decl.kind {
+        DeclKind::Fn(f) => f.is_pub,
+        DeclKind::Struct(s) => s.is_pub,
+        DeclKind::Enum(e) => e.is_pub,
+        DeclKind::Trait(t) => t.is_pub,
+        DeclKind::Const(c) => c.is_pub,
+        DeclKind::TypeAlias(a) => a.is_pub,
+        DeclKind::Annotation(a) => a.is_pub,
+        DeclKind::Impl(_) => true,
+        _ => true,
+    }
 }
 
-fn prefix_decl(decl: &Decl, pkg_name: &str) -> Decl {
-    let mut d = decl.clone();
-    match &mut d.kind {
-        DeclKind::Fn(f) => f.name = format!("{}${}", pkg_name, f.name),
-        DeclKind::Struct(s) => s.name = format!("{}${}", pkg_name, s.name),
-        DeclKind::Enum(e) => e.name = format!("{}${}", pkg_name, e.name),
-        DeclKind::Trait(t) => t.name = format!("{}${}", pkg_name, t.name),
-        DeclKind::Const(c) => c.name = format!("{}${}", pkg_name, c.name),
-        DeclKind::Impl(i) => i.target_ty = format!("{}${}", pkg_name, i.target_ty),
-        _ => {}
+/// The name a declaration puts in scope, if it puts one there.
+///
+/// `extend` blocks have none — they attach to a type that is named elsewhere —
+/// and neither do imports, exports or the package block itself.
+fn declared_name(decl: &Decl) -> Option<String> {
+    match &decl.kind {
+        DeclKind::Fn(f) => Some(f.name.clone()),
+        DeclKind::Struct(s) => Some(s.name.clone()),
+        DeclKind::Enum(e) => Some(e.name.clone()),
+        DeclKind::Trait(t) => Some(t.name.clone()),
+        DeclKind::Const(c) => Some(c.name.clone()),
+        DeclKind::TypeAlias(a) => Some(a.name.clone()),
+        DeclKind::Annotation(a) => Some(a.name.clone()),
+        DeclKind::Union(u) => Some(u.name.clone()),
+        _ => None,
     }
-    d
 }
 
 fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
@@ -947,6 +1108,38 @@ fn ensure_order_to_diagnostic(w: &rask_effects::ensure_order::EnsureOrderWarning
     )
     .with_fix(w.fixed_order.clone())
     .with_why("`ensure` bodies run LIFO — the last one registered runs first. A resource derived from another has to be cleaned up first, which means its `ensure` comes second. Registered the other way round, the cleanup calls into a dependency that's already torn down; across an FFI boundary that's undefined behaviour the language otherwise makes impossible [mem.resource-types/EO1]")
+}
+
+/// CT60: the promise `comptime func` makes, checked at the definition.
+fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePurityError) -> Diagnostic {
+    let via = match &e.via {
+        Some(call) => format!(" — `{}` does", call),
+        None => String::new(),
+    };
+    let diag = Diagnostic::error(format!(
+        "`comptime func {}` reaches {} at compile time{}",
+        e.func, e.effect, via
+    ))
+    .with_code("E0875")
+    .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+    .with_fix(format!(
+        "drop `comptime` from `{}` and let its callers decide, or move the \
+         {} out and pass the result in",
+        e.func, e.effect
+    ))
+    .with_why(
+        "`comptime func` asserts at the definition what CT6 otherwise checks at \
+         each call: that the body stays inside the compile-time subset, \
+         transitively. Without the check the keyword bought nothing — the \
+         failure surfaced later and elsewhere, as the evaluator not finding a \
+         function it had never registered [ctrl.comptime/CT7, CT60]"
+            .to_string(),
+    );
+    if e.via.is_some() && e.span != e.decl_span {
+        diag.with_secondary(e.decl_span, "declared `comptime` here")
+    } else {
+        diag
+    }
 }
 
 fn frozen_to_diagnostic(d: &FrozenDiagnostic) -> Diagnostic {

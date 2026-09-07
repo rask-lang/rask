@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.testing/T20: a test block is the error branch. A `try` on a failing step
+// ends that test as a failure, and later tests still run (#976).
+//
+// The half that was missing is "reporting the error". Both backends said only
+// that something had failed:
+//
+//     ✗ a failing try ends this test
+//         t.rk:12: try propagated an error out of a test block
+//
+// which meant bisecting the body to find out which step and why. The error's
+// own `message()` is what T20 asks for, and it is right there — the same call
+// `r!` already makes. Now:
+//
+//     ✗ …  t.rk:12: try propagated an error out of a test block: no route
+//
+// A test can't read its own failure text, so what this file checks is the half
+// a program can see: that a failing `try` ends the test it is in and nothing
+// else, and that the ordinary paths through `try` still work. The wording
+// itself is pinned by `try_in_a_test_block_reports_the_error` in
+// `compile_run.rs`, which reads it from both backends and compares.
+
+enum RouteError {
+    NoRoute
+    Blocked
+}
+
+extend RouteError {
+    func message(self) -> string {
+        match self {
+            RouteError.NoRoute => return "no route"
+            RouteError.Blocked => return "blocked"
+        }
+    }
+}
+
+func leg(ok: bool) -> i64 or RouteError {
+    if ok {
+        return 5
+    }
+    return RouteError.NoRoute
+}
+
+// A `try` that succeeds is an ordinary extract — nothing about T20 changes it.
+test "a try that succeeds carries on" {
+    let first = try leg(true)
+    let second = try leg(true)
+    assert first + second == 10
+}
+
+// `catch` is how you test the failure rather than be stopped by it.
+test "a caught failure stays caught" {
+    let n = leg(false) catch e => -1
+    assert n == -1
+}
+
+// A `catch` arm answers with the same type as the value it guards, so reading
+// the message means leaving the function with it.
+func describe(ok: bool) -> string {
+    let n = leg(ok) catch e => return e.message()
+    return "got {n}"
+}
+
+test "and the error still knows what it was" {
+    assert describe(false) == "no route"
+    assert describe(true) == "got 5"
+}
+
+// The test after a failing one still runs — that half is what makes T20 usable,
+// and it's checked by the harness rather than from inside a test. This file
+// ends on a passing test so a regression there shows up as a missing result
+// rather than as a wrong one.
+test "a later test is reached" {
+    assert (leg(true) catch e => 0) == 5
+}
+
+func main() {
+    let n = leg(true) catch e => 0
+    println("try in a test block ok: {n}")
+    return
+}

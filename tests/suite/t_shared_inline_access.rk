@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The three ways to reach a `Shared`'s value, and that they agree across
+// backends. `cfg.read() + 1` — a fourth spelling that isn't one of them — is
+// rejected now; it used to print 49 natively and 42 on the interpreter for a
+// box holding 41 (#958). `tests/compile_errors/inline_sync_unchained.rk` holds
+// the rejection.
+
+import sync.Shared
+
+struct Config {
+    timeout: i64
+    retries: i64
+}
+
+test "get copies the whole value out" {
+    let n = Shared.new(41)
+    assert n.get() + 1 == 42
+    assert n.get() == 41
+}
+
+test "a chained read takes one field" {
+    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    assert c.read().timeout == 30
+    assert c.read().timeout + c.read().retries == 33
+}
+
+test "a chained write sets one field" {
+    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    c.write().timeout = 60
+    assert c.read().timeout == 60
+}
+
+test "with holds the lock across statements" {
+    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    with c.write() as v {
+        v.timeout = 45
+        v.retries = v.retries + 1
+    }
+    assert c.read().timeout == 45
+    assert c.read().retries == 4
+}
+
+test "set and replace" {
+    let n = Shared.new(1)
+    n.set(9)
+    assert n.get() == 9
+    assert n.replace(11) == 9
+    assert n.get() == 11
+}

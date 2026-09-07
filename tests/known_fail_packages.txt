@@ -1,0 +1,17 @@
+# Multi-package fixtures that don't build (or don't answer right) yet, and the
+# issue tracking each. One name per line — the directory under tests/packages/.
+# `#` comments ignored.
+#
+# The gate reports a fixture that starts working, so a fix can't be made and
+# left unrecorded.
+#
+# Empty: every fixture builds and matches. #1112, #1123, #1124, #1125 and #1126
+# were all the same root — a dependency's declarations were renamed halfway
+# into the consumer's program, and each package's node and file ids restarted
+# at zero so two packages' nodes collided.
+
+name-collision           # #1129 — a dependency's public names occupy the
+                         # consumer's namespace, so the consumer's own `Cat`
+                         # loses to a library's. E0876 reports the collision
+                         # rather than compiling one of them wrong; a scope
+                         # per package is what would let both exist.

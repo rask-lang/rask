@@ -95,7 +95,7 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
@@ -117,7 +117,7 @@ extend fs {
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         let f = unsafe fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
@@ -144,7 +144,7 @@ extend fs {
 
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         let f = unsafe fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
@@ -162,7 +162,7 @@ extend fs {
 
     /// Check if a file or directory exists at the path.
     public func exists(path: string) -> bool {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         return (unsafe {
             access(p, 0)
         }) == 0
@@ -181,7 +181,7 @@ extend fs {
     /// Return the canonical, absolute form of a path.
     public func absolute_path(path: string) -> string or IoError {
         let buf = unsafe rask_alloc(4096)
-        let result = unsafe realpath(path.as_c_str(), buf)
+        let result = unsafe realpath(path.as_ptr(), buf)
         if unsafe result.is_null() {
             unsafe rask_free(buf)
             return IoError.last_os_error()
@@ -194,11 +194,11 @@ extend fs {
 
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
-        let src = unsafe fopen(from.as_c_str(), "rb\0".as_ptr())
+        let src = unsafe fopen(from.as_ptr(), "rb\0".as_ptr())
         if unsafe src.is_null() {
             return IoError.last_os_error()
         }
-        let dst = unsafe fopen(to.as_c_str(), "wb\0".as_ptr())
+        let dst = unsafe fopen(to.as_ptr(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
             return IoError.last_os_error()
@@ -217,7 +217,7 @@ extend fs {
 
     /// Rename a file or directory.
     public func rename(from: string, to: string) -> void or IoError {
-        let r = unsafe rask_libc_rename(from.as_c_str(), to.as_c_str())
+        let r = unsafe rask_libc_rename(from.as_ptr(), to.as_ptr())
         if r != 0 {
             return IoError.last_os_error()
         }
@@ -226,7 +226,7 @@ extend fs {
 
     /// Remove a file.
     public func remove_file(path: string) -> void or IoError {
-        let r = unsafe rask_libc_remove(path.as_c_str())
+        let r = unsafe rask_libc_remove(path.as_ptr())
         if r != 0 {
             return IoError.last_os_error()
         }
@@ -235,7 +235,7 @@ extend fs {
 
     /// Create a directory.
     public func create_dir(path: string) -> void or IoError {
-        let r = unsafe rask_libc_mkdir(path.as_c_str(), 493)
+        let r = unsafe rask_libc_mkdir(path.as_ptr(), 493)
         if r != 0 {
             return IoError.last_os_error()
         }
@@ -248,7 +248,7 @@ extend fs {
 
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         let f = unsafe fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
@@ -262,7 +262,7 @@ extend fs {
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError {
-        let dir = unsafe opendir(path.as_c_str())
+        let dir = unsafe opendir(path.as_ptr())
         if unsafe dir.is_null() {
             return IoError.last_os_error()
         }
@@ -291,7 +291,7 @@ extend fs {
     /// `Metadata` — so the `catch` never ran and `meta.size` read through null.
     /// A `T or E` needs the error built on this side (#674).
     public func metadata(path: string) -> Metadata or IoError {
-        let p = unsafe path.as_c_str()
+        let p = unsafe path.as_ptr()
         if (unsafe {
             rask_stat_load(p)
         }) != 0 {

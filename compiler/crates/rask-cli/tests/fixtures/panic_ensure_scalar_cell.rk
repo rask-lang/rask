@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.panic/U1: an ensure reading a scalar the function *writes again* runs on
+// panic unwind, and reads the value at the moment of the panic (#1011).
+//
+// The sibling fixture is the `let` case, where the value never changes so a
+// snapshot taken when the ensure was scheduled is exact. A `mut` has no such
+// guarantee, so native used to leave the ensure inline-only rather than print a
+// stale number — and inline-only means it doesn't run on a panic at all.
+//
+// The name gets a one-word stack cell instead: reads load through it, writes
+// store through it, and the hook captures the cell. Same shape a scalar `mutate`
+// parameter already had.
+func main() {
+    mut n = 7
+    mut total = 0.5
+    ensure println("n={n} total={total}")
+    n = 42
+    total = 1.25
+    println("body")
+    panic("boom")
+}

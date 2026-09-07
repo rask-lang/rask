@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::analysis::addr_alias::AddrAliases;
 use crate::analysis::cfg;
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
@@ -22,45 +23,67 @@ use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// `dst = <local> as <int>` — the cast that turns a string into the address of
-/// its buffer, which only `unsafe` code can ask for.
+/// The runtime entry points that answer with the address of a string's own
+/// buffer rather than with a value.
 ///
-/// It reads as the string's last use because nothing afterwards names the
-/// string; what continues is the integer holding its address. Releasing on that
-/// reading frees the buffer while the address is still in flight.
-fn casts_to_int(stmt: &MirStmt, local: LocalId) -> bool {
-    let MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } = &stmt.kind
-    else {
-        return false;
-    };
-    matches!(value, MirOperand::Local(id) if *id == local)
-        && matches!(
-            target_ty,
-            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
-                | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
-                | MirType::Ptr
-        )
+/// Everything else a string method returns is either a scalar or a string of
+/// its own; these two hand out an interior pointer, and the string is what
+/// keeps the storage behind it alive.
+const HANDS_OUT_THE_BUFFER: &[&str] = &["string_as_ptr", "string_as_mut_ptr"];
+
+/// Does this statement hand out the address of `local`'s buffer?
+///
+/// Two spellings, one meaning. `s as i64` is the cast only `unsafe` code can
+/// ask for; `s.as_ptr()` is the method, and it lowers to a call. Both read as
+/// the string's last use, because nothing afterwards names the string — what
+/// continues is the address. Releasing on that reading frees the buffer while
+/// the address is still in flight.
+fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } => {
+            matches!(value, MirOperand::Local(id) if *id == local)
+                && matches!(
+                    target_ty,
+                    MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+                        | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                        | MirType::U128 | MirType::Ptr
+                )
+        }
+        // `let p = unsafe s.as_ptr()` — the method form, which the cast rule
+        // never covered. `strlen(s.as_ptr())` in a frame that doesn't name `s`
+        // again read the buffer after it had been freed, and got a wrong answer
+        // out of libc whenever the free had written over the bytes (#1118).
+        MirStmtKind::Call { func, args, .. } => {
+            HANDS_OUT_THE_BUFFER.contains(&func.name.as_str())
+                && args.iter().any(|a| matches!(a, MirOperand::Local(id) if *id == local))
+        }
+        _ => false,
+    }
 }
 
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 pub fn insert_rc_ops(func: &mut MirFunction) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
-    if string_locals.is_empty() {
-        return;
+    // The three string steps only have work when there is a string. The
+    // aggregate walk does not: a struct holding a `Vec` and no string needs its
+    // release just the same, and bailing out here meant whether that happened
+    // depended on whether the function *happened* to mention a string —
+    // `println("{h.items[0]}")` released the vector and
+    // `assert h.items[0] == 7` leaked it, in bodies that are otherwise the same.
+    if !string_locals.is_empty() {
+        // Insert RcInc after string copies
+        insert_rc_inc(func, &string_locals);
+
+        // Insert RcDec at last-use points
+        insert_rc_dec(func, &string_locals);
+
+        // A returned parameter is handed out, not owned — take a reference for it.
+        retain_returned_params(func, &string_locals);
     }
 
-    // Insert RcInc after string copies
-    insert_rc_inc(func, &string_locals);
-
-    // Insert RcDec at last-use points
-    insert_rc_dec(func, &string_locals);
-
-    // A returned parameter is handed out, not owned — take a reference for it.
-    retain_returned_params(func, &string_locals);
-
-    // And the aggregates: a struct field or a wrapper's payload owns a string
-    // just as much as a local does.
+    // And the aggregates: a struct field or a wrapper's payload owns a string —
+    // or a container — just as much as a local does.
     insert_aggregate_release(func);
 }
 
@@ -147,6 +170,69 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// is returned, stored, or handed to a call may be keeping the string alive
 /// somewhere this pass can't see, and releasing it there is a use-after-free
 /// rather than a leak. Only a local nothing else can reach gets the release.
+/// Container handles this frame read out of an aggregate, and their copies.
+///
+/// A `Vec` field's slot holds the handle, so reading it gives a bare `Ptr` that
+/// the aggregate analysis can't see: it isn't an aggregate, and the group
+/// union's `Field` arm skips it because a `Ptr` can't hold a string. But it
+/// names storage the aggregate owns — releasing the aggregate frees what the
+/// handle points at — so the two die together and liveness has to know it.
+///
+/// They join the group; they never become the release *target*, because the
+/// release walks an aggregate apart field by field and a bare handle is not one.
+fn container_handles_from(
+    func: &MirFunction,
+    aggregates: &HashSet<LocalId>,
+    ty_of: &HashMap<LocalId, MirType>,
+) -> HashMap<LocalId, LocalId> {
+    let mut from: HashMap<LocalId, LocalId> = HashMap::new();
+    // A fixpoint: `_29 = _27` after `_27 = _25.0` is still the same handle.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    // The read itself has to be `Ptr` — that is what tells a
+                    // container handle from an ordinary scalar field. A plain
+                    // `m.size` admitted here joins the group and can block its
+                    // release, which turns this into a leak somewhere else.
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } }
+                        if matches!(ty_of.get(dst), Some(MirType::Ptr)) =>
+                    {
+                        if let Some(base) = uses::operand_local(base) {
+                            if aggregates.contains(&base) && from.insert(*dst, base).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                    MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Use(MirOperand::Local(src)),
+                    // A *copy* of a known handle stays one whatever MIR types
+                    // it: `_43: ptr` then `_45 = _43` with `_45: i64` is what
+                    // gets emitted. Requiring `Ptr` here dropped the copy out of
+                    // the group, so the release landed before its own uses —
+                    //
+                    //     _43 = _40.1
+                    //     _45 = _43
+                    //     rc_dec_contents(_40)     // frees the Vec
+                    //     _46 = Vec_len(_45)       // reads it: 0
+                    } => {
+                        if let Some(&root) = from.get(src) {
+                            if from.insert(*dst, root).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    from
+}
+
 fn insert_aggregate_release(func: &mut MirFunction) {
     let ty_of: HashMap<LocalId, MirType> =
         func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
@@ -159,13 +245,22 @@ fn insert_aggregate_release(func: &mut MirFunction) {
     if aggregates.is_empty() {
         return;
     }
+    let handles = container_handles_from(func, &aggregates, &ty_of);
 
     // One group per value. SSA renames an aggregate at every copy, and a
     // payload read out of a wrapper names the same bytes rather than copying
     // them — so `r`, `r.0`, and every SSA name of either are one thing that
     // dies once. Splitting them was how the wrapper's release ended up running
     // while a view into its payload was still live.
-    let groups = aggregate_value_groups(func, &aggregates, &ty_of);
+    let mut groups = aggregate_value_groups(func, &aggregates, &ty_of);
+    for (handle, base) in &handles {
+        for g in groups.iter_mut() {
+            if g.contains(base) {
+                g.insert(*handle);
+                break;
+            }
+        }
+    }
 
     // Anything that might keep the value alive elsewhere disqualifies its whole
     // group. Releasing there is a use-after-free rather than a leak, and this
@@ -226,11 +321,20 @@ fn insert_aggregate_release(func: &mut MirFunction) {
         for stmt in &block.statements {
             match &stmt.kind {
                 // Handed to something else, which may keep it.
-                MirStmtKind::Call { args, .. } => {
-                    for arg in args {
-                        if let Some(id) = uses::operand_local(arg) {
-                            block_local(&mut blocked, &id);
+                MirStmtKind::Call { func: fref, args, .. } => {
+                    let borrows_recv =
+                        rask_stdlib::mir_metadata::borrows_receiver(&fref.name);
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        // `h.items[0]` is `Vec_index(items, 0)`: the receiver is
+                        // borrowed, so the call keeps nothing. Only for a
+                        // handle read out of an aggregate — a *struct* reaching
+                        // a call is one whose fields might now be somebody
+                        // else's, whatever the callee does with argument zero.
+                        if i == 0 && borrows_recv && handles.contains_key(&id) {
+                            continue;
                         }
+                        block_local(&mut blocked, &id);
                     }
                 }
                 // Copied whole into memory — the destination owns it now.
@@ -292,10 +396,27 @@ fn insert_aggregate_release(func: &mut MirFunction) {
                 if matches!(stmt.kind, MirStmtKind::Phi { .. }) {
                     continue;
                 }
+                // A store *into* the aggregate is one field of a value being
+                // built, not the end of one — and a release placed right after
+                // it runs on a slot whose other fields nobody has written yet.
+                // `try dto.validate()` in a `-> string or ApiError` function
+                // released between the tag store and the payload store, so
+                // `release_either` took the err branch and freed a string
+                // header made of stack garbage (#1122).
+                if matches!(&stmt.kind, MirStmtKind::Store { addr, .. } if group.contains(addr)) {
+                    continue;
+                }
                 for id in group {
                     if uses::stmt_reads(stmt, *id) || uses::stmt_def(stmt) == Some(*id) {
                         last = Some(si);
-                        local = Some(*id);
+                        // The release walks an aggregate apart field by field,
+                        // so a bare handle is never the thing to name — but its
+                        // use still moves the release later.
+                        if !handles.contains_key(id) {
+                            local = Some(*id);
+                        } else if local.is_none() {
+                            local = group.iter().find(|l| !handles.contains_key(l)).copied();
+                        }
                     }
                 }
             }
@@ -326,6 +447,32 @@ fn insert_aggregate_release(func: &mut MirFunction) {
             func.blocks[block_idx].statements.insert(idx, stmt);
         }
     }
+}
+
+/// Is every definition of `local` on the aborting side?
+///
+/// The edge release below exists for a value the aborting branch is the only
+/// remaining reader of — so it releases on the branch that carries on. That is
+/// wrong for a value the aborting branch also *builds*: on the surviving branch
+/// the slot was never written. `combined("42", 2)!` succeeded and still handed
+/// `rask_string_free` a header nobody had written, because the panic branch's
+/// `"parse error: …"` was released on the success branch (#1121).
+fn defined_only_where_it_aborts(
+    func: &MirFunction,
+    aborting: &HashSet<BlockId>,
+    local: LocalId,
+) -> bool {
+    let mut any = false;
+    for b in &func.blocks {
+        if !b.statements.iter().any(|st| uses::stmt_def(st) == Some(local)) {
+            continue;
+        }
+        any = true;
+        if !aborting.contains(&b.id) {
+            return false;
+        }
+    }
+    any
 }
 
 /// Group the aggregate locals that name one value.
@@ -576,6 +723,10 @@ fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // `s as i64` into an unsafe call hands out the address of `s`, and the
+    // native callee reads the buffer through it. Counting only the cast as a
+    // use released the buffer one statement before the call read it (#1036).
+    let aliases = AddrAliases::build(func);
     // A string parameter is borrowed from the caller, which keeps its own
     // reference and releases it at its own last use. Releasing here as well is
     // two releases for one reference:
@@ -634,6 +785,10 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 if preds.get(succ).map(|p| p.len()) != Some(1) {
                     continue;
                 }
+                // And the value has to exist by the time control gets there.
+                if defined_only_where_it_aborts(func, &aborting, *local) {
+                    continue;
+                }
                 edge_releases.push((*succ, *local));
             }
         }
@@ -659,7 +814,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // value it releases has been written. That freed whatever the
                 // uninitialized slot happened to point at.
                 let phi = matches!(stmt.kind, MirStmtKind::Phi { .. });
-                if !phi && uses::stmt_reads(stmt, *local) {
+                if !phi && aliases.stmt_reads(stmt, *local) {
                     last_use_idx = Some(si);
                 }
                 // If this statement defines the local, earlier uses are irrelevant
@@ -669,7 +824,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
             }
 
             // Check terminator
-            let term_reads = uses::terminator_reads(&func.blocks[block_idx].terminator, *local);
+            let term_reads = aliases.terminator_reads(&func.blocks[block_idx].terminator, *local);
 
             // A returned string is handed to the caller, not dropped. Decrementing
             // it here freed the buffer while the caller still held the only
@@ -703,16 +858,16 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 )));
             } else if let Some(si) = last_use_idx {
                 let span = func.blocks[block_idx].statements[si].span;
-                // A cast to an integer hands out the buffer's address and
-                // nothing after that mentions the string, so the naive spot is
-                // directly after the cast — the release runs, the buffer is
-                // freed, and the raw address the callee dereferences is
-                // dangling. `write_raw` in `stdlib/http.rk` is exactly this
+                // Handing out the buffer's address is not the end of the
+                // string's usefulness, but nothing after it mentions the string,
+                // so the naive spot is directly after — the release runs, the
+                // buffer is freed, and the raw address the callee dereferences
+                // is dangling. `write_raw` in `stdlib/http.rk` is exactly this
                 // shape, which is how the HTTP server answered with eight bytes
                 // of allocator free-list where `HTTP/1.1` should be. Hold the
                 // reference to the end of the block, so every use of the
                 // address it produced is covered.
-                if casts_to_int(&func.blocks[block_idx].statements[si], *local) {
+                if hands_out_the_buffer(&func.blocks[block_idx].statements[si], *local) {
                     let span = func.blocks[block_idx].terminator.span;
                     insertions.push((stmts_len, MirStmt::new(
                         MirStmtKind::RcDec { local: *local },
@@ -864,6 +1019,247 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
+    }
+
+    /// `unsafe { native_fn(fd, s as i64) }` — the release belongs after the
+    /// call, not after the cast.
+    ///
+    /// The cast is the last statement that names `s`, so the naive last-use
+    /// scan put the release between the cast and the call. The buffer hit zero
+    /// and the allocator wrote its free-list link into the first eight bytes,
+    /// which the native call then wrote to the socket: every HTTP response
+    /// started with eight bytes of garbage (#1036).
+    #[test]
+    fn release_follows_the_call_that_reads_the_address() {
+        let mut f = make_fn(
+            vec![
+                string_local(0, "s"),
+                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false },
+            ],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(0)),
+                        func: FunctionRef::internal("build".into()),
+                        args: vec![],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(1),
+                        rvalue: MirRValue::Cast {
+                            value: MirOperand::Local(local(0)),
+                            target_ty: MirType::I64,
+                        },
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::extern_c("rask_io_write_string".into()),
+                        args: vec![
+                            MirOperand::Constant(MirConst::Int(1)),
+                            MirOperand::Local(local(1)),
+                        ],
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f);
+
+        let stmts = &f.blocks[0].statements;
+        let dec = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::RcDec { local: l } if *l == local(0)))
+            .expect("string is released somewhere: {stmts:?}");
+        let write = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "rask_io_write_string"))
+            .unwrap();
+        assert!(dec > write, "release must follow the native write: {stmts:?}");
+    }
+
+    /// `unsafe { strlen(s.as_ptr()) }` — the method form of the same thing.
+    ///
+    /// `as_ptr` is a call, not a cast, so the rule above never covered it: the
+    /// release landed between taking the address and using it, and libc read a
+    /// freed buffer. Most of the time freed memory still holds the same bytes,
+    /// which is why this went unseen — `strlen` on a string with a NUL at byte
+    /// 3 answered 21 (#1118).
+    #[test]
+    fn release_follows_the_call_that_reads_a_pointer_from_as_ptr() {
+        let mut f = make_fn(
+            vec![
+                string_local(0, "s"),
+                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false },
+                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false },
+            ],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(0)),
+                        func: FunctionRef::internal("build".into()),
+                        args: vec![],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(1)),
+                        func: FunctionRef::internal("string_as_ptr".into()),
+                        args: vec![MirOperand::Local(local(0))],
+                    }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(2)),
+                        func: FunctionRef::extern_c("strlen".into()),
+                        args: vec![MirOperand::Local(local(1))],
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f);
+
+        let stmts = &f.blocks[0].statements;
+        let dec = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::RcDec { local: l } if *l == local(0)))
+            .expect("string is released somewhere");
+        let read = stmts
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "strlen"))
+            .unwrap();
+        assert!(dec > read, "release must follow the read through the pointer: {stmts:?}");
+    }
+
+    /// A string the aborting branch builds is not the surviving branch's to
+    /// release.
+    ///
+    /// The edge release exists for a value whose only remaining reader is a
+    /// branch that panics — releasing it on the branch that carries on is the
+    /// point. It is wrong when that branch is also where the value is *built*:
+    /// on the surviving side the slot was never written, and
+    /// `rask_string_free` read an uninitialised header. `combined("42", 2)!`
+    /// succeeded and still did it, because the panic branch's
+    /// `"parse error: …"` was released on the success branch (#1121).
+    #[test]
+    fn a_string_built_only_where_it_panics_is_not_released_where_it_does_not() {
+        let mut f = make_fn(
+            vec![
+                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false },
+                string_local(1, "msg"),
+            ],
+            vec![
+                MirBlock {
+                    id: BlockId(0),
+                    statements: vec![MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(0),
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(local(0)),
+                        then_block: BlockId(1),
+                        else_block: BlockId(2),
+                    }),
+                },
+                // Carries on. Never sees `msg`.
+                MirBlock {
+                    id: BlockId(1),
+                    statements: vec![],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+                },
+                // Builds the message and dies.
+                MirBlock {
+                    id: BlockId(2),
+                    statements: vec![
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(local(1)),
+                            func: FunctionRef::internal("build_message".into()),
+                            args: vec![],
+                        }),
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("panic_forced_error".into()),
+                            args: vec![MirOperand::Local(local(1))],
+                        }),
+                    ],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Unreachable),
+                },
+            ],
+        );
+        insert_rc_ops(&mut f);
+
+        let surviving = &f.blocks[1].statements;
+        assert!(
+            !has_rc_dec(surviving, local(1)),
+            "the branch that carries on never had the string: {surviving:?}",
+        );
+    }
+
+    /// A half-built aggregate is not a dead one.
+    ///
+    /// `insert_aggregate_release` puts the release after the group's last use
+    /// in a block, and a `Store` into the aggregate was counted as one — so a
+    /// `try` that wraps its error released the outer Result after its tag had
+    /// been written and before its payload had. `release_either` read the tag,
+    /// took the err branch, and freed a string header made of stack garbage
+    /// (#1122).
+    #[test]
+    fn a_store_into_an_aggregate_is_not_a_place_to_release_it() {
+        let mut f = make_fn(
+            vec![
+                MirLocal {
+                    id: local(0),
+                    name: Some("r".into()),
+                    ty: MirType::Result {
+                        ok: Box::new(MirType::String),
+                        err: Box::new(MirType::String),
+                    },
+                    is_param: false,
+                },
+                string_local(1, "payload"),
+            ],
+            vec![
+                MirBlock {
+                    id: BlockId(0),
+                    statements: vec![
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(local(1)),
+                            func: FunctionRef::internal("build".into()),
+                            args: vec![],
+                        }),
+                        // The tag, and nothing else — the payload lands in the
+                        // next block.
+                        MirStmt::dummy(MirStmtKind::Store {
+                            addr: local(0),
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(1)),
+                            store_size: None,
+                        }),
+                    ],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
+                        target: BlockId(1),
+                    }),
+                },
+                MirBlock {
+                    id: BlockId(1),
+                    statements: vec![MirStmt::dummy(MirStmtKind::Store {
+                        addr: local(0),
+                        offset: 24,
+                        value: MirOperand::Local(local(1)),
+                        store_size: None,
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
+                        value: Some(MirOperand::Local(local(0))),
+                    }),
+                },
+            ],
+        );
+        insert_rc_ops(&mut f);
+
+        let building = &f.blocks[0].statements;
+        assert!(
+            !building
+                .iter()
+                .any(|s| matches!(&s.kind, MirStmtKind::RcDecContents { local: l } if *l == local(0))),
+            "nothing may release a Result whose payload isn't written yet: {building:?}",
+        );
     }
 
     #[test]

@@ -15,10 +15,12 @@ func parallel_max(readings: Vec<f64>) -> f64 or Error {
         let first_half = readings[0..mid].to_vec()
         let second_half = readings[mid..readings.len()].to_vec()
 
-        let h1 = spawn(|| {
+        // `own` moves the captures in. A spawned closure outlives the block
+        // that made it, so borrowing them wouldn't be safe (SL2).
+        let h1 = spawn(own || {
             return vec_max(first_half)
         })
-        let h2 = spawn(|| {
+        let h2 = spawn(own || {
             return vec_max(second_half)
         })
 
@@ -34,16 +36,24 @@ func channel_sum(n: i32) -> i32 or Error {
     using Multitasking {
         mut (tx, rx) = Channel<i32>.buffered(n)
 
-        let producer = spawn(|| {
+        let producer = spawn(own || {
             for i in 1..(n + 1) {
                 tx.send(i)
             }
             tx.close()
         })
 
+        // Drain until the channel closes. `receive` hands back
+        // `i32 or ReceiveError`, so the loop stops when the error branch shows
+        // up — the consumer never has to know how many the producer sent.
         mut sum = 0
-        for value in rx {
-            sum = sum + value
+        loop {
+            let r = rx.receive()
+            if r? as v {
+                sum = sum + v
+            } else {
+                break
+            }
         }
 
         try producer.join()
@@ -59,18 +69,19 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
         for task_id in 0..num_tasks {
             let seed = task_id * 1000 + 42
             let iters = per_task
-            spawn(|| {
-                mut state = seed
+            spawn(own || {
+                // 2^31 doesn't fit in an i32, so the whole LCG runs at i64.
+                mut state: i64 = seed as i64
                 mut inside = 0
-                let a = 1103515245
-                let c = 12345
-                let m = 2147483648
+                let a: i64 = 1103515245
+                let c: i64 = 12345
+                let m: i64 = 2147483648
 
                 for i in 0..iters {
                     state = (a * state + c) % m
-                    let x = state as f64 / m as f64
+                    let x = state.round<f64>() / m.round<f64>()
                     state = (a * state + c) % m
-                    let y = state as f64 / m as f64
+                    let y = state.round<f64>() / m.round<f64>()
                     if x * x + y * y <= 1.0 {
                         inside = inside + 1
                     }
@@ -81,10 +92,12 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
 
         mut total_inside = 0
         for i in 0..num_tasks {
-            total_inside = total_inside + rx.receive()
+            // `receive` hands back `i32 or ReceiveError`, so the value has to
+            // come out of the wrapper before it can be added.
+            total_inside = total_inside + rx.receive()!
         }
 
-        return 4.0 * total_inside as f64 / total as f64
+        return 4.0 * total_inside.round<f64>() / total.round<f64>()
     }
 }
 

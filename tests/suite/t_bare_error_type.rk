@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Error` written on its own means `any Error` — the erased error box (#1095).
+//
+// It used to mean nothing. The name resolved to a builtin symbol with no type
+// behind it, so `i64 or Error` became plain `i64`:
+//
+//     func g(n: i64) -> i64 or Error {
+//         if n < 0 { return Boom.Bad }     // expected `i64`, found `Boom`
+//         return n
+//     }
+//
+// The error side was simply gone, and the message pointed at the ok type as if
+// the program had asked for one. `any Error` worked the whole time, so all that
+// was missing was reading the short spelling as the long one — in three places,
+// because the checker, MIR and the interpreter each parse type strings on their
+// own. Only the checker knowing it left MIR typing the error side as a bare
+// pointer with a 16-byte fat pointer written into it, and the interpreter
+// handing a returned error back as the *ok* branch.
+//
+// Boxing a second time is #1106: `try` through two functions that both return
+// `… or Error` used to ask for the concrete type's name twice, and a trait
+// object hasn't got one — the vtable came out `.vtable.unknown__Error`.
+
+enum Boom {
+    Bad
+    Worse
+}
+
+extend Boom {
+    func message(self) -> string {
+        match self {
+            Boom.Bad => return "bad"
+            Boom.Worse => return "worse"
+        }
+    }
+}
+
+enum Other {
+    Nope
+}
+
+extend Other {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func classify(n: i64) -> i64 or Error {
+    if n < -10 { return Boom.Worse }
+    if n < 0 { return Boom.Bad }
+    if n == 0 { return Other.Nope }
+    return n
+}
+
+// The same signature written out. The two spellings have to behave alike.
+func classify_long(n: i64) -> i64 or any Error {
+    if n < -10 { return Boom.Worse }
+    if n < 0 { return Boom.Bad }
+    if n == 0 { return Other.Nope }
+    return n
+}
+
+test "the error side survives the short spelling" {
+    assert (classify(7) catch e => -1) == 7
+    assert (classify(-1) catch e => -1) == -1
+}
+
+test "the error that comes back is the one that was returned" {
+    let a = classify(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert a == 0
+}
+
+test "two different error types erase to the same box" {
+    let a = classify(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert a == 0
+}
+
+test "and one from a different enum entirely" {
+    let a = classify(0) catch e => {
+        assert e.message() == "nope"
+        return
+    }
+    assert a == 0
+}
+
+test "the short and long spellings agree" {
+    assert (classify(3) catch e => -1) == (classify_long(3) catch e => -1)
+    assert (classify(-1) catch e => -1) == (classify_long(-1) catch e => -1)
+}
+
+// #1106: propagating an error that is already a box. The box carries the
+// vtable; making a second one around it loses the concrete type's name.
+func doubled(n: i64) -> i64 or Error {
+    let v = try classify(n)
+    return v * 2
+}
+
+func doubled_long(n: i64) -> i64 or any Error {
+    let v = try classify_long(n)
+    return v * 2
+}
+
+test "try forwards a box instead of boxing it again" {
+    assert (doubled(21) catch e => -1) == 42
+    let a = doubled(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert a == 0
+}
+
+test "the long spelling forwards it the same way" {
+    assert (doubled_long(21) catch e => -1) == 42
+    let a = doubled_long(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert a == 0
+}
+
+// Three hops, so a box that survived one forward but not two would show.
+func quadrupled(n: i64) -> i64 or Error {
+    let v = try doubled(n)
+    return v * 2
+}
+
+test "and through more than one hop" {
+    assert (quadrupled(5) catch e => -1) == 20
+    let a = quadrupled(0) catch e => {
+        assert e.message() == "nope"
+        return
+    }
+    assert a == 0
+}
+
+func main() {
+    println("bare error type ok")
+    return
+}

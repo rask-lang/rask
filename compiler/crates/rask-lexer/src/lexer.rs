@@ -575,6 +575,41 @@ impl<'a> Lexer<'a> {
                 }
             };
 
+            // `n.0.0` on a nested tuple: after the dot, `0.0` looks exactly
+            // like a float and got lexed as one, so the second index vanished
+            // and the parser complained about a name (#914). Split it back at
+            // the dot — from the source text, because the parsed value can't
+            // tell `.10` from `.1`.
+            let after_dot = matches!(
+                tokens.last().map(|t: &Token| &t.kind),
+                Some(TokenKind::Dot)
+            );
+            if after_dot && matches!(kind, TokenKind::Float(_, None))
+            {
+                if let Some((lhs, rhs)) = slice.split_once('.') {
+                    let both_plain = !lhs.is_empty()
+                        && !rhs.is_empty()
+                        && lhs.chars().all(|c| c.is_ascii_digit())
+                        && rhs.chars().all(|c| c.is_ascii_digit());
+                    if both_plain {
+                        let dot_at = span.start + lhs.len();
+                        tokens.push(Token {
+                            kind: TokenKind::Int(lhs.parse().unwrap_or(0), None),
+                            span: self.span(span.start, dot_at),
+                        });
+                        tokens.push(Token {
+                            kind: TokenKind::Dot,
+                            span: self.span(dot_at, dot_at + 1),
+                        });
+                        tokens.push(Token {
+                            kind: TokenKind::Int(rhs.parse().unwrap_or(0), None),
+                            span: self.span(dot_at + 1, span.end),
+                        });
+                        continue;
+                    }
+                }
+            }
+
             tokens.push(Token {
                 kind,
                 span: self.span(span.start, span.end),

@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1124 — a method on an exported struct isn't found. `prefix_decl`
+// renames the `extend` block's target, so the methods attach to
+// `libpkg$Counter` while the consumer's `Counter` has none.
+
+public struct Counter {
+    public n: i64
+}
+
+extend Counter {
+    public func bump(self) -> i64 {
+        return self.n + 1
+    }
+}

@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Atomic<T>` reached from more than one task — the only reason to make one
+// atomic (#1068, #927).
+//
+// `Atomic<T>` didn't exist. The eleven `AtomicU64`-style names the registry
+// carried were the opposite of what mem.atomics/GA1 says, and none of them
+// worked either: `AtomicI64.new(0)` left its binding un-inferrable, `.clone()`
+// type-checked and wouldn't lower, and a module-level one couldn't name an
+// ordering. So the spec's metrics counter and its shutdown flag — the two
+// things the decision tree in `boxes.md` routes to an atomic — were both
+// unwritable, and `16_shared_state.rk`'s lock-free puzzle used a lock.
+//
+// A counter reached from several tasks is a module-level `const`, the shape
+// `conc.sync` uses for `METRICS`. `spawn` needs `own ||`, which moves what it
+// captures, so a local atomic can only ever reach one task; a const is reached
+// by name from anywhere and there is nothing to move.
+
+import sync.Atomic
+import sync.Relaxed
+import sync.SeqCst
+import async.spawn
+
+const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
+const SHUTDOWN: Atomic<bool> = Atomic<bool>.new(false)
+
+func bump(times: i64) {
+    for i in 0..times {
+        COUNTER.fetch_add(1, Relaxed)
+    }
+}
+
+test "two tasks counting on one atomic agree on the total" {
+    using Multitasking {
+        COUNTER.store(0, SeqCst)
+        let a = spawn(own || { bump(250) })
+        let b = spawn(own || { bump(250) })
+        a.join()!
+        b.join()!
+        assert COUNTER.load(SeqCst) == 500
+    }
+}
+
+test "a shutdown flag set by one task is seen by the next" {
+    using Multitasking {
+        SHUTDOWN.store(false, SeqCst)
+        let setter = spawn(own || { SHUTDOWN.store(true, Relaxed) })
+        setter.join()!
+        assert SHUTDOWN.load(SeqCst)
+    }
+}
+
+test "the bare and qualified spellings of an ordering are the same value" {
+    let a = Atomic<i64>.new(1)
+    assert a.load(Relaxed) == a.load(Ordering.Relaxed)
+}
+
+test "compare_exchange reports the value it found" {
+    // `T or CasFailed<T>`, so the two branches tell apart. Both carry a `T` —
+    // the old value on success, the observed one on failure — and as `T or T`
+    // no pattern could separate them.
+    let a = Atomic<i64>.new(5)
+    match a.compare_exchange(5, 9, SeqCst, SeqCst) {
+        i64 as old => { assert old == 5 }
+        CasFailed as e => { assert false }
+    }
+    assert a.load(SeqCst) == 9
+
+    // It holds 9 now, so exchanging against 5 fails and hands back what's there.
+    match a.compare_exchange(5, 1, SeqCst, SeqCst) {
+        i64 as old => { assert false }
+        CasFailed as e => { assert e.found == 9 }
+    }
+    assert a.load(SeqCst) == 9
+}
+
+test "the spec's retry loop terminates" {
+    let a = Atomic<i64>.new(0)
+    mut swaps = 0
+    loop {
+        let current = a.load(Relaxed)
+        if current >= 5 {
+            break
+        }
+        match a.compare_exchange_weak(current, current + 1, SeqCst, Relaxed) {
+            i64 as _ => { swaps = swaps + 1 }
+            CasFailed as _ => { }
+        }
+    }
+    assert a.load(SeqCst) == 5
+    assert swaps == 5
+}
+
+test "swap hands back the old value" {
+    let a = Atomic<i64>.new(3)
+    assert a.swap(8, SeqCst) == 3
+    assert a.load(SeqCst) == 8
+}

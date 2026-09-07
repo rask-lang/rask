@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: package-level state written without a sync box
+// ERROR: `SHARED_VEC` is package-level state — writing to it needs a sync box
+//
+// PS2 puts package-level mutable state behind `Shared`, `Shared.mutex` or
+// `Atomic`. Nothing checked it (#944): a bare `const Vec` accepted mutating
+// methods from any number of tasks with no synchronization, and the program
+// below type-checked clean and then did this:
+//
+//     len 9855 (expected 10000)
+//     len 7298 (expected 10000)
+//     realloc(): invalid old size
+//     realloc(): invalid old size
+//     len 7729 (expected 10000)
+//
+// A data race out of safe code with no `unsafe` anywhere, which goes straight
+// at "data races impossible by construction".
+//
+// The single-threaded half was the same hole without the race: a `const` is one
+// instance, so `bump()` below accumulated across calls. Both backends agreed,
+// which is what made it a front-end gap rather than a divergence.
+//
+// The sanctioned spellings are in `tests/suite/t_package_state.rk`.
+
+const SHARED_VEC: Vec<i32> = Vec.new()
+const NAMES: Map<string, i32> = Map.new()
+
+func hammer() {
+    mut i = 0
+    while i < 5000 {
+        SHARED_VEC.push(i)
+        i = i + 1
+    }
+}
+
+func bump() {
+    NAMES.insert("n", 1)
+}
+
+func main() {
+    using Multitasking {
+        let a = spawn(|| { hammer() })
+        let b = spawn(|| { hammer() })
+        let _ = a.join()
+        let _ = b.join()
+    }
+    bump()
+    println("len {SHARED_VEC.len()}")
+}

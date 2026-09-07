@@ -3,7 +3,7 @@
 // spells a mutating method the same way (#839).
 //
 //     let s = "abc"
-//     s.reverse()    // error[E0322]: cannot mutate `s` — declared `let`
+//     s.reverse()    // error[E0302]: cannot mutate `s` — declared `let`
 //
 // `string.reverse` takes `self` by value and returns a new string. The check
 // that decides "does this method mutate its receiver" looked the receiver up in

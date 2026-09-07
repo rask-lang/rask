@@ -162,14 +162,9 @@ impl<'a> MirLowerer<'a> {
                     let off = self.payload_byte_offset(&err_ty);
                     (err_ty.clone(), scrutinee_op.clone(), off)
                 } else {
-                    let off = if matches!(
-                        payload_ty,
-                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                    ) {
-                        None
-                    } else {
-                        Some(crate::types::RESULT_PAYLOAD_OFFSET)
-                    };
+                    // `payload_byte_offset` is the one rule for this, and it
+                    // was spelled out again here minus `String` and `Union`.
+                    let off = self.payload_byte_offset(&payload_ty);
                     (payload_ty.clone(), MirOperand::Local(inner_local), off)
                 };
                 let local = self.builder.alloc_local(binding.clone(), bind_ty.clone());
@@ -327,12 +322,26 @@ impl<'a> MirLowerer<'a> {
                 MirType::Enum(crate::types::EnumLayoutId { id, .. }) => Some(*id),
                 _ => None,
             });
+            // A union's members need the same second switch an error enum's
+            // variants get, for the same reason: they can't share the Ok/Err
+            // switch. Without this every member arm was handed tag 1, so
+            // `match fetch() { i64 as v => …, AErr as e => …, BErr as e => … }`
+            // built `switch [0: ok, 1: A, 1: B]` and whichever error the
+            // program actually returned ran the first error arm (#1013).
+            let err_union = err_payload_ty
+                .as_ref()
+                .filter(|t| matches!(t, MirType::Union(_)));
             arms.iter()
                 .map(|arm| {
-                    let id = err_layout_id?;
                     // `MyErr.Bad` and a bare `Bad` name the same variant.
                     let name = pattern_name(&arm.pattern)?;
                     let bare = name.rsplit('.').next().unwrap_or(name);
+                    if let Some(union_ty) = err_union {
+                        return self
+                            .union_member_index_by_name(union_ty, bare)
+                            .map(|i| i as u64);
+                    }
+                    let id = err_layout_id?;
                     let layout = self.ctx.enum_layouts.get(id as usize)?;
                     layout
                         .variants
@@ -524,7 +533,25 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
             err_value_local = Some(err_local);
-            let inner_tag = self.emit_option_tag(&MirOperand::Local(err_local), None);
+            // An enum discriminates by its tag; a union by the member index it
+            // carries at offset 0. `emit_option_tag` reads a one-byte tag, which
+            // for a union is the low byte of an eight-byte index — right by
+            // accident for small unions and wrong the moment it isn't.
+            let inner_tag = if matches!(err_ty, MirType::Union(_)) {
+                let idx = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: idx,
+                    rvalue: MirRValue::Field {
+                        base: MirOperand::Local(err_local),
+                        field_index: 0,
+                        byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                        access: FieldAccess::Sized(8),
+                    },
+                }));
+                idx
+            } else {
+                self.emit_option_tag(&MirOperand::Local(err_local), None)
+            };
             let inner_cases: Vec<(u64, BlockId)> = err_variant_tags
                 .iter()
                 .enumerate()
@@ -721,7 +748,38 @@ impl<'a> MirLowerer<'a> {
                 // Here we emit the payload extraction for the binding.
                 } else if let Pattern::TypePat { ty_name, binding } = &arm.pattern {
                     if let Some(binding_name) = binding {
-                        if is_result_or_option {
+                        // A union-member arm binds the *member*, which sits past
+                        // the member index inside the union — not the union
+                        // itself. Binding the union meant `e.code` read the index
+                        // where the field belonged, so `BErr { code: 42 }` came
+                        // back as `code=1` (#1013).
+                        let member = err_variant_tags[i].and_then(|idx| {
+                            let MirType::Union(members) = err_payload_ty.as_ref()? else {
+                                return None;
+                            };
+                            let m = members.get(idx as usize)?.clone();
+                            Some((m, err_value_local?))
+                        });
+                        if let Some((member_ty, union_local)) = member {
+                            let payload_local = self.builder.alloc_local(
+                                binding_name.clone(), member_ty.clone(),
+                            );
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: payload_local,
+                                rvalue: MirRValue::Field {
+                                    base: MirOperand::Local(union_local),
+                                    field_index: 0,
+                                    byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                                    access: FieldAccess::for_field(&member_ty, member_ty.size()),
+                                },
+                            }));
+                            if let Some(p) = self.mir_type_name(&member_ty) {
+                                self.meta_mut(binding_name).type_prefix = Some(p);
+                            }
+                            self.locals.insert(
+                                binding_name.clone(), (payload_local, member_ty),
+                            );
+                        } else if is_result_or_option {
                             // Bind the matching side's payload — the side is
                             // decided by type identity, same as the tag routing.
                             let payload_ty = if self.pattern_is_err_side(ty_name, &scrutinee_ty) {
@@ -738,18 +796,18 @@ impl<'a> MirLowerer<'a> {
                             // "return pointer if either ok or err is aggregate" check, which
                             // would wrongly return a pointer when ok=i32 but err=SomeEnum.
                             // Aggregate payloads: let field_index=0 trigger the pointer return.
-                            let is_aggregate_payload = matches!(
-                                payload_ty,
-                                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-                            );
+                            //
+                            // Which is which is `payload_byte_offset`'s question,
+                            // and this had its own copy of the list missing
+                            // `Union`. An error union in the payload was loaded as
+                            // a word, so its member index arrived where its address
+                            // belonged and the arm dispatch read whatever that
+                            // pointed at (#1013) — the same mistake #776 fixed in
+                            // the shared rule, still living on in the copies.
                             let rvalue = MirRValue::Field {
                                 base: scrutinee_op.clone(),
                                 field_index: 0,
-                                byte_offset: if !is_aggregate_payload {
-                                    Some(crate::types::RESULT_PAYLOAD_OFFSET)
-                                } else {
-                                    None
-                                },
+                                byte_offset: self.payload_byte_offset(&payload_ty),
                                 access: FieldAccess::Word,
                             };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

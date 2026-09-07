@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import helpers
+
+func main() {
+    // `private_delay` has no `public`, so it is `helpers`' own business —
+    // even though every declaration of every package is merged into one
+    // program and the name is therefore in scope here (E0877, #1129).
+    println("{private_delay()}")
+    return
+}

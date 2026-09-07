@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Vec.new<string>()` used to parse its `<string>` and then drop it (#1084).
+// The binding stayed an open variable, so `v.push(7)` on the next line widened
+// it instead of being checked against it, and `{v:debug}` had no element type
+// to render. The annotated form was checked all along — the turbofish just
+// never reached the checker.
+//
+// Two places lost it: `check_method_call` recorded the written arguments after
+// the type-namespace branch had already filed its constraint and returned, and
+// the static resolvers mint one fresh variable per parameter without asking
+// what the call wrote.
+//
+// The rejections live in `tests/compile_errors/container_turbofish.rk`.
+
+import collections.Set
+
+test "a Vec element from the turbofish" {
+    mut v = Vec.new<string>()
+    v.push("hi")
+    assert v[0] == "hi"
+    assert v.len() == 1
+}
+
+test "the element reaches the debug renderer" {
+    mut v = Vec.new<string>()
+    v.push("hi")
+    assert "{v:debug}" == "[\"hi\"]"
+}
+
+test "both of a Map's arguments" {
+    mut m = Map.new<string, i64>()
+    m.insert("k", 3)
+    assert m["k"] == 3
+}
+
+test "a Set's element" {
+    mut s = Set.new<string>()
+    s.insert("a")
+    assert s.len() == 1
+}
+
+test "annotation and turbofish agree" {
+    mut v: Vec<i64> = Vec.new<i64>()
+    v.push(2)
+    assert v[0] == 2
+}

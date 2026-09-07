@@ -31,10 +31,10 @@ func example_closures() {
     let numbers = Vec.from([1, 2, 3, 4, 5])
 
     let doubled = numbers.map(|n| n * 2)
-    println("doubled: {doubled}")
+    println("doubled: {doubled:debug}")
 
     let evens = numbers.filter(|n| n % 2 == 0)
-    println("evens: {evens}")
+    println("evens: {evens:debug}")
 
     let sum = numbers.fold(0, |acc, n| acc + n)
     println("sum: {sum}")
@@ -43,7 +43,7 @@ func example_closures() {
     let result = numbers
         .filter(|n| n > 2)
         .map(|n| n * n)
-    println("squares of >2: {result}")
+    println("squares of >2: {result:debug}")
 }
 
 // ============================================================

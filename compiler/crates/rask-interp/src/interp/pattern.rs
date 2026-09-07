@@ -219,21 +219,15 @@ impl Interpreter {
             }
 
             Pattern::Tuple(patterns) => {
-                if let Value::Vec(v) = value {
-                    let vec = v.lock().unwrap();
-                    if patterns.len() == vec.len() {
-                        let mut bindings = HashMap::new();
-                        for (pat, val) in patterns.iter().zip(vec.iter()) {
-                            if let Some(sub_bindings) = self.match_pattern(pat, val) {
-                                bindings.extend(sub_bindings);
-                            } else {
-                                return None;
-                            }
-                        }
-                        return Some(bindings);
-                    }
+                let elems = value.as_tuple_elements()?;
+                if patterns.len() != elems.len() {
+                    return None;
                 }
-                None
+                let mut bindings = HashMap::new();
+                for (pat, val) in patterns.iter().zip(elems.iter()) {
+                    bindings.extend(self.match_pattern(pat, val)?);
+                }
+                Some(bindings)
             }
 
             Pattern::Or(patterns) => {
@@ -388,12 +382,14 @@ impl Interpreter {
                         b.fields.get(name).is_some_and(|bv| Self::value_eq(av, bv))
                     })
             }
-            // TU9: a tuple compares element by element. A tuple *is* a
-            // `Value::Vec` in here, so this arm is also what `Vec == Vec` would
-            // use — same element-wise answer either way. Without it a
-            // `Map<(i64, i64), …>` accepted an insert and then missed every read,
-            // while native found the key (#812).
-            //
+            // TU9: a tuple compares element by element, and so does a `Vec`.
+            // Without this a `Map<(i64, i64), …>` accepted an insert and then
+            // missed every read, while native found the key (#812).
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                Arc::ptr_eq(a, b)
+                    || (a.len() == b.len()
+                        && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y)))
+            }
             // Same `ptr_eq` shortcut the struct arm carries: locking both sides
             // hangs when they are the same buffer.
             (Value::Vec(a), Value::Vec(b)) => {
@@ -448,10 +444,15 @@ impl Interpreter {
                 type_name.hash(&mut hasher);
                 Self::value_hash(inner).hash(&mut hasher);
             }
-            // A tuple, which shares the Vec representation. Element-wise, to
-            // match the equality arm — every tuple used to hash to the same
-            // number, which is only survivable because equality decides the
-            // bucket, and equality had no arm either.
+            // Element-wise, to match the equality arm — every tuple used to
+            // hash to the same number, which is only survivable because
+            // equality decides the bucket, and equality had no arm either.
+            Value::Tuple(items) => {
+                items.len().hash(&mut hasher);
+                for item in items.iter() {
+                    Self::value_hash(item).hash(&mut hasher);
+                }
+            }
             Value::Vec(v) => {
                 let guard = v.lock().unwrap();
                 guard.items.len().hash(&mut hasher);
@@ -517,6 +518,20 @@ impl Interpreter {
                 }
                 Some(std::cmp::Ordering::Equal)
             }
+            // TU9: element by element, left to right — the first difference
+            // decides, like a word in a dictionary.
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return None;
+                }
+                for (x, y) in a.iter().zip(b.iter()) {
+                    match Self::value_cmp(x, y) {
+                        Some(std::cmp::Ordering::Equal) => continue,
+                        other => return other,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            }
             _ => None,
         }
     }
@@ -526,13 +541,12 @@ impl Interpreter {
 /// Handles primitives (`i32`, `f64`, `string`, `bool`, `char`) and named
 /// enum/struct types. Used by ER27 match type patterns.
 /// What a binder on an enum variant sees: the one field, a tuple of several, or
-/// unit when the variant carries nothing. A tuple is a `Vec` value here, the same
-/// as `ExprKind::Tuple` builds.
+/// unit when the variant carries nothing.
 fn variant_payload(fields: &[Value]) -> Value {
     match fields.len() {
         0 => Value::Unit,
         1 => fields[0].clone(),
-        _ => Value::vec(fields.to_vec()),
+        _ => Value::tuple(fields.to_vec()),
     }
 }
 
@@ -565,6 +579,13 @@ fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
         // `Vec`) — the interpreter doesn't track element types at runtime,
         // so it can't verify `<i32>` matches. rask#217 generic type patterns.
         Value::Vec(_) => ty_name.split('<').next() == Some("Vec"),
+        // A tuple type is written `(i64, string)`, so there's no name to
+        // compare — the arity is all this can check.
+        Value::Tuple(items) => {
+            ty_name.starts_with('(')
+                && ty_name.ends_with(')')
+                && ty_name[1..ty_name.len() - 1].split(',').count() == items.len()
+        }
         Value::Map(_) => ty_name.split('<').next() == Some("Map"),
         // Everything else answers with its own runtime type name — Duration,
         // Instant, File, Cell, Shared, TcpConnection, and the 128-bit integers.

@@ -666,7 +666,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     // Compile root package (full pipeline, with compilation cache XC1-XC5)
     if total_errors == 0 {
         // Extract data from registry before moving it into PackageContext.
-        let (source_files, all_decls, dep_decls, pkg_path_string) = {
+        let (source_files, all_decls, pkg_path_string) = {
             let root_pkg = match registry.get(root_id) {
                 Some(p) => p,
                 None => {
@@ -674,30 +674,38 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                     process::exit(1);
                 }
             };
-            let source_files: Vec<_> = root_pkg.files.iter()
-                .map(|f| (f.path.clone(), f.source.clone()))
-                .collect();
             let all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
             let pkg_path_string = root_pkg.path_string();
 
-            // All dependency decls (public and private) for cross-package resolution.
-            let mut dep_decls = Vec::new();
+            // Every file that goes into this binary, not just the root
+            // package's. Two things read this list, and both were wrong for a
+            // package with a subdirectory in it:
+            //
+            //   - the compilation cache keys on it. A package root holding no
+            //     `.rk` files at all hashed nothing, so `rask build` reported
+            //     "Finished" and ran the previous binary however the code under
+            //     `src/` had changed. Even with files at the root, editing a
+            //     sub-package left the key untouched — `helpers.answer()`
+            //     going 99 → 7 rebuilt to a binary that still printed 99 (#1100).
+            //
+            //   - `show_diagnostic_multi` renders the snippet under a
+            //     diagnostic from it, so an error pointing into a sub-package
+            //     had no source to show.
+            // Indexed by file id, not by iteration order: a span carries the
+            // id, and the ids run across the whole registry.
+            let mut source_files: Vec<(std::path::PathBuf, String)> = Vec::new();
             for pkg in registry.packages() {
-                if pkg.id == root_id { continue; }
-                for decl in pkg.all_decls() {
-                    match &decl.kind {
-                        rask_ast::decl::DeclKind::Fn(_)
-                        | rask_ast::decl::DeclKind::Struct(_)
-                        | rask_ast::decl::DeclKind::Enum(_)
-                        | rask_ast::decl::DeclKind::Impl(_)
-                        | rask_ast::decl::DeclKind::Const(_) => {
-                            dep_decls.push(decl.clone());
-                        }
-                        _ => {}
+                for f in &pkg.files {
+                    let slot = f.file_id as usize;
+                    if source_files.len() <= slot {
+                        source_files
+                            .resize(slot + 1, (std::path::PathBuf::new(), String::new()));
                     }
+                    source_files[slot] = (f.path.clone(), f.source.clone());
                 }
             }
-            (source_files, all_decls, dep_decls, pkg_path_string)
+
+            (source_files, all_decls, pkg_path_string)
         };
 
         let source_hash = super::cache::hash_source_files(&source_files);
@@ -763,7 +771,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             root_id,
             all_decls,
         };
-        let output = rask_compiler::compile_package(&mut pkg_ctx, dep_decls, &config);
+        let output = rask_compiler::compile_package(&mut pkg_ctx, &config);
 
         for d in &output.diagnostics {
             crate::show_diagnostic_multi(d, &source_files);

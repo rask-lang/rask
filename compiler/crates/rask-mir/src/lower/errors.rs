@@ -12,8 +12,8 @@ use crate::{
 use rask_ast::expr::{CallArg, CatchClause, Expr, ExprKind};
 
 /// What a `try` says when it has nowhere to propagate to. Both backends print
-/// this, so a test that hits an error reads the same either way.
-pub const TRY_PROPAGATED_NOWHERE: &str = "try propagated an error out of a test block";
+/// it, so it is declared once where both can see it.
+pub use rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE;
 
 /// ER31a: where a propagated error goes inside the caller's error enum.
 struct ErrorWrapTarget {
@@ -177,13 +177,33 @@ impl<'a> MirLowerer<'a> {
         // then read its first two words as {data, vtable} and called through
         // whatever the second one happened to be, which is a segfault as soon
         // as anyone asks for `.message()`.
+        //
+        // Unless it arrived erased already: `try g(n)` inside a
+        // `-> i64 or any Error` whose `g` returns one too. Boxing a box asks
+        // for the concrete type's name and a trait object hasn't got one, so
+        // the vtable came out `.vtable.unknown__Error` and the first
+        // `.message()` on it failed to link (#1106). The value is forwarded
+        // whole instead — it already carries the right vtable.
+        let already_boxed = |err: &MirType| matches!(
+            (&err_ty, err),
+            (MirType::TraitObject { trait_name: have }, MirType::TraitObject { trait_name: want })
+                if have == want
+        );
         let box_trait: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
             (None, None, MirType::Result { err, .. }) => match &**err {
-                MirType::TraitObject { trait_name } => Some(trait_name.clone()),
+                MirType::TraitObject { trait_name } if !already_boxed(err) => {
+                    Some(trait_name.clone())
+                }
                 _ => None,
             },
             _ => None,
         };
+        // A forwarded box is 16 bytes, so it comes back as an address to copy
+        // from for the same reason a wrapped or freshly boxed error does.
+        let forwarding_box = matches!(
+            (&err_ty, self.builder.ret_ty()),
+            (MirType::TraitObject { .. }, MirType::Result { err, .. }) if already_boxed(err)
+        );
         let err_val = match &handler {
             Some(frame) => frame.err_val,
             None => self.builder.alloc_temp(err_ty.clone()),
@@ -201,7 +221,7 @@ impl<'a> MirLowerer<'a> {
                 // Wrapping copies the error into an enum slot and boxing
                 // memcpies it onto the heap, so an aggregate one has to come
                 // back as an address either way.
-                access: if wrap.is_some() || box_trait.is_some() {
+                access: if wrap.is_some() || box_trait.is_some() || forwarding_box {
                     aggregate_payload_access(&err_ty)
                 } else {
                     FieldAccess::Word
@@ -284,13 +304,50 @@ impl<'a> MirLowerer<'a> {
         // message about test blocks. Those are a compile error now (E0316), and
         // this arm is only for the one case that isn't.
         if self.in_test_body {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("panic".to_string()),
-                args: vec![MirOperand::Constant(MirConst::String(
-                    TRY_PROPAGATED_NOWHERE.to_string(),
-                ))],
-            }));
+            // T20 asks for the error to be *reported*, not only for the test to
+            // end. The value is right here and its type is known, so call its
+            // `message()` the same way `r!` does — reachability queued the body
+            // and left the name on this node. Without it a failing setup step
+            // said only that something had failed, and finding out what meant
+            // bisecting the test.
+            let text = self
+                .ctx
+                .call_rewrites
+                .get(&try_id)
+                .cloned()
+                .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
+            match text {
+                Some(text) => {
+                    let joined = self.builder.alloc_temp(MirType::String);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(joined),
+                        func: FunctionRef::internal("concat".to_string()),
+                        args: vec![
+                            MirOperand::Constant(MirConst::String(format!(
+                                "{TRY_PROPAGATED_NOWHERE}: "
+                            ))),
+                            MirOperand::Local(text),
+                        ],
+                    }));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic_str".to_string()),
+                        args: vec![MirOperand::Local(joined)],
+                    }));
+                }
+                // No `message()` to call — an optional's `none`, or an error
+                // type whose body nothing queued. The bare line still names the
+                // test and the line it failed on.
+                None => {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic".to_string()),
+                        args: vec![MirOperand::Constant(MirConst::String(
+                            TRY_PROPAGATED_NOWHERE.to_string(),
+                        ))],
+                    }));
+                }
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
         }

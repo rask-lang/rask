@@ -201,11 +201,17 @@ public struct Timer { }
 extend Timer {
     /// Create a one-shot timer that fires after the given duration.
     /// Returns a Receiver that will receive () when the timer fires.
-    @native
+    ///
+    /// A timer needs the reactor to wake a fiber on a deadline, and the
+    /// reactor isn't built (Phase B). Both of these were marked `@native`
+    /// against a symbol nobody wrote, so a call type-checked, ran on the
+    /// interpreter, and died at codegen with "Function not found: Timer_after"
+    /// (#1066).
+    @unimplemented
     public func after(duration: Duration) -> Receiver<void> {}
 
     /// Create a periodic timer that fires at the given interval.
     /// Returns a Receiver that receives () on each tick.
-    @native
+    @unimplemented
     public func interval(duration: Duration) -> Receiver<void> {}
 }

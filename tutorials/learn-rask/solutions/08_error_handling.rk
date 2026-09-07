@@ -24,7 +24,7 @@ func validate_temperature(reading: f64) -> f64 or SensorError {
 
 func parse_altitude(s: string) -> i32 or SensorError {
     if s.len() == 0 { return SensorError.Msg("empty string") }
-    let alt = s.parse_i32() catch e => return SensorError.Msg(e.message())
+    let alt = s.parse<i32>() catch e => return SensorError.Msg(e.message())
     if alt < 0 { return SensorError.Msg("negative altitude") }
     return alt
 }

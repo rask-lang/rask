@@ -72,10 +72,13 @@ test "stdlib.collections — a Map behind a field indexes to its value type" {
     assert score == 7
 }
 
+// The inner `Vec` is the element here, so binding it would be a second name for
+// the same buffer rather than a copy — that's E0871, and chaining the two
+// indexes is the form the rule points at (mem.borrowing/E1, E2).
 test "stdlib.collections — a nested Vec indexes twice" {
     let w = build()
-    let row = w.grid[0]
-    assert row[1] == 4
+    assert w.grid[0][1] == 4
+    assert w.grid[0].len() == 2
 }
 
 test "mem.pools — the same index inside a method" {

@@ -15,7 +15,7 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     compute_enum_layout, compute_struct_layout, compute_union_layout, is_stdlib_span,
-    ordering_layout, type_size_align,
+    ordering_layout, parse_field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
@@ -121,6 +121,99 @@ fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
 /// Topological sort of type declarations by field dependencies (Kahn's algorithm).
 /// Returns indices into `decls` for struct/enum/union declarations only,
 /// ordered so that dependencies come before dependents.
+/// Every layout a declaration list defines on its own, plus the size/align
+/// cache they were computed against.
+///
+/// Concrete types first, in dependency order, so a struct holding another sees
+/// its real size rather than a guess; then one layout per generic declaration,
+/// with a word standing in for each type parameter.
+///
+/// Public because the interpreter needs the same answers. `reflect.fields<T>()`
+/// reports each field's offset and size, and the interpreter had no layouts at
+/// all — it answered 0 for both while native answered the truth (#1104).
+/// Computing them a second way there is how two backends drift; this is the
+/// one that already exists.
+///
+/// What it leaves out is the per-*instantiation* layout, which needs the
+/// checker's type table to know which instantiations a program reaches.
+/// `compute_struct_layout` with the arguments in hand answers that directly.
+pub fn compute_declared_layouts(
+    decls: &[Decl],
+) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
+    // Compute layouts for concrete (non-generic) struct/enum types.
+    let mut layout_cache = LayoutCache::new();
+    let mut struct_layouts = Vec::new();
+    let mut enum_layouts = Vec::new();
+
+    let sorted = topo_sort_type_decls(decls);
+    for idx in sorted {
+        let decl = &decls[idx];
+        match &decl.kind {
+            DeclKind::Struct(s) if s.type_params.is_empty() => {
+                let layout = compute_struct_layout(decl, &[], &layout_cache);
+                layout_cache.insert(s.name.clone(), (layout.size, layout.align));
+                struct_layouts.push(layout);
+            }
+            DeclKind::Enum(e) if e.type_params.is_empty() => {
+                let layout = compute_enum_layout(decl, &[], &layout_cache);
+                layout_cache.insert(e.name.clone(), (layout.size, layout.align));
+                enum_layouts.push(layout);
+            }
+            DeclKind::Union(u) => {
+                let layout = compute_union_layout(decl, &layout_cache);
+                layout_cache.insert(u.name.clone(), (layout.size, layout.align));
+                struct_layouts.push(layout);
+            }
+            // A nominal newtype has the same layout as what it wraps — it's
+            // transparent, so it needs no layout of its own, just an entry so
+            // fields typed by it get the right size. Without this a
+            // `type Name = string` field was sized 8 instead of 16 and the
+            // struct's later fields overlapped it (#445).
+            DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
+                let (size, align) = type_size_align(
+                    &Type::UnresolvedNamed(a.target.clone()),
+                    &layout_cache,
+                );
+                layout_cache.insert(a.name.clone(), (size, align));
+            }
+            _ => {}
+        }
+    }
+
+    // Compute layouts for generic struct/enum types. The 8-byte-everything
+    // layout model means all scalar type parameters produce the same field
+    // sizes, so a single layout per generic struct suffices. Use i64 as the
+    // placeholder type for each type parameter.
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Struct(s) if !s.type_params.is_empty() => {
+                let placeholder_args: Vec<Type> = s.type_params.iter()
+                    .map(|_| Type::I64)
+                    .collect();
+                let mut layout = compute_struct_layout(decl, &placeholder_args, &layout_cache);
+                // Strip type params from name so struct literals ("Box") match
+                let base_name = s.name.split('<').next().unwrap_or(&s.name).to_string();
+                layout.name = base_name.clone();
+                layout_cache.insert(base_name, (layout.size, layout.align));
+                struct_layouts.push(layout);
+            }
+            DeclKind::Enum(e) if !e.type_params.is_empty() => {
+                let placeholder_args: Vec<Type> = e.type_params.iter()
+                    .map(|_| Type::I64)
+                    .collect();
+                let mut layout = compute_enum_layout(decl, &placeholder_args, &layout_cache);
+                let base_name = e.name.split('<').next().unwrap_or(&e.name).to_string();
+                layout.name = base_name.clone();
+                layout_cache.insert(base_name, (layout.size, layout.align));
+                enum_layouts.push(layout);
+            }
+            _ => {}
+        }
+    }
+
+    (struct_layouts, enum_layouts, layout_cache)
+}
+
 fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
     // Map type name → decl index for struct/enum/union declarations
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
@@ -529,6 +622,20 @@ pub fn monomorphize(
     monomorphize_with_packages(program, decls, std::collections::HashSet::new())
 }
 
+/// Monomorphize a program that may have no `main` — a file of `test` blocks has
+/// none, and `rask check` still has to answer whether its comptime consts fold.
+/// Every non-generic top-level function is a root instead of the entry point,
+/// so layouts and call targets exist for whatever the file defines.
+///
+/// Only for analysis. The result is not a program you can run: nothing in it
+/// says which function starts.
+pub fn monomorphize_for_analysis(
+    program: &TypedProgram,
+    decls: &[Decl],
+) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, std::collections::HashSet::new(), true)
+}
+
 /// Monomorphize with cross-package module awareness.
 ///
 /// `package_modules` contains names of imported external packages so the
@@ -538,12 +645,41 @@ pub fn monomorphize_with_packages(
     decls: &[Decl],
     package_modules: std::collections::HashSet<String>,
 ) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_inner(program, decls, package_modules, false)
+}
+
+/// `entryless` seeds every plain function as a root when there's no `main`,
+/// for the analysis entry point above.
+fn monomorphize_inner(
+    program: &TypedProgram,
+    decls: &[Decl],
+    package_modules: std::collections::HashSet<String>,
+    entryless: bool,
+) -> Result<MonoProgram, MonomorphizeError> {
+    // A struct out of an `import c` header has no declaration in the source —
+    // the type checker synthesizes one so the header's structs get layouts,
+    // fields and codegen like any other struct (#948).
+    let with_c_types: Vec<Decl>;
+    let decls: &[Decl] = if program.c_type_decls.is_empty() {
+        decls
+    } else {
+        with_c_types = decls
+            .iter()
+            .cloned()
+            .chain(program.c_type_decls.iter().cloned())
+            .collect();
+        &with_c_types
+    };
+
     let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
     mono.set_trait_coercions(&program.trait_coercions);
 
     if !mono.add_entry("main") {
-        return Err(MonomorphizeError::NoEntryPoint);
+        if !entryless {
+            return Err(MonomorphizeError::NoEntryPoint);
+        }
+        mono.add_all_plain_fn_roots();
     }
     mono.add_module_const_roots();
     mono.add_exported_roots();
@@ -558,76 +694,10 @@ pub fn monomorphize_with_packages(
         });
     }
 
-    // Compute layouts for concrete (non-generic) struct/enum types.
-    let mut layout_cache = LayoutCache::new();
-    let mut struct_layouts = Vec::new();
-    let mut enum_layouts = Vec::new();
-
-    let sorted = topo_sort_type_decls(decls);
-    for idx in sorted {
-        let decl = &decls[idx];
-        match &decl.kind {
-            DeclKind::Struct(s) if s.type_params.is_empty() => {
-                let layout = compute_struct_layout(decl, &[], &layout_cache);
-                layout_cache.insert(s.name.clone(), (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            DeclKind::Enum(e) if e.type_params.is_empty() => {
-                let layout = compute_enum_layout(decl, &[], &layout_cache);
-                layout_cache.insert(e.name.clone(), (layout.size, layout.align));
-                enum_layouts.push(layout);
-            }
-            DeclKind::Union(u) => {
-                let layout = compute_union_layout(decl, &layout_cache);
-                layout_cache.insert(u.name.clone(), (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            // A nominal newtype has the same layout as what it wraps — it's
-            // transparent, so it needs no layout of its own, just an entry so
-            // fields typed by it get the right size. Without this a
-            // `type Name = string` field was sized 8 instead of 16 and the
-            // struct's later fields overlapped it (#445).
-            DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
-                let (size, align) = type_size_align(
-                    &Type::UnresolvedNamed(a.target.clone()),
-                    &layout_cache,
-                );
-                layout_cache.insert(a.name.clone(), (size, align));
-            }
-            _ => {}
-        }
-    }
-
-    // Compute layouts for generic struct/enum types. The 8-byte-everything
-    // layout model means all scalar type parameters produce the same field
-    // sizes, so a single layout per generic struct suffices. Use i64 as the
-    // placeholder type for each type parameter.
-    for decl in decls {
-        match &decl.kind {
-            DeclKind::Struct(s) if !s.type_params.is_empty() => {
-                let placeholder_args: Vec<Type> = s.type_params.iter()
-                    .map(|_| Type::I64)
-                    .collect();
-                let mut layout = compute_struct_layout(decl, &placeholder_args, &layout_cache);
-                // Strip type params from name so struct literals ("Box") match
-                let base_name = s.name.split('<').next().unwrap_or(&s.name).to_string();
-                layout.name = base_name.clone();
-                layout_cache.insert(base_name, (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            DeclKind::Enum(e) if !e.type_params.is_empty() => {
-                let placeholder_args: Vec<Type> = e.type_params.iter()
-                    .map(|_| Type::I64)
-                    .collect();
-                let mut layout = compute_enum_layout(decl, &placeholder_args, &layout_cache);
-                let base_name = e.name.split('<').next().unwrap_or(&e.name).to_string();
-                layout.name = base_name.clone();
-                layout_cache.insert(base_name, (layout.size, layout.align));
-                enum_layouts.push(layout);
-            }
-            _ => {}
-        }
-    }
+    // Concrete and generic-base layouts, shared with the interpreter so both
+    // backends read one set of offsets (#1104).
+    let (mut struct_layouts, mut enum_layouts, mut layout_cache) =
+        compute_declared_layouts(decls);
 
     // One layout per *instantiation*, but only where the shared one is too small.
     // The placeholder above gives every type parameter a word, which is right for
@@ -681,6 +751,13 @@ pub fn monomorphize_with_packages(
                 .node_types
                 .values()
                 .chain(mono.instantiated_node_types.values())
+                // A type argument is an instantiation even when nothing builds
+                // one. `reflect.fields<Box2<string>>()` names the type and never
+                // constructs it, so it appeared in no expression's type — and
+                // the layout that would have said `value` is sixteen bytes was
+                // never emitted. Reflection then read the shared layout and
+                // reported a `string` field as an eight-byte `i64` (#968).
+                .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
             {
                 collect_generic_instances(ty, &type_names, &mut instances);
             }
@@ -948,6 +1025,7 @@ mod tests {
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
+            c_type_decls: Vec::new(),
             mutate_self_fns: std::collections::HashSet::new(),
             resolutions: std::collections::HashMap::new(),
             types: rask_types::TypeTable::new(),

@@ -50,6 +50,11 @@ pub struct SourceFile {
     pub decls: Vec<Decl>,
     /// Original source text (for diagnostics).
     pub source: String,
+    /// Which slot this file's spans point at. Unique across every package in
+    /// the registry, so a diagnostic from a dependency renders against the
+    /// dependency's source rather than whatever file the root happened to put
+    /// in that slot.
+    pub file_id: u16,
 }
 
 /// Registry of all discovered packages.
@@ -63,6 +68,17 @@ pub struct PackageRegistry {
     name_to_id: HashMap<String, PackageId>,
     /// Dependencies currently being discovered (cycle detection).
     discovering: HashSet<PathBuf>,
+    /// Next unused node id, shared by every package.
+    ///
+    /// This used to restart at 0 for each package, and the consumer's
+    /// declarations are merged with its dependencies' into one program — so
+    /// two unrelated expressions carried the same id and the checker's record
+    /// of one was read as the other's. `let v = libpkg.ones(3)` came out of
+    /// MIR typed `i64` because a node in the library held that id first, and
+    /// `v.len()` was emitted as `i64_len` (#1125).
+    next_node_id: u32,
+    /// Next unused file id, likewise shared.
+    next_file_id: u16,
 }
 
 /// Error that can occur during package discovery.
@@ -191,13 +207,17 @@ fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageE
 }
 
 /// Lex and parse a list of .rk file paths into SourceFiles.
-/// Chains NodeIds across files to ensure uniqueness when decls are combined.
-fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> {
+///
+/// Node ids and file ids come from the registry's own counters, so they stay
+/// unique across every file of every package.
+fn parse_rk_files(
+    next_id: &mut u32,
+    next_file_id: &mut u16,
+    paths: Vec<PathBuf>,
+) -> Result<Vec<SourceFile>, PackageError> {
     let mut source_files = Vec::new();
     let mut file_errors = Vec::new();
-    let mut next_id: u32 = 0;
-    let mut successful_file_idx: u16 = 0;
-    for (_file_idx, file_path) in paths.into_iter().enumerate() {
+    for file_path in paths.into_iter() {
         let source = match fs::read_to_string(&file_path) {
             Ok(s) => s,
             Err(e) => {
@@ -213,14 +233,15 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
         // into it would make a package file and a stdlib file share an id, and
         // every diagnostic from one would be rendered against the other — so
         // say so instead of wrapping into it silently.
-        if successful_file_idx >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE {
+        if *next_file_id >= rask_stdlib::stubs::STDLIB_FILE_ID_BASE {
             file_errors.push(PackageError::TooManyFiles {
                 limit: rask_stdlib::stubs::STDLIB_FILE_ID_BASE,
             });
             break;
         }
 
-        let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, successful_file_idx);
+        let file_id = *next_file_id;
+        let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
         let lex_result = lexer.tokenize();
         if !lex_result.is_ok() {
             file_errors.push(PackageError::Lex {
@@ -231,9 +252,10 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             continue;
         }
 
-        let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, successful_file_idx);
+        let mut parser =
+            rask_parser::Parser::new_with_file_id(lex_result.tokens, *next_id, file_id);
         let parse_result = parser.parse();
-        next_id = parser.next_node_id();
+        *next_id = parser.next_node_id();
         if !parse_result.is_ok() {
             file_errors.push(PackageError::Parse {
                 file: file_path,
@@ -247,8 +269,9 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             path: file_path,
             source,
             decls: parse_result.decls,
+            file_id,
         });
-        successful_file_idx += 1;
+        *next_file_id += 1;
     }
 
     if !file_errors.is_empty() {
@@ -432,7 +455,8 @@ impl PackageRegistry {
             .unwrap_or_else(|| pkg_path.last().cloned().unwrap_or_else(|| "main".to_string()));
 
         let (files, subdirs) = collect_rk_files(dir)?;
-        let source_files = parse_rk_files(files)?;
+        let source_files =
+            parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
         let deps = path_deps(&manifest);
 
         let package = Package {
@@ -503,7 +527,8 @@ impl PackageRegistry {
         }
 
         let (files, _subdirs) = collect_rk_files(&canonical)?;
-        let source_files = parse_rk_files(files)?;
+        let source_files =
+            parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
         let deps = path_deps(&manifest);
         let pkg_path = vec![pkg_name.clone()];
 
@@ -591,7 +616,8 @@ impl PackageRegistry {
             .unwrap_or_else(|| name.to_string());
 
         let (files, _subdirs) = collect_rk_files(cache_dir)?;
-        let source_files = parse_rk_files(files)?;
+        let source_files =
+            parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
         let pkg_path = vec![pkg_name.clone()];
 
         // Build a manifest with the correct version if build.rk doesn't have one
@@ -654,7 +680,16 @@ impl PackageRegistry {
             name: name.clone(),
             path: path.clone(),
             root_dir: root_dir.clone(),
-            files: vec![SourceFile { path: root_dir.join("lib.rk"), source: String::new(), decls }],
+            files: vec![SourceFile {
+                path: root_dir.join("lib.rk"),
+                source: String::new(),
+                decls,
+                file_id: {
+                    let id = self.next_file_id;
+                    self.next_file_id += 1;
+                    id
+                },
+            }],
             imports: Vec::new(),
             manifest: None,
             build_decls: Vec::new(),

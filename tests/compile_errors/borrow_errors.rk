@@ -19,7 +19,12 @@ func bad_heal(p: Player) {
 }
 
 // --- moving out of a borrowed parameter (PM3) ---
-func bad_store(p: Player) {
+//
+// `Player` is 8 bytes, so `let stored = p` copies it and moves nothing. The
+// rule needs a value the copy threshold doesn't cover, which `Roster` is.
+struct Roster { name: string, members: Vec<string> }
+
+func bad_store(p: Roster) {
     // ERROR: cannot move out of borrowed parameter `p`
     let stored = p
 }

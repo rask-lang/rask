@@ -20,9 +20,10 @@ func main() {
     let is_empty = pool.is_empty()
     println("Is empty: {is_empty}")
 
-    // Index access - read whole value
-    let e1 = pool[h1]
-    println("Entity 1: {e1.name}")
+    // Index access - read a field. Binding the whole element would be a silent
+    // copy of something the pool still owns (mem.borrowing/E4).
+    let name1 = pool[h1].name
+    println("Entity 1: {name1}")
 
     // Index access - read field
     let name2 = pool[h2].name
@@ -67,8 +68,9 @@ func main() {
     // Iteration via cursor
     println("All entities via cursor:")
     for h in pool.handles() {
-        let e = pool[h]
-        println("  {e.name}: health={e.health}")
+        with pool[h] as e {
+            println("  {e.name}: health={e.health}")
+        }
     }
 
     // Insert more entities to test slot reuse
@@ -79,8 +81,7 @@ func main() {
     // Safe removal during iteration
     pool[h4].health = 30
     for h in pool.handles() {
-        let e = pool[h]
-        if e.health < 50 {
+        if pool[h].health < 50 {
             pool.remove(h)
         }
     }
@@ -90,8 +91,9 @@ func main() {
     // Verify remaining entities
     println("Remaining entities:")
     for h in pool.handles() {
-        let e = pool[h]
-        println("  {e.name}: health={e.health}")
+        with pool[h] as e {
+            println("  {e.name}: health={e.health}")
+        }
     }
 
     println("Pool test passed!")

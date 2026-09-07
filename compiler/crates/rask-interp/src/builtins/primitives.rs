@@ -291,7 +291,7 @@ impl Interpreter {
                 };
                 let value = Value::Int(sign_extend(out, width, signed), kind);
                 if method.starts_with("overflowing_") {
-                    return Ok(Value::vec(vec![value, Value::Bool(overflowed)]));
+                    return Ok(Value::tuple(vec![value, Value::Bool(overflowed)]));
                 }
                 if overflowed {
                     return Ok(Value::Enum {

@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A comptime `string` const is const data, not work done at startup (#1074).
+//
+// `ComptimeValue::serialize` had no arm for a string, so a block that produced
+// one folded fine and then had its answer thrown away: the const was lowered as
+// ordinary code and the string was built again on every run. Half the plumbing
+// already expected strings — `type_prefix` answers `"string"`, `elem_type_name`
+// spells it — only the bytes were missing.
+//
+// The bytes are the characters, and lowering turns them back into a string
+// literal. A literal is already emitted as const data with a sentinel refcount,
+// short ones inline in the 16-byte value and longer ones through a static
+// header, so nothing here needs to know the `RaskStr` layout and there is no
+// 15-byte cliff.
+//
+// A string *element* is different: it sits in a slot beside its neighbours, so
+// it has to be a real sixteen-byte `RaskStr`. Short ones are written inline;
+// a longer one leaves its first eight bytes zero and records a relocation, and
+// codegen points it at the same static header a literal of that text uses.
+
+comptime func banner(width: i64) -> string {
+    return "a banner {width} columns wide, comfortably past the inline limit"
+}
+
+comptime func shout(word: string) -> string {
+    return word.to_uppercase()
+}
+
+const SHORT = comptime { "hi" }
+const EMPTY = comptime { "" }
+const EXACTLY_FIFTEEN = comptime { "123456789012345" }
+const SIXTEEN = comptime { "1234567890123456" }
+const LONG = comptime { banner(80) }
+const SHOUTED = comptime { shout("rask") }
+
+// The pure string methods fold too. Each is the same Rust std call the
+// interpreter makes, and native's case tables are generated from Rust's, so
+// the folded answer and the runtime answer are the same by construction — the
+// tests below check that rather than trusting it.
+const TRIMMED = comptime { "  padded  ".trim() }
+const SWAPPED = comptime { "a-b-c".replace("-", "+") }
+const BAR = comptime { "=".repeat(12) }
+const GREEK = comptime { "\u{3c3}\u{3b9}\u{3c3}".to_uppercase() }
+const SHARP = comptime { "stra\u{df}e".to_uppercase() }
+
+const NAMES = comptime {
+    mut v = Vec.new()
+    v.push("alpha")
+    v.push("")
+    v.push("123456789012345")
+    v.push("1234567890123456")
+    v.push(banner(80))
+    v.freeze()
+}
+
+test "a short string folds and reads back" {
+    assert SHORT == "hi"
+    assert SHORT.len() == 2
+}
+
+test "an empty string folds" {
+    assert EMPTY == ""
+    assert EMPTY.len() == 0
+}
+
+test "the inline boundary is not a cliff" {
+    // 15 bytes is the last that fits in the value itself; 16 goes through a
+    // static header. Both are const data and both read back.
+    assert EXACTLY_FIFTEEN.len() == 15
+    assert SIXTEEN.len() == 16
+    assert EXACTLY_FIFTEEN == "123456789012345"
+    assert SIXTEEN == "1234567890123456"
+}
+
+test "a long string built from a comptime function" {
+    assert LONG.len() == 59
+    assert LONG.starts_with("a banner 80 columns")
+    assert LONG.ends_with("inline limit")
+}
+
+test "a string method runs at comptime" {
+    assert SHOUTED == "RASK"
+}
+
+test "a folded string works where any string does" {
+    mut m = Map.new()
+    m.insert(SHORT.clone(), 1)
+    assert m[SHORT] == 1
+    assert "{SHORT}-{SIXTEEN.len()}" == "hi-16"
+}
+
+test "a Vec of strings folds, inline and heap elements alike" {
+    assert NAMES.len() == 5
+    assert NAMES[0] == "alpha"
+    assert NAMES[1] == ""
+    assert NAMES[2] == "123456789012345"
+    assert NAMES[3] == "1234567890123456"
+    assert NAMES[4] == LONG
+}
+
+test "a folded string element is a string like any other" {
+    mut joined = ""
+    for n in NAMES {
+        joined = "{joined}{n.len()}:"
+    }
+    assert joined == "5:0:15:16:59:"
+    assert NAMES[0].to_uppercase() == "ALPHA"
+}
+
+test "the pure string methods fold" {
+    assert TRIMMED == "padded"
+    assert SWAPPED == "a+b+c"
+    assert BAR.len() == 12
+    assert BAR.starts_with("==")
+}
+
+test "a folded case conversion is what the runtime would have said" {
+    // Not an ASCII check: ß uppercases to two characters and Greek sigma has a
+    // final form. If the fold and the runtime ever disagreed, this is where.
+    assert GREEK == "\u{3c3}\u{3b9}\u{3c3}".to_uppercase()
+    assert SHARP == "stra\u{df}e".to_uppercase()
+    assert SHARP.len() == 7
+}

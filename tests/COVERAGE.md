@@ -153,9 +153,23 @@ specifies those as a panic with a location in debug and UB in release; the
 interpreter always panics, native reads whatever is there. That's the specified
 split between the modes, not a divergence.
 
-What genuinely does need a build harness is the C-interop half: `compile_rust()` in
-a build script, the C ABI, cbindgen, linking a real object file. That stays
-uncovered. `&x` to take a raw pointer to a local also isn't available on either
+The C ABI and a real object file turned out not to need a build harness either,
+just a test that shells out to `cc`. `compiler/crates/rask-cli/tests/compile_run.rs`
+compiles a `.c` fixture, links it with the Rask binary and runs the result:
+`a_c_struct_goes_by_value` asserts one line per System V argument class (a struct
+passed as a pointer, or cut into the wrong register class, gives a different
+number), `a_c_function_returning_a_struct_is_rejected` pins the return-side rule
+the ABI doesn't implement (E0858), and `extern_c_export_returns_through_c_frames`
+calls *into* Rask from C frames. Writing those found #948 — `c.mylib_area(r)`
+returned 364029824 where it should return 42 — and #1101.
+
+Handing a string to a C function taking `const char*` is the other half of a real
+C API, and was `@unimplemented` until #949; `examples/19_unsafe.rk` now passes one
+to libc's `strlen`.
+
+What stays uncovered is `compile_rust()` in a build script and cbindgen — both
+need a Rust toolchain invoked from a build script, which is a different harness
+again. `&x` to take a raw pointer to a local also isn't available on either
 backend, so `as_ptr()` is the only way to get a pointer today.
 
 **The build system and multi-package projects.** `tests/projects_gate.sh` and

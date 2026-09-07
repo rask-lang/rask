@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a turbofish on a container constructor is checked
+// ERROR: expected `string`, found `i64`
+//
+// `Vec.new<string>()` used to parse its `<string>` and drop it, so the binding
+// stayed open and this push widened it instead of being rejected (#1084). The
+// annotated form — `mut v: Vec<string> = Vec.new()` — always caught it, which
+// is what said the checking machinery was fine and the turbofish never got
+// there.
+
+func main() {
+    mut v = Vec.new<string>()
+    v.push(7)
+    println("{v.len()}")
+}

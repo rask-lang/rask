@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: using clauses declare pool dependencies; compiler threads as hidden parameters -->
 <!-- depends: memory/pools.md, memory/borrowing.md -->
-<!-- implemented-by: compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-mir/src/hidden_params/, compiler/crates/rask-types/ -->
 
 # Context Clauses
 
@@ -70,6 +70,12 @@ Order: generics, parameters, return type, `using` clause, `where` clause, body.
 | **CC4: Resolution order** | At call sites, compiler searches: local variables, function parameters, fields of `self`, own `using` clause |
 | **CC5: Propagation** | A function's `using` clause satisfies callees requiring the same context type |
 | **CC8: Ambiguity error** | Multiple pools of the same type in scope is a compile error — pass explicitly |
+
+Propagation stops at two places, and a requirement that arrives at either with no
+pool to satisfy it is an error (`E0868`). A public function is one: its signature
+is what a caller in another module reads, so nothing is added behind it. The entry
+point is the other — `main`, an `@entry` function, or a `test`/`benchmark` block —
+because there is no caller left to fill the parameter in. Own the pool there.
 
 <!-- test: parse -->
 ```rask

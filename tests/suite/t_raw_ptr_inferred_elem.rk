@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `let b = unsafe v.as_ptr()` on a `Vec` whose element was inferred came back
+// "couldn't work out the type of `b`" (#970). Annotating the Vec fixed it, so
+// the pointer looked like the problem — it wasn't. The element had settled:
+// writing `let b: *string = …` reported "expected string, found i64", which is
+// the answer, arriving through a check that doesn't consult the substitution.
+//
+// `InferenceContext::apply` had no arm for `*T`, so a variable inside one kept
+// its variable spelling however thoroughly it had been solved, and the "every
+// binding must end up with a type" pass read it as an inference gap.
+
+test "an inferred integer element" {
+    mut v = Vec.new()
+    v.push(7)
+    let p = unsafe v.as_ptr()
+    assert unsafe *p == 7
+}
+
+test "Vec.from infers the same way" {
+    let v = Vec.from([3, 4, 5])
+    let p = unsafe v.as_ptr()
+    assert unsafe *p == 3
+}
+
+test "an inferred string element" {
+    mut v = Vec.new()
+    v.push("hi")
+    let p = unsafe v.as_ptr()
+    assert v[0] == "hi"
+    assert unsafe !p.is_null()
+}
+
+test "annotating it still works" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(11)
+    let p = unsafe v.as_ptr()
+    assert unsafe *p == 11
+}

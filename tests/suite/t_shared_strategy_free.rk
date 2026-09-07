@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Every `Shared` strategy's box is freed, not just the default one's (#1099).
+//
+// `Shared<T, S>` is one type over three runtime objects, and which one a
+// constructor builds is settled at lowering:
+//
+//     Shared.new(0)      ->  Shared_new
+//     Shared.mutex(0)    ->  Mutex_new
+//     Shared.local(0)    ->  Cell_new
+//
+// The drop pass decides "this call produced something the caller owns" from a
+// list of constructor names, and only `Shared_new` was on it. So two of the
+// three leaked the box and its payload — two allocations each, whatever the
+// payload was. `rask_cell_free` had been in the runtime the whole time with
+// nothing calling it, which is the same shape `rask_shared_free` was in before
+// the first half of this issue.
+//
+// The leak gate is what measures this — the file is deliberately *not* on
+// `known_leaks.txt`, so a regression shows up there rather than here. What this
+// file checks is the other half: that freeing them didn't break them.
+
+import sync.Shared
+
+struct Reading {
+    sensor: i64
+    value: f64
+}
+
+test "the default strategy holds its value" {
+    let s = Shared.new(41)
+    with s.write() as n {
+        n = n + 1
+    }
+    with s.read() as n {
+        assert n == 42
+    }
+}
+
+test "the mutex strategy does too" {
+    let s = Shared.mutex(0)
+    with s.write() as n {
+        n = n + 7
+    }
+    with s.write() as n {
+        n = n * 2
+    }
+    with s.read() as n {
+        assert n == 14
+    }
+}
+
+test "and the local one" {
+    let s = Shared.local(100)
+    with s.write() as n {
+        n = n - 58
+    }
+    with s.read() as n {
+        assert n == 42
+    }
+}
+
+// A payload wider than a word goes through the pointer-based runtime entry
+// points, which allocate the same two things.
+test "an aggregate payload survives the round trip" {
+    let s = Shared.mutex(Reading { sensor: 1, value: 0.0 })
+    with s.write() as r {
+        r.value = 2.5
+        r.sensor = 9
+    }
+    with s.read() as r {
+        assert r.sensor == 9
+        assert r.value == 2.5
+    }
+}
+
+// A module-level box is deliberately not here. It leaks two allocations, and so
+// does a module-level `const NAMES: Vec<i64> = [1, 2, 3]` — nothing drops a
+// module const at exit, whatever it holds. That is #1116, not this, and keeping
+// it out is what lets this file stay off `known_leaks.txt`.
+
+func main() {
+    let s = Shared.local(1)
+    with s.write() as n {
+        n = n + 1
+    }
+    with s.read() as n {
+        println("shared strategy free ok: {n}")
+    }
+    return
+}

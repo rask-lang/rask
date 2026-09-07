@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an `i128` field counts its real 16 bytes
+// ERROR: use of moved value: `x`
+//
+// The ownership checker's size table lists a width for every other scalar and
+// had no arm for `i128`/`u128`, so both fell through to the 8-byte default
+// (#936). `Wide` measured 16 bytes instead of 24 — right on the Copy threshold
+// instead of over it — and the two bindings below silently aliased one value.
+//
+// One error, not two: the initializer used to be reported by the expression
+// walk and again by the assignment (#1092).
+
+struct Wide {
+    a: i128
+    b: i64
+}
+
+func main() {
+    let x = Wide { a: 1, b: 2 }
+    let y = x
+    let z = x
+    println("{y.a} {z.a}")
+}

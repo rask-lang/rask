@@ -79,7 +79,10 @@ func handle_sleep(req: Request) -> Response or ApiError {
     let ms = raw.parse<u64>() ?? {
         return ApiError.BadRequest("ms must be a non-negative integer")
     }
-    try time.sleep(time.Duration.millis(ms))
+    // `parse<u64>` is the non-negative check; `Duration.millis` takes an i64,
+    // and a millisecond count past i64's range is nonsense for a sleep, so
+    // clamping is total where `to<i64>()!` would panic.
+    try time.sleep(time.Duration.millis(ms.clamp<i64>()))
     return json_response(200, json.encode(OkBody { ok: true }))
 }
 

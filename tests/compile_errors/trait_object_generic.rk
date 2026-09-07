@@ -20,7 +20,7 @@ extend Bin with Store {
     }
 }
 
-// ERROR: generic method `put` cannot be called through `any Store` [E0819]
+// ERROR: generic method `put` cannot be called through `any Store` [E0852]
 func use_generic(s: any Store) {
     s.put(42)
 }

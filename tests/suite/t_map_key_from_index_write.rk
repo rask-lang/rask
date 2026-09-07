@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `mut m = Map.new()` has nothing to say what the key type is. The first
+// `m["a"] = 1` does, and the value type was already read off that write — but
+// the key wasn't, so K stayed an inference variable and every mention of `m`
+// inherited it (#1026). The index check compared the index type against K and
+// accepted "K is still open" without ever writing the answer back.
+//
+// It reads both ways now: a literal index still adapts to a known K, and an
+// open K takes the index's type.
+
+func total(m: Map<string, i32>) -> i32 {
+    mut sum = 0
+    for k in m.keys() {
+        sum = sum + m[k]
+    }
+    return sum
+}
+
+test "the key type comes from the first index write" {
+    mut m = Map.new()
+    m["a"] = 1
+    m["b"] = 2
+    assert m.len() == 2
+    assert m["a"] == 1
+    assert total(m) == 3
+}
+
+test "an integer key, inferred the same way" {
+    mut m = Map.new()
+    m[3] = "three"
+    m[4] = "four"
+    assert m[3] == "three"
+    assert m.len() == 2
+}
+
+test "a tuple key" {
+    mut grid = Map.new()
+    grid[(1, 2)] = "here"
+    grid[(0, 0)] = "origin"
+    assert grid[(1, 2)] == "here"
+    assert grid[(0, 0)] == "origin"
+}
+
+test "a key written through a variable" {
+    let k = "count"
+    mut m = Map.new()
+    m[k] = 7
+    assert m["count"] == 7
+}
+
+test "an annotated key still wins over the write" {
+    mut m: Map<i64, i32> = Map.new()
+    m[1] = 10
+    assert m[1] == 10
+}
+
+test "reading the map back in a loop" {
+    mut m = Map.new()
+    m["x"] = 1
+    m["y"] = 2
+    mut sum = 0
+    for k in m.keys() {
+        sum = sum + m[k]
+    }
+    assert sum == 3
+}

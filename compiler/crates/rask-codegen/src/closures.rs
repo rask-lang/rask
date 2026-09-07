@@ -194,20 +194,34 @@ pub fn load_func_ptr(builder: &mut FunctionBuilder, closure_ptr: Value) -> Value
 ///
 /// Loads func_ptr from offset 0, computes env_ptr = closure_ptr + 8,
 /// prepends env_ptr to the argument list, and performs an indirect call.
+/// `dst` is the destination pointer for a closure whose answer is wider than a
+/// machine word — the same first-parameter convention every Rask function uses
+/// (#1109). It goes ahead of the environment, because that is the order the
+/// closure body's own signature was declared in.
 pub fn call_closure(
     builder: &mut FunctionBuilder,
     closure_ptr: Value,
     mut sig: Signature,
     args: &[Value],
+    dst: Option<Value>,
 ) -> cranelift_codegen::ir::Inst {
     let func_ptr = load_func_ptr(builder, closure_ptr);
     let env_ptr = builder.ins().iadd_imm(closure_ptr, CLOSURE_ENV_OFFSET);
 
     sig.params
         .insert(0, AbiParam::new(types::I64));
-    let mut all_args = Vec::with_capacity(args.len() + 1);
+    let mut all_args = Vec::with_capacity(args.len() + 2);
     all_args.push(env_ptr);
     all_args.extend_from_slice(args);
+
+    if let Some(dst) = dst {
+        sig.params.insert(
+            0,
+            AbiParam::special(types::I64, cranelift_codegen::ir::ArgumentPurpose::StructReturn),
+        );
+        sig.returns.clear();
+        all_args.insert(0, dst);
+    }
 
     let sig_ref = builder.import_signature(sig);
     builder.ins().call_indirect(sig_ref, func_ptr, &all_args)

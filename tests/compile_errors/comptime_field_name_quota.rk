@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: the `comptime` block naming a field runs past its branch quota
+// Rejects: comptime exceeded backwards branch quota (1000)
+//
+// `value.(comptime { … })` names a field, so the block has to finish. MIR said
+// so, and said it well — "the `comptime` block naming a field didn't finish:
+// comptime exceeded backwards branch quota (1000)" — but as a lowering failure:
+// no span, no error code, and not during `rask check` at all. A program with a
+// field-name block that never finishes type-checked clean and failed at the end
+// of a build (#1090).
+//
+// The block runs where a `comptime` const's does now, so a failure is the same
+// E0383 a const's failure is.
+//
+// Alone in its own file on purpose. Running it needs monomorphization, and that
+// bails once a program has type errors — so this marker could never land in
+// `comptime_field_name.rk`, which has two by design.
+
+struct Budget10 {
+    spent: i64
+    limit: i64
+}
+
+// ERROR: the block runs past the branch quota — say so, don't call it unknown [E0383]
+func over_quota(b: Budget10) -> i64 {
+    return b.(comptime {
+        mut s = ""
+        for i in 0..1500 { s = "spent" }
+        s
+    })
+}
+
+// THE FIX: keep the block under the quota, or raise it with @comptime_quota(N).
+func fine(b: Budget10) -> i64 {
+    return b.(comptime { "spent" })
+}
+
+func main() {
+    let b = Budget10 { spent: 3, limit: 10 }
+    println("{fine(b)}")
+}

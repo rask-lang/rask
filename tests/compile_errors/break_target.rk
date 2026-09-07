@@ -5,7 +5,7 @@
 // to a label named `total` — the loop's value type then had nothing to unify
 // against, and the binding it fed came out un-inferrable. Now the enclosing
 // labels decide, so a name that is neither a label nor a variable is caught
-// here with the label-or-value question spelled out (E0210).
+// here with the label-or-value question spelled out (E0215).
 
 // --- neither a label nor a variable ---
 // ERROR: `nowhere` is neither a variable to break with nor a label to break to

@@ -36,3 +36,6 @@ benchmarks/ergonomics/grep_c
 
 # Agent benchmark run output (transcripts, reports, raw run data)
 agentbench/runs/
+
+# Test-fixture lockfiles — the gate builds from source (see tests/packages/README.md).
+tests/packages/*/app/rask.lock

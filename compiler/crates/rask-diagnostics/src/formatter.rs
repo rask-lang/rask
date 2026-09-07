@@ -35,6 +35,11 @@ pub struct DiagnosticFormatter<'a> {
 
 /// A source line with its labels.
 struct AnnotatedLine {
+    /// Which file this line is in. Labels used to be keyed by line number
+    /// alone, so a diagnostic naming two files rendered both under the first
+    /// one's header — and where the two line numbers happened to match, one
+    /// label landed on the other file's source text.
+    file_id: u16,
     line_num: usize,
     text: String,
     annotations: Vec<Annotation>,
@@ -101,50 +106,79 @@ impl<'a> DiagnosticFormatter<'a> {
         // up, and an editor jumping there landed on the wrong statement.
         // `labels` is non-empty here, so `primary_span` always answers.
         let anchor = diagnostic.primary_span().unwrap_or(diagnostic.labels[0].span);
-        let file = self.name_of(anchor.file_id);
-        let (line, col) = self.offset_to_line_col(anchor.start, anchor.file_id);
-        out.push_str(&format!("  {} {}:{}:{}\n", "-->".blue(), file, line, col));
 
         // Calculate gutter width from max line number
-        let max_line = annotated.last().map(|a| a.line_num).unwrap_or(1);
+        let max_line = annotated.iter().map(|a| a.line_num).max().unwrap_or(1);
         let gutter_width = max_line.to_string().len().max(2);
 
-        // Render each annotated line
-        let mut prev_line_num: Option<usize> = None;
-        for annotated_line in &annotated {
-            // Gap indicator for non-consecutive lines
-            if let Some(prev) = prev_line_num {
-                if annotated_line.line_num > prev + 1 {
-                    out.push_str(&format!(
-                        "{} {}\n",
-                        " ".repeat(gutter_width),
-                        "...".blue()
-                    ));
-                }
+        // One snippet per file, the one the error is *about* first. A
+        // diagnostic that names two files — a dependency's declaration and the
+        // consumer's, say — used to print every line under the primary's
+        // header, so the other file's lines looked like they came from a file
+        // they aren't in.
+        let mut file_order: Vec<u16> = vec![anchor.file_id];
+        for a in &annotated {
+            if !file_order.contains(&a.file_id) {
+                file_order.push(a.file_id);
+            }
+        }
+
+        for file_id in file_order {
+            let lines: Vec<&AnnotatedLine> =
+                annotated.iter().filter(|a| a.file_id == file_id).collect();
+            if lines.is_empty() {
+                continue;
             }
 
-            // Empty pipe line before first source line
-            if prev_line_num.is_none() {
-                out.push_str(&format!(
-                    "{} {}\n",
-                    " ".repeat(gutter_width + 1),
-                    "|".blue()
-                ));
-            }
-
-            // Source line: NN | code
+            let (line, col) = if file_id == anchor.file_id {
+                self.offset_to_line_col(anchor.start, anchor.file_id)
+            } else {
+                (lines[0].line_num, 1)
+            };
             out.push_str(&format!(
-                "{:>width$} {} {}\n",
-                annotated_line.line_num.to_string().blue().bold(),
-                "|".blue(),
-                annotated_line.text,
-                width = gutter_width + 1,
+                "  {} {}:{}:{}\n",
+                "-->".blue(),
+                self.name_of(file_id),
+                line,
+                col
             ));
 
-            // Annotation lines beneath
-            self.format_annotations(&mut out, annotated_line, gutter_width);
+            let mut prev_line_num: Option<usize> = None;
+            for annotated_line in lines {
+                // Gap indicator for non-consecutive lines
+                if let Some(prev) = prev_line_num {
+                    if annotated_line.line_num > prev + 1 {
+                        out.push_str(&format!(
+                            "{} {}\n",
+                            " ".repeat(gutter_width),
+                            "...".blue()
+                        ));
+                    }
+                }
 
-            prev_line_num = Some(annotated_line.line_num);
+                // Empty pipe line before first source line
+                if prev_line_num.is_none() {
+                    out.push_str(&format!(
+                        "{} {}\n",
+                        " ".repeat(gutter_width + 1),
+                        "|".blue()
+                    ));
+                }
+
+                // Source line: NN | code
+                out.push_str(&format!(
+                    "{:>width$} {} {}\n",
+                    annotated_line.line_num.to_string().blue().bold(),
+                    "|".blue(),
+                    annotated_line.text,
+                    width = gutter_width + 1,
+                ));
+
+                // Annotation lines beneath
+                self.format_annotations(&mut out, annotated_line, gutter_width);
+
+                prev_line_num = Some(annotated_line.line_num);
+            }
         }
 
         self.format_footer(&mut out, diagnostic);
@@ -285,7 +319,7 @@ impl<'a> DiagnosticFormatter<'a> {
     }
 
     fn collect_annotated_lines(&self, diagnostic: &Diagnostic) -> Vec<AnnotatedLine> {
-        let mut lines_map: std::collections::BTreeMap<usize, AnnotatedLine> =
+        let mut lines_map: std::collections::BTreeMap<(u16, usize), AnnotatedLine> =
             std::collections::BTreeMap::new();
 
         for label in &diagnostic.labels {
@@ -309,9 +343,10 @@ impl<'a> DiagnosticFormatter<'a> {
                 line_text.len() + 1
             };
 
-            let entry = lines_map.entry(line_num).or_insert_with(|| {
+            let entry = lines_map.entry((label.span.file_id, line_num)).or_insert_with(|| {
                 let text = self.get_line(line_num, label.span.file_id).unwrap_or("").to_string();
                 AnnotatedLine {
+                    file_id: label.span.file_id,
                     line_num,
                     text,
                     annotations: Vec::new(),

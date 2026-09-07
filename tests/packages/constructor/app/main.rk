@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+
+func main() {
+    println("{libpkg.twice(21)}")
+    let d = libpkg.make()
+    println("{d.age}")
+    return
+}

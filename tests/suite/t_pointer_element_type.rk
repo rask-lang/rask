@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The shapes a pointer element type check has to let through. The rejections
+// are in `tests/compile_errors/pointer_element_type.rk`.
+//
+// A pointer is an address and the reader picks the stride from its own element
+// type, so the two have to agree exactly — no widening, no policy to choose.
+// Nothing enforced that behind a `*`, which is how a `Vec<i64>` handed to a C
+// `const int *` returned arithmetic that looked fine (#947).
+
+func first(p: *i64) -> i64 {
+    unsafe { return *p }
+}
+
+func first_byte(p: *u8) -> u8 {
+    unsafe { return *p }
+}
+
+// `*void` is the untyped pointer: it takes any element type, which is what
+// makes it the spelling for an opaque C handle.
+func opaque(p: *void) -> bool {
+    return true
+}
+
+test "a pointer at the declared element type" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(7i64)
+    unsafe {
+        assert first(v.as_ptr()) == 7i64
+    }
+}
+
+test "a string's bytes" {
+    let s = "abc"
+    unsafe {
+        assert first_byte(s.as_ptr()) == 97u8
+    }
+}
+
+test "an untyped pointer takes either" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1i64)
+    let s = "x"
+    unsafe {
+        assert opaque(v.as_ptr())
+        assert opaque(s.as_ptr())
+    }
+}
+
+test "the element type survives a cast" {
+    let s = "abc"
+    unsafe {
+        let p = s.as_ptr()
+        let q = p.cast<u8>()
+        assert first_byte(q) == 97u8
+    }
+}
+
+test "arithmetic keeps the element type" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1i64)
+    v.push(2i64)
+    unsafe {
+        let p = v.as_ptr()
+        assert first(p.offset(1)) == 2i64
+    }
+}

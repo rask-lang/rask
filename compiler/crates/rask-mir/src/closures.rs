@@ -254,6 +254,17 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
 ///
 /// A closure passed to a known callee whose corresponding parameter doesn't
 /// escape is NOT escaping — the callee merely borrows it.
+/// Every local that names a closure, mapped to the closure it names.
+///
+/// `ClosureCreate` writes one local, and the analyses below matched on exactly
+/// that one. A closure bound to a name and used later reaches its use through a
+/// copy — `let f = own || …` lowers to `_12 = closure(…)` then `_13 = _12`, and
+/// `spawn(_13)` was invisible to the escape check. The closure was downgraded to
+/// a stack allocation and `spawn` then freed a stack address: `free(): invalid
+/// pointer` (#1008).
+///
+/// Copies are followed to a fixpoint, so a chain of them resolves to the one
+/// `ClosureCreate` at the root.
 fn find_escaping_closures(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
@@ -261,10 +272,11 @@ fn find_escaping_closures(
 ) -> HashSet<LocalId> {
     // Lowering routinely copies the `ClosureCreate` result on before returning
     // it, so reading only the original destination missed the escape. Every
-    // alias answers for the closure it came from.
+    // alias answers for the closure it came from, and the answer is recorded
+    // against that closure — `decide_allocation` looks up the `ClosureCreate`
+    // destination, which is the origin, never a copy of it.
     let aliases = closure_aliases(func, closure_locals);
-    let closure_locals = &aliases.keys().map(|id| (*id, false)).collect::<HashMap<_, _>>();
-    let mut found = HashSet::new();
+    let mut escaping: HashSet<LocalId> = HashSet::new();
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -272,22 +284,22 @@ fn find_escaping_closures(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if closure_locals.contains_key(&id) {
+                            if let Some(origin) = aliases.get(&id).copied() {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or(false);
 
                                 if !is_borrow {
-                                    found.insert(id);
+                                    escaping.insert(origin);
                                 }
                             }
                         }
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
-                    if closure_locals.contains_key(id) {
-                        found.insert(*id);
+                    if let Some(origin) = aliases.get(id).copied() {
+                        escaping.insert(origin);
                     }
                 }
                 _ => {}
@@ -297,18 +309,13 @@ fn find_escaping_closures(
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                if closure_locals.contains_key(id) {
-                    found.insert(*id);
+                if let Some(origin) = aliases.get(id).copied() {
+                    escaping.insert(origin);
                 }
             }
             _ => {}
         }
     }
-
-    // Answer in terms of the `ClosureCreate` destinations, which is what the
-    // caller rewrites.
-    let mut escaping: HashSet<LocalId> =
-        found.iter().filter_map(|id| aliases.get(id).copied()).collect();
 
     // An escaping closure takes its captures with it, so a capture that is
     // itself a closure has to outlive the frame too.

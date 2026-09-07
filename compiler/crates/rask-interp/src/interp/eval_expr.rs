@@ -8,7 +8,7 @@ use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
 use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
-use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
+use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
 /// CC3 runtime panic message for spawn() without an active `using Multitasking` block.
 const SPAWN_NO_RUNTIME_MSG: &str =
@@ -191,6 +191,20 @@ fn comparison_op_symbol(method: &str) -> Option<&'static str> {
     }
 }
 
+/// One operand as an assertion message shows it.
+///
+/// A string is quoted, because an empty one and a trailing space are invisible
+/// otherwise — `assertion failed:  ==  ` says nothing. Everything else renders
+/// the way it prints. Native quotes the same way and doesn't escape either, so
+/// the same failing assert reads the same on both backends (#994).
+fn assert_operand(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+        Value::Char(c) => format!("'{}'", c),
+        other => format!("{}", other),
+    }
+}
+
 /// Build a descriptive failure message for assert/check.
 ///
 /// After desugaring, `a == b` becomes `a.eq(b)` and `a != b` becomes
@@ -208,11 +222,16 @@ fn comparison_op_symbol(method: &str) -> Option<&'static str> {
 /// `differential.sh` compares the two backends' output byte for byte, so a
 /// suite file with a failing string comparison used to diverge on formatting
 /// alone.
-fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> String {
+/// How the comparison read, or the empty string when there is nothing to say.
+///
+/// The caller supplies "assertion failed" / "check failed" — this is only the
+/// detail after it, so a form with no detail can come back empty rather than
+/// repeating the caller's own words back at it (#1098).
+fn format_comparison(left: &Value, op: &str, right: &Value) -> String {
     // Same order as the MIR side picks its helper: string wins over everything,
     // then char when both sides are chars, then the plain form.
     if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
-        return format!("{}: \"{}\" {} \"{}\"", prefix, left, op, right);
+        return format!("\"{}\" {} \"{}\"", left, op, right);
     }
     // Anything native has no rendering for gets none here either. It compares
     // an aggregate by address, so printing the operands there gave two pointer
@@ -220,15 +239,15 @@ fn format_comparison(prefix: &str, left: &Value, op: &str, right: &Value) -> Str
     // `Point { x: 1, y: 2 }`. Both are "correct" and they are not the same
     // line, which is the one thing the two backends may not be.
     if !renders_as_operand(left) || !renders_as_operand(right) {
-        return prefix.to_string();
+        return String::new();
     }
     if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
         return format!(
-            "{}: '{}' {} '{}' (left: '{}', right: '{}')",
-            prefix, left, op, right, left, right,
+            "'{}' {} '{}' (left: '{}', right: '{}')",
+            left, op, right, left, right,
         );
     }
-    format!("{}: {} {} {} (left: {}, right: {})", prefix, left, op, right, left, right)
+    format!("{} {} {} (left: {}, right: {})", left, op, right, left, right)
 }
 
 /// Has a one-line rendering both backends agree on.
@@ -249,7 +268,11 @@ fn renders_as_operand(v: &Value) -> bool {
     )
 }
 
-fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: &str) -> String {
+/// The detail line for a failed `assert`/`check` with no hand-written message.
+///
+/// Empty when the operands can't be read back — the caller's "assertion
+/// failed" then stands alone.
+fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> String {
     match &condition.kind {
         // Desugared comparison: a.eq(b), a.lt(b), etc.
         ExprKind::MethodCall { object, method, args, .. }
@@ -259,8 +282,8 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(object).ok();
             let right_val = interp.eval_expr(&args[0].expr).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
-                _ => prefix.to_string(),
+                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                _ => String::new(),
             }
         }
         // Desugared != : !(a.eq(b))
@@ -272,15 +295,15 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
                     let left_val = interp.eval_expr(object).ok();
                     let right_val = interp.eval_expr(&args[0].expr).ok();
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => format_comparison(prefix, &l, "!=", &r),
-                        _ => prefix.to_string(),
+                        (Some(l), Some(r)) => format_comparison(&l, "!=", &r),
+                        _ => String::new(),
                     }
                 }
                 _ => {
                     let val = interp.eval_expr(operand).ok();
                     match val {
-                        Some(v) => format!("{}: !({}) — value was {}", prefix, v, v),
-                        None => prefix.to_string(),
+                        Some(v) => format!("!({}) — value was {}", v, v),
+                        None => String::new(),
                     }
                 }
             }
@@ -301,8 +324,8 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             let left_val = interp.eval_expr(left).ok();
             let right_val = interp.eval_expr(right).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(prefix, &l, op_str, &r),
-                _ => prefix.to_string(),
+                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                _ => String::new(),
             }
         }
         // is pattern: assert x is Some
@@ -315,15 +338,35 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr, prefix: 
             };
             let val = interp.eval_expr(expr).ok();
             match val {
-                Some(v) => format!("{}: {} is not {}", prefix, v, pat_name),
-                None => prefix.to_string(),
+                Some(v) => format!("{} is not {}", v, pat_name),
+                None => String::new(),
             }
         }
-        _ => prefix.to_string(),
+        _ => String::new(),
     }
 }
 
 impl Interpreter {
+    /// A condition's truth, with any `is` bindings in it visible to the rest of
+    /// the condition.
+    ///
+    /// `if` and `while` have gone through `eval_cond_bindings` since #256;
+    /// `assert` and `check` evaluated their condition as an ordinary expression,
+    /// so `assert e is Bad.FoundAt(at) && at == 2` failed with "undefined
+    /// variable `at`" while the same test under `if` worked, and native ran both.
+    /// The bindings live for the condition and no longer — there is no branch
+    /// here for them to be visible in.
+    fn eval_cond_scoped(&mut self, cond: &Expr) -> Result<bool, RuntimeDiagnostic> {
+        if !cond_binds_pattern(cond) {
+            let value = self.eval_expr(cond)?;
+            return Ok(self.is_truthy(&value));
+        }
+        self.env.push_scope();
+        let taken = self.eval_cond_bindings(cond);
+        self.env.pop_scope();
+        taken
+    }
+
     /// Evaluate a condition, defining each `is` pattern's bindings in the
     /// current scope as it matches, so later `&&` operands can use them.
     /// Callers push the scope that holds them.
@@ -586,6 +629,35 @@ impl Interpreter {
         }
     }
 
+    /// `io.IoError` as a method receiver, when `method` names one of its
+    /// variants — the enum's own name, or `None` if this isn't that shape.
+    ///
+    /// The head isn't checked against a module list: `import http as h` gives a
+    /// name no list knows, and a module the program imported is bound in the
+    /// environment like anything else, so "is it a variable?" answers nothing
+    /// either. What rules this shape out is the head already owning the middle
+    /// name — a value with a field by that name, or an enum with a variant by
+    /// it, which is what `Level.Low.label()` is: a method on the *value*
+    /// `Level.Low`, not a variant of a type called `Low`.
+    fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
+        let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
+        let ExprKind::Ident(head_name) = &head.kind else { return None };
+        if let Some(Value::Struct(s)) = self.env.get(head_name) {
+            if s.lock().unwrap().fields.contains_key(type_name.as_str()) {
+                return None;
+            }
+        }
+        let head_owns_it = self
+            .enums
+            .get(head_name)
+            .is_some_and(|e| e.variants.iter().any(|v| v.name == *type_name));
+        if head_owns_it {
+            return None;
+        }
+        let decl = self.enums.get(type_name)?;
+        decl.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
+    }
+
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
@@ -800,6 +872,17 @@ impl Interpreter {
                 if let Some(kind) = super::register::prelude_builtin(base_name) {
                     return Ok(Value::Builtin(kind));
                 }
+                // `import sync.Relaxed` brings the ordering into scope under
+                // its bare name, which is how mem.atomics writes its examples.
+                if rask_stdlib::ordering_tag(base_name).is_some() {
+                    return Ok(Value::Enum {
+                        name: "Ordering".to_string(),
+                        variant: base_name.to_string(),
+                        fields: vec![],
+                        variant_index: rask_stdlib::ordering_tag(base_name).unwrap_or(0) as u32,
+                        origin: None,
+                    });
+                }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 
@@ -856,8 +939,12 @@ impl Interpreter {
                         }
                     }
 
-                    return self.call_method(obj_val, field, arg_vals)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    let outer = self.failed_call_span.take();
+                    let result = self.call_method(obj_val, field, arg_vals);
+                    let inner = self.failed_call_span.take();
+                    self.failed_call_span = outer;
+                    return result
+                        .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
                 }
 
                 // A bare name in call position is a function, not a variable —
@@ -893,8 +980,11 @@ impl Interpreter {
                     ExprKind::Ident(written) => written_type_args(written),
                     _ => None,
                 };
-                let result = self.call_value(func_val, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                // The callee's own line when it has one — a panic several
+                // frames down belongs where it happened, not at the outermost
+                // call (#1110).
+                let result = self.call_value_spanned(func_val, arg_vals)
+                    .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)));
                 self.pending_type_args = outer_type_args;
                 let result = result?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
@@ -910,7 +1000,32 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                if let ExprKind::Ident(written) = &object.kind {
+                // `io.IoError.NotFound("x")` — a payload-carrying variant
+                // reached through the module that exports its enum, which is
+                // the spelling IM1 asks for. Everything below reads the enum's
+                // name off an `Ident`, so a qualified receiver never matched
+                // and the call failed with "type IoError has no method
+                // 'NotFound'" (#1108). Rewritten to the bare name here, once,
+                // rather than in each of the branches that key off it.
+                let rewritten;
+                let object = match self.module_qualified_enum_receiver(object, method) {
+                    Some(bare) => {
+                        rewritten = Expr {
+                            id: object.id,
+                            span: object.span,
+                            kind: ExprKind::Ident(bare),
+                        };
+                        &rewritten
+                    }
+                    None => object,
+                };
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` is the same type under another
+                    // spelling, and everything below keys off the spelling. One
+                    // rewrite here reaches every branch — the enum table, the
+                    // stdlib namespaces, `extend` methods — rather than each of
+                    // them learning about aliases (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — written type arguments are folded
                     // into the name and the enum table is keyed by the bare one, so
                     // the whole-name lookup missed and the variant call fell through
@@ -1064,7 +1179,23 @@ impl Interpreter {
                     }
                 }
 
-                let receiver = self.eval_expr(object)?;
+                // A transparent alias over a stdlib type reaches its statics
+                // through the environment rather than the tables above —
+                // `Duration.from_millis` is a value in scope, `Zwibble` is not.
+                // Look up what the alias names (#998).
+                let receiver = match &object.kind {
+                    ExprKind::Ident(ident) => {
+                        let target = self.resolve_transparent_alias(ident);
+                        match (target != *ident)
+                            .then(|| self.env.get(&target))
+                            .flatten()
+                        {
+                            Some(v) => v,
+                            None => self.eval_expr(object)?,
+                        }
+                    }
+                    _ => self.eval_expr(object)?,
+                };
                 let mut arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(&a.expr))
@@ -1209,8 +1340,14 @@ impl Interpreter {
                 // "3.5" came back as an error (#480).
                 let method = self.parse_target_method(method, type_args, expr.id);
 
-                self.call_method(receiver, &method, arg_vals)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
+                // Blame the line the callee failed on, not this call. Taken
+                // and restored around the call so an error swallowed inside it
+                // can't leave a stale span for something later (#1110).
+                let outer = self.failed_call_span.take();
+                let result = self.call_method(receiver, &method, arg_vals);
+                let inner = self.failed_call_span.take();
+                self.failed_call_span = outer;
+                result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
             }
 
             ExprKind::Binary { op, left, right } => match op {
@@ -1643,7 +1780,10 @@ impl Interpreter {
                         return Ok(v);
                     }
                 }
-                if let ExprKind::Ident(written) = &object.kind {
+                if let ExprKind::Ident(ident) = &object.kind {
+                    // A transparent `type alias` names the same enum, so a
+                    // variant reached through it is that enum's variant (#998).
+                    let written = &self.resolve_transparent_alias(ident);
                     // `Holder<i64>.Full(4)` — the parser folds written type
                     // arguments into the name, and the enum table is keyed by the
                     // bare one. Looked up whole, it missed, and the miss surfaced
@@ -1724,6 +1864,10 @@ impl Interpreter {
                         Ok(*inner.clone())
                     }
                     // Tuple field access: tuple.0, tuple.1, ...
+                    Value::Tuple(ref items) if field.parse::<usize>().is_ok() => {
+                        let idx = field.parse::<usize>().unwrap();
+                        Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
+                    }
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {
                         let idx = field.parse::<usize>().unwrap();
                         let vec = v.lock().unwrap();
@@ -2057,7 +2201,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::vec(values))
+                Ok(Value::tuple(values))
             }
 
             ExprKind::Match { scrutinee, arms } => {
@@ -2305,7 +2449,17 @@ impl Interpreter {
                                     expr.span
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedError, expr.span))
+                                // ER15: `!` panics *using* the error's message.
+                                // The payload is right here, and every error
+                                // type has a `message()` — E0344 is what makes
+                                // that true — so there is always something to
+                                // say beyond "it was an error" (#1009).
+                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                                let text = self.describe_error_value(&payload);
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::ForcedError(text),
+                                    expr.span,
+                                ))
                             }
                         }
                         _ => Err(RuntimeDiagnostic::new(
@@ -2752,23 +2906,21 @@ impl Interpreter {
             }
 
             ExprKind::Assert { condition, message } => {
-                let cond_val = self.eval_expr(condition)?;
-                if self.is_truthy(&cond_val) {
+                if self.eval_cond_scoped(condition)? {
                     Ok(Value::Unit)
                 } else {
-                    let msg = if let Some(msg_expr) = message {
+                    let detail = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
-                        format!("{}", v)
+                        AssertDetail::Message(format!("{}", v))
                     } else {
-                        build_comparison_message(self, condition, "assertion failed")
+                        AssertDetail::Comparison(build_comparison_message(self, condition))
                     };
-                    Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(msg), expr.span))
+                    Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(detail), expr.span))
                 }
             }
 
             ExprKind::Check { condition, message } => {
-                let cond_val = self.eval_expr(condition)?;
-                if self.is_truthy(&cond_val) {
+                if self.eval_cond_scoped(condition)? {
                     Ok(Value::Unit)
                 } else {
                     // A hand-written message gets `file:line:`, the same as
@@ -2776,18 +2928,18 @@ impl Interpreter {
                     // like an ordinary `print`. The comparison form already
                     // says "check failed: a == b (…)" and carries no location
                     // on either backend, so it goes in as it is.
-                    let msg = if let Some(msg_expr) = message {
+                    let detail = if let Some(msg_expr) = message {
                         let v = self.eval_expr(msg_expr)?;
                         let origin = self.origin_string(expr.span);
-                        if origin.is_empty() {
+                        AssertDetail::Message(if origin.is_empty() {
                             format!("{}", v)
                         } else {
                             format!("{}: {}", origin, v)
-                        }
+                        })
                     } else {
-                        build_comparison_message(self, condition, "check failed")
+                        AssertDetail::Comparison(build_comparison_message(self, condition))
                     };
-                    Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(msg), expr.span))
+                    Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(detail), expr.span))
                 }
             }
 
@@ -3366,12 +3518,11 @@ fn annotation_value(text: &str, ty: &str) -> Value {
 /// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
 /// `None` when the name carries none.
 fn written_type_args(name: &str) -> Option<Vec<String>> {
-    let open = name.find('<')?;
-    let inner = name[open + 1..].strip_suffix('>')?;
-    let args = rask_ast::decl::field_attrs::split_top_level(inner, ',')
-        .into_iter()
-        .map(|a| a.trim().to_string())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>();
+    // Angle brackets nest, and `split_top_level` doesn't count them — it is
+    // written for annotation arguments, where `<` is a comparison rather than a
+    // bracket. So `describe<Both<string, i64>>` split at the inner comma and
+    // bound `T` to the string `Both<string`, which then named no struct.
+    let (_, args) = rask_ast::type_str::split_generic_name(name)?;
+    let args: Vec<String> = args.into_iter().map(|a| a.to_string()).collect();
     (!args.is_empty()).then_some(args)
 }

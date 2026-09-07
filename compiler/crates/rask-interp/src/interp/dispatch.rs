@@ -59,6 +59,32 @@ impl Interpreter {
         Ok((value, written))
     }
 
+    /// Call a value, keeping where the failure happened.
+    ///
+    /// `Some(span)` is a line inside the callee; `None` means the call
+    /// machinery itself refused — an undefined function, a wrong argument
+    /// count — and the caller's own span is the right one.
+    ///
+    /// The distinction is the whole point. `call_value` hands back a bare
+    /// `RuntimeError`, so every frame re-attached its own span on the way out
+    /// and the surviving one was the outermost call in `main`: a panic in
+    /// `inner()` two frames down was reported at `println("{middle()}")`
+    /// (#1110).
+    pub(crate) fn call_value_spanned(
+        &mut self,
+        func: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, (RuntimeError, Option<rask_ast::Span>)> {
+        if let Value::Function { name } = &func {
+            if let Some(decl) = self.functions.get(name).cloned() {
+                return self
+                    .call_function(&decl, args)
+                    .map_err(|diag| (diag.error, Some(diag.span)));
+            }
+        }
+        self.call_value(func, args).map_err(|e| (e, None))
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name } => {
@@ -338,6 +364,12 @@ impl Interpreter {
             // reachable. Nothing was until `Vec.as_sequence` — the chain head a
             // collection stands for (SEQ48) — so the fallback below had never
             // been asked for a Vec and these arms were simply missing.
+            // A Rask-bodied method on `extend string` had no way to be reached:
+            // the Rust arms answer every string method the primitive layer
+            // knows and this table had no arm for a string, so the fallback
+            // that finds Rask bodies was never consulted for one.
+            // `string.to_cstring()` is the first such method (#949).
+            Value::String(_) => "string".to_string(),
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Pool(_) => "Pool".to_string(),
@@ -368,6 +400,10 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 self.call_metadata_method(&guard.fields, method)
             }
+            Value::Struct(ref s) if s.lock().unwrap().name == "cstring" => {
+                let guard = s.lock().unwrap();
+                self.call_cstring_method(&guard.fields, method)
+            }
             Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
                 let guard = s.lock().unwrap();
                 self.call_args_method(&guard.fields, method, args)
@@ -391,16 +427,6 @@ impl Interpreter {
                 })?;
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Command" => {
-                let guard = s.lock().unwrap();
-                self.call_command_instance_method(&guard.fields, method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Output" => {
-                let guard = s.lock().unwrap();
-                self.call_output_instance_method(&guard.fields, method)
             }
             // The stdlib `io` module is compiled out on wasm, and it owns both
             // these handlers and the `io.stdout()`/`stdin()`/`stderr()` calls

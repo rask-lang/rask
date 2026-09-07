@@ -128,6 +128,14 @@ impl Interpreter {
 
         self.register_stdlib_enums();
 
+        // Field offsets and sizes for `reflect.fields<T>()`, from the one
+        // implementation both backends read (#1104). Kept alongside the
+        // declarations because a generic instantiation's layout is computed on
+        // demand, with the arguments the call site wrote.
+        self.type_decls = decls.to_vec();
+        let (_, _, cache) = rask_mono::compute_declared_layouts(decls);
+        self.layout_cache = cache;
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -259,7 +267,12 @@ impl Interpreter {
                     top_level_consts.push(c.clone());
                 }
                 DeclKind::TypeAlias(a) => {
-                    if !a.is_transparent {
+                    if a.is_transparent {
+                        // The same type under another spelling, so a static call
+                        // through it has to reach the target's methods (#998).
+                        self.transparent_aliases
+                            .insert(a.name.clone(), a.target.clone());
+                    } else {
                         // Nominal type: register constructor so `UserId(42)` works
                         self.env.define(
                             a.name.clone(),
@@ -499,8 +512,8 @@ impl Interpreter {
                 match self.exec_stmt(stmt) {
                     Ok(_) => {}
                     Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_)) => {
-                        if let RuntimeError::CheckFailed(msg) = diag.error {
-                            errors.push(msg);
+                        if let RuntimeError::CheckFailed(detail) = diag.error {
+                            errors.push(detail.framed("check failed"));
                         }
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::AssertionFailed(_)) => {
@@ -510,8 +523,8 @@ impl Interpreter {
                         // deliberately, asymmetry included — `differential.sh`
                         // compares the two backends' output byte for byte.
                         let origin = self.origin_string(diag.span);
-                        if let RuntimeError::AssertionFailed(msg) = diag.error {
-                            errors.push(prefix_origin(&origin, msg));
+                        if let RuntimeError::AssertionFailed(detail) = diag.error {
+                            errors.push(prefix_origin(&origin, detail.framed("assertion failed")));
                         }
                         break;
                     }
@@ -525,6 +538,36 @@ impl Interpreter {
                         expect_fail = true;
                     }
                     Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
+                        break;
+                    }
+                    // T20: the test block is the error branch. Report the
+                    // error, not only that there was one — `Display` on the
+                    // variant can't call `message()`, so it says the fixed half
+                    // and the value's own half is added here. Native prints the
+                    // same words with the same `file:line` in front.
+                    Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
+                        let origin = self.origin_string(diag.span);
+                        if let RuntimeError::TryError(v) = diag.error {
+                            // What `try` raises is the whole `Result.Err(e)` —
+                            // that is what a caller would have received. The
+                            // error itself is what has a `message()`.
+                            let err = match &v {
+                                Value::Enum { name, variant, fields, .. }
+                                    if name == "Result" && variant == "Err" =>
+                                {
+                                    fields.first().cloned().unwrap_or(v.clone())
+                                }
+                                _ => v.clone(),
+                            };
+                            let detail = self.describe_error_value(&err);
+                            errors.push(prefix_origin(
+                                &origin,
+                                format!(
+                                    "{}: {}",
+                                    rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                                ),
+                            ));
+                        }
                         break;
                     }
                     Err(e) => {
@@ -575,8 +618,10 @@ impl Interpreter {
                 let origin = self.origin_string(diag.span);
                 let msg = match diag.error {
                     // Assert carries `file:line`, check doesn't — see above.
-                    RuntimeError::AssertionFailed(m) => prefix_origin(&origin, m),
-                    RuntimeError::CheckFailed(m) => m,
+                    RuntimeError::AssertionFailed(d) => {
+                        prefix_origin(&origin, d.framed("assertion failed"))
+                    }
+                    RuntimeError::CheckFailed(d) => d.framed("check failed"),
                     _ => unreachable!(),
                 };
                 errors.push(msg);

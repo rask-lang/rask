@@ -198,9 +198,14 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         "u64" => Type::U64,
         "u128" => Type::U128,
         "usize" => Type::usize_ty(),
+        "isize" => Type::isize_ty(),
         "f32" => Type::F32,
         "f64" => Type::F64,
         "Never" => Type::Never,
+        // The C scalar names, per struct.c-interop/TM1. See `c_type_spelling`.
+        _ if rask_ast::primitives::c_type_spelling(s).is_some() => {
+            parse_stub_type(rask_ast::primitives::c_type_spelling(s).unwrap())
+        }
         // Single uppercase letter = type variable (wildcard for module generics)
         _ if s.len() == 1 && s.as_bytes()[0].is_ascii_uppercase() => {
             Type::UnresolvedNamed("_Any".to_string())

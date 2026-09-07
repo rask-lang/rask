@@ -138,6 +138,20 @@ impl TypeTable {
         self.builtins.insert("usize".to_string(), Type::usize_ty());
         self.builtins.insert("Never".to_string(), Type::Never);
 
+        // The C scalar names an `import c` header translates to. Until these
+        // were here none of them was a type, so `*i64` passed for a `const int
+        // *` and the C side read a 64-bit buffer as 32-bit ints (#947).
+        for name in rask_ast::primitives::C_SCALARS {
+            let spelling = rask_ast::primitives::c_type_spelling(name)
+                .expect("C_SCALARS and c_type_spelling must agree");
+            let ty = self
+                .builtins
+                .get(spelling)
+                .cloned()
+                .expect("a c_* type resolves to a primitive spelling");
+            self.builtins.insert((*name).to_string(), ty);
+        }
+
         let option_id = self.register_type(TypeDef::Enum {
             name: "Option".to_string(),
             type_params: vec!["T".to_string()],

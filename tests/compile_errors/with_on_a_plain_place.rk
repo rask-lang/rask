@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `with` source that is neither an element nor a box
+//
+// Spec: mem.borrowing (W1-W7), conc.sync (R4)
+//
+// `with` scopes access to one of two things: an element of a collection reached
+// by key, or a box's payload. Both are cases where the block earns its keep —
+// it re-resolves the handle after a structural change (W2a-W2d) and holds the
+// lock for the block's duration.
+//
+// A plain place is neither. Native compiled the form anyway and the interpreter
+// refused it at run time ("expected Cell, Mutex, Shared, or collection index,
+// got Vec"), which is #1114 — no file in the corpus used it, so the divergence
+// sat there.
+
+import sync.Shared
+import sync.Mutex
+
+struct Holder { data: Vec<i64> }
+
+func write_through_a_field() {
+    mut h = Holder { data: Vec<i64>.new() }
+    h.data.push(10)
+    // ERROR: `with` needs an element or a box [E0874]
+    with h.data as d {
+        d.push(99)
+    }
+}
+
+// FIX 1: write through the field where it lives — the block was doing nothing else
+func write_where_it_lives() {
+    mut h = Holder { data: Vec<i64>.new() }
+    h.data.push(10)
+    h.data.push(99)
+}
+
+// FIX 2: name the element, if an element is what you wanted
+func name_the_element() {
+    mut v: Vec<Holder> = Vec.new()
+    v.push(Holder { data: Vec<i64>.new() })
+    with v[0] as first {
+        first.data.push(1)
+    }
+}
+
+// FIX 3: a box is the other legal source, and needs no index
+const COUNTER: Shared<i64, Mutex> = Shared.mutex(0)
+
+func through_a_box() {
+    with COUNTER.write() as n {
+        n = n + 1
+    }
+}

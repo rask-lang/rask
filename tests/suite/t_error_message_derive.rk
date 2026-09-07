@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// ER6: an error enum satisfies the `Error` bound with nothing written (#1001).
+//
+// Before this, every error enum needed a hand-written `message()`. The spec
+// said otherwise, `LANGUAGE_GUIDE.md` said otherwise, and a bare error enum got
+// E0344 telling it to add the method the docs promised it didn't need.
+//
+// The generator was already here and already correct — humanized variant name,
+// payloads interpolated, single-error-payload variants delegating. It only ran
+// for enums carrying `@message`. What changed is when it runs.
+//
+// The derive is limited to enums a signature names as an error type. Deriving
+// for every enum in the program cost more than it gave, and tripped #1062 in
+// the bargain.
+
+enum Bare {
+    Empty
+    UnexpectedEnd(ctx: string)
+    BadCount(n: i64)
+}
+
+struct Opaque {
+    a: i64
+    b: i64
+}
+
+enum CarriesOpaque {
+    Wrapped(p: Opaque)
+}
+
+enum Inner {
+    TooSmall
+}
+
+extend Inner with Error {
+    func message(self) -> string {
+        return "inner said no"
+    }
+}
+
+enum Outer {
+    Nested(e: Inner)
+    Own(n: i64)
+}
+
+enum WritesItsOwn {
+    Whatever
+
+    func message(self) -> string {
+        return "hand written"
+    }
+}
+
+enum ExtendsItsOwn {
+    Whatever
+}
+
+extend ExtendsItsOwn with Error {
+    func message(self) -> string {
+        return "from the extend block"
+    }
+}
+
+func bare(n: i64) -> i64 or Bare {
+    if n == 0 { return Bare.Empty }
+    if n == 1 { return Bare.UnexpectedEnd(ctx: "line 3") }
+    if n == 2 { return Bare.BadCount(n: 7) }
+    return n
+}
+
+func opaque() -> i64 or CarriesOpaque {
+    return CarriesOpaque.Wrapped(p: Opaque { a: 1, b: 2 })
+}
+
+func outer(n: i64) -> i64 or Outer {
+    if n == 0 { return Outer.Nested(e: Inner.TooSmall) }
+    return Outer.Own(n: 4)
+}
+
+func body_method() -> i64 or WritesItsOwn {
+    return WritesItsOwn.Whatever
+}
+
+func extended() -> i64 or ExtendsItsOwn {
+    return ExtendsItsOwn.Whatever
+}
+
+func bare_msg(n: i64) -> string {
+    match bare(n) {
+        i64 as v => { return "ok {v}" }
+        Bare as e => { return e.message() }
+    }
+}
+
+func opaque_msg() -> string {
+    match opaque() {
+        i64 as v => { return "ok {v}" }
+        CarriesOpaque as e => { return e.message() }
+    }
+}
+
+func own_msg() -> string {
+    match body_method() {
+        i64 as v => { return "ok {v}" }
+        WritesItsOwn as e => { return e.message() }
+    }
+}
+
+func extended_msg() -> string {
+    match extended() {
+        i64 as v => { return "ok {v}" }
+        ExtendsItsOwn as e => { return e.message() }
+    }
+}
+
+func outer_msg(n: i64) -> string {
+    match outer(n) {
+        i64 as v => { return "ok {v}" }
+        Outer as e => { return e.message() }
+    }
+}
+
+test "an error enum needs no message() at all" {
+    // The repro from #1001: this used to be E0344 before it ran.
+    assert bare(5)! == 5
+}
+
+test "a fieldless variant is its name, humanized" {
+    assert bare_msg(0) == "empty"
+}
+
+test "a payload is interpolated after the name" {
+    assert bare_msg(1) == "unexpected end: line 3"
+    assert bare_msg(2) == "bad count: 7"
+}
+
+test "a payload with no to_string still renders" {
+    // The derive can't ask for `Displayable` here — `Opaque` has no
+    // `to_string`, and demanding one would make an ordinary enum stop
+    // compiling for a method its author never asked for. Payloads that
+    // aren't primitives go through Debug, which every type has.
+    assert opaque_msg() == "wrapped: Opaque {{ a: 1, b: 2 }}"
+}
+
+test "a single payload that is itself an error delegates to it" {
+    assert outer_msg(0) == "inner said no"
+    assert outer_msg(1) == "own: 4"
+}
+
+test "a hand-written message in the enum body wins" {
+    // It used to lose: the generated one was pushed after it and shadowed it,
+    // so `@message` plus a body method silently ignored the body method.
+    assert own_msg() == "hand written"
+}
+
+test "a hand-written message in an extend block wins" {
+    assert extended_msg() == "from the extend block"
+}

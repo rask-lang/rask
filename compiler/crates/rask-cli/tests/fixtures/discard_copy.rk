@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.ownership/D2: `discard` on a Copy type frees nothing, so it warns.
+//
+// The variant, the message and the code were all written and nothing ever
+// constructed them — a dead error path holding a live number (#992). Three
+// warnings here and no more: a `Vec` owns its buffer, so discarding one is the
+// case `discard` exists for.
+//
+// The unsuffixed `let n = 7` is the one that matters. Asking at the statement
+// would miss it — an unsuffixed literal is an open type variable until literal
+// defaulting runs, well after the body is walked — so the check waits.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func main() {
+    let n = 7
+    discard n                    // warning: i32, frees nothing
+
+    let flag = true
+    discard flag                 // warning: bool
+
+    let ch = 'x'
+    discard ch                   // warning: char
+
+    // A struct isn't Copy past the 16-byte threshold, and this one is exactly
+    // at it — two words — so it stays quiet either way: the warning is about
+    // primitives, not about size.
+    mut v = Vec.new()
+    v.push(1)
+    discard v                    // no warning — a Vec owns its buffer
+
+    let p = Point { x: 1, y: 2 }
+    discard p                    // no warning
+
+    println("done")
+}

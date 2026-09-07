@@ -331,7 +331,7 @@ extend Lexer {
             let int_part = self.source[start..frac_start - 1].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer part
             let frac_part = self.source[frac_start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
             let frac_digits = self.pos - frac_start
-            let raw = (int_part << 32) + (frac_part << 32) / i64.pow(10, frac_digits)
+            let raw = (int_part << 32) + (frac_part << 32) / pow10(frac_digits)
             return Token.NumLit(raw)
         } else {
             let value = self.source[start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer
@@ -380,6 +380,20 @@ extend Lexer {
         let word = self.source[start..self.pos].to_string()
         return self.keyword_or_ident(word)
     }
+}
+
+// Ten to the `n`, for scaling a fractional part into 32.32 fixed point.
+// There is no integer `pow` in the stdlib — `pow` is a method on an f64 value
+// (std.math/N1) — and a float round trip is exactly what a deterministic VM
+// can't have.
+func pow10(n: i64) -> i64 {
+    mut result = 1
+    mut i = 0
+    while i < n {
+        result = result * 10
+        i = i + 1
+    }
+    return result
 }
 
 // --- Errors ---

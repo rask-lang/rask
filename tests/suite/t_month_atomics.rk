@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Atomics — #927. Unimplemented, so this drives the feature.
+// Atomics — #927, and the file that drove the feature.
 //
-// `Atomic` has no operations on any spelling. `Atomic<i64>` and `AtomicI64` both
-// resolve as type names and then `new`, `load`, `store`, `add` are all "no method
-// found". There is no `Atomic` in `stdlib/*.rk` at all — the names come from the
-// compiler's type registry with nothing behind them.
+// `Atomic` had no operations on any spelling. `Atomic<i64>` and `AtomicI64`
+// both resolved as type names and then `new`, `load`, `store` were all "no
+// method found" — the names came from the compiler's type registry with
+// nothing behind them, while the C runtime had every operation implemented and
+// unreachable.
 //
 // Everything here uses `Atomic<T>`, the only spelling mem.atomics/GA1 allows:
-// "There are no `AtomicU64`-style named types and no aliases". The registry
-// currently has the eleven named variants the spec rules out and nothing behind
-// the one it mandates — worth settling before there are call sites.
-//
-// `Ordering` does exist, so the enum these operations take is already there.
+// "There are no `AtomicU64`-style named types and no aliases". The eleven named
+// ones the registry carried are gone with the fix.
 //
 // mem.boxes/BX1 lists Atomic as the box family's adjacent member and boxes.md's
-// decision tree routes "single counter, flag, or pointer-sized value" to it, so a
-// reader following the documented procedure for a shared counter lands here.
-// `Shared.mutex(0)` with `with m.write()` is the working answer today and is covered
-// in `t_month_boxes.rk`.
+// decision tree routes "single counter, flag, or pointer-sized value" to it, so
+// a reader following the documented procedure for a shared counter lands here.
+// Reaching one from several tasks is `t_atomic_across_tasks.rk`.
 import sync.Atomic
 
-// A word-sized, padding-free, Copy struct — a legal payload per GA1.
+// A word-sized, padding-free, Copy struct — a legal payload per GA2.
+//
+// One field, not two: Rask gives every field its own word, so `{ index: i32,
+// gen: i32 }` is 16 bytes however small the fields are written, and an atomic
+// is one word. That case is a compile error now (E0384), pinned in
+// `rask-cli/tests/compile_run.rs`.
 struct Slot {
-    index: i32
-    gen: i32
+    packed: i64
 }
 
 test "mem.atomics — new and load" {
@@ -66,11 +67,10 @@ test "mem.atomics — a bool payload loads and stores" {
 }
 
 test "mem.atomics — a word-sized struct payload" {
-    let s = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
-    s.store(Slot { index: 3, gen: 1 }, Ordering.SeqCst)
+    let s = Atomic<Slot>.new(Slot { packed: 0 })
+    s.store(Slot { packed: 3 }, Ordering.SeqCst)
     let got = s.load(Ordering.SeqCst)
-    assert got.index == 3
-    assert got.gen == 1
+    assert got.packed == 3
 }
 
 test "mem.atomics — default for a primitive payload" {

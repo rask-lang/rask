@@ -11,7 +11,7 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 
 | Rule | Description |
 |------|-------------|
-| **CI1: Auto-parse** | `import c "header.h"` parses header with built-in C parser, exposes as `c.symbol` |
+| **CI1: Auto-parse** | `import c "header.h"` parses header with built-in C parser, exposes as `c.symbol`. Searched for beside the importing file, then as written, then along `CPATH`/`C_INCLUDE_PATH`, then along the C compiler's own system list (asked of `CC`, per XC3) |
 | **CI2: Explicit binding** | `extern "C" { }` declares C functions/types manually |
 | **CI3: Unsafe required** | All C function calls require `unsafe` context |
 | **CI4: Override** | Explicit bindings override auto-parsed declarations per-symbol |
@@ -19,7 +19,7 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 
 | Syntax | Effect |
 |--------|--------|
-| `import c "header.h"` | Parse header, expose as `c.symbol` |
+| `import c "header.h"` | Parse header, expose as `c.symbol`. A quoted path is relative to the importing file, then the system include paths — same as `#include "…"` |
 | `import c "header.h" as name` | Parse header, expose as `name.symbol` |
 | `import c { "a.h", "b.h" }` | Multiple headers, unified namespace |
 
@@ -59,6 +59,8 @@ Use explicit bindings for: C++ libraries, complex macros (token pasting, stringi
 | **TM1: Platform types** | `c_int`, `c_long`, etc. resolve to target platform sizes, not host |
 | **TM2: Pointer mapping** | `T*` → `*T`, `void*` → `*void`, function pointers → `*func(...)` |
 | **TM3: Composite types** | `extern "C" struct/union/enum` for C-layout types |
+| **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
+| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
 
 ### Primitive Types
 
@@ -80,23 +82,49 @@ Use explicit bindings for: C++ libraries, complex macros (token pasting, stringi
 | Bit fields | `@bitfield` annotation |
 | Packed struct | `@packed` annotation |
 
+A header's struct is named and built under its namespace:
+
+<!-- test: skip -->
+```rask
+import c "mylib.h"          // typedef struct { int width; int height; } Rect;
+
+func main() {
+    let r = c.Rect { width: 6, height: 7 }
+    println("{r.width}")
+    unsafe {
+        println("{c.mylib_area(r)}")     // by value, in registers
+    }
+}
+```
+
+`c.Rect` is the spelling everywhere — in a signature, in a literal, in a type
+argument. The bare `Rect` is not in scope: a header must not claim a name a Rask
+declaration might want.
+
+Handing a struct *to* C works; getting one *back* does not, and the call is
+rejected rather than reading a value nobody wrote. Take it through an
+out-parameter instead.
+
 ## String Interop
 
 | Rule | Description |
 |------|-------------|
-| **ST1: as_c_str** | `.as_c_str()` returns null-terminated `*u8` — zero-cost if already null-terminated, copies otherwise |
-| **ST2: ptr + len** | `.ptr` + `.len` for pointer+length APIs — NOT null-terminated |
-| **ST3: from_c** | `string.from_c(ptr)` copies from null-terminated C string (unsafe) |
-| **ST4: Lifetime** | `.as_c_str()` pointer invalidated if string dropped (refcount reaches zero) |
+| **ST1: to_cstring** | `s.to_cstring()` returns `cstring or NullByteError` — an owned, NUL-terminated copy. Refuses a string holding an interior `\0`, since C would read that as a shorter string |
+| **ST2: ptr + len** | `.as_ptr()` + `.len()` for pointer+length APIs. Borrowed, not owned, and unchecked |
+| **ST3: back again** | `cstring.to_string()` returns `string or Utf8Error` — the bytes came from C, which promises nothing about encoding |
+| **ST4: Lifetime** | A `cstring` owns its buffer and frees it when it goes. A pointer from `.as_ptr()` owns nothing and is invalid once its source is dropped |
+
+Full method list: [std.strings](../stdlib/strings.md#c-interop).
 
 <!-- test: skip -->
 ```rask
-func call_c_string_api(name: string) {
+func call_c_string_api(name: string) -> void or NullByteError {
+    let c_name = try name.to_cstring()
     unsafe {
-        c.printf("Hello %s\n".as_c_str(), name.as_c_str())
-        c.write(fd, name.ptr, name.len)
-        let rask_name = string.from_c(c.get_name())
+        c.puts(c_name.as_ptr())
+        c.write(fd, name.as_ptr(), name.len())
     }
+    return
 }
 ```
 
@@ -194,7 +222,7 @@ public struct Database { handle: *sql.sqlite3 }
 public func open(path: string) -> Database or Error {
     mut db: *sql.sqlite3 = null
     unsafe {
-        mut rc = sql.sqlite3_open(path.as_c_str(), &db)
+        mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {
             return Error.new("sqlite open failed")
         }

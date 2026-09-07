@@ -78,6 +78,24 @@ pub struct Interpreter {
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// Where the innermost `call_function` failed, when one did.
+    ///
+    /// The method-dispatch path hands back a bare `RuntimeError`, so a
+    /// diagnostic rebuilt at the call site gets the call site's own span — and
+    /// a panic several frames down was reported at the outermost call in
+    /// `main` (#1110). Taken and restored around each call, never read as
+    /// ambient state.
+    pub(crate) failed_call_span: Option<Span>,
+    /// The whole declaration list, kept so a layout can be computed from it.
+    ///
+    /// `reflect.fields<T>()` reports each field's offset and size, and there was
+    /// nothing here to compute them from — the interpreter answered 0 for both
+    /// while native answered the truth (#1104). `rask_mono::compute_struct_layout`
+    /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
+    pub(crate) type_decls: Vec<Decl>,
+    /// Size and alignment of every declared type, so a struct holding another
+    /// sees its real size. Computed once, when the declarations are registered.
+    pub(crate) layout_cache: rask_mono::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -85,6 +103,13 @@ pub struct Interpreter {
     /// it — a newtype over a primitive is flat, and answering "not declared" made
     /// it not (#791).
     pub(crate) nominal_targets: HashMap<String, String>,
+    /// `type alias X = Y` — the transparent kind, which is the same type under
+    /// another spelling. An instance call takes its prefix from the receiver's
+    /// *value*, so the alias is long gone by then; a static call takes it from
+    /// the spelling, and `Zwibble.make(7)` found nothing named `Zwibble` in
+    /// scope. Resolved through here before the static-call path reads the name
+    /// (#998).
+    pub(crate) transparent_aliases: HashMap<String, String>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
@@ -196,9 +221,13 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
@@ -224,9 +253,13 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
@@ -254,9 +287,13 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            failed_call_span: None,
+            type_decls: Vec::new(),
+            layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
+            transparent_aliases: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
@@ -287,6 +324,22 @@ impl Interpreter {
     }
 
     /// Compute an error origin string like `"file.rk:42"` from a span.
+    /// Follow a transparent `type alias` chain to the type it names.
+    ///
+    /// Bounded rather than trusting the chain to be acyclic: `type alias A = B`
+    /// with `type alias B = A` is a resolution error, not something a runtime
+    /// loop should hang on.
+    pub(crate) fn resolve_transparent_alias(&self, name: &str) -> String {
+        let mut current = name;
+        for _ in 0..16 {
+            match self.transparent_aliases.get(current) {
+                Some(target) if target != current => current = target,
+                _ => break,
+            }
+        }
+        current.to_string()
+    }
+
     pub(crate) fn origin_string(&self, span: Span) -> Arc<str> {
         if let Some(info) = &self.source_info {
             let (line, _) = info.line_map.offset_to_line_col(span.start);
@@ -306,9 +359,19 @@ impl Interpreter {
     /// you want when a background task dies, so that's what it carries —
     /// `file:line:col: boom`, matching native.
     pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
-        let RuntimeError::Panic(msg) = &diag.error else {
-            return format!("{}", diag);
+        // Every way the program can panic, not the `Panic` variant alone.
+        // `is_panic` is the same question the exit code asks — OV1–OV4 and
+        // OPT13 say an overflow and a forced `x!` panic, whatever enum variant
+        // carries the message — and only `Panic` got a location here, so a task
+        // that died on `v!` reported "! on a value that was absent" with no file
+        // or line while native said `f.rk:7:`.
+        let msg = match &diag.error {
+            RuntimeError::Panic(m) => m.clone(),
+            e => format!("{}", e),
         };
+        if !diag.error.is_panic() {
+            return msg;
+        }
         match &self.source_info {
             Some(info) => {
                 // file:line, no column — see the note in the runtime's
@@ -317,7 +380,7 @@ impl Interpreter {
                 let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
                 format!("{}:{}: {}", info.file_name, line, msg)
             }
-            None => msg.clone(),
+            None => msg,
         }
     }
 
@@ -439,6 +502,14 @@ impl Interpreter {
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
+        // The same capture buffer, not a fresh one. A `test` block's runner
+        // captures the main thread's output and prints it under the test's
+        // name; a task writing to the real stdout instead put its lines
+        // somewhere the runner never looked, so `println` inside a spawned task
+        // was lost — and a task that panicked was invisible for the same
+        // reason, which is the failure std.testing/T19 exists to surface
+        // (#1093). Shared rather than copied, because there is one report.
+        child.output_buffer = self.output_buffer.clone();
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);
         }
@@ -770,12 +841,17 @@ impl Interpreter {
                     self.transfer_resource_to_scope(field, new_depth);
                 }
             }
-            // A tuple is a `Vec` at runtime, and `return (request, responder)`
-            // hands the resource to the caller the same way a struct field
-            // does. Without this the callee's scope exit read it as a leak, and
-            // native — which has no runtime tracker — disagreed (#792). A real
-            // `Vec` can't hold a resource at all (mem.linear/RC1, RC3), so
-            // walking one costs nothing and finds nothing.
+            // `return (request, responder)` hands the resource to the caller
+            // the same way a struct field does. Without this the callee's scope
+            // exit read it as a leak, and native — which has no runtime tracker
+            // — disagreed (#792). A `Vec` can't hold a resource at all
+            // (mem.linear/RC1, RC3), so walking one costs nothing and finds
+            // nothing.
+            Value::Tuple(items) => {
+                for item in items.iter() {
+                    self.transfer_resource_to_scope(item, new_depth);
+                }
+            }
             Value::Vec(items) => {
                 let snapshot: Vec<Value> = items.lock().unwrap().items.clone();
                 for item in &snapshot {
@@ -1079,8 +1155,10 @@ pub enum RuntimeError {
 
     /// Error propagation via try operator. The text only shows when one escapes
     /// uncaught — a `try` in a `test` block, which has no caller to hand the
-    /// error to. Native panics with the same words there (#932).
-    #[error("try propagated an error out of a test block")]
+    /// error to (std.testing/T20). The test runner appends the error's own
+    /// `message()`; `Display` can't, having no interpreter to call it with.
+    /// Native prints the same words (#932).
+    #[error("{}", rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE)]
     TryError(Value),
 
     /// `x!` on an absent optional (type.optionals/OPT13).
@@ -1091,16 +1169,23 @@ pub enum RuntimeError {
     /// ForcedAbsent because they are different mistakes: one had nothing there,
     /// the other had a failure it threw away. Both used to report "value was
     /// None", which for the error case names something that never happened.
-    #[error("! on a value that was an error")]
-    ForcedError,
+    ///
+    /// Carries the error's own `message()`. ER15 says `!` panics *using* it,
+    /// and ctrl.panic/F3 wants a panic message to be a function of the failing
+    /// operation's operands — here the operand is the error, and every error
+    /// type has a `message()` (that's what E0344 enforces), so there is always
+    /// something to print. Reporting only "was an error" threw away the one
+    /// thing the reader wanted and had in hand (#1009).
+    #[error("! on a value that was an error: {0}")]
+    ForcedError(String),
 
     /// Assertion failed (assert expr) — stops test immediately
-    #[error("assertion failed: {0}")]
-    AssertionFailed(String),
+    #[error("{}", .0.framed("assertion failed"))]
+    AssertionFailed(AssertDetail),
 
     /// Check failed (check expr) — test continues, marked failed
-    #[error("check failed: {0}")]
-    CheckFailed(String),
+    #[error("{}", .0.framed("check failed"))]
+    CheckFailed(AssertDetail),
 
     /// Test skipped via skip("reason")
     #[error("skipped: {0}")]
@@ -1109,6 +1194,39 @@ pub enum RuntimeError {
     /// Test expects failure via expect_fail()
     #[error("expect_fail")]
     TestExpectFail,
+}
+
+/// What a failed `assert` or `check` has to say, and who gets to frame it.
+///
+/// The two forms are different things. A comparison is the compiler's own
+/// account of operands it read — `1 == 2 (left: 1, right: 2)` — and reads as
+/// "assertion failed: …". A hand-written message is the programmer's, and
+/// native prints it alone: prefixing it says something the author already said
+/// better.
+///
+/// One `String` for both meant no consumer could tell which it had, so the
+/// `run` path prefixed unconditionally. The comparison form came out
+/// "assertion failed: assertion failed: 1 == 2 (left: 1, right: 2)" and the
+/// message form gained a prefix native never prints (#1098).
+#[derive(Debug, Clone)]
+pub enum AssertDetail {
+    /// How the comparison read, or empty when the operands couldn't be
+    /// evaluated a second time to report them.
+    Comparison(String),
+    /// The message the program wrote.
+    Message(String),
+}
+
+impl AssertDetail {
+    /// The whole line, with `kind` — "assertion failed" or "check failed" —
+    /// supplied only where it belongs.
+    pub fn framed(&self, kind: &str) -> String {
+        match self {
+            AssertDetail::Comparison(d) if d.is_empty() => kind.to_string(),
+            AssertDetail::Comparison(d) => format!("{}: {}", kind, d),
+            AssertDetail::Message(m) => m.clone(),
+        }
+    }
 }
 
 impl RuntimeError {
@@ -1138,7 +1256,7 @@ impl RuntimeError {
                 | RuntimeError::DivisionByZero
                 | RuntimeError::IndexOutOfBounds { .. }
                 | RuntimeError::ForcedAbsent
-                | RuntimeError::ForcedError
+                | RuntimeError::ForcedError(_)
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)

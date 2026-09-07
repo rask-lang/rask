@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `*p`, `p.read()` and `p.write(v)` on a float pointer used to move the value
+// through the `int64_t` C helpers (#1091). The bits survived, the type didn't:
+// 2.5 printed as 4612811918334231000, and a write landed as a denormal — `w[0]`
+// read back as 0.000…044.
+//
+// A float slot is a whole word everywhere (`Vec<f32>` widens on the way in), so
+// the load is eight bytes as an `f64` and an `f32` narrows after it.
+
+test "reading a float back as a float" {
+    mut w: Vec<f64> = Vec.new()
+    w.push(2.5)
+    let q = unsafe w.as_ptr()
+    assert unsafe *q == 2.5
+    assert unsafe q.read() == 2.5
+}
+
+test "writing a float through a pointer" {
+    mut w: Vec<f64> = Vec.new()
+    w.push(2.5)
+    let q = unsafe w.as_mut_ptr()
+    unsafe q.write(9.75)
+    assert w[0] == 9.75
+}
+
+test "an f32 narrows after the word-wide load" {
+    mut s: Vec<f32> = Vec.new()
+    s.push(1.5)
+    let t = unsafe s.as_ptr()
+    assert unsafe *t == 1.5
+}
+
+test "stepping to the next element" {
+    mut w: Vec<f64> = Vec.new()
+    w.push(1.25)
+    w.push(3.75)
+    let q = unsafe w.as_ptr()
+    let next = unsafe q.add(1)
+    assert unsafe *next == 3.75
+}
+
+test "an inferred float element needs no annotation" {
+    mut w = Vec.new()
+    w.push(2.5)
+    let q = unsafe w.as_ptr()
+    assert unsafe *q == 2.5
+}

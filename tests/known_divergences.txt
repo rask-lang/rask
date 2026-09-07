@@ -39,7 +39,6 @@
 #     same pool. All 5 tests pass on both backends now.
 
 # --- interpreter lag (native correct) ---
-t_block_exit_drains_tasks.rk  # multitasking — #1093 (interp output)
 #
 # Pruned 2026-08-26, fixed and re-verified on both backends before removing the line:
 #   t_month_unsafe.rk — #935. The interpreter had no pointer value: `as_ptr()`
@@ -117,6 +116,13 @@ t_block_exit_drains_tasks.rk  # multitasking — #1093 (interp output)
 # so `for i in 1..6` left `i` free and every Vec it filled with it. Both
 # `with`-block-as-value and `collect` were mislabelled — reduced, neither needed
 # a `with` block or a `collect` to fail.
+# `{x:debug}` landed on this branch and all three container shapes now agree.
+# Pruned 2026-09-05:
+#   t_debug_container_elision.rk — #1064. The Map half turned out not to need an
+#     iteration order from the runtime, because there isn't one to have: order
+#     is unspecified and seeded per process on both backends. The renderer sorts
+#     by key instead, which is the same on every run and on both sides.
+
 # --- interp lag: a lazy chain's `mutate` writeback ---
 #
 # `counting_source(mutate calls).filter(…)` then `.sum()`. Native reports
@@ -128,3 +134,17 @@ t_block_exit_drains_tasks.rk  # multitasking — #1093 (interp output)
 # writeback deferred to when the value is actually driven.
 p08_sequence.rk  # sequence — #1046 (interp run)
 
+# `extern "C"` needs dlsym and a C ABI, which a tree walker doesn't have — the
+# same reason `examples/19_unsafe.rk` is on known_fail_examples.txt. Not a bug
+# in either backend and not a roadmap item; the interpreter is never going to
+# call libc. The file is here for the native half — #1128, a write through a
+# `*u8` storing eight bytes, which is fixed. So there is no open issue behind
+# this line and there is not going to be one: it records a permanent asymmetry,
+# the way `19_unsafe.rk`'s entry on known_fail_examples.txt does, rather than
+# tracking something. Pointing it at #1128 would send a reader to a closed
+# codegen fix and leave them wondering why the file is still divergent.
+#
+# The Rask-only way to get a `*u8` — `Vec<u8>.as_mut_ptr()` — can't stand in for
+# it: `p.offset(1)` on one steps eight bytes rather than one, which is #985 and
+# a design call rather than a bug.
+t_raw_pointer_width.rk  # extern "C" is native-only — no issue, see above (interp run)

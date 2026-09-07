@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CT35: past the default 1,000 backwards branches with no `@comptime_quota`.
+const SUM: i64 = comptime {
+    mut n = 0
+    for i in 0..5000 {
+        n = n + i
+    }
+    n
+}
+
+func main() { println(SUM.to_string()) }

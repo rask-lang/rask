@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A comptime `Map` is const data, not a table built by running the block at
+// startup (#1075).
+//
+// `ComptimeValue` had no map, so `Map.new` fell out of the evaluator and the
+// whole block ran at runtime — with a W0303 saying so. A lookup table is the
+// most obvious reason to reach for `comptime` in the first place, so this is
+// the case the feature exists for.
+//
+// The representation is the interesting half. There is no static hash table to
+// emit: the runtime seeds its bucket layout per process, so the same entries
+// land in different slots on every run. What the constant holds is the entries
+// — a pair per entry in the binary, key then value, each padded to a whole
+// number of words so a sixteen-byte string never sits at a four-byte offset —
+// and lowering reads them back with `rask_vec_from_static` and inserts them.
+// That still saves the whole fold: no loop, no arithmetic, no intermediate
+// values, just N inserts of data that is already there.
+//
+// Entries keep insertion order in the evaluator and a repeated key overwrites
+// in place, so the constant reads the way the block wrote it. The map that
+// comes out is an ordinary one, and its iteration order is the usual
+// unspecified, per-process one.
+
+const CODES = comptime {
+    mut m = Map.new()
+    m.insert("alpha", 1)
+    m.insert("bravo", 2)
+    m.insert("a key comfortably past the fifteen byte inline limit", 3)
+    m.freeze()
+}
+
+const SQUARES = comptime {
+    mut m = Map.new()
+    for i in 1..6 {
+        m.insert(i, i * i)
+    }
+    m.freeze()
+}
+
+const NAMES = comptime {
+    mut m = Map.new()
+    m.insert(1, "one")
+    m.insert(2, "two")
+    m.freeze()
+}
+
+// The annotation isn't about folding — an empty map has nothing to read its
+// key and value types off, folded or not, and `contains_key` needs to know
+// what a key is. Without it the block fails to lower either way.
+const EMPTY: Map<string, i64> = comptime {
+    mut m = Map.new()
+    m.freeze()
+}
+
+const OVERWRITTEN = comptime {
+    mut m = Map.new()
+    m.insert("k", 1)
+    m.insert("k", 2)
+    m.freeze()
+}
+
+const AFTER_REMOVE = comptime {
+    mut m = Map.new()
+    m.insert("keep", 1)
+    m.insert("drop", 2)
+    m.remove("drop")
+    m.freeze()
+}
+
+test "a string-keyed table reads back" {
+    assert CODES["alpha"] == 1
+    assert CODES["bravo"] == 2
+    assert CODES.len() == 3
+}
+
+test "a key too long to sit inline still finds its entry" {
+    // Past fifteen bytes a key is a pointer to a static header rather than
+    // characters in the slot, and the map hashes contents either way.
+    assert CODES["a key comfortably past the fifteen byte inline limit"] == 3
+}
+
+test "membership answers for a key that isn't there" {
+    assert CODES.contains_key("alpha")
+    assert !CODES.contains_key("zulu")
+}
+
+test "a table computed by a loop folds" {
+    assert SQUARES[1] == 1
+    assert SQUARES[3] == 9
+    assert SQUARES[5] == 25
+    assert SQUARES.len() == 5
+}
+
+test "an integer key with a string value" {
+    assert NAMES[1] == "one"
+    assert NAMES[2] == "two"
+    assert NAMES.len() == 2
+}
+
+test "an empty map folds to an empty map" {
+    assert EMPTY.len() == 0
+    assert !EMPTY.contains_key("anything")
+}
+
+test "inserting the same key twice keeps the last value" {
+    assert OVERWRITTEN["k"] == 2
+    assert OVERWRITTEN.len() == 1
+}
+
+test "a key removed inside the block isn't in the constant" {
+    assert AFTER_REMOVE["keep"] == 1
+    assert !AFTER_REMOVE.contains_key("drop")
+    assert AFTER_REMOVE.len() == 1
+}
+
+test "a folded map is a map like any other" {
+    mut copy = Map.new()
+    for k in CODES.keys() {
+        copy.insert(k.clone(), CODES[k])
+    }
+    assert copy.len() == 3
+    assert copy["bravo"] == 2
+}

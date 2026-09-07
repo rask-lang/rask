@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1034 — comparing an integer to a char has to be rejected.
+//
+// It type-checked, and then the backends disagreed: native compares a `char`
+// as its underlying scalar and answered `true` because 104 is both a byte and
+// `'h'`, while the interpreter refused at runtime. The silent half is the one
+// that ships.
+//
+// The comparison arms unify the operand with the receiver and discard the
+// result on purpose — mixed signedness is allowed (ORD4) and would fail that
+// unification — and discarding it discarded every real mismatch with it.
+//
+// ERROR: E0382 — cannot apply `==` to `u8` and `char`
+
+func main() {
+    let b: u8 = 104u8
+    if b == 'h' {
+        println("compiled")
+    }
+}

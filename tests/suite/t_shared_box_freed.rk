@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Shared` box built in a function is freed when the function is done
+// (#1099). Nothing ever freed one:
+//
+//     let s = Shared.new(0)
+//     rask: 2 allocations never released (88 bytes, undercounted)
+//
+// Two, whatever the payload — the box's own storage and the copy of the value
+// inside it. `rask_shared_free` had existed all along with nothing calling it,
+// the same way `rask_rack_free` and `rask_pool_free` had before #1048.
+//
+// This file is on `known_leaks.txt` for `s.clone()`, which is deliberately not
+// a registered constructor: `clone_elision` may leave the caller's own box in
+// the slot, and freeing that is a double free rather than a smaller leak. The
+// count is what checks the rest — a regression that stopped freeing any of
+// these would push it back up, and one that started freeing a box twice would
+// abort the run.
+
+import sync.Shared
+
+struct Reading {
+    label: string
+    value: i64
+}
+
+test "a box holding a scalar" {
+    let s = Shared.new(41)
+    with s.write() as v {
+        v = v + 1
+    }
+    with s.read() as v {
+        assert v == 42
+    }
+}
+
+// The payload has its own allocation, so a box that frees only its own storage
+// still shows here.
+test "a box holding a string" {
+    let s = Shared.new("hello")
+    with s.read() as v {
+        assert v == "hello"
+    }
+}
+
+test "a box holding a struct" {
+    let s = Shared.new(Reading { label: "temp", value: 21 })
+    with s.write() as r {
+        r.value = 22
+    }
+    with s.read() as r {
+        assert r.label == "temp"
+        assert r.value == 22
+    }
+}
+
+func peek(s: Shared<i64>) -> i64 {
+    mut out = 0
+    with s.read() as v {
+        out = v
+    }
+    return out
+}
+
+// PM1: a parameter is borrowed, so the box is still the caller's to free —
+// freeing it in both places would be a double free, not a leak.
+test "a box lent to a function" {
+    let s = Shared.new(7)
+    assert peek(s) == 7
+    assert peek(s) == 7
+    with s.read() as v {
+        assert v == 7
+    }
+}
+
+// A box made and dropped in a loop is the shape that turns a leak into an
+// out-of-memory rather than a number in a report.
+test "a box made many times" {
+    mut total = 0
+    for i in 0..50 {
+        let s = Shared.new(i)
+        with s.read() as v {
+            total = total + v
+        }
+    }
+    assert total == 1225
+}
+
+// The release is refcounted: a clone hands back another handle on the same
+// cell, and the storage goes when the last one does.
+test "a cloned handle sees the same cell" {
+    let s = Shared.new(1)
+    let t = s.clone()
+    with s.write() as v {
+        v = 9
+    }
+    with t.read() as v {
+        assert v == 9
+    }
+}
+
+func main() {
+    println("shared box freed ok")
+    return
+}

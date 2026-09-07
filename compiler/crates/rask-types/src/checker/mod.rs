@@ -45,6 +45,10 @@ pub enum BindingKind {
     Mut,
     /// `let x` — deep-immutable local binding
     Let,
+    /// A module-level `const`. One instance for the whole program, reachable
+    /// from every task, so PS2 puts package-level mutable state behind a sync
+    /// box rather than allowing a bare one to be written.
+    ModuleConst,
     /// Default parameter (read-only; use `mutate` to allow mutation)
     Param,
     /// `with expr as v` — read-only with-binding (use `as mut v` to mutate)
@@ -102,6 +106,7 @@ impl BindingKind {
         matches!(
             self,
             BindingKind::Let
+                | BindingKind::ModuleConst
                 | BindingKind::Param
                 | BindingKind::WithRead
                 | BindingKind::Bound(_)
@@ -132,6 +137,15 @@ pub struct TypeChecker {
     pub(super) ctx: InferenceContext,
     /// Types assigned to nodes.
     pub(super) node_types: HashMap<NodeId, Type>,
+    /// Struct declarations synthesized from `import c` headers. They reach
+    /// monomorphization through `TypedProgram` so a C struct gets a layout like
+    /// any other (#948).
+    pub(super) c_type_decls: Vec<rask_ast::decl::Decl>,
+    /// The `import c` namespace names in this program (`c`, or the alias in
+    /// `import c "…" as mylib`). A dotted name under one of these is a C type
+    /// that must be registered — `c.Nonexistent` in a signature is an error,
+    /// where a module path like `time.Instant` resolves elsewhere.
+    pub(super) c_namespaces: std::collections::HashSet<String>,
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
     stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
@@ -150,6 +164,15 @@ pub struct TypeChecker {
     /// was a fresh variable nothing ever wrote to, so `let found = loop { … }`
     /// stayed open however the breaks were typed.
     pub(super) loop_value_types: Vec<Type>,
+    /// The form of each enclosing loop, innermost last — "while", "for" or
+    /// "loop", plus where its header is.
+    ///
+    /// `loop` is the form that produces a value; the other two are statements
+    /// and have none to give when their condition goes false (ctrl.flow/CF20,
+    /// CF21). `break 42` inside a `while` was accepted silently, because the
+    /// only question anyone asked was whether `loop_value_types` had a top —
+    /// and it only ever does for a `loop` in expression position (#1090).
+    pub(super) loop_forms: Vec<(&'static str, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Trait bounds on the current function's type params (name → trait names).
@@ -174,6 +197,31 @@ pub struct TypeChecker {
     /// parameter, named by that parameter). Resolved after constraint solving to
     /// populate TypedProgram.call_type_args.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<(String, Type)>)>,
+    /// Type arguments written at a *method* call, keyed by the call's NodeId.
+    ///
+    /// `s.parse<i64>()` says what it wants and nothing carried it: the method's
+    /// `T` became a fresh variable for the call site to settle, so with no
+    /// annotation and no `??` there was nothing to settle it from and the
+    /// binding was reported un-inferrable. Worse, the turbofish was decorative
+    /// even when it did infer — `let x: f64 = "42".parse<i64>()!` type-checked
+    /// and ran the float parse (#1029).
+    pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
+    /// TR5 checks whose container hadn't resolved yet when the call was walked
+    /// — `(argument node, was it an `as any Trait`, receiver, argument)`.
+    pub(super) pending_trait_elem_coercions:
+        Vec<(NodeId, bool, Type, Type)>,
+    /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
+    /// `try`s propagate to the innermost of these instead of to the enclosing
+    /// function, which is what makes the handler cover the block.
+    pub(super) try_block_errors: Vec<Type>,
+    /// Interpolations that asked for `{:debug}`, by the `__fmt` call's NodeId.
+    ///
+    /// Every type derives Debug (std.fmt/G2), so `{:debug}` needs nothing of
+    /// its value — only `{}` goes through Displayable (D3). One gate served
+    /// both, so a plain struct was rejected for lacking a `to_string` it was
+    /// never going to need, and the suggested fix told the user to add
+    /// `Displayable` when they had asked for debug output (#1032).
+    pub(super) debug_fmt_calls: std::collections::HashSet<NodeId>,
     /// CALL6: the function each call resolves to, keyed by the call's NodeId.
     /// Free calls record here immediately; method calls record when their
     /// `HasMethod` constraint resolves.
@@ -204,6 +252,13 @@ pub struct TypeChecker {
     /// solver resolves those later, long after `in_unsafe` has been unwound, so
     /// it reads the flag from here instead of from the walk.
     pub(super) ptr_method_sites: std::collections::HashMap<rask_ast::Span, bool>,
+    /// The `<U>` on a `p.cast<U>()`, by call site.
+    ///
+    /// Both halves of pointer-method checking need it — the eager path in
+    /// `check_expr` and the solver in `resolve` — and only the walk sees the
+    /// call's type arguments. Recorded here for the same reason
+    /// `ptr_method_sites` is: the solver runs later and has only the span.
+    pub(super) ptr_cast_targets: std::collections::HashMap<rask_ast::Span, Type>,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
     /// Whether we're inferring an expression in statement position (value discarded).
@@ -287,6 +342,16 @@ pub struct TypeChecker {
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
     pub(super) allowed_warnings: Vec<String>,
+    /// Per scope: whether a name is bound to a string the compiler will know —
+    /// a literal or a `comptime { … }` block. `value.(name)` is a compile-time
+    /// rewrite to a direct field access (ctrl.comptime/CT53), so only these can
+    /// name a field. Mirrors MIR's `comptime_strings`, which does the rewrite.
+    ///
+    /// A stack rather than one set, because it has to shadow the way bindings
+    /// do: an inner `let which = f()` must not make an outer comptime `which`
+    /// unusable after the block ends. `false` is an explicit "not knowable
+    /// here", which is what shadows an outer `true`.
+    pub(super) comptime_string_names: Vec<HashMap<String, bool>>,
     /// ST1: `staged()` calls found outside a `with` binding source, collected by
     /// the sync-access walk and reported by its caller (the walk itself only
     /// gathers).
@@ -301,9 +366,27 @@ pub struct TypeChecker {
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
     pub(super) pending_int_literals: Vec<(i128, bool, Type, rask_ast::Span)>,
+    /// D2: `discard` on a Copy type, checked after literal defaulting.
+    /// `let n = 7` is an unsolved integer var while the body is walked, so
+    /// asking at the statement missed the commonest spelling of the case.
+    pub(super) pending_discards: Vec<(String, Type, rask_ast::Span)>,
+    /// Matches whose scrutinee was still an open variable when the arms were
+    /// walked, and that have no arm for the values the others don't name.
+    ///
+    /// `let x = 5` is an unsuffixed literal, so its type isn't `i32` until
+    /// defaults land — and asking then is the whole point, since a match on an
+    /// integer is exactly the shape that needs a wildcard (#1090).
+    pub(super) pending_match_wildcards: Vec<(Type, rask_ast::Span)>,
+    /// `b.(comptime { … })` blocks whose value was still open when the access
+    /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
+    /// is the case worth catching (#1090).
+    pub(super) pending_comptime_field_names: Vec<(Type, rask_ast::Span)>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
+    /// Field accesses whose receiver was still open when the leftovers pass ran
+    /// — a closure parameter, most often, which its caller pins later.
+    pub(super) deferred_fields: Vec<TypeConstraint>,
     /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
@@ -390,11 +473,14 @@ impl TypeChecker {
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
+            c_type_decls: Vec::new(),
+            c_namespaces: std::collections::HashSet::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
             loop_value_types: Vec::new(),
+            loop_forms: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
@@ -402,6 +488,10 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            written_method_type_args: HashMap::new(),
+            pending_trait_elem_coercions: Vec::new(),
+            try_block_errors: Vec::new(),
+            debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
@@ -411,6 +501,7 @@ impl TypeChecker {
             in_unsafe: false,
             unsafe_ops: Vec::new(),
             ptr_method_sites: HashMap::new(),
+            ptr_cast_targets: HashMap::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             in_stmt_expr: false,
@@ -431,13 +522,18 @@ impl TypeChecker {
             multitasking_depth: 0,
             pending_casts: Vec::new(),
             pending_int_literals: Vec::new(),
+            pending_discards: Vec::new(),
+            pending_match_wildcards: Vec::new(),
+            pending_comptime_field_names: Vec::new(),
             deferred_methods: Vec::new(),
+            deferred_fields: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             local_shared_uses: Vec::new(),
             staged_outside_with: Vec::new(),
             allowed_warnings: Vec::new(),
+            comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
             pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),
@@ -498,8 +594,10 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
         }
         self.collect_import_aliases();
+        self.collect_c_types();
         self.collect_type_declarations(decls);
         self.check_user_annotations(decls);
+        self.check_allow_names(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
@@ -561,6 +659,12 @@ impl TypeChecker {
         // once the type args are known.
         self.validate_pending_disjointness();
 
+        // An operator whose other side settled after the body was walked —
+        // `func double(x) { x * 2 }` called with an f64. The literal has to hear
+        // about it before defaulting, or the body reports `f64 * i32` for a
+        // program with no i32 in it (#904).
+        self.settle_operator_literals();
+
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
 
@@ -576,6 +680,15 @@ impl TypeChecker {
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
 
+        // D2: `discard` on a Copy type frees nothing. Asked here because an
+        // unsuffixed literal has a type only after defaulting.
+        self.validate_pending_discards();
+
+        // A match whose scrutinee only became a number here, and a `comptime`
+        // field name whose block did.
+        self.validate_pending_match_wildcards();
+        self.validate_pending_comptime_field_names();
+
         // ER14a: a void-bodied `catch` whose scrutinee's success type was still
         // open when it ran — check it against whatever that type settled to
         // (from another catch, a `try`, literal defaults, anything else),
@@ -590,6 +703,12 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+
+        // TR5: an element pushed into a container the checker only resolved
+        // later. A concrete value going into an `any Trait` slot has to be boxed
+        // with a vtable, and the container reached through a field wasn't known
+        // when the push was walked (#955).
+        self.validate_pending_trait_elem_coercions();
 
         // S2: view bindings whose source was a field or loop variable — the type
         // is concrete now, so "is this a string slice / a growable view" has an
@@ -640,7 +759,7 @@ impl TypeChecker {
             // holds. Ids are allocation order — two nodes with the same gap get
             // different ids and look like two problems, while one line of source
             // that produces eight open nodes looks like eight.
-            let mut sites: std::collections::BTreeMap<(usize, usize, &'static str, String), u32> =
+            let mut sites: std::collections::BTreeMap<(u16, usize, usize, &'static str, String), u32> =
                 Default::default();
             let mut unattributed = 0u32;
             for (id, ty) in node_types.iter() {
@@ -649,15 +768,20 @@ impl TypeChecker {
                 }
                 match self.node_origins.get(id) {
                     Some((span, kind)) => {
-                        *sites.entry((span.start, span.end, kind, format!("{ty:?}"))).or_insert(0) += 1
+                        *sites
+                            .entry((span.file_id, span.start, span.end, kind, format!("{ty:?}")))
+                            .or_insert(0) += 1
                     }
                     None => unattributed += 1,
                 }
             }
             let mut v: Vec<_> = sites.into_iter().collect();
             v.sort_by(|a, b| b.1.cmp(&a.1));
-            for ((start, end, kind, shape), n) in v.iter().take(25) {
-                eprintln!("[open-nodes] {n:>5}  bytes {start}..{end}  {kind}  {shape}");
+            // The file id matters: checking one file of a package checks the
+            // whole package, and a bare byte offset then names a position in a
+            // file nobody can identify.
+            for ((file, start, end, kind, shape), n) in v.iter().take(25) {
+                eprintln!("[open-nodes] {n:>5}  file {file} bytes {start}..{end}  {kind}  {shape}");
             }
             if unattributed > 0 {
                 eprintln!("[open-nodes] {unattributed:>5}  (no recorded origin)");
@@ -786,6 +910,7 @@ impl TypeChecker {
 
         let program = TypedProgram {
             symbols: self.resolved.symbols,
+            c_type_decls: self.c_type_decls,
             resolutions: self.resolved.resolutions,
             types: self.types,
             node_types,

@@ -42,6 +42,21 @@ test "type.gradual-constraints — IN2: a bare literal body infers concrete" {
     assert get_port() == 8080
 }
 
+// One call site, one type — no generalization needed, and this is the exact
+// program the table's `double` row is written about. The literal in the body
+// used to default to `i32` before the call was heard, so the body reported
+// `*` between `f64` and `i32` for a program with no `i32` in it (#904). Two
+// call sites at two different types still need generalization; that's next
+// door in `p11_gradual_generalization.rk`.
+func double(x) {
+    return x * 2
+}
+
+test "type.gradual-constraints — an inferred parameter takes the call's type" {
+    let f: f64 = 1.5
+    assert double(f) == 3.0
+}
+
 // #905: the inferred `string` has to survive into codegen, not just into the
 // checker — interpolating it is what reads the type back out.
 test "type.gradual-constraints — interpolation constrains the parameter to string" {

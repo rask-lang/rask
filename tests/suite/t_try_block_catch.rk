@@ -41,6 +41,11 @@ test "a try inside the block runs the handler" {
     }
 }
 
+// ER18's handler covers the block, so this `try` propagates a `ParseError` to
+// `_e` and not to the function's `LowError`. The checker used to match it
+// against the function's error type instead — the handler-covers-the-block path
+// looked for the opposite AST nesting and never fired — and the mismatch was
+// swallowed because a stdlib name deferred rather than resolving (#950).
 func parsed(s: string) -> f64 or LowError {
     let v = try {
         try s.parse<f64>()

@@ -97,9 +97,18 @@ func test_break_type_mismatch() {
 }
 
 // --- break value in while (CF20) ---
-// ERROR: cannot break with value from while loop
+// ERROR: cannot break with value from while loop [E0865]
 func test_while_break_value() {
     while true {
         break 42
+    }
+}
+
+// `for` is the same rule (CF21): it ends when the iterator does, with no value
+// to give. `loop` is the form that produces one, in both positions.
+// ERROR: the same, from a `for` [E0865]
+func test_for_break_value() {
+    for i in 0..3 {
+        break 7
     }
 }

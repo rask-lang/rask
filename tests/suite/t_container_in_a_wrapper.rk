@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container handed back inside a `T or E` belongs to the caller (#1117).
+//
+// The drop pass decides "this function hands a container to its caller" by
+// reading each `return` and asking whether the local being returned is one this
+// frame made. With an error union in the signature the local being returned is
+// the *wrapper*, and the vector is a slot inside it — so the answer was no, the
+// caller saw an ordinary call result, which is somebody else's by default, and
+// nobody freed it:
+//
+//     func build(n: i64) -> Vec<i64> or Refused    // 2 allocations, every call
+//     func build(n: i64) -> Vec<i64>               // clean
+//
+// Same body, same call site. Only the return type differed.
+//
+// It reads the payload slot now. The guard is that one store of somebody
+// else's container into that slot is enough to refuse the whole answer —
+// `index.get(word) ?? Vec.new()` wrapped in an optional is a fresh vector on
+// one path and the map's own on the other, and freeing that one is a double
+// free rather than a leak.
+//
+// The other half of #1117 is still open, and not for the reason first written
+// here. It is not inlining: `string_to_cstring` is a plain call in the MIR.
+// It is that a `cstring` handle comes back `i64`-shaped —
+//
+//     let _11: i64 or enum#3
+//     _13 = _11.0          // let _13: i64
+//
+// — and the pass that decides an aggregate still owns what a field read handed
+// out tells a container handle from an ordinary scalar field *by MIR width*.
+// A `Vec` handle is `ptr` and is followed; a `cstring` handle is `i64` and is
+// indistinguishable from `m.size`, which can't be followed because admitting it
+// blocks releases elsewhere. The two sides need to agree on which slots hold
+// containers, which is the same missing relation as #1035.
+
+import string.NullByteError
+
+enum Refused {
+    Negative
+    TooBig
+}
+
+extend Refused {
+    public func message(self) -> string {
+        match self {
+            Refused.Negative => return "negative"
+            Refused.TooBig => return "too big"
+        }
+    }
+}
+
+// Big enough that the inliner leaves it alone, which is what keeps this file
+// measuring the thing it is named for.
+func build(n: i64) -> Vec<i64> or Refused {
+    if n < 0 {
+        return Refused.Negative
+    }
+    if n > 100 {
+        return Refused.TooBig
+    }
+    mut v: Vec<i64> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push(i * 3)
+        i = i + 1
+        if i > 1000 {
+            return Refused.TooBig
+        }
+    }
+    mut total = 0
+    for x in v {
+        total = total + x
+    }
+    if total < 0 {
+        return Refused.Negative
+    }
+    return v
+}
+
+test "the caller owns what came out of the wrapper" {
+    let v = build(4) catch e => {
+        assert false
+        return
+    }
+    assert v.len() == 4.wrap<usize>()
+    assert v[0] == 0
+    assert v[3] == 9
+}
+
+test "and the error path carries no container at all" {
+    let v = build(-1) catch e => {
+        assert e.message() == "negative"
+        return
+    }
+    assert false
+}
+
+test "called twice, freed twice" {
+    let a = build(3) catch e => {
+        assert false
+        return
+    }
+    let b = build(5) catch e => {
+        assert false
+        return
+    }
+    assert a.len() + b.len() == 8.wrap<usize>()
+}
+
+// A cstring is the same shape with a different payload — `to_cstring` returns
+// `cstring or NullByteError`, and its terminated copy is a container too. This
+// one is still leaked: `cstring` is not in the container free table, and adding
+// it needs the analysis above to recognise an `i64`-shaped handle. It is here
+// so the day that lands, this file says so.
+test "the same shape carries a cstring" {
+    let c = "hei".to_cstring() catch e => {
+        assert false
+        return
+    }
+    assert (c.to_string() catch _ => "") == "hei"
+}
+
+func main() {
+    let v = build(6) catch e => {
+        println("refused: {e.message()}")
+        return
+    }
+    println("container in a wrapper ok: {v.len()}")
+    return
+}

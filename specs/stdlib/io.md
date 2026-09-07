@@ -165,14 +165,14 @@ try stdout.flush()
 let buf = Buffer.new()
 try buf.write_text("hello ")
 try buf.write_text("world")
-let result = string.from_utf8(buf.as_bytes())  // "hello world"
+let result = string.from_utf8(buf.to_bytes())  // "hello world"
 ```
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `Buffer.new()` | `Buffer` | Empty buffer |
 | `Buffer.from(data: []u8)` | `Buffer` | Initialized with data, position at 0 |
-| `as_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy: a borrowed slice into a struct field isn't expressible yet |
+| `to_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy, which is what `to_` says: a borrowed slice into a struct field isn't expressible yet |
 | `len(self)` | `usize` | Total bytes written |
 
 No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.

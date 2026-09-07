@@ -35,7 +35,7 @@ func append_via_push() {
 }
 
 func empty_constructor() {
-    // ERROR: E0331 — `string.new()` doesn't exist, an empty string is `""`
+    // ERROR: E0387 — `string.new()` doesn't exist, an empty string is `""`
     let s = string.new()
     let _ = s
 }

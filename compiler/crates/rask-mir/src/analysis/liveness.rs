@@ -6,6 +6,7 @@
 //! to a use of the local that doesn't pass through a redefinition. Uses the
 //! generic dataflow framework with gen/kill sets derived from `uses.rs`.
 
+use crate::analysis::addr_alias::AddrAliases;
 use crate::analysis::dataflow::{self, DataflowAnalysis, DataflowResults, Direction};
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::uses;
@@ -55,6 +56,9 @@ impl LiveSet {
 /// Liveness analysis configuration.
 pub struct LivenessAnalysis {
     pub num_locals: usize,
+    /// Reading the address of a local reads the local. Without this a
+    /// `s as i64` handed to a native call looks like the last use of `s`.
+    pub aliases: AddrAliases,
 }
 
 impl DataflowAnalysis for LivenessAnalysis {
@@ -80,7 +84,7 @@ impl DataflowAnalysis for LivenessAnalysis {
         // Terminator reads are gen (live before terminator)
         for local_idx in 0..self.num_locals {
             let local = LocalId(local_idx as u32);
-            if uses::terminator_reads(&block.terminator, local) {
+            if self.aliases.terminator_reads(&block.terminator, local) {
                 state.set(local);
             }
         }
@@ -94,7 +98,7 @@ impl DataflowAnalysis for LivenessAnalysis {
             // Gen: if this statement reads a local, it becomes live above
             for local_idx in 0..self.num_locals {
                 let local = LocalId(local_idx as u32);
-                if uses::stmt_reads(stmt, local) {
+                if self.aliases.stmt_reads(stmt, local) {
                     state.set(local);
                 }
             }
@@ -131,7 +135,7 @@ impl LivenessResults {
 /// Run liveness analysis on a function.
 pub fn analyze(func: &MirFunction, dom_tree: &DominatorTree) -> LivenessResults {
     let num_locals = func.locals.len() + func.params.len();
-    let analysis = LivenessAnalysis { num_locals };
+    let analysis = LivenessAnalysis { num_locals, aliases: AddrAliases::build(func) };
     let results = dataflow::solve(func, &analysis, dom_tree);
     LivenessResults {
         results,

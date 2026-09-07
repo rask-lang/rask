@@ -477,7 +477,7 @@ func start_app() -> App or any Error {
 | **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
 | **ER36: Variant template** | `@message("template")` on a variant provides the format string. `{name}` for named payloads, `{0}` / `{1}` for positional |
 | **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `Error`, and no `@message` annotation, delegates to `inner.message()` |
-| **ER38: Coverage required** | Every variant must have either an annotation or an auto-delegatable payload. Missing coverage is a compile error |
+| **ER38: Coverage** | A variant with neither an annotation nor a delegatable payload falls back to the derived message — the one every error enum gets from its layout (#1001). It used to be a compile error; there is nothing missing to report once the fallback exists |
 
 <!-- test: skip -->
 ```rask

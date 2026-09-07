@@ -383,6 +383,7 @@ RaskVec *rask_vec_take_all(RaskVec *v) {
 // reference themselves, so there is nothing for the caller to free either way.
 
 // join(vec_of_strings, separator) — concatenate strings with separator.
+// join(vec_of_strings, separator) — a Vec stores its elements inline.
 void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     rask_string_new(out);
     if (!src || src->len == 0) return;
@@ -400,6 +401,11 @@ void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
 }
 
 // join(vec_of_ints, separator) — convert integers to strings and concatenate.
+//
+// The element's own width, not a machine word. Reading eight bytes at a
+// four-byte stride returned each pair of elements packed into one number: a
+// `Vec<i32>` of 1, 2, 3 joined as `8589934593,12884901890,3`, where that first
+// value is `(2<<32)|1`.
 void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     rask_string_new(out);
     if (!src || src->len == 0) return;
@@ -409,7 +415,14 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
             rask_string_append(&tmp, out, sep);
             *out = tmp;
         }
-        int64_t val = *(int64_t *)(src->data + i * src->elem_size);
+        const uint8_t *p = src->data + i * src->elem_size;
+        int64_t val;
+        switch (src->elem_size) {
+            case 1:  val = *(const int8_t *)p; break;
+            case 2:  val = *(const int16_t *)p; break;
+            case 4:  val = *(const int32_t *)p; break;
+            default: val = *(const int64_t *)p; break;
+        }
         RaskStr s;
         rask_i64_to_string(&s, val);
         RaskStr tmp;
@@ -417,6 +430,88 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
         rask_string_free(&s);
         *out = tmp;
     }
+}
+
+// debug(vec) — `[1, 2, 3]`, the developer-facing rendering (std.fmt/G2).
+//
+// `kind` says how to read one element, because the header only carries a width:
+// a four-byte slot is an i32, a u32 or an f32, and they print differently.
+// Strings and chars come out quoted and escaped, the same as they do inside a
+// derived struct rendering, so a `Vec<string>` reads `["a", "b"]`.
+//
+// Elements the caller can't classify never reach here — lowering renders those
+// as `[…]` rather than guessing, so there is no kind meaning "unknown".
+void rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind) {
+    RaskStr open_br, close_br, comma;
+    rask_string_from(&open_br, "[");
+    rask_string_from(&close_br, "]");
+    rask_string_from(&comma, ", ");
+
+    *out = open_br;
+    if (src) {
+        for (int64_t i = 0; i < src->len; i++) {
+            if (i > 0) {
+                RaskStr t;
+                rask_string_append(&t, out, &comma);
+                *out = t;
+            }
+            const uint8_t *p = src->data + i * src->elem_size;
+            RaskStr elem;
+            switch (kind) {
+                case RASK_DEBUG_ELEM_U64: {
+                    uint64_t val;
+                    switch (src->elem_size) {
+                        case 1:  val = *(const uint8_t *)p; break;
+                        case 2:  val = *(const uint16_t *)p; break;
+                        case 4:  val = *(const uint32_t *)p; break;
+                        default: val = *(const uint64_t *)p; break;
+                    }
+                    rask_u64_to_string(&elem, val);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_F64: {
+                    if (src->elem_size == 4) {
+                        rask_f64_to_string(&elem, (double)*(const float *)p);
+                    } else {
+                        rask_f64_to_string(&elem, *(const double *)p);
+                    }
+                    break;
+                }
+                case RASK_DEBUG_ELEM_BOOL: {
+                    rask_bool_to_string(&elem, *(const uint8_t *)p != 0);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_STRING: {
+                    rask_string_debug(&elem, (const RaskStr *)p);
+                    break;
+                }
+                case RASK_DEBUG_ELEM_CHAR: {
+                    rask_char_debug(&elem, *(const int32_t *)p);
+                    break;
+                }
+                default: {
+                    int64_t val;
+                    switch (src->elem_size) {
+                        case 1:  val = *(const int8_t *)p; break;
+                        case 2:  val = *(const int16_t *)p; break;
+                        case 4:  val = *(const int32_t *)p; break;
+                        default: val = *(const int64_t *)p; break;
+                    }
+                    rask_i64_to_string(&elem, val);
+                    break;
+                }
+            }
+            RaskStr t;
+            rask_string_append(&t, out, &elem);
+            rask_string_free(&elem);
+            *out = t;
+        }
+    }
+    RaskStr t;
+    rask_string_append(&t, out, &close_br);
+    *out = t;
+    rask_string_free(&comma);
+    rask_string_free(&close_br);
 }
 
 // Take a reference to every string in every element. A container built by
@@ -648,6 +743,69 @@ void rask_vec_sort_f64(RaskVec *v) {
     vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
+}
+
+// sort a Vec of (key, value) pairs by the key, which sits at offset 0.
+//
+// `{m:debug}` needs an order, and a map has none to give: iteration order is
+// unspecified and seeded per process (std.collections, determinism/D7), so
+// printing the table's order would print something different on every run.
+// Sorting by key is the order a reader expects, and it costs nothing outside a
+// debug render.
+//
+// The kind codes are the `RASK_DEBUG_ELEM_*` ones, so lowering says what a key
+// is once and both the renderer and this agree. `qsort` takes no context
+// argument portably, hence the thread-locals; a sort is not reentrant here.
+static _Thread_local int64_t tl_pair_key_kind;
+static _Thread_local int64_t tl_pair_key_size;
+
+static int64_t pair_key_signed(const void *p) {
+    switch (tl_pair_key_size) {
+        case 1:  return *(const int8_t *)p;
+        case 2:  return *(const int16_t *)p;
+        case 4:  return *(const int32_t *)p;
+        default: return *(const int64_t *)p;
+    }
+}
+
+static uint64_t pair_key_unsigned(const void *p) {
+    switch (tl_pair_key_size) {
+        case 1:  return *(const uint8_t *)p;
+        case 2:  return *(const uint16_t *)p;
+        case 4:  return *(const uint32_t *)p;
+        default: return *(const uint64_t *)p;
+    }
+}
+
+static int rask_pair_key_compare(const void *a, const void *b) {
+    switch (tl_pair_key_kind) {
+        case RASK_DEBUG_ELEM_STRING:
+            return rask_str_compare_elem(a, b);
+        case RASK_DEBUG_ELEM_F64: {
+            if (tl_pair_key_size == 4) {
+                double da = *(const float *)a, db = *(const float *)b;
+                return rask_f64_compare(&da, &db);
+            }
+            return rask_f64_compare(a, b);
+        }
+        case RASK_DEBUG_ELEM_U64:
+        case RASK_DEBUG_ELEM_CHAR:
+        case RASK_DEBUG_ELEM_BOOL: {
+            uint64_t va = pair_key_unsigned(a), vb = pair_key_unsigned(b);
+            return va < vb ? -1 : (va > vb ? 1 : 0);
+        }
+        default: {
+            int64_t va = pair_key_signed(a), vb = pair_key_signed(b);
+            return va < vb ? -1 : (va > vb ? 1 : 0);
+        }
+    }
+}
+
+void rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size) {
+    if (!v || v->len <= 1) return;
+    tl_pair_key_kind = key_kind;
+    tl_pair_key_size = key_size;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_pair_key_compare);
 }
 
 // compare(a, b) on f64 — the same total order, returning an Ordering *tag*.

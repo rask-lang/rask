@@ -35,12 +35,7 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
     ("memory", &["Heap"]),
     // The atomics are codegen intrinsics. sync.rk declares `Mutex` and
     // `Shared`'s strategies, so those come off the file itself.
-    ("sync", &[
-        "Atomic", "AtomicBool",
-        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
-        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
-        "AtomicUsize", "AtomicIsize",
-    ]),
+    ("sync", &["Atomic"]),
 ];
 
 /// Names a module exports that aren't types — free functions that come into
@@ -58,9 +53,10 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
     // to read them off — but `import sync.Relaxed` is the spelling the corpus
     // uses and it has to name something.
     ("sync", &["Ordering", "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"]),
-    // The traits fmt.rk and encoding.rk describe. Compiler-provided, so always
-    // in scope — but a selective import of one has to name something, and these
-    // two files aren't parsed (see `COMPILER_MODULES`).
+    // The traits fmt.rk and encoding.rk declare. Compiler-provided, so always in
+    // scope and satisfied by shape — the declarations are read for their method
+    // lists, not to gate conformance. Listed here because a selective import
+    // has to name something and a trait isn't a type the stub walk registers.
     ("fmt", &["Displayable", "Debug"]),
     ("encoding", &["Encode", "Decode"]),
 ];
@@ -77,25 +73,22 @@ const COMPILER_MODULES: &[&str] = &[
     "core",
     // Build configuration read at comptime (`cfg.target_os`).
     "cfg",
-    // These two have a `stdlib/*.rk` file that isn't in the stub set, so the
-    // name is importable but nothing in the file reaches the checker. Both were
-    // tried in the stub set and taken back out: they describe traits the
-    // compiler provides rather than declares (`COMPILER_PROVIDED_TRAITS`), so
-    // parsing them gives `Displayable` a second definition whose `to_string`
-    // hides the inherent one and `StringView.to_string()` stops resolving.
-    // That half of #990 is still open.
+    // `fmt`, `encoding` and `reflect` used to be here, each with a
+    // `stdlib/*.rk` file the stub set couldn't take. All three are stub sources
+    // now, so every one of the 29 files reaches the checker (#990).
     //
-    // `reflect` used to be the third. It was here because parsing it made
-    // `reflect.fields<T>()` inside a generic function stop monomorphizing —
-    // `print_fields(Point{…})` mangled to `print_fields$_`. That turned out not
-    // to be about reflect at all: mono registered free functions as instance
-    // methods by splitting on the first underscore, so `print_fields` was filed
-    // as a `fields` method and swept up by an unresolved-receiver call to
-    // `reflect.fields<T>()`, carrying that call's type arguments. Fixed, so
-    // reflect.rk is a stub source now and its declarations reach the checker —
-    // which is what `f.name` needed a type from (#931).
-    "fmt",
-    "encoding",
+    // `reflect` was blamed for making `reflect.fields<T>()` inside a generic
+    // function stop monomorphizing — `print_fields(Point{…})` mangled to
+    // `print_fields$_`. It turned out not to be about reflect: mono registered
+    // free functions as instance methods by splitting on the first underscore,
+    // so `print_fields` was filed as a `fields` method and swept up by an
+    // unresolved-receiver call, carrying that call's type arguments.
+    //
+    // `fmt` and `encoding` declare traits the compiler provides, and giving
+    // `Displayable` a declaration made it look like a trait a program had
+    // written — which G1 gates on `extend T with Trait`, so every inherent
+    // `to_string` in the stdlib stopped counting. The gate asks what kind of
+    // trait it is now, not whether a declaration exists.
 ];
 
 static MODULE_NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();

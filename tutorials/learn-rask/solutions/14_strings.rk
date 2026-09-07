@@ -3,11 +3,14 @@
 struct Wind { direction: i32, speed: i32 }
 
 func parse_wind(metar: string) -> Wind {
-    let dir_str = metar[0..3]
-    let spd_str = metar[3..5]
+    // A slice is a view into `metar`, not a copy, and a view can't outlive the
+    // statement it's made in. `.to_string()` takes an independent copy — the
+    // cheaper `metar[0..3].view()` works too, bound as a `StringView`.
+    let dir_str = metar[0..3].to_string()
+    let spd_str = metar[3..5].to_string()
     return Wind {
-        direction: dir_str.parse<i64>()!,
-        speed: spd_str.parse<i64>()!,
+        direction: dir_str.parse<i32>()!,
+        speed: spd_str.parse<i32>()!,
     }
 }
 
@@ -22,8 +25,13 @@ func format_flight_plan(departure: string, arrival: string, waypoints: Vec<strin
 
 func word_count(text: string) -> i32 {
     if text.len() == 0 { return 0 }
-    let words = text.split_whitespace()
-    return words.len()
+    // Counting them doesn't need to keep them, so nothing is stored and no
+    // view outlives its statement.
+    mut count = 0
+    for word in text.split_whitespace() {
+        count = count + 1
+    }
+    return count
 }
 
 func callsign_prefix(callsign: string) -> string {
@@ -35,14 +43,19 @@ func callsign_prefix(callsign: string) -> string {
             break
         }
     }
-    return callsign[0..end]
+    return callsign[0..end].to_string()
 }
 
 func parse_csv(input: string) -> Vec<Vec<string>> {
     mut rows = Vec.new()
-    let lines = input.split("\n")
-    for line in lines {
-        rows.push(line.split(","))
+    // `split` hands back views into `input`, so anything kept has to be copied
+    // out. Iterating them directly is fine; storing them is what needs the copy.
+    for line in input.split("\n") {
+        mut fields: Vec<string> = Vec.new()
+        for field in line.split(",") {
+            fields.push(field.to_string())
+        }
+        rows.push(fields)
     }
     return rows
 }

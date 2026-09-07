@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A module import binds the module, so an enum it exports is reached through
+// it — `io.IoError.BrokenPipe` (structure.modules/IM1, #1108).
+//
+// Only two-segment paths were handled. The third segment was read as a field
+// access on a name with no type, so MIR warned, defaulted the type to `i64`
+// and the program segfaulted:
+//
+//     [mir] unresolved field `BrokenPipe` — defaulting to I64
+//     error: program crashed with SIGSEGV (signal 11)
+//
+// A payload-carrying variant failed differently and on both backends: the
+// `module.Type.method()` flattening turned `io.IoError.NotFound("x")` into a
+// call to `IoError_NotFound`, which nobody declares.
+//
+// The sibling file t_month_qualified_module_types.rk covers the same spelling
+// in *type* position — a field, a return type, a generic argument.
+
+import io
+import time
+// Both spellings of `http`. The alias alone would not do: `import http as h`
+// puts `h` in scope and not `http` (IM3), and the parser's list of names a
+// dotted head may use is exactly what the imports bind — so `http.Response { … }`
+// under an alias-only import is still a field access followed by a block.
+import http
+import http as h
+
+// A program enum whose name is the *middle* segment of nothing, to keep the
+// two-segment path honest: `Local.Second` is a variant, not a type reached
+// through something.
+enum Local {
+    First
+    Second
+}
+
+func classify(n: i64) -> i64 or any Error {
+    if n < -10 { return io.IoError.NotFound("nowhere") }
+    if n < 0 { return io.IoError.BrokenPipe }
+    return n
+}
+
+test "a fieldless variant through its module" {
+    let a = classify(-1) catch e => {
+        assert e.message() == "broken pipe"
+        return
+    }
+    assert a == 0
+}
+
+test "and one that carries a payload" {
+    let a = classify(-50) catch e => {
+        assert e.message() == "not found: nowhere"
+        return
+    }
+    assert a == 0
+}
+
+test "the ok branch still comes back whole" {
+    assert (classify(9) catch e => -1) == 9
+}
+
+// The qualified spelling has to build the same value the bare one does.
+import io.IoError
+
+func bare(n: i64) -> i64 or any Error {
+    if n < 0 { return IoError.BrokenPipe }
+    return n
+}
+
+test "both spellings name one variant" {
+    mut a = ""
+    mut b = ""
+    let x = classify(-1) catch e => { a = e.message(); 0 }
+    let y = bare(-1) catch e => { b = e.message(); 0 }
+    assert x == 0
+    assert y == 0
+    assert a == b
+    assert a == "broken pipe"
+}
+
+// A method on a variant *value* looks like the same three-segment shape and
+// isn't: `Local.Second` is the value, `.to_i()` the method (#400).
+extend Local {
+    func to_i(self) -> i64 {
+        match self {
+            Local.First => return 1
+            Local.Second => return 2
+        }
+    }
+}
+
+test "a method on a variant value is not a module path" {
+    assert Local.Second.to_i() == 2
+    assert Local.First.to_i() == 1
+}
+
+// A struct built through the module that exports it (#1113). It didn't parse:
+// `let r = http.Response` is a complete expression and the `{` opened a block,
+// because the parser only took a dotted head for a literal when it started
+// uppercase or named an `import c` namespace. Once it parsed, native
+// segfaulted — layouts are filed under the bare name, so the whole spelling
+// missed and every field store went through an address nobody had written.
+test "a struct literal through its module" {
+    let r = http.Response { status: 201, body: "made" }
+    assert r.status == 201
+    assert r.body == "made"
+}
+
+test "and through an alias" {
+    let r = h.Response { status: 202, body: "aliased" }
+    assert r.status == 202
+    assert r.body == "aliased"
+}
+
+struct Crate {
+    n: i64
+}
+
+test "an unqualified literal is unaffected" {
+    let c = Crate { n: 5 }
+    assert c.n == 5
+}
+
+// What the capitalised-head rule was guarding: in a condition the brace opens
+// the body, not a literal. `allow_brace_expr` is false there, and widening the
+// head rule must not reach past it (#342).
+test "a dotted name in a condition still starts the body" {
+    mut hit = 0
+    let m = Local.Second
+    if m == Local.Second {
+        hit = 1
+    }
+    assert hit == 1
+}
+
+// A static method through a module still flattens the way it always did.
+test "module.Type.method() is unaffected" {
+    let d = time.Duration.from_millis(250)
+    assert d.as_millis() == 250
+    let r = h.Response.new(204, "")
+    assert r.status == 204
+}
+
+func main() {
+    println("qualified variants ok")
+    return
+}

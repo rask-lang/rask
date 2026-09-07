@@ -46,7 +46,7 @@ Every expression has a stage: comptime (runs during compilation) or runtime (com
 | **CT55: Two stages** | Comptime code computes values and decides what runtime code exists. Runtime code is the residue left after all comptime evaluation |
 | **CT56: Comptime positions** | Comptime evaluation happens exactly at: `comptime` expressions, blocks, and variables; bodies of `comptime func`; `comptime` parameter arguments and array sizes; the iterable of `comptime for`; the condition of `comptime if`; the name in `value.(expr)` |
 | **CT57: Residual bodies** | The body of a `comptime for` and the branches of a `comptime if` in runtime position stay runtime code. Comptime control decides *which* runtime code exists (unrolls, selects) — it never evaluates that code. Calls inside these bodies are ordinary runtime calls; CT6 doesn't apply to them |
-| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, `str`, and structs, enums, or fixed arrays of these. A comptime `string` embeds as `str`. Unfrozen `Vec`/`Map` cannot cross (CT19) |
+| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, and `Vec`/`Map` of those. A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. Unfrozen `Vec`/`Map` cannot cross (CT19) |
 | **CT59: Discarded branches** | A branch discarded by a runtime-position `comptime if` is syntax-checked only — same treatment as an uninstantiated generic body (`type.generics/G2`). This is what lets platform-specific code compile on every target |
 
 <!-- test: skip -->
@@ -86,7 +86,7 @@ func print_fields<T>(value: T) {
 | **CT50: Unrolling** | `comptime for` fully unrolls at monomorphization time. Not a runtime loop — each iteration may have different types via comptime field access |
 | **CT51: Comptime iterable** | The iterable must be comptime-known: `reflect.fields<T>()`, `reflect.variants<T>()`, or any comptime array |
 | **CT52: No branch quota** | `comptime for` unrolling doesn't count against the backwards branch quota (CT35). The quota applies to comptime *interpreter* execution, not monomorphization-time unrolling |
-| **CT53: Field name must be comptime** | The expression in `value.(expr)` must be comptime-known. Runtime strings are a compile error |
+| **CT53: Field name must be comptime** | The expression in `value.(expr)` must be comptime-known: a string literal, a `comptime { … }` block, a `let` bound to either, or a `comptime for` binding's `.name`. Anything else — a call, an `if`, a `mut` — is a compile error |
 | **CT54: Field must exist** | Compile error if the comptime string doesn't match any field on the value's type |
 
 Primary use case: serialization format libraries. See `std.encoding` for the full pattern.
@@ -282,6 +282,10 @@ const BAD = comptime {
 | **CT38: String size** | 1 MB | - | Prevent memory issues |
 | **CT39: Array size** | 16 MB | - | Prevent memory issues |
 
+`@comptime_quota` attaches to the const, like any other annotation — the const is
+what's being folded, and the constant's own declaration is where a reader looks to
+find out why this one is allowed to take longer.
+
 <!-- test: skip -->
 ```rask
 comptime func slow() {
@@ -294,16 +298,33 @@ comptime func slow() {
 const X = comptime slow()
 // ERROR: Comptime evaluation exceeded backwards branch quota (1,000)
 
-comptime func large_computation() -> [u8; 10000] {
-    @comptime_quota(20000)  // Allow 20,000 backwards branches
-
-    let table = [0u8; 10000]
+@comptime_quota(20000)
+const TABLE = comptime {
+    mut table = Vec.new()
     for i in 0..10000 {
-        table[i] = compute(i)
+        table.push(compute(i))
     }
-    return table
+    table.freeze()
 }
 ```
+
+### CT69: Failing to fold is a compile error
+
+A `comptime` const is a promise that the value exists before the program runs, so
+there's no runtime to retry on. Every failure in the table above — the quota, a
+panic, an index out of bounds, asking for I/O or a pool or a spawn — stops the
+build where the const is written.
+
+Two exceptions, and they're both about work that hasn't been done rather than
+work that failed:
+
+- **`todo()`** means the block isn't written yet. A program full of them still
+  has to compile; the const runs at startup instead, where the same `todo()`
+  panics.
+- **A construct the evaluator doesn't cover yet** (`Map.new` today) is the
+  compiler's gap, not the program's. The block runs at startup and the compiler
+  warns, naming what stopped it. It used to say nothing, which is how a const
+  could quietly stop being a constant.
 
 ## File Embedding
 
@@ -386,7 +407,7 @@ const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 | Recursive comptime (within limit) | CT35 | Works; memoized to avoid recomputation |
 | Comptime type mismatch | - | Regular type error (type checking still applies) |
 | Unfrozen collection escape | CT19 | Compile error: "cannot return unfrozen Vec from comptime" |
-| Runtime string in field access | CT53 | Compile error: "runtime string in comptime field access" |
+| Runtime string in field access | CT53 | Compile error (E0385): "the field name in `value.(…)` isn't known at compile time" |
 | Non-existent field in field access | CT54 | Compile error: "no field X on type Y" |
 | Comptime for over runtime iterable | CT51 | Compile error: "comptime for requires comptime-known iterable" |
 | Nested comptime for | CT48 | Works — each level unrolls independently |

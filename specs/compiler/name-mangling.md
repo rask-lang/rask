@@ -240,7 +240,7 @@ C-compatible types:
 - `extern "C" struct/enum/union`
 
 **Not C-compatible** (compile error if used with `@export`):
-- `string` (use `*u8` + `usize` or `.as_c_str()`)
+- `string` (use `*u8` + `usize`, or `to_cstring()` for a `const char*`)
 - `T or E` (use return codes + out params)
 - `T?` (use nullable pointers or sentinel values)
 - `Vec<T>`, `Map<K,V>` (use `*T` + `usize`)

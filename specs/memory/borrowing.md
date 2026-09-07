@@ -333,6 +333,8 @@ One syntax for all container types that hold values behind indirection. Bindings
 | Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
 | Mutex | `with mutex as v { ... }` | — (lock is exclusive) |
 
+A source that is neither an element reached by key nor a box is a compile error (`E0874`). Those are the two cases the block earns its keep in — it re-resolves the handle after a structural change (W2a-W2d) and holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does.
+
 Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 
 See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.

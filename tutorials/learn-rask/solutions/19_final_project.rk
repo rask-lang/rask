@@ -67,7 +67,14 @@ func drag(ac: Aircraft) -> Vec3 {
 func lift(ac: Aircraft) -> Vec3 {
     let speed = ac.velocity.magnitude()
     let rho = 1.225
-    let mag = 0.5 * rho * speed * speed * ac.lift_coeff * ac.wing_area
+    mut mag = 0.5 * rho * speed * speed * ac.lift_coeff * ac.wing_area
+    // Lift grows with the square of speed, and it accelerates the aircraft,
+    // which raises the speed — left uncapped this runs away, and the Euler
+    // step above turns that into inf and then NaN within ten simulated
+    // seconds. A real airframe has a load limit; 2.5g is a transport
+    // category's, and capping there is what keeps the model bounded.
+    let max_lift = 2.5 * 9.81 * ac.mass
+    if mag > max_lift { mag = max_lift }
     return Vec3 { x: 0.0, y: 0.0, z: mag }
 }
 

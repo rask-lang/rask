@@ -23,7 +23,9 @@ struct Holder { rows: Vec<Row> }
 
 extend Holder {
     func new() -> Holder { return Holder { rows: build() } }
-    func take(self) -> Vec<Row> { return self.rows }
+    // `take self` — the Vec goes to the caller rather than being lent out
+    // (mem.borrowing/S3): a borrowed `self` would hand out a second name for it.
+    func take(take self) -> Vec<Row> { return self.rows }
 }
 
 test "codegen — iterate a Vec of aggregates returned from a function" {

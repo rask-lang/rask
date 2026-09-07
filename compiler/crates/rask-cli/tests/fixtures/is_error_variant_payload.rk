@@ -4,7 +4,7 @@
 //
 // The bare form worked; adding the binder was rejected outright:
 //
-//     error[E0346]: `MyErr.Worse` is not a branch of `i64 or MyErr` — this test
+//     error[E0398]: `MyErr.Worse` is not a branch of `i64 or MyErr` — this test
 //                   can never be true
 //
 // The two forms took different paths: `is MyErr.Worse` parses as a constructor

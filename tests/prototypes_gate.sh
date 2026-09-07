@@ -84,6 +84,27 @@ run_one() {
 
     agree=0
     if [ "$iout" = "$nout" ] && [ "$ic" -eq "$nc" ]; then agree=1; fi
+
+    # The delete-cost counters are part of the model, not a per-backend
+    # diagnostic (mem.racks, "Measuring it"): the two ends are supposed to keep
+    # the same edge records, so they are supposed to report the same numbers.
+    # Nothing checked that, and two shapes had drifted — a deleted node's own
+    # edges on one side, a replaced container's on the other, both of them
+    # records naming storage nobody held any more (#983).
+    #
+    # A second run rather than folding it into the first: the two drivers print
+    # the line at different points relative to stdout, so comparing the streams
+    # whole would call the ordering a divergence.
+    if [ "$agree" -eq 1 ]; then
+        istats="$(cd "$ROOT" && RASK_RACK_STATS=1 timeout "$RUN_TIMEOUT" "$RASK" run --interp "$src" 2>&1 < /dev/null | grep '^rack stats:')"
+        nstats="$(cd "$ROOT" && RASK_RACK_STATS=1 timeout "$RUN_TIMEOUT" "$RASK" run "$src" 2>&1 < /dev/null | grep '^rack stats:')"
+        if [ "$istats" != "$nstats" ]; then
+            agree=0
+            iout="$istats"
+            nout="$nstats"
+        fi
+    fi
+
     printf '%s\t%s\t%s\n' "$agree" "$ic" "$nc" > "$WORK/$base.status"
     if [ "$agree" -eq 0 ]; then
         diff <(printf '%s' "$iout") <(printf '%s' "$nout") | head -12 | sed 's/^/    /' \

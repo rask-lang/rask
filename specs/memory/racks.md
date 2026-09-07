@@ -136,18 +136,20 @@ list that gets scanned.
 
 | Counter | Meaning |
 |---------|---------|
-| `deletes` | Nodes deleted, `clear` included. A property of the program |
-| `edges_fixed` | Slots set to `none`, plus container entries removed. Also a property of the program: it counts what actually changed, so a splice that repointed an edge before the delete leaves nothing here |
-| `holders_visited` | Edge records the fixup walked. A property of the *backend*, not the program — the two keep different records, so this is what delete cost on the backend you ran, and comparing it across them means nothing |
+| `deletes` | Nodes deleted, `clear` included |
+| `edges_fixed` | Slots actually rewritten: links set to `none`, plus container entries removed — one per entry, not one per container. A splice that repointed an edge before the delete leaves nothing here, because nothing had to change |
+| `holders_visited` | Edge records the fixup walked, live or stale |
 
-The first two are model-level and agree across backends; the third is not and
-does not. That split is the useful one: `edges_fixed` says what RK3 had to do,
-`holders_visited` says what it cost the implementation that did it.
+All three agree across backends, and they are meant to: `edges_fixed` says what
+RK3 had to do, `holders_visited` says what it cost to find it. A number that
+meant something different on each backend couldn't answer either question.
 
-`edges_fixed` still disagrees on one shape — a doubly-linked list emptied
-through `remove` reads 0 natively and 1 on the interpreter, with no observable
-difference in the program's output. Untangled to the point of knowing it is a
-counting artefact rather than a missed edge, and no further (rask-lang/rask#983).
+Agreement is not free — it says the two ends keep the *same* records, which is
+a soundness property in disguise. A record for a holder that no longer exists is
+a wasted visit at best and a read through dead storage at worst, so both ends
+drop a dying node's own outgoing edges and both drop the records of a container
+that gets replaced wholesale. Neither used to, in different places, and the
+counters are how that was found (rask-lang/rask#983).
 
 ## Choosing this over the alternatives
 

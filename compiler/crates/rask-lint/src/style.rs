@@ -15,17 +15,17 @@ pub fn check_snake_case_func(decls: &[Decl], source: &str) -> Vec<LintDiagnostic
             DeclKind::Fn(f) => check_fn_snake_case(f, source, decl.span, &mut diags),
             DeclKind::Struct(s) => {
                 for m in &s.methods {
-                    check_fn_snake_case(m, source, decl.span, &mut diags);
+                    check_fn_snake_case(m, source, m.span, &mut diags);
                 }
             }
             DeclKind::Enum(e) => {
                 for m in &e.methods {
-                    check_fn_snake_case(m, source, decl.span, &mut diags);
+                    check_fn_snake_case(m, source, m.span, &mut diags);
                 }
             }
             DeclKind::Impl(imp) => {
                 for m in &imp.methods {
-                    check_fn_snake_case(m, source, decl.span, &mut diags);
+                    check_fn_snake_case(m, source, m.span, &mut diags);
                 }
             }
             _ => {}
@@ -41,9 +41,6 @@ fn check_fn_snake_case(
     span: rask_ast::Span,
     diags: &mut Vec<LintDiagnostic>,
 ) {
-    if is_suppressed(f, "style/snake-case-func") {
-        return;
-    }
     if !is_snake_case(&f.name) {
         let (line, col) = util::line_col(source, span.start);
         let source_line = util::get_source_line(source, line);
@@ -102,17 +99,17 @@ pub fn check_public_return_type(decls: &[Decl], source: &str) -> Vec<LintDiagnos
             DeclKind::Fn(f) => check_fn_return_type(f, source, decl.span, &mut diags),
             DeclKind::Struct(s) => {
                 for m in &s.methods {
-                    check_fn_return_type(m, source, decl.span, &mut diags);
+                    check_fn_return_type(m, source, m.span, &mut diags);
                 }
             }
             DeclKind::Enum(e) => {
                 for m in &e.methods {
-                    check_fn_return_type(m, source, decl.span, &mut diags);
+                    check_fn_return_type(m, source, m.span, &mut diags);
                 }
             }
             DeclKind::Impl(imp) => {
                 for m in &imp.methods {
-                    check_fn_return_type(m, source, decl.span, &mut diags);
+                    check_fn_return_type(m, source, m.span, &mut diags);
                 }
             }
             _ => {}
@@ -128,7 +125,7 @@ fn check_fn_return_type(
     span: rask_ast::Span,
     diags: &mut Vec<LintDiagnostic>,
 ) {
-    if !f.is_pub || is_suppressed(f, "style/public-return-type") {
+    if !f.is_pub {
         return;
     }
     // Only flag if no return type AND body is non-empty (not just a declaration)
@@ -150,12 +147,6 @@ fn check_fn_return_type(
             fix: "add `-> ReturnType` to the function signature".to_string(),
         });
     }
-}
-
-fn is_suppressed(f: &FnDecl, rule_id: &str) -> bool {
-    f.attrs
-        .iter()
-        .any(|a| a == &format!("allow({})", rule_id))
 }
 
 /// Strip generic type parameters from a name (e.g., "wrap<T>" → "wrap").

@@ -2,6 +2,7 @@
 
 //! Rask code generator — MIR → native code via Cranelift.
 
+pub mod c_abi;
 mod types;
 mod builder;
 pub mod closures;
@@ -74,7 +75,11 @@ pub trait Backend {
     fn declare_stdlib_functions(&mut self) -> CodegenResult<()>;
 
     /// Declare extern "C" functions from user code.
-    fn declare_extern_functions(&mut self, extern_decls: &[ExternFuncSig]) -> CodegenResult<()>;
+    fn declare_extern_functions(
+        &mut self,
+        extern_decls: &[ExternFuncSig],
+        layouts: &[rask_mono::StructLayout],
+    ) -> CodegenResult<()>;
 
     /// Declare all MIR functions (signatures only — no codegen yet).
     fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()>;

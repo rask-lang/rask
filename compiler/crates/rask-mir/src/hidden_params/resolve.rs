@@ -113,14 +113,14 @@ pub fn infer_private_contexts(pass: &mut HiddenParamPass, decls: &[Decl]) {
     for decl in decls {
         match &decl.kind {
             DeclKind::Fn(f) => {
-                if let Some(req) = maybe_infer_context(&f.name, f, pass) {
+                if let Some(req) = infer_for_private(&f.name, f, pass) {
                     inferred.push((f.name.clone(), req));
                 }
             }
             DeclKind::Struct(s) => {
                 for method in &s.methods {
                     let qname = format!("{}.{}", s.name, method.name);
-                    if let Some(req) = maybe_infer_context(&qname, method, pass) {
+                    if let Some(req) = infer_for_private(&qname, method, pass) {
                         inferred.push((qname, req));
                     }
                 }
@@ -128,7 +128,7 @@ pub fn infer_private_contexts(pass: &mut HiddenParamPass, decls: &[Decl]) {
             DeclKind::Enum(e) => {
                 for method in &e.methods {
                     let qname = format!("{}.{}", e.name, method.name);
-                    if let Some(req) = maybe_infer_context(&qname, method, pass) {
+                    if let Some(req) = infer_for_private(&qname, method, pass) {
                         inferred.push((qname, req));
                     }
                 }
@@ -136,7 +136,7 @@ pub fn infer_private_contexts(pass: &mut HiddenParamPass, decls: &[Decl]) {
             DeclKind::Impl(i) => {
                 for method in &i.methods {
                     let qname = format!("{}.{}", i.target_ty, method.name);
-                    if let Some(req) = maybe_infer_context(&qname, method, pass) {
+                    if let Some(req) = infer_for_private(&qname, method, pass) {
                         inferred.push((qname, req));
                     }
                 }
@@ -154,22 +154,25 @@ pub fn infer_private_contexts(pass: &mut HiddenParamPass, decls: &[Decl]) {
     }
 }
 
-/// Check if a private function should have its context inferred (CC7).
-/// Returns Some(ContextReq) if the function:
-/// - Is not public
-/// - Has Handle<T> parameters
-/// - Accesses handle fields in the body
-/// - Doesn't already have a `using` clause for the relevant Pool<T>
-fn maybe_infer_context(
-    qname: &str,
-    f: &FnDecl,
-    pass: &HiddenParamPass,
-) -> Option<ContextReq> {
-    // Only infer for private functions (CC7 — public must declare explicitly)
+/// CC7: infer for a private function only. A public function that would have
+/// qualified is a CC6 error instead, raised in `verify` — inference must not
+/// reach across a public signature, because the caller reads the signature.
+fn infer_for_private(qname: &str, f: &FnDecl, pass: &HiddenParamPass) -> Option<ContextReq> {
     if f.is_pub {
         return None;
     }
+    inferred_context(pass, qname, f)
+}
 
+/// The context this function's body implies, public or not: it takes at least
+/// one `Handle<T>`, reads a field through one, has no `using` clause of its
+/// own, and can't reach the pool from its own scope. `None` when the body
+/// implies nothing.
+pub(crate) fn inferred_context(
+    pass: &HiddenParamPass,
+    qname: &str,
+    f: &FnDecl,
+) -> Option<ContextReq> {
     // Skip if already has context clauses
     if !f.context_clauses.is_empty() {
         return None;

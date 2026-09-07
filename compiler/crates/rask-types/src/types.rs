@@ -141,6 +141,25 @@ impl Type {
         if rask_ast::primitives::pointer_bits() == 32 { Type::U32 } else { Type::U64 }
     }
 
+    /// How many bytes a scalar of this type occupies, or `None` if it isn't a
+    /// scalar.
+    ///
+    /// The one place the widths are written down. `rask_mono`'s layout pass and
+    /// the atomic-payload check both read them here, so a struct's size and the
+    /// rule about what fits a machine word can't drift apart (#1083).
+    ///
+    /// `char` is a full word: the runtime carries a code point in one.
+    pub fn scalar_bytes(&self) -> Option<u32> {
+        Some(match self {
+            Type::Bool | Type::I8 | Type::U8 => 1,
+            Type::I16 | Type::U16 => 2,
+            Type::I32 | Type::U32 | Type::F32 => 4,
+            Type::I64 | Type::U64 | Type::F64 | Type::Char => 8,
+            Type::I128 | Type::U128 => 16,
+            _ => return None,
+        })
+    }
+
     /// P2: what `isize` is on this target.
     pub fn isize_ty() -> Type {
         if rask_ast::primitives::pointer_bits() == 32 { Type::I32 } else { Type::I64 }
@@ -166,9 +185,33 @@ impl Type {
                 other => flat.push(other),
             }
         }
-        // Sort by display name for canonical ordering
-        flat.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
-        flat.dedup();
+        canonicalize_union_members(&mut flat, |_| None);
+        match flat.len() {
+            0 => Type::Unit,
+            1 => flat.into_iter().next().unwrap(),
+            _ => Type::Union(flat),
+        }
+    }
+
+    /// `union`, with the declared name of a resolved member available.
+    ///
+    /// The order of a union's members is not decoration: MIR stores the member
+    /// that is present as an index into it, so the frame that writes one and
+    /// the frame that reads it have to agree. Sorting by `Display` didn't give
+    /// that — a member is `UnresolvedNamed("AErr")` before resolution and
+    /// `Named(id)` after, and those print differently, so a union built from a
+    /// signature string and one built from resolved types could order the same
+    /// two members opposite ways. The reader then read `AErr`'s slot as `BErr`
+    /// (#1103).
+    pub fn union_named(types: Vec<Type>, name_of: impl Fn(TypeId) -> Option<String>) -> Type {
+        let mut flat = Vec::new();
+        for ty in types {
+            match ty {
+                Type::Union(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
+        }
+        canonicalize_union_members(&mut flat, name_of);
         match flat.len() {
             0 => Type::Unit,
             1 => flat.into_iter().next().unwrap(),
@@ -291,4 +334,21 @@ impl fmt::Display for Type {
             Type::Error => write!(f, "<error>"),
         }
     }
+}
+
+
+/// One order for a union's members, whatever stage built it.
+///
+/// The key is the member's declared name where there is one, so a member
+/// written as a name and the same member after resolution sort together.
+fn canonicalize_union_members(flat: &mut Vec<Type>, name_of: impl Fn(TypeId) -> Option<String>) {
+    let key = |ty: &Type| -> String {
+        match ty {
+            Type::Named(id) => name_of(*id).unwrap_or_else(|| format!("{}", ty)),
+            Type::Generic { base, .. } => name_of(*base).unwrap_or_else(|| format!("{}", ty)),
+            other => format!("{}", other),
+        }
+    };
+    flat.sort_by(|a, b| key(a).cmp(&key(b)));
+    flat.dedup();
 }

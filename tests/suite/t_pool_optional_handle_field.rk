@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A pool element with a `Handle<T>?` field — the spec's own graph pattern
+// (mem.pools, "Graph with Handles") — written through every route it has.
+//
+// Two bugs lived here and both are gone. #733: an already-wrapped `Handle?`
+// used as a struct-literal field initializer arrived as `none`, so every `prev`
+// in a doubly-linked list was empty. #734: *assigning* one to the field of a
+// pool element corrupted the pool instead — native panicked "pool access with
+// invalid handle" on the very next access, before the first iteration.
+//
+// Nothing in the corpus exercised the shape, which is why #734 sat open after
+// it started working. This is that coverage.
+
+import memory.Pool
+import memory.Handle
+
+struct Entity {
+    health: i32
+    damage: i32
+    target: Handle<Entity>?
+}
+
+test "assigning a handle to an element's optional field" {
+    mut world: Pool<Entity> = Pool.new()
+    let a = world.insert(Entity { health: 1, damage: 0, target: none })
+    let b = world.insert(Entity { health: 2, damage: 0, target: none })
+    world[a].target = b
+
+    // The pool survives the write: iterating it used to panic here.
+    mut visited = 0
+    for h in world {
+        visited = visited + world[h].health
+    }
+    assert visited == 3
+
+    if world[a].target? as t {
+        assert world[t].health == 2
+    } else {
+        assert false, "the target was written and should be readable"
+    }
+}
+
+test "an already-wrapped handle as a field initializer" {
+    mut world: Pool<Entity> = Pool.new()
+    let a = world.insert(Entity { health: 1, damage: 0, target: none })
+    let t: Handle<Entity>? = a
+    let b = world.insert(Entity { health: 2, damage: 0, target: t })
+    if world[b].target? as n {
+        assert world[n].health == 1
+    } else {
+        assert false, "the initializer carried a value"
+    }
+}
+
+test "clearing the field back to none" {
+    mut world: Pool<Entity> = Pool.new()
+    let a = world.insert(Entity { health: 1, damage: 0, target: none })
+    let b = world.insert(Entity { health: 2, damage: 0, target: none })
+    world[a].target = b
+    world[a].target = none
+    assert world[a].target is none
+    assert world[b].health == 2
+}
+
+test "a two-way link, both directions readable" {
+    mut world: Pool<Entity> = Pool.new()
+    let a = world.insert(Entity { health: 1, damage: 0, target: none })
+    let b = world.insert(Entity { health: 2, damage: 0, target: a })
+    world[a].target = b
+    if world[a].target? as t {
+        assert world[t].health == 2
+    }
+    if world[b].target? as t {
+        assert world[t].health == 1
+    }
+}

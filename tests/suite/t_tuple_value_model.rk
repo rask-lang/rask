@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A tuple is its own kind of value on both backends (#1063).
+//
+// The interpreter stored one as a `Vec`, so nothing downstream could tell the
+// two apart. `{t:debug}` printed `[1, "x"]` where native prints `(1, "x")`,
+// and "is this a tuple?" had no answer at all — a `Vec`-only method reached on
+// a tuple, or an error message naming the type, got the wrong answer.
+//
+// The places a tuple has to keep working are the ones that used to ride on the
+// Vec representation: destructuring, `.0` access, patterns, equality, hashing
+// as a Map key, and the pair a `Map` yields per iteration.
+
+struct Reading {
+    sensor: string
+    value: i64
+}
+
+func pair() -> (i64, string) {
+    return (7, "seven")
+}
+
+test "debug renders positionally" {
+    let t = (1, "x", true)
+    assert "{t:debug}" == "(1, \"x\", true)"
+}
+
+test "a nested tuple keeps its shape" {
+    let t = (1, (2, 3))
+    assert "{t:debug}" == "(1, (2, 3))"
+}
+
+test "a tuple in an array renders as a tuple" {
+    // An array's length is in its type, so native unrolls the elements at
+    // compile time. A `Vec` of tuples still elides natively — that's #1064.
+    let v = [(1, 2), (3, 4)]
+    assert "{v:debug}" == "[(1, 2), (3, 4)]"
+}
+
+test "destructuring still works" {
+    let (n, name) = pair()
+    assert n == 7
+    assert name == "seven"
+}
+
+test "positional access still works" {
+    let t = pair()
+    assert t.0 == 7
+    assert t.1 == "seven"
+}
+
+test "equality is element by element" {
+    assert (1, 2) == (1, 2)
+    assert (1, 2) != (1, 3)
+    assert ("a", 1) == ("a", 1)
+}
+
+test "a tuple works as a Map key" {
+    mut m = Map.new()
+    m.insert((1, 2), "first")
+    m.insert((3, 4), "second")
+    assert m[(1, 2)] == "first"
+    assert m[(3, 4)] == "second"
+    assert m.len() == 2
+}
+
+test "a tuple holding a struct" {
+    let t = (Reading { sensor: "north", value: 3 }, 1)
+    assert t.0.sensor == "north"
+    assert t.1 == 1
+}
+
+test "map iteration yields a pair that destructures" {
+    mut m = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    mut total = 0
+    for (k, v) in m {
+        total = total + v
+    }
+    assert total == 3
+}
+
+test "a tuple pattern in a match" {
+    let t = (1, 2)
+    match t {
+        (1, y) => { assert y == 2 }
+        _ => { assert false }
+    }
+}

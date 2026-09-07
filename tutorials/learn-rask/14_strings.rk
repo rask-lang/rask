@@ -29,6 +29,21 @@
 //   s[0..3]                   first 3 characters (like Python's s[:3])
 //   s[3..5]                   characters 3 and 4 (like Python's s[3:5])
 //
+// Unlike Python, a slice is a *view* into s, not a copy — it borrows s's
+// bytes rather than allocating new ones. That makes it free, and it means a
+// view can't outlive the statement that made it, because s might not. So a
+// slice you only look at needs nothing:
+//
+//   if metar[0..3] == "270" { … }
+//
+// and a slice you keep has to say which it wants:
+//
+//   let dir = metar[0..3].to_string()          // an independent copy
+//   let dir: StringView = metar[0..3].view()   // still borrowed, and scoped
+//
+// The same goes for split() and split_whitespace(): iterating them is fine,
+// storing what they hand back needs .to_string().
+//
 
 // --- Examples ---
 
@@ -40,8 +55,13 @@ func example_strings() {
     let starts = callsign.starts_with("SAS")
     println("starts with SAS: {starts}")
 
+    // `split` hands back views into `csv`, so keeping them means copying the
+    // bytes out — see the note on slicing above.
     let csv = "ENGM,OSL,Oslo Gardermoen"
-    let parts = csv.split(",")
+    mut parts: Vec<string> = Vec.new()
+    for piece in csv.split(",") {
+        parts.push(piece.to_string())
+    }
     println("ICAO: {parts[0]}, IATA: {parts[1]}, Name: {parts[2]}")
 }
 

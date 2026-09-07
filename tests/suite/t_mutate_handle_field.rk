@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container reached through a struct field, passed `mutate`.
+//
+//     parallel_movement_system(mutate state.entities, dt, threads)
+//
+// An aggregate `mutate` argument is passed by address, so the callee's writes
+// land in the caller's storage. A `Pool`, `Vec`, `Map` or `Rack` field isn't
+// that kind of aggregate: the field *holds* the runtime pointer, and the
+// callee's local is typed to be that pointer. Handing over the field's address
+// added a level nothing removes, so the callee got a pointer to the whole
+// struct and read the struct's bytes as a `RaskPool` header.
+//
+// It was silent while every field took a machine word — the bytes it landed on
+// happened to be a zero — and `examples/game_loop` segfaulted the moment real
+// field widths moved them (#1083). Nothing in the corpus covered the shape.
+
+import memory.Pool
+import memory.Handle
+import memory.Rack
+import memory.Link
+
+struct Entity {
+    hp: i32
+    speed: f32
+}
+
+struct World {
+    entities: Pool<Entity>
+    player: Handle<Entity>?
+    score: i32
+    over: bool
+}
+
+func heal_all(mutate entities: Pool<Entity>, amount: i32) {
+    let hs = entities.handles()
+    for i in 0..hs.len() {
+        let h = hs[i]
+        entities[h].hp = entities[h].hp + amount
+    }
+}
+
+func count(entities: Pool<Entity>) -> i64 {
+    return entities.handles().len().wrap<i64>()
+}
+
+test "a pool field passed by mutate" {
+    mut pool: Pool<Entity> = Pool.new()
+    let a = pool.insert(Entity { hp: 10, speed: 1.0f32 })
+    let b = pool.insert(Entity { hp: 20, speed: 2.0f32 })
+    mut w = World { entities: pool, player: a, score: 0, over: false }
+
+    assert count(w.entities) == 2
+    heal_all(mutate w.entities, 5)
+    assert w.entities[a].hp == 15
+    assert w.entities[b].hp == 25
+    // The fields after it are untouched — a write through the wrong pointer
+    // would land here.
+    assert w.score == 0
+    assert !w.over
+}
+
+func append(mutate xs: Vec<i64>, n: i64) {
+    xs.push(n)
+}
+
+struct Log {
+    lines: Vec<i64>
+    tag: u16
+    live: bool
+}
+
+test "a vec field passed by mutate" {
+    mut l = Log { lines: Vec.new(), tag: 65535u16, live: true }
+    append(mutate l.lines, 1)
+    append(mutate l.lines, 2)
+    assert l.lines.len() == 2u64
+    assert l.lines[0] == 1
+    assert l.lines[1] == 2
+    assert l.tag == 65535u16
+    assert l.live
+}
+
+func record(mutate m: Map<string, i64>, k: string, v: i64) {
+    m[k] = v
+}
+
+struct Counts {
+    by_name: Map<string, i64>
+    total: i32
+}
+
+test "a map field passed by mutate" {
+    mut c = Counts { by_name: Map.new(), total: 7 }
+    record(mutate c.by_name, "a", 1)
+    record(mutate c.by_name, "b", 2)
+    assert c.by_name.len() == 2u64
+    assert (c.by_name.get("a") ?? -1) == 1
+    assert c.total == 7
+}
+
+struct Node {
+    value: i64
+}
+
+func add_node(mutate s: Rack<Node>, v: i64) -> i64 {
+    let n = s.insert(Node { value: v })
+    return n.value
+}
+
+struct Graph {
+    nodes: Rack<Node>
+    label: u8
+}
+
+test "a rack field passed by mutate" {
+    mut g = Graph { nodes: Rack.new(), label: 255u8 }
+    assert add_node(mutate g.nodes, 3) == 3
+    assert add_node(mutate g.nodes, 4) == 4
+    assert g.nodes.len() == 2u64
+    assert g.label == 255u8
+}
+
+// A genuine aggregate field still goes by address: the callee's write has to
+// reach the caller's storage.
+struct Inner {
+    a: i32
+    b: i32
+}
+
+struct Outer {
+    inner: Inner
+    tail: i64
+}
+
+func bump(mutate i: Inner) {
+    i.a = i.a + 1
+    i.b = i.b + 2
+}
+
+test "a struct field still passes by address" {
+    mut o = Outer { inner: Inner { a: 1, b: 1 }, tail: 42i64 }
+    bump(mutate o.inner)
+    assert o.inner.a == 2
+    assert o.inner.b == 3
+    assert o.tail == 42i64
+}

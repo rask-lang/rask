@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import helpers
+
+func main() {
+    println("{helpers.answer()}")
+    return
+}

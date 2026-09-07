@@ -120,6 +120,17 @@ pub fn resolve_with_stdlib_and_cfg(
 }
 
 /// Resolve all names in a package with access to other packages (multi-file mode).
+/// `resolve_with_stdlib_and_cfg`, told where each file lives, so `import c`
+/// can look for a header beside the file that imports it (#1096).
+pub fn resolve_with_stdlib_cfg_and_dirs(
+    decls: &[Decl],
+    stdlib_decls: &[Decl],
+    cfg_values: HashMap<String, String>,
+    source_dirs: HashMap<u16, std::path::PathBuf>,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_with_stdlib_cfg_and_dirs(decls, stdlib_decls, cfg_values, source_dirs)
+}
+
 pub fn resolve_package(
     decls: &[Decl],
     registry: &PackageRegistry,

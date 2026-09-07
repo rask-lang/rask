@@ -55,6 +55,16 @@ impl Interpreter {
         self.call_depth += 1;
         let result = self.call_function_at_depth(func, args);
         self.call_depth -= 1;
+        // Where it actually happened, for the callers that lose it. Everything
+        // between a method call and this point hands back a bare
+        // `RuntimeError`, so the span is gone by the time anyone rebuilds a
+        // diagnostic and each frame re-attached its own — leaving the outermost
+        // call in `main` as the reported line (#1110). Read and restored around
+        // the call in `eval_expr`, so a swallowed error can't leave a stale one
+        // for something later.
+        if let Err(diag) = &result {
+            self.failed_call_span = Some(diag.span);
+        }
         result
     }
 
@@ -581,8 +591,14 @@ impl Interpreter {
             _ => return false,
         };
         names.iter().any(|n| {
-            let Some(trait_name) = rask_ast::traits::trait_object_name(n) else {
-                return false;
+            // `Error` and `any Error` are one type written two ways (#1095).
+            // Only the long spelling matched, so an `i64 or Error` function
+            // returning a concrete error handed it back as the *ok* branch —
+            // the same #708 bug, in the spelling most of the corpus uses.
+            let trait_name = match rask_ast::traits::trait_object_name(n) {
+                Some(t) => t,
+                None if rask_ast::traits::is_bare_error(n) => "Error",
+                None => return false,
             };
             let required = rask_types::builtin_trait_method_names(trait_name);
             if required.is_empty() {

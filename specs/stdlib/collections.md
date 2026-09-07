@@ -3,9 +3,9 @@
 <!-- summary: Vec and Map with inline access + `with`, optional capacity bounds, fallible try_ variants -->
 <!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
 
-# Collections (Vec and Map)
+# Collections (Vec, Map and Set)
 
-Vec and Map with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
+Vec, Map and Set with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
 
 ## Collection Types
 
@@ -20,6 +20,31 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 |------|---------|----------|
 | `Vec<T>` | Ordered, indexed | `Vec.new()`, `Vec.with_capacity(n)`, `Vec.fixed(n)`, `Vec.from([T; N])` |
 | `Map<K,V>` | Key-value associative | `Map.new()`, `Map.with_capacity(n)`, `Map.from([(K,V); N])` |
+| `Set<T>` | Unique values | `Set.new()` |
+
+## Set
+
+| Rule | Description |
+|------|-------------|
+| **C5: Membership is `contains`** | `s.contains(v)`, not `contains_key`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains_key` because there a key is one of two things you could mean |
+| **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
+| **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
+| **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so |
+
+<!-- test: skip -->
+```rask
+mut seen: Set<string> = Set.new()
+if seen.insert(name) {
+    // first time we've seen this one
+}
+if seen.contains(other) { … }
+seen.remove(name)
+for v in seen.to_vec() { … }
+```
+
+`Set` has been in BI1's always-available list from the start. It resolved as a
+builtin and had no methods at all until #1017 — `Set.new()` type-checked and
+`s.insert(x)` was "no method `insert` found" three lines later.
 
 ## Capacity Semantics
 
@@ -235,10 +260,12 @@ Two forms: count or collect. There is no `retain` — invert the predicate on `r
 | Rule | Description |
 |------|-------------|
 | **SO1: Stable by default** | `sort()` preserves relative order of equal elements |
-
-`sort_by` is backed by a merge sort, so the guarantee holds whatever the comparator looks at. `sort` and `sort_by_key` compare whole elements, where two equal elements are indistinguishable and the guarantee has nothing to bite on — those use the platform sort, which is faster and needs no scratch buffer.
 | **SO2: In-place** | Sorting mutates the Vec. No new allocation (may use O(log n) stack) |
 | **SO3: Comparable required** | `sort()` requires `T: Comparable`. Custom ordering uses `sort_by` |
+
+`sort_by` and `sort_by_key` are where the guarantee earns its keep: a comparator can look at part of an element and a key extractor does by definition, so two that tie can differ in every other field and their order *is* observable. `sort_by` is backed by a merge sort; `sort_by_key` compares extracted keys and only ever swaps a pair the comparison calls strictly less, so equal keys never cross.
+
+`sort` hands off to the platform sort, which is faster and needs no scratch buffer. That's sound wherever `Comparable` compares whole elements — two that tie are then indistinguishable and there is nothing for stability to preserve — and it isn't where a hand-written `compare` ignores a field. See #942.
 
 | Method | Signature | Semantics |
 |--------|-----------|-----------|
@@ -295,7 +322,7 @@ for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```
 
-**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().to_vec().sort()`. See `determinism/D7`.
+**Iteration order is unspecified and seeded per process** — don't depend on it. The hash seed varies between production runs (and across sim seeds, so order-dependent code fails under test rather than in production). Need a stable order? Sort explicitly: `map.keys().to_vec().sort()`. See `determinism/D7`. `{m:debug}` is the one place that can't ask you to sort, so it sorts by key itself (`std.fmt/G5`).
 
 ## Shrinking
 

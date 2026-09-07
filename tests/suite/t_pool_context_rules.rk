@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The pool-context rules E0867/E0868/E0869 now enforce, written the way they
+// have to be written instead (#1089).
+//
+// A `using Pool<T>` clause is a hidden parameter: the caller passes the pool
+// in, and the compiler finds it by searching the caller's scope. Nothing
+// checked that the search could succeed. When it couldn't, the call site still
+// got a hidden argument naming a variable that didn't exist:
+//
+//     public func damage(h: Handle<Enemy>, n: i32) using Pool<Enemy> { … }
+//     func wound(h: Handle<Enemy>)  { damage(h, 10) }     // requirement moves up
+//     func main()                   { wound(make_handle()) }
+//
+//     native:  program crashed with SIGSEGV
+//
+// `main` ended up holding a `Pool<Enemy>` parameter nobody ever wrote, and the
+// first index through it read whatever the stack contained. That's #732 again,
+// one level removed: the checker already rejects a `using` clause written on
+// `main` by hand, and this is the one propagation puts there.
+//
+// Private functions still get the requirement propagated — that's the point of
+// the clause. It stops at a public signature (a caller in another module reads
+// the signature, not the body) and at the entry point (no caller left).
+
+import memory.Handle
+import memory.Pool
+
+struct Enemy {
+    health: i32
+}
+
+// A public function says what its callers must supply. Without the clause this
+// is E0867 — the body reads `h.health`, which only means anything with a pool.
+public func damage(h: Handle<Enemy>, amount: i32) -> void using Pool<Enemy> {
+    h.health -= amount
+    return
+}
+
+// Private, no clause: the requirement propagates here from the call below, and
+// this function's own callers supply it. Nothing to write.
+func wound_twice(h: Handle<Enemy>) {
+    damage(h, 3)
+    damage(h, 4)
+    return
+}
+
+// Public, so the clause is written out — propagation would have stopped here.
+public func finish_off(h: Handle<Enemy>) -> void using Pool<Enemy> {
+    wound_twice(h)
+    return
+}
+
+// A named context binds, so structural operations have something to call on.
+// The unnamed form would resolve `h.health` and leave `graveyard` undefined
+// (E0869).
+func bury_if_dead(h: Handle<Enemy>) using graveyard: Pool<Enemy> {
+    if h.health <= 0 {
+        graveyard.remove(h)
+    }
+    return
+}
+
+test "the requirement travels up to whoever owns the pool" {
+    mut enemies: Pool<Enemy> = Pool.new()
+    let h = enemies.insert(Enemy { health: 100 })
+    finish_off(h)
+    assert enemies[h].health == 93
+}
+
+test "and the entry point is where it stops — main owns the pool" {
+    mut enemies: Pool<Enemy> = Pool.new()
+    let a = enemies.insert(Enemy { health: 10 })
+    let b = enemies.insert(Enemy { health: 10 })
+    damage(a, 4)
+    wound_twice(b)
+    assert enemies[a].health == 6
+    assert enemies[b].health == 3
+}
+
+test "a named context can remove through the pool it binds" {
+    mut enemies: Pool<Enemy> = Pool.new()
+    let h = enemies.insert(Enemy { health: 1 })
+    damage(h, 5)
+    bury_if_dead(h)
+    assert enemies.len() == 0
+}
+
+func main() {
+    mut enemies: Pool<Enemy> = Pool.new()
+    let h = enemies.insert(Enemy { health: 20 })
+    finish_off(h)
+    println("pool context rules ok: {enemies[h].health}")
+    return
+}

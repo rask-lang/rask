@@ -24,7 +24,7 @@ fn run_pipeline(path: &str, format: Format) -> PipelineResult {
     let config = rask_compiler::CompilerConfig {
         cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
     };
-    let output = rask_compiler::compile_file(path, vec![], &config);
+    let output = rask_compiler::compile_file(path, &config);
 
     // Build source_files for display
     let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {
@@ -520,14 +520,35 @@ pub fn collect_c_import_extern_sigs(
     let mut sigs = Vec::new();
     for sym in symbols.iter() {
         if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
+            // The header's struct types register under the qualified spelling —
+            // `c.Rect` — because that is how a program writes them. A parameter
+            // declared as one arrives here bare, so it wouldn't find the layout
+            // that says how to pass it (#948).
+            let structs: std::collections::HashSet<&str> = members
+                .iter()
+                .filter(|(_, &id)| {
+                    symbols
+                        .get(id)
+                        .is_some_and(|m| matches!(m.kind, rask_resolve::SymbolKind::Struct { .. }))
+                })
+                .map(|(name, _)| name.as_str())
+                .collect();
+            let qualify = |ty: &String| {
+                if structs.contains(ty.as_str()) {
+                    format!("{}.{}", sym.name, ty)
+                } else {
+                    ty.clone()
+                }
+            };
+
             for (_, &member_id) in members {
                 if let Some(member) = symbols.get(member_id) {
                     if let rask_resolve::SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
                         if abi == "C" {
                             sigs.push(rask_codegen::ExternFuncSig {
                                 name: member.name.clone(),
-                                param_types: params.clone(),
-                                ret_ty: ret_ty.clone(),
+                                param_types: params.iter().map(qualify).collect(),
+                                ret_ty: ret_ty.as_ref().map(qualify),
                             });
                         }
                     }

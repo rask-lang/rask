@@ -46,10 +46,13 @@ test "std.fs — metadata on a real file reports its size" {
     }
 }
 
+// A `catch` body is the success type or a divergence (ER14), so a void body
+// against a `Metadata` success type doesn't type-check. It used to: `Metadata`
+// arrives from the stub spelled as a name rather than a declared type, and
+// unification deferred names instead of resolving them (#950).
 test "std.fs — metadata on a directory succeeds" {
-    mut failed = false
-    fs.metadata("/tmp") catch e => {
-        failed = true
+    match fs.metadata("/tmp") {
+        Metadata as m => assert m.modified > 0
+        IoError as e => assert false, "metadata on /tmp failed: {e.message()}"
     }
-    assert !failed
 }

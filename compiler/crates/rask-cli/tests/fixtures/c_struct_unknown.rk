@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A name under a C namespace has to be a type the header actually declares.
+// `c.Rect` resolved through the namespace's member map without there being a
+// type behind it, so `c.Nonexistent` type-checked too (#948).
+import c "c_struct.h"
+
+func make() -> c.Nonexistent {
+    todo()
+}
+
+func main() {
+    println("unreached")
+}

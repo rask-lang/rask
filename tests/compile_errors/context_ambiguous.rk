@@ -15,7 +15,8 @@ public func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 
-// ERROR: Ambiguous context — two Pool<Player> in scope
+// Two Pool<Player> in scope: the marker is on the call below, which is where
+// the compiler has to choose and can't.
 func process_teams() {
     mut team_a = Pool<Player>.new()
     mut team_b = Pool<Player>.new()
@@ -70,7 +71,7 @@ func process_teams_scoped() {
 }
 
 // FIX 3: Use explicit parameter for multi-pool functions
-func damage_explicit(pool: Pool<Player>, h: Handle<Player>, amount: i32) {
+func damage_explicit(mutate pool: Pool<Player>, h: Handle<Player>, amount: i32) {
     pool[h].health -= amount
 }
 
@@ -80,5 +81,5 @@ func process_teams_explicit() {
 
     let h = team_a.insert(Player { health: 100, team_id: 1 })
 
-    damage_explicit(team_a, h, 10)    // ✅ Explicitly specify pool
+    damage_explicit(mutate team_a, h, 10)    // ✅ Explicitly specify pool
 }

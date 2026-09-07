@@ -86,9 +86,17 @@ impl Interpreter {
             int_at(0), int_at(1), int_at(2), int_at(3), fill,
         );
 
-        let display = match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
-            Value::String(s) => s.lock().unwrap().clone(),
-            other => format!("{}", other),
+        // Debug renders from the value itself and never reads `display`, so
+        // asking for `to_string` first is not just wasted work — it fails on
+        // the types Debug exists to cover. `{v:debug}` on a `Vec` died with
+        // "no method to_string on type Vec" while native printed `[1, 2]`.
+        let display = if matches!(spec.ty, rask_ast::fmt_spec::SpecType::Debug) {
+            String::new()
+        } else {
+            match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
+                Value::String(s) => s.lock().unwrap().clone(),
+                other => format!("{}", other),
+            }
         };
         let rendered = self.render_spec(&receiver, spec, display);
         Ok(Value::String(Arc::new(Mutex::new(rendered))))
@@ -227,9 +235,7 @@ impl Interpreter {
             Value::TaskGroup(tasks) => return self.call_task_group_method(tasks, method, args),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
-            Value::AtomicBool(atomic) => return self.call_atomic_bool_method(atomic, method, args),
-            Value::AtomicUsize(atomic) => return self.call_atomic_usize_method(atomic, method, args),
-            Value::AtomicU64(atomic) => return self.call_atomic_u64_method(atomic, method, args),
+            Value::Atomic(atomic) => return self.call_atomic_method(atomic, method, args),
             Value::Shared(s) => return self.call_shared_method(&Arc::clone(s), method, args),
             Value::RaskMutex(m) => return self.call_mutex_method(&Arc::clone(m), method, args),
             Value::Rng(rng) => return self.call_rng_instance_method(&Arc::clone(rng), method, args),
@@ -272,6 +278,22 @@ impl Interpreter {
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
             #[cfg(not(target_arch = "wasm32"))]
             Value::TcpConnection(c) => return self.call_tcp_stream_method(&Arc::clone(c), method, args),
+            // TU9: a tuple's derived traits compare, order and hash element by
+            // element. It was a `Value::Vec` until #1063, so `(1, 2) == (1, 2)`
+            // used to land on `Vec.eq`; now it needs its own arm.
+            Value::Tuple(..) if matches!(method, "eq" | "ne") => {
+                let eq = args.first().is_some_and(|o| Self::value_eq(&receiver, o));
+                return Ok(Value::Bool(if method == "eq" { eq } else { !eq }));
+            }
+            Value::Tuple(..) if method == "hash" => {
+                return Ok(Value::int(Self::value_hash(&receiver) as i64));
+            }
+            Value::Tuple(..) if method == "compare" => {
+                let ord = args.first()
+                    .and_then(|o| Self::value_cmp(&receiver, o))
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                return Ok(Self::ordering_value(ord));
+            }
             Value::Enum { .. } if method == "eq" => {
                 if let Some(other) = args.first() {
                     if let (Value::Enum { name: n1, variant: v1, fields: f1, .. },
@@ -326,46 +348,16 @@ impl Interpreter {
                 return Ok(Value::int(Self::value_hash(&receiver) as i64));
             }
             Value::Struct(..) if method == "compare" => {
-                if let Some(other) = args.first() {
-                    let ord = Self::value_cmp(&receiver, other).unwrap_or(std::cmp::Ordering::Equal);
-                    return Ok(Value::Enum {
-                        name: "Ordering".to_string(),
-                        variant: match ord {
-                            std::cmp::Ordering::Less => "Less".to_string(),
-                            std::cmp::Ordering::Equal => "Equal".to_string(),
-                            std::cmp::Ordering::Greater => "Greater".to_string(),
-                        },
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                return Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "Equal".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                });
+                let ord = args.first()
+                    .and_then(|other| Self::value_cmp(&receiver, other))
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                return Ok(Self::ordering_value(ord));
             }
             Value::Enum { .. } if method == "compare" => {
-                if let Some(other) = args.first() {
-                    let ord = Self::value_cmp(&receiver, other).unwrap_or(std::cmp::Ordering::Equal);
-                    return Ok(Value::Enum {
-                        name: "Ordering".to_string(),
-                        variant: match ord {
-                            std::cmp::Ordering::Less => "Less".to_string(),
-                            std::cmp::Ordering::Equal => "Equal".to_string(),
-                            std::cmp::Ordering::Greater => "Greater".to_string(),
-                        },
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                return Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "Equal".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                });
+                let ord = args.first()
+                    .and_then(|other| Self::value_cmp(&receiver, other))
+                    .unwrap_or(std::cmp::Ordering::Equal);
+                return Ok(Self::ordering_value(ord));
             }
             // ORD1: lt/le/gt/ge derived from compare via value_cmp
             Value::Struct(..) | Value::Enum { .. }
@@ -500,6 +492,25 @@ impl Interpreter {
             ty: type_name,
             method: method.to_string(),
         })
+    }
+
+    /// `Ordering` as a value. The variant index is its declaration order —
+    /// Less(0), Equal(1), Greater(2) — which is what makes two `Ordering`s
+    /// comparable to each other; every one of these used to be built with
+    /// index 0.
+    fn ordering_value(ord: std::cmp::Ordering) -> Value {
+        let (variant, index) = match ord {
+            std::cmp::Ordering::Less => ("Less", 0),
+            std::cmp::Ordering::Equal => ("Equal", 1),
+            std::cmp::Ordering::Greater => ("Greater", 2),
+        };
+        Value::Enum {
+            name: "Ordering".to_string(),
+            variant: variant.to_string(),
+            fields: vec![],
+            variant_index: index,
+            origin: None,
+        }
     }
 }
 

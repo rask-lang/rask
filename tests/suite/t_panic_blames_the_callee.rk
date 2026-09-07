@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A panic several frames down is reported where it happened (#1110).
+//
+// The interpreter blamed the outermost call in `main`:
+//
+//     native:  panic at f.rk:3: ! on a value that was absent    ← `return v!`
+//     interp:  --> f.rk:11:15                                   ← `println("{middle()}")`
+//
+// Every `call_*` helper below `call_function` hands back a bare `RuntimeError`,
+// so the span was dropped and each frame re-attached its own on the way out.
+// The surviving one was whichever frame was outermost.
+//
+// A test can't read its own panic line, so this file checks the half a program
+// can see: that the panic happens at all, from the frame that should raise it,
+// and that an error caught on the way doesn't change where a later one is
+// blamed. The line numbers themselves are pinned by
+// `panic_reports_the_line_it_happened_on` in `compile_run.rs`, which reads the
+// message from both backends and compares them.
+
+enum Boom {
+    Bad
+}
+
+extend Boom {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+struct Holder {
+    n: i64
+}
+
+extend Holder {
+    // Fails, and its caller catches it. Nothing about this may reach a later
+    // failure's location — the span is taken and restored around each call for
+    // exactly this reason.
+    func risky(self) -> i64 or Boom {
+        if self.n < 0 {
+            return Boom.Bad
+        }
+        return self.n
+    }
+
+    func safe(self) -> i64 {
+        return self.risky() catch e => 0
+    }
+}
+
+test "an error caught inside a method stays caught" {
+    let bad = Holder { n: -1 }
+    assert bad.safe() == 0
+    let good = Holder { n: 7 }
+    assert good.safe() == 7
+}
+
+// Three frames, so a report that blamed the outermost call would be two frames
+// off rather than one.
+func inner(d: i64) -> i64 {
+    return 10 / d
+}
+
+func middle(d: i64) -> i64 {
+    return inner(d)
+}
+
+func outer(d: i64) -> i64 {
+    return middle(d)
+}
+
+test "the frames that don't panic still return" {
+    assert outer(2) == 5
+    assert outer(10) == 1
+}
+
+func main() {
+    println("panic blames the callee ok")
+    return
+}

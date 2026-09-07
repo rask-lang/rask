@@ -103,8 +103,22 @@ impl TypeChecker {
         let leftovers = std::mem::take(&mut self.ctx.constraints);
         for constraint in leftovers {
             match constraint {
-                TypeConstraint::HasField { ty, field, span, .. } => {
+                TypeConstraint::HasField { ty, field, expected, span, self_type } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    // A receiver that's still a variable has something left to
+                    // wait for, the same as the `HasMethod` case below — and the
+                    // commonest one is a closure parameter, which its *caller*
+                    // pins when the method taking the closure resolves. That can
+                    // land after this pass, and dropping the constraint here left
+                    // `|x, y| x.rank.compare(y.rank)` with no type for `x.rank`
+                    // at all: four open nodes per `sort_by` (#1026). Retry it
+                    // once everything else has settled.
+                    if matches!(resolved, Type::Var(_)) {
+                        self.deferred_fields.push(TypeConstraint::HasField {
+                            ty, field, expected, span, self_type,
+                        });
+                        continue;
+                    }
                     if !Self::is_placeholder_type(&resolved) {
                         self.errors.push(TypeError::NoSuchField {
                             ty: resolved,
@@ -129,11 +143,27 @@ impl TypeChecker {
                         });
                         continue;
                     }
-                    // Skip operator methods on primitive types — these are
-                    // desugared from +, *, etc. and resolved at the MIR level.
-                    if !Self::is_placeholder_type(&resolved)
-                        && !Self::is_operator_on_primitive(&resolved, &method)
-                    {
+                    // Operator methods on primitive types are desugared from
+                    // `+`, `==` and friends and resolved at the MIR level, so
+                    // there's no method to look up. Their *operand* still has to
+                    // agree with the receiver, and dropping the whole constraint
+                    // meant nothing ever checked it: `some_u8 == 'h'` and even
+                    // `some_u8 == "x"` type-checked, then native compared `char`
+                    // as its underlying scalar and answered `true` while the
+                    // interpreter refused at runtime (#1034).
+                    if Self::is_operator_on_primitive(&resolved, &method) {
+                        if let Some(arg) = args.first() {
+                            let arg = self.resolve_named(&self.ctx.apply(arg));
+                            if !Self::operand_agrees(&resolved, &arg, &method) {
+                                self.errors.push(TypeError::IncomparableOperands {
+                                    left: resolved,
+                                    right: arg,
+                                    op: Self::operator_spelling(&method).to_string(),
+                                    span,
+                                });
+                            }
+                        }
+                    } else if !Self::is_placeholder_type(&resolved) {
                         self.errors.push(TypeError::NoSuchMethod {
                             ty: resolved,
                             method,
@@ -161,6 +191,29 @@ impl TypeChecker {
                             found: b,
                             span,
                         });
+                    }
+                }
+                // A widening into `T?` whose value never settled. The coercion
+                // re-defers while the value is a variable, waiting to find out
+                // whether it's already optional — and if nothing ever tells it,
+                // the constraint lands here and used to be dropped, leaving the
+                // value with no type at all:
+                //
+                //     extend Bin<T> {
+                //         func take(mutate self) -> T? {
+                //             return self.items.remove(last)   // no type (#1026)
+                //         }
+                //     }
+                //
+                // `pop()` in the same position was fine, because it answers
+                // `T?` outright and unified. There is only one answer left for
+                // the widening case — the value is the payload — so give it.
+                TypeConstraint::Coerce { value, target, span, .. } => {
+                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
+                        continue;
+                    }
+                    if let Some(inner) = self.ctx.apply(&target).as_option().cloned() {
+                        let _ = self.unify(&value, &inner, span);
                     }
                 }
                 _ => {}
@@ -211,6 +264,23 @@ impl TypeChecker {
     /// method that doesn't exist on the type the literal defaulted to was
     /// accepted here and failed later — in MIR lowering, in codegen, or not at
     /// all.
+    /// Field accesses whose receiver was still a variable when the leftovers
+    /// pass ran. Same shape as the deferred methods next door: one pass, and
+    /// anything still open after it had nothing to wait for.
+    fn retry_deferred_fields(&mut self) {
+        let deferred = std::mem::take(&mut self.deferred_fields);
+        for constraint in deferred {
+            let TypeConstraint::HasField { ref ty, .. } = constraint else { continue };
+            if matches!(self.ctx.apply(ty), Type::Var(_) | Type::Error) {
+                continue;
+            }
+            match self.solve_constraint(constraint) {
+                Ok(_) => {}
+                Err(e) => self.errors.push(e),
+            }
+        }
+    }
+
     pub(super) fn retry_deferred_methods(&mut self) {
         // A deferred call can be waiting on another deferred call. The receiver
         // of `"{n.compare(m)}"`'s `to_string` is compare's *result*, which only
@@ -240,6 +310,7 @@ impl TypeChecker {
                 break;
             }
         }
+        self.retry_deferred_fields();
         // Anything still deferred has nothing left to wait for. Those were
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.
@@ -316,6 +387,48 @@ impl TypeChecker {
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
             | "abs" | "min" | "max" | "pow" | "to_float" | "compare"
         )
+    }
+
+    /// Whether an operator's operand type works with its receiver.
+    ///
+    /// Mixed signedness is the one deliberate exception (`type.operators/ORD4`),
+    /// so any two integers agree. Everything else has to be the same type: a
+    /// `char` is a Unicode scalar, not a number, and comparing it to an integer
+    /// would answer by code point — which is right for ASCII and silently wrong
+    /// for everything else.
+    ///
+    /// Only asked of two concrete primitives. Anything still settling, or a
+    /// named type that might yet resolve, is left to the rest of inference.
+    fn operand_agrees(recv: &Type, arg: &Type, method: &str) -> bool {
+        // Bit operations and shifts take a count or mask whose width is its own
+        // business — `x << 2` is not a claim that both sides are the same type.
+        let checked = matches!(
+            method,
+            "eq" | "ne" | "lt" | "gt" | "le" | "ge" | "compare"
+            | "add" | "sub" | "mul" | "div" | "rem" | "pow" | "min" | "max"
+        );
+        if !checked {
+            return true;
+        }
+        let is_int = |t: &Type| matches!(
+            t,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+        );
+        let is_float = |t: &Type| matches!(t, Type::F32 | Type::F64);
+        let is_concrete_primitive = |t: &Type| is_int(t) || is_float(t)
+            || matches!(t, Type::Bool | Type::Char | Type::String);
+
+        if !is_concrete_primitive(recv) || !is_concrete_primitive(arg) {
+            return true;
+        }
+        if is_int(recv) && is_int(arg) {
+            return true;
+        }
+        if is_float(recv) && is_float(arg) {
+            return true;
+        }
+        recv == arg
     }
 
     pub(super) fn solve_constraint(&mut self, constraint: TypeConstraint) -> Result<bool, TypeError> {
@@ -412,6 +525,35 @@ impl TypeChecker {
         }
     }
 
+    /// Do these two name the same type, ignoring type arguments?
+    ///
+    /// Only useful when one side has none: a pattern written `CasFailed`
+    /// against a `CasFailed<i64>` branch. Two *different* instantiations would
+    /// both answer true here, which is why the caller requires exactly one
+    /// branch to match.
+    pub(super) fn same_type_head(&self, a: &Type, b: &Type) -> bool {
+        let head = |t: &Type| -> Option<String> {
+            match t {
+                Type::Named(id) | Type::Generic { base: id, .. } => {
+                    Some(self.types.type_name(*id))
+                }
+                Type::UnresolvedNamed(n) => Some(n.clone()),
+                Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+                _ => None,
+            }
+        };
+        let bare = |t: &Type| matches!(t, Type::Named(_) | Type::UnresolvedNamed(_));
+        // One side written bare, the other generic — otherwise this is either
+        // an exact match (already handled) or a genuine mismatch.
+        if bare(a) == bare(b) {
+            return false;
+        }
+        match (head(a), head(b)) {
+            (Some(x), Some(y)) => x.split('<').next() == y.split('<').next(),
+            _ => false,
+        }
+    }
+
     /// ER27: verify that `narrow_ty` matches either the ok or err branch of
     /// the scrutinee's `T or E` type. Defer if scrutinee is still unresolved.
     fn resolve_type_pattern(
@@ -447,6 +589,22 @@ impl TypeChecker {
                     .filter(|b| matches!(b, Type::Var(_)))
                     .cloned()
                     .collect();
+                // A generic branch named without its arguments. `T or
+                // CasFailed<T>` is matched `CasFailed as e` in mem.atomics's
+                // own example, and repeating the payload type at the pattern
+                // adds nothing — there is only one branch it could mean. Bind
+                // the pattern to the whole branch so `e.found` still resolves.
+                if !branches.contains(&narrow_applied) {
+                    let heads: Vec<Type> = branches
+                        .iter()
+                        .filter(|b| self.same_type_head(b, &narrow_applied))
+                        .cloned()
+                        .collect();
+                    if heads.len() == 1 {
+                        self.unify(&narrow_ty, &heads[0], span)?;
+                        return Ok(true);
+                    }
+                }
                 if !branches.contains(&narrow_applied) && unresolved.len() == 1 {
                     self.unify(&unresolved[0], &narrow_applied, span)?;
                     return Ok(true);
@@ -1293,6 +1451,19 @@ impl TypeChecker {
 
             (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
 
+            // `*void` is the untyped pointer — an address with no element type,
+            // which is what an opaque C handle and every `void *` parameter is.
+            // It unified like any other pointee, so `memcpy(dst, src, n)` and
+            // anything else taking a `void *` rejected every pointer anyone had.
+            // Direction is `check_fits`'s job: `*T` goes in where `*void` is
+            // declared, and coming back out needs `cast<T>()`.
+            (Type::RawPtr(inner1), Type::RawPtr(inner2))
+                if matches!(self.ctx.apply(inner1), Type::Unit)
+                    || matches!(self.ctx.apply(inner2), Type::Unit) =>
+            {
+                Ok(false)
+            }
+
             (Type::RawPtr(inner1), Type::RawPtr(inner2)) => self.unify(inner1, inner2, span),
 
             // Union types: exact match element-wise, or subset widening for try propagation (ER31).
@@ -1383,6 +1554,24 @@ impl TypeChecker {
             }
 
             (Type::UnresolvedNamed(_), _) | (_, Type::UnresolvedNamed(_)) => {
+                // Resolve the name before giving up on it. A stdlib signature
+                // arrives spelled `UnresolvedNamed("IoError")` while the type
+                // table holds the same type as `Named(id)`, and deferring a name
+                // that *is* declared parks the constraint where nothing
+                // discharges it — so the mismatch is never reported at all.
+                // That's why `catch e => { let x: i64 = e }` on an `IoError`
+                // type-checked, and `grep_clone` lost every error message it
+                // ever tried to print (#950).
+                //
+                // A name that still won't resolve is a type parameter mid-flight
+                // and keeps the old deferral.
+                let r1 = self.resolve_named(&t1);
+                let r2 = self.resolve_named(&t2);
+                let both_known = !matches!(r1, Type::UnresolvedNamed(_))
+                    && !matches!(r2, Type::UnresolvedNamed(_));
+                if both_known && (r1 != t1 || r2 != t2) {
+                    return self.unify(&r1, &r2, span);
+                }
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(t1, t2, span));
                 Ok(false)
@@ -1619,6 +1808,39 @@ impl TypeChecker {
     ) -> Result<(), TypeError> {
         let source = self.ctx.apply(source);
         let target = self.ctx.apply(target);
+
+        // A pointer's element type is part of it (mem.unsafe, struct.c-interop/
+        // TM2). Nothing converts here — the pointer is an address and the reader
+        // picks the stride from its own type — so `*i64` where `*i32` is wanted
+        // is a different pointer, not a narrowing with a policy to choose.
+        //
+        // Only checked at a position that knows which side is the source, same
+        // as the integer rule below. `import c` translates `int` to `c_int`, and
+        // handing `Vec<i64>.as_ptr()` to a `const int *` parameter used to pass
+        // in silence: the C side then read the 64-bit buffer as 32-bit ints and
+        // returned arithmetic that looked fine (#947).
+        if let (Type::RawPtr(from), Type::RawPtr(to)) = (&source, &target) {
+            let from_inner = self.resolve_named(&self.ctx.apply(from));
+            let to_inner = self.resolve_named(&self.ctx.apply(to));
+            // An open pointee has nothing to compare yet.
+            let open = matches!(from_inner, Type::Var(_) | Type::Error)
+                || matches!(to_inner, Type::Var(_) | Type::Error);
+            // `*T` into a `*void` slot is the whole point of `*void`. The other
+            // direction isn't: an address with no element type doesn't become
+            // one by being assigned somewhere, so it needs `cast<T>()`.
+            if to_inner == Type::Unit {
+                return Ok(());
+            }
+            if !open && from_inner != to_inner {
+                return Err(TypeError::PointeeMismatch {
+                    from: source,
+                    to: target,
+                    span,
+                });
+            }
+            return Ok(());
+        }
+
         if Self::int_shape(&source).is_none() || Self::int_shape(&target).is_none() {
             return Ok(());
         }

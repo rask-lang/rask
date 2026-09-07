@@ -231,7 +231,7 @@ impl Interpreter {
         Ok(Value::Enum {
             name: "Result".into(),
             variant: "Ok".into(),
-            fields: vec![Value::vec(vec![struct_val, remaining_val])],
+            fields: vec![Value::tuple(vec![struct_val, remaining_val])],
             variant_index: 0,
             origin: None,
         })

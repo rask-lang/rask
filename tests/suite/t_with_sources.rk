@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The two things `with` scopes access to, and that both backends agree (#1114).
+//
+// A third form used to compile natively and fail on the interpreter:
+//
+//     with h.data as d { d.push(99) }
+//
+//     native:  2
+//     interp:  with...as: expected Cell, Mutex, Shared, or collection index, got Vec
+//
+// The interpreter was right. `mem.borrowing`'s grammar takes an index, and the
+// block earns its keep in exactly two cases: an element reached by key, where
+// the handle is re-resolved after a structural change (W2a-W2d), and a box,
+// where a lock is held for the block's duration. A plain field has neither, so
+// the block did what writing through the field already does. It's E0874 now.
+//
+// No file in the corpus used the form, which is why the divergence sat there —
+// this one exists so it can't come back quietly.
+
+import sync.Shared
+import sync.Mutex
+import memory.Pool
+import memory.Handle
+
+struct Row {
+    key: string
+    n: i64
+}
+
+extend Row {
+    func bump(mutate self) {
+        self.n = self.n + 1
+        return
+    }
+}
+
+// An element of a Vec, reached by index.
+test "with over a Vec element" {
+    mut v: Vec<Row> = Vec.new()
+    v.push(Row { key: "a", n: 1 })
+    with v[0] as first {
+        first.bump()
+        first.bump()
+    }
+    assert v[0].n == 3
+}
+
+// An element of a Pool, reached by handle — the case the re-resolution rules
+// are written for.
+test "with over a pool element" {
+    mut p: Pool<Row> = Pool.new()
+    let h = p.insert(Row { key: "b", n: 10 })
+    with p[h] as r {
+        r.bump()
+    }
+    assert p[h].n == 11
+}
+
+// An element through a field of `self` — the receiver is a place, the *source*
+// is still an index.
+struct Sheet {
+    rows: Vec<Row>
+}
+
+extend Sheet {
+    func bump_first(mutate self) {
+        with self.rows[0] as r {
+            r.bump()
+        }
+        return
+    }
+}
+
+test "with over an element behind a field" {
+    mut s = Sheet { rows: Vec<Row>.new() }
+    s.rows.push(Row { key: "c", n: 100 })
+    s.bump_first()
+    assert s.rows[0].n == 101
+}
+
+// The other legal source: a box, which needs no index because the payload is
+// what the block binds.
+const TOTAL: Shared<i64, Mutex> = Shared.mutex(0)
+
+test "with over a box's payload" {
+    with TOTAL.write() as n {
+        n = n + 5
+    }
+    with TOTAL.write() as n {
+        n = n + 6
+    }
+    with TOTAL.read() as n {
+        assert n == 11
+    }
+}
+
+// What the rejected form has to be written as instead: reach the field where it
+// lives. Two lines shorter than the block was.
+test "a plain field is written through, not scoped" {
+    mut sheet = Sheet { rows: Vec<Row>.new() }
+    sheet.rows.push(Row { key: "d", n: 1 })
+    sheet.rows.push(Row { key: "e", n: 2 })
+    assert sheet.rows.len() == 2
+    assert sheet.rows[1].n == 2
+}
+
+func main() {
+    mut v: Vec<Row> = Vec.new()
+    v.push(Row { key: "a", n: 1 })
+    with v[0] as first {
+        first.bump()
+    }
+    println("with sources ok: {v[0].n}")
+    return
+}

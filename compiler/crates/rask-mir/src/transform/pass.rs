@@ -96,22 +96,42 @@ impl PassManager {
         // in a frame the pre-inline analysis never saw (#1045).
         pm.add(ClosureDropInsertionPass);
         pm.add(TraitDropInsertionPass);
-        pm.add(ContainerDropInsertionPass);
         // Per-function passes — run after inlining for wider optimization window (IN5)
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
+        // After clone elision, deliberately. The drop pass decides what this
+        // frame owns by reading the calls it makes, and elision *removes* one:
+        // an elided `v.clone()` becomes `dst = src`, so the "fresh container"
+        // is the caller's own. Running first, the pass saw a `Vec_clone` call,
+        // registered the result as ours to free, and elision then made that a
+        // free of the source — which is why the clones could never be listed in
+        // `elem_strs::CTORS` (#1050, #1045).
+        pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
         // Phase G: Advanced analyses before gen coalescing (needs PoolCheckedAccess intact)
         pm.add(TypestatePass);
         pm.add(BoundsCheckElimPass);
         pm.add(GenerationCoalescingPass);
+        // Last: it reads what the const init thunks build, and the passes
+        // above are what settle that (clone elision in particular).
+        pm.add(ConstFreePass);
         pm.add(DeadCodeEliminationPass);
         pm
     }
 }
 
 // Wrapper structs for existing passes
+
+/// Free what module-level consts hold, after the program is done (#1116).
+pub struct ConstFreePass;
+
+impl MirPass for ConstFreePass {
+    fn name(&self) -> &str { "const_free" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::add_const_free(fns);
+    }
+}
 
 /// Free a container this function built and never handed on (#1027).
 pub struct ContainerDropInsertionPass;

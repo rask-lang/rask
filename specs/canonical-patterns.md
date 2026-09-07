@@ -120,7 +120,7 @@ let vec = list.into_vec()
 |---------------|---------|---------|----------|
 | `from_*` | Construction from source | `Self` or `Self or E` | `Path.from(s)`, `from_utf8(b)` — suffix only when the source type needs disambiguating |
 | `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
-| `as_*` | Cheap view or cast | reference or copy | `as_slice()`, `as_string()` |
+| `as_*` | Cheap view or cast — hands back what the value already has, allocating nothing | a primitive, a raw pointer, a slice, a `string`, or a field read as it stands | `as_ptr()`, `as_string()` |
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
 | `display` | Render for a person | `string` | `Displayable` — `point.display()` |
 | `debug` | Render for a developer | `string` | `Debug` — `value.debug()` |

@@ -37,10 +37,22 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 pub struct Resolver {
     symbols: SymbolTable,
+    /// Where each source file lives, by its `file_id`.
+    ///
+    /// Only `import c` reads this: a header written `"mylib.h"` is looked for
+    /// next to the file that imports it, the way `#include "…"` works in C.
+    /// Empty when the caller doesn't know the paths — the header then has to be
+    /// on a system include path.
+    source_dirs: HashMap<u16, std::path::PathBuf>,
     scopes: ScopeTree,
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
     current_function: Option<SymbolId>,
+    /// CC2: the types of the enclosing function's *unnamed* `using` clauses.
+    /// An unnamed clause enables `h.field` auto-resolution and binds nothing,
+    /// so a structural call through a name reads as an undefined symbol — this
+    /// is what lets the message say which clause to name instead.
+    current_unnamed_contexts: Vec<String>,
 
     current_package: Option<PackageId>,
     package_bindings: HashMap<String, PackageId>,
@@ -80,6 +92,13 @@ pub struct Resolver {
     stdlib_mode: bool,
     /// Symbols defined during stdlib_mode — imports may override these.
     stdlib_symbols: HashSet<SymbolId>,
+    /// Enums (and their variants) the compiler puts in scope itself: the
+    /// prelude's, and the ones a module import carries. Span (0,0) used to
+    /// stand in for this, which was wrong the moment anything else synthesised
+    /// a symbol — a dependency's `public enum Colour` is recorded as an export
+    /// with no span, so declaring it was reported as shadowing a built-in
+    /// type that doesn't exist (#1126).
+    builtin_enums: HashSet<SymbolId>,
     /// Compile-time cfg values for dead branch elimination in `comptime if`.
     /// Maps field names (os, arch, env, profile) to their values.
     cfg_values: HashMap<String, String>,
@@ -89,10 +108,12 @@ impl Resolver {
     pub fn new() -> Self {
         let mut resolver = Self {
             symbols: SymbolTable::new(),
+            source_dirs: HashMap::new(),
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
             errors: Vec::new(),
             current_function: None,
+            current_unnamed_contexts: Vec::new(),
             current_package: None,
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
@@ -104,6 +125,7 @@ impl Resolver {
             package_exports: HashMap::new(),
             stdlib_mode: false,
             stdlib_symbols: HashSet::new(),
+            builtin_enums: HashSet::new(),
             cfg_values: HashMap::new(),
         };
 
@@ -269,6 +291,7 @@ impl Resolver {
             true,
         );
         let _ = self.scopes.define(name.to_string(), enum_sym_id, Span::new(0, 0));
+        self.builtin_enums.insert(enum_sym_id);
 
         let mut variant_syms = Vec::new();
         for variant_name in variants {
@@ -280,6 +303,7 @@ impl Resolver {
                 true,
             );
             let _ = self.scopes.define(variant_name.to_string(), variant_sym_id, Span::new(0, 0));
+            self.builtin_enums.insert(variant_sym_id);
             variant_syms.push((variant_name.to_string(), variant_sym_id));
         }
 
@@ -452,7 +476,7 @@ impl Resolver {
             if let Some(sym) = self.symbols.get(sym_id) {
                 return matches!(sym.kind, SymbolKind::BuiltinModule { .. })
                     || (matches!(sym.kind, SymbolKind::Enum { .. })
-                        && sym.span == Span::new(0, 0));
+                        && self.builtin_enums.contains(&sym_id));
             }
         }
         false
@@ -522,8 +546,23 @@ impl Resolver {
         stdlib_decls: &[Decl],
         cfg_values: HashMap<String, String>,
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_with_stdlib_cfg_and_dirs(decls, stdlib_decls, cfg_values, HashMap::new())
+    }
+
+    /// `resolve_with_stdlib_and_cfg`, told where each file lives.
+    ///
+    /// Only `import c` needs it, to look for a header beside the file that
+    /// imports it (#1096). A caller that doesn't know the paths passes an empty
+    /// map and the header has to be on a system include path.
+    pub fn resolve_with_stdlib_cfg_and_dirs(
+        decls: &[Decl],
+        stdlib_decls: &[Decl],
+        cfg_values: HashMap<String, String>,
+        source_dirs: HashMap<u16, std::path::PathBuf>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
+        resolver.source_dirs = source_dirs;
 
         if !stdlib_decls.is_empty() {
             resolver.stdlib_mode = true;
@@ -591,6 +630,20 @@ impl Resolver {
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
+        // Where each file lives, so `import c "x.h"` can look beside the file
+        // that imports it (#1096). Read off the declarations rather than
+        // tracked separately: a file's decls all carry its `file_id`, so the
+        // first one names it and there is no second bookkeeping to drift.
+        for pkg in registry.packages() {
+            for file in &pkg.files {
+                let Some(dir) = file.path.parent() else { continue };
+                if let Some(decl) = file.decls.first() {
+                    resolver
+                        .source_dirs
+                        .insert(decl.span.file_id, dir.to_path_buf());
+                }
+            }
+        }
 
         resolver.current_package = Some(current_package);
 
@@ -668,10 +721,32 @@ impl Resolver {
             match &decl.kind {
                 DeclKind::Fn(f) if f.is_pub => {
                     let base = Self::base_name(&f.name).to_string();
+                    // The parameters too, not just the return type. An export
+                    // with an empty list reads as taking none, so the first
+                    // consumer to pass an argument was told "expected 0
+                    // arguments, found 1" — for a function it can see the
+                    // declaration of (#1112).
+                    let params: Vec<crate::SymbolId> = f
+                        .params
+                        .iter()
+                        .map(|p| {
+                            self.symbols.insert(
+                                p.name.clone(),
+                                SymbolKind::Parameter {
+                                    is_take: p.is_take,
+                                    is_mutate: p.is_mutate,
+                                    is_deleting: p.is_deleting,
+                                },
+                                Some(p.ty.clone()),
+                                Span::new(0, 0),
+                                false,
+                            )
+                        })
+                        .collect();
                     let sym_id = self.symbols.insert(
                         base.clone(),
                         SymbolKind::Function {
-                            params: vec![],
+                            params,
                             ret_ty: f.ret_ty.clone(),
                             context_clauses: f.context_clauses.clone(),
                             is_unsafe: f.is_unsafe,
@@ -1239,13 +1314,11 @@ impl Resolver {
                     // atomic orderings are variants of `Ordering`, which the
                     // resolver puts in scope itself, so `import sync.Relaxed`
                     // met a name that was already there and was reported as
-                    // shadowing an import that doesn't exist. Span (0,0) is how
-                    // the rest of the resolver tells a registered builtin from
-                    // a declaration with real source behind it.
+                    // shadowing an import that doesn't exist.
                     || (matches!(
                             sym.kind,
                             SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. }
-                        ) && sym.span == Span::new(0, 0))
+                        ) && self.builtin_enums.contains(&existing_id))
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);
@@ -1459,7 +1532,7 @@ impl Resolver {
         let mut all_decls = Vec::new();
 
         for header_path in &c_import.headers {
-            let source = match self.read_c_header(header_path) {
+            let source = match self.read_c_header(header_path, span.file_id) {
                 Ok(s) => s,
                 Err(msg) => {
                     self.errors.push(ResolveError::c_header_not_found(
@@ -1638,28 +1711,45 @@ impl Resolver {
     }
 
     /// Read a C header file, searching standard include paths.
-    fn read_c_header(&self, path: &str) -> Result<String, String> {
-        // Try relative to current directory first
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            return Ok(contents);
-        }
-
-        // Search standard include paths
-        let search_paths = [
-            "/usr/include",
-            "/usr/local/include",
-            "/usr/include/x86_64-linux-gnu",
-            "/usr/include/aarch64-linux-gnu",
-        ];
-
-        for base in &search_paths {
-            let full = format!("{}/{}", base, path);
-            if let Ok(contents) = std::fs::read_to_string(&full) {
+    /// Read a C header, C's own way: next to the file that imports it, then the
+    /// system include paths.
+    ///
+    /// The importing file's directory used to be the one place nothing looked.
+    /// A quoted path was resolved against the process's *current directory*, so
+    /// a header sitting beside its `.rk` was found only when the compiler
+    /// happened to be run from that directory — `rask check tests/fixtures/x.rk`
+    /// failed where `cd tests/fixtures && rask check x.rk` worked (#1096).
+    /// Every other quoted path in the language means "relative to this file".
+    ///
+    /// The current directory stays as a fallback, because a header at a project
+    /// root imported from `src/` is a real shape and there is no `-I` yet. The
+    /// system list is fixed at two Linux triples with no `CC` input, which is
+    /// the other half of #1096.
+    fn read_c_header(&self, path: &str, file_id: u16) -> Result<String, String> {
+        if let Some(dir) = self.source_dirs.get(&file_id) {
+            if let Ok(contents) = std::fs::read_to_string(dir.join(path)) {
                 return Ok(contents);
             }
         }
 
-        Err(format!("header not found in search paths: {}", path))
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            return Ok(contents);
+        }
+
+        let mut looked: Vec<String> = Vec::new();
+        for base in c_include_search_dirs() {
+            let full = base.join(path);
+            if let Ok(contents) = std::fs::read_to_string(&full) {
+                return Ok(contents);
+            }
+            looked.push(base.display().to_string());
+        }
+
+        Err(format!(
+            "header not found: {}\n  looked in: {}",
+            path,
+            looked.join(", ")
+        ))
     }
 
     // =========================================================================
@@ -1812,6 +1902,13 @@ impl Resolver {
             }
         }
 
+        self.current_unnamed_contexts = fn_decl
+            .context_clauses
+            .iter()
+            .filter(|c| c.name.is_none())
+            .map(|c| c.ty.clone())
+            .collect();
+
         // Register named context clauses as bindings
         for clause in &fn_decl.context_clauses {
             if let Some(name) = &clause.name {
@@ -1835,6 +1932,7 @@ impl Resolver {
         self.pop_type_params();
         self.scopes.pop();
         self.current_function = None;
+        self.current_unnamed_contexts.clear();
     }
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
@@ -2527,6 +2625,25 @@ impl Resolver {
                                 }
                                 return;
                             }
+                        }
+                    }
+                }
+                // CC2: `pool.remove(h)` under `using Pool<Entity>`. The clause
+                // resolves `h.field` and binds no name, so the receiver is a
+                // plain undefined symbol — and "check spelling or add an
+                // import" is neither of the two things that would fix it.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if self.scopes.lookup(name).is_none() {
+                        if let Some(ty) = self.current_unnamed_contexts.first().cloned() {
+                            self.errors.push(ResolveError::unnamed_context(
+                                name.clone(),
+                                ty,
+                                object.span,
+                            ));
+                            for arg in args {
+                                self.resolve_expr(&arg.expr);
+                            }
+                            return;
                         }
                     }
                 }
@@ -3902,4 +4019,102 @@ mod tests {
             sym.kind
         );
     }
+}
+
+/// Where `import c "header.h"` looks, after the importing file's own directory
+/// and the path as written.
+///
+/// Asking the C compiler is the point: `compile_c` builds the C side with `CC`
+/// (or `cc`), and if the header parser reads a different `<stdint.h>` than that
+/// compiler will, the layouts it derives are for the wrong headers — and the
+/// by-value struct ABI reads its field offsets from those layouts. The two lists
+/// used to be unrelated, one of them four hardcoded Linux paths.
+///
+/// `CPATH` and `C_INCLUDE_PATH` come first because that is what they mean to
+/// the compiler itself; this is not a new interface, it is the existing one.
+/// The hardcoded list stays as a last resort for when the compiler can't be
+/// reached at all.
+///
+/// Computed once — the answer can't change inside a compilation, and each query
+/// is a process spawn.
+///
+/// Still host-only: the target's headers are a separate question (#1102), and
+/// this asks the host compiler because the resolver has no target to ask about.
+fn c_include_search_dirs() -> &'static [std::path::PathBuf] {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut push = |d: PathBuf| {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        };
+        for var in ["CPATH", "C_INCLUDE_PATH"] {
+            if let Ok(val) = std::env::var(var) {
+                for part in val.split(':').filter(|p| !p.is_empty()) {
+                    push(PathBuf::from(part));
+                }
+            }
+        }
+        let from_cc = cc_system_include_dirs();
+        let asked = !from_cc.is_empty();
+        for d in from_cc {
+            push(d);
+        }
+        if !asked {
+            for d in ["/usr/include", "/usr/local/include",
+                      "/usr/include/x86_64-linux-gnu", "/usr/include/aarch64-linux-gnu"] {
+                push(PathBuf::from(d));
+            }
+        }
+        dirs
+    })
+}
+
+/// The C compiler's own system header list, from `cc -E -Wp,-v` on empty input.
+/// Every compiler that matters prints it to stderr between two fixed lines.
+/// Empty when the compiler isn't there or answers in a shape this doesn't read,
+/// which is the caller's signal to fall back.
+fn cc_system_include_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // `-` reads the translation unit from stdin, so this needs no temp file and
+    // no `/dev/null` (which isn't one on every host).
+    let Ok(mut child) = Command::new(&cc)
+        .args(["-E", "-Wp,-v", "-xc", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    drop(child.stdin.take());
+    let Ok(out) = child.wait_with_output() else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stderr);
+    let mut dirs = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("#include <...> search starts here:") {
+            inside = true;
+            continue;
+        }
+        if line.starts_with("End of search list.") {
+            break;
+        }
+        if inside {
+            let d = line.trim();
+            // clang appends " (framework directory)" to framework entries, which
+            // are not header directories in this sense.
+            if !d.is_empty() && !d.ends_with("(framework directory)") {
+                dirs.push(PathBuf::from(d));
+            }
+        }
+    }
+    dirs
 }

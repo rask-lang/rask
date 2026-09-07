@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// #1125 — a function returning `Vec<T>` across a package boundary loses
+// its type: `v.len()` fails MIR dispatch. A `string` return is fine.
+
+public func ones(n: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push(1)
+        i = i + 1
+    }
+    return v
+}

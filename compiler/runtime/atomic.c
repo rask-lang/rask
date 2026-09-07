@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 // Rask atomic runtime — C11 stdatomic wrappers for native-compiled programs.
-// All integer atomic types share one implementation since codegen represents
-// all values as i64. AtomicBool is separate (0/1 semantics).
+//
+// One implementation for every payload: `Atomic<T>` is the only atomic type
+// (mem.atomics/GA1), and every legal payload is one machine word, which
+// codegen hands over as an i64. A `bool` is 0 or 1 in that word and a
+// word-sized struct is its own bytes; there used to be a separate
+// `rask_atomic_bool_*` family for the first of those and nothing for the
+// second.
 
 #include "rask_runtime.h"
 
@@ -163,107 +168,6 @@ int64_t rask_atomic_int_into_inner(int64_t ptr) {
     int64_t val = atomic_load_explicit(&a->value, memory_order_relaxed);
     rask_free(a);
     return val;
-}
-
-// ═══════════════════════════════════════════════════════════
-// Bool atomics
-// Uses _Atomic(int) for C11 compatibility (bool atomics can be tricky).
-// Values: 0 = false, 1 = true.
-// ═══════════════════════════════════════════════════════════
-
-typedef struct { _Atomic(int) value; } RaskAtomicBool;
-
-// ── Construction ────────────────────────────────────────────
-
-int64_t rask_atomic_bool_new(int64_t val) {
-    RaskAtomicBool *a = rask_alloc(sizeof(RaskAtomicBool));
-    atomic_init(&a->value, val ? 1 : 0);
-    return (int64_t)(uintptr_t)a;
-}
-
-int64_t rask_atomic_bool_default(void) {
-    return rask_atomic_bool_new(0);
-}
-
-// ── Load / Store / Swap ─────────────────────────────────────
-
-int64_t rask_atomic_bool_load(int64_t ptr, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    return atomic_load_explicit(&a->value, to_order(ordering)) ? 1 : 0;
-}
-
-void rask_atomic_bool_store(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    atomic_store_explicit(&a->value, val ? 1 : 0, to_order(ordering));
-}
-
-int64_t rask_atomic_bool_swap(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    return atomic_exchange_explicit(&a->value, val ? 1 : 0, to_order(ordering)) ? 1 : 0;
-}
-
-// ── Compare-and-Exchange ────────────────────────────────────
-
-int64_t rask_atomic_bool_compare_exchange(int64_t ptr, int64_t expected,
-                                           int64_t desired, int64_t success_ord,
-                                           int64_t fail_ord, int64_t *out_ok) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    int current = expected ? 1 : 0;
-    _Bool ok = atomic_compare_exchange_strong_explicit(
-        &a->value, &current, desired ? 1 : 0,
-        to_order(success_ord), to_order(fail_ord));
-    *out_ok = ok ? 1 : 0;
-    return current ? 1 : 0;
-}
-
-int64_t rask_atomic_bool_compare_exchange_weak(int64_t ptr, int64_t expected,
-                                                int64_t desired, int64_t success_ord,
-                                                int64_t fail_ord, int64_t *out_ok) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    int current = expected ? 1 : 0;
-    _Bool ok = atomic_compare_exchange_weak_explicit(
-        &a->value, &current, desired ? 1 : 0,
-        to_order(success_ord), to_order(fail_ord));
-    *out_ok = ok ? 1 : 0;
-    return current ? 1 : 0;
-}
-
-// ── Bool fetch (bitwise on 0/1) ─────────────────────────────
-
-int64_t rask_atomic_bool_fetch_and(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    return atomic_fetch_and_explicit(&a->value, val ? 1 : 0, to_order(ordering)) ? 1 : 0;
-}
-
-int64_t rask_atomic_bool_fetch_or(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    return atomic_fetch_or_explicit(&a->value, val ? 1 : 0, to_order(ordering)) ? 1 : 0;
-}
-
-int64_t rask_atomic_bool_fetch_xor(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    return atomic_fetch_xor_explicit(&a->value, val ? 1 : 0, to_order(ordering)) ? 1 : 0;
-}
-
-int64_t rask_atomic_bool_fetch_nand(int64_t ptr, int64_t val, int64_t ordering) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    int old = atomic_load_explicit(&a->value, memory_order_relaxed);
-    int nand = !((old ? 1 : 0) & (val ? 1 : 0)) ? 1 : 0;
-    while (!atomic_compare_exchange_weak_explicit(
-        &a->value, &old, nand,
-        to_order(ordering), memory_order_relaxed)) {
-        nand = !((old ? 1 : 0) & (val ? 1 : 0)) ? 1 : 0;
-    }
-    return old ? 1 : 0;
-}
-
-// ── Non-atomic access ───────────────────────────────────────
-
-int64_t rask_atomic_bool_into_inner(int64_t ptr) {
-    RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
-    int val = atomic_load_explicit(&a->value, memory_order_relaxed);
-    rask_free(a);
-    return val ? 1 : 0;
 }
 
 // ═══════════════════════════════════════════════════════════

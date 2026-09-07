@@ -104,11 +104,14 @@ impl InferPass {
     }
 
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
-        // PU2: comptime functions are always pure
-        if f.is_comptime {
-            self.effects.insert(qname.to_string(), Effects::default());
-            return;
-        }
+        // PU2 says a `comptime func` is pure and that "effect inference
+        // confirms this". It used to *assert* it: stamp `Effects::default()`
+        // on anything wearing the keyword and skip the body, so the map could
+        // never disagree with the marking. That made CT60 uncheckable — the one
+        // thing that could have caught a `comptime func` doing I/O was reading
+        // the answer off the keyword it was meant to verify. The body is
+        // classified like any other now, and `comptime_purity::check` reports a
+        // marking the body doesn't earn.
 
         // Classify direct effects from function body
         let mut direct = Effects::default();
@@ -901,11 +904,37 @@ mod tests {
         assert!(effects["ffi_call"].io, "IO3: unsafe blocks conservative IO");
     }
 
+    /// PU2 says a `comptime func` is pure and that "effect inference confirms
+    /// this". Confirming means looking: this fixture's body is a `println`, so
+    /// what inference reports is I/O, and `comptime_purity::check` is what turns
+    /// that disagreement into the CT60 error. Stamping it pure — which is what
+    /// this test used to assert — made the marking its own evidence.
     #[test]
-    fn comptime_always_pure() {
+    fn a_comptime_func_is_measured_not_assumed() {
         let decls = vec![make_comptime_fn("table_gen")];
         let effects = infer(&decls);
-        assert!(effects["table_gen"].is_pure(), "PU2: comptime is pure");
+        assert!(
+            effects["table_gen"].io,
+            "PU2: inference confirms purity rather than granting it"
+        );
+        let violations = crate::comptime_purity::check(&decls, &effects);
+        assert_eq!(violations.len(), 1, "CT60 rejects the marking the body doesn't earn");
+        assert_eq!(violations[0].func, "table_gen");
+        assert_eq!(violations[0].effect, "I/O");
+    }
+
+    /// The other half: a body that stays inside the subset keeps the promise,
+    /// and nothing is reported.
+    #[test]
+    fn a_pure_comptime_func_passes() {
+        let mut decl = make_comptime_fn("adds");
+        if let DeclKind::Fn(f) = &mut decl.kind {
+            f.body = vec![];
+        }
+        let decls = vec![decl];
+        let effects = infer(&decls);
+        assert!(effects["adds"].is_pure());
+        assert!(crate::comptime_purity::check(&decls, &effects).is_empty());
     }
 
     #[test]

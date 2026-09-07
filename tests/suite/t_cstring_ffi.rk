@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Getting a Rask string into a C `const char*` (#949).
+//
+// `to_cstring()` was `@unimplemented`, so there was no way to do it at all —
+// which took most of a real C API's surface with it. The workaround people
+// reach for is `s.as_ptr()`, and it is not the same thing. A whole string's
+// buffer does end in a NUL, so that pointer usually works; what it can't do is
+// refuse a string with an interior NUL — C reads that as a shorter string, with
+// no complaint — and it owns nothing, so it dies when the string does (#1118).
+//
+//     let n = unsafe strlen(s.as_ptr())        // borrowed, unchecked
+//     let n = unsafe s.to_cstring()!.as_ptr()  // an owned, checked copy
+//
+// The conversion can fail, and that is the point of its shape: C has no way to
+// spell a string with an interior NUL, so `to_cstring` says where the NUL is
+// rather than silently truncating there.
+//
+// The actual libc call lives in `examples/19_unsafe.rk` — `extern "C"` needs a
+// C ABI the interpreter doesn't have, and this file has to run on both. What is
+// checked here is everything up to the pointer: which strings convert, what the
+// refusal says, and that the bytes survive the round trip.
+
+import string.cstring
+import string.NullByteError
+import string.Utf8Error
+
+/// The round trip, both halves. `to_string` is fallible because the bytes came
+/// from C — here they came from a Rask string a moment earlier, so they are
+/// always valid, and the arm is unreachable.
+func round_trip(s: string) -> string or NullByteError {
+    let c = try s.to_cstring()
+    return c.to_string() catch _ => "<not utf-8>"
+}
+
+test "a plain string converts and comes back" {
+    assert (round_trip("hello") catch _ => "") == "hello"
+}
+
+test "an empty string is a valid C string" {
+    assert (round_trip("") catch _ => "x") == ""
+}
+
+// Multi-byte UTF-8 has no NUL in it — the continuation bytes are all ≥ 0x80 —
+// so it converts, and C sees the same bytes.
+test "utf-8 survives" {
+    assert (round_trip("hej på deg") catch _ => "") == "hej på deg"
+}
+
+// The refusal. `\0` in the middle is the case C can't represent, and the error
+// carries the byte offset so a caller can say which string and where.
+test "an interior NUL is refused, with the offset" {
+    let nul = "\0"
+    let s = "ab{nul}cd"
+    let c = s.to_cstring() catch e => {
+        assert e is NullByteError.FoundAt(at) && at == 2.wrap<usize>()
+        return
+    }
+    assert false
+}
+
+// `first_nul` is the check `to_cstring` runs, and it answers for any string:
+// a byte offset, or -1 when there is none. -1 rather than an optional because
+// it is the same shape the byte-search primitives use.
+test "first_nul finds it, or says there is none" {
+    assert "plain".first_nul() == -1
+    let nul = "\0"
+    assert "{nul}first".first_nul() == 0
+    assert "a{nul}b".first_nul() == 1
+}
+
+// The copy is a copy: the cstring owns its own buffer, so the source string
+// going out of scope doesn't take it with it.
+func terminated_copy_of(s: string) -> cstring or NullByteError {
+    return s.to_cstring()
+}
+
+test "the copy outlives the string it came from" {
+    let c = terminated_copy_of("owned") catch e => {
+        assert false
+        return
+    }
+    assert (c.to_string() catch _ => "") == "owned"
+}
+
+// Every conversion here leaks its terminated copy, and nothing in this file can
+// fix it: a container returned inside a `T or E` is freed by nobody, whatever it
+// holds (#1117). That is why the file is on `known_leaks.txt` — one allocation
+// per successful `to_cstring`, and the refusal path leaks nothing.
+func main() {
+    let text = round_trip("cstring ok") catch e => {
+        println("cstring refused a string with no NUL in it")
+        return
+    }
+    println("{text}")
+    return
+}

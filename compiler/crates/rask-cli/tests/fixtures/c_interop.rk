@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What `import c` makes of a header. Checked, not run — the point is the
+// signatures, and linking a C object is the build system's business.
+//
+// Nothing tested this surface at all, which is how three things stayed broken:
+// a `c.f(…)` call had no type unless its binding was annotated, CI3's `unsafe`
+// requirement never fired for a call through the namespace, and a header's
+// `int` was the name `c_int`, which wasn't a type — so `*i64` passed for a
+// `const int *` and the C side read a 64-bit buffer as 32-bit ints (#947).
+
+import c "c_interop.h"
+
+// The return type comes from the header, with no annotation on the binding.
+func summed() -> i32 {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    v.push(2)
+    unsafe {
+        return c.c_sum(v.as_ptr(), 2)
+    }
+}
+
+// `long` is 64-bit here, so this one wants a `Vec<i64>`.
+func totalled() -> i64 {
+    mut v: Vec<i64> = Vec.new()
+    v.push(3i64)
+    unsafe {
+        return c.c_total(v.as_ptr(), 1)
+    }
+}
+
+// `double` and `float` are the two Rask floats, and they don't mix.
+func scaled() -> f64 {
+    unsafe {
+        return c.c_scale(2.5, 2.0f32)
+    }
+}
+
+// `void *` takes any pointer — an opaque handle is the whole reason it exists.
+func copied() {
+    mut src: Vec<u8> = Vec.new()
+    src.push(1u8)
+    mut dst: Vec<u8> = Vec.new()
+    dst.push(0u8)
+    unsafe {
+        c.c_copy(dst.as_ptr(), src.as_ptr(), 1)
+    }
+}
+
+// `unsigned char` is `u8`, not `char`.
+func first(s: string) -> u8 {
+    unsafe {
+        return c.c_first_byte(s.as_ptr())
+    }
+}
+
+func main() {
+    println("{summed()} {totalled()} {scaled()} {first("a")}")
+    copied()
+}

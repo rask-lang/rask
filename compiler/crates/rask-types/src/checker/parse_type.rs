@@ -30,7 +30,7 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         let types_vec: Result<Vec<_>, _> = parts.iter()
             .map(|p| parse_type_string(p, types))
             .collect();
-        return Ok(Type::union(types_vec?));
+        return Ok(Type::union_named(types_vec?, |id| Some(types.type_name(id))));
     }
 
     if s.ends_with('?') && !s.starts_with('(') {
@@ -203,6 +203,19 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
 
     if let Some(ty) = types.lookup(s) {
         return Ok(ty);
+    }
+
+    // Bare `Error` means the erased error box, same as `any Error` (#1095).
+    //
+    // It resolved to nothing before: `i64 or Error` became plain `i64`, so
+    // `return Boom.Bad` from such a function reported "expected `i64`, found
+    // `Boom`" — the error side had quietly gone. `any Error` did work, so the
+    // only thing missing was reading the short spelling as the long one.
+    //
+    // After the type-parameter check above on purpose: a `<Error>` parameter is
+    // still the parameter.
+    if rask_ast::traits::is_bare_error(s) {
+        return Ok(Type::TraitObject { trait_name: "Error".to_string() });
     }
 
     Ok(Type::UnresolvedNamed(s.to_string()))

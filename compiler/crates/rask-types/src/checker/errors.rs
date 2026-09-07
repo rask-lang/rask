@@ -52,6 +52,21 @@ pub enum TypeError {
     NotCallable { ty: Type, span: Span },
     #[error("no such field '{field}' on type {ty}")]
     NoSuchField { ty: Type, field: String, span: Span },
+    /// An operator whose two sides can't be compared or combined.
+    ///
+    /// Mixed signedness is allowed on purpose (ORD4); `char` against an integer
+    /// is the case this exists for, because native compares a `char` as its
+    /// underlying scalar and quietly answers by code point.
+    #[error("cannot apply `{op}` to {left} and {right}")]
+    IncomparableOperands {
+        left: Type,
+        right: Type,
+        /// The operator as written (`*`, `==`), not the desugared method name.
+        /// `operator_spelling` in the resolver is the one table for this; the
+        /// diagnostic had started keeping a second, shorter copy.
+        op: String,
+        span: Span,
+    },
     #[error("no such method '{method}' on type {ty}")]
     NoSuchMethod {
         ty: Type,
@@ -171,6 +186,13 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// A pointer whose element type isn't the one the slot declares.
+    ///
+    /// Nothing converts here: the pointer is an address, and the reader decides
+    /// the stride from its own type. So `*i64` where `*i32` is wanted isn't a
+    /// narrowing with a policy to pick — it's a different pointer.
+    #[error("`{from}` can't be used where `{to}` is expected")]
+    PointeeMismatch { from: Type, to: Type, span: Span },
     /// ORD4: arithmetic between a signed and an unsigned integer. Comparison is
     /// the one operator family that crosses signedness, because it has an
     /// obviously-correct answer; `u64 + i32` has no obviously-correct result type.
@@ -371,12 +393,6 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
-    #[error("parameter `{param_name}` requires `mutate` annotation at call site")]
-    MissingMutateAnnotation {
-        param_name: String,
-        param_index: usize,
-        span: Span,
-    },
     #[error("parameter `{param_name}` requires `own` annotation at call site")]
     MissingOwnAnnotation {
         param_name: String,
@@ -408,6 +424,29 @@ pub enum TypeError {
         param_name: String,
         span: Span,
     },
+    /// mem.borrowing/W1: a `with` source that is neither an element reached by
+    /// key nor a box.
+    #[error("`with` needs an element or a box, and `{place}` is a `{ty}`")]
+    WithNeedsElementOrBox {
+        /// Not called `source`: `thiserror` reads that name as the error cause.
+        place: String,
+        /// Rendered through the type table — `Display` on a `Type` prints a
+        /// `Named` id as `<type#3>`.
+        ty: String,
+        binding: String,
+        span: Span,
+    },
+
+    /// F3: two arguments of one call reach the same storage and one of them
+    /// writes. `written` is the path going in as `mutate`, `other` the path it
+    /// overlaps.
+    #[error("`{callee}` gets `{other}` while `{written}` is borrowed for writing")]
+    OverlappingArgumentBorrow {
+        callee: String,
+        written: String,
+        other: String,
+        span: Span,
+    },
     #[error("`try` requires a Result or Option type, found {found}")]
     TryOnNonResult {
         found: Type,
@@ -423,6 +462,12 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    #[error("`{func}` returns the struct `{ty}` by value, which isn't supported yet")]
+    CStructReturn {
+        func: String,
+        ty: String,
+        span: Span,
+    },
     #[error("method `{method}` returns Self and cannot be called through `any {trait_name}`")]
     TraitObjectSelfReturn {
         trait_name: String,
@@ -433,6 +478,53 @@ pub enum TypeError {
     TraitObjectGenericMethod {
         trait_name: String,
         method: String,
+        span: Span,
+    },
+    /// `Error.NotFound` — picking a variant off the erased error type.
+    ///
+    /// `Error` is a trait, so it has no variants to pick. Nothing said so: the
+    /// name resolved to a builtin symbol with no type behind it, the access
+    /// handed back an open type variable, and the variable then unified with
+    /// whatever the surrounding code expected. `Error.CompletelyMadeUp` passed
+    /// the checker, ran to `0` natively and died on the interpreter with
+    /// "undefined variable `Error`" (#1095).
+    #[error("`Error` is a trait, not an enum — `{member}` is not one of its variants")]
+    ErrorTraitMember {
+        member: String,
+        span: Span,
+    },
+    /// `match n { 1 => …, 2 => … }` on an integer, with nothing to catch the
+    /// rest. No list of arms exhausts an integer, a float, a string or a char,
+    /// and nothing said so: native produced no value and carried on, the
+    /// interpreter panicked with "no matching arm" (#1090).
+    #[error("this `match` on `{ty}` has no arm for the values the others don't name")]
+    MatchNeedsWildcard {
+        ty: String,
+        span: Span,
+    },
+    /// `break 42` from a `while` or a `for` (ctrl.flow/CF20, CF21).
+    ///
+    /// Those forms are statements — when the condition goes false there is
+    /// nowhere for a value to go. `loop` is the one that produces one. Nothing
+    /// checked it: the only question asked was whether the loop-value stack had
+    /// a top, and it only ever does for a `loop` in expression position
+    /// (#1090).
+    #[error("cannot break with a value from a `{form}` loop")]
+    BreakValueFromStatementLoop {
+        form: &'static str,
+        /// The loop's header, so the message can point at both.
+        header: Span,
+        span: Span,
+    },
+    /// `b.(comptime { 42 })` — the block names a field, so it has to produce a
+    /// name. This one produced a number.
+    ///
+    /// It used to fall into "the field name has to be known at compile time",
+    /// which tells someone who has already written a `comptime` block to write
+    /// a `comptime` block (#1090).
+    #[error("a `comptime` block naming a field has to produce a string — this one produced `{ty}`")]
+    ComptimeFieldNameNotString {
+        ty: String,
         span: Span,
     },
     #[error("`{ty}` does not implement `{trait_name}`")]
@@ -662,13 +754,6 @@ pub enum TypeError {
         step_direction: String,
     },
 
-    /// ER26: @message variant missing coverage
-    #[error("@message variant `{variant}` has no message template and cannot auto-delegate")]
-    MessageCoverageMissing {
-        variant: String,
-        enum_name: String,
-        span: Span,
-    },
 
     /// E5/R5/MX3: standalone sync access without chaining
     #[error("standalone `.{method}()` on `{ty}` must be chained — use `.{method}().field` or `with` block")]
@@ -813,6 +898,26 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// PS2: package-level mutable state goes behind a sync box. A bare `const`
+    /// collection is one instance every task can reach, so writing to it from
+    /// two of them is a data race out of safe code.
+    #[error("`{name}` is package-level state — writing to it needs a sync box")]
+    MutatePackageState {
+        name: String,
+        ty: String,
+        span: Span,
+    },
+
+    /// `@allow(name)` where nothing answers to `name` — a typo, or a rule id
+    /// that doesn't exist. Silence here is indistinguishable from a warning
+    /// correctly suppressed, so it's an error.
+    #[error("`@allow({name})` names nothing")]
+    UnknownAllowName {
+        name: String,
+        suggestion: Option<String>,
+        span: Span,
+    },
+
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
     #[error("`{name}(...)` is no longer a valid constructor")]
     LegacyWrapperConstructor {
@@ -905,6 +1010,24 @@ pub enum TypeError {
         key: Type,
         /// Which way out to offer — the advice differs per kind of type.
         fix: MapKeyFix,
+        span: Span,
+    },
+
+    /// mem.atomics/GA2: `Atomic<T>` needs a payload the hardware can treat as
+    /// one word. The reason is carried so the message can say which rule the
+    /// payload broke rather than restating the rule.
+    #[error("`Atomic<{ty}>` — {reason}")]
+    AtomicPayload {
+        ty: Type,
+        reason: String,
+        span: Span,
+    },
+
+    /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
+    /// while compiling, so the name has to be one the compiler knows. A runtime
+    /// string has nothing to rewrite to.
+    #[error("the field name in `value.(…)` isn't known at compile time")]
+    DynamicFieldNameNotComptime {
         span: Span,
     },
 
@@ -1016,6 +1139,13 @@ impl TypeError {
 
             FixedArrayGrowth { array, .. } => *array = f(array),
 
+            IncomparableOperands { left, right, .. } => {
+                *left = f(left);
+                *right = f(right);
+            }
+
+            AtomicPayload { ty, .. } => *ty = f(ty),
+
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }
             | CoalesceOnResult { found, .. }
@@ -1067,6 +1197,10 @@ impl TypeError {
                 *found = f(found);
             }
 
+            PointeeMismatch { from, to, .. } => {
+                *from = f(from);
+                *to = f(to);
+            }
             NarrowingNeedsPolicy { from, to, .. } => {
                 *from = f(from);
                 *to = f(to);
@@ -1099,6 +1233,7 @@ impl TypeError {
 
             // Carry no types.
             Undefined(..)
+            | DynamicFieldNameNotComptime { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
             | UnimplementedStdlibMethod { .. }
@@ -1134,14 +1269,20 @@ impl TypeError {
             | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
-            | MissingMutateAnnotation { .. }
             | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
+            | OverlappingArgumentBorrow { .. }
+            | WithNeedsElementOrBox { .. }
             | UnsafeRequired { .. }
+            | CStructReturn { .. }
             | TraitObjectSelfReturn { .. }
             | TraitObjectGenericMethod { .. }
+            | ErrorTraitMember { .. }
+            | MatchNeedsWildcard { .. }
+            | BreakValueFromStatementLoop { .. }
+            | ComptimeFieldNameNotString { .. }
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
             | NotSerializable { .. }
@@ -1163,10 +1304,11 @@ impl TypeError {
             | UseAfterDiscard { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
-            | MessageCoverageMissing { .. }
             | BareSyncAccess { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
+            | UnknownAllowName { .. }
+            | MutatePackageState { .. }
             | MixedDiscriminants { .. }
             | DiscriminantWithPayload { .. }
             | DuplicateDiscriminant { .. }

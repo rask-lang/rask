@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // tool.warnings/W9 (W0907): two fields of a locked value written in one `with`
-// block without staging. `transfer` warns; the other three are the exclusions —
+// block without staging. `transfer` warns; the rest are the exclusions —
 // `@allow` says the tear is harmless, `Local` has nobody to observe one (and
-// `staged()` is an error there per ST3a), and staging is the fix itself.
+// `staged()` is an error there per ST3a), and staging is the fix itself. The
+// `@allow` goes on a `test` block too (#1010), which is where a warning most
+// often fires on purpose.
 
 import sync.Shared
 import sync.Mutex
@@ -38,6 +40,14 @@ func transfer_staged(amount: i64) {
     with BOOKS.staged() as b {
         b.checking = b.checking - amount
         b.savings = b.savings + amount
+    }
+}
+
+@allow(torn_lock_update)
+test "a test block can say the tear is harmless" {
+    with BOOKS.write() as b {
+        b.checking = b.checking - 1
+        b.savings = b.savings + 1
     }
 }
 

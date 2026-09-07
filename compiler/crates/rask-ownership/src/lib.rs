@@ -130,6 +130,12 @@ pub struct OwnershipChecker<'a> {
     /// say — two `Rack<Node>` parameters give links of the same type — so the
     /// origin is carried from wherever the link was derived.
     link_rack_root: HashMap<String, String>,
+    /// A container that has had a link put into it, and which rack that link
+    /// came from. E0379 walks *expressions* to find a link leaving, and a
+    /// container is neither a link nor built where the link went in — `v.push(n)`
+    /// several statements before `return v` (#941). The rack rides on the
+    /// container name instead, so the same escape test covers it.
+    container_link_rack: HashMap<String, String>,
     /// Rack bindings this body may write nodes through: `mut` locals, and
     /// `mutate`/`deleting` parameters. A link is an access path into a rack, not
     /// a permission of its own, so this is what a node write is checked against.
@@ -179,8 +185,28 @@ pub struct OwnershipChecker<'a> {
     /// (type, method) -> (is the receiver `deleting`, which parameters are). Built
     /// here rather than carried on `MethodSig`, which has 46 construction sites.
     method_deleting: HashMap<(String, String), (bool, Vec<bool>)>,
+    /// MC2: closure bindings that hold a mutable capture, and what they hold.
+    /// `(binding, variables, where the closure was written, last statement that
+    /// mentions the binding)` — the record dies at that statement, so reading
+    /// the variable after the closure's last call is fine.
+    mutable_captures: Vec<MutableCapture>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
+}
+
+/// One live mutable capture: a closure binding and the variables its body writes.
+#[derive(Debug, Clone)]
+struct MutableCapture {
+    /// The name the closure is bound to.
+    holder: String,
+    /// Variables from the enclosing scope the body assigns to.
+    vars: Vec<String>,
+    /// Where the closure literal is.
+    span: Span,
+    /// Index of the last statement in the holder's block that mentions it.
+    dies_after: usize,
+    /// Which block's statement list `dies_after` counts in.
+    block: u32,
 }
 
 impl<'a> OwnershipChecker<'a> {
@@ -207,6 +233,7 @@ impl<'a> OwnershipChecker<'a> {
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
             link_rack_root: HashMap::new(),
+            container_link_rack: HashMap::new(),
             writable_racks: HashSet::new(),
             link_params: HashSet::new(),
             writable_links: HashSet::new(),
@@ -219,6 +246,7 @@ impl<'a> OwnershipChecker<'a> {
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
             last_closure_scope_limit: None,
+            mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
             method_deleting: HashMap::new(),
@@ -487,6 +515,7 @@ impl<'a> OwnershipChecker<'a> {
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
         self.last_closure_scope_limit = None;
+        self.mutable_captures.clear();
         self.param_type_strings.clear();
         self.identified_links.clear();
         self.coarse_resources.clear();
@@ -496,6 +525,7 @@ impl<'a> OwnershipChecker<'a> {
         self.exit_reported.clear();
         self.deleting_params.clear();
         self.link_rack_root.clear();
+        self.container_link_rack.clear();
         self.writable_racks.clear();
         self.link_params.clear();
         self.writable_links.clear();
@@ -657,13 +687,25 @@ impl<'a> OwnershipChecker<'a> {
         self.current_block += 1;
         let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
 
-        for stmt in stmts {
+        // MC2 needs to know where each name is mentioned for the last time, so
+        // a mutable capture can stop being exclusive once the closure holding
+        // it is done. Cheaper here than during the walk: the whole list is in
+        // hand, and it is one pass.
+        let last_mention = Self::last_mentions(stmts);
+
+        for (index, stmt) in stmts.iter().enumerate() {
+            self.check_mutable_capture_access(stmt);
             self.check_stmt(stmt);
+            // After the walk, not before: the closure's own body is where the
+            // write lives, and checking it against its own record would report
+            // every mutable capture as a conflict with itself.
+            self.register_mutable_capture(stmt, index, block_id, &last_mention);
             self.current_stmt += 1;
 
             // Release instant borrows at statement end
             self.release_instant_borrows(self.current_stmt - 1);
         }
+        self.mutable_captures.retain(|c| c.block != block_id);
 
         // Release persistent borrows at block end
         self.release_persistent_borrows(block_id);
@@ -781,12 +823,120 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// E4: `let x = collection[key]` copies when the element is Copy and is a
+    /// compile error when it isn't.
+    ///
+    /// Indexing hands back the element in place, so a non-Copy binding is a
+    /// second name for storage the collection still owns — writing through
+    /// either writes both, on both backends. `with` is the form that says the
+    /// access is scoped; `.clone()` is the form that says a second value is
+    /// wanted and pays for it.
+    ///
+    /// A field projection is a different rule and stays allowed: a view into a
+    /// struct field lives until the block ends (S1), and the field's owner is
+    /// right there in the same scope.
+    fn check_index_binding(&mut self, name: &str, init: &Expr, is_mut: bool) {
+        if let ExprKind::Field { .. } = &init.kind {
+            self.check_mutable_field_view(name, init, is_mut);
+            return;
+        }
+        if !matches!(init.kind, ExprKind::Index { .. }) {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        let collection = match &init.kind {
+            ExprKind::Index { object, .. } => Self::render_place(object),
+            _ => None,
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::NonCopyElementCopiedOut {
+                binding: name.to_string(),
+                elem_ty: self.resource_type_display(&ty),
+                collection,
+            },
+            span: init.span,
+        });
+    }
+
+    /// S5: `mut x = value.field` on a field that isn't Copy.
+    ///
+    /// A field read is a view that lives until the block ends (S1), and a
+    /// read-only view is fine — the source stays readable beside it. Binding one
+    /// as `mut` asks for something else: S5 says a mutable borrow excludes all
+    /// other access to the source, and a plain binding has no way to say for how
+    /// long. So the two names stay live together and a write through either is a
+    /// write through both — `escaped.push(1)` puts an element in `h.data`.
+    /// `with` is the form that scopes the exclusion; `.clone()` is the form that
+    /// asks for a separate value.
+    fn check_mutable_field_view(&mut self, name: &str, init: &Expr, is_mut: bool) {
+        if !is_mut {
+            return;
+        }
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) else {
+            return;
+        };
+        if fields.is_empty() {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::MutableFieldView {
+                binding: name.to_string(),
+                path: format!("{}.{}", root, fields.join(".")),
+                field_ty: self.resource_type_display(&ty),
+            },
+            span: init.span,
+        });
+    }
+
+    /// `is_copy` answers "treat this as a move", so a type it can't place — a
+    /// name the type table never resolved, an inference variable, a generic it
+    /// has no declaration for — comes back non-Copy. That is the safe direction
+    /// for a move analysis and the wrong one for a rejection: it would reject on
+    /// "couldn't tell". This asks the narrower question, and says yes only for a
+    /// type the pass can actually look up.
+    fn definitely_not_copy(&self, ty: &Type) -> bool {
+        let placed = match ty {
+            Type::Result { .. } | Type::Union(_) => true,
+            Type::Named(id) => self.program.types.get(*id).is_some(),
+            Type::Generic { base, .. } => {
+                let name = self.program.types.type_name(*base);
+                Self::is_native_opaque_generic(&name) || self.program.types.get(*base).is_some()
+            }
+            _ => false,
+        };
+        placed && !self.is_copy(ty)
+    }
+
+    /// A place expression rendered back to source, for a message. `None` for
+    /// anything that isn't a plain name or field chain.
+    fn render_place(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Field { object, field } => {
+                Some(format!("{}.{}", Self::render_place(object)?, field))
+            }
+            _ => None,
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
                 // `mut` is what makes a rack's nodes writable here.
                 self.writable_racks.insert(name.clone());
                 self.check_expr(init);
+                self.check_index_binding(name, init, true);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
@@ -839,6 +989,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
+                self.check_index_binding(name, init, false);
                 // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
@@ -991,6 +1142,16 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 if reinit_target {
                     if let ExprKind::Ident(target_name) = &target.kind {
+                        // Rebinding replaces what the name holds, links included:
+                        // `v = Vec.new()` after a `v.push(n)` points at nothing.
+                        match self.link_bearing_root(value) {
+                            Some(rack) => {
+                                self.container_link_rack.insert(target_name.clone(), rack);
+                            }
+                            None => {
+                                self.container_link_rack.remove(target_name);
+                            }
+                        }
                         self.bindings.insert(target_name.clone(), BindingState::Owned);
                         // Putting a resource into a binding gives it the
                         // obligation, whether or not it had one before. This is
@@ -1061,6 +1222,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(expr) = expr {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
+                    self.check_borrowed_field_escape(expr);
                     self.check_link_escape(expr, LinkEscape::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -1368,6 +1530,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
+                self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters of user
                 // methods. T1: a channel `send` transfers ownership of its value.
                 let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
@@ -2296,9 +2459,21 @@ impl<'a> OwnershipChecker<'a> {
     /// iteration binding or a call result may be a second name for a node some
     /// other local also names, and a delete of either invalidates both.
     fn record_link_provenance(&mut self, name: &str, ty: &rask_types::Type, init: &Expr) {
+        // A container binding takes its links from whatever it is bound to, and
+        // loses them when it's bound to something else. Recomputed rather than
+        // accumulated, so `v = Vec.new()` after a `v.push(n)` starts clean.
         if !self.is_link_type(ty) {
+            match self.link_bearing_root(init) {
+                Some(rack) => {
+                    self.container_link_rack.insert(name.to_string(), rack);
+                }
+                None => {
+                    self.container_link_rack.remove(name);
+                }
+            }
             return;
         }
+        self.container_link_rack.remove(name);
         let from_insert = matches!(
             &init.kind,
             ExprKind::MethodCall { object, method, .. }
@@ -2323,6 +2498,59 @@ impl<'a> OwnershipChecker<'a> {
         } else {
             self.writable_links.remove(name);
         }
+    }
+
+    /// A link handed to a container keeps the container alive no longer than its
+    /// rack. `v.push(n)`, `m.insert(k, n)`, `v[i] = n` — anything that puts a
+    /// link somewhere the container outlives the statement.
+    fn note_link_into_container(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[rask_ast::expr::CallArg],
+    ) {
+        let Some(root) = Self::extract_root_and_fields(object).0 else { return };
+        // `clear` throws the links away with everything else, so what's left
+        // points at nothing and outlives nothing.
+        if method == "clear" && args.is_empty() {
+            self.container_link_rack.remove(&root);
+            return;
+        }
+        for arg in args {
+            if let Some(rack) = self.link_bearing_root(&arg.expr) {
+                self.container_link_rack.insert(root.clone(), rack);
+                return;
+            }
+        }
+    }
+
+    /// The rack behind a value that is, or contains, a link. Walks the literal
+    /// forms the same way the escape check does, so `[n]` and `(n, 7)` count.
+    fn link_bearing_root(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                elems.iter().find_map(|e| self.link_bearing_root(e))
+            }
+            ExprKind::StructLit { fields, spread, .. } => fields
+                .iter()
+                .find_map(|f| self.link_bearing_root(&f.value))
+                .or_else(|| spread.as_ref().and_then(|sp| self.link_bearing_root(sp))),
+            ExprKind::Ident(name) => self
+                .container_link_rack
+                .get(name)
+                .cloned()
+                .or_else(|| self.link_carrying_expr_root(expr)),
+            _ => self.link_carrying_expr_root(expr),
+        }
+    }
+
+    /// The rack behind an expression whose *own* type is a link.
+    fn link_carrying_expr_root(&self, expr: &Expr) -> Option<String> {
+        let ty = self.program.node_types.get(&expr.id)?;
+        if !self.is_link_type(ty) {
+            return None;
+        }
+        self.link_root_of_expr(expr)
     }
 
     /// Whether this expression is reached from a link this body may write through.
@@ -2438,11 +2666,25 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => {}
         }
-        let Some(ty) = self.program.node_types.get(&expr.id) else { return };
-        if !self.is_link_type(ty) {
-            return;
-        }
-        let Some(rack) = self.link_root_of_expr(expr) else { return };
+        // A container that had a link put into it escapes with the link inside
+        // it. Asked first, because the container's own type isn't a link and the
+        // walk below would stop at that (#941).
+        let via_container = match &expr.kind {
+            ExprKind::Ident(name) => self.container_link_rack.get(name).cloned(),
+            _ => None,
+        };
+        let carried = via_container.is_some();
+        let rack = match via_container {
+            Some(rack) => rack,
+            None => {
+                let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+                if !self.is_link_type(ty) {
+                    return;
+                }
+                let Some(rack) = self.link_root_of_expr(expr) else { return };
+                rack
+            }
+        };
         // A parameter rack outlives this body, so nothing can escape it here.
         if self.param_type_strings.contains_key(&rack) {
             return;
@@ -2463,7 +2705,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => rack.clone(),
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via },
+            kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via, carried },
             span,
         });
     }
@@ -2836,28 +3078,14 @@ impl<'a> OwnershipChecker<'a> {
                                 });
                                 return;
                             }
-                            BindingState::Moved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
-                                return;
-                            }
-                            BindingState::MaybeMoved { at } => {
-                                let reason = self.move_reason_for(&source_name);
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::UseAfterMaybeMove {
-                                        name: source_name.clone(),
-                                        moved_at: *at,
-                                        reason,
-                                    },
-                                    span,
-                                });
+                            // Already reported. Every caller walks this same
+                            // expression with `check_expr` first, and its `Ident`
+                            // arm reports the use — at the name rather than at
+                            // the whole statement, which is the better underline.
+                            // Reporting again here gave one `let z = x` two
+                            // identical E0800s at two spans (#1092). There is
+                            // still nothing to move.
+                            BindingState::Moved { .. } | BindingState::MaybeMoved { .. } => {
                                 return;
                             }
                             BindingState::Discarded { at } => {
@@ -2898,6 +3126,45 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => (None, None),
         }
+    }
+
+    /// S3: a view into a borrowed parameter's field, handed back to the caller.
+    ///
+    /// A parameter without `take` is on loan (PM1), and a field of it is a view
+    /// that lives until the block ends (S1). Returning that view gives the
+    /// caller a second name for the field: `return self.value` on a `Vec` hands
+    /// back the same buffer, so a `push` through the returned value is a `push`
+    /// into the struct — identically on both backends. Nothing said so, and
+    /// whoever frees it second frees it twice.
+    ///
+    /// Only a field of a *borrowed* root: a local you own is yours to take
+    /// apart, and a `take` parameter was given to you.
+    fn check_borrowed_field_escape(&mut self, expr: &Expr) {
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+            return;
+        };
+        if fields.is_empty() {
+            return; // whole-value return is `consume_binding`'s rule
+        }
+        let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&root) else {
+            return;
+        };
+        let Some(ty) = self.program.node_types.get(&expr.id).cloned() else {
+            return;
+        };
+        if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::BorrowedFieldEscapes {
+                path: format!("{}.{}", root, fields.join(".")),
+                root,
+                field_ty: self.resource_type_display(&ty),
+                declared_at,
+                is_mutate,
+            },
+            span: expr.span,
+        });
     }
 
     /// LP14: Extract the collection name from a for-loop iterator expression.
@@ -3286,6 +3553,11 @@ impl<'a> OwnershipChecker<'a> {
             Type::I16 | Type::U16 => 2,
             Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
             Type::I64 | Type::U64 | Type::F64 => 8,
+            // Two words, and the only scalar that is. Falling through to the
+            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
+            // instead of 24, so it sat on the Copy threshold instead of over it
+            // and two bindings aliased one value with nothing said (#936).
+            Type::I128 | Type::U128 => 16,
             Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
             Type::Array { elem, len } => self.type_size(elem) * len,
             ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte
@@ -3876,7 +4148,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::Block(stmts) => {
-                for s in stmts { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(stmts, locals, out, projections);
             }
             ExprKind::Closure { params, body, .. } => {
                 let mut inner_locals = locals.clone();
@@ -3938,14 +4210,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args { self.collect_free_vars_inner(&arg.expr, locals, out, projections); }
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.collect_free_vars_inner(&b.source, locals, out, projections); }
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::Spawn { body } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message, .. } => {
                 self.collect_free_vars_inner(condition, locals, out, projections);
@@ -3957,11 +4229,52 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             _ => {
                 // Literals, string interpolation, etc.
             }
+        }
+    }
+
+    /// Free variables of a statement list, with each statement seeing the names
+    /// the ones above it declared.
+    ///
+    /// Without this a closure's own `mut total = 0` didn't shadow an outer
+    /// `total`, so the outer one was reported as a capture the closure writes —
+    /// which registered a borrow on a variable the closure never touches, and
+    /// under MC2 rejected the outer name's next use.
+    fn collect_free_vars_body_inner(
+        &self,
+        body: &[Stmt],
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
+        let mut scope = locals.clone();
+        for stmt in body {
+            self.collect_free_vars_stmt_inner(stmt, &scope, out, projections);
+            Self::names_declared_by(stmt, &mut scope);
+        }
+    }
+
+    /// The names a statement introduces into the rest of its block.
+    fn names_declared_by(stmt: &Stmt, scope: &mut HashSet<String>) {
+        match &stmt.kind {
+            StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
+                scope.insert(name.clone());
+            }
+            StmtKind::LetTuple { patterns, .. } | StmtKind::MutTuple { patterns, .. } => {
+                for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
+                    scope.insert(name.to_string());
+                }
+            }
+            StmtKind::LetStruct { pattern, .. } => {
+                for name in pattern.bound_names() {
+                    scope.insert(name.to_string());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3995,39 +4308,245 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::While { cond, body, .. } => {
                 self.collect_free_vars_inner(cond, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::WhileLet { expr, body, .. } => {
                 self.collect_free_vars_inner(expr, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::For { iter, body, .. } => {
                 self.collect_free_vars_inner(iter, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Ensure { body, else_handler } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
                 if let Some((_, handler_body)) = else_handler {
-                    for s in handler_body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                    self.collect_free_vars_body_inner(handler_body, locals, out, projections);
                 }
             }
             StmtKind::Comptime(body) => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::ComptimeFor { iter, body, .. } => {
                 self.collect_free_vars_inner(iter, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
             | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
         }
     }
 
+    // ---- MC2: a mutable capture is exclusive while it lasts ----
+    //
+    // `mem.closures/MC2` says that while a mutable capture exists, nothing else
+    // may reach the variable. Two closures writing one counter, or a read
+    // between two calls that change it, is the same aliasing bug the borrow
+    // rules exist to stop — and nothing checked it, so both compiled (#1087).
+    //
+    // The capture lasts until the closure's last use, not to the end of the
+    // block. MC4 is the reason: "caller sees mutations after the closure
+    // completes" is the whole point of a mutable capture, so a read after the
+    // last call has to stay legal.
+    //
+    // Only a closure bound to a name is tracked. One written inline —
+    // `v.each(|x| { total = total + x })` — dies at the semicolon, so there is
+    // never a second thing reaching the variable while it lives.
+
+    /// Every name any expression in this statement mentions.
+    fn names_in(stmt: &Stmt) -> HashSet<String> {
+        let mut out = HashSet::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                out.insert(name.clone());
+            }
+        });
+        out
+    }
+
+    /// For each name, the last statement in this list that mentions it.
+    fn last_mentions(stmts: &[Stmt]) -> HashMap<String, usize> {
+        let mut out = HashMap::new();
+        for (index, stmt) in stmts.iter().enumerate() {
+            for name in Self::names_in(stmt) {
+                out.insert(name, index);
+            }
+        }
+        out
+    }
+
+    /// The name at the root of an assignment target: `x`, `x.f`, `x[i].f`.
+    fn assign_root(target: &Expr) -> Option<String> {
+        match &target.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. }
+            | ExprKind::DynamicField { object, .. } => Self::assign_root(object),
+            _ => None,
+        }
+    }
+
+    /// Names this statement list assigns to, including through the bodies that
+    /// hang off a statement rather than off a block expression.
+    fn assigned_in(stmts: &[Stmt], out: &mut Vec<String>) {
+        for stmt in stmts {
+            if let StmtKind::Assign { target, .. } = &stmt.kind {
+                if let Some(root) = Self::assign_root(target) {
+                    out.push(root);
+                }
+            }
+            match &stmt.kind {
+                StmtKind::While { body, .. }
+                | StmtKind::WhileLet { body, .. }
+                | StmtKind::Loop { body, .. }
+                | StmtKind::For { body, .. }
+                | StmtKind::ComptimeFor { body, .. }
+                | StmtKind::Comptime(body) => Self::assigned_in(body, out),
+                StmtKind::Ensure { body, else_handler } => {
+                    Self::assigned_in(body, out);
+                    if let Some((_, handler)) = else_handler {
+                        Self::assigned_in(handler, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Which of a closure's captures its body writes.
+    ///
+    /// Intersecting with the captures is what makes the scan safe to keep
+    /// flat: a name the body declares itself is not a capture, so a local
+    /// `total` inside can't be mistaken for the outer one.
+    fn written_captures(&self, body: &Expr, captures: &[String]) -> Vec<String> {
+        let mut written: Vec<String> = Vec::new();
+        rask_ast::visit::walk_expr(body, &mut |e| match &e.kind {
+            // Every block expression anywhere below, so the assignments inside
+            // an `if` arm or a nested closure are seen too.
+            ExprKind::Block(stmts) => Self::assigned_in(stmts, &mut written),
+            // `v.push(1)` writes `v` as surely as `v[0] = 1` does, and
+            // `h.items.push(1)` writes `h`.
+            ExprKind::MethodCall { object, method, .. } => {
+                if self.is_mutate_self_method(object, method) {
+                    if let Some(root) = Self::assign_root(object) {
+                        written.push(root);
+                    }
+                }
+            }
+            _ => {}
+        });
+        captures
+            .iter()
+            .filter(|name| written.contains(name))
+            .cloned()
+            .collect()
+    }
+
+    /// The closure a `let`/`mut` statement binds, if it binds one that borrows
+    /// its captures. An `own` closure moves them instead, and a use of the
+    /// variable afterwards is already a use after move.
+    fn closure_binding(stmt: &Stmt) -> Option<(&String, &Expr)> {
+        let (name, init) = match &stmt.kind {
+            StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => (name, init),
+            _ => return None,
+        };
+        match &init.kind {
+            ExprKind::Closure { is_own: false, .. } => Some((name, init)),
+            _ => None,
+        }
+    }
+
+    /// MC2: report anything in this statement that reaches a variable a live
+    /// closure is holding.
+    fn check_mutable_capture_access(&mut self, stmt: &Stmt) {
+        let touched = Self::names_in(stmt);
+        // What a closure *this* statement binds would write, so the message can
+        // say "captured again" only when that is what happened — a second
+        // closure that merely reads the variable is still a conflict, but a
+        // different sentence.
+        let would_write = self.captures_a_statement_writes(stmt);
+
+        let mut hit: Vec<(String, String, Span, bool)> = Vec::new();
+        for capture in &self.mutable_captures {
+            for name in &capture.vars {
+                if touched.contains(name) {
+                    hit.push((
+                        name.clone(),
+                        capture.holder.clone(),
+                        capture.span,
+                        would_write.contains(name),
+                    ));
+                }
+            }
+        }
+        for (name, holder, captured_at, second_closure) in hit {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::MutableCaptureConflict {
+                    name: name.clone(),
+                    holder: holder.clone(),
+                    captured_at,
+                    second_closure,
+                },
+                span: stmt.span,
+            });
+            // One report per conflict. The second access to the same variable
+            // is the same mistake, and a loop body would otherwise say it once
+            // per statement.
+            self.mutable_captures.retain(|c| c.holder != holder);
+        }
+    }
+
+    /// The captures a closure bound by this statement writes, if it binds one.
+    fn captures_a_statement_writes(&self, stmt: &Stmt) -> Vec<String> {
+        let Some((_, closure)) = Self::closure_binding(stmt) else { return Vec::new() };
+        let ExprKind::Closure { params, body, .. } = &closure.kind else { return Vec::new() };
+        let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut captures = Vec::new();
+        self.collect_free_vars(body, &param_names, &mut captures);
+        self.written_captures(body, &captures)
+    }
+
+    /// Record what a closure this statement binds holds, and retire the
+    /// records whose closure has now seen its last use.
+    fn register_mutable_capture(
+        &mut self,
+        stmt: &Stmt,
+        index: usize,
+        block_id: u32,
+        last_mention: &HashMap<String, usize>,
+    ) {
+        if let Some((holder, closure)) = Self::closure_binding(stmt) {
+            let vars = self.captures_a_statement_writes(stmt);
+            if !vars.is_empty() {
+                self.mutable_captures.push(MutableCapture {
+                    holder: holder.clone(),
+                    vars,
+                    span: closure.span,
+                    dies_after: last_mention.get(holder).copied().unwrap_or(index),
+                    block: block_id,
+                });
+            }
+        }
+
+        self.mutable_captures
+            .retain(|c| !(c.block == block_id && c.dies_after <= index));
+    }
+
     /// Check if a method call uses `take self`.
     fn is_take_self_method(&self, object: &Expr, method_name: &str) -> bool {
+        self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Take)
+    }
+
+    /// Check if a method call uses `mutate self` — it writes its receiver.
+    fn is_mutate_self_method(&self, object: &Expr, method_name: &str) -> bool {
+        self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Mutate)
+    }
+
+    /// How a method takes its receiver, looked up from the receiver's type.
+    fn self_param_of(&self, object: &Expr, method_name: &str) -> Option<rask_types::SelfParam> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
@@ -4048,17 +4567,17 @@ impl<'a> OwnershipChecker<'a> {
                     let methods = match def {
                         rask_types::TypeDef::Struct { methods, .. } => methods,
                         rask_types::TypeDef::Enum { methods, .. } => methods,
-                        _ => return false,
+                        _ => return None,
                     };
                     for m in methods {
                         if m.name == method_name {
-                            return m.self_param == rask_types::SelfParam::Take;
+                            return Some(m.self_param);
                         }
                     }
                 }
             }
         }
-        false
+        None
     }
 
     /// Mark an argument as consumed (moved) when it names a binding.

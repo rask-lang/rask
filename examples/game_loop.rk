@@ -137,14 +137,19 @@ func collision_system(mutate state: GameState) {
 
             if !state.entities[h1].active || !state.entities[h2].active { continue }
 
-            let e1 = state.entities[h1]
-            let e2 = state.entities[h2]
+            // Take the components the check needs, not the whole entity —
+            // `Position` is 8 bytes and copies, an `Entity` doesn't
+            // (mem.borrowing/E4).
+            let p1 = state.entities[h1].position
+            let p2 = state.entities[h2].position
 
             // Calculate distance
-            let dx = e1.position.x - e2.position.x
-            let dy = e1.position.y - e2.position.y
+            let dx = p1.x - p2.x
+            let dy = p1.y - p2.y
             let dist = (dx * dx + dy * dy).sqrt()
-            let min_dist = e1.collider.radius + e2.collider.radius
+            let r1 = state.entities[h1].collider.radius
+            let r2 = state.entities[h2].collider.radius
+            let min_dist = r1 + r2
 
             if dist < min_dist {
                 handle_collision(mutate state, h1, h2)

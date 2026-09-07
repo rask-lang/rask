@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a variant payload names the type, so the message does too
+// ERROR: expected `i32`, found `string`
+//
+// The payload's declared type is what the reader has to match, and the message
+// used to name it as "found" (#922): `Node.Branch([1, 2, 3])` reported
+// "expected `[i32; 3]`, found `Vec<i32>`" and told the reader to change their
+// expression to the type they had just written.
+//
+// The literal itself is legal now — C4 says the slot picks the shape and a
+// declared payload is a slot — so what's left to reject is a genuine mismatch.
+
+enum Node {
+    Leaf(i32)
+    Branch(Vec<i32>)
+}
+
+func main() {
+    let a = Node.Leaf("nope")
+    let b = Node.Branch("also nope")
+    println("built")
+}

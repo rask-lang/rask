@@ -58,6 +58,40 @@ pub enum OwnershipErrorKind {
         reason: MoveReason,
     },
 
+    /// mem.borrowing/S5: `mut x = value.field` on a non-Copy field — a second,
+    /// writable name for storage the source still holds.
+    #[error("`{binding}` and `{path}` would be the same `{field_ty}`, both writable")]
+    MutableFieldView {
+        binding: String,
+        path: String,
+        field_ty: String,
+    },
+
+    /// mem.borrowing/S3: a view into a borrowed parameter's field, returned.
+    #[error("`{path}` belongs to the caller — returning it hands out a second name for it")]
+    BorrowedFieldEscapes {
+        /// `self.value`, `p.items`.
+        path: String,
+        /// The parameter the path starts at.
+        root: String,
+        field_ty: String,
+        /// Where the parameter is declared, to point at and suggest `take` on.
+        declared_at: Span,
+        is_mutate: bool,
+    },
+
+    /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
+    /// Copy. Indexing hands the element back in place, so the binding is a
+    /// second name for storage the collection still owns.
+    #[error("`{elem_ty}` isn't Copy, so `{binding}` would be a second name for the same element")]
+    NonCopyElementCopiedOut {
+        binding: String,
+        elem_ty: String,
+        /// The collection being indexed, when it has a printable name.
+        /// Not called `source`: `thiserror` reads that name as the error cause.
+        collection: Option<String>,
+    },
+
     /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
     /// lent out can't be given away.
     ///
@@ -189,6 +223,9 @@ pub enum OwnershipErrorKind {
         rack: String,
         /// How it escapes — a return, or an assignment into a longer-lived name.
         via: LinkEscape,
+        /// The escaping name is a *container* holding links rather than a link:
+        /// `v.push(n)` then `return v`. Same dangle, different sentence.
+        carried: bool,
     },
 
     /// analysis.fourth-option: a node written through a link whose rack this
@@ -342,6 +379,18 @@ pub enum OwnershipErrorKind {
     #[error("closure `{name}` captures scoped borrow and cannot escape")]
     ScopeLimitedClosureEscapes {
         name: String,
+    },
+
+    /// MC2: a variable a live closure captures mutably, touched by something
+    /// else. `holder` is the closure's binding, `second_closure` says whether
+    /// the thing touching it is another closure capturing the same variable.
+    #[error("`{name}` is already mutably captured by `{holder}`")]
+    MutableCaptureConflict {
+        name: String,
+        holder: String,
+        /// Where the capturing closure was written.
+        captured_at: Span,
+        second_closure: bool,
     },
 
     /// ER43: a wildcard pattern would silently drop a transitively-linear value.

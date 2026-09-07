@@ -719,17 +719,24 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(body_block);
 
         let elem_ref = &elem_ty;
-        let nested_struct = match elem_ref {
-            Some(Type::UnresolvedNamed(name)) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-            Some(Type::UnresolvedGeneric { name, .. }) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
+        // The index travels with the layout. Re-deriving it from the layout's
+        // *name* afterwards is what let this land on the wrong entry: a name
+        // shared by a user struct and a stdlib one resolves differently
+        // depending on which side asks, and a name that isn't in the table at
+        // all used to fall back to index 0 — whatever type happens to sit
+        // there (#1062).
+        let nested_struct: Option<(u32, StructLayout)> = match elem_ref {
+            Some(Type::UnresolvedNamed(name)) => self.ctx.find_struct(name),
+            Some(Type::UnresolvedGeneric { name, .. }) => self.ctx.find_struct(name),
             Some(Type::Named(type_id)) => {
-                self.ctx.type_names.get(type_id)
-                    .and_then(|name| self.ctx.find_struct(name).map(|(_, l)| l.clone()))
+                self.ctx.type_names.get(type_id).and_then(|name| self.ctx.find_struct(name))
             }
             _ => None,
-        }.or_else(|| match &elem_mir {
+        }
+        .map(|(i, l)| (i, l.clone()))
+        .or_else(|| match &elem_mir {
             Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
-                self.ctx.struct_layouts.get(*id as usize).cloned()
+                self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
             }
             _ => None,
         });
@@ -737,9 +744,8 @@ impl<'a> MirLowerer<'a> {
         // The element's own type, so a struct element comes back as a pointer to
         // its storage and a string keeps all 16 bytes.
         let elem_local_ty = match (&nested_struct, elem_ref, &elem_mir) {
-            (Some(l), _, _) => {
-                let idx = self.ctx.struct_layouts.iter().position(|s| s.name == l.name).unwrap_or(0);
-                MirType::Struct(crate::types::StructLayoutId::new(idx as u32, l.size, l.align))
+            (Some((idx, l)), _, _) => {
+                MirType::Struct(crate::types::StructLayoutId::new(*idx, l.size, l.align))
             }
             (None, Some(Type::String), _) => MirType::String,
             (None, _, Some(m)) if matches!(m, MirType::String) => MirType::String,
@@ -752,7 +758,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 
-        if let Some(layout) = nested_struct {
+        if let Some((_, layout)) = nested_struct {
             let (json_str, _) = self.lower_json_encode_struct(
                 MirOperand::Local(elem),
                 layout,

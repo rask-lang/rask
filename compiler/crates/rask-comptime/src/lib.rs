@@ -337,6 +337,60 @@ fn extract_cfg_field(expr: &Expr) -> Option<&str> {
 // Comptime Values
 // ============================================================================
 
+/// What a folded const becomes in the binary: its bytes, plus the addresses
+/// that only the linker can fill in.
+///
+/// A string element inside an array is the case that needs the second half. It
+/// occupies sixteen bytes like any other, and when the characters don't fit in
+/// them the slot holds a pointer to a static header instead. `string_relocs`
+/// says "at this byte offset goes the address of the header for this text";
+/// codegen emits the header and writes the relocation.
+#[derive(Debug, Clone, Default)]
+pub struct SerializedConst {
+    pub bytes: Vec<u8>,
+    pub string_relocs: Vec<(usize, String)>,
+}
+
+/// The Rask type name of a scalar or string, spelled the way an annotation
+/// would be. `None` for anything with no constant form.
+fn scalar_type_name(v: &ComptimeValue) -> Option<&'static str> {
+    Some(match v {
+        ComptimeValue::String(_) => "string",
+        ComptimeValue::Bool(_) => "bool",
+        ComptimeValue::Char(_) => "char",
+        ComptimeValue::I8(_) => "i8",
+        ComptimeValue::I16(_) => "i16",
+        ComptimeValue::I32(_) => "i32",
+        ComptimeValue::I64(_) => "i64",
+        ComptimeValue::U8(_) => "u8",
+        ComptimeValue::U16(_) => "u16",
+        ComptimeValue::U32(_) => "u32",
+        ComptimeValue::U64(_) => "u64",
+        ComptimeValue::F32(_) => "f32",
+        ComptimeValue::F64(_) => "f64",
+        _ => return None,
+    })
+}
+
+/// Whether two comptime values are the same map key.
+///
+/// A key is a scalar or a string — the things a map can hash — so this is
+/// equality on those and "no" for anything else. Integer widths compare by
+/// value, which is what `m[1]` finding a key pushed as `1i64` needs.
+fn ct_key_eq(a: &ComptimeValue, b: &ComptimeValue) -> bool {
+    use ComptimeValue::*;
+    match (a, b) {
+        (String(x), String(y)) => x == y,
+        (Bool(x), Bool(y)) => x == y,
+        (Char(x), Char(y)) => x == y,
+        (F32(_) | F64(_), _) | (_, F32(_) | F64(_)) => false,
+        _ => match (a.as_i64(), b.as_i64()) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        },
+    }
+}
+
 /// A value that exists at compile time.
 #[derive(Debug, Clone)]
 pub enum ComptimeValue {
@@ -357,6 +411,13 @@ pub enum ComptimeValue {
     Char(char),
     String(String),
     Array(Vec<ComptimeValue>),
+    /// Entries in insertion order, not a hash table.
+    ///
+    /// The runtime's map seeds its bucket layout per process, so there is no
+    /// order for a fold to reproduce and no static table to emit. A list of
+    /// pairs is what the constant actually is: the entries, and lowering
+    /// inserts them (#1075).
+    Map(Vec<(ComptimeValue, ComptimeValue)>),
     Tuple(Vec<ComptimeValue>),
     Struct {
         name: String,
@@ -444,6 +505,13 @@ fn show(v: &ComptimeValue) -> String {
                 _ => format!("[{}]", inner.join(", ")),
             }
         }
+        ComptimeValue::Map(entries) => {
+            let inner: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", show(k), show(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
         ComptimeValue::Struct { name, .. } => format!("{name} {{ … }}"),
         ComptimeValue::Enum { name, variant, .. } => format!("{name}.{variant}"),
         ComptimeValue::Closure { .. } => "<closure>".to_string(),
@@ -471,10 +539,35 @@ impl ComptimeValue {
             ComptimeValue::Char(_) => "char",
             ComptimeValue::String(_) => "String",
             ComptimeValue::Array(_) => "Array",
+            ComptimeValue::Map(_) => "Map",
             ComptimeValue::Tuple(_) => "Tuple",
             ComptimeValue::Struct { .. } => "Struct",
             ComptimeValue::Enum { .. } => "Enum",
             ComptimeValue::Closure { .. } => "Closure",
+        }
+    }
+
+    /// What `to_string` and an interpolation render this as — the same text
+    /// the runtime would print.
+    pub fn to_display_string(&self) -> String {
+        match self {
+            ComptimeValue::Unit => "()".to_string(),
+            ComptimeValue::Bool(b) => b.to_string(),
+            ComptimeValue::I8(v) => v.to_string(),
+            ComptimeValue::I16(v) => v.to_string(),
+            ComptimeValue::I32(v) => v.to_string(),
+            ComptimeValue::I64(v) => v.to_string(),
+            ComptimeValue::I128(v) => v.to_string(),
+            ComptimeValue::U8(v) => v.to_string(),
+            ComptimeValue::U16(v) => v.to_string(),
+            ComptimeValue::U32(v) => v.to_string(),
+            ComptimeValue::U64(v) => v.to_string(),
+            ComptimeValue::U128(v) => v.to_string(),
+            ComptimeValue::F32(v) => v.to_string(),
+            ComptimeValue::F64(v) => v.to_string(),
+            ComptimeValue::Char(c) => c.to_string(),
+            ComptimeValue::String(s) => s.clone(),
+            other => other.type_name().to_string(),
         }
     }
 
@@ -488,6 +581,7 @@ impl ComptimeValue {
     pub fn type_prefix(&self) -> &'static str {
         match self {
             ComptimeValue::Array(_) => "Vec",
+            ComptimeValue::Map(_) => "Map",
             ComptimeValue::String(_) => "string",
             _ => self.type_name(),
         }
@@ -497,6 +591,7 @@ impl ComptimeValue {
     pub fn elem_count(&self) -> usize {
         match self {
             ComptimeValue::Array(elems) => elems.len(),
+            ComptimeValue::Map(entries) => entries.len(),
             _ => 0,
         }
     }
@@ -514,7 +609,7 @@ impl ComptimeValue {
         Some(match first {
             // `type_name` spells this one for error messages, not as a type.
             ComptimeValue::String(_) => "string",
-            ComptimeValue::Array(_) | ComptimeValue::Tuple(_)
+            ComptimeValue::Array(_) | ComptimeValue::Tuple(_) | ComptimeValue::Map(_)
             | ComptimeValue::Struct { .. } | ComptimeValue::Enum { .. }
             | ComptimeValue::Closure { .. } | ComptimeValue::Unit => return None,
             other => other.type_name(),
@@ -572,19 +667,89 @@ impl ComptimeValue {
         }
     }
 
-    /// Serialize to a flat byte array for embedding in Cranelift data sections.
-    /// Only supports primitive arrays — the main use case for comptime globals.
-    pub fn serialize(&self) -> Option<Vec<u8>> {
+    /// Serialize to bytes for embedding in Cranelift data sections.
+    ///
+    /// Primitives, strings, and arrays of either. Anything else has no constant
+    /// form and the const is left to run where it's used.
+    pub fn serialize(&self) -> Option<SerializedConst> {
+        let mut out = SerializedConst::default();
         match self {
             ComptimeValue::Array(elems) => {
-                let mut bytes = Vec::new();
                 for elem in elems {
-                    bytes.extend(elem.serialize_element()?);
+                    elem.write_element(&mut out)?;
                 }
-                Some(bytes)
             }
-            _ => self.serialize_element().map(|b| b.to_vec()),
+            // The characters, not a `RaskStr`. Lowering turns a whole-value
+            // string back into a string literal, which is already emitted as
+            // const data with a sentinel refcount — so a folded string const
+            // costs nothing at startup and needs no layout knowledge here. An
+            // *element* is different: it sits in a slot next to its neighbours,
+            // so it has to be a real `RaskStr` (see `write_element`).
+            ComptimeValue::String(s) => out.bytes.extend_from_slice(s.as_bytes()),
+            // Entries back to back, key then value, each in a slot of its own.
+            // Lowering reads them at the same offsets and inserts them into a
+            // real map: a hash table seeds its layout per process, so there is
+            // no static table to emit, only the entries to put in one (#1075).
+            ComptimeValue::Map(entries) => {
+                for (k, v) in entries {
+                    k.write_map_slot(&mut out)?;
+                    v.write_map_slot(&mut out)?;
+                }
+            }
+            _ => out.bytes.extend(self.serialize_element()?),
         }
+        Some(out)
+    }
+
+    /// The Rask type names of a map's keys and values, taken from the first
+    /// entry. `None` for an empty map, or one holding something with no
+    /// constant form.
+    pub fn map_types(&self) -> Option<(&'static str, &'static str)> {
+        let ComptimeValue::Map(entries) = self else { return None };
+        let (k, v) = entries.first()?;
+        Some((scalar_type_name(k)?, scalar_type_name(v)?))
+    }
+
+    /// One map slot: the value, then padding out to the next eight bytes.
+    ///
+    /// Every slot is a whole number of words, so a sixteen-byte string never
+    /// lands at a four-byte offset. Lowering computes the same offsets from the
+    /// type names in the metadata, so the two sides can't drift.
+    fn write_map_slot(&self, out: &mut SerializedConst) -> Option<()> {
+        scalar_type_name(self)?;
+        let start = out.bytes.len();
+        self.write_element(out)?;
+        let written = out.bytes.len() - start;
+        let padded = written.div_ceil(8) * 8;
+        out.bytes.resize(start + padded, 0);
+        Some(())
+    }
+
+    /// Append one array element to `out`.
+    ///
+    /// A string element is a full sixteen-byte `RaskStr`: up to fifteen
+    /// characters inline with `15 - len` in the last byte, or — when it doesn't
+    /// fit — a header address and the length with the heap bit set. The address
+    /// isn't known until link time, so it's left zero and recorded as a
+    /// relocation for codegen to fill in.
+    fn write_element(&self, out: &mut SerializedConst) -> Option<()> {
+        const SSO_MAX: usize = 15;
+        const HEAP_FLAG: u64 = 1 << 63;
+        match self {
+            ComptimeValue::String(s) if s.len() <= SSO_MAX => {
+                let mut slot = [0u8; 16];
+                slot[..s.len()].copy_from_slice(s.as_bytes());
+                slot[15] = (SSO_MAX - s.len()) as u8;
+                out.bytes.extend_from_slice(&slot);
+            }
+            ComptimeValue::String(s) => {
+                out.string_relocs.push((out.bytes.len(), s.clone()));
+                out.bytes.extend_from_slice(&0u64.to_le_bytes());
+                out.bytes.extend_from_slice(&(s.len() as u64 | HEAP_FLAG).to_le_bytes());
+            }
+            _ => out.bytes.extend(self.serialize_element()?),
+        }
+        Some(())
     }
 
     /// Serialize a single element to its native byte representation.
@@ -616,7 +781,7 @@ impl ComptimeValue {
 /// Errors that can occur during comptime evaluation.
 #[derive(Debug, Error)]
 pub enum ComptimeError {
-    #[error("comptime exceeded backwards branch quota ({0}); increase with @branch_quota")]
+    #[error("comptime exceeded backwards branch quota ({0}); raise it with @comptime_quota(N) on the const")]
     BranchQuotaExceeded(usize),
 
     #[error("comptime exceeded time limit; simplify the expression or increase the limit")]
@@ -661,6 +826,13 @@ pub enum ComptimeError {
     #[error("comptime panic: {0}")]
     Panic(String),
 
+    /// `todo()` reached at comptime. Separate from `Panic` because `todo()`
+    /// means "not written yet" — a program full of them still has to compile,
+    /// which is the whole point of the placeholder. The value falls back to
+    /// runtime, where the same `todo()` panics.
+    #[error("not yet implemented at comptime: {0}")]
+    Unimplemented(String),
+
     #[error("no field `{field}` on type `{ty}`")]
     NoSuchField { ty: String, field: String },
 
@@ -693,14 +865,36 @@ pub enum ComptimeError {
 }
 
 impl ComptimeError {
-    /// Hard errors are genuine compile errors (not a reason to fall back or
-    /// skip): comptime overflow and divide-by-zero (type.overflow CT1, OV2).
+    /// Hard errors are genuine compile errors — the evaluator ran the code and
+    /// the code, or what it asked for, is the problem. There is no answer to
+    /// fall back to: `const X = comptime { … }` promises a value computed at
+    /// compile time (CT2), and running the block again at runtime would only
+    /// reach the same panic or the same limit.
+    ///
+    /// The spec's own error table says as much: quota (CT35), panic and
+    /// out-of-bounds (CT46), I/O (CT7), pools (CT31), concurrency (CT33),
+    /// memory (CT37) are all listed as compile errors.
+    ///
+    /// Everything else is the evaluator's own gap — a construct it can't model
+    /// yet — and that's soft: the const runs at runtime and the caller warns.
     pub fn is_hard(&self) -> bool {
+        use ComptimeError::*;
         matches!(
             self,
-            ComptimeError::IntegerOverflow(_)
-                | ComptimeError::DivisionByZero
-                | ComptimeError::AssertionFailed { .. }
+            IntegerOverflow(_)
+                | DivisionByZero
+                | AssertionFailed { .. }
+                | BranchQuotaExceeded(_)
+                | TimeoutExceeded
+                | MemoryLimitExceeded
+                | StackOverflow(_)
+                | IndexOutOfBounds { .. }
+                | NonExhaustiveMatch
+                | Panic(_)
+                | IoNotAllowed
+                | PoolsNotAllowed
+                | ConcurrencyNotAllowed
+                | UnsafeNotAllowed
         )
     }
 }
@@ -760,6 +954,11 @@ impl ComptimeEnv {
     /// Reset branch counter between independent comptime evaluations.
     pub fn reset_branch_count(&mut self) {
         self.branch_count = 0;
+    }
+
+    /// CT35: raise or lower the quota for the next evaluation (`@comptime_quota`).
+    pub fn set_quota(&mut self, quota: usize) {
+        self.branch_quota = quota;
     }
 
     fn push_scope(&mut self) {
@@ -1172,16 +1371,34 @@ impl ComptimeInterpreter {
         self.env.reset_branch_count();
     }
 
+    /// CT35: set the backwards-branch quota for the next evaluation.
+    pub fn set_quota(&mut self, quota: usize) {
+        self.env.set_quota(quota);
+    }
+
     /// Inject the `cfg` build configuration into the comptime environment.
     pub fn inject_cfg(&mut self, cfg: &CfgConfig) {
         self.env.define("cfg".to_string(), cfg.to_comptime_value());
     }
 
     /// Register comptime functions from declarations.
+    /// Every function with a body, not only the `comptime func`s.
+    ///
+    /// CT6 is explicit that a call in comptime position is legal iff the
+    /// callee evaluates within CT7/CT8 — "No `comptime` marking required on
+    /// the callee". Registering only the marked ones meant an ordinary `func`
+    /// came back "undefined function in comptime context", the const fell out
+    /// of folding, and the block ran at runtime instead (#1072). The compiler's
+    /// own `ctrl.comptime/CT6 — unmarked func called only at comptime` test
+    /// passed the whole time, because the runtime answer is the same number.
+    ///
+    /// Registering one doesn't promise it evaluates. A body that does I/O or
+    /// touches something the evaluator has no answer for fails the same way it
+    /// would have; this only stops the lookup failing first.
     pub fn register_functions(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Fn(f) = &decl.kind {
-                if f.is_comptime {
+                if f.is_comptime || !f.body.is_empty() {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
             }
@@ -1242,6 +1459,13 @@ impl ComptimeInterpreter {
             ExprKind::Char(c) => ComptimeValue::Char(*c),
             ExprKind::Bool(b) => ComptimeValue::Bool(*b),
 
+            // `none`. The evaluator's optional is the shape `eval_presence_if`
+            // already reads — an `Option` enum, `Some` with a payload or `None`
+            // without. Nothing produced one before, so a `comptime func`
+            // returning `T?` fell out of folding and its const ran at runtime
+            // (#1072).
+            ExprKind::None => Self::ct_none(),
+
             // Identifier
             ExprKind::Ident(name) => {
                 self.env
@@ -1293,6 +1517,17 @@ impl ComptimeInterpreter {
             ExprKind::Index { object, index } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
+                // A map is keyed by whatever it's keyed by, so it reads the
+                // index as a key rather than as a position.
+                if let ComptimeValue::Map(entries) = &obj {
+                    return match entries.iter().find(|(k, _)| ct_key_eq(k, &idx)) {
+                        Some((_, v)) => Ok(ControlFlow::Normal(v.clone())),
+                        None => Err(ComptimeError::Panic(format!(
+                            "no entry for `{}` in the map",
+                            idx.to_display_string()
+                        ))),
+                    };
+                }
                 let idx_val = idx.as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
                     expected: "integer".to_string(),
                     found: idx.type_name().to_string(),
@@ -1574,9 +1809,19 @@ impl ComptimeInterpreter {
                 }
             }
 
+            // `a ?? b` — the payload when there is one, `b` when there isn't.
+            ExprKind::NullCoalesce { value, default } => {
+                let v = self.eval_expr(value)?;
+                match Self::ct_payload(&v) {
+                    Some(payload) => payload,
+                    None => self.eval_expr(default)?,
+                }
+            }
+
             // Other expressions not yet supported. Naming the form matters —
             // this used to report `Discriminant(23)`, which tells a reader
-            // nothing about which line to change.
+            // nothing about which line to change. `expr_kind_name` is
+            // exhaustive on purpose, so a new variant can't go unnamed.
             _ => {
                 let kind_name = match &expr.kind {
                     ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
@@ -2210,9 +2455,55 @@ impl ComptimeInterpreter {
         // `i64`, so `big() + 1` was i64 arithmetic — no overflow — and the
         // out-of-range 2147483648 went into an `i32` const with no diagnostic,
         // where CT1 says comptime overflow is a compile error (#325).
-        match func.ret_ty.as_deref().and_then(CtInt::from_name) {
+        // A `-> T?` hands back an optional, so a bare `T` is wrapped here
+        // rather than at every `return` in the body. Already-optional values
+        // (a `none`, or a result passed straight through) go as they are.
+        let ret = func.ret_ty.as_deref();
+        if ret.map(rask_ast::type_str::is_optional).unwrap_or(false) {
+            return Ok(Self::ct_some(value));
+        }
+        match ret.and_then(CtInt::from_name) {
             Some(kind) => Self::coerce_int_width(value, kind),
             None => Ok(value),
+        }
+    }
+
+    /// The absent optional.
+    fn ct_none() -> ComptimeValue {
+        ComptimeValue::Enum {
+            name: "Option".to_string(),
+            variant: "None".to_string(),
+            data: None,
+        }
+    }
+
+    /// `value` as a present optional, unless it already is one.
+    fn ct_some(value: ComptimeValue) -> ComptimeValue {
+        if let ComptimeValue::Enum { name, .. } = &value {
+            if name == "Option" {
+                return value;
+            }
+        }
+        ComptimeValue::Enum {
+            name: "Option".to_string(),
+            variant: "Some".to_string(),
+            data: Some(Box::new(value)),
+        }
+    }
+
+    /// What's inside a present optional or result, or `None` for an absent
+    /// one. A value that isn't a wrapper at all is its own payload — that's
+    /// what makes `x ?? y` work on something already unwrapped.
+    fn ct_payload(value: &ComptimeValue) -> Option<ComptimeValue> {
+        match value {
+            ComptimeValue::Enum { variant, data, .. } if variant == "None" => {
+                let _ = data;
+                None
+            }
+            ComptimeValue::Enum { variant, data, .. } if variant == "Some" || variant == "Ok" => {
+                Some(data.as_ref().map(|d| (**d).clone()).unwrap_or(ComptimeValue::Unit))
+            }
+            other => Some(other.clone()),
         }
     }
 
@@ -2264,11 +2555,11 @@ impl ComptimeInterpreter {
             }
             "todo" => {
                 let msg = if let Some(ComptimeValue::String(s)) = args.first() {
-                    format!("not yet implemented: {}", s)
+                    s.clone()
                 } else {
-                    "not yet implemented".to_string()
+                    "no message".to_string()
                 };
-                Err(ComptimeError::Panic(msg))
+                Err(ComptimeError::Unimplemented(msg))
             }
             "unreachable" => {
                 let msg = if let Some(ComptimeValue::String(s)) = args.first() {
@@ -2312,6 +2603,7 @@ impl ComptimeInterpreter {
     ) -> ComptimeResult<ComptimeValue> {
         match (type_name, method) {
             ("Vec", "new") => Ok(ComptimeValue::Array(Vec::new())),
+            ("Map", "new") | ("Map", "new_string_keys") => Ok(ComptimeValue::Map(Vec::new())),
             ("Vec", "from") if args.len() == 1 => {
                 // Vec.from(array) — clone the array
                 match &args[0] {
@@ -2339,6 +2631,9 @@ impl ComptimeInterpreter {
             .ok_or_else(|| ComptimeError::UndefinedVariable(var_name.to_string()))?
             .clone();
 
+        if let ComptimeValue::Map(entries) = val {
+            return self.call_mutating_map_method(var_name, entries, method, args);
+        }
         let mut arr = match val {
             ComptimeValue::Array(arr) => arr,
             _ => return Err(ComptimeError::TypeMismatch {
@@ -2408,6 +2703,54 @@ impl ComptimeInterpreter {
 
         // Write back the modified array
         if !self.env.assign(var_name, ComptimeValue::Array(arr)) {
+            return Err(ComptimeError::UndefinedVariable(var_name.to_string()));
+        }
+        Ok(result)
+    }
+
+    /// `insert`, `remove` and `clear` on a comptime map.
+    ///
+    /// Entries stay in insertion order and a repeated key overwrites in place,
+    /// so the constant reads the way the block wrote it.
+    fn call_mutating_map_method(
+        &mut self,
+        var_name: &str,
+        mut entries: Vec<(ComptimeValue, ComptimeValue)>,
+        method: &str,
+        args: &[ComptimeValue],
+    ) -> ComptimeResult<ComptimeValue> {
+        let result = match method {
+            "insert" if args.len() == 2 => {
+                match entries.iter_mut().find(|(k, _)| ct_key_eq(k, &args[0])) {
+                    Some(slot) => {
+                        let old = std::mem::replace(&mut slot.1, args[1].clone());
+                        Self::ct_some(old)
+                    }
+                    None => {
+                        entries.push((args[0].clone(), args[1].clone()));
+                        Self::ct_none()
+                    }
+                }
+            }
+            "remove" if args.len() == 1 => {
+                match entries.iter().position(|(k, _)| ct_key_eq(k, &args[0])) {
+                    Some(i) => Self::ct_some(entries.remove(i).1),
+                    None => Self::ct_none(),
+                }
+            }
+            "clear" => {
+                entries.clear();
+                ComptimeValue::Unit
+            }
+            _ => {
+                return Err(ComptimeError::NotSupported(format!(
+                    "map method .{} with {} arguments",
+                    method,
+                    args.len()
+                )))
+            }
+        };
+        if !self.env.assign(var_name, ComptimeValue::Map(entries)) {
             return Err(ComptimeError::UndefinedVariable(var_name.to_string()));
         }
         Ok(result)
@@ -2511,16 +2854,148 @@ impl ComptimeInterpreter {
                 }),
             },
             // String methods
+            // A string's own `to_string` is the identity. Without it a
+            // `const GREETING = comptime { … "{name}".to_string() }` fell out
+            // of folding and ran at runtime (#1072).
+            "to_string" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
+            // Every other scalar renders the way `Display` does, which is what
+            // an interpolation asks for. Without it a comptime string with a
+            // number in it — `"banner {n}"` — fell out of folding on the
+            // rendering rather than on anything it was doing.
+            "to_string" if args.is_empty() => Ok(ComptimeValue::String(obj.to_display_string())),
+            // The string methods that are a pure function of their input, so a
+            // fold and a run give the same answer. Each one is the same Rust
+            // std call the interpreter makes — the interpreter is the
+            // reference, and native's Unicode case tables are generated from
+            // Rust's for exactly that reason (`runtime/unicode_case.c`).
+            //
+            // Without them an ordinary `const NAME = comptime { … }` fell out
+            // of folding on the rendering rather than on anything it computed:
+            // `shout("rask")` warned "not supported at comptime: method
+            // to_uppercase on String" and ran at startup.
+            "to_uppercase" | "to_lowercase" | "trim" | "trim_start" | "trim_end"
+            | "repeat" | "replace" | "is_empty" | "is_ascii" | "starts_with"
+            | "ends_with" | "contains"
+                if matches!(obj, ComptimeValue::String(_)) =>
+            {
+                let ComptimeValue::String(text) = obj else { unreachable!() };
+                let str_arg = |i: usize| match args.get(i) {
+                    Some(ComptimeValue::String(s)) => Ok(s.as_str()),
+                    _ => Err(ComptimeError::TypeMismatch {
+                        expected: "string".to_string(),
+                        found: args.get(i).map_or("nothing", |v| v.type_name()).to_string(),
+                    }),
+                };
+                Ok(match method {
+                    "to_uppercase" => ComptimeValue::String(text.to_uppercase()),
+                    "to_lowercase" => ComptimeValue::String(text.to_lowercase()),
+                    "trim" => ComptimeValue::String(text.trim().to_string()),
+                    "trim_start" => ComptimeValue::String(text.trim_start().to_string()),
+                    "trim_end" => ComptimeValue::String(text.trim_end().to_string()),
+                    "is_empty" => ComptimeValue::Bool(text.is_empty()),
+                    "is_ascii" => ComptimeValue::Bool(text.is_ascii()),
+                    "starts_with" => ComptimeValue::Bool(text.starts_with(str_arg(0)?)),
+                    "ends_with" => ComptimeValue::Bool(text.ends_with(str_arg(0)?)),
+                    "contains" => ComptimeValue::Bool(text.contains(str_arg(0)?)),
+                    "repeat" => {
+                        let n = args.first().and_then(|v| v.as_i64()).unwrap_or(0);
+                        // A count that would blow past the memory limit is a
+                        // comptime error, not a compiler that stops responding.
+                        let total = text.len().saturating_mul(n.max(0) as usize);
+                        if total > 1 << 24 {
+                            return Err(ComptimeError::MemoryLimitExceeded);
+                        }
+                        ComptimeValue::String(text.repeat(n.max(0) as usize))
+                    }
+                    _ => ComptimeValue::String(text.replace(str_arg(0)?, str_arg(1)?)),
+                })
+            }
+            // What string interpolation desugars to — there is no public
+            // `concat`, so this is the one way two strings join (std.strings).
+            "__concat" => match (obj, args.first()) {
+                (ComptimeValue::String(a), Some(ComptimeValue::String(b))) => {
+                    Ok(ComptimeValue::String(format!("{a}{b}")))
+                }
+                _ => Err(ComptimeError::TypeMismatch {
+                    expected: "two strings".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
+            },
+            // The checked hatches (type.overflow). They answer `T?`, which the
+            // evaluator can represent now, so overflow is the absent case
+            // rather than a comptime error — the whole point of reaching for
+            // one of these instead of `+`.
+            "checked_add" | "checked_sub" | "checked_mul" => {
+                let (a, ka) = obj.as_int().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: obj.type_name().to_string(),
+                })?;
+                let (b, _) = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .ok_or_else(|| ComptimeError::TypeMismatch {
+                        expected: "integer".to_string(),
+                        found: "non-integer argument".to_string(),
+                    })?;
+                let op = match method {
+                    "checked_add" => CtOp::Add,
+                    "checked_sub" => CtOp::Sub,
+                    _ => CtOp::Mul,
+                };
+                Ok(match ct_checked_binop(ka, op, a, b) {
+                    Ok(v) => Self::ct_some(v),
+                    Err(_) => Self::ct_none(),
+                })
+            }
             "len" => {
                 match obj {
                     ComptimeValue::String(s) => Ok(ComptimeValue::I64(s.len() as i64)),
                     ComptimeValue::Array(arr) => Ok(ComptimeValue::I64(arr.len() as i64)),
+                    ComptimeValue::Map(entries) => Ok(ComptimeValue::I64(entries.len() as i64)),
                     _ => Err(ComptimeError::TypeMismatch {
-                        expected: "String or Array".to_string(),
+                        expected: "String, Array or Map".to_string(),
                         found: obj.type_name().to_string(),
                     }),
                 }
             }
+            // The read side of a comptime map. `is_empty` and `contains_key`
+            // are here rather than with the mutators because they don't write
+            // the binding back.
+            "get" | "contains_key" | "is_empty" if matches!(obj, ComptimeValue::Map(_)) => {
+                let ComptimeValue::Map(entries) = obj else { unreachable!() };
+                Ok(match method {
+                    "is_empty" => ComptimeValue::Bool(entries.is_empty()),
+                    _ => {
+                        let key = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
+                            expected: "a key".to_string(),
+                            found: "no argument".to_string(),
+                        })?;
+                        let hit = entries.iter().find(|(k, _)| ct_key_eq(k, key));
+                        match method {
+                            "contains_key" => ComptimeValue::Bool(hit.is_some()),
+                            _ => match hit {
+                                Some((_, v)) => Self::ct_some(v.clone()),
+                                None => Self::ct_none(),
+                            },
+                        }
+                    }
+                })
+            }
+            // `freeze` ends a `comptime` block to say the Vec it built is the
+            // constant's value. Everything here is already a compile-time
+            // value, so there is nothing to do but hand it back. It was
+            // declared `comptime func` with an empty body and nothing
+            // implemented it, so every `const X = comptime { … v.freeze() }`
+            // reached codegen as a call to `Vec_freeze` (#1069).
+            // A `Map` reaches here too, now that `Map.new` folds (#1075).
+            "freeze" => match obj {
+                ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
+                ComptimeValue::Map(entries) => Ok(ComptimeValue::Map(entries.clone())),
+                _ => Err(ComptimeError::TypeMismatch {
+                    expected: "Vec or Map".to_string(),
+                    found: obj.type_name().to_string(),
+                }),
+            },
             _ => Err(ComptimeError::NotSupported(format!("method {} on {}", method, obj.type_name()))),
         }
     }

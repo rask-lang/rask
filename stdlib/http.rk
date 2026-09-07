@@ -445,6 +445,13 @@ func write_raw(conn_fd: i64, data: string) {
     }
 }
 
+// Close a TCP connection.
+func close_raw(conn_fd: i64) {
+    unsafe {
+        rask_io_close_fd(conn_fd)
+    }
+}
+
 // ─── Client Helpers ──────────────────────────────────────────────
 
 // Parse "http://host:port/path" into (host, port, path).
@@ -670,6 +677,11 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Ht
     }
     let raw = format_http_response(resp)
     write_raw(conn_fd, raw)
+    // The response says `Connection: close`, so close it — the same promise
+    // `Responder.respond` keeps. Without this a caller using the low-level
+    // `TcpConnection.write_http_response` got the #1055 bug on a second path:
+    // client hangs waiting for an EOF, descriptor held for the process's life.
+    close_raw(conn_fd)
     return 0
 }
 
@@ -688,9 +700,13 @@ extend HttpServer {
         }
         let raw = read_raw(conn as i64, 65536)
         let request = parse_http_request(raw) catch _ => {
+            // No responder is handed out on this path, so nothing downstream
+            // will ever close this connection. Close it here or the descriptor
+            // is held until the process ends.
+            close_raw(conn as i64)
             return HttpError.InvalidResponse("malformed request")
         }
-        let responder = Responder { conn_fd: conn as i64, sent: false }
+        let responder = Responder { conn_fd: conn as i64 }
         return (request, responder)
     }
     public func local_addr(self) -> string {
@@ -702,16 +718,25 @@ extend HttpServer {
     }
 }
 
+// The connection, held until exactly one response goes out on it.
+//
+// `@resource` plus `take self` on `respond` is what makes "exactly one" a
+// compile-time fact, so there's no `sent` flag to check at runtime — a second
+// response has nothing left to send it with.
 @resource
 struct Responder {
     conn_fd: i64
-    sent: bool
 }
 
 extend Responder {
     public func respond(take self, response: Response) -> void or HttpError {
         let raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
+        // `format_http_response` writes `Connection: close`, so close it. A
+        // client that believes the header waits for an EOF that never arrives
+        // — Rask's own client hung on Rask's own server — and the server holds
+        // a descriptor per request for the life of the process.
+        close_raw(self.conn_fd)
     }
 }
 
