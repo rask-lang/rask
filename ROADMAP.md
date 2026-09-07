@@ -4,13 +4,13 @@ Strategic phases. Open work items are in [TODO.md](TODO.md); bugs are [GitHub is
 
 ## Where things stand
 
-Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 90 decided specs (up from 73 a week ago — a batch of stdlib specs landed: url, base64, hex, csv, terminal, digest, tls).
+Frontend, ownership, interpreter, monomorphization, MIR lowering, Cranelift backend, build system, package management — all working. 90 decided specs, unchanged from last measure.
 
-Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). What's left is a registered backlog — as of 2026-09-04, no tracked bugs and seven unbuilt features, each with a probe file in the suite (was 11+6, and 13+7 the measure before). See [PLAN.md](PLAN.md) for the work order.
+Simple programs compile natively (hello world, structs, closures, Vec/Map, threads, channels, file I/O). As of 2026-09-07: 2 tracked bugs (both interpreter-only — native is correct on both) and 7 unbuilt features, each with a probe file in the suite. That's up from "0 bugs, 7 unbuilt" a week ago, but it's not backsliding — both new bugs were caught by a harness audit that got better at looking, not by anything breaking. See [PLAN.md](PLAN.md) for the work order.
 
 ## Validation programs
 
-Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `6c835416` after #953, #962 and #969 landed — every figure below still holds, and the HTTP server is still red.
+Re-measured 2026-09-07 by running all five. **All five now work, including the HTTP server** — last week's native regression (#1036, every response's first 8 bytes coming back as garbage) is gone. I confirmed it directly: pulled the 12-line repro straight from the issue and ran it — output is now byte-for-byte correct (`HTTP/1.1 200 OK\r\n...`), not just "the gate happens to pass."
 
 | Program | Status | Gate |
 |---------|--------|------|
@@ -18,18 +18,9 @@ Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `
 | grep clone | **Works** | examples gate, golden + argv |
 | Game loop with entities | **Works** | examples gate, golden (seeded RNG) |
 | Text editor with undo | **Works** | examples gate, golden + stdin |
-| HTTP JSON API server | **Broken on native** | `tests/http_api_harness.sh` fails; interp is fine |
+| HTTP JSON API server | **Works** | `tests/http_api_harness.sh`, both backends |
 
-The HTTP server is a new regression, found by this re-measure: every response's
-first 8 bytes come back as garbage instead of `HTTP/1.1 `. Traced to a minimal
-repro — `StringBuilder` plus one `unsafe` call to a native function taking a
-`string` argument — so it's not HTTP-specific: **anything native that hands a
-built string across an `unsafe` FFI boundary is corrupting its first 8 bytes
-right now.** Filed as [#1036](https://github.com/rask-lang/rask/issues/1036)
-with the repro. This is the same lesson as the `match n { 1 => 2.5, _ => 0.0 }`
-bug from last month: every other gate was green while the flagship example
-silently broke. Fix this first — it's the widest blast radius of anything on
-this list, and it undoes "the five validation programs work."
+I couldn't find the exact commit that fixed #1036 — the issue is still open, and the PR that claims to close it (#1054) is an unmerged draft. The likely source is #1056 ("Audit the test harness..."), whose own summary mentions fixing "a use-after-free corrupting every response the native server sent" — a different bug than the one #1036 describes (uninitialized bytes vs. freed memory), but on the same send path, so one commit plausibly fixed both. Worth a comment on #1036 closing it out with this note, since nobody currently gets credit for the fix.
 
 ## Stdlib architecture
 
@@ -44,155 +35,55 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 ---
 
+## An open draft PR is sitting on ~100 issues
+
+[#1054](https://github.com/rask-lang/rask/pull/1054) is a 148-commit, 26k-line draft branch that claims to close roughly a hundred issues — atomics, three package-system bugs, C-struct interop, `reflect`, several use-after-free classes, closure mutation enforcement (MC2), and more. It's based on the current `main` tip and GitHub reports it as cleanly mergeable. None of it is reflected in the numbers above or in "what comes next" below, because it isn't merged — this roadmap describes `main`, not a branch sitting next to it.
+
+I'm flagging it rather than folding it in because merging (or reviewing, or discarding) a change of that size is a call for a person, not something to wave through as part of a measurement pass. If it's good, most of the "what comes next" section below is already done and just needs a merge.
+
 ## What comes next, and why in this order
 
-### 1. Fix the native string→FFI corruption (#1036)
+The sequence protocol used to be one item that unblocked three others. It mostly landed since last measure (PR #1042: `Sequence<T>` is now the real backbone of `Vec.iter()`, adapters are lazy), so what's left below is a set of independent gaps rather than a dependency chain — ordered by how visible each one is to a day-one user, not by what it unblocks.
 
-Leads the list because of blast radius, not because it's hard to characterize.
-Every native program that writes a built string to a raw fd through `unsafe`
-gets its first 8 bytes clobbered — that's the actual send path for the whole
-HTTP server (`write_raw` in `stdlib/http.rk`), so every native HTTP response is
-wrong today. Repro is 12 lines, no networking needed. Whoever picks this up:
-start at how `string as i64` gets codegen'd for an argument headed into an
-`unsafe` block.
+### 1. Ranges still have no methods (#920)
 
-### 2. The sequence protocol — now the leading feature gap
+`Vec` iteration now goes through `Sequence<T>` and works — `v.iter().filter(...).map(...).to_vec()` all run correctly on both backends, confirmed directly against `tests/suite/p21_sequence_adapters.rk`. Ranges didn't get any of it: `(0..10).sum()`, `.map()`, `.filter()`, even `.iter()` still fail with "no method found," confirmed directly against `tests/suite/t_week_range_adapters.rk`. A `for x in range` loop works; anything else on a range doesn't. This is the most-reached-for missing thing now that the collection side works, since a range is the obvious thing to reach for before a `Vec` even exists.
 
-Panics used to be here (see "what came off this list" below); with that mostly
-done, this is the item that unblocks the most other things. `type.sequence` is
-unimplemented (`p08_sequence.rk`), and three separate gaps chain off it:
+### 2. Eleven declared Vec/Map methods, still unimplemented (#912)
 
-- Ranges have no methods beyond `for` — no `.sum()`, `.map()`, `.to_vec()` — because
-  they're meant to reach adapters through the sequence protocol
-  ([#920](https://github.com/rask-lang/rask/issues/920)).
-- Eleven declared Vec/Map methods (capacity control, `get_clone`, `remove_where`)
-  are unimplemented on both backends
-  ([#912](https://github.com/rask-lang/rask/issues/912)).
-- `Atomic` — the one atomic-type spelling the spec mandates — has zero operations,
-  while the eleven `AtomicU64`-style names the spec forbids are still registered
-  ([#927](https://github.com/rask-lang/rask/issues/927)).
+Unchanged since last measure — `remove_where`, `take_where`, `get_clone`, and the capacity-control cluster (`reserve`, `shrink_to_fit`, etc.) all still fail with "declared but not implemented" on both backends. Confirmed directly against `tests/suite/t_week_collection_stubs.rk`. Most of these are thin wrappers over state the runtime already tracks (`capacity()`, `is_bounded()` work today); `remove_where`/`take_where` are the two with real logic.
 
-One protocol landing turns three "unbuilt" rows into "done" rows, which is why
-it leads over finishing the smaller registered-bug backlog.
+### 3. Atomics have zero operations on any spelling (#927)
 
-### 3. Finish the coverage backlog
+Unchanged. `Atomic<i64>.new(0)` type-checks and then has no `.load`, `.store`, `.add` — confirmed directly against `tests/suite/t_month_atomics.rk`. `Mutex` is the working substitute today, which is exactly what atomics exist to avoid paying for.
 
-The registered-bug half is done. `tests/known_divergences.txt` is empty:
-all eleven — #1022, #1000, #1021, #899, #932, #928, #1002, #974, #919, #997,
-#905 — are fixed on both backends and pruned, and the file's header records
-what each one turned out to be. #904 was the one that wasn't a bug: it needs an
-inferred parameter to *generalize*, which nothing in the pipeline does, so it
-moved to the pending list as `p11_gradual_generalization.rk`.
+### 4. The sequence protocol's remaining edges (#1046)
 
-What's left is `tests/pending_features.txt` — seven unbuilt features, each with
-a probe. Three are the sequence-protocol cluster above (#912, #920, #927) and
-`p08_sequence.rk` is the protocol itself. Of the rest:
+Two smaller things left in the otherwise-landed protocol: the operator-bound terminals (`sum`, `product`, `min`, `max`, `join`) need a Rust-driven closure call the way `rask_vec_sort_by` already does one for its comparator, and a user-written `Sequence<T>` (not going through `Vec`) works on native but not on the interpreter — `tests/suite/p08_sequence.rk` is now a `known_divergences.txt` entry rather than a `pending_features.txt` one, i.e. it went from "unbuilt" to "built, but the interpreter has a bug." That's forward motion even though it's still red.
 
-- **`p10_binary.rk`** — `@binary` is closer than it looked. Two bugs were in the
-  way and are fixed: PC2 rejected every `@binary` struct (`unknown type u16be`,
-  telling you to declare it) and monomorphization laid the fields out at
-  pointer size. The interpreter now runs the whole probe. Native generates
-  neither `build` nor `parse`, and is blocked on
-  [#1058](https://github.com/rask-lang/rask/issues/1058) — G1's signature takes
-  `[]u8`, and a `Vec<u8>` can't be passed to a declared `[]u8` parameter, except
-  to a method the compiler registered itself. That inconsistency needs settling
-  first, and there's no slices spec to settle it from.
-- **`p09_simd.rk`** — surveyed in
-  [#1059](https://github.com/rask-lang/rask/issues/1059). The checker's half is
-  built; nothing below it is. A SIMD literal lowers to `[f64; 4]` and the
-  binding is a `ptr` nothing writes to, so lane reads and lane-wise arithmetic
-  have no value to work on. `splat[T, N](…)` doesn't parse — square-bracket
-  type application isn't in the grammar, and the spec's own `Vec[T, N]` form
-  needs it too.
-- **`p11_gradual_generalization.rk`** — #904, above.
+### 5. Panics — same one small tracker left as last measure
 
-### 4. Incremental compilation
+No change: [#298](https://github.com/rask-lang/rask/issues/298), 10 of [#299](https://github.com/rask-lang/rask/issues/299)'s 11 sub-issues closed. What's left: detached-task panics should print to stderr (silent today), a guard that panics during unwind should report as a secondary panic instead of replacing the original, the task id should prefix the panic line, and a panic reaching an FFI boundary should abort there instead of unwinding into foreign frames.
 
-NORTH_STAR's first commitment is maximum static checking per millisecond of
-feedback. Unchanged since last measure: the function-granularity design
-(spec: [incremental.md](specs/compiler/incremental.md)) has no implementation
-yet — semantic hashing is done, the LSP has its own editor-facing incremental
-checking, but `rask build` itself doesn't cache or patch at function
-granularity. The IR design can't be retrofitted, so this has to be deliberate
-when it's picked up.
+### 6. Incremental compilation
 
-### 5. Panics — nearly done, one small tracker left
+Unchanged. Function-granularity design exists (spec: [incremental.md](specs/compiler/incremental.md)), semantic hashing is done, but `rask build` itself doesn't cache or patch at function granularity yet. Not re-verified in detail this pass beyond confirming nobody's touched `rask-semantic-hash` or the build cache since last measure.
 
-This used to be the headline blocker ("the panic path runs no `ensure` blocks
-and aborts the process"). That's fixed:
+### 7. Cross-compilation — not re-verified this pass
 
-```
-$ rask run panic_test.rk
-panic at panic_test.rk:10: boom
-closing g1
-exit: 101
-```
-
-Verified directly this pass — `ensure` runs on panic, native exits 101 instead
-of aborting. 10 of [#299](https://github.com/rask-lang/rask/issues/299)'s 11
-sub-issues are closed. What's left is
-[#298](https://github.com/rask-lang/rask/issues/298) — genuinely small,
-runtime-surface items, not a redo: a detached task's panic should print to
-stderr (currently prints nothing), a guard that panics during unwind should be
-contained and reported as a secondary panic instead of replacing the original,
-the task id should prefix the panic line when a runtime is active, and a panic
-that reaches an FFI boundary should abort there instead of unwinding into
-foreign frames.
-
-### 6. Cross-compilation — partly built already, don't re-derive it
-
-Corrected this pass: the roadmap used to say "the compiler simply doesn't
-configure" ARM/WASM targets. Wrong — `--target` reaches Cranelift's ISA lookup
-today, and `rask targets` lists all three tiers. Tried it directly:
-
-```
-$ rask compile examples/http_api_server.rk --target aarch64-linux -o out
-error: link: cross-compilation to aarch64-linux requires a C cross-compiler
-Install one of: zig (recommended), aarch64-linux-gnu-gcc, or set CC=...
-```
-
-That's the compiler working correctly and reporting what's missing (this is
-literally what spec rule XT3 asks for), not a gap. What's actually missing,
-per `specs/structure/build.md`'s own status table: the wider toolchain — cross
-compiler detection, platform-specific deps, multi-target builds (XT1–XT8,
-listed "Not started"). Also worth knowing: the runtime is a static C library
-linked into every binary, so "pure Rask needs only the compiler to
-cross-compile" (XT2) doesn't hold yet even for programs with no `unsafe` in
-them — the C runtime always needs a matching cross-linker. Couldn't verify the
-zig/gcc path end-to-end — neither is installed in this environment.
+Last measure's correction stands unchanged: `--target` reaches Cranelift's ISA lookup, `rask targets` lists all three tiers, and what's actually missing is the wider toolchain (cross-linker detection, multi-target builds, XT1–XT8 in `specs/structure/build.md`). Didn't re-run the zig/gcc cross-link check this pass — no reason to think it changed, but flagging that "unchanged" here means "no new evidence," not "re-confirmed."
 
 ## On the LLVM backend
 
-Deferring it, and the reason is the bug history rather than the engineering.
+Deferring it, unchanged reasoning: the two backends disagreeing is still the largest bug class this project produces, and Cranelift already reaches ARM/WASM, so LLVM's usual "more targets" argument doesn't apply here. Nothing measures generated-code quality yet (`benchmarks/` has one ceremony comparison, no speed benchmark). **Nothing goes to LLVM until something measures slow.**
 
-The largest single class of bugs in this project is the two backends disagreeing —
-measured at 39% of open issues when [#724](https://github.com/rask-lang/rask/issues/724)
-was written, and the differential harness exists because of it. A third thing that can
-produce an answer is a third thing that can disagree, and the second one still has
-tracked divergences.
+## The agent benchmark
 
-The usual argument for LLVM is more targets. That one is weak here: Cranelift reaches
-ARM and WASM already. The real argument is generated-code quality for a language meant
-to compete with Rust and C — and that is a decision for a benchmark to make, not taste.
-`benchmarks/` now has one apples-to-apples pair (`grep.c` vs `examples/grep_clone.rk` —
-ceremony came out a tie, ED 0.96) but nothing measuring raw speed yet.
-**Nothing goes to LLVM until something measures slow.**
+`agentbench/` — 19 tasks, reference solutions, model adapters. `agentbench_gate.sh` (the free `selftest`) passed this measure: 18 green, 1 quarantined.
 
-## The agent benchmark (built, since last measure it didn't exist)
+The quarantine itself needed a fix this pass: #1002 (native mis-dispatching a method on a union-narrowed error) is fixed on `main` — I confirmed by hand-running the task's own test suite natively, all 5 pass. But `agentbench/quarantine.txt` still listed the task as broken for that reason. Digging in, the task fixture has an unrelated bug: `verify.rk` imports `string.ParseError`, which nothing in the task uses and which collides with the task's own `ParseError` enum (`E0208`, one-name-one-meaning) — a real, if minor, compiler-caught error that was there all along and just never surfaced because #1002 failed first. Filed as [#1133](https://github.com/rask-lang/rask/issues/1133) and re-pointed the quarantine entry at it, so the file says what's actually true again.
 
-Last measure said this instrument "does not exist." It does now:
-`agentbench/` — 19 tasks, reference solutions, model adapters (`mock:*`, `cli:<model>`
-against a Claude subscription, `api:<model>`), and it measures solve rate, pass@1,
-convergence, backend divergences, thrash, and teach rate against the targets in
-its README. CI runs `agentbench_gate.sh` (the free `selftest` — do the references
-still build), which passed this measure: 18 green, 1 quarantined
-(`month_error_union`, [#1002](https://github.com/rask-lang/rask/issues/1002),
-already tracked). The one real-model run on record (2026-08-28): pass@1 61%→72%,
-convergence 1.47→1.29, after the language card got a "method surface" section —
-method-not-found was the top first-attempt failure. Running it against a live
-model isn't automated (deliberately — it spends plan quota or API credit), so
-that number will go stale between measures; re-run it by hand when a stdlib or
-diagnostics change is large enough to matter.
+This is exactly the failure mode this task exists to catch, just one level down — a tracked-broken row that was half-fixed, with a second, different reason for the row to stay red hiding underneath.
 
 ## Stdlib breadth, alongside
 
@@ -206,13 +97,11 @@ diagnostics change is large enough to matter.
 | hash | Rask (or C for HW accel) | SHA-256, MD5, CRC32 |
 | tls | C shim + Rask API | TLS/SSL via OpenSSL/mbedTLS |
 
-All seven now have specs (landed this week). Implementation and tests still
-open per module. `json.to_value` / `json.from_value` are still `@unimplemented` —
-the tree↔typed bridge waits on Encode/Decode derivation.
+Unchanged: all seven have specs, none has an implementation file in `stdlib/` yet — confirmed no `stdlib/url.rk` etc. exist. `json.to_value`/`json.from_value` are still `@unimplemented`, waiting on Encode/Decode derivation.
 
 ## Post-v1.0
 
-- Platform-specific deps (XT7), multi-target builds (XT8), `rask targets` polish (XT9 itself already ships)
+- Platform-specific deps (XT7), multi-target builds (XT8)
 - LLVM backend, if the benchmarks ask for it
 - Macros / `format!`
 - Comptime debugger
@@ -224,26 +113,16 @@ the tree↔typed bridge waits on Encode/Decode derivation.
 - `compile_cpp()` build script support
 - Auto Rask wrapper generation from cbindgen
 
-## What came off this list since last measure (2026-08-24)
+## What came off this list since last measure (2026-09-04)
 
-- **Panics and unwinding** — was the #1 blocker, now #5 and nearly closed. `ensure`
-  runs on panic, native exits 101. Verified directly, not just by issue status.
-- **The agent benchmark** — was "doesn't exist," now built, in CI, and has one
-  real measured run on record.
-- **Cross-compilation was reported worse than it is.** `--target` and
-  `rask targets` work; only the wider toolchain (cross-linkers, multi-target)
-  is unbuilt. Corrected the framing above rather than re-deriving it.
-- **Stackless state-machine transform for spawned tasks** — landed 2026-08-14
-  (`rask-mir/src/transform/state_machine.rs`, wired into spawn lowering), was
-  still listed under Post-v1.0 as future work. Removed from that list.
-- **#194 (trait-object vtable dispatch)** — the roadmap cited this as an open
-  gap ("runtime trait dispatch for heterogeneous collections"). It's been
-  closed since July 22, fixed by #344. Dropped the reference.
-- **Coverage backlog shrank 20 → 17** (13 bugs + 7 unbuilt → 11 bugs + 6 unbuilt).
+- **The HTTP server's native corruption (#1036)** — was the #1 blocker, now fixed. Verified directly against the issue's own repro, not just by the gate turning green.
+- **The sequence protocol's Vec side** — was "unimplemented, leading feature gap." `Sequence<T>` is now the real backbone of `Vec.iter()`; twelve adapters (`filter`, `map`, `take`, `fold`, `enumerate`, `flat_map`, `to_map`, and more) work on both backends. What's left moved down to items #1 and #4 above, and it's a much smaller remaining slice than "the whole protocol."
+- **The registered-bug half of the coverage backlog (#1057)** — ten tracked divergences fixed and pruned, one (#904, gradual-inference) correctly reclassified as unbuilt rather than broken.
+- **#1002 (union-narrowed error dispatch)** — fixed. See "The agent benchmark" above for the fixture wrinkle this uncovered underneath it.
 
 ## New this measure
 
-- **HTTP server broken on native (#1036)** — see Validation programs above. Not
-  fixed as part of this pass per the "measure, don't fix" rule for this task,
-  but filed with a minimal repro since it's a live regression, not a documentation
-  correction.
+- **#1093** — the interpreter's `using Multitasking` block doesn't wait for its spawned tasks the way native does, and inside a `test` block the task's output is silently dropped rather than late. Found by the Sept 4–6 harness audit (#1056), not by anything regressing.
+- **#1046** — the sequence protocol's remaining edges (see item #4 above): a user-written `Sequence<T>` now works on native but not the interpreter, and five operator-bound terminals need a Rust-driven closure call that doesn't exist yet.
+- **#1133** — the agentbench fixture bug uncovered under #1002's fix (see "The agent benchmark" above).
+- **The open draft PR #1054** — see its own section above.
