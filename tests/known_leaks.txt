@@ -57,9 +57,7 @@ p15_read_only_graph.rk  # 37 allocations
 p16_rack_link_holders.rk  # 4 allocations
 p18_rack_multi_link_fields.rk  # 11 allocations
 p19_mutate_param_link_write.rk  # 19 allocations
-p20_closure_mutable_capture.rk  # 4 allocations
 t25_iterator_adapters.rk  # 4 allocations
-t26_closure_scoping.rk  # 2 allocations
 t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
 t27_own_closure_state.rk  # 4 allocations

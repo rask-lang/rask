@@ -419,10 +419,37 @@ fn insert_for_function(
     }
     droppable.retain(|id, _| placed.contains(id));
 
-    if droppable.is_empty() {
-        return;
+    // A container in a capture cell is reached through a store, which the rule
+    // above reads as handing it over — so it never becomes droppable and its
+    // free goes in separately, keyed on the cell rather than on a name.
+    let cells = cells_this_frame_frees(func, all, &fresh, kept);
+    for (cell, _, _) in &cells {
+        for group in &groups {
+            if group.iter().any(|id| stores_into(func, *id, *cell)) {
+                for id in group {
+                    droppable.remove(id);
+                }
+            }
+        }
     }
-    insert_drops(func, &droppable, &groups);
+
+    if !droppable.is_empty() {
+        insert_drops(func, &droppable, &groups);
+    }
+    if !cells.is_empty() {
+        insert_cell_drops(func, &cells);
+    }
+}
+
+/// Is `value` what gets stored into `cell`?
+fn stores_into(func: &MirFunction, value: LocalId, cell: LocalId) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| {
+        matches!(
+            &stmt.kind,
+            MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
+                if *addr == cell && *v == value
+        )
+    })
 }
 
 /// Locals holding a container this frame owns, mapped to how to free it: the
@@ -657,6 +684,189 @@ fn fresh_through_cells(
         }
     }
     out
+}
+
+/// Containers this frame owns that live in a capture cell and never leave.
+///
+/// A closure that borrows a variable makes it memory-resident
+/// (`transform::addr_taken`), so `mut log: Vec<i64>` stops being a local and
+/// becomes a stack cell the closure holds the address of. The container is then
+/// reached only through a store into that cell — and a store is handing the
+/// value over, so nothing freed it:
+///
+/// ```text
+/// mut log: Vec<i64> = Vec.new()
+/// let record = |x| { log.push(x) }     // `log` moves into a cell
+/// record(1)
+/// // rask: 2 allocations never released
+/// ```
+///
+/// The same body without the closure was freed correctly, which is what made
+/// this look like a closure bug rather than a cell one.
+///
+/// A store into an aggregate really is handing it over; a store into this
+/// frame's own variable cell is not, because the cell *is* the variable and
+/// dies with the frame. Telling the two apart is what the by-ref capture says:
+/// only `addr_taken` makes these, and only for a variable of this frame.
+///
+/// The conditions are `fresh_through_cells`' — one store, holding one of this
+/// frame's own fresh containers, and no closure that replaces it — plus the two
+/// this direction needs: the frame must not hand the container back, and must
+/// not hand the cell's address anywhere the closures can't be read.
+fn cells_this_frame_frees(
+    func: &MirFunction,
+    all: &[MirFunction],
+    fresh: &HashMap<LocalId, &'static str>,
+    kept: &HashMap<String, Vec<bool>>,
+) -> Vec<(LocalId, &'static str, BlockId)> {
+    let by_ref_cells: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureCreate { captures, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| c.by_ref)
+        .map(|c| c.local_id)
+        .collect();
+    if by_ref_cells.is_empty() {
+        return Vec::new();
+    }
+
+    let mut stores: HashMap<LocalId, Vec<(MirOperand, BlockId)>> = HashMap::new();
+    let mut loaded: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    let mut handed_on: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Store { addr, value, .. } => {
+                    stores.entry(*addr).or_default().push((value.clone(), block.id));
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                } => {
+                    loaded.entry(*addr).or_default().push(*dst);
+                }
+                // The address itself going somewhere this pass can't follow.
+                // A `ClosureCreate` is the one that made the cell and is read
+                // through `cell_is_read_only_in_closures` instead.
+                MirStmtKind::Call { args, .. } | MirStmtKind::TraitCall { args, .. } => {
+                    for arg in args {
+                        if let MirOperand::Local(id) = arg {
+                            handed_on.insert(*id);
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { args, .. } => {
+                    for arg in args {
+                        if let MirOperand::Local(id) = arg {
+                            handed_on.insert(*id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let returned: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for cell in &by_ref_cells {
+        if handed_on.contains(cell) {
+            continue;
+        }
+        let Some(values) = stores.get(cell) else { continue };
+        let [(MirOperand::Local(src), store_block)] = values.as_slice() else { continue };
+        let Some(free) = fresh.get(src).copied() else { continue };
+        if !cell_is_read_only_in_closures(func, all, *cell) {
+            continue;
+        }
+        // A load the frame returns is the caller's to free.
+        if loaded.get(cell).is_some_and(|dsts| dsts.iter().any(|d| returned.contains(d))) {
+            continue;
+        }
+        // And so is one it hands to something that keeps it. `consume(log)` on
+        // a `take` parameter takes the container with it, and the cell it came
+        // out of must not free it a second time. The same rules the frame's own
+        // locals get, asked of what comes out of the cell.
+        let mut carried: HashMap<LocalId, &'static str> = HashMap::new();
+        for dst in loaded.get(cell).into_iter().flatten() {
+            carried.insert(*dst, free);
+        }
+        follow_copies(func, &mut carried);
+        if !find_escaping(func, &carried, kept).is_empty() {
+            continue;
+        }
+        out.push((*cell, free, *store_block));
+    }
+    out
+}
+
+/// Free what a capture cell holds, on the way out of the frame.
+///
+/// The cell holds the container's handle rather than being it, so this is a
+/// load and then the free — unlike a plain local, whose name already is the
+/// thing to hand over.
+///
+/// Only where the store dominates the exit. A cell filled in one arm of an
+/// `if` holds nothing on the other, and the load would free whatever the stack
+/// had there — reliably zero on a fresh frame, and 0xAAAA… under
+/// `RASK_POISON_STACK=1`, which is the point of that flag.
+fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, &'static str, BlockId)]) {
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let return_blocks: Vec<usize> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| {
+            matches!(
+                b.terminator.kind,
+                MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
+            )
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    for block_idx in return_blocks {
+        let exit = func.blocks[block_idx].id;
+        for (cell, free, store_block) in cells {
+            if !dom.dominates(*store_block, exit) {
+                continue;
+            }
+            let tmp = LocalId(next);
+            next += 1;
+            func.locals.push(crate::MirLocal {
+                id: tmp,
+                name: None,
+                ty: MirType::Ptr,
+                is_param: false,
+            });
+            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tmp,
+                rvalue: MirRValue::Deref(MirOperand::Local(*cell)),
+            }));
+            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(free.to_string()),
+                args: vec![MirOperand::Local(tmp)],
+            }));
+        }
+    }
 }
 
 /// Does every closure that captured `cell` only ever read it?
