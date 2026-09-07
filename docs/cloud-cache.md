@@ -24,11 +24,17 @@ relative `./scripts/...` fails with exit 127. The script itself finds the repo
 from its own location, so it works from any working directory.
 
 The whole script takes 3m07 from cold (1m56 release, 1m09 for the dev-profile
-test binaries) against a ~5-minute budget, so there's about two minutes of
-headroom before an addition starts costing you the snapshot. It rebuilds itself
-when you change the script or after ~7 days, and lands around 5G
-(`~/.cargo/registry` 0.4G, `target/release` 0.5G, `target/debug` 4.1G — debug
-is fat because dev-profile debug info is).
+test binaries) against the documented ~5-minute budget, so there's about two
+minutes of headroom before an addition starts costing you the snapshot. It
+rebuilds itself when you change the script or the allowed network hosts, and
+after ~7 days. It lands around 5G — `~/.cargo/registry` 0.4G,
+`target/release` 0.5G, `target/debug` 4.1G, debug being fat because
+dev-profile debug info is — against the 30G a session gets, so there's room.
+
+Nothing in the script is allowed to fail the run. A setup script that exits
+non-zero stops sessions in the environment from starting at all, which would
+mean a broken `main` locking you out of the session you need to fix it. Every
+step warms a cache and none of them gates, so they report and carry on.
 
 A `SessionStart` hook is *not* a substitute: it isn't snapshotted, so it re-runs
 the build on every session instead of caching once.
