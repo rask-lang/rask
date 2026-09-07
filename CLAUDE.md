@@ -135,8 +135,9 @@ If the compiler panics saying a name "belongs to `Vec`" but nothing declares it,
 
 SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
 
-**Three things that will waste your time:**
+**Things that will waste your time:**
 
+- In a cloud session `compiler/target/release/rask` comes from the environment snapshot and can be days older than your clone, while `runtime/*.c` is current. Run it as-is and you get raw `ld` undefined-symbol errors for `rask_*` internals, which read like a codegen bug in your program (#1041). Build the compiler before you trust it. [docs/cloud-cache.md](docs/cloud-cache.md) covers what the snapshot does and doesn't cover.
 - `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), so editing it does nothing until `cargo build --release -p rask-cli`. `runtime/*.c` is different: the linker compiles those sources itself and caches the objects keyed by size+mtime, so an edit takes effect on the next compile with no rebuild and no `make`. (`librask_runtime.a` isn't linked by anything — `make` in `compiler/runtime` builds it for its own sake.) Cached objects live in `$XDG_CACHE_HOME/rask/runtime`, or `RASK_RUNTIME_CACHE` if set.
 - A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code.
 - `rask build` caches Rask object files in `build/.cache/*.o` (separate from the runtime object cache above). The key covers source, profile, target **and the compiler binary** (path + size + mtime), so rebuilding `rask` invalidates it on its own — no `rm -rf build/.cache` needed. Two compilers keep separate entries rather than evicting each other, so alternating between builds still hits. `rask build --verbose` prints the compiler fingerprint on a cache hit; `--force` or `--no-cache` bypasses. (`rask run` / `rask compile` on a single file don't cache at all.)
