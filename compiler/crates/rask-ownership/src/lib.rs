@@ -185,8 +185,28 @@ pub struct OwnershipChecker<'a> {
     /// (type, method) -> (is the receiver `deleting`, which parameters are). Built
     /// here rather than carried on `MethodSig`, which has 46 construction sites.
     method_deleting: HashMap<(String, String), (bool, Vec<bool>)>,
+    /// MC2: closure bindings that hold a mutable capture, and what they hold.
+    /// `(binding, variables, where the closure was written, last statement that
+    /// mentions the binding)` — the record dies at that statement, so reading
+    /// the variable after the closure's last call is fine.
+    mutable_captures: Vec<MutableCapture>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
+}
+
+/// One live mutable capture: a closure binding and the variables its body writes.
+#[derive(Debug, Clone)]
+struct MutableCapture {
+    /// The name the closure is bound to.
+    holder: String,
+    /// Variables from the enclosing scope the body assigns to.
+    vars: Vec<String>,
+    /// Where the closure literal is.
+    span: Span,
+    /// Index of the last statement in the holder's block that mentions it.
+    dies_after: usize,
+    /// Which block's statement list `dies_after` counts in.
+    block: u32,
 }
 
 impl<'a> OwnershipChecker<'a> {
@@ -226,6 +246,7 @@ impl<'a> OwnershipChecker<'a> {
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
             last_closure_scope_limit: None,
+            mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
             method_deleting: HashMap::new(),
@@ -494,6 +515,7 @@ impl<'a> OwnershipChecker<'a> {
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
         self.last_closure_scope_limit = None;
+        self.mutable_captures.clear();
         self.param_type_strings.clear();
         self.identified_links.clear();
         self.coarse_resources.clear();
@@ -665,13 +687,25 @@ impl<'a> OwnershipChecker<'a> {
         self.current_block += 1;
         let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
 
-        for stmt in stmts {
+        // MC2 needs to know where each name is mentioned for the last time, so
+        // a mutable capture can stop being exclusive once the closure holding
+        // it is done. Cheaper here than during the walk: the whole list is in
+        // hand, and it is one pass.
+        let last_mention = Self::last_mentions(stmts);
+
+        for (index, stmt) in stmts.iter().enumerate() {
+            self.check_mutable_capture_access(stmt);
             self.check_stmt(stmt);
+            // After the walk, not before: the closure's own body is where the
+            // write lives, and checking it against its own record would report
+            // every mutable capture as a conflict with itself.
+            self.register_mutable_capture(stmt, index, block_id, &last_mention);
             self.current_stmt += 1;
 
             // Release instant borrows at statement end
             self.release_instant_borrows(self.current_stmt - 1);
         }
+        self.mutable_captures.retain(|c| c.block != block_id);
 
         // Release persistent borrows at block end
         self.release_persistent_borrows(block_id);
@@ -4114,7 +4148,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }
             }
             ExprKind::Block(stmts) => {
-                for s in stmts { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(stmts, locals, out, projections);
             }
             ExprKind::Closure { params, body, .. } => {
                 let mut inner_locals = locals.clone();
@@ -4176,14 +4210,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args { self.collect_free_vars_inner(&arg.expr, locals, out, projections); }
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.collect_free_vars_inner(&b.source, locals, out, projections); }
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::Spawn { body } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message, .. } => {
                 self.collect_free_vars_inner(condition, locals, out, projections);
@@ -4195,11 +4229,52 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             _ => {
                 // Literals, string interpolation, etc.
             }
+        }
+    }
+
+    /// Free variables of a statement list, with each statement seeing the names
+    /// the ones above it declared.
+    ///
+    /// Without this a closure's own `mut total = 0` didn't shadow an outer
+    /// `total`, so the outer one was reported as a capture the closure writes —
+    /// which registered a borrow on a variable the closure never touches, and
+    /// under MC2 rejected the outer name's next use.
+    fn collect_free_vars_body_inner(
+        &self,
+        body: &[Stmt],
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
+        let mut scope = locals.clone();
+        for stmt in body {
+            self.collect_free_vars_stmt_inner(stmt, &scope, out, projections);
+            Self::names_declared_by(stmt, &mut scope);
+        }
+    }
+
+    /// The names a statement introduces into the rest of its block.
+    fn names_declared_by(stmt: &Stmt, scope: &mut HashSet<String>) {
+        match &stmt.kind {
+            StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
+                scope.insert(name.clone());
+            }
+            StmtKind::LetTuple { patterns, .. } | StmtKind::MutTuple { patterns, .. } => {
+                for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
+                    scope.insert(name.to_string());
+                }
+            }
+            StmtKind::LetStruct { pattern, .. } => {
+                for name in pattern.bound_names() {
+                    scope.insert(name.to_string());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -4233,39 +4308,245 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::While { cond, body, .. } => {
                 self.collect_free_vars_inner(cond, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::WhileLet { expr, body, .. } => {
                 self.collect_free_vars_inner(expr, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Loop { body, .. } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::For { iter, body, .. } => {
                 self.collect_free_vars_inner(iter, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Ensure { body, else_handler } => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
                 if let Some((_, handler_body)) = else_handler {
-                    for s in handler_body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                    self.collect_free_vars_body_inner(handler_body, locals, out, projections);
                 }
             }
             StmtKind::Comptime(body) => {
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::ComptimeFor { iter, body, .. } => {
                 self.collect_free_vars_inner(iter, locals, out, projections);
-                for s in body { self.collect_free_vars_stmt_inner(s, locals, out, projections); }
+                self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
             | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
         }
     }
 
+    // ---- MC2: a mutable capture is exclusive while it lasts ----
+    //
+    // `mem.closures/MC2` says that while a mutable capture exists, nothing else
+    // may reach the variable. Two closures writing one counter, or a read
+    // between two calls that change it, is the same aliasing bug the borrow
+    // rules exist to stop — and nothing checked it, so both compiled (#1087).
+    //
+    // The capture lasts until the closure's last use, not to the end of the
+    // block. MC4 is the reason: "caller sees mutations after the closure
+    // completes" is the whole point of a mutable capture, so a read after the
+    // last call has to stay legal.
+    //
+    // Only a closure bound to a name is tracked. One written inline —
+    // `v.each(|x| { total = total + x })` — dies at the semicolon, so there is
+    // never a second thing reaching the variable while it lives.
+
+    /// Every name any expression in this statement mentions.
+    fn names_in(stmt: &Stmt) -> HashSet<String> {
+        let mut out = HashSet::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                out.insert(name.clone());
+            }
+        });
+        out
+    }
+
+    /// For each name, the last statement in this list that mentions it.
+    fn last_mentions(stmts: &[Stmt]) -> HashMap<String, usize> {
+        let mut out = HashMap::new();
+        for (index, stmt) in stmts.iter().enumerate() {
+            for name in Self::names_in(stmt) {
+                out.insert(name, index);
+            }
+        }
+        out
+    }
+
+    /// The name at the root of an assignment target: `x`, `x.f`, `x[i].f`.
+    fn assign_root(target: &Expr) -> Option<String> {
+        match &target.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. }
+            | ExprKind::DynamicField { object, .. } => Self::assign_root(object),
+            _ => None,
+        }
+    }
+
+    /// Names this statement list assigns to, including through the bodies that
+    /// hang off a statement rather than off a block expression.
+    fn assigned_in(stmts: &[Stmt], out: &mut Vec<String>) {
+        for stmt in stmts {
+            if let StmtKind::Assign { target, .. } = &stmt.kind {
+                if let Some(root) = Self::assign_root(target) {
+                    out.push(root);
+                }
+            }
+            match &stmt.kind {
+                StmtKind::While { body, .. }
+                | StmtKind::WhileLet { body, .. }
+                | StmtKind::Loop { body, .. }
+                | StmtKind::For { body, .. }
+                | StmtKind::ComptimeFor { body, .. }
+                | StmtKind::Comptime(body) => Self::assigned_in(body, out),
+                StmtKind::Ensure { body, else_handler } => {
+                    Self::assigned_in(body, out);
+                    if let Some((_, handler)) = else_handler {
+                        Self::assigned_in(handler, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Which of a closure's captures its body writes.
+    ///
+    /// Intersecting with the captures is what makes the scan safe to keep
+    /// flat: a name the body declares itself is not a capture, so a local
+    /// `total` inside can't be mistaken for the outer one.
+    fn written_captures(&self, body: &Expr, captures: &[String]) -> Vec<String> {
+        let mut written: Vec<String> = Vec::new();
+        rask_ast::visit::walk_expr(body, &mut |e| match &e.kind {
+            // Every block expression anywhere below, so the assignments inside
+            // an `if` arm or a nested closure are seen too.
+            ExprKind::Block(stmts) => Self::assigned_in(stmts, &mut written),
+            // `v.push(1)` writes `v` as surely as `v[0] = 1` does, and
+            // `h.items.push(1)` writes `h`.
+            ExprKind::MethodCall { object, method, .. } => {
+                if self.is_mutate_self_method(object, method) {
+                    if let Some(root) = Self::assign_root(object) {
+                        written.push(root);
+                    }
+                }
+            }
+            _ => {}
+        });
+        captures
+            .iter()
+            .filter(|name| written.contains(name))
+            .cloned()
+            .collect()
+    }
+
+    /// The closure a `let`/`mut` statement binds, if it binds one that borrows
+    /// its captures. An `own` closure moves them instead, and a use of the
+    /// variable afterwards is already a use after move.
+    fn closure_binding(stmt: &Stmt) -> Option<(&String, &Expr)> {
+        let (name, init) = match &stmt.kind {
+            StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => (name, init),
+            _ => return None,
+        };
+        match &init.kind {
+            ExprKind::Closure { is_own: false, .. } => Some((name, init)),
+            _ => None,
+        }
+    }
+
+    /// MC2: report anything in this statement that reaches a variable a live
+    /// closure is holding.
+    fn check_mutable_capture_access(&mut self, stmt: &Stmt) {
+        let touched = Self::names_in(stmt);
+        // What a closure *this* statement binds would write, so the message can
+        // say "captured again" only when that is what happened — a second
+        // closure that merely reads the variable is still a conflict, but a
+        // different sentence.
+        let would_write = self.captures_a_statement_writes(stmt);
+
+        let mut hit: Vec<(String, String, Span, bool)> = Vec::new();
+        for capture in &self.mutable_captures {
+            for name in &capture.vars {
+                if touched.contains(name) {
+                    hit.push((
+                        name.clone(),
+                        capture.holder.clone(),
+                        capture.span,
+                        would_write.contains(name),
+                    ));
+                }
+            }
+        }
+        for (name, holder, captured_at, second_closure) in hit {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::MutableCaptureConflict {
+                    name: name.clone(),
+                    holder: holder.clone(),
+                    captured_at,
+                    second_closure,
+                },
+                span: stmt.span,
+            });
+            // One report per conflict. The second access to the same variable
+            // is the same mistake, and a loop body would otherwise say it once
+            // per statement.
+            self.mutable_captures.retain(|c| c.holder != holder);
+        }
+    }
+
+    /// The captures a closure bound by this statement writes, if it binds one.
+    fn captures_a_statement_writes(&self, stmt: &Stmt) -> Vec<String> {
+        let Some((_, closure)) = Self::closure_binding(stmt) else { return Vec::new() };
+        let ExprKind::Closure { params, body, .. } = &closure.kind else { return Vec::new() };
+        let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut captures = Vec::new();
+        self.collect_free_vars(body, &param_names, &mut captures);
+        self.written_captures(body, &captures)
+    }
+
+    /// Record what a closure this statement binds holds, and retire the
+    /// records whose closure has now seen its last use.
+    fn register_mutable_capture(
+        &mut self,
+        stmt: &Stmt,
+        index: usize,
+        block_id: u32,
+        last_mention: &HashMap<String, usize>,
+    ) {
+        if let Some((holder, closure)) = Self::closure_binding(stmt) {
+            let vars = self.captures_a_statement_writes(stmt);
+            if !vars.is_empty() {
+                self.mutable_captures.push(MutableCapture {
+                    holder: holder.clone(),
+                    vars,
+                    span: closure.span,
+                    dies_after: last_mention.get(holder).copied().unwrap_or(index),
+                    block: block_id,
+                });
+            }
+        }
+
+        self.mutable_captures
+            .retain(|c| !(c.block == block_id && c.dies_after <= index));
+    }
+
     /// Check if a method call uses `take self`.
     fn is_take_self_method(&self, object: &Expr, method_name: &str) -> bool {
+        self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Take)
+    }
+
+    /// Check if a method call uses `mutate self` — it writes its receiver.
+    fn is_mutate_self_method(&self, object: &Expr, method_name: &str) -> bool {
+        self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Mutate)
+    }
+
+    /// How a method takes its receiver, looked up from the receiver's type.
+    fn self_param_of(&self, object: &Expr, method_name: &str) -> Option<rask_types::SelfParam> {
         if let Some(ty) = self.program.node_types.get(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
@@ -4286,17 +4567,17 @@ impl<'a> OwnershipChecker<'a> {
                     let methods = match def {
                         rask_types::TypeDef::Struct { methods, .. } => methods,
                         rask_types::TypeDef::Enum { methods, .. } => methods,
-                        _ => return false,
+                        _ => return None,
                     };
                     for m in methods {
                         if m.name == method_name {
-                            return m.self_param == rask_types::SelfParam::Take;
+                            return Some(m.self_param);
                         }
                     }
                 }
             }
         }
-        false
+        None
     }
 
     /// Mark an argument as consumed (moved) when it names a binding.

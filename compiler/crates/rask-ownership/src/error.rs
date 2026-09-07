@@ -381,6 +381,18 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// MC2: a variable a live closure captures mutably, touched by something
+    /// else. `holder` is the closure's binding, `second_closure` says whether
+    /// the thing touching it is another closure capturing the same variable.
+    #[error("`{name}` is already mutably captured by `{holder}`")]
+    MutableCaptureConflict {
+        name: String,
+        holder: String,
+        /// Where the capturing closure was written.
+        captured_at: Span,
+        second_closure: bool,
+    },
+
     /// ER43: a wildcard pattern would silently drop a transitively-linear value.
     /// Either the whole scrutinee is linear and `_` discards it, or a pattern
     /// position inside a destructure (variant payload, struct field, tuple

@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a variable two things want to write
+//
+// Spec: mem.closures (MC2, MC4)
+//
+// A closure that writes a variable it captured holds the only name for that
+// variable while it lives. That is what makes the write safe with no lock and
+// nothing written at the capture — the compiler can see there is nothing else
+// to race with.
+//
+// Nothing checked it, so two closures over one counter compiled and the answer
+// depended on the order they ran in (#1087).
+//
+// The capture ends at the closure's *last use*, not at the end of the block.
+// MC4 is the reason: seeing the mutations afterwards is the whole point of a
+// mutable capture, so `println("{total}")` below the last call has to stay
+// legal — and it does, further down this file.
+
+func two_closures_over_one_counter() {
+    mut n = 0
+    let a = || { n = n + 1 }
+    // ERROR: `n` is already captured for writing by `a` [E0878]
+    let b = || { n = n + 2 }
+    a()
+    b()
+}
+
+func a_read_between_two_calls() {
+    mut total = 0
+    let add = |x| { total = total + x }
+    add(5)
+    // ERROR: `total` is reached while `add` still holds it [E0878]
+    println("{total}")
+    add(3)
+}
+
+func a_write_from_outside() {
+    mut n = 0
+    let bump = || { n = n + 1 }
+    bump()
+    // ERROR: `n` is reached while `bump` still holds it [E0878]
+    n = 100
+    bump()
+}
+
+// FIX 1: read it after the closure is done — this is MC4, and it compiles
+func read_it_afterwards() {
+    mut total = 0
+    let add = |x| { total = total + x }
+    add(5)
+    add(3)
+    println("{total}")
+}
+
+// FIX 2: one closure instead of two
+func one_closure() {
+    mut n = 0
+    let step = |by| { n = n + by }
+    step(1)
+    step(2)
+    println("{n}")
+}
+
+// FIX 3: an inline closure lives for one statement, so nothing else overlaps it
+func inline_closures_are_fine() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    mut total = 0
+    let n = v.filter(|x| { total = total + x; return x > 1 }).count()
+    println("{total} {n}")
+}
+
+// A closure that only *reads* its capture takes no exclusive hold, so any
+// number of them may sit beside each other.
+func reading_closures_dont_conflict() {
+    let n = 7
+    let show = || { println("{n}") }
+    let double = || { return n * 2 }
+    show()
+    println("{double()}")
+}

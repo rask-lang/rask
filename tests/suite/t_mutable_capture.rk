@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure that writes what it captured, and the code around it (#1087).
+//
+// `mem.closures/MC2` says nothing else may reach the variable while the
+// capture lives, and nothing enforced it — two closures over one counter
+// compiled, and which write landed depended on the order they ran in. The
+// rejections are in `tests/compile_errors/mutable_capture_is_exclusive.rk`.
+//
+// This file is the other half: everything the rule must *not* reject. The
+// capture ends at the closure's last use rather than at the end of the block,
+// which is MC4 — "caller sees mutations after the closure completes" is the
+// whole point, so a read below the last call has to keep working.
+
+test "the caller sees what the closure wrote" {
+    mut total = 0
+    let add = |x| { total = total + x }
+    add(5)
+    add(3)
+    assert total == 8
+}
+
+// Two closures, one counter each. The rule is per variable, not per closure.
+test "closures over different variables" {
+    mut a = 0
+    mut b = 0
+    let bump_a = || { a = a + 1 }
+    let bump_b = || { b = b + 10 }
+    bump_a()
+    bump_b()
+    bump_a()
+    assert a == 2
+    assert b == 10
+}
+
+// Reads take no exclusive hold, so any number of them sit beside each other.
+test "closures that only read" {
+    let n = 7
+    let double = || { return n * 2 }
+    let triple = || { return n * 3 }
+    assert double() == 14
+    assert triple() == 21
+    assert n == 7
+}
+
+// An inline closure dies at the end of its statement, so there is never a
+// second thing reaching the variable while it lives — however many of them a
+// chain has.
+test "inline closures in a chain" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    mut seen = 0
+    let n = v.filter(|x| { seen = seen + 1; return x > 1 }).count()
+    assert seen == 3
+    assert n == 2.wrap<usize>()
+}
+
+// A container, not a scalar: `push` is `mutate self`, so the closure writes
+// `log` as surely as an assignment would.
+test "a closure that pushes to a captured vector" {
+    mut log: Vec<i64> = Vec.new()
+    let record = |x| { log.push(x) }
+    record(1)
+    record(2)
+    assert log.len() == 2.wrap<usize>()
+    assert log[1] == 2
+}
+
+// The write is under an `if`, three levels down from the closure's own block.
+test "a write nested inside the body" {
+    mut hits = 0
+    let count_if_big = |x| {
+        if x > 10 {
+            hits = hits + 1
+        }
+    }
+    count_if_big(5)
+    count_if_big(20)
+    assert hits == 1
+}
+
+// A name the closure declares itself is not a capture, so an inner `total`
+// must not be mistaken for the outer one — the outer stays readable throughout.
+test "a local inside the closure shadows nothing outside" {
+    let total = 100
+    let compute = |x| {
+        mut total = 0
+        total = total + x
+        return total
+    }
+    assert compute(5) == 5
+    assert total == 100
+    assert compute(7) == 7
+}
+
+func main() {
+    mut total = 0
+    let add = |x| { total = total + x }
+    add(4)
+    add(6)
+    println("mutable capture ok: {total}")
+    return
+}

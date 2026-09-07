@@ -494,6 +494,45 @@ pub enum Pattern {
     },
 }
 
+impl Pattern {
+    /// Every name this pattern binds, in the order they appear.
+    ///
+    /// A `_` binds nothing, and so does a literal or a range; a `Type as name`
+    /// binds only when the `as` is written.
+    pub fn bound_names(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        self.collect_bound_names(&mut out);
+        out
+    }
+
+    fn collect_bound_names<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            Pattern::Ident(name) => out.push(name.as_str()),
+            Pattern::Constructor { fields, .. } => {
+                for f in fields {
+                    f.collect_bound_names(out);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, pat) in fields {
+                    pat.collect_bound_names(out);
+                }
+            }
+            Pattern::Tuple(pats) | Pattern::Or(pats) => {
+                for p in pats {
+                    p.collect_bound_names(out);
+                }
+            }
+            Pattern::TypePat { binding, .. } => {
+                if let Some(name) = binding {
+                    out.push(name.as_str());
+                }
+            }
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+        }
+    }
+}
+
 /// The name of an expression's form, for diagnostics and instrumentation that
 /// need to say *what kind* of expression something was without carrying the
 /// tree around.

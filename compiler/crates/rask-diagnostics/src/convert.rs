@@ -2671,6 +2671,38 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 link_deleted_diagnostic(name, *moved_at, self.span, true)
             }
 
+            MutableCaptureConflict { name, holder, captured_at, second_closure } => {
+                let primary = if *second_closure {
+                    format!("`{}` can't be captured again while `{}` holds it", name, holder)
+                } else {
+                    format!("`{}` is reached here, and `{}` is still holding it", name, holder)
+                };
+                Diagnostic::error(format!(
+                    "`{}` is already captured for writing by `{}`",
+                    name, holder
+                ))
+                .with_code("E0878")
+                .with_primary(self.span, primary)
+                .with_secondary(*captured_at, format!("`{}` writes `{}`, so it holds it exclusively", holder, name))
+                .with_fix(format!(
+                    "move this below `{}`'s last call, or put the variable in a box \
+                     both can share: `let {} = Shared.new(…)`, then \
+                     `with {}.write() as v {{ … }}` in each closure",
+                    holder, name, name
+                ))
+                .with_why(
+                    "a closure that writes a captured variable holds the only \
+                     name for it while it lives — that is what makes the write \
+                     safe without a lock. A second closure, or a read in \
+                     between two calls, is a second name for the same storage, \
+                     and which of them wins depends on the order they run in. \
+                     The capture ends at the closure's last use, so reading the \
+                     variable after that is fine — seeing the mutations is the \
+                     point [mem.closures/MC2, MC4]"
+                        .to_string(),
+                )
+            }
+
             MutableFieldView { binding, path, field_ty } => {
                 Diagnostic::error(format!(
                     "`{}` and `{}` would be the same `{}`, both writable",
