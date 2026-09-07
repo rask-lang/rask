@@ -68,20 +68,30 @@ jobs:
       with:
         path: artifacts
 
-    - name: Generate changelog
+    # Written notes if this tag has them, commit subjects otherwise. The
+    # fallback alone doesn't survive a long release: v0.1.1..v0.2.0 is 782
+    # subjects, and the two tags share no history, so the range is every commit
+    # main has rather than the ones that are new.
+    - name: Assemble release body
       id: changelog
       run: |
-        PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
-        if [ -z "$PREV_TAG" ]; then
-          echo "body=Initial release" >> "$GITHUB_OUTPUT"
-        else
-          LOG=$(git log --oneline "$PREV_TAG"..HEAD --no-merges)
-          {
-            echo 'body<<CHANGELOG_EOF'
-            echo "$LOG"
-            echo 'CHANGELOG_EOF'
-          } >> "$GITHUB_OUTPUT"
-        fi
+        NOTES="release-notes/${GITHUB_REF_NAME}.md"
+        {
+          echo 'body<<CHANGELOG_EOF'
+          if [ -f "$NOTES" ]; then
+            cat "$NOTES"
+          else
+            echo "No written notes for ${GITHUB_REF_NAME} (add \`$NOTES\`)."
+            echo
+            PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+            if [ -z "$PREV_TAG" ]; then
+              echo "Initial release"
+            else
+              git log --oneline "$PREV_TAG"..HEAD --no-merges | head -300
+            fi
+          fi
+          echo 'CHANGELOG_EOF'
+        } >> "$GITHUB_OUTPUT"
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
