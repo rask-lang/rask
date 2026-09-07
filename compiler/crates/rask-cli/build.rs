@@ -15,6 +15,11 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // Without this, changing RASK_RUNTIME_DIR leaves the previously baked
+    // runtime in place and says nothing — a stale runtime is worse than a
+    // build error, because nothing points at it.
+    println!("cargo:rerun-if-env-changed=RASK_RUNTIME_DIR");
+
     let runtime_dir = runtime_dir();
     println!("cargo:rerun-if-changed={}", runtime_dir.display());
 
@@ -51,21 +56,33 @@ fn main() {
     std::fs::write(&dest, out).expect("write embedded_runtime.rs");
 }
 
-/// The runtime lives at `compiler/runtime`, four levels up from this crate.
+/// The runtime lives at `compiler/runtime`, two levels up from this crate.
 /// `RASK_RUNTIME_DIR` overrides it so a build can point at a runtime elsewhere.
+///
+/// Always absolute. The paths go into `include_str!` in a file written to
+/// `OUT_DIR`, and that macro resolves a relative path against the directory of
+/// the file holding it — not against the build script's working directory. So a
+/// relative `RASK_RUNTIME_DIR=../../runtime` passes the `exists()` check here
+/// (cwd is the crate root) and then fails to compile as
+/// `OUT_DIR/../../runtime/alloc.c`.
 fn runtime_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("RASK_RUNTIME_DIR") {
         let p = PathBuf::from(dir);
         if p.join("runtime.c").exists() {
-            return p;
+            return absolute(&p);
         }
-        panic!("RASK_RUNTIME_DIR is set but has no runtime.c");
+        panic!("RASK_RUNTIME_DIR is set but has no runtime.c: {}", p.display());
     }
 
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let candidate = Path::new(&manifest).join("../../runtime");
     if candidate.join("runtime.c").exists() {
-        return candidate;
+        return absolute(&candidate);
     }
     panic!("no runtime next to {} — expected ../../runtime", manifest.display());
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    p.canonicalize()
+        .unwrap_or_else(|e| panic!("cannot resolve runtime dir {}: {e}", p.display()))
 }
