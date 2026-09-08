@@ -99,10 +99,33 @@ typedef struct RaskVec RaskVec;
 //
 // `offsets` is NULL and `count` 0 when the elements own nothing. Built by
 // codegen's `string_offsets_of` from the element tag lowering emitted.
+//
+// Each entry is one int32: the byte offset in the low 28 bits, and what lives
+// there in the top 4. The kind exists because a `Vec<Order>` whose `Order`
+// holds a `Vec<Item>` has to free each element's inner vector, and a bare
+// offset can only mean "string". A plain offset still reads as a string at
+// that offset, so every hand-written list below keeps its meaning.
 typedef struct {
     const int32_t *offsets;
     int64_t        count;
 } RaskElemStrs;
+
+#define RASK_OWNED_KIND_SHIFT 28
+#define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
+#define RASK_OWNED_STRING 0
+#define RASK_OWNED_VEC    1
+#define RASK_OWNED_MAP    2
+
+// Release, or take a reference to, whatever one entry points at inside `elem`.
+//
+// `retain` is what makes a derived container an owner: a clone, a slice or a
+// chunk copies element bytes, so two containers name one string buffer or one
+// nested vector, and whichever is freed second reads memory that is gone. For a
+// string that's a refcount; for a nested container it's a real copy, written
+// back into the element — which is the deep clone `.clone()` is supposed to be.
+void rask_owned_release(char *elem, int32_t entry);
+void rask_owned_retain(char *elem, int32_t entry);
+void rask_owned_adopt(char *elem, int32_t entry);
 
 // Two maps the runtime needs constantly: a container of bare strings (one
 // string, at offset zero) and one of (string, string) pairs — `split`,

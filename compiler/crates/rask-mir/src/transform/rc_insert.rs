@@ -187,14 +187,43 @@ fn container_handles_from(
     func: &MirFunction,
     aggregates: &HashSet<LocalId>,
     ty_of: &HashMap<LocalId, MirType>,
-) -> HashMap<LocalId, LocalId> {
+) -> (HashMap<LocalId, LocalId>, HashMap<LocalId, LocalId>) {
     let mut from: HashMap<LocalId, LocalId> = HashMap::new();
-    // A fixpoint: `_29 = _27` after `_27 = _25.0` is still the same handle.
+    // What a call handed back that points into a container this group holds:
+    // `inv.orders[1]` is an `Order` *inside* the vector's buffer, not a copy of
+    // one. Reading `.items` off it and indexing that is still reaching through
+    // the Inventory, so the release can't run until those reads are done —
+    //
+    //     _64 = Vec_index(_63, 1)
+    //     rc_dec_contents(_43)     // frees the Inventory, and the Vec inside it
+    //     _65 = _64.0              // reads the handle that just went away
+    //
+    // which segfaulted on `inv.orders[1].items[1].qty` once a nested container
+    // started being freed. Before that it read a freed buffer that happened to
+    // still hold the right bytes.
+    let mut views: HashMap<LocalId, LocalId> = HashMap::new();
+    // A fixpoint: `_29 = _27` after `_27 = _25.0` is still the same handle, and
+    // a view's own field read is a handle into the same group.
     let mut changed = true;
     while changed {
         changed = false;
         for block in &func.blocks {
             for stmt in &block.statements {
+                // A call that hands back a view into its receiver's storage.
+                if let MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } = &stmt.kind {
+                    if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+                        let root = args
+                            .first()
+                            .and_then(uses::operand_local)
+                            .and_then(|recv| from.get(&recv).or_else(|| views.get(&recv)))
+                            .copied();
+                        if let Some(root) = root {
+                            if views.insert(*dst, root).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
                 match &stmt.kind {
                     // The read itself has to be `Ptr` — that is what tells a
                     // container handle from an ordinary scalar field. A plain
@@ -226,6 +255,10 @@ fn container_handles_from(
                             if from.insert(*dst, root).is_none() {
                                 changed = true;
                             }
+                        } else if let Some(&root) = views.get(src) {
+                            if views.insert(*dst, root).is_none() {
+                                changed = true;
+                            }
                         }
                     }
                     _ => {}
@@ -233,7 +266,7 @@ fn container_handles_from(
             }
         }
     }
-    from
+    (from, views)
 }
 
 fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) {
@@ -248,7 +281,7 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     if aggregates.is_empty() {
         return;
     }
-    let handles = container_handles_from(func, &aggregates, &ty_of);
+    let (handles, views) = container_handles_from(func, &aggregates, &ty_of);
 
     // One group per value. SSA renames an aggregate at every copy, and a
     // payload read out of a wrapper names the same bytes rather than copying
@@ -263,6 +296,27 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                 break;
             }
         }
+    }
+    // Neither a handle nor a view is a name the release can walk — the release
+    // takes an aggregate apart field by field, and both of these point *into*
+    // one.
+    let not_a_name = |l: &LocalId| handles.contains_key(l) || views.contains_key(l);
+
+    /// The aggregate a chain of views and handles ultimately reads out of.
+    fn resolve_root(
+        local: LocalId,
+        handles: &HashMap<LocalId, LocalId>,
+        views: &HashMap<LocalId, LocalId>,
+    ) -> LocalId {
+        let mut cur = local;
+        // Bounded rather than trusting the chain to be acyclic.
+        for _ in 0..64 {
+            match views.get(&cur).or_else(|| handles.get(&cur)) {
+                Some(&next) if next != cur => cur = next,
+                _ => break,
+            }
+        }
+        cur
     }
 
     // Anything that might keep the value alive elsewhere disqualifies its whole
@@ -403,7 +457,43 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
         return;
     }
 
-    let (live_in, live_out) = aggregate_liveness(func, &groups);
+    // Locals that read *through* a group without being one of its names.
+    //
+    // `inv.orders[1]` is an `Order` inside the vector's buffer, not a copy of
+    // one, so `.items` off it and an index into that are still reads of the
+    // Inventory. They can't be group members: a view's own verdict — "not owned
+    // here" — belongs to the view, and letting it reach the container took the
+    // protection off `scene.nodes.get(h)? as n` and released a pool element's
+    // contents. So they count for placement and for nothing else:
+    //
+    //     _64 = Vec_index(_63, 1)
+    //     rc_dec_contents(_43)     // frees the Inventory, and the Vec inside it
+    //     _65 = _64.0              // reads the handle that just went away
+    //
+    // which segfaulted `inv.orders[1].items[1].qty` once a nested container
+    // started being freed; before that it read a buffer that was gone and
+    // happened to still hold the right bytes.
+    let mut reaches: Vec<HashSet<LocalId>> = vec![HashSet::new(); groups.len()];
+    {
+        let member_of: HashMap<LocalId, usize> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(gi, g)| g.iter().map(move |l| (*l, gi)))
+            .collect();
+        for local in views.keys().chain(handles.keys()) {
+            let root = resolve_root(*local, &handles, &views);
+            if root == *local {
+                continue;
+            }
+            if let Some(&gi) = member_of.get(&root) {
+                if !groups[gi].contains(local) {
+                    reaches[gi].insert(*local);
+                }
+            }
+        }
+    }
+
+    let (live_in, live_out) = aggregate_liveness(func, &groups, &reaches);
 
     // A group that only stays live because of a branch that doesn't end it
     // needs its release on the branch that does. The normal placement below
@@ -413,7 +503,8 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     // mentions it, so there was no release anywhere and the container in the
     // field was never freed. An early `return` out of a function that reads the
     // field later is the same shape.
-    let edge_releases = aggregate_edge_releases(func, &groups, &handles, &live_in, &live_out);
+    let edge_releases =
+        aggregate_edge_releases(func, &groups, &handles, &views, &live_in, &live_out);
 
     for block_idx in 0..func.blocks.len() {
         let stmts_len = func.blocks[block_idx].statements.len();
@@ -440,17 +531,38 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                 if matches!(&stmt.kind, MirStmtKind::Store { addr, .. } if group.contains(addr)) {
                     continue;
                 }
-                for id in group {
-                    if uses::stmt_reads(stmt, *id) || uses::stmt_def(stmt) == Some(*id) {
-                        last = Some(si);
-                        // The release walks an aggregate apart field by field,
-                        // so a bare handle is never the thing to name — but its
-                        // use still moves the release later.
-                        if !handles.contains_key(id) {
-                            local = Some(*id);
-                        } else if local.is_none() {
-                            local = group.iter().find(|l| !handles.contains_key(l)).copied();
-                        }
+                // Lowest id among the ones this statement touches, and lowest
+                // among the group's own names — a group is a `HashSet`, so
+                // `find` picked a different member per process and two compiles
+                // of one program emitted the release on different locals. It
+                // showed up as a leak that appeared in half the runs.
+                let touched = group
+                    .iter()
+                    .chain(reaches[gi].iter())
+                    .copied()
+                    .filter(|id| {
+                        uses::stmt_reads(stmt, *id) || uses::stmt_def(stmt) == Some(*id)
+                    })
+                    .min_by_key(|id| id.0);
+                if let Some(id) = touched {
+                    last = Some(si);
+                    // The release walks an aggregate apart field by field, so a
+                    // bare handle is never the thing to name — but its use
+                    // still moves the release later.
+                    let nameable = group
+                        .iter()
+                        .copied()
+                        .filter(|l| !not_a_name(l))
+                        .min_by_key(|l| l.0);
+                    if !not_a_name(&id) {
+                        // The name has to be one this statement actually
+                        // touches. Taking the group's lowest instead named a
+                        // local the path never wrote, and the `IoError` message
+                        // in `fs.metadata(missing) catch e => …` stopped being
+                        // released.
+                        local = Some(id);
+                    } else if local.is_none() {
+                        local = nameable;
                     }
                 }
             }
@@ -511,6 +623,7 @@ fn aggregate_edge_releases(
     func: &MirFunction,
     groups: &[HashSet<LocalId>],
     handles: &HashMap<LocalId, LocalId>,
+    views: &HashMap<LocalId, LocalId>,
     live_in: &[Vec<bool>],
     live_out: &[Vec<bool>],
 ) -> Vec<(BlockId, LocalId)> {
@@ -539,7 +652,12 @@ fn aggregate_edge_releases(
             if !live_out[bi][gi] || writes[gi].is_empty() {
                 continue;
             }
-            let Some(name) = group.iter().find(|l| !handles.contains_key(l)).copied() else {
+            let Some(name) = group
+                .iter()
+                .copied()
+                .filter(|l| !handles.contains_key(l) && !views.contains_key(l))
+                .min_by_key(|l| l.0)
+            else {
                 continue;
             };
             for succ in cfg::successors(&block.terminator) {
@@ -684,6 +802,7 @@ fn aggregate_value_groups(
 fn aggregate_liveness(
     func: &MirFunction,
     groups: &[HashSet<LocalId>],
+    reaches: &[HashSet<LocalId>],
 ) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
     let n_blocks = func.blocks.len();
     let n_groups = groups.len();
@@ -714,6 +833,7 @@ fn aggregate_liveness(
                     }
                 } else {
                     group.iter().any(|l| uses::stmt_reads(stmt, *l))
+                        || reaches[gi].iter().any(|l| uses::stmt_reads(stmt, *l))
                 };
                 if reads && !written {
                     gen[bi][gi] = true;

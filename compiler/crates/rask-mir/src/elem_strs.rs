@@ -17,13 +17,36 @@
 //!
 //!   0            the elements own nothing
 //!   1            the element *is* a string
-//!   2 + index    a struct with that layout
+//!   2            the element *is* a Vec
+//!   3            the element *is* a Map
+//!   4 + index    a struct with that layout
 
 use crate::MirType;
 
 pub const ELEM_NONE: i64 = 0;
 pub const ELEM_STRING: i64 = 1;
-pub const ELEM_STRUCT_BASE: i64 = 2;
+pub const ELEM_VEC: i64 = 2;
+pub const ELEM_MAP: i64 = 3;
+pub const ELEM_STRUCT_BASE: i64 = 4;
+
+/// The tag for an element that *is* a container.
+///
+/// MIR types a nested container as `Ptr`, which is what every pointer is — so
+/// `tag_of` can't tell `Map<string, Vec<i32>>`'s values from a raw address and
+/// answered "owns nothing". The checker's type knows, so this takes the
+/// rendered name. `Vec<i64>?` and `Vec<i64> or E` are wrappers around the
+/// handle rather than the handle, and a `Pool` or `Rack` is an arena whose
+/// contents outlive any one element (mem.pools, mem.racks).
+pub fn container_tag(rendered: &str) -> Option<i64> {
+    if rendered.ends_with('?') || rendered.contains(" or ") {
+        return None;
+    }
+    match rendered.split('<').next().unwrap_or(rendered).trim() {
+        "Vec" => Some(ELEM_VEC),
+        "Map" => Some(ELEM_MAP),
+        _ => None,
+    }
+}
 
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///

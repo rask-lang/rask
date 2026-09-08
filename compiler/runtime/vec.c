@@ -33,7 +33,66 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op);
 const int32_t rask_elem_strs_one[1] = {0};
 const int32_t rask_elem_strs_pair[2] = {0, 16};
 
-// Take a reference to every string in `count` elements starting at `from`.
+// One entry of an element map. Shared by every container's free and retain
+// walks — the encoding is described next to `RaskElemStrs` in the header.
+void rask_owned_release(char *elem, int32_t entry) {
+    char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
+    switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_STRING:
+            rask_string_free((const RaskStr *)at);
+            break;
+        case RASK_OWNED_VEC:
+            rask_vec_free(*(RaskVec **)at);
+            *(RaskVec **)at = NULL;
+            break;
+        case RASK_OWNED_MAP:
+            rask_map_free(*(RaskMap **)at);
+            *(RaskMap **)at = NULL;
+            break;
+        default:
+            break;
+    }
+}
+
+// What a container built from element bytes it was *given* has to do.
+//
+// `rask_vec_from_static` is handed a literal's elements and takes them over:
+// the array they came from is a temporary the frame never frees. A string still
+// needs the reference, because the locals that built `["{a}", "{b}"]` release
+// their own on the way out — but a nested container is not refcounted, so
+// cloning it here would leave the original with no owner at all. The new
+// container adopts the handle it was given.
+void rask_owned_adopt(char *elem, int32_t entry) {
+    if (((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_STRING) {
+        rask_string_clone((const RaskStr *)(elem + (entry & RASK_OWNED_OFFSET_MASK)));
+    }
+}
+
+void rask_owned_retain(char *elem, int32_t entry) {
+    char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
+    switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_STRING:
+            rask_string_clone((const RaskStr *)at);
+            break;
+        // A nested container can't be shared by two owners, so the copy gets
+        // one of its own. The handle written back is what makes the derived
+        // container's element point at it.
+        case RASK_OWNED_VEC: {
+            RaskVec *inner = *(RaskVec **)at;
+            if (inner) *(RaskVec **)at = rask_vec_clone(inner);
+            break;
+        }
+        case RASK_OWNED_MAP: {
+            RaskMap *inner = *(RaskMap **)at;
+            if (inner) *(RaskMap **)at = rask_map_clone(inner);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// Take a reference to everything `count` elements starting at `from` own.
 //
 // A vector derived from another — clone, slice, chunk, skip — copies element
 // bytes. Two vectors then point at one string buffer, and whichever is freed
@@ -42,9 +101,9 @@ const int32_t rask_elem_strs_pair[2] = {0, 16};
 static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
     if (!v || !v->strs.offsets || v->strs.count <= 0 || !v->data) return;
     for (int64_t i = from; i < from + count; i++) {
-        const char *elem = v->data + i * v->elem_size;
+        char *elem = v->data + i * v->elem_size;
         for (int64_t k = 0; k < v->strs.count; k++) {
-            rask_string_clone((const RaskStr *)(elem + v->strs.offsets[k]));
+            rask_owned_retain(elem, v->strs.offsets[k]);
         }
     }
 }
@@ -101,8 +160,16 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     // The elements are copied in, so this vector is a second owner of whatever
     // they hold. A literal's sentinel refcount makes that free; a `["{a}",
     // "{b}"]` built at runtime is the case that needs it, since the locals that
-    // made those strings release their own reference on the way out.
-    vec_retain_elems(v, 0, v->len);
+    // made those strings release their own reference on the way out. A nested
+    // container is adopted rather than copied — see `rask_owned_adopt`.
+    if (v->strs.offsets && v->strs.count > 0 && v->data) {
+        for (int64_t i = 0; i < v->len; i++) {
+            char *elem = v->data + i * v->elem_size;
+            for (int64_t k = 0; k < v->strs.count; k++) {
+                rask_owned_adopt(elem, v->strs.offsets[k]);
+            }
+        }
+    }
     return v;
 }
 
@@ -116,9 +183,9 @@ void rask_vec_free(RaskVec *v) {
     vec_check_no_borrows(v, "free");
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
-            const char *elem = v->data + i * v->elem_size;
+            char *elem = v->data + i * v->elem_size;
             for (int64_t k = 0; k < v->strs.count; k++) {
-                rask_string_free((const RaskStr *)(elem + v->strs.offsets[k]));
+                rask_owned_release(elem, v->strs.offsets[k]);
             }
         }
     }

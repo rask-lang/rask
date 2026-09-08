@@ -935,6 +935,18 @@ impl<'a> MirLowerer<'a> {
         node_id: rask_ast::NodeId,
         index: usize,
     ) -> Option<MirType> {
+        match self.container_elem_rask_type(node_id, index)? {
+            rask_types::Type::Var(_) => None,
+            resolved => Some(self.ctx.type_to_mir(&resolved)),
+        }
+    }
+
+    /// The checker's own type for a container's `index`-th type argument.
+    fn container_elem_rask_type(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<rask_types::Type> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(node_id)?;
         let container = match ty {
@@ -948,9 +960,37 @@ impl<'a> MirLowerer<'a> {
         let GenericArg::Type(inner) = args.get(index)? else {
             return None;
         };
-        match inner.as_ref() {
-            rask_types::Type::Var(_) => None,
-            resolved => Some(self.ctx.type_to_mir(resolved)),
+        Some(inner.as_ref().clone())
+    }
+
+    /// The element tag for a container's `index`-th type argument.
+    ///
+    /// A nested container is a bare handle in MIR — `Ptr`, and so is every
+    /// other pointer — so the checker's type is what says it is one. Without
+    /// this a `Map<string, Vec<i32>>` freed its keys and left every value
+    /// vector to nobody.
+    pub(super) fn container_elem_tag(&self, node_id: rask_ast::NodeId, index: usize) -> i64 {
+        if let Some(name) = self.container_elem_head(node_id, index) {
+            if let Some(tag) = crate::elem_strs::container_tag(&name) {
+                return tag;
+            }
+        }
+        crate::elem_strs::tag_of(self.container_elem_mir_type(node_id, index).as_ref())
+    }
+
+    /// The head name of a container's `index`-th type argument, when it has one.
+    ///
+    /// A resolved generic carries its base as a `TypeId` and renders as
+    /// `<type#7><i32>`, so the name has to come from the registry rather than
+    /// from `Display`. An `Option`/`Result` wrapper answers `None`: the handle
+    /// is behind a tag, not at the start of the slot.
+    fn container_elem_head(&self, node_id: rask_ast::NodeId, index: usize) -> Option<String> {
+        use rask_types::Type;
+        match self.container_elem_rask_type(node_id, index)? {
+            Type::Generic { base, .. } => self.ctx.type_names.get(&base).cloned(),
+            Type::Named(id) => self.ctx.type_names.get(&id).cloned(),
+            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => Some(name),
+            _ => None,
         }
     }
 

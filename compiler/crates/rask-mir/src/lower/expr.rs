@@ -5325,9 +5325,7 @@ impl<'a> MirLowerer<'a> {
                                 // What the elements are, settled here and kept
                                 // by the container for the rest of its life —
                                 // see `elem_strs`.
-                                let tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
-                                );
+                                let tag = self.container_elem_tag(expr.id, 0);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
                             }
                             // Map.new(): inject key_size, val_size
@@ -5336,12 +5334,8 @@ impl<'a> MirLowerer<'a> {
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
-                                let key_tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
-                                );
-                                let val_tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 1).as_ref(),
-                                );
+                                let key_tag = self.container_elem_tag(expr.id, 0);
+                                let val_tag = self.container_elem_tag(expr.id, 1);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
                             }
