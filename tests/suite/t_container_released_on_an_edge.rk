@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container whose last owner dies on a branch, not inside a block.
+//
+// The release-insertion pass anchors a release to a group's last *use* in a
+// block where it dies. A block can have neither. `for it in self.items` is
+// exactly that shape: the loop header keeps the vector live for the body, and
+// the block the loop exits into never mentions it — so there was no release
+// anywhere and the container in the field was never freed, however many times
+// the function ran. An early `return` out of a function that reads the field
+// further down is the same thing from the other side: the branch that returns
+// doesn't touch it, so the release landed only on the branch that did.
+//
+// The fix is a release on the edge where the group actually dies, guarded three
+// ways — the successor has one predecessor, something that writes the group
+// dominates it, and the name is one the release can walk. Each guard says
+// "leak" rather than "double free" when it says no.
+//
+// `tests/leak_gate.sh` counts the allocations; this file pins that the frees
+// land on the right memory, which a double free shows up as a crash or as
+// garbage read back. Run it under `RASK_POISON_STACK=1` too — a release of a
+// slot nobody wrote reads as zero on a fresh stack and is invisible otherwise.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+struct Item {
+    name: string
+    qty: i32
+}
+
+struct Order {
+    id: i32
+    items: Vec<Item>
+}
+
+extend Order {
+    /// The loop shape. `self.items` is live for the body and dead at the exit,
+    /// and the exit block never names it.
+    public func total(take self) -> i32 {
+        mut sum = 0
+        for it in self.items {
+            sum = sum + it.qty
+        }
+        return sum
+    }
+
+    /// The early-return shape. One branch reads the vector, the other doesn't.
+    public func first_name(take self) -> string {
+        if self.items.is_empty() {
+            return "none"
+        }
+        return self.items[0].name
+    }
+
+    /// Both, and a loop that runs zero times — the guard has to hold when the
+    /// body never executes as well as when it does.
+    public func count_over(take self, floor: i32) -> i32 {
+        if self.items.is_empty() {
+            return 0
+        }
+        mut n = 0
+        for it in self.items {
+            if it.qty > floor {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}
+
+func order(n: i32) -> Order {
+    mut v: Vec<Item> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push(Item { name: "item-{i}", qty: i })
+        i = i + 1
+    }
+    return Order { id: n, items: v }
+}
+
+test "mem.ownership — a loop over a container in a field" {
+    assert order(4).total() == 6
+    assert order(1).total() == 0
+    assert order(0).total() == 0
+}
+
+test "mem.ownership — an early return past a container in a field" {
+    assert order(0).first_name() == "none"
+    assert order(3).first_name() == "item-0"
+}
+
+test "mem.ownership — both, with a body that may not run" {
+    assert order(0).count_over(0) == 0
+    assert order(4).count_over(1) == 2
+    assert order(4).count_over(9) == 0
+}
+
+// Repeatedly, so a freed-and-reused buffer would read back wrong rather than
+// merely leak.
+test "mem.ownership — the same shapes in a loop" {
+    mut sum = 0
+    for i in 1..6 {
+        let o = order(i)
+        sum = sum + o.total()
+    }
+    assert sum == 20
+
+    mut names = 0
+    for i in 1..6 {
+        let o = order(i)
+        if o.first_name() == "item-0" {
+            names = names + 1
+        }
+    }
+    assert names == 5
+}

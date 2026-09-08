@@ -403,7 +403,17 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
         return;
     }
 
-    let live_out = aggregate_live_out(func, &groups);
+    let (live_in, live_out) = aggregate_liveness(func, &groups);
+
+    // A group that only stays live because of a branch that doesn't end it
+    // needs its release on the branch that does. The normal placement below
+    // anchors a release to the group's last *use* in a block where it dies —
+    // and a block can have neither. `for it in self.items` is exactly that: the
+    // loop header keeps the vector live for the body, the exit block never
+    // mentions it, so there was no release anywhere and the container in the
+    // field was never freed. An early `return` out of a function that reads the
+    // field later is the same shape.
+    let edge_releases = aggregate_edge_releases(func, &groups, &handles, &live_in, &live_out);
 
     for block_idx in 0..func.blocks.len() {
         let stmts_len = func.blocks[block_idx].statements.len();
@@ -471,6 +481,85 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
             func.blocks[block_idx].statements.insert(idx, stmt);
         }
     }
+
+    // After the placement loop, for the same reason the string version is: a
+    // release sitting at the top of a block reads the group, so the loop above
+    // would have counted it as a use and put a second one behind it.
+    for (block_id, local) in edge_releases {
+        if let Some(b) = func.blocks.iter_mut().find(|b| b.id == block_id) {
+            let span = b.terminator.span;
+            b.statements
+                .insert(0, MirStmt::new(MirStmtKind::RcDecContents { local }, span));
+        }
+    }
+}
+
+/// Where a group's release belongs when no block holds both its last use and
+/// its death.
+///
+/// The group is live out of `B` and dead on entry to one of `B`'s successors,
+/// so that edge is where it ends. Three guards, and each of them is a leak
+/// rather than a double free when it says no:
+///
+///   - the successor has one predecessor, so nothing else can arrive there with
+///     the value still live and run the release twice
+///   - something that writes the group dominates the successor, so the slot the
+///     release walks has been written by the time control gets there
+///   - the name is one the release can walk, which a bare container handle is
+///     not — it names the aggregate, and the aggregate is what holds the fields
+fn aggregate_edge_releases(
+    func: &MirFunction,
+    groups: &[HashSet<LocalId>],
+    handles: &HashMap<LocalId, LocalId>,
+    live_in: &[Vec<bool>],
+    live_out: &[Vec<bool>],
+) -> Vec<(BlockId, LocalId)> {
+    let index_of: HashMap<BlockId, usize> =
+        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let preds = cfg::predecessors(func);
+    let dom = DominatorTree::build(func);
+
+    // Blocks that write each group, so "has it been built yet" has an answer.
+    let mut writes: Vec<Vec<BlockId>> = vec![Vec::new(); groups.len()];
+    for block in &func.blocks {
+        for (gi, group) in groups.iter().enumerate() {
+            let touched = block.statements.iter().any(|st| {
+                matches!(&st.kind, MirStmtKind::Store { addr, .. } if group.contains(addr))
+                    || uses::stmt_def(st).is_some_and(|d| group.contains(&d))
+            });
+            if touched {
+                writes[gi].push(block.id);
+            }
+        }
+    }
+
+    let mut out: Vec<(BlockId, LocalId)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (gi, group) in groups.iter().enumerate() {
+            if !live_out[bi][gi] || writes[gi].is_empty() {
+                continue;
+            }
+            let Some(name) = group.iter().find(|l| !handles.contains_key(l)).copied() else {
+                continue;
+            };
+            for succ in cfg::successors(&block.terminator) {
+                let Some(si) = index_of.get(&succ) else { continue };
+                if live_in[*si][gi] {
+                    continue;
+                }
+                if preds.get(&succ).map(|p| p.len()) != Some(1) {
+                    continue;
+                }
+                if !writes[gi].iter().any(|w| dom.dominates(*w, succ)) {
+                    continue;
+                }
+                out.push((succ, name));
+            }
+        }
+    }
+    out.sort_by_key(|(b, l)| (b.0, l.0));
+    out.dedup_by_key(|(b, l)| (b.0, l.0));
+    out
 }
 
 /// Is every definition of `local` on the aborting side?
@@ -591,7 +680,11 @@ fn aggregate_value_groups(
 /// before reading it.
 ///
 /// Indexed `[block index][group index]`.
-fn aggregate_live_out(func: &MirFunction, groups: &[HashSet<LocalId>]) -> Vec<Vec<bool>> {
+/// Per block, per group: live on entry and live on exit.
+fn aggregate_liveness(
+    func: &MirFunction,
+    groups: &[HashSet<LocalId>],
+) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
     let n_blocks = func.blocks.len();
     let n_groups = groups.len();
     let index_of: HashMap<BlockId, usize> =
@@ -665,7 +758,7 @@ fn aggregate_live_out(func: &MirFunction, groups: &[HashSet<LocalId>]) -> Vec<Ve
             break;
         }
     }
-    live_out
+    (live_in, live_out)
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would
