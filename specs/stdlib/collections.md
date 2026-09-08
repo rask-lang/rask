@@ -346,31 +346,6 @@ let idx = vec.push_with(|slot| {
 
 Avoids constructing on stack then moving. Useful for large types.
 
-## Slice Descriptors
-
-Slices (`[]T`) are ephemeral fat pointers that can't be stored. `SliceDescriptor<T>` stores the "recipe" instead.
-
-<!-- test: parse -->
-```rask
-struct SliceDescriptor<T> {
-    handle: Handle<T>,    // 8 bytes
-    range: Range,         // 8 bytes (start..end)
-}
-```
-
-| Rule | Description |
-|------|-------------|
-| **SD1: Copyable** | Exactly 16 bytes, copyable by value semantics |
-| **SD2: Storable** | Can be stored in structs, collections, channels |
-| **SD3: Lazy bounds** | Bounds checked at access time, not creation |
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `handle.slice(range)` | `SliceDescriptor<T>` | Create descriptor |
-| `desc.len()` | `usize` | Length of range |
-| `desc.is_empty()` | `bool` | Range is empty |
-| `for x in desc` | `Sequence<T>` | Iterate (requires ambient pool) |
-
 ## Capacity Introspection
 
 | Method | Returns | Semantics |
@@ -498,10 +473,10 @@ FIX: Use try_push to handle capacity limits:
 - 2+ statements: `with vec[i] as v { ... }`
 - Error propagation: `with vec[i] as v { try validate(v) }`
 
-**Slice descriptors — when to use:**
-- Storing references to substrings or sub-vectors
-- Event systems with text ranges
-- Undo buffers with slices of document state
+**Storing part of a collection:** there is no slice type, so a run of elements
+is a sequence over the source (`v.skip(a).take(n)`) and a *stored* run is either
+`.to_vec()` — its own value, its own elements — or the two indices, kept as what
+they are. For text, `StringView` is the storable form (`std.strings/V1`).
 
 ### See Also
 

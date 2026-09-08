@@ -113,7 +113,6 @@ fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
             collect_type_deps(ok, out);
             collect_type_deps(err, out);
         }
-        Type::Slice(inner) => collect_type_deps(inner, out),
         _ => {}
     }
 }
@@ -491,7 +490,7 @@ fn type_depth(ty: &Type) -> u32 {
         Type::Tuple(elems) | Type::Union(elems) => {
             1 + elems.iter().map(type_depth).max().unwrap_or(0)
         }
-        Type::Slice(inner) | Type::RawPtr(inner) => 1 + type_depth(inner),
+        Type::RawPtr(inner) => 1 + type_depth(inner),
         Type::Array { elem, .. } => 1 + type_depth(elem),
         Type::Result { ok, err } => 1 + type_depth(ok).max(type_depth(err)),
         _ => 0,
@@ -595,7 +594,7 @@ fn collect_generic_instances(
                 collect_generic_instances(elem, type_names, out);
             }
         }
-        Type::Slice(inner) | Type::RawPtr(inner) => {
+        Type::RawPtr(inner) => {
             collect_generic_instances(inner, type_names, out)
         }
         Type::Array { elem, .. } => collect_generic_instances(elem, type_names, out),

@@ -734,9 +734,6 @@ impl<'a> Monomorphizer<'a> {
                 elem: Box::new(Self::concretize(elem, type_args, bindings)?),
                 len: *len,
             }),
-            Type::Slice(elem) => Some(Type::Slice(Box::new(Self::concretize(
-                elem, type_args, bindings,
-            )?))),
             Type::RawPtr(inner) => Some(Type::RawPtr(Box::new(Self::concretize(
                 inner, type_args, bindings,
             )?))),

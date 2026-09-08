@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a range index needs a slice type, and there isn't one
+// (type.operators/IX4).
+//
+// `s[a..b]` on a string is a string. On a Vec or a fixed array the result would
+// have to be a `Vec<T>` copy, which hides an allocation behind a bracket — so
+// the run is a sequence instead: `v.skip(a).take(n)`, `.to_vec()` where a value
+// with positions is wanted.
+//
+// The `[]T` spelling itself is rejected in `no_slice_type.rk` — a parse error,
+// which stops the pipeline before any of these are reached.
+
+// ERROR: cannot slice `Vec<i64>` with a range [E0819]
+func slice_a_vec() {
+    let v: Vec<i64> = [1i64, 2i64, 3i64]
+    let part = v[1..3]
+    println("{part.len()}")
+}
+
+// ERROR: cannot slice `[i64; 3]` with a range [E0819]
+func slice_an_array() {
+    let a = [1i64, 2i64, 3i64]
+    let part = a[0..2]
+    println("{part.len()}")
+}
+
+// ERROR: cannot slice `Vec<i64>` with a range [E0819]
+func slice_open_ended() {
+    let v: Vec<i64> = [1i64, 2i64, 3i64]
+    for x in v[1..] {
+        println("{x}")
+    }
+}
+
+// THE FIX: the run is a sequence, and `.to_vec()` gives it positions back.
+func the_fix() {
+    let v: Vec<i64> = [1i64, 2i64, 3i64]
+    let part: Vec<i64> = v.skip(1).take(2).to_vec()
+    assert part.len() == 2u64
+}
+
+func main() {
+    the_fix()
+    slice_a_vec()
+    slice_an_array()
+    slice_open_ended()
+}

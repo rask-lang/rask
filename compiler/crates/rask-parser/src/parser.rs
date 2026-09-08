@@ -1291,12 +1291,28 @@ impl Parser {
         }
 
         if self.check(&TokenKind::LBracket) {
+            let lbracket_span = self.current().span;
             self.advance();
 
+            // `[]T` used to mean a borrowed run of elements. There is no slice
+            // type: a run of elements is a `Vec<T>`, part of one is a sequence
+            // over it, and only a string slices to another string.
             if self.check(&TokenKind::RBracket) {
+                let rbracket_span = self.current().span;
                 self.advance();
                 let elem_ty = self.parse_type_name()?;
-                return Ok(format!("[]{}", elem_ty));
+                let end = self.tokens[self.pos - 1].span.end;
+                let _ = rbracket_span;
+                return Err(ParseError {
+                    span: Span::with_file(lbracket_span.start, end, lbracket_span.file_id),
+                    message: format!("`[]{}` is not a type", elem_ty),
+                    hint: Some(format!("write `Vec<{}>`", elem_ty)),
+                    why: Some(
+                        "there is no slice type — a run of elements is a `Vec<T>`, and part of \
+                         one is `v.skip(a).take(n)`"
+                            .to_string(),
+                    ),
+                });
             }
 
             // [N]T — fixed-count type (used by @binary byte arrays)

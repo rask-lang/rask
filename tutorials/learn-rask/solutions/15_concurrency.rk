@@ -12,8 +12,8 @@ func vec_max(v: Vec<f64>) -> f64 {
 func parallel_max(readings: Vec<f64>) -> f64 or Error {
     using Multitasking {
         let mid = readings.len() / 2
-        let first_half = readings[0..mid].to_vec()
-        let second_half = readings[mid..readings.len()].to_vec()
+        let first_half = readings.take(mid).to_vec()
+        let second_half = readings.skip(mid).to_vec()
 
         // `own` moves the captures in. A spawned closure outlives the block
         // that made it, so borrowing them wouldn't be safe (SL2).

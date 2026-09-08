@@ -108,10 +108,10 @@ JavaScript's automatic semicolon insertion, which guesses from the previous line
 
 | Rule | Description |
 |------|-------------|
-| **IX1: Sequence index** | Vec, arrays, slices, and strings take **any integer type** as index — no `as usize` ceremony. The value is range-checked at access (a negative or too-large index panics, `std.collections/V1`); there is no wraparound and no negative-from-end indexing |
+| **IX1: Sequence index** | Vec, arrays, and strings take **any integer type** as index — no `as usize` ceremony. The value is range-checked at access (a negative or too-large index panics, `std.collections/V1`); there is no wraparound and no negative-from-end indexing |
 | **IX2: Map index** | `Map<K, V>` is indexed by `K`. An unsuffixed integer literal adapts to an integer key type |
 | **IX3: Pool index** | `Pool<T>` is indexed by `Handle<T>` (`mem.pools/PL4`). A handle whose element type differs from the pool's is rejected when statically known; same-type handles from a different pool are caught at runtime by the pool id |
-| **IX4: Range slices sequences** | `c[a..b]` produces a slice and is valid only on Vec, arrays, slices, and strings — not Map or Pool |
+| **IX4: Only a string slices** | `s[a..b]` on a string is another string (`std.strings/U1b`). There is no slice type, so on a Vec or a fixed array the expression has nothing to be — part of a run of elements is a sequence over it, `v.skip(a).take(n)`, with `.to_vec()` where a value with positions is wanted. A Map or a Pool is keyed and has no positions to read at all |
 
 ## Bitwise Operators
 

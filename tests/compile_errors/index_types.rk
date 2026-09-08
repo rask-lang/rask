@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: index expression types (#310, std.collections/V1, mem.pools/PL4).
-// Vec/array/slice/string are position-indexed by an integer; `Map<K,V>` by `K`;
-// `Pool<T>` by `Handle<T>`. Range indexing (slicing) works only on sequences.
+// Vec/array/string are position-indexed by an integer; `Map<K,V>` by `K`;
+// `Pool<T>` by `Handle<T>`. A range index slices a string and nothing else —
+// see `range_slice_rejected.rk` for the Vec and array halves of that.
 import memory.Pool
 
 struct Entity { health: i32 }
@@ -64,7 +65,7 @@ func pool_int_index() {
     println("{bad.health}")
 }
 
-// --- range slice on a Map (not sliceable) ---
+// --- range slice on a Map (keyed, so it has no positions at all) ---
 // ERROR: cannot slice `Map` with a range [E0819]
 func map_range_slice() {
     mut m = Map.new()

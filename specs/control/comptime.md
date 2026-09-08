@@ -339,7 +339,7 @@ work that failed:
 <!-- test: skip -->
 ```rask
 // Embed file contents as byte array
-let SCHEMA: []u8 = comptime @embed_file("schema.json")
+let SCHEMA: Vec<u8> = comptime @embed_file("schema.json")
 
 // Embed as string (file must be valid UTF-8)
 let VERSION: string = comptime @embed_file("VERSION")
@@ -548,7 +548,7 @@ comptime func crc8_table() -> [u8; 256] {
 
 let CRC8_TABLE: [u8; 256] = comptime crc8_table()
 
-func crc8(data: []u8) -> u8 {
+func crc8(data: Vec<u8>) -> u8 {
     mut crc = 0u8
     for byte in data {
         crc = CRC8_TABLE[(crc ^ byte) as usize]
@@ -580,7 +580,7 @@ let large = try read_packet<4096>(socket2)
 let DEBUG_MODE: bool = comptime cfg.debug
 let LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
-func process(data: []u8) -> void or Error {
+func process(data: Vec<u8>) -> void or Error {
     comptime if LOGGING_ENABLED {
         log.debug("Processing {} bytes", data.len)
     }

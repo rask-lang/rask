@@ -102,7 +102,7 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 <!-- test: skip -->
 ```rask
 // Cancellation check woven into I/O
-func File.read(self, buf: []u8) -> usize or IoError {
+func File.read(self, buf: Vec<u8>) -> usize or IoError {
     if let Some(runtime) = RUNTIME_SLOT.read() {
         if runtime.current_task().cancel_flag.load() {
             return Err(IoError.Cancelled)
@@ -123,11 +123,11 @@ func File.read(self, buf: []u8) -> usize or IoError {
 <!-- test: skip -->
 ```rask
 trait Reader {
-    func read(self, buf: []u8) -> usize or IoError
+    func read(self, buf: Vec<u8>) -> usize or IoError
 }
 
 extend File with Reader {
-    func read(self, buf: []u8) -> usize or IoError {
+    func read(self, buf: Vec<u8>) -> usize or IoError {
         // Reads RUNTIME_SLOT at execution time
     }
 }

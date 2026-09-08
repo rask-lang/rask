@@ -520,22 +520,6 @@ void rask_vec_retain_all(RaskVec *v) {
     if (v) vec_retain_elems(v, 0, v->len);
 }
 
-// slice(vec, start, end) — returns a new Vec with elements [start..end).
-RaskVec *rask_vec_slice(const RaskVec *src, int64_t start, int64_t end) {
-    if (!src) return rask_vec_new(8, NULL, 0);
-    if (start < 0) start = 0;
-    if (end > src->len) end = src->len;
-    int64_t new_len = end - start;
-    if (new_len <= 0) return rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
-    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len,
-                                          src->strs.offsets, src->strs.count);
-    memcpy(dst->data, src->data + start * src->elem_size,
-           (size_t)(new_len * src->elem_size));
-    dst->len = new_len;
-    vec_retain_elems(dst, 0, dst->len);
-    return dst;
-}
-
 // chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.
 // Each chunk is a freshly allocated Vec with copied elements.
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {

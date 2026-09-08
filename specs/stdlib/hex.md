@@ -76,7 +76,7 @@ a file, a header, a database column. One canonical output means that comparison
 works without normalizing first. Uppercase stays available because some wire
 formats specify it.
 
-**Why not `[]u8 -> string` on the byte slice itself:** a `.to_hex()` method on
+**Why not `Vec<u8> -> string` on the bytes themselves:** a `.to_hex()` method on
 `Vec<u8>` would put a formatting concern on the collection type, and then `base64`
 wants one too. Encodings are modules; the collection stays a collection.
 

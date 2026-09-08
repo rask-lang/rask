@@ -1986,7 +1986,7 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
-            | RaskType::Fn { .. } | RaskType::Slice(_) => false,
+            | RaskType::Fn { .. } => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
             // A named type is an aggregate when it's a user struct or enum —
@@ -2206,7 +2206,7 @@ impl<'a> FunctionBuilder<'a> {
                 let is_aggregate = matches!(
                     local_ty,
                     Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
-                         | MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+                         | MirType::Tuple(_) | MirType::Option(_)
                          | MirType::Result { .. } | MirType::Union(_))
                 );
 
@@ -3991,7 +3991,7 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().icmp(IntCC::Equal, a, b))
             }
-            // Option/Result/Slice and friends as a nested element: compare the
+            // Option/Result and friends as a nested element: compare the
             // raw slot bytes. Correct for POD payloads; heap payloads nested
             // this deep aren't content-compared yet.
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
@@ -6919,7 +6919,7 @@ impl<'a> FunctionBuilder<'a> {
                 Some((offset + max_align - 1) & !(max_align - 1))
             }
             MirType::String => Some(16),
-            MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
+            MirType::TraitObject { .. } => Some(ty.size()),
             // `[member:8][member bytes]` — the index word counts, or the slot
             // comes up 8 bytes short and the widest member's tail lands past its
             // end (#776).
@@ -7856,7 +7856,6 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Tuple(_)
                     | MirType::Option(_)
                     | MirType::Result { .. }
-                    | MirType::Slice(_)
                     | MirType::Union(_)
                     | MirType::TraitObject { .. }
                 ))
@@ -7955,7 +7954,6 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::Tuple(_)
                 | MirType::Option(_)
                 | MirType::Result { .. }
-                | MirType::Slice(_)
                 | MirType::Union(_)
                 | MirType::TraitObject { .. }
             ))

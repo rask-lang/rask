@@ -325,7 +325,7 @@ let resp = try client.post("https://api.example.com/submit")
 | `req.method` | `string` | GET, POST, etc. |
 | `req.path` | `string` | Request path |
 | `req.headers` | `Headers` | Request headers |
-| `req.body` | `[]u8` | Request body |
+| `req.body` | `Vec<u8>` | Request body |
 | `resp.status` | `u16` | Status code |
 | `resp.headers` | `Headers` | Response headers |
 

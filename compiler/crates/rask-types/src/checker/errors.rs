@@ -1071,6 +1071,9 @@ pub enum IndexErrorKind {
     /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
     /// so there is no position to read.
     NotPositioned,
+    /// A range indexed a Vec or a fixed array. There is no slice type for the
+    /// result to have — only a string slices to another string.
+    NoSliceType,
 }
 
 /// Where a trait requirement came from — drives the advice.

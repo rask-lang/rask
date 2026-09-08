@@ -184,7 +184,7 @@
       "name": "read",
       "public": true,
       "self_mode": "self",
-      "params": [{ "name": "buf", "type": "[]u8", "mode": "borrow" }],
+      "params": [{ "name": "buf", "type": "Vec<u8>", "mode": "borrow" }],
       "returns": { "ok": "usize", "err": "IoError" }
     }
   ]

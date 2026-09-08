@@ -98,7 +98,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 
 ```rask
 // Public: bounds MUST be explicit
-public func process<T: Hashable>(items: []T) { ... }
+public func process<T: Hashable>(items: Vec<T>) { ... }
 
 // Private: bounds inferred from body
 func helper(item) { item.hash() }
@@ -437,7 +437,7 @@ func increment<T: Numeric>(val: T) -> T {
 | Associated types | — | Not in MVP; deferred |
 | More than 2 type params | — | Not in MVP; traits limited to 1-2 parameters |
 | Omitted bounds (private) | GF2 | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |
-| Container method access | GF1 | Methods on containers (like `[]T.len()`) don't require constraints on T |
+| Container method access | GF1 | Methods on containers (like `Vec<T>.len()`) don't require constraints on T |
 
 ---
 
@@ -474,7 +474,7 @@ What's left for a publish gate is a discipline claim — "a published package is
 **Generic sorting:**
 
 ```rask
-public func sort<T: Comparable>(items: []T) {
+public func sort<T: Comparable>(items: Vec<T>) {
     for i in 1..items.len() {
         mut j = i
         while j > 0 && items[j] < items[j - 1] {
@@ -491,7 +491,7 @@ public func sort<T: Comparable>(items: []T) {
 trait HashKey: Hashable + Cloneable {}
 
 public struct HashMap<K: HashKey, V> {
-    buckets: []Bucket<K, V>
+    buckets: Vec<Bucket<K, V>>
 }
 
 public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {

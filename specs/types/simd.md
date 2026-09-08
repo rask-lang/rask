@@ -33,7 +33,7 @@ Explicit vector types with parametric width. `Vec[T, N]` where N is fixed or `na
 | **C2: Repeat** | `[x; N]` — repeat value x for N lanes |
 | **C3: Splat** | `splat[T, N](x)` — explicit broadcast |
 | **C4: Default** | `default` — zero-initialized |
-| **C5: Load** | `Vec[T, N].load(slice)` — load from slice |
+| **C5: Load** | `Vec[T, N].load(src)` — load lanes from a `Vec<T>` |
 
 <!-- test: skip -->
 ```rask
@@ -135,9 +135,9 @@ v.shuffle([0, 0, 0, 0])   // Broadcast: [1, 1, 1, 1]
 
 | Rule | Description |
 |------|-------------|
-| **MEM1: Load/store** | `.load(slice)` and `.store(slice)` — bounds-checked |
+| **MEM1: Load/store** | `.load(v)` and `.store(v)` on a `Vec<T>` — bounds-checked |
 | **MEM2: Aligned variants** | `.load_aligned()` / `.store_aligned()` — requires `N * sizeof(T)` alignment |
-| **MEM3: Masked load/store** | `.load_masked(slice, mask, default:)` / `.store_masked(slice, mask)` |
+| **MEM3: Masked load/store** | `.load_masked(v, mask, default:)` / `.store_masked(v, mask)` |
 | **MEM4: Gather/scatter** | `data.gather(indices)` / `data.scatter(indices, values)` — non-contiguous, ~10-20x slower |
 
 ## Type Conversions
@@ -190,7 +190,7 @@ v.shuffle([0, 0, 0, 0])   // Broadcast: [1, 1, 1, 1]
 
 <!-- test: skip -->
 ```rask
-func process(data: []f32, scale: f32) {
+func process(data: Vec<f32>, scale: f32) {
     let N = Vec[f32, native].lanes
     let main_end = (data.len() / N) * N
 
@@ -210,7 +210,7 @@ func process(data: []f32, scale: f32) {
 
 <!-- test: skip -->
 ```rask
-func sum_array(data: []f32) -> f32 {
+func sum_array(data: Vec<f32>) -> f32 {
     let N = Vec[f32, native].lanes
     mut acc: Vec[f32, native] = [0.0; N]
     let main_end = (data.len() / N) * N

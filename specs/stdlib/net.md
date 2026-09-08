@@ -64,14 +64,14 @@ loop {
 <!-- test: skip -->
 ```rask
 extend TcpConnection with Reader {
-    func read(self, buf: []u8) -> usize or IoError
+    func read(self, buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
 
 extend TcpConnection with Writer {
-    func write(self, data: []u8) -> usize or IoError
-    func write_bytes(self, data: []u8) -> void or IoError
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
     func flush(self) -> void or IoError
 }
@@ -111,11 +111,11 @@ net.udp_bind(addr: string) -> UdpSocket or IoError
 <!-- test: skip -->
 ```rask
 extend UdpSocket {
-    func send_to(self, data: []u8, addr: string) -> usize or IoError
-    func receive_from(self, buf: []u8) -> (usize, string) or IoError
+    func send_to(self, data: Vec<u8>, addr: string) -> usize or IoError
+    func receive_from(self, buf: Vec<u8>) -> (usize, string) or IoError
     func connect(self, addr: string) -> void or IoError
-    func send(self, data: []u8) -> usize or IoError     // to connected peer
-    func receive(self, buf: []u8) -> usize or IoError      // from connected peer
+    func send(self, data: Vec<u8>) -> usize or IoError     // to connected peer
+    func receive(self, buf: Vec<u8>) -> usize or IoError      // from connected peer
     func local_addr(self) -> string
     func close(take self) -> void or IoError
 }

@@ -825,7 +825,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Struct(sid) => sid.byte_size as i64,
             MirType::Enum(eid) => eid.byte_size as i64,
             MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
-            MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+            MirType::Tuple(_) | MirType::Option(_)
             | MirType::Result { .. } | MirType::Union(_)
             | MirType::SimdVector { .. } | MirType::TraitObject { .. } => ty.size() as i64,
             MirType::Void => 0,
@@ -874,7 +874,7 @@ impl<'a> MirLowerer<'a> {
             | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
             | MirType::I64 | MirType::U64 | MirType::F64
             | MirType::Ptr | MirType::FuncPtr(_) | MirType::Handle => 8,
-            // Struct/Enum/Tuple/Slice/Option/Result/Union/Array/... — layout size.
+            // Struct/Enum/Tuple/Option/Result/Union/Array/... — layout size.
             _ => ty.size() as i64,
         }
     }

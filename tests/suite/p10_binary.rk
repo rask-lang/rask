@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Spec: specs/types/binary.md — @binary makes field order the wire layout (B1),
 // F2 requires be/le on multi-byte fields; G2 generates .build() -> Vec<u8> and
-// G1 generates .parse(data) -> (T, []u8) or ParseError.
+// G1 generates .parse(data) -> (T, Vec<u8>) or ParseError.
 
 @binary
 struct Packet {
@@ -15,7 +15,7 @@ struct Packet {
 test "type.binary/G1 — build/parse roundtrip preserves be fields" {
     let p = Packet { magic: 0x1234, id: 0xDEADBEEF }
     let bytes = p.build()              // G2: Vec<u8>, 6 bytes
-    let r = Packet.parse(bytes)        // G1: (Packet, []u8) or ParseError
+    let r = Packet.parse(bytes)        // G1: (Packet, Vec<u8>) or ParseError
     assert !(r is ParseError)
     let parsed = r!.0
     assert parsed.magic == 0x1234

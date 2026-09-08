@@ -57,9 +57,15 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::Tuple(elems?));
     }
 
+    // `[]T` is not a type. There is no slice — a run of elements is a `Vec<T>`,
+    // and part of one is `v.skip(a).take(n)`. The parser rejects the spelling
+    // with a fix; this catches an internally built one, which is a compiler bug
+    // rather than something an author wrote.
     if s.starts_with("[]") {
-        let inner = parse_type_string(&s[2..], types)?;
-        return Ok(Type::Slice(Box::new(inner)));
+        return Err(TypeError::GenericError(
+            format!("`{}` is not a type — write `Vec<{}>`", s, &s[2..]),
+            Span::new(0, 0),
+        ));
     }
 
     if s.starts_with('[') && s.ends_with(']') {
@@ -82,8 +88,10 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                 len,
             });
         }
-        let inner = parse_type_string(inner, types)?;
-        return Ok(Type::Slice(Box::new(inner)));
+        return Err(TypeError::GenericError(
+            format!("`{}` is not a type — write `Vec<{}>`", s, inner),
+            Span::new(0, 0),
+        ));
     }
 
     // Raw pointer: *T

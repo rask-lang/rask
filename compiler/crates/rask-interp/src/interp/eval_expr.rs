@@ -2074,19 +2074,6 @@ impl Interpreter {
                             )),
                         }
                     }
-                    (Value::Vec(v), Value::Range { start, end, inclusive, .. }) => {
-                        let vec = v.lock().unwrap();
-                        let len = vec.len() as i64;
-                        let start_idx = (*start).max(0).min(len) as usize;
-                        let end_idx = if *end == i64::MAX {
-                            vec.len()
-                        } else {
-                            let e = if *inclusive { *end + 1 } else { *end };
-                            e.max(0).min(len) as usize
-                        };
-                        let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
-                        Ok(Value::vec(slice))
-                    }
                     // `[]` on a string means bytes in both forms
                     // (std.strings/U1b): a range slices, a scalar index reads
                     // one byte. It used to yield the character at index `i`,

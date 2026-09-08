@@ -113,7 +113,6 @@ fn is_aggregate(ty: &MirType) -> bool {
             | MirType::Enum(_)
             | MirType::Tuple(_)
             | MirType::Array { .. }
-            | MirType::Slice(_)
             | MirType::Link(_)
             | MirType::Result { .. }
     )
@@ -2422,92 +2421,40 @@ impl<'a> MirLowerer<'a> {
 
             // Index access
             ExprKind::Index { object, index } => {
-                // Range index → slice operation: vec[start..end] or string[start..end]
+                // A range index slices a string, and only a string
+                // (type.operators/IX4) — the checker rejects it on a Vec or an
+                // array, where there is no slice type for the result to have.
                 if let ExprKind::Range { start, end, inclusive } = &index.kind {
-                    let (obj_op, obj_ty) = self.lower_expr(object)?;
-
-                    // Determine if receiver is a string (MIR type, type checker, or local prefix)
-                    let is_string = matches!(obj_ty, MirType::String)
-                        || self.ctx.lookup_raw_type(object.id)
-                            .map(|ty| matches!(ty, rask_types::Type::String))
-                            .unwrap_or(false)
-                        || if let ExprKind::Ident(var_name) = &object.kind {
-                            self.meta(var_name)
-                                .and_then(|m| m.type_prefix.as_deref())
-                                .map(|p| p == "string")
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-
+                    let (obj_op, _obj_ty) = self.lower_expr(object)?;
                     let start_op = if let Some(s) = start {
                         let (op, _) = self.lower_expr(s)?;
                         op
                     } else {
                         MirOperand::Constant(MirConst::Int(0))
                     };
-
-                    if is_string {
-                        // String slice: string_substr(s, start, end)
-                        let end_op = if let Some(e) = end {
-                            let (op, _) = self.lower_expr(e)?;
-                            // `..=` includes its last index, and the runtime
-                            // takes a half-open pair. Dropping the flag here
-                            // made `s[0..=4]` four bytes on native and five on
-                            // the interpreter — the same `Range { .., .. }`
-                            // slip that made the E0303 message quote `s[0..4]`
-                            // for code that said `s[0..=4]` (#694).
-                            self.bump_inclusive_end(op, *inclusive)
-                        } else {
-                            let len_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(len_local),
-                                func: FunctionRef::internal("string_len".to_string()),
-                                args: vec![obj_op.clone()],
-                            }));
-                            MirOperand::Local(len_local)
-                        };
-                        let result_local = self.builder.alloc_temp(MirType::String);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(result_local),
-                            func: FunctionRef::internal("string_substr".to_string()),
-                            args: vec![obj_op, start_op, end_op],
-                        }));
-                        return Ok((MirOperand::Local(result_local), MirType::String));
-                    }
-
-                    // `Vec_slice` reads a `RaskVec` header, and a `[T; N]`
-                    // local is just its buffer — no header, no length word. So
-                    // `v[0..2]` on a fixed array handed the first element over
-                    // as the header: `s.len()` happened to answer 2 and every
-                    // read through the slice segfaulted. Same materialization
-                    // the array's borrowed `Vec` methods already get.
-                    let (obj_op, _obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
-                        Some(v) => v,
-                        None => (obj_op, obj_ty),
-                    };
-
-                    // Vec slice: Vec_slice(v, start, end)
-                    // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
                         let (op, _) = self.lower_expr(e)?;
+                        // `..=` includes its last index, and the runtime takes
+                        // a half-open pair. Dropping the flag here made
+                        // `s[0..=4]` four bytes on native and five on the
+                        // interpreter (#694).
                         self.bump_inclusive_end(op, *inclusive)
                     } else {
                         let len_local = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(len_local),
-                            func: FunctionRef::internal("Vec_len".to_string()),
+                            func: FunctionRef::internal("string_len".to_string()),
                             args: vec![obj_op.clone()],
                         }));
                         MirOperand::Local(len_local)
                     };
-                    let result_local = self.builder.alloc_temp(MirType::Ptr);
+                    let result_local = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),
-                        func: FunctionRef::internal("Vec_slice".to_string()),
+                        func: FunctionRef::internal("string_substr".to_string()),
                         args: vec![obj_op, start_op, end_op],
                     }));
-                    return Ok((MirOperand::Local(result_local), MirType::Ptr));
+                    return Ok((MirOperand::Local(result_local), MirType::String));
                 }
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -7533,7 +7480,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The half-open end index for a range's written end.
     ///
-    /// `a..=b` includes `b`, while `string_substr` and `Vec_slice` both take a
+    /// `a..=b` includes `b`, while `string_substr` takes a
     /// half-open pair — so an inclusive range ends one past its last index.
     fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
         if !inclusive {

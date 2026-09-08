@@ -519,7 +519,7 @@ impl TypeTable {
                 })
             }
             Type::Tuple(elems) => elems.iter().any(|t| self.type_is_transitive_resource(t)),
-            Type::Array { elem, .. } | Type::Slice(elem) => {
+            Type::Array { elem, .. } => {
                 self.type_is_transitive_resource(elem)
             }
             Type::Result { ok, err } => {
@@ -595,7 +595,7 @@ impl TypeTable {
             Type::Tuple(elems) | Type::Union(elems) => {
                 elems.iter().any(|t| self.is_linear_value(t))
             }
-            Type::Array { elem, .. } | Type::Slice(elem) => self.is_linear_value(elem),
+            Type::Array { elem, .. } => self.is_linear_value(elem),
             // `T?` is `Result { ok: T, err: none }`; both `T or E` and `T?` carry
             // their payload linearly (RC4: an optional resource must be matched
             // and consumed), so a Vec of them is still a violation.
@@ -693,7 +693,7 @@ impl TypeTable {
         }
         match ty {
             Type::Tuple(elems) | Type::Union(elems) => nested.extend(elems.iter()),
-            Type::Slice(inner) | Type::RawPtr(inner) => nested.push(inner),
+            Type::RawPtr(inner) => nested.push(inner),
             Type::Array { elem, .. } => nested.push(elem),
             Type::Result { ok, err } => {
                 nested.push(ok);
@@ -727,7 +727,7 @@ impl TypeTable {
             Type::Tuple(elems) | Type::Union(elems) => {
                 elems.iter().find_map(|t| self.find_linear_container(t))
             }
-            Type::Array { elem, .. } | Type::Slice(elem) | Type::RawPtr(elem) => {
+            Type::Array { elem, .. } | Type::RawPtr(elem) => {
                 self.find_linear_container(elem)
             }
             Type::Result { ok, err } => {
@@ -938,7 +938,6 @@ impl TypeTable {
                 elem: Box::new(self.resolve_type_names(elem)),
                 len: *len,
             },
-            Type::Slice(elem) => Type::Slice(Box::new(self.resolve_type_names(elem))),
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
                 args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),

@@ -325,7 +325,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
-    ("Vec_slice", Internal::FreshFromReceiver),
     ("Map_entries", Internal::FreshFromReceiver),
     ("Sender_clone", Internal::FreshFromReceiver),
     // Every strategy's clone hands back another handle on the same cell, so

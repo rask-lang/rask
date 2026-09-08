@@ -17,7 +17,7 @@ use crate::types::{GenericArg, Type};
 
 /// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
 /// and `Generic` where the type table knows the name. Matches `resolve_named`
-/// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Slice`, `Array`,
+/// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Array`,
 /// `Fn`, and `Union` so two types built from different sources compare equal.
 pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
     match ty {
@@ -65,7 +65,6 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
             }).collect(),
         },
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| normalize_type(e, types)).collect()),
-        Type::Slice(elem) => Type::Slice(Box::new(normalize_type(elem, types))),
         Type::Array { elem, len } => Type::Array {
             elem: Box::new(normalize_type(elem, types)),
             len: *len,

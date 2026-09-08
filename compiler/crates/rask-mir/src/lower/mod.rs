@@ -271,7 +271,6 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
             | MirType::Option(_)
             | MirType::Union(_)
             | MirType::Array { .. }
-            | MirType::Slice(_)
             | MirType::SimdVector { .. }
             | MirType::String
             | MirType::TraitObject { .. }
@@ -925,14 +924,11 @@ impl<'a> MirContext<'a> {
             "StringView" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
-                // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
-                // these an annotated `const a: [i32; 5]` fell through to the
-                // pointer default, and the array's length was gone by the time
-                // `a.len()` looked for it — the call failed dispatch outright
-                // while the same code without the annotation worked.
-                if let Some(inner) = name.strip_prefix("[]") {
-                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
-                }
+                // "[T; N]" → fixed-size array. Without this an annotated
+                // `const a: [i32; 5]` fell through to the pointer default, and
+                // the array's length was gone by the time `a.len()` looked for
+                // it — the call failed dispatch outright while the same code
+                // without the annotation worked.
                 if name.starts_with('[') && name.ends_with(']') {
                     let inner = &name[1..name.len() - 1];
                     if let Some(semi) = inner.rfind(';') {
@@ -955,7 +951,6 @@ impl<'a> MirContext<'a> {
                             .unwrap_or(0);
                         return MirType::Array { elem: Box::new(elem), len };
                     }
-                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
                 }
                 // "(A | B)" → Union. Before the tuple branch: an error union is
                 // written in parentheses, so the tuple case claimed it and
@@ -1341,8 +1336,6 @@ impl<'a> MirContext<'a> {
                 elem: Box::new(self.type_to_mir(elem)),
                 len: *len as u32,
             },
-            // Slice → fat pointer (ptr + len)
-            Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
             // Option (T or none): niche-optimized handle, or a tagged union.
             //
             // A handle keeps the collapsed spelling — `type_to_mir` gives bare
@@ -2521,7 +2514,7 @@ impl<'a> MirLowerer<'a> {
                 // An unresolved element is no answer — it lowers to Ptr, which
                 // reads as a real aggregate element and shadows the fallbacks
                 // below that do know.
-                Type::Array { elem, .. } | Type::Slice(elem)
+                Type::Array { elem, .. }
                     if !matches!(**elem, Type::Var(_)) =>
                 {
                     return Some(self.ctx.type_to_mir(elem))
@@ -2939,7 +2932,7 @@ impl<'a> MirLowerer<'a> {
     /// data — an aggregate's stack address, or a heap pointer (Vec/Map/String).
     /// Capturing such a value by value is capture-by-reference: the ensure hook
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
-    /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
+    /// stale), as are fat pointers (a trait object — 16 bytes, doesn't fit an
     /// 8-byte env slot).
     /// Collect every name this body reassigns. Walks closure and spawn bodies
     /// too: a closure writing an outer name reassigns it just the same.
@@ -4257,7 +4250,6 @@ impl<'a> MirLowerer<'a> {
                     })
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
-                Type::Slice(elem) => return Some(self.ctx.type_to_mir(elem)),
                 // Pool iteration yields handles (packed i64)
                 Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
                 Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
@@ -5693,7 +5685,7 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
         }
         Type::Tuple(elems) | Type::Union(elems) => elems.iter().find_map(type_names_a_parameter),
         Type::Array { elem, .. } => type_names_a_parameter(elem),
-        Type::Slice(inner) | Type::RawPtr(inner) => type_names_a_parameter(inner),
+        Type::RawPtr(inner) => type_names_a_parameter(inner),
         Type::Result { ok, err } => {
             type_names_a_parameter(ok).or_else(|| type_names_a_parameter(err))
         }
@@ -5937,7 +5929,7 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
         // .join(" ")` is `Vec_join`. Without this the call fell through to the
         // name-policy table, which guesses "a two-argument `join` means Vec" —
         // right here, and only by luck.
-        Type::Slice(_) | Type::Array { .. } => Some("Vec"),
+        Type::Array { .. } => Some("Vec"),
         _ => None,
     }
 }

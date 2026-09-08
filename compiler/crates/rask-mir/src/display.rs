@@ -41,7 +41,6 @@ impl fmt::Display for MirType {
                 }
                 write!(f, ")")
             }
-            MirType::Slice(elem) => write!(f, "[{}]", elem),
             MirType::Option(inner) => write!(f, "{}?", inner),
             MirType::Result { ok, err } => write!(f, "{} or {}", ok, err),
             MirType::Union(variants) => {

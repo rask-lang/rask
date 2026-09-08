@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `[]T` is not a type (type.operators/IX4).
+//
+// It used to name a borrowed run of elements — a fat pointer nothing could
+// store, that no `Vec<T>` could be passed to, and that no spec ever defined. It
+// is gone. A run of elements is a `Vec<T>`; part of one is a sequence over it,
+// spelled `v.skip(a).take(n)`.
+//
+// Parse errors only: this one stops the pipeline, so the checker's half of the
+// rule — a range index on a Vec or an array — is in `range_slice_rejected.rk`.
+
+// ERROR: `[]i64` is not a type [E0100]
+func takes_a_slice(xs: []i64) -> i64 {
+    return 0i64
+}
+
+func main() {
+    println("{takes_a_slice([1i64, 2i64])}")
+}

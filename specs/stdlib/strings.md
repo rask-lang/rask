@@ -136,7 +136,6 @@ A `StringView` is the storable form of a string slice: it references a byte rang
 |-----------|--------|-------|
 | `s.view()` | `StringView` | View of the whole string. Refcount bump (heap mode) |
 | `s[i..j].view()` | `StringView` | Storable view of the slice. Works on any expression-scoped slice: `s.trim().view()`, split items |
-| `v[i..j]` | expression-scoped slice | Same inline slicing rules as string (S2, S5) |
 | `v.to_string()` | `string` | Copy bytes into an independent string — releases the pin |
 | `v.len()`, `v.chars()`, `v.index_of(pat)`, ... | — | Full read-only string API (V3) |
 

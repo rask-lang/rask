@@ -330,7 +330,7 @@ impl TypeChecker {
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
             }
             // A wrapper is only as settled as what it wraps.
-            Type::RawPtr(inner) | Type::Slice(inner) => self.names_a_concrete_type(inner),
+            Type::RawPtr(inner) => self.names_a_concrete_type(inner),
             Type::Result { ok, err } => {
                 self.names_a_concrete_type(ok) && self.names_a_concrete_type(err)
             }
@@ -1448,8 +1448,6 @@ impl TypeChecker {
                 }
                 self.unify(e1, e2, span)
             }
-
-            (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
 
             // `*void` is the untyped pointer — an address with no element type,
             // which is what an opaque C handle and every `void *` parameter is.

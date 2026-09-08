@@ -50,8 +50,6 @@ pub enum MirType {
     /// Tuple type — struct-like layout with positional fields.
     /// Stored as (field types, total byte size).
     Tuple(Vec<MirType>),
-    /// Slice — pointer + length (fat pointer).
-    Slice(Box<MirType>),
     /// Option<T> — tagged union: u8 tag (0=None, 1=Some) + payload.
     /// Size = 8 (tag aligned) + payload size, rounded to 8-byte alignment.
     Option(Box<MirType>),
@@ -189,7 +187,6 @@ impl MirType {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 (offset + max_align - 1) & !(max_align - 1)
             }
-            MirType::Slice(_) => 16,         // ptr (8) + len (8)
             MirType::TraitObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
                 // The niche pair are one word: the value *is* the option, and
@@ -226,7 +223,7 @@ impl MirType {
             MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
             MirType::Struct(sid) => sid.align,
             MirType::Enum(eid) => eid.align,
-            MirType::Slice(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
             _ => 8,
         }
     }

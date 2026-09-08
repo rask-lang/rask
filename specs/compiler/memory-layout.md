@@ -396,28 +396,13 @@ SSO strings store UTF-8 data directly in the 16-byte value — no heap pointer, 
 
 Strings ≤ 15 bytes (including all single-byte-per-char ASCII strings up to 15 chars) use SSO. Strings > 15 bytes use heap mode. `StringBuilder.build()` produces SSO when the result fits.
 
-## References and Slices
+## References
 
-References and slices are ephemeral (expression-scoped). Not stored in structs, but layout documented for calling convention:
+A reference is ephemeral (expression-scoped) and never stored in a struct, but
+its layout matters for the calling convention: a single pointer, 8 bytes.
 
-### Reference `&T`
-
-Single pointer (8 bytes).
-
-### Slice `[]T`
-
-Fat pointer:
-```rask
-struct Slice<T> {
-    ptr: *T,           // offset 0
-    len: usize,        // offset 8
-}
-// Total: 16 bytes
-```
-
-### String Slice `str`
-
-Same as `[]u8`: pointer + length (16 bytes).
+There is no slice type — a run of elements is a `Vec<T>`, which is one pointer
+to its header — so nothing here is a fat pointer except a trait object.
 
 ## Zero-Sized Types (ZST)
 
@@ -500,17 +485,13 @@ Function calls follow System V AMD64 ABI on Linux, Windows x64 calling conventio
 
 **Fat pointer calling convention:**
 
-Fat pointers (trait objects, slices) are passed as two consecutive register arguments:
-- **Trait object `any T`**: data pointer in first register, vtable pointer in second register
-  - Example: `func f(w: any Widget)` → data in RDI, vtable in RSI
-- **Slice `[]T`**: data pointer in first register, length in second register
-  - Example: `func f(s: []i32)` → data in RDI, len in RSI
-
-Fat pointers consume two argument slots. Example:
+A trait object is the one fat pointer, and it is passed as two consecutive
+register arguments — data pointer first, vtable pointer second:
 ```rask
-func process(x: i32, s: []u8, y: i32)
+func f(w: any Widget)
 ```
-Arguments: `x` in RDI, `s.ptr` in RSI, `s.len` in RDX, `y` in RCX
+Arguments: data in RDI, vtable in RSI. It consumes two argument slots, so in
+`func process(x: i32, w: any Widget, y: i32)` the `y` lands in RCX.
 
 ## Codegen Validation
 

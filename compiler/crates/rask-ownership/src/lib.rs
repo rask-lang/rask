@@ -3381,7 +3381,6 @@ impl<'a> OwnershipChecker<'a> {
                 elem: Box::new(Self::substitute_generic_field(elem, subst)),
                 len: *len,
             },
-            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_generic_field(elem, subst))),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
             ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
             Type::Generic { base, args } => Type::Generic {
@@ -3424,9 +3423,6 @@ impl<'a> OwnershipChecker<'a> {
             Type::Tuple(elems) => {
                 elems.iter().all(|t| self.is_copy(t)) && self.type_size(ty) <= 16
             }
-
-            // Slices are Copy (borrowed view)
-            Type::Slice(_) => true,
 
             // Option (T or none): Copy if inner is Copy and size <= 16 bytes
             ty if ty.is_option() => {
@@ -3612,8 +3608,8 @@ impl<'a> OwnershipChecker<'a> {
                     8
                 }
             }
-            // Pointers/references/slices/trait objects: fat pointer
-            Type::String | Type::Slice(_) | Type::Fn { .. } | Type::TraitObject { .. } => 16,
+            // Strings, closures and trait objects: fat pointer
+            Type::String | Type::Fn { .. } | Type::TraitObject { .. } => 16,
             _ => 8,
         }
     }
@@ -5390,7 +5386,7 @@ fn collect_generic_instances(
             collect_generic_instances(err, out);
         }
         Type::Array { elem, .. } => collect_generic_instances(elem, out),
-        Type::Slice(inner) | Type::RawPtr(inner) => collect_generic_instances(inner, out),
+        Type::RawPtr(inner) => collect_generic_instances(inner, out),
         Type::Tuple(elems) | Type::Union(elems) => {
             for e in elems {
                 collect_generic_instances(e, out);
@@ -5424,7 +5420,6 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
             elem: Box::new(substitute_params(elem, subst)),
             len: *len,
         },
-        Type::Slice(inner) => Type::Slice(Box::new(substitute_params(inner, subst))),
         Type::RawPtr(inner) => Type::RawPtr(Box::new(substitute_params(inner, subst))),
         Type::Tuple(elems) => {
             Type::Tuple(elems.iter().map(|e| substitute_params(e, subst)).collect())

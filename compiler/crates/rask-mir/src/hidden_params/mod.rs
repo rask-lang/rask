@@ -158,7 +158,7 @@ impl<'a> HiddenParamPass<'a> {
         }
     }
 
-    /// Element type of an iterable expression: `Vec<T>`/`Slice<T>` → `T`,
+    /// Element type of an iterable expression: `Vec<T>` → `T`,
     /// fixed arrays → their element. Used to type `for` loop variables the
     /// checker left as inference vars.
     pub fn iterable_elem_type(&self, iter: &Expr) -> Option<Type> {
@@ -171,14 +171,13 @@ impl<'a> HiddenParamPass<'a> {
             Type::Generic { base, args } => {
                 let name = self.typed?.types.type_name(base);
                 match name.as_str() {
-                    "Vec" | "Slice" => first_type_arg(&args),
+                    "Vec" => first_type_arg(&args),
                     _ => None,
                 }
             }
-            Type::UnresolvedGeneric { name, args } if name == "Vec" || name == "Slice" => {
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => {
                 first_type_arg(&args)
             }
-            Type::Slice(e) => Some(*e),
             Type::Array { elem, .. } => Some(*elem),
             _ => None,
         }
@@ -265,7 +264,6 @@ impl<'a> HiddenParamPass<'a> {
                 err: Box::new(self.canonical_type(err)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.canonical_type(e)).collect()),
-            Type::Slice(e) => Type::Slice(Box::new(self.canonical_type(e))),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.canonical_type(elem)),
                 len: *len,

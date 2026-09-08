@@ -81,7 +81,6 @@ impl<'a> TypeFormatter<'a> {
             }
 
             Type::Array { elem, len } => format!("[{}; {}]", self.format(elem), len),
-            Type::Slice(elem) => format!("[{}]", self.format(elem)),
             Type::RawPtr(inner) => format!("*{}", self.format(inner)),
             Type::Union(types) => {
                 types.iter()

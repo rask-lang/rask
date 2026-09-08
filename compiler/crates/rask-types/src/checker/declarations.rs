@@ -1340,7 +1340,7 @@ impl TypeChecker {
             // Tuples: all elements must have the method
             Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method(e, method)),
             // Arrays: element must have the method
-            Type::Array { elem, .. } | Type::Slice(elem) => self.type_has_method(elem, method),
+            Type::Array { elem, .. } => self.type_has_method(elem, method),
             _ => false,
         }
     }
@@ -1580,11 +1580,15 @@ impl TypeChecker {
 
             let struct_type = Type::Named(id);
 
-            // G1: parse(data: []u8) -> (T, []u8) or ParseError
+            // G1: parse(data: Vec<u8>) -> (T, Vec<u8>) or ParseError
+            let bytes = Type::UnresolvedGeneric {
+                name: "Vec".to_string(),
+                args: vec![crate::types::GenericArg::Type(Box::new(Type::U8))],
+            };
             let parse_result = Type::Result {
                 ok: Box::new(Type::Tuple(vec![
                     struct_type.clone(),
-                    Type::Slice(Box::new(Type::U8)),
+                    bytes.clone(),
                 ])),
                 err: Box::new(Type::UnresolvedNamed("ParseError".to_string())),
             };
@@ -1595,7 +1599,7 @@ impl TypeChecker {
                 args: vec![crate::types::GenericArg::Type(Box::new(Type::U8))],
             };
 
-            // G3: build_into(self, buffer: []u8) -> usize or BuildError
+            // G3: build_into(self, buffer: Vec<u8>) -> usize or BuildError
             let build_into_result = Type::Result {
                 ok: Box::new(Type::U64), // usize
                 err: Box::new(Type::UnresolvedNamed("BuildError".to_string())),
@@ -1607,7 +1611,7 @@ impl TypeChecker {
                     type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
-                    params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Default)],
+                    params: vec![(bytes.clone(), ParamMode::Default)],
                     ret: parse_result,
                 },
                 MethodSig {
@@ -1623,7 +1627,7 @@ impl TypeChecker {
                     type_params: Vec::new(),
                     name: "build_into".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Slice(Box::new(Type::U8)), ParamMode::Mutate)],
+                    params: vec![(bytes.clone(), ParamMode::Mutate)],
                     ret: build_into_result,
                 },
             ];
@@ -1900,7 +1904,6 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
             }
         }
         Type::Array { elem, .. }
-        | Type::Slice(elem)
         | Type::RawPtr(elem)
         | Type::SimdVector { elem, .. } => for_each_unresolved_name(elem, f),
         Type::Fn { params, ret } => {

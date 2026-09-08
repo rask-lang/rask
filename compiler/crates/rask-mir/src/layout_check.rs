@@ -107,7 +107,6 @@ fn walk(ty: &MirType, f: &mut impl FnMut(&MirType)) {
     f(ty);
     match ty {
         MirType::Array { elem, .. }
-        | MirType::Slice(elem)
         | MirType::Option(elem)
         | MirType::SimdVector { elem, .. } => walk(elem, f),
         MirType::Result { ok, err } => {

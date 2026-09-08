@@ -58,7 +58,6 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::Result { err, .. } if **err == Type::None => Some("Option".to_string()),
         Type::Result { .. } => Some("Result".to_string()),
         Type::RawPtr(_) => Some("Ptr".to_string()),
-        Type::Slice(_) => Some("Slice".to_string()),
         Type::Bool => Some("bool".to_string()),
         Type::Char => Some("char".to_string()),
         Type::I8 => Some("i8".to_string()),

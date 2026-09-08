@@ -170,9 +170,9 @@ I chose block-scoped borrowing only:
 
 ```rask
 func process(data: Vec<u8>) {
-    let view = data.slice(0, 10)  // Borrow
-    use(view)
-    // Borrow ends
+    with data[0] as first {   // Borrow
+        use(first)
+    }                         // Borrow ends
 }
 ```
 
