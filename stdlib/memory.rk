@@ -32,7 +32,7 @@ extend Rack<T> {
 
     /// Insert a node, returning a link to it.
     @native("rask_rack_insert")
-    public func insert(mutate self, node: T) -> Link<T> {}
+    public func insert(mutate self, take node: T) -> Link<T> {}
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
     /// returns. Takes the link: after this the caller's name for that node is
@@ -111,7 +111,7 @@ extend Pool<T> {
     /// Insert an element, returning a handle to it. Panics on allocation
     /// failure (mem.pools/PL3, PL8) — use `try_insert` to handle capacity.
     @native("rask_pool_insert_packed_sized")
-    public func insert(mutate self, value: T) -> Handle<T> {}
+    public func insert(mutate self, take value: T) -> Handle<T> {}
 
     /// Get element by handle (borrows).
     @native("rask_pool_get_packed")
@@ -152,7 +152,7 @@ extend Pool<T> {
 
     /// Try to insert, returning none if at capacity.
     @native("rask_pool_try_insert_packed_sized")
-    public func try_insert(mutate self, value: T) -> Handle<T>? {}
+    public func try_insert(mutate self, take value: T) -> Handle<T>? {}
 
     /// Remove all elements, returning them as a Vec.
     @native("rask_pool_drain")

@@ -62,7 +62,10 @@ fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
 }
 
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
-pub fn insert_rc_ops(func: &mut MirFunction) {
+///
+/// `kept` says, per callee, which of its parameters it holds on to — see
+/// `insert_aggregate_release`, which is the only part that needs it.
+pub fn insert_rc_ops(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
     // The three string steps only have work when there is a string. The
@@ -84,7 +87,7 @@ pub fn insert_rc_ops(func: &mut MirFunction) {
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func);
+    insert_aggregate_release(func, kept);
 }
 
 /// Insert `RcInc` after each assignment that copies a string local.
@@ -233,7 +236,7 @@ fn container_handles_from(
     from
 }
 
-fn insert_aggregate_release(func: &mut MirFunction) {
+fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) {
     let ty_of: HashMap<LocalId, MirType> =
         func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
     let aggregates: HashSet<LocalId> = func
@@ -332,6 +335,27 @@ fn insert_aggregate_release(func: &mut MirFunction) {
                         // a call is one whose fields might now be somebody
                         // else's, whatever the callee does with argument zero.
                         if i == 0 && borrows_recv && handles.contains_key(&id) {
+                            continue;
+                        }
+                        // A callee whose body this pass can read, and which
+                        // demonstrably doesn't hold on to the aggregate, leaves
+                        // it to this frame. Both sides refusing is how a `take
+                        // self` struct's `Vec` came to be freed by nobody: the
+                        // caller called it handed over, the callee called it the
+                        // caller's, and `os.Command.spawn` leaked the builder's
+                        // two vectors on every call. It only looked fixed when
+                        // the callee was small enough to inline, which put the
+                        // release in the caller by accident.
+                        //
+                        // Only for a callee in `kept`. A runtime helper or a
+                        // native has no body to read, and the declared metadata
+                        // answers "doesn't keep" for anything outside a family
+                        // it accounts for — `rask_vec_from_static` copies an
+                        // array literal's bytes into a new vector and owns the
+                        // strings afterwards, so releasing the array here freed
+                        // what the vector now holds.
+                        if kept.get(&fref.name).is_some_and(|v| !v.get(i).copied().unwrap_or(true))
+                        {
                             continue;
                         }
                         block_local(&mut blocked, &id);

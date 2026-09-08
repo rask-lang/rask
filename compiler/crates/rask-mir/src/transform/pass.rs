@@ -219,8 +219,14 @@ pub struct StringRcInsertionPass;
 
 impl MirPass for StringRcInsertionPass {
     fn name(&self) -> &str { "string_rc_insert" }
-    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
-        crate::transform::rc_insert::insert_rc_ops(func);
+    // Whole-program rather than per-function: releasing a struct that arrived
+    // by value needs to know whether the callee kept it, and that answer is
+    // read off every body (see `container_drop::params_a_callee_keeps`).
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        let kept = crate::container_drop::params_a_callee_keeps(fns);
+        for func in fns.iter_mut() {
+            crate::transform::rc_insert::insert_rc_ops(func, &kept);
+        }
     }
 }
 

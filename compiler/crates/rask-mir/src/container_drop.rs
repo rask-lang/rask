@@ -231,7 +231,7 @@ fn build_env_drop(
 ///
 /// Grows to a fixed point because "passed on to something that keeps it" is
 /// itself one of these answers.
-fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
 
@@ -340,7 +340,7 @@ fn param_is_kept_by(
 /// A function this pass can see answers for itself. Anything else — a runtime
 /// function, a stdlib method — falls back to the declared metadata, whose own
 /// unmapped default leans to leaking rather than to a double free.
-fn call_keeps_argument(
+pub(crate) fn call_keeps_argument(
     fref: &FunctionRef,
     index: usize,
     kept: &HashMap<String, Vec<bool>>,

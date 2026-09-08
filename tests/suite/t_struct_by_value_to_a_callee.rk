@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct handed to a callee that doesn't keep it is still the caller's, and
+// the containers in its fields get freed.
+//
+// Both sides used to refuse. The caller saw the struct go into a call and
+// called it handed over; the callee saw a parameter and called it the caller's.
+// So the `Vec` in the field was freed by nobody. It looked fixed whenever the
+// callee was small enough to inline — that put the release in the caller by
+// accident — which is why `os.Command.run()` leaked its two vectors and the
+// same builder with a one-line consumer did not.
+//
+// The rule now: a callee whose body the pass can read, and which demonstrably
+// doesn't hold on to the aggregate, leaves it to this frame. A runtime helper
+// or a native has no body to read and stays blocked — `rask_vec_from_static`
+// copies an array literal's bytes into a new vector and owns the strings
+// afterwards, so releasing the array would free what the vector holds.
+//
+// There are no assertions about allocation counts here — `tests/leak_gate.sh`
+// makes them, per file. What this pins is that the frees land on the right
+// memory: a double free shows up as a crash or as garbage read back.
+//
+// Spec: specs/memory/ownership.md, specs/memory/parameters.md
+//   PM1 a parameter is borrowed unless declared `take`
+//   PM6 giving away a borrow is a compile error
+
+struct Item {
+    name: string
+    qty: i32
+}
+
+struct Order {
+    id: i32
+    items: Vec<Item>
+}
+
+struct Inventory {
+    orders: Vec<Order>
+}
+
+extend Order {
+    /// The shape that leaked: two exits and nothing that keeps `self`.
+    ///
+    /// Deliberately no `for it in self.items` — iterating a container reached
+    /// through a field leaks on its own account, and this file would then be
+    /// measuring that instead.
+    public func count(take self) -> i32 {
+        if self.items.is_empty() {
+            return 0
+        }
+        return self.items.len().clamp<i32>()
+    }
+
+    /// And the shape that must NOT be freed by the caller: `self` goes into
+    /// what comes back.
+    public func with_item(take self, name: string, qty: i32) -> Order {
+        mut o = self
+        o.items.push(Item { name: name, qty: qty })
+        return o
+    }
+}
+
+/// A borrowed struct parameter. The caller keeps it and frees it.
+func describe(o: Order) -> string {
+    return "order {o.id} has {o.items.len()} items"
+}
+
+test "mem.parameters/PM1 — a struct's Vec survives a call that borrows it" {
+    let o = Order { id: 1, items: [Item { name: "a", qty: 2 }] }
+    assert describe(o) == "order 1 has 1 items"
+    // Still readable afterwards: the release goes at the last use, not at the
+    // call.
+    assert o.items[0].name == "a"
+    assert o.items.len() == 1
+}
+
+test "mem.parameters — a take-self consumer with two exits" {
+    let o = Order { id: 1, items: [Item { name: "a", qty: 2 }, Item { name: "b", qty: 5 }] }
+    assert o.count() == 2
+
+    let empty = Order { id: 2, items: Vec.new() }
+    assert empty.count() == 0
+}
+
+test "mem.parameters — a take-self builder hands the Vec on, so it lives" {
+    let o = Order { id: 3, items: Vec.new() }
+        .with_item("x", 1)
+        .with_item("y", 2)
+    assert o.items.len() == 2
+    assert o.items[1].name == "y"
+    assert o.count() == 2
+}
+
+test "mem.ownership — an array literal's strings belong to the Vec it built" {
+    // `rask_vec_from_static` copies the bytes without retaining, so the array
+    // must not release them. Three levels deep, because that is where reading
+    // back garbage showed up.
+    let inv = Inventory {
+        orders: [
+            Order { id: 1, items: [Item { name: "a", qty: 1 }] },
+            Order { id: 2, items: [Item { name: "b", qty: 2 }, Item { name: "c", qty: 3 }] },
+        ],
+    }
+    assert inv.orders.len() == 2
+    assert inv.orders[1].items.len() == 2
+    assert inv.orders[1].items[1].name == "c"
+    assert inv.orders[1].items[1].qty == 3
+}
+
+test "mem.parameters — the same call in a loop, repeatedly" {
+    mut seen = 0
+    for i in 1..5 {
+        let o = Order { id: i, items: [Item { name: "n", qty: i }] }
+        seen = seen + o.count()
+    }
+    assert seen == 4
+}
