@@ -171,8 +171,15 @@ impl fmt::Display for MirStmt {
             MirStmtKind::Assign { dst, rvalue } => {
                 write!(f, "_{} = {}", dst.0, rvalue)
             }
-            MirStmtKind::Store { addr, offset, value, .. } => {
-                write!(f, "*(_{}+{}) = {}", addr.0, offset, value)
+            MirStmtKind::Store { addr, offset, value, store_size } => {
+                write!(f, "*(_{}+{}) = {}", addr.0, offset, value)?;
+                // The width is half the meaning of a store — a copy that moves
+                // 8 bytes into a 16-byte option looks identical to a correct one
+                // without it.
+                match store_size {
+                    Some(n) => write!(f, "  [{}B]", n),
+                    None => Ok(()),
+                }
             }
             MirStmtKind::Call { dst, func, args } => {
                 if let Some(d) = dst {

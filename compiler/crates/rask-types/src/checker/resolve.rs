@@ -1176,32 +1176,6 @@ impl TypeChecker {
                     _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
-            // ctrl.ranges — the range adapters. Both return a range so they
-            // chain, and `for i in (0..5).rev()` still sees something iterable.
-            Type::UnresolvedNamed(name) if name == "Range" => {
-                match method.as_str() {
-                    "rev" if args.is_empty() => {
-                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
-                    }
-                    "step" if args.len() == 1 => {
-                        self.unify(&args[0], &Type::I64, span)?;
-                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
-                    }
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
-            // The adapters hand back the same range, element type included, so
-            // `for i in (0..5).rev()` still knows what `i` is.
-            Type::UnresolvedGeneric { name, .. } if name == "Range" => {
-                match method.as_str() {
-                    "rev" if args.is_empty() => self.unify(&ret, &ty, span),
-                    "step" if args.len() == 1 => {
-                        self.unify(&args[0], &Type::I64, span)?;
-                        self.unify(&ret, &ty, span)
-                    }
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
             // Pool (bare, for static constructors like Pool.new())
             Type::UnresolvedNamed(name) if name == "Pool" => {
                 self.resolve_pool_static_method(&method, &args, &ret, span)

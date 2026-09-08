@@ -30,7 +30,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | 6 — Migrate collection iteration; delete eager Vec adapters (`SEQ41`) | ✓ every adapter on a collection is lazy. `zip`/`chunks` stay eager by SEQ39, which is a decision rather than a gap | `t38`, `t40`, `t42` |
 | — #1045: a returned closure's environment | ✓ dangles no more; captured containers still leak | `3417ccc`, `09c6b4a`, `c947684` |
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
-| 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | pending | — |
+| 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | ✓ one stdlib struct, the whole surface forwarding to `as_sequence()` | `t_week_range_adapters` |
 | 8 — Channel `stream()` method | pending | — |
 | 9 — Retire `Iterator<Item>` trait | pending | — |
 | 10 — Test suite migration | pending | — |
@@ -193,6 +193,77 @@ came back as `Vec<T` — a name nothing has, and every method on it "not found".
 **Indexing a sequence** is a type error now (`E0819`, SEQ39) rather than
 "Function not found: Sequence_index" out of codegen. `.len()` is likewise a
 "no method" error pointing at `count()`.
+
+### A range is a struct (stage 7, #920)
+
+`Range<T>` was never a value. `0..n` type-checked, `for i in 0..n` fused into an
+index loop, `s[a..b]` sliced a string — and anything else failed: `let r = 0..4`
+compiled to a call to a `range()` the runtime never had, so it didn't link, and
+`(0..4).to_vec()` was "no method `to_vec` on `Range<i32>`" because the checker
+answered range methods from a two-arm match holding `rev` and `step`.
+
+It is one ordinary stdlib struct now (`ctrl.ranges/R6`), in `stdlib/range.rk`:
+
+```rask
+public struct Range<T> {
+    public start: T          // the first value, whichever way it runs
+    public end: T            // the bound; meaningless when `bounded` is false
+    public step: T           // magnitude — `descending` carries the sign
+    public inclusive: bool
+    public descending: bool
+    public bounded: bool     // false for `0..`
+}
+```
+
+with `as_sequence()` and the twenty-odd adapters and terminals written in Rask,
+each forwarding to it. So `(0..n).map(f)`, `(1..n).sum()` and `(0..4).to_vec()`
+are the sequence surface reaching ranges rather than anything new (R8), and
+`.rev()`/`.step(s)` hand back a `Range<T>` so they still chain.
+
+**Both backends build the same value.** MIR lowers the literal to six field
+stores; the interpreter builds the same struct, which is what lets the Rask
+bodies read `self.start` on either side. The interpreter's `Value::Range`
+variant is gone with its two hardcoded adapters, and so is the checker's match.
+`for i in 0..n` and `s[a..b]` still match the range *in place*, above the
+value path, so the fused loop and the substring are untouched.
+
+**The surface is `where T: Integer`.** `rev()` needs the last value a range
+yields, which is exact arithmetic on the step; a float range accumulates and has
+no such value. `Integer` and `Float` also now carry comparison and `rem` in
+their bound, which they always had as types — without that `self.start <
+self.end` inside the block was "no method `lt` provided by the bounds on `T`".
+
+**`count()` and `sum()` walk.** SEQ42 permits computing them, and a range's
+length is arithmetic — but the closed form needs `T` as a `usize` and a body
+generic in `T` can't spell that conversion. Walking is right; a wrong closed
+form would not be.
+
+### Three native bugs the range work turned up
+
+All three were about *how wide* something is written or read, all three are
+independent of ranges, and all three were silent — wrong answers, no crash.
+
+1. **An enum's tag was compared as a word.** `emit_enum_eq` loaded `I64` at the
+   tag offset, and a fieldless enum's whole storage is one byte of tag, so
+   `a == b` answered from whatever sat beside the slot. It agreed with itself
+   often enough to pass and flipped under `RASK_POISON_STACK=1`:
+   `cmp(x, y) == Ordering.Greater` inside a generic body was simply always
+   false, which is why `Sequence.max_by` came back with the first item.
+   `EnumTag` and `emit_option_eq` already read the declared width.
+2. **A `return` out of a `for x in seq` body didn't widen into its option.**
+   The yield closure writes the answer into a slot typed as the enclosing
+   function's return type, and it stored a bare payload at offset 0 — where the
+   tag lives. `find(…)` answered 4 through `??` (which reads the payload it was
+   written into) and `== 4` was false (which reads the tag it never got). An
+   ordinary assignment has widened for this since OPT6; the non-local return
+   path just didn't call it.
+3. **`MirType::size()` and codegen's slot size disagreed about an option.**
+   `i32?` was 12 bytes in MIR and 16 in codegen, because a payload narrower
+   than a word still occupies one there. A copy of an option through a capture
+   pointer took the MIR number and left four stale bytes in the destination —
+   and `==` on an option compares its payload as a word, so an option written
+   inside a yield closure was equal to nothing. Both now say
+   `8 + payload.max(8)`.
 
 ### Where an extend method's type parameters come from
 

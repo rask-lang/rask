@@ -57,6 +57,7 @@ p15_read_only_graph.rk  # 37 allocations
 p16_rack_link_holders.rk  # 4 allocations
 p18_rack_multi_link_fields.rk  # 11 allocations
 p19_mutate_param_link_write.rk  # 19 allocations
+p21_sequence_adapters.rk   # 17 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t25_iterator_adapters.rk  # 4 allocations
 t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
@@ -97,7 +98,6 @@ t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
                   # `cstring or NullByteError`, and a container returned in a
                   # `T or E` is freed by nobody (#1117)
 t_module_qualified_variants.rk  # 9 allocations — trait boxes again
-t_array_method_surface.rk  # 10 allocations
 t_atomic_across_tasks.rk  # 6 allocations
 t_bare_lock_value.rk  # 21 allocations
 t_borrow_param_consume.rk  # 7 allocations

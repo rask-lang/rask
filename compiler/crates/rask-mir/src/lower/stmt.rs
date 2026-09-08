@@ -116,7 +116,12 @@ impl<'a> MirLowerer<'a> {
                     addr: wrap_local,
                     offset: 8,
                     value: val_op,
-                    store_size: Some(val_ty.size()),
+                    // The payload slot is a word wide even for a narrower
+                    // scalar, and a copy of the whole option carries whatever
+                    // the rest of it holds — so a 4-byte store here left four
+                    // stale bytes inside every `i32?` built this way, and `==`
+                    // reads the payload as a word (#920).
+                    store_size: Some(val_ty.size().max(8)),
                 }));
                 return (MirOperand::Local(wrap_local), place_ty.clone());
             }
@@ -454,6 +459,22 @@ impl<'a> MirLowerer<'a> {
                 // return to an assignment + goto instead of a real return.
                 if let Some((dst_local, cont_block)) = self.inline_return_target {
                     if let Some(val) = value {
+                        // `return x` from a function that answers `T?` hands
+                        // back a bare payload, and the slot it lands in is the
+                        // whole option — so it needs the same widen an ordinary
+                        // assignment gets (OPT6). Without it the value went in
+                        // at offset 0, where the tag lives: `find(…)` answered
+                        // 4 through `??` (which reads the payload it was
+                        // written into) and `== 4` was false (which reads the
+                        // tag it never got).
+                        let place_ty = self.builder.local_type(dst_local);
+                        let (val, _) = match &place_ty {
+                            Some(pt) => {
+                                let val_ty = returned_ty.clone().unwrap_or(MirType::Void);
+                                self.wrap_for_option_place(val, val_ty, pt)
+                            }
+                            None => (val, MirType::Void),
+                        };
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: dst_local,
                             rvalue: MirRValue::Use(val),

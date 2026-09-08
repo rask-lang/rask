@@ -16,11 +16,9 @@
 # The differential harness treats both files as expected-red (non-fatal).
 
 # --- spec-heavy pending features ---
-p21_sequence_adapters.rk   # type.sequence — the Sequence adapter/terminal surface is declared, not built, #920 (both check)
 p09_simd.rk                # type.simd f32x4 etc. vector types — checks, but no SIMD value is ever built below the checker, #1059 (both check)
 p10_binary.rk              # type.binary @binary — the interpreter builds and parses; native generates neither method, so the call doesn't link. #1058 is out of the way: the slice type is deleted, so G1/G3 take a `Vec<u8>` (native compile)
 p11_gradual_generalization.rk # type.gradual IN1/IN3 — an inferred parameter never generalizes, so the first call site pins it, #904 (both check)
 
 # --- declared-but-unbuilt stdlib surface ---
 t_week_collection_stubs.rk # std.collections — 11 declared Vec/Map methods unimplemented on both backends, #912 (both check)
-t_week_range_adapters.rk   # ctrl.ranges — a range has no terminals or adapters; routed through the unbuilt sequence protocol, #920 (both check)

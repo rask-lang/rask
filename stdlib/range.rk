@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Range<T>: one range type (ctrl.ranges/R6).
+//
+// `0..n`, `0..=n`, `0..`, `.rev()` and `.step(s)` are all this one struct with
+// different fields — not seven types, each of which would need its own copy of
+// the sequence surface. `start`, `end` and `step` are values; direction,
+// inclusivity and boundedness are flags.
+//
+// A range is its own chain head (SEQ48), the same way a collection is: the
+// adapters below forward to `as_sequence()`, so `(0..n).map(f)` and
+// `(1..n).sum()` are the sequence surface reaching ranges rather than new
+// surface of their own (R8).
+//
+// The whole surface wants `T: Integer`. A float range steps by accumulation and
+// has no exact last value, so `.rev()` and the closed forms can't be right for
+// one; `for x in (0.0..1.0).step(0.1)` is the fused loop and stays that.
+
+/// A half-open or inclusive range, ascending or descending, with a step.
+public struct Range<T> {
+    /// The first value, whichever direction the range runs.
+    public start: T
+    /// The bound. Meaningless when `bounded` is false.
+    public end: T
+    /// Distance between values. Always positive — `descending` carries the sign.
+    public step: T
+    /// Does `end` count as a value.
+    public inclusive: bool
+    /// Walk down from `start` instead of up.
+    public descending: bool
+    /// False for `0..`, which has no end to compare against (R3).
+    public bounded: bool
+}
+
+extend Range<T> where T: Integer {
+    /// No values at all. An unbounded range always has some.
+    public func is_empty(self) -> bool {
+        if !self.bounded {
+            return false
+        }
+        if self.descending {
+            if self.inclusive {
+                return self.start < self.end
+            }
+            return self.start <= self.end
+        }
+        if self.inclusive {
+            return self.start > self.end
+        }
+        return self.start >= self.end
+    }
+
+    /// The last value this range yields. Only meaningful when it has one —
+    /// callers check `is_empty()` first, and an unbounded range has no last.
+    func last_value(self) -> T {
+        if self.descending {
+            if self.inclusive {
+                return self.end + (self.start - self.end) % self.step
+            }
+            return self.end + 1 + (self.start - self.end - 1) % self.step
+        }
+        if self.inclusive {
+            return self.end - (self.end - self.start) % self.step
+        }
+        return self.end - 1 - (self.end - 1 - self.start) % self.step
+    }
+
+    /// The same values, other way round (RV1). Ascending becomes descending
+    /// from the last value down to the original start, which is why the result
+    /// is inclusive: that start is a value.
+    public func rev(self) -> Range<T> {
+        if self.is_empty() {
+            return Range {
+                start: self.start,
+                end: self.start,
+                step: self.step,
+                inclusive: false,
+                descending: false,
+                bounded: true,
+            }
+        }
+        return Range {
+            start: self.last_value(),
+            end: self.start,
+            step: self.step,
+            inclusive: true,
+            descending: !self.descending,
+            bounded: true,
+        }
+    }
+
+    /// Take every `s`-th value (SP1/SP2). A negative `s` walks downward, so
+    /// `(10..0).step(-1)` is 10, 9, … 1; the magnitude is what gets stored.
+    public func step(self, s: T) -> Range<T> {
+        if s < 0 {
+            return Range {
+                start: self.start,
+                end: self.end,
+                step: 0 - s,
+                inclusive: self.inclusive,
+                descending: true,
+                bounded: self.bounded,
+            }
+        }
+        return Range {
+            start: self.start,
+            end: self.end,
+            step: s,
+            inclusive: self.inclusive,
+            descending: self.descending,
+            bounded: self.bounded,
+        }
+    }
+
+    /// The values, as a sequence — the chain head every adapter below forwards
+    /// to. Not a spelling anyone writes: `(0..n).map(f)` reaches it (SEQ48).
+    public func as_sequence(self) -> Sequence<T> {
+        return |yield| {
+            if self.is_empty() {
+                return
+            }
+            let last = self.last_value()
+            mut i = self.start
+            if self.descending {
+                loop {
+                    if !yield(i) {
+                        return
+                    }
+                    if i == last {
+                        return
+                    }
+                    i = i - self.step
+                }
+            }
+            loop {
+                if !yield(i) {
+                    return
+                }
+                // Compared against the last value rather than the bound, so an
+                // unbounded range runs on and a stepped one stops exactly on a
+                // value it actually yields (SP4) — no overflow past the end.
+                if self.bounded {
+                    if i == last {
+                        return
+                    }
+                }
+                i = i + self.step
+            }
+        }
+    }
+
+    // --- Adapters. Lazy, and each forwards to the sequence (SEQ41). ---
+
+    /// Keep only the values `f` accepts.
+    public func filter(self, f: func(T) -> bool) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.filter(f)
+    }
+
+    /// Transform each value.
+    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.map(f)
+    }
+
+    /// Drop the first n values.
+    public func skip(self, n: usize) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.skip(n)
+    }
+
+    /// Keep the first n values. The terminator for an unbounded range (R3).
+    public func take(self, n: usize) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.take(n)
+    }
+
+    /// Keep values while `f` holds, then stop.
+    public func take_while(self, f: func(T) -> bool) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.take_while(f)
+    }
+
+    /// Drop values while `f` holds, then keep the rest.
+    public func skip_while(self, f: func(T) -> bool) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.skip_while(f)
+    }
+
+    /// Pair each value with its position.
+    public func enumerate(self) -> Sequence<(usize, T)> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.enumerate()
+    }
+
+    /// This range's values, then the other's.
+    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.chain(other)
+    }
+
+    // --- Terminals. ---
+
+    /// The values in a Vec.
+    public func to_vec(self) -> Vec<T> {
+        let src: Sequence<T> = self.as_sequence()
+        return src.to_vec()
+    }
+
+    /// How many values. Walked, not computed: the closed form needs `T` as a
+    /// `usize`, which a generic body can't spell (SEQ42 permits computing it,
+    /// and this is where that would go).
+    public func count(self) -> usize {
+        let src: Sequence<T> = self.as_sequence()
+        return src.count()
+    }
+
+    /// Every value added up.
+    public func sum(self) -> T {
+        let src: Sequence<T> = self.as_sequence()
+        return src.sum()
+    }
+
+    /// Every value multiplied together.
+    public func product(self) -> T {
+        let src: Sequence<T> = self.as_sequence()
+        return src.product()
+    }
+
+    /// The smallest value, or none when empty.
+    public func min(self) -> T? {
+        let src: Sequence<T> = self.as_sequence()
+        return src.min()
+    }
+
+    /// The largest value, or none when empty.
+    public func max(self) -> T? {
+        let src: Sequence<T> = self.as_sequence()
+        return src.max()
+    }
+
+    /// Fold from an initial accumulator.
+    public func fold<U>(self, init: U, f: func(U, T) -> U) -> U {
+        let src: Sequence<T> = self.as_sequence()
+        return src.fold(init, f)
+    }
+
+    /// Fold with the first value as the accumulator. None when empty.
+    public func reduce(self, f: func(T, T) -> T) -> T? {
+        let src: Sequence<T> = self.as_sequence()
+        return src.reduce(f)
+    }
+
+    /// Run `f` on every value.
+    public func for_each(self, f: func(T)) -> void {
+        let src: Sequence<T> = self.as_sequence()
+        src.for_each(f)
+    }
+
+    /// Does any value satisfy `f`.
+    public func any(self, f: func(T) -> bool) -> bool {
+        let src: Sequence<T> = self.as_sequence()
+        return src.any(f)
+    }
+
+    /// Do all values satisfy `f`.
+    public func all(self, f: func(T) -> bool) -> bool {
+        let src: Sequence<T> = self.as_sequence()
+        return src.all(f)
+    }
+
+    /// The first value satisfying `f`, or none.
+    public func find(self, f: func(T) -> bool) -> T? {
+        let src: Sequence<T> = self.as_sequence()
+        return src.find(f)
+    }
+}

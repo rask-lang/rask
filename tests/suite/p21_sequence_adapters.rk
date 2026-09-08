@@ -97,7 +97,7 @@ test "type.sequence/SEQ44 — enumerate pairs each item with its position" {
 }
 
 test "type.sequence/SEQ12 — flat_map maps then flattens one level" {
-    let pairs: Vec<i32> = count_to_five().take(2).flat_map(|x| count_to_five().take(x)).to_vec()
+    let pairs: Vec<i32> = count_to_five().take(2).flat_map(|x| count_to_five().take(x.to<usize>()!)).to_vec()
     assert pairs.len() == 3
     assert pairs[0] == 1
     assert pairs[2] == 2
@@ -169,8 +169,14 @@ test "type.sequence/SEQ12 — min and max, and none when empty" {
     assert count_to_five().take(0).max() is none
 }
 
+// The comparator answers with an `Ordering`, the same as `Vec.sort_by` — an
+// integer comparator is a type error here too, so this reads "closest to 3
+// wins" as a comparison of distances rather than as their difference.
 test "type.sequence/SEQ12 — min_by and max_by use the comparator" {
-    assert count_to_five().max_by(|a, b| (3 - a) - (3 - b)) == 1
+    // Furthest from 3 wins for `max_by`: 1 and 5 tie at a distance of 2, and a
+    // tie keeps the first item seen.
+    assert count_to_five().max_by(|a, b| (3 - a).abs().compare((3 - b).abs())) == 1
+    assert count_to_five().min_by(|a, b| (3 - a).abs().compare((3 - b).abs())) == 3
 }
 
 test "type.sequence/SEQ12 — min_by_key and max_by_key use the extracted key" {

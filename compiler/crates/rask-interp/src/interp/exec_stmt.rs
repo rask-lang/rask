@@ -243,39 +243,49 @@ impl Interpreter {
                 let loop_label = label.as_deref();
                 let iter_val = self.eval_expr(iter)?;
 
-                match iter_val {
-                    Value::Range {
-                        start,
-                        end,
-                        inclusive,
-                        step,
-                        rev,
-                    } => {
-                        let n = crate::value::range_count(start, end, inclusive, step);
-                        for k in 0..n {
-                            let idx = if rev { n - 1 - k } else { k };
-                            let i = start.wrapping_add(idx.wrapping_mul(step));
-                            self.env.push_scope();
-                            self.define_for_binding(binding, Value::int(i));
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
+                // A range walks by index rather than through its own
+                // `as_sequence()`, the same way native fuses `for i in 0..n`
+                // into a counted loop: the common loop in the language shouldn't
+                // pay for a yield closure per element.
+                if let Some((start, end, inclusive, step, descending, bounded)) =
+                    crate::interp::as_range(&iter_val)
+                {
+                    let end = if bounded { end } else { i64::MAX };
+                    let (first, walk_step) = if descending {
+                        (start, -step)
+                    } else {
+                        (start, step)
+                    };
+                    let n = if descending {
+                        crate::value::range_count(start, end, inclusive, -step)
+                    } else {
+                        crate::value::range_count(start, end, inclusive, step)
+                    };
+                    for k in 0..n {
+                        let i = first.wrapping_add(k.wrapping_mul(walk_step));
+                        self.env.push_scope();
+                        self.define_for_binding(binding, Value::int(i));
+                        match self.exec_stmts(body) {
+                            Ok(_) => {}
+                            Err(diag) if breaks_here(&diag.error, loop_label) => {
+                                self.env.pop_scope();
+                                break;
                             }
-                            self.env.pop_scope();
+                            Err(diag) if continues_here(&diag.error, loop_label) => {
+                                self.env.pop_scope();
+                                continue;
+                            }
+                            Err(e) => {
+                                self.env.pop_scope();
+                                return Err(e);
+                            }
                         }
-                        Ok(Value::Unit)
+                        self.env.pop_scope();
                     }
+                    return Ok(Value::Unit);
+                }
+
+                match iter_val {
                     Value::Vec(ref v) if *mutate => {
                         let len = v.lock().unwrap().len();
                         for i in 0..len {

@@ -3411,25 +3411,74 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Range expression
+            // A range *value* — `let r = 0..n`, `(0..n).map(f)`. `for i in 0..n`
+            // and `s[a..b]` never reach here: both match the range in place,
+            // above, and stay a fused loop and a substring.
+            //
+            // `Range<T>` is one ordinary stdlib struct (ctrl.ranges/R6), so the
+            // literal is six field stores. It used to call a `range()` the
+            // runtime never had, which is why a range bound to a name failed to
+            // link at all (#920).
             ExprKind::Range { start, end, inclusive } => {
-                let result_ty = MirType::Ptr; // Range is an opaque struct
-                let result_local = self.builder.alloc_temp(result_ty.clone());
-                let mut args = Vec::new();
-                if let Some(s) = start {
-                    let (op, _) = self.lower_expr(s)?;
-                    args.push(op);
+                // The instance layout when there is one, else the declaration's
+                // own — a `Range<T>`'s fields are all `T` or `bool`, so its
+                // layout doesn't vary with the element and mono keeps one
+                // (`struct#N` for every instantiation of the methods too).
+                let Some((idx, sl)) = self
+                    .ctx
+                    .generic_instance_struct(self.ctx.lookup_raw_type(expr.id))
+                    .or_else(|| self.ctx.find_struct("Range"))
+                else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "no layout for `Range` — the stdlib declaration is missing".into()
+                    ));
+                };
+                let layout_ty = MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
+                let offsets: Vec<(String, u32, u32)> = sl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.offset, f.size))
+                    .collect();
+                let result_local = self.builder.alloc_temp(layout_ty.clone());
+
+                let (start_op, start_ty) = match start {
+                    Some(s) => self.lower_expr(s)?,
+                    None => (MirOperand::Constant(MirConst::Int(0)), MirType::I64),
+                };
+                // An unbounded `0..` has no end to store; `bounded` is what the
+                // sequence reads, and the slot keeps `start` so it is never a
+                // stale word (R3).
+                let end_op = match end {
+                    Some(e) => {
+                        let (op, _) = self.lower_expr(e)?;
+                        op
+                    }
+                    None => start_op.clone(),
+                };
+                let one = match start_ty {
+                    MirType::F32 | MirType::F64 => MirOperand::Constant(MirConst::Float(1.0)),
+                    _ => MirOperand::Constant(MirConst::Int(1)),
+                };
+                let values: [(&str, MirOperand); 6] = [
+                    ("start", start_op),
+                    ("end", end_op),
+                    ("step", one),
+                    ("inclusive", MirOperand::Constant(MirConst::Bool(*inclusive))),
+                    ("descending", MirOperand::Constant(MirConst::Bool(false))),
+                    ("bounded", MirOperand::Constant(MirConst::Bool(end.is_some()))),
+                ];
+                for (name, value) in values {
+                    let Some((_, offset, size)) = offsets.iter().find(|(n, _, _)| n == name) else {
+                        continue;
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: *offset,
+                        value,
+                        store_size: Some(*size),
+                    }));
                 }
-                if let Some(e) = end {
-                    let (op, _) = self.lower_expr(e)?;
-                    args.push(op);
-                }
-                let func_name = if *inclusive { "range_inclusive" } else { "range" };
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef::internal(func_name.to_string()),
-                    args,
-                }));
-                Ok((MirOperand::Local(result_local), result_ty))
+                Ok((MirOperand::Local(result_local), layout_ty))
             }
 
             // Array repeat ([value; count])

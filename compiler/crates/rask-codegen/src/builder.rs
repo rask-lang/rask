@@ -3887,6 +3887,42 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Compare two enums: tags first, then the payload of the shared variant.
     /// Different tags short-circuit to "not equal".
+    /// Load an enum's variant tag at the width the layout gives it.
+    ///
+    /// An `I64` load here reads past the end of a fieldless enum — its whole
+    /// storage is the tag, one byte of it — so `a == b` answered from whatever
+    /// sat next to the slot. It agreed with itself often enough to look right
+    /// and flipped under `RASK_POISON_STACK=1`: `cmp(a, b) == Ordering.Greater`
+    /// inside a generic body was simply false. `EnumTag` and `emit_option_eq`
+    /// already read the declared width; this is the third place that has to.
+    fn load_enum_tag(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        ptr: Value,
+        idx: usize,
+    ) -> Value {
+        let (offset, ty) = match ctx.enum_layouts.get(idx) {
+            Some(layout) => {
+                let (tag_size, _) =
+                    rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                let ty = match tag_size {
+                    8 => types::I64,
+                    4 => types::I32,
+                    2 => types::I16,
+                    _ => types::I8,
+                };
+                (layout.tag_offset as i32, ty)
+            }
+            None => (0, types::I8),
+        };
+        let raw = builder.ins().load(ty, MemFlags::new(), ptr, offset);
+        if ty == types::I64 {
+            raw
+        } else {
+            builder.ins().uextend(types::I64, raw)
+        }
+    }
+
     fn emit_enum_eq(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
@@ -3908,8 +3944,9 @@ impl<'a> FunctionBuilder<'a> {
             (layout.tag_offset as i32, vs)
         };
 
-        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
-        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let _ = tag_off;
+        let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
+        let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tags_eq = builder.ins().icmp(IntCC::Equal, tag_l, tag_r);
 
         // Fieldless enum (plain tag union): equality is just tag equality.
@@ -4205,8 +4242,9 @@ impl<'a> FunctionBuilder<'a> {
             (layout.tag_offset as i32, vs)
         };
 
-        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
-        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let _ = tag_off;
+        let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
+        let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tag_cmp = Self::emit_signed_three_way(builder, tag_l, tag_r);
 
         if variants.iter().all(|(_, _, f)| f.is_empty()) {

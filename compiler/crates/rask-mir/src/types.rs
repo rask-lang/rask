@@ -192,15 +192,23 @@ impl MirType {
                 // The niche pair are one word: the value *is* the option, and
                 // `none` is the all-ones sentinel. Everything else is
                 // tag (8 bytes, aligned) + payload.
+                //
+                // A payload narrower than a word still occupies one: every
+                // writer of a payload slot stores a whole word into it, so the
+                // slot has to be that wide. Counting an `i32?` as 12 bytes here
+                // while codegen gave the slot 16 is what made a copy of one
+                // leave four stale bytes behind, and `==` on an option reads
+                // its payload as a word (#920).
                 if matches!(**inner, MirType::Handle | MirType::Link(_)) {
                     8
                 } else {
-                    8 + inner.size()
+                    8 + inner.size().max(8)
                 }
             }
             MirType::Result { ok, err } => {
-                // [tag:8][origin_file:8][origin_line:8][payload] — offsets in rask_mono::abi (ER15).
-                RESULT_PAYLOAD_OFFSET + ok.size().max(err.size())
+                // [tag:8][origin_file:8][origin_line:8][payload] — offsets in
+                // rask_mono::abi (ER15). Same word-wide payload rule as Option.
+                RESULT_PAYLOAD_OFFSET + ok.size().max(8).max(err.size().max(8))
             }
             // [member:8][member bytes] — the members are nominally distinct
             // types with nothing in their bytes to tell them apart, so the index

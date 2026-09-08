@@ -900,10 +900,12 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             "Integer" => {
                 let mut sigs = numeric_method_sigs();
                 sigs.extend(integer_overflow_hatch_method_sigs());
+                sigs.extend(ordered_method_sigs());
                 Some(sigs)
             }
             "Float" => {
                 let mut sigs = numeric_method_sigs();
+                sigs.extend(ordered_method_sigs());
                 sigs.push(MethodSig {
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
@@ -1202,6 +1204,20 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
 }
 
 /// The eight methods the roster gives `Numeric`.
+/// Comparison and remainder — what every `Integer` and `Float` member has and
+/// `Numeric` alone doesn't declare.
+///
+/// A bound has to declare a method for a generic body to call it, and membership
+/// in these two sets is decided by what the type *is* — so a `T: Integer` that
+/// couldn't be compared was the bound describing less than it knows. That's what
+/// stopped `stdlib/range.rk` from asking `self.start < self.end`.
+fn ordered_method_sigs() -> Vec<MethodSig> {
+    let mut sigs = builtin_trait_methods("Comparable").unwrap_or_default();
+    sigs.extend(builtin_trait_methods("Equal").unwrap_or_default());
+    sigs.extend(builtin_trait_methods("Rem").unwrap_or_default());
+    sigs
+}
+
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         owner_patterns: Vec::new(),
