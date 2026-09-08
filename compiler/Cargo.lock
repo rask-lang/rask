@@ -1333,18 +1333,18 @@ dependencies = [
 
 [[package]]
 name = "rask-ast"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "rask-c-parse"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "rask-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "colored",
  "rask-ast",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "rask-codegen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cranelift",
  "cranelift-codegen",
@@ -1393,7 +1393,7 @@ dependencies = [
 
 [[package]]
 name = "rask-compiler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-comptime",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "rask-comptime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "thiserror",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "rask-describe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-lexer",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "rask-desugar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-lexer",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "rask-diagnostics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "colored",
  "rask-ast",
@@ -1458,14 +1458,14 @@ dependencies = [
 
 [[package]]
 name = "rask-effects"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
 ]
 
 [[package]]
 name = "rask-fmt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-lexer",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "rask-interp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "indexmap",
  "rask-ast",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "rask-lexer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "logos",
  "rask-ast",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "rask-lint"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-effects",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "rask-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-compiler",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "rask-mir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-comptime",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "rask-miri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-mir",
  "rask-mono",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "rask-mono"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-resolve",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "rask-ownership"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-resolve",
@@ -1576,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "rask-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-lexer",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "rask-resolve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "flate2",
@@ -1607,14 +1607,14 @@ dependencies = [
 
 [[package]]
 name = "rask-semantic-hash"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
 ]
 
 [[package]]
 name = "rask-spec-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-desugar",
  "rask-interp",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "rask-stdlib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-desugar",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "rask-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rask-ast",
  "rask-resolve",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "rask-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
  "rask-ast",

@@ -527,6 +527,11 @@ fn stale_runtime_hint(stderr: &str) -> Option<String> {
 /// Searches:
 /// 1. RASK_RUNTIME_DIR environment variable
 /// 2. Relative to the rask binary (walking up to find compiler/runtime/)
+/// 3. The copy baked into this binary, unpacked to the cache
+///
+/// A checkout on disk wins over the baked-in copy on purpose: editing
+/// `runtime/*.c` has to take effect on the next compile, which is what makes
+/// runtime work possible without rebuilding the compiler.
 pub fn find_runtime_dir() -> Result<std::path::PathBuf, String> {
     if let Ok(dir) = std::env::var("RASK_RUNTIME_DIR") {
         let p = Path::new(&dir);
@@ -554,5 +559,59 @@ pub fn find_runtime_dir() -> Result<std::path::PathBuf, String> {
         }
     }
 
-    Err("Could not find runtime directory — set RASK_RUNTIME_DIR to the directory containing runtime.c".to_string())
+    unpack_embedded_runtime()
+}
+
+/// The runtime sources baked in by `build.rs`, keyed by file name.
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/embedded_runtime.rs"));
+}
+
+/// Write the baked-in runtime to the cache and return that directory.
+///
+/// Written once and then left alone. `runtime_cache_key` identifies sources by
+/// size and mtime, so rewriting these on every run would change the mtimes,
+/// miss the object cache every time, and recompile 29 C files per build. The
+/// directory is named after the contents, so a different compiler build gets a
+/// different directory rather than overwriting one in use.
+fn unpack_embedded_runtime() -> Result<PathBuf, String> {
+    let mut hasher = DefaultHasher::new();
+    for (name, contents) in embedded::EMBEDDED_RUNTIME {
+        name.hash(&mut hasher);
+        contents.hash(&mut hasher);
+    }
+    let dir = runtime_cache_root()
+        .join("src")
+        .join(format!("{:016x}", hasher.finish()));
+
+    if dir.join("runtime.c").exists() {
+        return Ok(dir);
+    }
+
+    // Build under a private name and rename in, so a half-written directory is
+    // never visible to a concurrent `rask run`.
+    let staging = dir.with_extension(format!("tmp.{}", process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("cannot create {}: {}", staging.display(), e))?;
+    for (name, contents) in embedded::EMBEDDED_RUNTIME {
+        std::fs::write(staging.join(name), contents)
+            .map_err(|e| format!("cannot write {}: {}", name, e))?;
+    }
+
+    match std::fs::rename(&staging, &dir) {
+        Ok(()) => Ok(dir),
+        // Another process got there first; its copy is the same bytes.
+        Err(_) if dir.join("runtime.c").exists() => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Ok(dir)
+        }
+        Err(e) => Err(format!(
+            "cannot place the runtime at {}: {}\n\
+             note: set RASK_RUNTIME_CACHE to a writable directory, or \
+             RASK_RUNTIME_DIR to a runtime checkout",
+            dir.display(),
+            e
+        )),
+    }
 }
