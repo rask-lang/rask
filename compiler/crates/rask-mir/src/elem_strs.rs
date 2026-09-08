@@ -117,6 +117,33 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Pool_handles", 0, 0, "Vec_free"),
     ("Pool_drain", 0, 0, "Vec_free"),
     ("Pool_values", 0, 0, "Vec_free"),
+    // `entries` is the fourth of that family and was the one left out. Its
+    // elements are (handle, value) pairs copied out of the slots with no
+    // element map, so freeing it gives back the byte store and leaves the
+    // strings to the pool — which is what the other three do too.
+    ("Pool_entries", 0, 0, "Vec_free"),
+    // `rack.nodes()` walks the directory and pushes each node's address into a
+    // fresh Vec. The elements are links, which own nothing — freeing the
+    // vector doesn't touch a node. `for n in s.nodes()` leaked one vector per
+    // call, which is most of what the snapshot files were carrying.
+    ("Rack_nodes", 0, 0, "Vec_free"),
+    // Clone the elements into a new vector and clear the source, so the result
+    // owns them and carries the source's element map. The source keeps its own
+    // allocation, empty.
+    ("Vec_take_all", 0, 0, "Vec_free"),
+    // Not `fs.read_lines`, `fs.read_bytes` or `File.lines`, even though the
+    // runtime has a function for each: those three are written in Rask now, so
+    // these names reach MIR as ordinary functions with bodies and the pass
+    // works out the answer itself — including that each hands its vector back
+    // *inside* a `Vec<T> or IoError`, which a line here can't say. Listing
+    // them overrode that with "a bare Vec" and the caller freed the wrapper as
+    // one: `fs.read_lines(p) catch _ => Vec.new()` tripped the borrow guard.
+    //
+    // `chars()` yields scalars and `graphemes()` copies each cluster into a
+    // fresh string. Neither points into the source — unlike the splitters
+    // below, which look identical from here and are not.
+    ("string_chars", 0, 0, "Vec_free"),
+    ("string_graphemes", 0, 0, "Vec_free"),
     // The three the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single
