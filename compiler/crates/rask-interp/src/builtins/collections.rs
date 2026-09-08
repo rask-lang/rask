@@ -137,6 +137,42 @@ impl Interpreter {
             }
             "is_bounded" => Ok(Value::Bool(v.lock().unwrap().bound.is_some())),
             "is_full" => Ok(Value::Bool(v.lock().unwrap().is_full())),
+            // The allocation, in elements — the same unit as `len()`, and a
+            // different question from `capacity()` above, which is the bound.
+            "allocated" => Ok(Value::int(v.lock().unwrap().items.capacity() as i64)),
+            "reserve" => {
+                let additional = self.expect_int(&args, 0)? as usize;
+                let mut guard = v.lock().unwrap();
+                let needed = guard.items.len() + additional;
+                if let Some(bound) = guard.bound {
+                    if needed > bound {
+                        return Err(RuntimeError::Panic(format!(
+                            "Vec.reserve({}) exceeds the capacity bound of {}",
+                            additional, bound
+                        )));
+                    }
+                }
+                guard.items.reserve(additional);
+                Ok(Value::Unit)
+            }
+            // A bounded vector is pre-allocated at its bound (CP3) and keeps
+            // its allocation: shrinking one would make a later push reallocate
+            // past its own promise.
+            "shrink_to_fit" => {
+                let mut guard = v.lock().unwrap();
+                if guard.bound.is_none() {
+                    guard.items.shrink_to_fit();
+                }
+                Ok(Value::Unit)
+            }
+            "shrink_to" => {
+                let min_capacity = self.expect_int(&args, 0)? as usize;
+                let mut guard = v.lock().unwrap();
+                if guard.bound.is_none() {
+                    guard.items.shrink_to(min_capacity);
+                }
+                Ok(Value::Unit)
+            }
             "pop" => {
                 let result = v.lock().unwrap().pop();
                 match result {

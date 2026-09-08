@@ -272,6 +272,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("Vec_capacity", "rask_vec_bound", &[types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("Vec_remaining", "rask_vec_remaining", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_is_bounded", "rask_vec_is_bounded", &[types::I64], Some(types::I64), false),
+        // `allocated()` is the room the buffer has, in elements — the same unit
+        // as `len()`. `capacity()` above answers a different question (the
+        // bound), which is why both exist.
+        StdlibEntry::simple("Vec_allocated", "rask_vec_allocated", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_reserve", "rask_vec_reserve", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Vec_shrink_to_fit", "rask_vec_shrink_to_fit", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_shrink_to", "rask_vec_shrink_to", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
         // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
         // with_capacity. The difference is the bound it sets.
@@ -1885,7 +1892,6 @@ mod tests {
     const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
     "FieldInfo.get",
     "FieldInfo.has",
-    "Map.capacity",
     "Map.modify",
     "Map.modify_with_default",
     "Map.read",

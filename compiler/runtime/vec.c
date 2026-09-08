@@ -305,7 +305,47 @@ void rask_vec_clear(RaskVec *v) {
 
 int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
     if (!v) return -1;
-    return vec_grow(v, v->len + additional);
+    if (additional < 0) rask_panic("Vec.reserve needs a non-negative count");
+    int64_t needed = rask_safe_add(v->len, additional);
+    if (v->bound >= 0 && needed > v->bound) {
+        rask_panic_fmt("Vec.reserve(%lld) exceeds the capacity bound of %lld",
+                       (long long)additional, (long long)v->bound);
+    }
+    return vec_grow(v, needed);
+}
+
+// How many elements the buffer has room for. Same unit as `len()` — bytes would
+// make the pair read wrong.
+int64_t rask_vec_allocated(const RaskVec *v) {
+    return v ? v->cap : 0;
+}
+
+// Give back everything past `min_cap` elements, keeping at least `len`. A
+// bounded vector is pre-allocated at its bound (CP3) and stays that way:
+// shrinking one would make a later push reallocate past its own promise.
+static void vec_shrink(RaskVec *v, int64_t min_cap) {
+    if (!v || v->bound >= 0) return;
+    vec_check_no_borrows(v, "shrink");
+    int64_t want = v->len > min_cap ? v->len : min_cap;
+    if (want >= v->cap) return;
+    if (want == 0) {
+        if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+        v->data = NULL;
+        v->cap = 0;
+        return;
+    }
+    char *new_data = (char *)rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size),
+                                          rask_safe_mul(want, v->elem_size));
+    v->data = new_data;
+    v->cap = want;
+}
+
+void rask_vec_shrink_to_fit(RaskVec *v) {
+    vec_shrink(v, 0);
+}
+
+void rask_vec_shrink_to(RaskVec *v, int64_t min_capacity) {
+    vec_shrink(v, min_capacity < 0 ? 0 : min_capacity);
 }
 
 int64_t rask_vec_is_empty(const RaskVec *v) {

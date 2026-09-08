@@ -182,18 +182,24 @@ fn calling_an_unimplemented_stdlib_stub_fails_at_the_call() {
     // Most stdlib stubs have empty bodies and are implemented natively, so an
     // empty body says nothing. The ones with nothing behind them on either
     // backend are marked `@unimplemented`, and calling one is an error where
-    // the call is — not `Function not found: Vec_reserve` out of codegen, and
-    // not a runtime error part-way through a run.
+    // the call is — not `Function not found: Vec_remove_unordered` out of
+    // codegen, and not a runtime error part-way through a run.
+    //
+    // The example is whichever stub is still unbuilt; it used to be
+    // `Vec.reserve`, which now has a body (#912). Swap it when this one lands
+    // rather than deleting the test — the rule is about the marker, not the
+    // method.
     let path = tmp_rk(r#"
         func main() {
             mut v = Vec.from([1, 2, 3])
-            v.reserve(100)
+            let gone = v.remove_unordered(0)
+            println("{gone}")
         }
     "#);
     let out = check_file(path.to_str().unwrap(), &default_config());
     let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("Vec.reserve") && m.contains("not implemented")),
+        msgs.iter().any(|m| m.contains("Vec.remove_unordered") && m.contains("not implemented")),
         "expected an unimplemented-stub error naming the method, got {msgs:?}",
     );
     let _ = std::fs::remove_file(&path);

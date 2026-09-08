@@ -41,8 +41,10 @@ extend Vec<T> {
     @native
     public func remaining(self) -> Option<usize> {}
 
-    /// Total bytes allocated.
-    @unimplemented
+    /// How many elements the allocation has room for — the same unit as
+    /// `len()`, which is why this isn't in bytes. `capacity()` is a different
+    /// question: it answers the *bound*, and an unbounded vector has none.
+    @native("rask_vec_allocated")
     public func allocated(self) -> usize {}
 
     /// Push a value onto the end. Panics if bounded and full, or on OOM.
@@ -87,22 +89,29 @@ extend Vec<T> {
     @unimplemented
     public func remove_unordered(mutate self, index: i64) -> T {}
 
-    /// Reserve space for at least `additional` more elements. Panics on OOM.
-    @unimplemented
+    /// Reserve space for at least `additional` more elements. Panics on OOM,
+    /// and on a request past a bounded vector's bound.
+    @native("rask_vec_reserve")
     public func reserve(mutate self, additional: usize) {}
 
     /// Reserve space for at least `additional` more elements. Reports why
     /// instead of panicking when the room isn't there.
-    @unimplemented
-    public func try_reserve(mutate self, additional: usize) -> void or ReserveError {}
+    ///
+    /// Only a bounded vector can refuse: the allocator panics on OOM, so
+    /// `ReserveError.NoMemory` is not reachable from here.
+    public func try_reserve(mutate self, additional: usize) -> void or ReserveError {
+        if self.remaining()? as room {
+            if additional > room {
+                return ReserveError.Full
+            }
+        }
+        self.reserve(additional)
+        return
+    }
 
     /// Get element at index (borrows).
     @native("rask_vec_get")
     public func get(self, index: i64) -> Option<T> {}
-
-    /// Get a clone of element at index.
-    @unimplemented
-    public func get_clone(self, index: i64) -> Option<T> {}
 
     /// Get the first element.
     @native("rask_vec_first")
@@ -155,12 +164,37 @@ extend Vec<T> {
 
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
-    @unimplemented
-    public func remove_where(mutate self, f: func(T) -> bool) -> usize {}
+    ///
+    /// Order-preserving, so a removal shifts what follows it: O(n·m) for m
+    /// removals. `take_where` is this plus the elements.
+    public func remove_where(mutate self, f: func(T) -> bool) -> usize {
+        mut dropped: usize = 0
+        mut i: usize = 0
+        while i < self.len() {
+            if f(self[i]) {
+                self.remove(i)
+                dropped = dropped + 1
+            } else {
+                i = i + 1
+            }
+        }
+        return dropped
+    }
 
-    /// Remove and return elements where f returns true.
-    @unimplemented
-    public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {}
+    /// Remove and return elements where f returns true, in the order they
+    /// were in.
+    public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {
+        mut taken: Vec<T> = Vec.new()
+        mut i: usize = 0
+        while i < self.len() {
+            if f(self[i]) {
+                taken.push(self.remove(i))
+            } else {
+                i = i + 1
+            }
+        }
+        return taken
+    }
 
     /// True if the vector contains the given value.
     @native("rask_vec_contains")
@@ -294,12 +328,16 @@ extend Vec<T> {
     @native("rask_vec_set")
     public func set(mutate self, index: i64, take value: T) {}
 
-    /// Shrink allocation to fit current length.
-    @unimplemented
+    /// Give back every element of room past the current length.
+    ///
+    /// A bounded vector keeps its allocation: CP3 pre-allocates at the bound,
+    /// and shrinking one would make a later push reallocate past its promise.
+    @native("rask_vec_shrink_to_fit")
     public func shrink_to_fit(mutate self) {}
 
-    /// Shrink allocation to at least min_capacity.
-    @unimplemented
+    /// Shrink the allocation to `min_capacity` elements, or to the length if
+    /// that is larger. A bounded vector keeps its allocation, as above.
+    @native("rask_vec_shrink_to")
     public func shrink_to(mutate self, min_capacity: usize) {}
 
     /// Construct an element in place via closure. Panics on alloc failure.
@@ -318,6 +356,24 @@ extend Vec<T> {
 
     /// Freeze into a compile-time array.
     public comptime func freeze(self) -> Vec<T> {}
+}
+
+// A copy out, for an element too wide to hand back by borrow. `get` lends the
+// element for the expression; past the 16-byte threshold that isn't enough, and
+// this is the spelling that says the copy out loud (`mem.ownership`).
+//
+// Its own block because a `where` clause covers the whole one (type.generics/CC3).
+extend Vec<T> where T: Cloneable {
+    /// A clone of the element at `index`, or `none` when there isn't one.
+    public func get_clone(self, index: i64) -> Option<T> {
+        if index < 0 {
+            return none
+        }
+        if index >= self.len() {
+            return none
+        }
+        return self[index].clone()
+    }
 }
 
 // --- Growth errors ---
@@ -382,23 +438,9 @@ extend Map<K, V> {
     @native("rask_map_is_empty")
     public func is_empty(self) -> bool {}
 
-    /// Maximum capacity, if bounded.
-    @native
-    public func capacity(self) -> Option<usize> {}
-
-    /// True if this map has a fixed capacity.
-    @unimplemented
-    public func is_bounded(self) -> bool {}
-
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert")
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
-
-    /// Insert a key-value pair, handing the value back instead of panicking
-    /// when the map is at its bound or the allocator refuses. The success side
-    /// is the displaced value, as with `insert`.
-    @unimplemented
-    public func try_insert(mutate self, key: K, value: V) -> Option<V> or GrowError<V> {}
 
     /// Remove a key and return its value.
     @native("rask_map_take")
@@ -415,10 +457,6 @@ extend Map<K, V> {
     /// Get value for key (borrows).
     @native("rask_map_get")
     public func get(self, key: K) -> Option<V> {}
-
-    /// Get a clone of value for key.
-    @unimplemented
-    public func get_clone(self, key: K) -> Option<V> {}
 
     /// True if the map contains this key.
     @native("rask_map_contains")
@@ -463,6 +501,18 @@ extend Map<K, V> {
 
     /// Freeze into a compile-time map.
     public comptime func freeze(self) -> Map<K, V> {}
+}
+
+// The copying read, for the same reason `Vec.get_clone` exists: `get` lends the
+// value for the expression, and past the 16-byte threshold that isn't enough.
+extend Map<K, V> where V: Cloneable {
+    /// A clone of the value under `key`, or `none` when the key is absent.
+    public func get_clone(self, key: K) -> Option<V> {
+        if self.get(key)? as v {
+            return v.clone()
+        }
+        return none
+    }
 }
 
 /// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
