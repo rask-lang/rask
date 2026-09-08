@@ -2946,8 +2946,17 @@ impl<'a> FunctionBuilder<'a> {
             // capture layout.
             let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
+            // The environment's drop glue, when this closure owns a container
+            // it captured. `container_drop` generates the function and names it
+            // after the closure; the name is the whole agreement between the
+            // two sides (`ENV_DROP_SUFFIX`).
+            let glue_name = format!("{func_name}{}", rask_mir::ENV_DROP_SUFFIX);
+            let env_drop = match ctx.func_refs.get(glue_name.as_str()) {
+                Some(glue) => builder.ins().func_addr(types::I64, *glue),
+                None => builder.ins().iconst(types::I64, 0),
+            };
             crate::closures::allocate_closure_heap(
-                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop,
             )?
         } else {
             // Non-escaping closure: stack-allocate

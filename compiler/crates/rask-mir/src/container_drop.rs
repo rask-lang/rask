@@ -39,7 +39,7 @@ fn free_for(ctor: &str) -> Option<&'static str> {
     crate::elem_strs::free_fn(ctor)
 }
 
-pub fn insert_container_drops(fns: &mut [MirFunction]) {
+pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     let handing_over = functions_that_hand_a_container_back(fns);
     let kept = params_a_callee_keeps(fns);
     // A snapshot, because tracing a container through a capture cell has to
@@ -48,6 +48,160 @@ pub fn insert_container_drops(fns: &mut [MirFunction]) {
     let snapshot: Vec<MirFunction> = fns.to_vec();
     for func in fns.iter_mut() {
         insert_for_function(func, &snapshot, &handing_over, &kept);
+    }
+    let glue = env_drop_glue(fns, &handing_over);
+    fns.extend(glue);
+}
+
+/// The suffix a closure's environment-drop function carries.
+///
+/// Codegen looks the name up rather than being told: a closure block is freed
+/// by whichever frame ends up holding it, which is usually not the one that
+/// built it, so the block has to carry how to release what it owns. The name is
+/// the only thing the two sides need to agree on.
+pub const ENV_DROP_SUFFIX: &str = "__env_drop";
+
+/// One function per closure that *owns* a container it captured, freeing what
+/// the environment holds.
+///
+/// A heap closure with a by-value capture owns that value — `own` moves it in,
+/// and `find_escaping` below keeps the frame from freeing it as well. Nothing
+/// then released it: `closure_drop` gave back the block and left the vector
+/// inside it, which is the leak #1045 closed around ("the block would need drop
+/// glue next to its size"). Every adapter chain captures its source, so this is
+/// most of what the sequence files leak.
+///
+/// A *by-ref* capture is not this: the slot holds an address into the frame that
+/// built the closure, and that frame still owns the value.
+fn env_drop_glue(
+    fns: &[MirFunction],
+    handing_over: &HashMap<String, HandBack>,
+) -> Vec<MirFunction> {
+    // How many escaping closures capture each container by value, per frame.
+    // Two means the container has two candidate owners and the answer is to
+    // leave it alone: two glues freeing one vector is a use-after-free, where
+    // none is a leak. `v.map(f)` twice off one vector is exactly that shape —
+    // the receiver is *borrowed* (`mem.parameters/PM1`), so the frame owns it
+    // and neither chain may release it.
+    let mut capturers: HashMap<(String, LocalId), usize> = HashMap::new();
+    for func in fns {
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else {
+                    continue;
+                };
+                for c in captures.iter().filter(|c| !c.by_ref) {
+                    *capturers.entry((func.name.clone(), c.local_id)).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    // One glue per closure *function*, because the block header holds a
+    // function address and the name is all codegen has to find it by. So every
+    // site that builds this closure has to agree about what its environment
+    // owns — inlining copies a create site into each caller, and a site that
+    // owns nothing must not get a glue that frees something.
+    let mut answers: HashMap<String, Vec<Vec<(u32, &'static str)>>> = HashMap::new();
+    let mut order: Vec<(String, Option<String>)> = Vec::new();
+    for func in fns {
+        let fresh = collect_fresh_containers_with(func, fns, handing_over);
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::ClosureCreate { func_name, captures, heap: true, .. } = &stmt.kind
+                else {
+                    continue;
+                };
+                let mut owned: Vec<(u32, &'static str)> = captures
+                    .iter()
+                    .filter(|c| !c.by_ref)
+                    .filter(|c| {
+                        capturers
+                            .get(&(func.name.clone(), c.local_id))
+                            .copied()
+                            .unwrap_or(0)
+                            == 1
+                    })
+                    .filter_map(|c| fresh.get(&c.local_id).map(|free| (c.offset, *free)))
+                    .collect();
+                owned.sort();
+                if !answers.contains_key(func_name) {
+                    order.push((func_name.clone(), func.source_file.clone()));
+                }
+                answers.entry(func_name.clone()).or_default().push(owned);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (name, source_file) in order {
+        let sites = &answers[&name];
+        let first = &sites[0];
+        if first.is_empty() || sites.iter().any(|s| s != first) {
+            continue;
+        }
+        out.push(build_env_drop(&name, first, source_file));
+    }
+    out
+}
+
+/// `<closure>__env_drop(env: ptr)` — load each owned container out of the
+/// environment and free it.
+///
+/// `LoadCapture` is the same statement the closure's own body reads a capture
+/// with, so the offsets can't drift from how they were written.
+fn build_env_drop(
+    closure_name: &str,
+    owned: &[(u32, &'static str)],
+    source_file: Option<String>,
+) -> MirFunction {
+    let env = LocalId(0);
+    let mut locals = vec![crate::MirLocal {
+        id: env,
+        name: Some("__env".to_string()),
+        ty: MirType::Ptr,
+        is_param: true,
+    }];
+    let mut statements = Vec::new();
+    for (i, (offset, free)) in owned.iter().enumerate() {
+        let held = LocalId(i as u32 + 1);
+        locals.push(crate::MirLocal {
+            id: held,
+            name: None,
+            ty: MirType::Ptr,
+            is_param: false,
+        });
+        statements.push(MirStmt::dummy(MirStmtKind::LoadCapture {
+            dst: held,
+            env_ptr: env,
+            offset: *offset,
+            access: crate::CaptureAccess::Value,
+        }));
+        statements.push(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(free.to_string()),
+            args: vec![MirOperand::Local(held)],
+        }));
+    }
+    let entry = BlockId(0);
+    MirFunction {
+        name: format!("{closure_name}{ENV_DROP_SUFFIX}"),
+        params: vec![crate::MirLocal {
+            id: env,
+            name: Some("__env".to_string()),
+            ty: MirType::Ptr,
+            is_param: true,
+        }],
+        ret_ty: MirType::Void,
+        locals,
+        blocks: vec![MirBlock {
+            id: entry,
+            statements,
+            terminator: crate::MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+        }],
+        entry_block: entry,
+        is_extern_c: false,
+        source_file,
     }
 }
 

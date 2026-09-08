@@ -211,6 +211,9 @@ void rask_leak_check(void) {
         fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
                 (long long)live_strings, live_strings == 1 ? "is" : "are");
     }
+    // `RASK_LEAK_TRACE=1` adds where they came from; without it, a hint that
+    // the question is answerable.
+    rask_leak_trace_report();
     fflush(stderr);
     _exit(97);
 }

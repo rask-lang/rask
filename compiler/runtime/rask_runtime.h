@@ -36,8 +36,14 @@ void  rask_alloc_stats(RaskAllocStats *out);
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
-void *rask_closure_alloc(int64_t block_size);
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *));
 void  rask_closure_free(void *ptr);
+
+// `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
+// the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says
+// which runtime function is holding them.
+void  rask_leak_trace_init(void);
+void  rask_leak_trace_report(void);
 
 // Overflow-checked arithmetic for allocation sizes.
 _Noreturn void rask_panic(const char *msg);

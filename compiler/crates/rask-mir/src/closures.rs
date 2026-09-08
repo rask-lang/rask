@@ -30,7 +30,7 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 ///
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns);
+    let callee_escapes = build_callee_escape_map(fns, false);
 
     for func in fns.iter_mut() {
         decide_allocation(func, &callee_escapes);
@@ -54,7 +54,7 @@ pub fn optimize_all_closures(fns: &mut [MirFunction]) {
 /// that ends up holding the thing, so it can only be asked once inlining has
 /// settled which frame that is.
 pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns);
+    let callee_escapes = build_callee_escape_map(fns, true);
 
     // A function that hands a heap closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
@@ -188,11 +188,24 @@ fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
 /// For each function, checks whether each parameter escapes (appears in
 /// Call args, Store, or Return within the function body). A non-escaping
 /// parameter means the function only uses it locally (e.g., via ClosureCall).
-fn build_callee_escape_map(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+/// Which parameters each function gives away, by name.
+///
+/// `heap_captures_only` picks how strictly a captured parameter counts. While
+/// allocation is still being decided there is no answer to "does the closure
+/// that captured it escape", so every capture counts (a leak beats a
+/// use-after-free). Once the decisions are made, only a *heap* capture takes
+/// the parameter anywhere: a stack environment dies with the frame, so the
+/// caller is still the owner. `seq.reduce(|a, b| a + b)` is that case — the
+/// `for x in self` desugar captures `f` into a scope-limited yield closure, so
+/// every closure passed to a terminal read as given away and nobody freed it.
+fn build_callee_escape_map(
+    fns: &[MirFunction],
+    heap_captures_only: bool,
+) -> HashMap<String, Vec<bool>> {
     let mut map = HashMap::new();
     for func in fns {
         let escapes: Vec<bool> = func.params.iter()
-            .map(|p| param_escapes_from(func, p.id))
+            .map(|p| param_escapes_from(func, p.id, heap_captures_only))
             .collect();
         map.insert(func.name.clone(), escapes);
     }
@@ -203,7 +216,7 @@ fn build_callee_escape_map(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
 ///
 /// A parameter "escapes" if it appears in a Call arg, Store value, or Return.
 /// If it only appears in ClosureCall position, the function merely borrows it.
-fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
+fn param_escapes_from(func: &MirFunction, param_id: LocalId, heap_captures_only: bool) -> bool {
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -219,8 +232,10 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
                 // is decided, so there is no "does the closure escape" to ask
                 // yet. Erring toward escaping costs a leak; erring the other way
                 // costs a use-after-free.
-                MirStmtKind::ClosureCreate { captures, .. } => {
-                    if captures.iter().any(|c| c.local_id == param_id) {
+                MirStmtKind::ClosureCreate { captures, heap, .. } => {
+                    if (*heap || !heap_captures_only)
+                        && captures.iter().any(|c| c.local_id == param_id)
+                    {
                         return true;
                     }
                 }

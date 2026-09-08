@@ -2258,6 +2258,8 @@ int main(int argc, char **argv) {
     if (leak_env && leak_env[0] == '1') {
         rask_leak_check_enabled = 1;
     }
+    // Before the first allocation, or the table starts with holes in it.
+    rask_leak_trace_init();
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();
