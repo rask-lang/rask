@@ -7594,6 +7594,17 @@ impl<'a> FunctionBuilder<'a> {
             builder.switch_to_block(hit);
             builder.seal_block(hit);
             for (field_offset, field_ty) in fields {
+                // A variant's own container field, the same as a struct's. Only
+                // `release_strings_ty`'s *nested struct* arm looked for one, so
+                // `enum Shape { Many(Vec<i64>) }` released nothing and every
+                // vector inside one leaked — which is most of what a decoded
+                // `JsonValue` holds.
+                if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                    Self::emit_container_release(
+                        builder, base, offset + field_offset, free_fn, ctx,
+                    )?;
+                    continue;
+                }
                 Self::release_strings_ty(
                     builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
                 )?;

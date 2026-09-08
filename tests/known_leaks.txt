@@ -17,7 +17,8 @@
 # 1345 once a container inside a container element was freed with the element
 # (seven more, and `t_week_nested_data.rk` halved), and 1319 once a call through
 # a closure could say which bodies it reaches (`t_vec_flat_map_sort_by_key.rk`
-# 33 → 11).
+# 33 → 11), and 1311 once an enum variant's own container field was released
+# with the enum.
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -138,7 +139,7 @@ t_fs_open_failure.rk  # 2 allocations
 t_generic_optional_field.rk  # 6 allocations
 t_index_through_field.rk  # 10 allocations
 t_io_buffer.rk  # 42 allocations
-t_json_decode.rk  # 26 allocations
+t_json_decode.rk  # 22 allocations
 t_json_encode_shapes.rk  # 14 allocations
 t_link_in_collection.rk  # 2 allocations
 t_local_box_payload.rk  # 5 allocations
@@ -192,7 +193,7 @@ t_vec_flat_map_sort_by_key.rk  # 11 allocations — lazy collection adapters, #1
 t_vec_position_reduce.rk  # 6 allocations
 t_week_closures.rk  # 17 allocations
 t_week_imports.rk  # 2 allocations
-t_week_nested_data.rk  # 6 allocations
+t_week_nested_data.rk  # 2 allocations
 t_week_opaque_struct_fields.rk  # 1 allocation
 t_week_parse_format.rk  # 2 allocations
 t_week_ranges.rk  # 8 allocations
