@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The container a call *through a closure* hands back (#943).
+//
+// The drop pass decides "this call gave me a container I now own" by looking
+// the callee up by name. A call through a closure has no name, so the answer
+// was always "somebody else's" and the container leaked — one `Vec` per element
+// out of `flat_map`, since every sequence adapter reaches its callback through
+// a captured closure.
+//
+// Freeing it unconditionally is a use-after-free, and that is what makes this
+// an analysis rather than a one-liner: a closure doesn't have to have allocated
+// what it returns. So the question asked is which closure bodies the call can
+// reach, and the by-name machinery answers the rest. One body handing back
+// somebody else's container is the whole set's answer.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is the other
+// half — that nothing gets freed twice. Run it under `RASK_POISON_STACK=1` as
+// well: a free of a const's vector reads back as zeros rather than crashing.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+const SHARED: Vec<i64> = [7, 8, 9]
+
+// The closure allocates: this is the one that was leaking, once per element.
+func doubled(v: Vec<i64>) -> Vec<i64> {
+    return v.flat_map(|x| {
+        mut pair: Vec<i64> = []
+        pair.push(x)
+        pair.push(x * 2)
+        return pair
+    }).to_vec()
+}
+
+// The closure hands back a const's vector, which the frame must not free —
+// `SHARED` has to still be readable after, and after every element.
+func spread(keys: Vec<i64>) -> Vec<i64> {
+    return keys.flat_map(|k| SHARED).to_vec()
+}
+
+// Both closures reach one adapter body, so the set of possible callees has one
+// that allocates and one that doesn't. Rejecting the set as a whole is what
+// keeps `SHARED` alive here.
+func either(keys: Vec<i64>, own_it: bool) -> Vec<i64> {
+    if own_it {
+        return keys.flat_map(|k| {
+            mut v: Vec<i64> = []
+            v.push(k)
+            return v
+        }).to_vec()
+    }
+    return keys.flat_map(|k| SHARED).to_vec()
+}
+
+test "mem.ownership — a closure that builds its own Vec per element" {
+    let v: Vec<i64> = [1, 2, 3]
+    let out = doubled(v)
+    assert out.len() == 6
+    assert out[0] == 1
+    assert out[1] == 2
+    assert out[4] == 3
+    assert out[5] == 6
+}
+
+test "mem.ownership — a closure that hands back a const's Vec" {
+    let keys: Vec<i64> = [1, 2]
+    let out = spread(keys)
+    assert out.len() == 6
+    assert out[0] == 7
+    assert out[5] == 9
+    // The whole point: freeing the closure's result would have freed this.
+    assert SHARED.len() == 3
+    assert SHARED[0] == 7
+    assert SHARED[2] == 9
+}
+
+test "mem.ownership — one adapter body, one owning closure and one borrowing" {
+    let keys: Vec<i64> = [1, 2]
+    let owned = either(keys, true)
+    assert owned.len() == 2
+    assert owned[1] == 2
+
+    let borrowed = either(keys, false)
+    assert borrowed.len() == 6
+    assert borrowed[0] == 7
+
+    assert SHARED[1] == 8
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — the same chains in a loop" {
+    mut total = 0
+    for i in 1..5 {
+        let v: Vec<i64> = [i]
+        total = total + doubled(v).len().clamp<i64>()
+    }
+    assert total == 8
+
+    mut shared_total = 0
+    for i in 1..4 {
+        let keys: Vec<i64> = [i]
+        shared_total = shared_total + spread(keys)[0]
+    }
+    assert shared_total == 21
+    assert SHARED[2] == 9
+}

@@ -12,6 +12,7 @@ mod builder;
 pub mod dispatch_trace;
 pub mod elem_strs;
 pub mod fallback;
+mod closure_targets;
 mod closures;
 mod display;
 mod function;

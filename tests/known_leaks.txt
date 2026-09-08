@@ -15,7 +15,9 @@
 # 1411 once a group whose death falls on an edge rather than in a block got its
 # release there (eight more, `t_iterate_field_collection.rk` among them), and
 # 1345 once a container inside a container element was freed with the element
-# (seven more, and `t_week_nested_data.rk` halved).
+# (seven more, and `t_week_nested_data.rk` halved), and 1319 once a call through
+# a closure could say which bodies it reaches (`t_vec_flat_map_sort_by_key.rk`
+# 33 → 11).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -82,7 +84,7 @@ t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, 
 t34_vec_as_sequence.rk  # 13 allocations — the source closure captures self, #1045
 t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
 t36_cross_task_ownership.rk  # 16 allocations
-t38_lazy_collection_adapters.rk  # 24 allocations — a collection's adapters capture the collection, #1035
+t38_lazy_collection_adapters.rk  # 20 allocations — a collection's adapters capture the collection, #1035
 t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 16 allocations — sequence adapter closures, #1045
 t40_stdlib_renames.rk  # 8 allocations
@@ -100,6 +102,12 @@ t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is t
                         # every other test in it is clean.
 t_any_error_boxing.rk  # 5 allocations
 t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
+t_closure_call_container.rk  # 42 allocations — the source vector each
+                            # chain captures (#1035's closure half), and
+                            # the `SHARED` paths on purpose: one closure
+                            # handing back a const's vector rejects the
+                            # whole callee set, which is the point of the
+                            # third test
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
                              # small enough to inline, so there is no call left
                              # to read a handoff off (#1117's other half)
@@ -180,7 +188,7 @@ t_trait_object_in_field_container.rk  # 7 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 4 allocations
-t_vec_flat_map_sort_by_key.rk  # 33 allocations — lazy collection adapters, #1045
+t_vec_flat_map_sort_by_key.rk  # 11 allocations — lazy collection adapters, #1045
 t_vec_position_reduce.rk  # 6 allocations
 t_week_closures.rk  # 17 allocations
 t_week_imports.rk  # 2 allocations

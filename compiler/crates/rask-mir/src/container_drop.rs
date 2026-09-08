@@ -40,16 +40,20 @@ fn free_for(ctor: &str) -> Option<&'static str> {
 }
 
 pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
-    let handing_over = functions_that_hand_a_container_back(fns);
+    // Which bodies a call through a closure can reach, so the by-name answer
+    // below covers those calls too (#943). Built first: it reads only the MIR,
+    // and the "hands a container back" fixed point needs it.
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let kept = params_a_callee_keeps(fns);
     // A snapshot, because tracing a container through a capture cell has to
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
     for func in fns.iter_mut() {
-        insert_for_function(func, &snapshot, &handing_over, &kept);
+        insert_for_function(func, &snapshot, &handing_over, &kept, &targets);
     }
-    let glue = env_drop_glue(fns, &handing_over);
+    let glue = env_drop_glue(fns, &handing_over, &targets);
     fns.extend(glue);
 }
 
@@ -76,6 +80,7 @@ pub const ENV_DROP_SUFFIX: &str = "__env_drop";
 fn env_drop_glue(
     fns: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> Vec<MirFunction> {
     // How many escaping closures capture each container by value, per frame.
     // Two means the container has two candidate owners and the answer is to
@@ -105,7 +110,7 @@ fn env_drop_glue(
     let mut answers: HashMap<String, Vec<Vec<(u32, &'static str)>>> = HashMap::new();
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
-        let fresh = collect_fresh_containers_with(func, fns, handing_over);
+        let fresh = collect_fresh_containers_with(func, fns, handing_over, targets);
         for block in &func.blocks {
             for stmt in &block.statements {
                 let MirStmtKind::ClosureCreate { func_name, captures, heap: true, .. } = &stmt.kind
@@ -366,7 +371,10 @@ pub(crate) fn call_keeps_argument(
 /// this pass can see count: a container from the runtime (`split`, `map.keys`)
 /// still has no owner named here, because reading an element out of one
 /// doesn't take a reference — #1035.
-fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, HandBack> {
+fn functions_that_hand_a_container_back(
+    fns: &[MirFunction],
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashMap<String, HandBack> {
     let mut handing: HashMap<String, HandBack> = HashMap::new();
     loop {
         let mut grew = false;
@@ -374,7 +382,7 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
             if handing.contains_key(&func.name) {
                 continue;
             }
-            let fresh = collect_fresh_containers_with(func, fns, &handing);
+            let fresh = collect_fresh_containers_with(func, fns, &handing, targets);
             if fresh.is_empty() {
                 continue;
             }
@@ -494,8 +502,9 @@ fn insert_for_function(
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     kept: &HashMap<String, Vec<bool>>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) {
-    let fresh = collect_fresh_containers_with(func, all, handing_over);
+    let fresh = collect_fresh_containers_with(func, all, handing_over, targets);
     if fresh.is_empty() {
         return;
     }
@@ -613,6 +622,7 @@ fn collect_fresh_containers_with(
     func: &MirFunction,
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
     // Calls whose result is a wrapper holding the container, rather than the
@@ -632,6 +642,34 @@ fn collect_fresh_containers_with(
                         unwrap_for.insert(*dst, back.free);
                     } else {
                         fresh.insert(*dst, back.free);
+                    }
+                }
+            }
+            // A call through a closure, once every body it can reach agrees it
+            // hands one back. `flat_map`'s closure builds a `Vec` per element,
+            // and nothing owned it — the name-keyed answer above has no name to
+            // look up (#943). One body that hands back somebody else's is the
+            // whole set's answer, which is what keeps `|k| lookup()` returning
+            // a const's vector from being freed per key.
+            if let MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } = &stmt.kind {
+                if let Some(bodies) = targets.known(&func.name, *closure) {
+                    let mut agreed: Option<&'static str> = None;
+                    let all_hand_back = bodies.iter().all(|body| {
+                        match handing_over.get(body) {
+                            // A wrapper needs the unwrap step below, which is
+                            // keyed on the call's own destination — one closure
+                            // returning a bare container and another a wrapped
+                            // one have no single answer, so neither gets one.
+                            Some(back) if !back.wrapped => {
+                                let same = agreed.is_none_or(|f| f == back.free);
+                                agreed = Some(back.free);
+                                same
+                            }
+                            _ => false,
+                        }
+                    });
+                    if let (true, Some(free)) = (all_hand_back, agreed) {
+                        fresh.insert(*dst, free);
                     }
                 }
             }
@@ -686,7 +724,10 @@ fn collect_fresh_containers_with(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Call { dst: Some(dst), .. } => Some(*dst),
+            // A call through a closure counts the same way: its destination is
+            // the definition, not a copy of some other name (#943).
+            MirStmtKind::Call { dst: Some(dst), .. }
+            | MirStmtKind::ClosureCall { dst: Some(dst), .. } => Some(*dst),
             _ => None,
         })
         .filter(|id| fresh.contains_key(id))
