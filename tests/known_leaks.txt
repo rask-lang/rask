@@ -7,10 +7,11 @@
 #
 # The counts are re-measured when a leak fix lands. 2462 allocations across the
 # suite became 2080 with the closure work (64 files improved,
-# `t27_own_closure_state.rk` off the list), and 1952 once a `Map` in a struct
-# field started being freed (four more files clean). `RASK_LEAK_TRACE=1` says
-# which runtime function is still holding what, which is how each cause was
-# found — `docs/leak-tracing.md` has the recipe.
+# `t27_own_closure_state.rk` off the list), 1952 once a `Map` in a struct field
+# started being freed (four more files clean), and 1641 once the vectors the OS
+# hands over became the caller's (`t41_os.rk` clean, `t_os_env.rk` 160 → 4).
+# `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
+# is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
 # Why this file went from empty to 180 lines in one commit: the gate decided by
 # grepping the output of `rask test` for the leak report, and `rask test` was
@@ -83,7 +84,6 @@ t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struc
 t40_forwarded_generic_method.rk  # 16 allocations — sequence adapter closures, #1045
 t40_stdlib_renames.rk  # 8 allocations
 t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
-t41_os.rk  # 152 allocations
 t42_flatten_shaped_header.rk  # 25 allocations — flatten's per-element inner sequences, #1045
 t54_strings.rk  # 8 allocations
 t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
@@ -151,7 +151,7 @@ t_month_io.rk  # 2 allocations
 t_month_json.rk  # 3 allocations
 t_month_panic_observed.rk  # 11 allocations
 t_month_resource_ensure.rk  # 10 allocations
-t_month_stdlib_modules.rk  # 14 allocations
+t_month_stdlib_modules.rk  # 11 allocations
 t_mutate_handle_field.rk  # 12 allocations
 t_mutex_payload_kinds.rk  # 12 allocations
 t_named_context_resolves_by_type.rk  # 2 allocations
@@ -159,7 +159,7 @@ t_nested_with_return.rk  # 12 allocations
 t_net_loopback.rk  # 7 allocations
 t_niche_handle_option.rk  # 10 allocations
 t_ordering_displayable.rk  # 2 allocations
-t_os_env.rk  # 160 allocations
+t_os_env.rk  # 4 allocations
 t_package_state.rk  # 6 allocations
 t_path_module.rk  # 8 allocations
 t_borrow_aliasing_rules.rk  # 2 allocations — Vec fields (#1035, #1047) plus
