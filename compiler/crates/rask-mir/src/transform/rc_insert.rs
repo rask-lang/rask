@@ -1044,7 +1044,7 @@ mod tests {
             is_extern_c: false,
             source_file: None,
         };
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -1092,7 +1092,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -1143,7 +1143,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -1212,7 +1212,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -1280,7 +1280,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -1313,7 +1313,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -1332,7 +1332,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -1352,7 +1352,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -1377,7 +1377,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -1423,7 +1423,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -1446,7 +1446,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f);
+        insert_rc_ops(&mut f, &HashMap::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
