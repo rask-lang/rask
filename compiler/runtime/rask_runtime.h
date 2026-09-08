@@ -1187,7 +1187,23 @@ int64_t rask_process_run(const RaskStr *program, const RaskVec *args, const Rask
                          const RaskStr *dir, int64_t stdin_mode, int64_t stdout_mode,
                          int64_t stderr_mode);
 void    rask_process_stdout(RaskStr *out);
-void    rask_process_stderr(RaskStr *out);
+void     rask_process_stderr(RaskStr *out);
+
+// std.os/C3–C4: a spawned child, reached through an opaque handle `Process`
+// carries as an i64. `spawn` answers a handle or a negative errno.
+int64_t  rask_process_spawn(const RaskStr *program, const RaskVec *args,
+                            const RaskVec *envs, const RaskStr *dir,
+                            int64_t stdin_mode, int64_t stdout_mode,
+                            int64_t stderr_mode);
+int64_t  rask_process_pid(int64_t handle);
+int64_t  rask_process_wait(int64_t handle);
+int64_t  rask_process_kill_and_wait(int64_t handle);
+int64_t  rask_process_poll(int64_t handle);
+int64_t  rask_process_write_stdin(int64_t handle, const RaskStr *data);
+void     rask_process_read_stdout(RaskStr *out, int64_t handle);
+void     rask_process_captured_stdout(RaskStr *out, int64_t handle);
+void     rask_process_captured_stderr(RaskStr *out, int64_t handle);
+void     rask_process_release(int64_t handle);
 
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.

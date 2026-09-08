@@ -188,6 +188,7 @@ t_string_rc_escapes.rk  # 7 allocations
 t_string_unicode.rk  # 5 allocations
 t_string_view.rk  # 2 allocations
 t_subprocess.rk  # 24 allocations
+t_subprocess_spawn.rk  # 28 allocations
 t_supertrait_dispatch.rk  # 2 allocations
 t_text_units.rk  # 9 allocations
 t_trait_object_in_field_container.rk  # 13 allocations

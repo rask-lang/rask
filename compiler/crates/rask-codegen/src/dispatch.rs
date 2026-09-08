@@ -1186,6 +1186,36 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `spawn` and the six methods on the handle it hands back (std.os/C3).
+        // The handle is an i64 the runtime hands out and `Process` carries; the
+        // three string readers take an out-parameter, the same convention
+        // `process_stdout` uses.
+        StdlibEntry::simple(
+            "os_process_spawn", "rask_process_spawn",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64), false,
+        ),
+        StdlibEntry::simple("os_process_pid", "rask_process_pid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_wait", "rask_process_wait", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_kill_and_wait", "rask_process_kill_and_wait", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_poll", "rask_process_poll", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_write_stdin", "rask_process_write_stdin", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "os_process_read_stdout", c_name: "rask_process_read_stdout",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_captured_stdout", c_name: "rask_process_captured_stdout",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_captured_stderr", c_name: "rask_process_captured_stderr",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("os_process_release", "rask_process_release", &[types::I64], None, false),
 
         // ── StringBuilder ───────────────────────────────────────────
         // cstring: the `const char*` half of the C surface (#949). The handle is

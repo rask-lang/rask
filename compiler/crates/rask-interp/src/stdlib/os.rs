@@ -217,9 +217,19 @@ impl Interpreter {
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            "process_run" | "process_stdout" | "process_stderr" => {
-                self.call_process_function(method, args)
-            }
+            "process_run"
+            | "process_stdout"
+            | "process_stderr"
+            | "process_spawn"
+            | "process_pid"
+            | "process_wait"
+            | "process_kill_and_wait"
+            | "process_poll"
+            | "process_write_stdin"
+            | "process_read_stdout"
+            | "process_captured_stdout"
+            | "process_captured_stderr"
+            | "process_release" => self.call_process_function(method, args),
 
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "os".to_string(),
@@ -300,6 +310,90 @@ impl Interpreter {
                 let err = PROCESS_CAPTURE.with(|c| c.borrow().1.clone());
                 Ok(Value::String(Arc::new(Mutex::new(err))))
             }
+            "process_spawn" => {
+                let program = self.expect_string(&args, 0)?;
+                let cmd_args = string_vec_arg(&args, 1);
+                let envs = string_vec_arg(&args, 2);
+                let dir = self.expect_string(&args, 3).unwrap_or_default();
+                let mode = |i: usize| match args.get(i) {
+                    Some(Value::Int(n, _)) => *n,
+                    _ => 1,
+                };
+
+                let mut cmd = std::process::Command::new(&program);
+                cmd.args(&cmd_args);
+                if !dir.is_empty() {
+                    cmd.current_dir(&dir);
+                }
+                for pair in envs.chunks(2) {
+                    if let [k, v] = pair {
+                        cmd.env(k, v);
+                    }
+                }
+                cmd.stdin(stdio_for(mode(4)));
+                cmd.stdout(stdio_for(mode(5)));
+                cmd.stderr(stdio_for(mode(6)));
+
+                match cmd.spawn() {
+                    Ok(child) => Ok(Value::int(SPAWNED.insert(child))),
+                    Err(e) => {
+                        let code = e.raw_os_error().unwrap_or(0);
+                        Ok(Value::int(if code > 0 { -(code as i64) } else { -1 }))
+                    }
+                }
+            }
+            "process_pid" => Ok(Value::int(SPAWNED.with_proc(
+                handle_arg(&args, 0),
+                -1,
+                |p| p.child.id() as i64,
+            ))),
+            "process_wait" => Ok(Value::int(SPAWNED.with_proc(
+                handle_arg(&args, 0),
+                -1,
+                |p| p.wait(),
+            ))),
+            "process_kill_and_wait" => Ok(Value::int(SPAWNED.with_proc(
+                handle_arg(&args, 0),
+                -1,
+                |p| {
+                    if p.status.is_none() {
+                        let _ = p.child.kill();
+                    }
+                    p.wait()
+                },
+            ))),
+            "process_poll" => Ok(Value::int(SPAWNED.with_proc(
+                handle_arg(&args, 0),
+                -1,
+                |p| p.poll(),
+            ))),
+            "process_write_stdin" => {
+                let data = self.expect_string(&args, 1)?;
+                Ok(Value::int(SPAWNED.with_proc(
+                    handle_arg(&args, 0),
+                    -1,
+                    |p| p.write_stdin(data.as_bytes()),
+                )))
+            }
+            "process_read_stdout" => {
+                let out = SPAWNED.with_proc(handle_arg(&args, 0), String::new(), |p| {
+                    p.drain_stdout();
+                    std::mem::take(&mut p.out)
+                });
+                Ok(Value::String(Arc::new(Mutex::new(out))))
+            }
+            "process_captured_stdout" => {
+                let out = SPAWNED.with_proc(handle_arg(&args, 0), String::new(), |p| p.out.clone());
+                Ok(Value::String(Arc::new(Mutex::new(out))))
+            }
+            "process_captured_stderr" => {
+                let err = SPAWNED.with_proc(handle_arg(&args, 0), String::new(), |p| p.err.clone());
+                Ok(Value::String(Arc::new(Mutex::new(err))))
+            }
+            "process_release" => {
+                SPAWNED.remove(handle_arg(&args, 0));
+                Ok(Value::Unit)
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "os".to_string(),
                 method: method.to_string(),
@@ -338,6 +432,167 @@ thread_local! {
     static PROCESS_CAPTURE: std::cell::RefCell<(String, String)> =
         const { std::cell::RefCell::new((String::new(), String::new())) };
 }
+
+/// The `Stdio` code `stdlib/os.rk` sends: 0 inherit, 1 piped, 2 null.
+#[cfg(not(target_arch = "wasm32"))]
+fn stdio_for(mode: i64) -> std::process::Stdio {
+    match mode {
+        0 => std::process::Stdio::inherit(),
+        2 => std::process::Stdio::null(),
+        _ => std::process::Stdio::piped(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_arg(args: &[Value], index: usize) -> i64 {
+    match args.get(index) {
+        Some(Value::Int(n, _)) => *n,
+        _ => 0,
+    }
+}
+
+/// A child `spawn` handed back. The native side keeps the same pieces in a
+/// `RaskProcess` and passes its address as the handle; here the handle is a
+/// key into `SPAWNED`, because a Rust `Child` is not an address a Rask `i64`
+/// may carry across a GC-less boundary and back.
+///
+/// `out`/`err` accumulate the same way the C `Captured` does: whatever has
+/// been drained so far, so `read_stdout` and `wait` can both take a turn.
+#[cfg(not(target_arch = "wasm32"))]
+struct SpawnedProcess {
+    child: std::process::Child,
+    out: String,
+    err: String,
+    /// The exit status once reaped. `Child::wait` is not idempotent about
+    /// stdin, so the second call must not repeat the work.
+    status: Option<i64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SpawnedProcess {
+    fn drain_stdout(&mut self) {
+        use std::io::Read;
+        if let Some(mut pipe) = self.child.stdout.take() {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            self.out.push_str(&String::from_utf8_lossy(&buf));
+        }
+    }
+
+    fn drain_stderr(&mut self) {
+        use std::io::Read;
+        if let Some(mut pipe) = self.child.stderr.take() {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            self.err.push_str(&String::from_utf8_lossy(&buf));
+        }
+    }
+
+    /// Closes stdin first — a child reading to EOF would never exit — then
+    /// drains both pipes so `Output` carries what is left.
+    fn wait(&mut self) -> i64 {
+        if let Some(status) = self.status {
+            return status;
+        }
+        drop(self.child.stdin.take());
+        self.drain_stdout();
+        self.drain_stderr();
+        let status = match self.child.wait() {
+            Ok(st) => exit_code(&st),
+            Err(e) => -(e.raw_os_error().unwrap_or(1) as i64),
+        };
+        self.status = Some(status);
+        status
+    }
+
+    /// -1 while it is still running; its status once it has exited.
+    fn poll(&mut self) -> i64 {
+        if let Some(status) = self.status {
+            return status;
+        }
+        match self.child.try_wait() {
+            Ok(Some(st)) => {
+                let status = exit_code(&st);
+                self.status = Some(status);
+                self.drain_stdout();
+                self.drain_stderr();
+                status
+            }
+            Ok(None) => -1,
+            Err(e) => {
+                let status = -(e.raw_os_error().unwrap_or(1) as i64);
+                self.status = Some(status);
+                status
+            }
+        }
+    }
+
+    /// 0, or a negative errno. No pipe on stdin is EBADF, not a silent drop.
+    fn write_stdin(&mut self, bytes: &[u8]) -> i64 {
+        use std::io::Write;
+        let Some(pipe) = self.child.stdin.as_mut() else {
+            return -9; // EBADF
+        };
+        match pipe.write_all(bytes).and_then(|()| pipe.flush()) {
+            Ok(()) => 0,
+            Err(e) => -(e.raw_os_error().unwrap_or(1) as i64),
+        }
+    }
+}
+
+/// A signalled child has no exit code; 128+signal is what a shell reports and
+/// what the C runtime answers.
+#[cfg(not(target_arch = "wasm32"))]
+fn exit_code(status: &std::process::ExitStatus) -> i64 {
+    if let Some(code) = status.code() {
+        return code as i64;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig as i64;
+        }
+    }
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SpawnTable {
+    procs: Mutex<(i64, std::collections::HashMap<i64, SpawnedProcess>)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SpawnTable {
+    fn insert(&self, child: std::process::Child) -> i64 {
+        let mut guard = self.procs.lock().unwrap();
+        guard.0 += 1;
+        let handle = guard.0;
+        guard.1.insert(
+            handle,
+            SpawnedProcess { child, out: String::new(), err: String::new(), status: None },
+        );
+        handle
+    }
+
+    /// Run `f` over one child, or answer `missing` when the handle is stale.
+    fn with_proc<T>(&self, handle: i64, missing: T, f: impl FnOnce(&mut SpawnedProcess) -> T) -> T {
+        let mut guard = self.procs.lock().unwrap();
+        match guard.1.get_mut(&handle) {
+            Some(p) => f(p),
+            None => missing,
+        }
+    }
+
+    fn remove(&self, handle: i64) {
+        self.procs.lock().unwrap().1.remove(&handle);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static SPAWNED: std::sync::LazyLock<SpawnTable> = std::sync::LazyLock::new(|| SpawnTable {
+    procs: Mutex::new((0, std::collections::HashMap::new())),
+});
 
 /// The elements of a `Vec<string>` argument, or empty when it isn't one.
 fn string_vec_arg(args: &[Value], index: usize) -> Vec<String> {
