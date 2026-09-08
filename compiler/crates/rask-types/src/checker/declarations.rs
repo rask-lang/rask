@@ -337,9 +337,15 @@ impl TypeChecker {
                     Type::Unit
                 };
 
-                // Register in symbol_types so callers see the right type
+                // Register in symbol_types so callers see the right type.
+                // Matched on the base name: the parser keeps the explicit list
+                // in the declaration's name (`plus_one<T>`) while the resolver
+                // registers `plus_one`, so a generic function with an inferred
+                // return type registered nothing and its callers were handed
+                // `void` — `plus_one(4) == 5` was "no method `eq` on `void`".
+                let base = f.name.split('<').next().unwrap_or(&f.name);
                 if let Some(sym) = self.resolved.symbols.iter()
-                    .find(|s| s.name == f.name && matches!(s.kind, SymbolKind::Function { .. }))
+                    .find(|s| s.name == base && matches!(s.kind, SymbolKind::Function { .. }))
                 {
                     self.symbol_types.insert(sym.id, Type::Fn {
                         params: param_types,

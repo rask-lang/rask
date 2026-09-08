@@ -2671,7 +2671,15 @@ impl TypeChecker {
 
         let func_ty = self.infer_expr(func);
 
-        // Substitute type param names with fresh vars in the function signature
+        // Substitute type param names with fresh vars in the function signature.
+        // Applied first: a return type the checker inferred sits behind a
+        // variable, and substitution matches on the *name*, so `func f<T>(x: T)
+        // { return x + 1 }` handed its callers the bare `T` — "no method `eq`
+        // on `T`" for `f(4) == 5`.
+        let func_ty = match &generic_subst {
+            Some(_) => self.ctx.apply(&func_ty),
+            None => func_ty,
+        };
         let func_ty = if let Some(ref pairs) = generic_subst {
             let subst: std::collections::HashMap<&str, Type> = pairs.iter()
                 .map(|(k, v)| (k.as_str(), v.clone()))

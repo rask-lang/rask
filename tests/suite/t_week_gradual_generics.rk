@@ -4,9 +4,12 @@
 // type.gradual-constraints has a worked-example table: leave the types off a
 // private function and the compiler reads the body to decide the signature.
 // What works is the *concrete* reading (IN2) — one body, one answer, one type.
-// The generic reading (IN1/IN3), where a body that only calls methods on a
-// parameter leaves that parameter open for each call site to pin, is not built;
-// it lives in `p11_gradual_generalization.rk` with #904.
+// The generic reading is half built. IN3 — a parameter whose only constraint
+// is an operator — comes out as a real type parameter now, so `double` below
+// takes both an int and a float from the same program. What is still missing is
+// GC3's other shape, where the parameter isn't the generic but its *element*
+// is: `count(items)` should infer `<T>(items: Vec<T>) -> usize`. That one lives
+// in `p11_gradual_generalization.rk` with #904.
 //
 // #905 lived here too and is fixed: an omitted parameter type reached MIR as a
 // void, because every pass after the checker reads the type off the declaration
@@ -32,29 +35,93 @@ func double_explicit<T>(x: T) -> T where T: Numeric {
     return x * 2
 }
 
+// The same, with the return type left off. GC2 infers it from the body — and
+// the answer names a type parameter, which took two fixes to get to a call
+// site. The checker registered nothing at all for this shape, because it
+// matched the symbol against the declaration's name (`plus_one_generic<T>`)
+// while the resolver had registered the base name, so callers were handed
+// `void`. Then the answer arrived as a variable bound to `T` rather than the
+// name `T`, and the call's substitution matches on names — so `== 5` was "no
+// method `eq` on `T`". And the copy mono made kept the unsubstituted answer, so
+// the instance's signature said `-> ptr` while its body returned an `f64` and
+// `plus_one_generic(2.5)` came back 3.
+func plus_one_generic<T>(x: T) where T: Numeric {
+    return x + 1
+}
+
 test "type.gradual-constraints — an explicit Numeric bound takes both types" {
     assert double_explicit(21) == 42
     let f: f64 = 1.5
     assert double_explicit(f) == 3.0
 }
 
+test "type.gradual-constraints/GC2 — an inferred return on a written-out generic" {
+    assert plus_one_generic(4) == 5
+    let f: f64 = 2.5
+    assert plus_one_generic(f) == 3.5
+}
+
 test "type.gradual-constraints — IN2: a bare literal body infers concrete" {
     assert get_port() == 8080
 }
 
-// One call site, one type — no generalization needed, and this is the exact
-// program the table's `double` row is written about. The literal in the body
-// used to default to `i32` before the call was heard, so the body reported
-// `*` between `f64` and `i32` for a program with no `i32` in it (#904). Two
-// call sites at two different types still need generalization; that's next
-// door in `p11_gradual_generalization.rk`.
+// The table's first row, and now inferred rather than merely accepted. Every
+// use of `x` is an operand of `*` whose other side is an unsuffixed literal, so
+// the parameter becomes `<T: Numeric>` and each call instantiates it fresh.
+//
+// The literal in the body used to default to `i32` before the call was heard,
+// so the body reported `*` between `f64` and `i32` for a program with no `i32`
+// in it. Then one call site worked and two at different types did not, because
+// the parameter was a single variable the whole program shared (#904).
 func double(x) {
     return x * 2
 }
 
-test "type.gradual-constraints — an inferred parameter takes the call's type" {
+func plus_one(x) {
+    return x + 1
+}
+
+func doubled_is_big(x) {
+    return x * 2 > 10
+}
+
+test "type.gradual-constraints — IN3: an operator body infers a Numeric generic" {
+    assert double(21) == 42
     let f: f64 = 1.5
     assert double(f) == 3.0
+}
+
+test "type.gradual-constraints — the same signature serves both call types" {
+    assert plus_one(4) == 5
+    let f: f64 = 2.5
+    assert plus_one(f) == 3.5
+}
+
+// The bound comes from the operator, and the return type from what the `return`
+// answers — a comparison answers `bool` whatever `T` is.
+test "type.gradual-constraints — a comparison in the body returns bool" {
+    assert doubled_is_big(6)
+    assert !doubled_is_big(2)
+    let f: f64 = 5.5
+    assert doubled_is_big(f)
+}
+
+// Not every operator body generalizes, and it shouldn't. `+` on two parameters
+// says they are the same type but nothing about which, and `%` against a
+// settled `i64` pins it — both keep IN2's concrete answer.
+func sum_two(a, b) {
+    return a + b
+}
+
+func is_even(n) {
+    let two: i64 = 2
+    return n % two == 0
+}
+
+test "type.gradual-constraints — IN2 still answers where a use pins the type" {
+    assert sum_two(2, 3) == 5
+    assert is_even(4)
+    assert !is_even(7)
 }
 
 // #905: the inferred `string` has to survive into codegen, not just into the

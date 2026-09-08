@@ -808,6 +808,28 @@ pub fn instantiate_function_with_params(
     (cloned, substitutor.node_origin)
 }
 
+/// Apply an instantiation's type arguments to a type written as a string.
+///
+/// The same substitution `instantiate_function_with_params` does to a copy's
+/// signature, for a type the declaration didn't carry — the return type the
+/// checker inferred, which can name a type parameter.
+pub fn substitute_type_in_string(
+    type_str: &str,
+    param_names: &[String],
+    type_args: &[Type],
+) -> String {
+    let params: Vec<TypeParam> = param_names
+        .iter()
+        .map(|name| TypeParam {
+            name: name.clone(),
+            is_comptime: false,
+            comptime_type: None,
+            bounds: Vec::new(),
+        })
+        .collect();
+    TypeSubstitutor::new(&params, type_args).substitute_type_string(type_str)
+}
+
 /// Turn a PC1 name list back into `TypeParam`s, keeping whatever the explicit
 /// `<T>` list already recorded (bounds, comptime-ness) for the names it has.
 fn named_params(names: Vec<String>, declared: &[TypeParam]) -> Vec<TypeParam> {

@@ -1027,6 +1027,38 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
                 }
+                // A function with no declared return type has the one the
+                // checker inferred, and that answer can name a type parameter:
+                // `func plus_one<T>(x: T) { return x + 1 }` infers `T`. Nothing
+                // substituted it into the copy, so the instance's signature came
+                // out `-> ptr` while its body returned an `f64`, and the caller
+                // read a float as a pointer — `plus_one(2.5)` answered 3 while
+                // the interpreter said 3.5.
+                if let DeclKind::Fn(f) = &mut cloned.kind {
+                    if f.ret_ty.is_none() {
+                        // Keyed by the declaration's name, which carries an
+                        // explicit `<T>` list where the work item doesn't.
+                        let base = |n: &str| {
+                            n.split('<').next().unwrap_or(n).to_string()
+                        };
+                        let want = base(&item.name);
+                        let inferred = self.typed.and_then(|t| {
+                            t.inferred_fn_ret.get(&item.name).or_else(|| {
+                                t.inferred_fn_ret
+                                    .iter()
+                                    .find(|(k, _)| base(k) == want)
+                                    .map(|(_, v)| v)
+                            })
+                        });
+                        if let Some(ty) = inferred {
+                            f.ret_ty = Some(crate::instantiate::substitute_type_in_string(
+                                &format!("{}", ty),
+                                &param_names,
+                                &bound_args,
+                            ));
+                        }
+                    }
+                }
                 self.carry_node_records(&origins, &bound_args, &param_names);
                 cloned
             };
