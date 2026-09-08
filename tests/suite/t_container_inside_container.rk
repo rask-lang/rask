@@ -80,6 +80,23 @@ test "mem.ownership — a Map whose values are containers" {
     assert inv.by_name["a"][0] == 1
 }
 
+// The element that *is* a container, rather than a struct holding one. MIR
+// types it as `Ptr` like every other pointer, so the checker's type for the
+// first element is what says `[a, b]` is a `Vec<Vec<i32>>`.
+test "mem.ownership — a Vec whose elements are Vecs" {
+    let a: Vec<i32> = [1, 2]
+    let b: Vec<i32> = [3]
+    let outer: Vec<Vec<i32>> = [a, b]
+    assert outer.len() == 2
+    assert outer[0][1] == 2
+    assert outer[1][0] == 3
+
+    mut grown: Vec<Vec<i32>> = Vec.new()
+    let c: Vec<i32> = [4, 5]
+    grown.push(c)
+    assert grown[0][1] == 5
+}
+
 test "mem.ownership — built by push rather than from a literal" {
     mut items: Vec<Item> = Vec.new()
     items.push(Item { name: "x", qty: 7 })

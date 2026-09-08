@@ -14,8 +14,8 @@
 # being the caller's (ten more files clean, `t_subprocess.rk` among them), and
 # 1411 once a group whose death falls on an edge rather than in a block got its
 # release there (eight more, `t_iterate_field_collection.rk` among them), and
-# 1359 once a container inside a container element was freed with the element
-# (six more, and `t_week_nested_data.rk` halved).
+# 1345 once a container inside a container element was freed with the element
+# (seven more, and `t_week_nested_data.rk` halved).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -118,7 +118,6 @@ t_channel_try_receive.rk  # 20 allocations
 t_closure_diverging_return.rk  # 2 allocations
 t_closure_in_collection.rk  # 9 allocations
 t_collection_api_gaps.rk  # 26 allocations
-t_collection_literal.rk  # 4 allocations
 t_container_ownership.rk  # 1 allocation
                              # field (#1035, #1047); the clones themselves are freed
 t_container_through_field.rk  # 6 allocations
@@ -185,7 +184,7 @@ t_vec_flat_map_sort_by_key.rk  # 33 allocations — lazy collection adapters, #1
 t_vec_position_reduce.rk  # 6 allocations
 t_week_closures.rk  # 17 allocations
 t_week_imports.rk  # 2 allocations
-t_week_nested_data.rk  # 16 allocations
+t_week_nested_data.rk  # 6 allocations
 t_week_opaque_struct_fields.rk  # 1 allocation
 t_week_parse_format.rk  # 2 allocations
 t_week_ranges.rk  # 8 allocations

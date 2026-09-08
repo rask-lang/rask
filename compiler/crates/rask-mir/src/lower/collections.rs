@@ -80,6 +80,15 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let elem_head = elems
+            .first()
+            .and_then(|e| self.ctx.lookup_raw_type(e.id).cloned())
+            .and_then(|ty| self.head_name(&ty));
+        let elem_tag = elem_head
+            .as_deref()
+            .and_then(crate::elem_strs::container_tag)
+            .unwrap_or_else(|| crate::elem_strs::tag_of(Some(&elem_ty)));
+
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
@@ -90,9 +99,10 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Constant(MirConst::Int(elem_size as i64)),
                 // What the elements are, so the vector can give them back —
                 // and so anything pushed onto it later is given back too.
-                MirOperand::Constant(MirConst::Int(
-                    crate::elem_strs::tag_of(Some(&elem_ty)),
-                )),
+                // An element that *is* a container is a `Ptr` here like every
+                // other pointer, so the first element's own checked type is
+                // what says `[a, b]` is a `Vec<Vec<i32>>`.
+                MirOperand::Constant(MirConst::Int(elem_tag)),
             ],
         }));
         Ok((MirOperand::Local(vec_local), MirType::I64))
@@ -985,12 +995,29 @@ impl<'a> MirLowerer<'a> {
     /// from `Display`. An `Option`/`Result` wrapper answers `None`: the handle
     /// is behind a tag, not at the start of the slot.
     fn container_elem_head(&self, node_id: rask_ast::NodeId, index: usize) -> Option<String> {
+        let ty = self.container_elem_rask_type(node_id, index)?;
+        self.head_name(&ty)
+    }
+
+    /// The head name of a type, for the container tests. Associated rather than
+    /// a method where the caller has a borrowed type; `head_name` is the
+    /// borrowing form.
+    fn rask_type_head(ty: &rask_types::Type) -> Option<String> {
         use rask_types::Type;
-        match self.container_elem_rask_type(node_id, index)? {
-            Type::Generic { base, .. } => self.ctx.type_names.get(&base).cloned(),
-            Type::Named(id) => self.ctx.type_names.get(&id).cloned(),
-            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => Some(name),
+        match ty {
+            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => {
+                Some(name.clone())
+            }
             _ => None,
+        }
+    }
+
+    fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
+        use rask_types::Type;
+        match ty {
+            Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),
+            Type::Named(id) => self.ctx.type_names.get(id).cloned(),
+            other => Self::rask_type_head(other),
         }
     }
 
