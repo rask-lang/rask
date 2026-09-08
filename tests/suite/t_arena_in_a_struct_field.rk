@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A rack or a pool held by a struct field (#1035).
+//
+// A rack owns its nodes and a pool owns its slots, so whoever owns the arena
+// frees it. A local already did; a *field* didn't. Two reasons, both fixed
+// here:
+//
+//   - a rack has to be told which of a struct's fields hold links, so the
+//     whole struct goes to the runtime as `Link_register_struct(h)` — and a
+//     struct reaching any call at all was reason enough to stop releasing it.
+//     Every struct with a rack in it leaked the arena and every node in it:
+//     252 allocations across six suite files.
+//   - `Rack`/`Pool` weren't in the walk that releases a struct's own container
+//     fields at all, so even without the registrar there was nothing to run.
+//
+// Freeing an arena is where reads *through* it get dangerous, which is the
+// other half of this file. A pool element is in the pool's slot and a
+// `nested.get(0)?` is a handle inside the outer vector's buffer — neither is a
+// copy, so the release has to wait for those reads. Both got that wrong first:
+// `first.len()` read 5775375445721207872 and `first_hp()` read
+// 8590327353766614987.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// values still read right.
+//
+// Spec: specs/memory/racks.md/RK1 — a rack owns its nodes' lifetime.
+import memory.Link
+import memory.Pool
+import memory.Rack
+
+struct Node {
+    id: i32
+    peer: Link<Node>?
+}
+
+struct Graph {
+    rack: Rack<Node>
+    list: Vec<Link<Node>>
+    nested: Vec<Vec<Link<Node>>>
+    index: Map<string, Link<Node>>
+}
+
+func empty() -> Graph {
+    return Graph {
+        rack: Rack.new(),
+        list: Vec.new(),
+        nested: Vec.new(),
+        index: Map.new(),
+    }
+}
+
+struct Entity {
+    hp: i64
+    alive: bool
+}
+
+struct World {
+    entities: Pool<Entity>
+}
+
+extend World {
+    func first_hp(self) -> i64 {
+        for h in self.entities {
+            let e = self.entities[h]
+            return e.hp
+        }
+        return -1
+    }
+
+    func alive_count(self) -> i64 {
+        mut n = 0
+        for h in self.entities {
+            let e = self.entities[h]
+            if e.alive {
+                n = n + 1
+            }
+        }
+        return n
+    }
+}
+
+func populated() -> World {
+    mut entities: Pool<Entity> = Pool.new()
+    let a = entities.insert(Entity { hp: 5, alive: true })
+    let b = entities.insert(Entity { hp: 7, alive: false })
+    let c = entities.insert(Entity { hp: 9, alive: true })
+    return World { entities: entities }
+}
+
+test "mem.racks/RK1 — a rack in a field, with nothing in it" {
+    let g = empty()
+    assert g.rack.len() == 0
+}
+
+test "mem.racks/RK1 — a rack in a field, with nodes in it" {
+    mut g = empty()
+    let a = g.rack.insert(Node { id: 1, peer: none })
+    let b = g.rack.insert(Node { id: 2, peer: none })
+    a.peer = b
+    assert g.rack.len() == 2
+    assert g.rack.contains(a)
+}
+
+// The registrar that used to block the release: telling the rack which of the
+// struct's fields hold links hands it the whole struct.
+test "mem.racks/RK3 — links in the struct's own containers are still fixed" {
+    mut g = empty()
+    let a = g.rack.insert(Node { id: 3, peer: none })
+    g.list.push(a)
+    g.index.insert("a", a)
+    assert g.list.len() == 1
+    assert g.index.len() == 1
+
+    g.rack.delete(a)
+    assert g.list.len() == 0
+    assert g.index.len() == 0
+}
+
+// The read that broke first: `nested.get(0)?` binds a handle sitting inside the
+// outer vector's buffer, so releasing the struct frees what the binding names.
+test "mem.racks/RK3 — an edge two containers deep, read after the delete" {
+    mut g = empty()
+    let a = g.rack.insert(Node { id: 4, peer: none })
+    mut inner: Vec<Link<Node>> = Vec.new()
+    inner.push(a)
+    g.nested.push(inner)
+
+    g.rack.delete(a)
+
+    if g.nested.get(0)? as first {
+        assert first.len() == 0
+    } else {
+        assert false
+    }
+}
+
+test "mem.pools — a pool in a field is freed with the struct" {
+    let w = populated()
+    assert w.alive_count() == 2
+}
+
+// The other read that broke: a pool element is *in* the slot, so the field read
+// that reaches it has to outlive nothing and the release has to wait for it.
+test "mem.pools — an element read through the field after the loop ends" {
+    let w = populated()
+    assert w.first_hp() == 5
+}
+
+// Repeatedly, so an arena freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.racks/RK1 — arenas in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        mut g = empty()
+        let a = g.rack.insert(Node { id: i, peer: none })
+        g.list.push(a)
+        total = total + g.rack.len().clamp<i64>()
+    }
+    assert total == 5
+
+    mut hp = 0
+    for i in 1..4 {
+        let w = populated()
+        hp = hp + w.first_hp()
+    }
+    assert hp == 15
+}

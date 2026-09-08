@@ -644,6 +644,31 @@ fn internal_spelling(base: &str) -> Option<Internal> {
     INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
 }
 
+/// Does this call demonstrably keep none of what it is handed?
+///
+/// A stronger claim than `keeps_argument` can make. That one answers "keeps
+/// everything" for a name nobody wrote down, so a caller reading it can't tell
+/// "declared not to keep it" from "unaccounted for" — and the drop pass has to
+/// treat both as a reason to leave the value alone. Here the default is `false`
+/// and only a line in `INTERNAL_SPELLINGS` says otherwise, which is what makes
+/// a `true` worth acting on.
+///
+/// `FreshFromReceiver` and `NoReceiver` both say it in words: the receiver is
+/// borrowed or absent, no argument is kept, and nothing handed back points
+/// inside. The rack registrars are the family that needed this —
+/// `Link_register_struct(h)` hands the whole struct to the runtime so it can
+/// record which fields hold links, and a struct reaching *any* call was reason
+/// enough to give up on releasing it. So every struct with a rack in it leaked
+/// the arena and everything in it.
+pub fn keeps_no_arguments(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(
+        internal_spelling(base),
+        Some(Internal::FreshFromReceiver) | Some(Internal::NoReceiver)
+    )
+}
+
 /// Does this call borrow its receiver rather than consume it? True for
 /// anything declared `self` or `mutate self`, false for `take self` and for a
 /// static method, which has no receiver at all.

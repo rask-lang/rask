@@ -7244,10 +7244,17 @@ impl<'a> FunctionBuilder<'a> {
             // buffer, and 72 suite files were leaking one: `Set<T>` is a struct
             // holding a `Map<T, bool>`, so every set leaked its map too.
             "Map" => Some("rask_map_free"),
-            // Not `Pool` or `Rack`: a pool's slots and a rack's nodes are
-            // reached through handles and links that outlive any one field
-            // read, and freeing the arena from here would strand them. Their
-            // own drop rules (mem.pools, mem.racks) are where that belongs.
+            // A rack owns its nodes' lifetime and a pool owns its slots
+            // (mem.racks/RK1), so whoever owns the arena frees it. A local
+            // already did; a *field* didn't, so every struct with a rack in it
+            // leaked the arena and everything in it — 252 allocations across
+            // six suite files, `p12_rack_link_churn.rk` alone 128.
+            //
+            // The links and handles that outlive a field read don't change
+            // that: they can't outlive the struct that holds the arena, and
+            // this release runs where that struct dies.
+            "Rack" => Some("rask_rack_free"),
+            "Pool" => Some("rask_pool_free"),
             _ => None,
         }
     }

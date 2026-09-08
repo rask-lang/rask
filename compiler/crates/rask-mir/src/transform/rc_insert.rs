@@ -225,15 +225,59 @@ fn container_handles_from(
                     }
                 }
                 match &stmt.kind {
-                    // The read itself has to be `Ptr` — that is what tells a
-                    // container handle from an ordinary scalar field. A plain
-                    // `m.size` admitted here joins the group and can block its
-                    // release, which turns this into a leak somewhere else.
-                    MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } }
-                        if matches!(ty_of.get(dst), Some(MirType::Ptr)) =>
-                    {
-                        if let Some(base) = uses::operand_local(base) {
-                            if aggregates.contains(&base) && from.insert(*dst, base).is_none() {
+                    // A pool element is *in* the pool's slot, not a copy of
+                    // one, so reading it is reaching through whatever holds the
+                    // pool. Same shape as the `Vec.get` views above, and it
+                    // needs the same treatment now that a pool in a struct
+                    // field is freed with the struct:
+                    //
+                    //     _44 = pool_access(_43[_42])
+                    //     rc_dec_contents(_20)   // frees the World, pool and all
+                    //     _46 = _45.0            // reads the slot that just went
+                    //
+                    // `w.first_hp()` gave 8590327353766614987 for an `hp` of 5.
+                    MirStmtKind::PoolCheckedAccess { dst, pool, .. } => {
+                        let root = views.get(pool).or_else(|| from.get(pool)).copied();
+                        if let Some(root) = root {
+                            if views.insert(*dst, root).is_none() {
+                                changed = true;
+                            }
+                        }
+                    }
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } => {
+                        let Some(base) = uses::operand_local(base) else { continue };
+                        // A container handle out of an aggregate this frame
+                        // holds. The read has to be `Ptr` — that is what tells
+                        // a handle from an ordinary scalar field. A plain
+                        // `m.size` admitted here joins the group and can block
+                        // its release, which turns this into a leak somewhere
+                        // else.
+                        if aggregates.contains(&base)
+                            && matches!(ty_of.get(dst), Some(MirType::Ptr))
+                        {
+                            if from.insert(*dst, base).is_none() {
+                                changed = true;
+                            }
+                            continue;
+                        }
+                        // A field read off something already known to point
+                        // into a group is still pointing into it, whatever MIR
+                        // types the base. The rule above needs the base to be
+                        // an aggregate, and a `T?` holding a container handle
+                        // isn't one — so
+                        //
+                        //     _41 = Vec_get_opt(_40, 0)  // a view into h.nested
+                        //     _44 = _41.0                // the inner Vec's handle
+                        //     rc_dec_contents(_0)        // frees h, and _44 with it
+                        //     _45 = Vec_len(_44)         // reads what just went
+                        //
+                        // gave `first.len()` = 5775375445721207872 for
+                        // `h.nested.get(0)? as first`. Recorded as a view,
+                        // which holds the release back without letting this
+                        // local's own verdict decide the container's fate.
+                        let root = views.get(&base).or_else(|| from.get(&base)).copied();
+                        if let Some(root) = root {
+                            if views.insert(*dst, root).is_none() {
                                 changed = true;
                             }
                         }
@@ -410,6 +454,22 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         // what the vector now holds.
                         if kept.get(&fref.name).is_some_and(|v| !v.get(i).copied().unwrap_or(true))
                         {
+                            continue;
+                        }
+                        // A bodiless runtime helper whose line in
+                        // `INTERNAL_SPELLINGS` says outright that it keeps
+                        // none of what it is handed. That is a written-down
+                        // claim rather than the "nobody accounted for this"
+                        // default `keeps_argument` returns, which is why it
+                        // can be trusted where that one can't.
+                        //
+                        // `Link_register_struct(h)` is the reason: a rack has
+                        // to be told which of a struct's fields hold links, so
+                        // the whole struct goes to the runtime — and a struct
+                        // reaching any call at all was reason enough to stop
+                        // releasing it. Every struct with a rack in it leaked
+                        // the arena and its nodes.
+                        if rask_stdlib::mir_metadata::keeps_no_arguments(&fref.name) {
                             continue;
                         }
                         block_local(&mut blocked, &id);

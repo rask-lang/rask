@@ -18,7 +18,9 @@
 # (seven more, and `t_week_nested_data.rk` halved), and 1319 once a call through
 # a closure could say which bodies it reaches (`t_vec_flat_map_sort_by_key.rk`
 # 33 → 11), and 1311 once an enum variant's own container field was released
-# with the enum.
+# with the enum, and 1120 once a rack or a pool in a struct field was freed with
+# the struct (seven more files clean, and the rack cluster from 252 allocations
+# to 70 — `p12_rack_link_churn.rk` alone 128 → 2).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -66,14 +68,13 @@
 
 p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
-p11_rack_link.rk  # 18 allocations
-p12_rack_link_churn.rk  # 128 allocations
+p11_rack_link.rk  # 4 allocations
+p12_rack_link_churn.rk  # 2 allocations
 p13_rack_snapshot.rk  # 27 allocations
-p14_deleting_mode.rk  # 10 allocations
-p15_read_only_graph.rk  # 37 allocations
-p16_rack_link_holders.rk  # 4 allocations
+p14_deleting_mode.rk  # 4 allocations
+p15_read_only_graph.rk  # 22 allocations
+p16_rack_link_holders.rk  # 2 allocations
 p18_rack_multi_link_fields.rk  # 11 allocations
-p19_mutate_param_link_write.rk  # 19 allocations
 p21_sequence_adapters.rk  # 4 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t25_iterator_adapters.rk  # 2 allocations
 t26_custom_sequence.rk  # 4 allocations
@@ -98,25 +99,9 @@ t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 10 allocations
 t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
-                        # same trait-box leak as the two lines below. Nothing to
-                        # do with the aggregate return the file is named for:
-                        # every other test in it is clean.
 t_any_error_boxing.rk  # 5 allocations
-t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
-t_closure_call_container.rk  # 42 allocations — the source vector each
-                            # chain captures (#1035's closure half), and
-                            # the `SHARED` paths on purpose: one closure
-                            # handing back a const's vector rejects the
-                            # whole callee set, which is the point of the
-                            # third test
-t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
-                             # small enough to inline, so there is no call left
-                             # to read a handoff off (#1117's other half)
-t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
-                  # `cstring or NullByteError`, and a container returned in a
-                  # `T or E` is freed by nobody (#1117)
-t_module_qualified_variants.rk  # 5 allocations — trait boxes again
 t_atomic_across_tasks.rk  # 6 allocations
+t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
 t_bare_lock_value.rk  # 21 allocations
 t_borrow_param_consume.rk  # 2 allocations
 t_box_replace_payload.rk  # 3 allocations
@@ -124,12 +109,13 @@ t_card_method_surface.rk  # 6 allocations
 t_channel_aggregates.rk  # 20 allocations
 t_channel_receive_error.rk  # 16 allocations
 t_channel_try_receive.rk  # 20 allocations
+t_closure_call_container.rk  # 42 allocations — the source vector each
 t_closure_diverging_return.rk  # 2 allocations
 t_closure_in_collection.rk  # 9 allocations
 t_collection_api_gaps.rk  # 26 allocations
+t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation
-                             # field (#1035, #1047); the clones themselves are freed
-t_container_through_field.rk  # 6 allocations
+t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_day_strings.rk  # 6 allocations
 t_day_vec.rk  # 2 allocations
 t_debug_renders_containers.rk  # 2 allocations
@@ -137,13 +123,13 @@ t_element_type_resolution.rk  # 4 allocations
 t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
 t_fs_open_failure.rk  # 2 allocations
 t_generic_optional_field.rk  # 6 allocations
-t_index_through_field.rk  # 10 allocations
 t_io_buffer.rk  # 42 allocations
 t_json_decode.rk  # 22 allocations
 t_json_encode_shapes.rk  # 14 allocations
 t_link_in_collection.rk  # 2 allocations
 t_local_box_payload.rk  # 5 allocations
 t_modify_writeback.rk  # 12 allocations
+t_module_qualified_variants.rk  # 5 allocations — trait boxes again
 t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 1 allocation
 t_month_boxes.rk  # 8 allocations
@@ -151,20 +137,16 @@ t_month_concurrency.rk  # 57 allocations
 t_month_io.rk  # 2 allocations
 t_month_panic_observed.rk  # 11 allocations
 t_month_stdlib_modules.rk  # 11 allocations
-t_mutate_handle_field.rk  # 6 allocations
 t_mutex_payload_kinds.rk  # 12 allocations
-t_named_context_resolves_by_type.rk  # 2 allocations
 t_nested_with_return.rk  # 12 allocations
 t_net_loopback.rk  # 7 allocations
-t_niche_handle_option.rk  # 6 allocations
 t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 4 allocations
 t_package_state.rk  # 6 allocations
 t_path_module.rk  # 8 allocations
 t_pool_context_rules.rk  # 4 allocations
 t_pool_entries.rk  # 7 allocations
-t_pool_iter_handles.rk  # 7 allocations
-t_rack_stale_records.rk  # 23 allocations
+t_rack_stale_records.rk  # 15 allocations
 t_random_seeded.rk  # 10 allocations
 t_range_element_type.rk  # 2 allocations
 t_runtime_handle_out_of_result.rk  # 1 allocation
@@ -200,5 +182,18 @@ t_week_ranges.rk  # 8 allocations
 t_week_results.rk  # 4 allocations
 t_week_sorting.rk  # 9 allocations
 t_week_traits.rk  # 5 allocations
-t_with_collection_field_writes.rk  # 12 allocations
+t_with_collection_field_writes.rk  # 6 allocations
+                        # same trait-box leak as the two lines below. Nothing to
+                        # do with the aggregate return the file is named for:
+                        # every other test in it is clean.
+                            # chain captures (#1035's closure half), and
+                            # the `SHARED` paths on purpose: one closure
+                            # handing back a const's vector rejects the
+                            # whole callee set, which is the point of the
+                            # third test
+                             # small enough to inline, so there is no call left
+                             # to read a handoff off (#1117's other half)
+                  # `cstring or NullByteError`, and a container returned in a
+                  # `T or E` is freed by nobody (#1117)
+                             # field (#1035, #1047); the clones themselves are freed
                    # the Vec/Pool of structs holding strings (#1035)
