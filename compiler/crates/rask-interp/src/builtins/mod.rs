@@ -428,15 +428,27 @@ impl Interpreter {
             let consumes_self = method_fn.params.first()
                 .map(|p| p.name == "self" && p.is_take)
                 .unwrap_or(false);
+            let mut taken = None;
             if consumes_self {
                 if let Some(id) = self.get_resource_id(&receiver) {
                     self.resource_tracker.mark_consumed(id)
                         .map_err(|msg| RuntimeError::Panic(msg))?;
+                    // The callee owns it now, so it is live for the body: a
+                    // `take self` method is free to hand the resource on to
+                    // another one, and that is a move rather than a second
+                    // consumption.
+                    self.resource_tracker.revive(id);
+                    taken = Some(id);
                 }
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            let answer = self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            if let Some(id) = taken {
+                // Whatever the body did with it, the caller gave it up.
+                let _ = self.resource_tracker.mark_consumed(id);
+            }
+            return answer;
         }
 
         // `type Id = u64 with (Hashable)` delegates whatever it doesn't define

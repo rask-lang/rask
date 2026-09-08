@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take self` method may hand the resource on to another `take self` method.
+// That is one move per owner (mem.linear/L5), not two consumptions of the same
+// value (L2) — the first method owns it while it runs, and giving it away is
+// what "take" means.
+//
+// The interpreter used to disagree, and loudly: it flipped one bit per resource
+// and set it at the *call*, so `wait(take self)` marked the handle consumed and
+// then `self.finish(status)` inside the body hit "resource already consumed".
+// Native never checked, so this was a divergence you only saw with `--interp`.
+//
+// `os.Process` is exactly this shape — `wait` and `kill_and_wait` share a
+// private `finish(take self, status)` so they can't drift about what an
+// `Output` holds — which is how it surfaced.
+//
+// Spec: specs/memory/linear.md
+//   L2 a linear value cannot be consumed twice
+//   L5 passing to a `take` parameter consumes the value
+
+@resource
+struct Ticket {
+    id: i64
+    note: string
+}
+
+extend Ticket {
+    /// Two public consumers over one private one, the `Process.wait` shape.
+    public func redeem(take self) -> string {
+        return self.settle("redeemed")
+    }
+
+    public func cancel(take self) -> string {
+        return self.settle("cancelled")
+    }
+
+    func settle(take self, how: string) -> string {
+        return "{self.id} {self.note} {how}"
+    }
+}
+
+@resource
+struct Relay {
+    hops: i64
+}
+
+extend Relay {
+    /// Three deep. Each frame owns it for as long as it runs.
+    public func start(take self) -> i64 {
+        return self.middle()
+    }
+
+    func middle(take self) -> i64 {
+        return self.end()
+    }
+
+    func end(take self) -> i64 {
+        return self.hops
+    }
+}
+
+test "mem.linear/L5 — a take-self method forwards the resource to another" {
+    let t = Ticket { id: 7, note: "front row" }
+    assert t.redeem() == "7 front row redeemed"
+}
+
+test "mem.linear/L5 — the other consumer shares the same private one" {
+    let t = Ticket { id: 8, note: "balcony" }
+    assert t.cancel() == "8 balcony cancelled"
+}
+
+test "mem.linear/L5 — forwarding chains as deep as it likes" {
+    let r = Relay { hops: 3 }
+    assert r.start() == 3
+}
