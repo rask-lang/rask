@@ -7240,6 +7240,14 @@ impl<'a> FunctionBuilder<'a> {
         let head = rendered.split('<').next().unwrap_or(&rendered).trim();
         match head {
             "Vec" => Some("rask_vec_free"),
+            // A map's tables are the same shape of ownership as a vector's
+            // buffer, and 72 suite files were leaking one: `Set<T>` is a struct
+            // holding a `Map<T, bool>`, so every set leaked its map too.
+            "Map" => Some("rask_map_free"),
+            // Not `Pool` or `Rack`: a pool's slots and a rack's nodes are
+            // reached through handles and links that outlive any one field
+            // read, and freeing the arena from here would strand them. Their
+            // own drop rules (mem.pools, mem.racks) are where that belongs.
             _ => None,
         }
     }

@@ -1015,7 +1015,19 @@ impl TypeChecker {
             ExprKind::StructLit { name, fields, spread } => {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
-                let base_name = name.split('<').next().unwrap_or(name);
+                //
+                // And it may carry the module that exports it. Types are filed
+                // under the bare name, so `http.Response { … }` missed the
+                // lookup and skipped *everything* below — the field types went
+                // unchecked and FD4's "every field must be given" never fired,
+                // which left `headers` uninitialized in a literal the checker
+                // had accepted (the same last-segment rule as #1097, #1108 and
+                // #1113). `strip_module_qualifier` only strips a head that
+                // really is a module, so an enum variant's `A4.N { v: 5 }` is
+                // untouched.
+                let base_name = rask_stdlib::modules::strip_module_qualifier(
+                    name.split('<').next().unwrap_or(name),
+                );
                 // Annotations are comptime data — attached with @name(...),
                 // read through reflect, never constructed as runtime values.
                 if self.annotation_types.contains(base_name) {
