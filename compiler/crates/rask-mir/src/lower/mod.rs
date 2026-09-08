@@ -4826,6 +4826,14 @@ impl<'a> MirLowerer<'a> {
                 // aggregate. Loaded as a word instead, the member index came
                 // back as if it were the union's address (#776).
                 | MirType::Union(_)
+                // A `T?` or `T or E` in a payload is inline bytes too — tag
+                // plus payload — so it is reached by address like the rest.
+                // Loaded as a word instead, `maybe(0)!` on a `T? or E` read the
+                // inner option's *tag* and dereferenced it as the option's
+                // address (segfault at the unwrap).
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Array { .. }
         )
     }
 

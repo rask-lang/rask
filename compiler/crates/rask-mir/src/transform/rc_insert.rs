@@ -457,22 +457,27 @@ fn insert_aggregate_release(func: &mut MirFunction) {
 /// the slot was never written. `combined("42", 2)!` succeeded and still handed
 /// `rask_string_free` a header nobody had written, because the panic branch's
 /// `"parse error: …"` was released on the success branch (#1121).
+///
+/// A local with no definition anywhere counts too, and that is not a hypothetical
+/// — inlining `e.message()` for `!` leaves the inlined return slot unwritten on
+/// the match's unreachable default arm, and that arm is the only thing keeping
+/// the slot live. `maybe(0)!` on a `T? or E` released a slot nobody had ever
+/// written. It only crashed once the option wrapper moved the frame enough that
+/// the slot read as garbage instead of zero.
 fn defined_only_where_it_aborts(
     func: &MirFunction,
     aborting: &HashSet<BlockId>,
     local: LocalId,
 ) -> bool {
-    let mut any = false;
     for b in &func.blocks {
         if !b.statements.iter().any(|st| uses::stmt_def(st) == Some(local)) {
             continue;
         }
-        any = true;
         if !aborting.contains(&b.id) {
             return false;
         }
     }
-    any
+    true
 }
 
 /// Group the aggregate locals that name one value.

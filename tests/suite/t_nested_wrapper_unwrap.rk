@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `T? or E` unwrapped with `!` used to segfault natively.
+//
+// Two separate bugs, both about a wrapper *inside* a wrapper:
+//
+//  1. `_9 = _7.0` — pulling the Ok payload out of the Result — loaded one word
+//     from the payload offset and used it as an address. That is right for a
+//     scalar payload and wrong for an option, which is inline bytes (tag +
+//     payload) reached by address. So the unwrap read the inner option's tag,
+//     got 1, and dereferenced address 1.
+//
+//  2. `!` inlines `e.message()` for the panic. The inlined return slot is left
+//     unwritten on the match's unreachable default arm, and that arm was the
+//     only thing keeping the slot live — so the release-on-the-surviving-edge
+//     rule from #1049 put an `rc_dec` of a never-written string at the top of
+//     the *success* block. That one read as zero on a fresh stack and was
+//     invisible until the option wrapper moved the frame; `RASK_POISON_STACK=1`
+//     makes it fire on the plain `T or E` shape too.
+//
+// The interpreter answered correctly throughout, which is what made it a
+// divergence rather than a puzzle.
+
+enum Oops {
+    Bad(string)
+}
+
+extend Oops {
+    public func message(self) -> string {
+        match self {
+            Oops.Bad(why) => return "bad: {why}"
+        }
+    }
+}
+
+struct Thing {
+    status: i32
+    text: string
+}
+
+func maybe_int(n: i32) -> i32? or Oops {
+    if n < 0 {
+        return Oops.Bad("negative")
+    }
+    if n == 0 {
+        return none
+    }
+    return n
+}
+
+func maybe_thing(n: i32) -> Thing? or Oops {
+    if n < 0 {
+        return Oops.Bad("negative")
+    }
+    if n == 0 {
+        return none
+    }
+    return Thing { status: n, text: "hi" }
+}
+
+func plain(n: i32) -> i32 or Oops {
+    if n < 0 {
+        return Oops.Bad("negative")
+    }
+    return n
+}
+
+test "type.errors — `!` on a `T? or E` reaches the option, not its tag" {
+    let a = maybe_int(0)!
+    assert a is none
+    let b = maybe_int(5)!
+    assert b == 5
+    assert (b ?? -1) == 5
+}
+
+test "type.errors — the payload can be a struct as well as a scalar" {
+    let none_case = maybe_thing(0)!
+    assert none_case is none
+    let some_case = maybe_thing(3)!
+    if some_case? as t {
+        assert t.status == 3
+        assert t.text == "hi"
+    } else {
+        assert false
+    }
+}
+
+test "type.errors — a match sees the same three answers" {
+    match maybe_int(0) {
+        i32 as v => assert false
+        none => assert true
+        Oops as e => assert false
+    }
+    match maybe_int(2) {
+        i32 as v => assert v == 2
+        none => assert false
+        Oops as e => assert false
+    }
+    match maybe_int(-1) {
+        i32 as v => assert false
+        none => assert false
+        Oops as e => assert e.message() == "bad: negative"
+    }
+}
+
+test "type.errors — `!` on a plain `T or E` releases nothing on the way through" {
+    // The bug this pins is the stray release of the panic branch's message, so
+    // what matters is that the *success* path stays clean. Run it a few times
+    // so a freed-then-reused buffer would show up.
+    mut total = 0
+    for i in 1..5 {
+        total = total + plain(i)!
+    }
+    assert total == 10
+}
