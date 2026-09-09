@@ -96,7 +96,13 @@
 # two inlined copies of a chain each looked like the only one and both freed
 # it. Refusing both was the first answer and it leaks; the free goes after the
 # last of the closure drops instead (#1148, `t42_flatten_shaped_header.rk`
-# 9 → 3, `t34_vec_as_sequence.rk` clean).
+# 9 → 3, `t34_vec_as_sequence.rk` clean), and 223 once a struct handed to a
+# closure the frame also drops stayed the frame's. Any capture read as handing
+# the aggregate away, so a sequence built over a struct's `Vec` field left the
+# container to nobody — every `h.walk()` shape. The closure is a name that
+# reaches the group now, the way a handle read out of one is: alive for
+# placement, never the name released (`t40_forwarded_generic_method.rk`,
+# `t26_custom_sequence.rk` and `t35_returned_sequence.rk` all clean).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -145,12 +151,9 @@
 p07_heap.rk  # 7 allocations
 p12_rack_link_churn.rk  # 2 allocations
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
-t26_custom_sequence.rk  # 4 allocations
 t29_branch_merge.rk  # 7 allocations
-t35_returned_sequence.rk  # 2 allocations — a returned chain's captured containers, #1035
 t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
 t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
-t40_forwarded_generic_method.rk  # 14 allocations — sequence adapter closures, #1045
 t41_closure_environment_drop.rk  # 10 allocations — a closure made on one branch has nowhere safe to be freed, #1045
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 1 allocation

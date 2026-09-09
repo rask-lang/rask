@@ -374,6 +374,43 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     }
     let (handles, views) = container_handles_from(func, &aggregates, &ty_of);
 
+    // Closures this frame drops, and the aggregates they hold.
+    //
+    // `container_drop::insert_closure_drops` emits a drop only for a closure
+    // the frame owns, and this pass runs after it — so the drop's presence is
+    // the answer to "does the frame outlive this closure".
+    //
+    // A closure that holds an aggregate used to block its whole group, and
+    // blocking leaks: a struct with a `Vec` field, handed to a closure the
+    // frame also drops, was released by nobody. `h.walk()` on a
+    // `struct Holder { items: Vec<i64> }` leaked the vector on every sequence
+    // built over a struct field. The closure is a name that *reaches* the
+    // group instead, exactly like a handle read out of it — it counts for
+    // placement and is never the name released, so the group stays live until
+    // the `closure_drop` and the release lands after it.
+    let dropped_closures: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureDrop { closure } => Some(*closure),
+            _ => None,
+        })
+        .collect();
+    let mut holding_closures: Vec<(LocalId, LocalId)> = Vec::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
+            continue;
+        };
+        if !dropped_closures.contains(dst) {
+            continue;
+        }
+        for cap in captures.iter().filter(|c| aggregates.contains(&c.local_id)) {
+            holding_closures.push((*dst, cap.local_id));
+        }
+    }
+    let holds_one: HashSet<LocalId> = holding_closures.iter().map(|(c, _)| *c).collect();
+
     // One group per value. SSA renames an aggregate at every copy, and a
     // payload read out of a wrapper names the same bytes rather than copying
     // them — so `r`, `r.0`, and every SSA name of either are one thing that
@@ -391,7 +428,8 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     // Neither a handle nor a view is a name the release can walk — the release
     // takes an aggregate apart field by field, and both of these point *into*
     // one.
-    let not_a_name = |l: &LocalId| handles.contains_key(l) || views.contains_key(l);
+    let not_a_name =
+        |l: &LocalId| handles.contains_key(l) || views.contains_key(l) || holds_one.contains(l);
 
     /// The aggregate a chain of views and handles ultimately reads out of.
     fn resolve_root(
@@ -564,7 +602,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         block_local(&mut blocked, &id);
                     }
                 }
-                MirStmtKind::ClosureCreate { captures, .. } => {
+                // A closure the frame drops doesn't take the aggregate
+                // away — see `holding_closures` above. One it doesn't own can
+                // outlive the frame, and releasing then is a use-after-free
+                // rather than a leak.
+                MirStmtKind::ClosureCreate { dst, captures, .. } => {
+                    if holds_one.contains(dst) {
+                        continue;
+                    }
                     for cap in captures {
                         block_local(&mut blocked, &cap.local_id);
                     }
@@ -637,6 +682,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
             if let Some(&gi) = member_of.get(&root) {
                 if !groups[gi].contains(local) {
                     reaches[gi].insert(*local);
+                }
+            }
+        }
+        // And a closure holding one of the group's names, for the reason above.
+        for (closure, member) in &holding_closures {
+            if let Some(&gi) = member_of.get(member) {
+                if !groups[gi].contains(closure) {
+                    reaches[gi].insert(*closure);
                 }
             }
         }
