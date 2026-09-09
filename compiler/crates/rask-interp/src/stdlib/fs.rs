@@ -402,6 +402,42 @@ impl Interpreter {
                 let _ = file.lock().unwrap().take();
                 Ok(Value::Unit)
             }
+            // std.io/K1, K3. The two halves of `Seeker` as the backends see
+            // them: a position, or -1. The `SeekFrom` is taken apart by the
+            // Rask trait body in `stdlib/io.rk`, so neither backend repeats it,
+            // and `whence` follows that enum's declaration order —
+            // 0 = Start, 1 = End, 2 = Current.
+            "seek_raw" => {
+                use std::io::{Seek, SeekFrom};
+                let whence = match args.first() {
+                    Some(Value::Int(n, _)) => *n,
+                    _ => 0,
+                };
+                let offset = match args.get(1) {
+                    Some(Value::Int(n, _)) => *n,
+                    _ => 0,
+                };
+                let from = match whence {
+                    1 => SeekFrom::End(offset),
+                    2 => SeekFrom::Current(offset),
+                    _ => SeekFrom::Start(offset.max(0) as u64),
+                };
+                let mut file_opt = file.lock().unwrap();
+                let Some(f) = file_opt.as_mut() else { return Ok(Value::int(-1)) };
+                match f.seek(from) {
+                    Ok(at) => Ok(Value::int(at as i64)),
+                    Err(_) => Ok(Value::int(-1)),
+                }
+            }
+            "position_raw" => {
+                use std::io::Seek;
+                let mut file_opt = file.lock().unwrap();
+                let Some(f) = file_opt.as_mut() else { return Ok(Value::int(-1)) };
+                match f.stream_position() {
+                    Ok(at) => Ok(Value::int(at as i64)),
+                    Err(_) => Ok(Value::int(-1)),
+                }
+            }
             "read_text" => {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();

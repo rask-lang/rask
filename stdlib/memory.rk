@@ -117,9 +117,16 @@ extend Pool<T> {
     @native("rask_pool_get_packed")
     public func get(self, handle: Handle<T>) -> Option<T> {}
 
-    /// Get a clone of element by handle.
-    @unimplemented
-    public func get_clone(self, handle: Handle<T>) -> Option<T> {}
+    // No `get_clone`. It was declared and `@unimplemented`, and it earns
+    // nothing: `p.get(h)? as v` then `v.clone()` is the same two steps at the
+    // call site, spelled the way every other clone in Rask is. A method whose
+    // whole body is "call the one next to it and clone the answer" is a Rust
+    // reflex, not a Rask API (`specs/stdlib/api-design.md`).
+    //
+    // It also can't be written in Rask today: a Rask body on `Pool` can't reach
+    // the pool's own native methods through `self` on the interpreter, and
+    // `get_clone` came back `none` for a live handle there — #1142. Deleting
+    // this doesn't depend on that being fixed.
 
     /// Read element through a closure.
     @native

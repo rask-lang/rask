@@ -92,6 +92,22 @@ public trait Writer {
     func write_text(self, data: string) -> void or IoError
 }
 
+/// Where a seek measures from (std.io/K2).
+public enum SeekFrom {
+    Start(i64)
+    End(i64)
+    Current(i64)
+}
+
+/// A stream whose position can be moved (K1, K3).
+///
+/// `File` and `Buffer` implement it. The standard streams don't — they are
+/// sequential, and there is nothing to seek.
+public trait Seeker {
+    func seek(self, pos: SeekFrom) -> i64 or IoError
+    func position(self) -> i64 or IoError
+}
+
 /// Input/output module functions.
 struct io { }
 
@@ -437,14 +453,83 @@ extend Buffer {
     public func len(self) -> i64 {
         return self.data.len().wrap<i64>()
     }
+}
 
-    /// Reset read position to 0.
-    ///
-    /// Still nothing: specs/stdlib/io.md says rewinding is
-    /// `seek(SeekFrom.Start(0))` and there is no `reset`, but `Seeker` isn't
-    /// implemented either, so neither spelling works. Tracked in #860.
-    @unimplemented
-    public func reset(mutate self) {}
+/// K1–K3 for a file: the position the OS keeps, with the `SeekFrom` taken
+/// apart here rather than in each backend.
+extend File with Seeker {
+    public func seek(self, pos: SeekFrom) -> i64 or IoError {
+        mut whence: i64 = 0
+        mut offset: i64 = 0
+        match pos {
+            SeekFrom.Start(n) => {
+                whence = 0
+                offset = n
+            }
+            SeekFrom.End(n) => {
+                whence = 1
+                offset = n
+            }
+            SeekFrom.Current(n) => {
+                whence = 2
+                offset = n
+            }
+        }
+        // A negative absolute position is rejected here rather than by either
+        // backend: C's `fseek` fails on it and Rust's `SeekFrom::Start` takes a
+        // `u64` and would clamp, so leaving it to them is a divergence.
+        if whence == 0 && offset < 0 {
+            return IoError.Other("seek to a negative position")
+        }
+        let at = self.seek_raw(whence, offset)
+        if at < 0 {
+            return IoError.last_os_error()
+        }
+        return at
+    }
+    public func position(self) -> i64 or IoError {
+        let at = self.position_raw()
+        if at < 0 {
+            return IoError.last_os_error()
+        }
+        return at
+    }
+}
+
+/// Seeking a buffer is arithmetic on the cursor it already keeps (K1–K3).
+///
+/// There used to be a `reset()` stub here instead, which the spec says
+/// shouldn't exist — "no `reset` — `buf.seek(SeekFrom.Start(0))` is the one way
+/// to rewind" — and which nothing implemented either. So it is gone and this is
+/// the spelling.
+extend Buffer with Seeker {
+    public func seek(self, pos: SeekFrom) -> i64 or IoError {
+        let total = self.data.len().wrap<i64>()
+        mut want: i64 = 0
+        match pos {
+            SeekFrom.Start(n) => want = n
+            SeekFrom.End(n) => want = total + n
+            SeekFrom.Current(n) => {
+                with self.pos.read() as at {
+                    want = at + n
+                }
+            }
+        }
+        // Past the end is legal for a seek and reads as empty; before the
+        // start is not — there is no position there to report.
+        if want < 0 {
+            return IoError.Other("seek to a negative position")
+        }
+        with self.pos.write() as at {
+            at = want
+        }
+        return want
+    }
+    public func position(self) -> i64 or IoError {
+        with self.pos.read() as at {
+            return at
+        }
+    }
 }
 
 /// A file handle for reading and writing.
@@ -455,6 +540,14 @@ extend File {
     /// tell success from failure, since the runtime can't build an `IoError`.
     @native("rask_file_is_null")
     func is_null(self) -> bool {}
+
+    /// The two halves of `Seeker`, as the backends see them: a position or -1.
+    /// The trait methods below turn -1 into an `IoError` and take the
+    /// `SeekFrom` apart, which is work neither backend should be doing.
+    @native("rask_file_seek")
+    func seek_raw(self, whence: i64, offset: i64) -> i64 {}
+    @native("rask_file_position")
+    func position_raw(self) -> i64 {}
 
     /// Read the entire file contents as bytes.
     @native("rask_file_read_bytes")

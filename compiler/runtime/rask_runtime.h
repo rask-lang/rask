@@ -745,6 +745,11 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 int64_t     rask_file_is_null(int64_t file);
+// std.io/K1, K3. `whence` follows `SeekFrom`'s declaration order —
+// 0 = Start, 1 = End, 2 = Current — not SEEK_SET's numbering. Both hand back
+// the absolute position, or -1 with errno set.
+int64_t     rask_file_seek(int64_t file, int64_t whence, int64_t offset);
+int64_t     rask_file_position(int64_t file);
 void        rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and

@@ -186,20 +186,24 @@ fn calling_an_unimplemented_stdlib_stub_fails_at_the_call() {
     // codegen, and not a runtime error part-way through a run.
     //
     // The example is whichever stub is still unbuilt; it used to be
-    // `Vec.reserve`, which now has a body (#912). Swap it when this one lands
-    // rather than deleting the test — the rule is about the marker, not the
-    // method.
+    // `Vec.reserve` (#912), then `Vec.remove_unordered`, which is `swap` plus
+    // `pop` and now has a body. Swap it when this one lands rather than
+    // deleting the test — the rule is about the marker, not the method.
+    //
+    // `json.to_value` needs the derived encoder to build a tree rather than a
+    // string, so it isn't a two-liner like the last two were.
     let path = tmp_rk(r#"
+        import json
+
         func main() {
-            mut v = Vec.from([1, 2, 3])
-            let gone = v.remove_unordered(0)
-            println("{gone}")
+            let tree = json.to_value(7)
+            println("{tree.type_name()}")
         }
     "#);
     let out = check_file(path.to_str().unwrap(), &default_config());
     let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("Vec.remove_unordered") && m.contains("not implemented")),
+        msgs.iter().any(|m| m.contains("json.to_value") && m.contains("not implemented")),
         "expected an unimplemented-stub error naming the method, got {msgs:?}",
     );
     let _ = std::fs::remove_file(&path);

@@ -83,7 +83,7 @@ trait Writer {
 | **K2: SeekFrom** | Position specified as `SeekFrom.Start(n)`, `SeekFrom.End(n)`, or `SeekFrom.Current(n)` |
 | **K3: Position** | `position()` returns the current stream position without seeking |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum SeekFrom {
     Start(i64)
@@ -98,6 +98,8 @@ trait Seeker {
 ```
 
 `File` and `Buffer` implement `Seeker`. Standard streams do not — they are sequential.
+
+Past the end is legal — the position moves and a read from there gives nothing. A negative *absolute* position is not, and the trait bodies reject it rather than leaving it to the backends: C's `fseek` fails on one and Rust's `SeekFrom::Start` takes a `u64` and would clamp.
 
 ## Buffered Wrappers
 

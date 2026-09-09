@@ -131,6 +131,7 @@ t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 4 allocations
 t_fs_open_failure.rk  # 2 allocations
 t_io_buffer.rk  # 24 allocations
+t_io_seek.rk  # 21 allocations — the `io.Buffer` locals, the same shape `t_io_buffer.rk` carries
 t_json_decode.rk  # 22 allocations
 t_json_encode_shapes.rk  # 14 allocations
 t_local_box_payload.rk  # 1 allocation
