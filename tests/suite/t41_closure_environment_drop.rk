@@ -21,20 +21,19 @@
 // made. Both cases decide by dominance now, the way `container_drop` has all
 // along.
 //
-// What this does *not* fix, measured per test rather than assumed:
+// A third boundary closed the case this file used to leave open: a closure
+// made on one branch of an `if` inside a loop reaches neither of the two above
+// — the back edge doesn't dominate the arm that made it, and the return is
+// outside the loop. The drop goes where control *leaves the region the
+// definition rules*, which is the rule `container_drop` already had; it lives
+// in `analysis::drop_sites` now, because three passes wanted it.
 //
-//   - A closure made on one branch of an `if` inside a loop. Neither the
-//     back-edge nor the return dominates the block that made it, so there is
-//     no point where freeing it is unconditionally safe. Same conservatism
-//     `container_drop` has; the answer is drop placement at last use, not
-//     another boundary.
-//   - A chain's intermediate environments. Each adapter captures the one
-//     before it, so only the outermost is this frame's — and freeing an
-//     environment doesn't free what it captured.
-//
-// Both are the same question one level up: what happens to what an environment
-// *owns* when the environment goes. That is #1045's remaining half and a design
-// decision, not a missing case here.
+// What this still does not fix, measured per test rather than assumed: a
+// chain's intermediate environments. Each adapter captures the one before it,
+// so only the outermost is this frame's — and freeing an environment doesn't
+// free what it captured. That is the same question one level up — what happens
+// to what an environment *owns* when the environment goes — and it is #1045's
+// remaining half, a design decision rather than a missing case here.
 
 import sequence.Sequence
 
@@ -201,4 +200,63 @@ test "capturing a vec still works" {
     let v: Vec<i64> = [1, 2, 3]
     assert over_a_vec(v).count() == 3
     assert v.len() == 3
+}
+
+// The branch-inside-a-loop case, from more angles than the one above. Each of
+// these makes an environment on a path that reaches neither the back edge nor
+// the return from where it was made.
+test "a closure made on one branch, both arms making one" {
+    mut total = 0
+    mut r = 0
+    while r < 20 {
+        if r % 2 == 0 {
+            total = total + counter(r).count()
+        } else {
+            total = total + counter(r + 100).count()
+        }
+        r = r + 1
+    }
+    assert total == 40u64
+}
+
+test "a closure made in a nested branch" {
+    mut total = 0
+    mut r = 0
+    while r < 12 {
+        if r % 2 == 0 {
+            if r % 4 == 0 {
+                total = total + counter(r).count()
+            }
+        }
+        r = r + 1
+    }
+    assert total == 6u64
+}
+
+// A `for` rather than a `while`, so the loop's own shape isn't what decides it.
+test "a closure made on one branch of a for body" {
+    mut total = 0
+    for i in 0..10 {
+        if i > 4 {
+            total = total + counter(i).count()
+        }
+    }
+    assert total == 10u64
+}
+
+// The value is used after the branch closes, so a drop placed at the region's
+// exit has to come after the read rather than before it. A wrong answer here
+// rather than a leak.
+test "a closure made on one branch and read after it" {
+    mut total = 0
+    mut r = 0
+    while r < 8 {
+        mut n = 0
+        if r % 2 == 0 {
+            n = counter(r).count().wrap<i64>()
+        }
+        total = total + n
+        r = r + 1
+    }
+    assert total == 8
 }

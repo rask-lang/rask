@@ -1998,36 +1998,12 @@ fn exit_edge_drops(
             continue;
         }
         let def = func.blocks[def_idx].id;
-        // Anything outside the region still naming it would read a value this
-        // is about to free — a phi merging this arm's container with another
-        // arm's is the shape that matters.
-        let named_outside = func.blocks.iter().any(|b| {
-            !dom.dominates(def, b.id)
-                && (b.statements.iter().any(|st| crate::analysis::uses::stmt_reads(st, id))
-                    || crate::analysis::uses::terminator_reads(&b.terminator, id))
-        });
-        if named_outside {
-            continue;
-        }
-        for (idx, block) in func.blocks.iter().enumerate() {
-            if !dom.dominates(def, block.id) || !still_ours(&id, block.id) {
-                continue;
-            }
-            // Every successor, not any: the free goes at the end of the block,
-            // so a block that can also carry on inside the region would run it
-            // and keep going. A loop header branching to its own body and to
-            // the exit is exactly that, and freeing there segfaulted on the
-            // next turn. Mixed blocks are left alone — that leaks where
-            // splitting the edge would free, and leaking is the safe half.
-            let succs = crate::analysis::cfg::successors(&block.terminator);
-            // A back-edge target is not an exit either, whatever dominance
-            // says: `backedge_drops` already frees a container built inside a
-            // loop, and freeing here as well is a double free —
-            // `while i < 4 { mut v = Vec.new() … }` segfaulted on the second
-            // turn.
-            let leaves = !succs.is_empty()
-                && succs.iter().all(|s| !dom.dominates(def, *s) && !dom.dominates(*s, block.id));
-            if leaves {
+        let sites = crate::analysis::drop_sites::where_control_leaves(func, dom, def, id);
+        for idx in sites {
+            // And not where the value has already been handed over on this
+            // path — the one question the shared rule can't answer, because
+            // only this pass tracks it.
+            if still_ours(&id, func.blocks[idx].id) {
                 extra.entry(idx).or_default().push(id);
             }
         }

@@ -562,35 +562,8 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
         for id in droppable.iter().copied() {
             let Some(&def_idx) = defined_in_block.get(&id) else { continue };
             let def = func.blocks[def_idx].id;
-            // Anything outside the region still naming it would read a value
-            // this is about to free — a phi merging this arm's box with
-            // another's is the shape that matters.
-            let named_outside = func.blocks.iter().any(|b| {
-                !dom.dominates(def, b.id)
-                    && (b.statements.iter().any(|st| crate::analysis::uses::stmt_reads(st, id))
-                        || crate::analysis::uses::terminator_reads(&b.terminator, id))
-            });
-            if named_outside {
-                continue;
-            }
-            for (idx, block) in func.blocks.iter().enumerate() {
-                if !dom.dominates(def, block.id) {
-                    continue;
-                }
-                // Every successor, not any: the drop goes at the end of the
-                // block, so a block that can also carry on inside the region
-                // would run it and keep going. And a back-edge target is not an
-                // exit whatever dominance says — `collect_backedge_drops`
-                // already owns those, and dropping in both places is a double
-                // free.
-                let succs = crate::analysis::cfg::successors(&block.terminator);
-                let leaves = !succs.is_empty()
-                    && succs
-                        .iter()
-                        .all(|s| !dom.dominates(def, *s) && !dom.dominates(*s, block.id));
-                if leaves {
-                    extra.entry(idx).or_default().push(id);
-                }
+            for idx in crate::analysis::drop_sites::where_control_leaves(func, &dom, def, id) {
+                extra.entry(idx).or_default().push(id);
             }
         }
         for (idx, mut locals) in extra {

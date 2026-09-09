@@ -7,6 +7,7 @@ pub mod addr_alias;
 pub mod call_graph;
 pub mod cfg;
 pub mod dataflow;
+pub mod drop_sites;
 pub mod dominators;
 pub mod escape;
 pub mod intervals;

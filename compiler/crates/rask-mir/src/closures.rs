@@ -783,6 +783,50 @@ fn insert_closure_drops(
         }
     }
 
+    // And where control *leaves* the region the closure's definition rules.
+    //
+    // A closure made on one branch of an `if` inside a loop reaches neither
+    // boundary above: the loop's back edge doesn't dominate the arm that made
+    // it, and the return is outside the loop. So nothing freed it and every
+    // even-numbered turn of `if r % 2 == 0 { counter(r).count() }` leaked an
+    // environment.
+    //
+    // The rule `container_drop` uses answers it: the last place the value is
+    // certainly alive and certainly finished with is the edge out of the
+    // region its definition dominates. Both of that rule's guards carry over,
+    // and both exist because of a crash — every successor has to be outside
+    // (a loop header branches to its own body as well as to the exit), and a
+    // back-edge target doesn't count, because the back-edge case above already
+    // frees there.
+    let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
+    for id in heap_closures.iter().copied() {
+        let Some(&def_idx) = closure_block.get(&id) else { continue };
+        let def = func.blocks[def_idx].id;
+        // Returned, or handed anywhere a later block still names it: the frame
+        // is not the one that finishes with it here.
+        let returned = func.blocks.iter().any(|b| {
+            matches!(
+                &b.terminator.kind,
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(v)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), .. }
+                    if aliases.get(v).copied().unwrap_or(*v) == id
+            )
+        });
+        if returned {
+            continue;
+        }
+        // Already freed at one of the boundaries above.
+        if drops_to_insert.iter().any(|(_, locals)| locals.contains(&id)) {
+            continue;
+        }
+        for idx in crate::analysis::drop_sites::where_control_leaves(func, &dom, def, id) {
+            extra.entry(idx).or_default().push(id);
+        }
+    }
+    for (idx, locals) in extra {
+        drops_to_insert.push((idx, locals));
+    }
+
     for (block_idx, locals) in drops_to_insert {
         for local_id in expand_owned(&locals, owned_by) {
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::ClosureDrop {
