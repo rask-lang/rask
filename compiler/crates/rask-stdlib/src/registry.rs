@@ -228,8 +228,14 @@ macro_rules! methods_with_arity {
 // copy would be a second thing to keep in step. `clone` is the one name this
 // list has that the stdlib file doesn't — it comes from the box family rather
 // than from a declaration.
+//
+// `staged` is missing on purpose, and not because it doesn't exist: it is
+// declared, the checker accepts it, and `with s.staged() as v` runs on both
+// backends. What has no implementation anywhere is the bare `s.staged()` this
+// list would claim — see #1156. Adding the name asserts a method call that
+// answers, and that one doesn't.
 const SHARED_METHODS: &[&str] = &[
-    "read", "write", "try_read", "try_write", "staged", "clone",
+    "read", "write", "try_read", "try_write", "clone",
     "get", "set", "replace", "into_inner",
 ];
 
