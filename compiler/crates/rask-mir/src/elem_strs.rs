@@ -151,6 +151,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // caller owns what came back.
     ("Random_new", 0, 0, "Random_free"),
     ("Random_from_seed", 0, 0, "Random_free"),
+    // An `Atomic<T>` is the same shape: one heap word behind an opaque handle,
+    // with a free that didn't exist. Every counter in a program leaked eight
+    // bytes, and `Atomic<T>` is what mem.atomics/GA1 makes you write.
+    ("Atomic_new", 0, 0, "Atomic_free"),
+    ("Atomic_default", 0, 0, "Atomic_free"),
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
     ("Pool_new", 1, 0, "Pool_free"),

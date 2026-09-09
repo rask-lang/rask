@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An `Atomic<T>` is given back.
+//
+// An atomic is one machine word behind an opaque handle, and there was no
+// `rask_atomic_int_free` in the runtime at all — so every counter in every
+// program leaked its eight bytes and nothing on either side said so. The same
+// shape `Random` was in: a constructor handing back a heap block with no free
+// on the list the drop pass reads.
+//
+// `into_inner` did free, because it reads the word and gives the block back in
+// the same call. That's why the leak hid: the shape a test reaches for to
+// *check* the value is the one shape that cleaned up after itself.
+//
+// Adding the constructor to that list made every other `Atomic_*` spelling
+// unaccounted for, which is the deliberate panic in `INTERNAL_SPELLINGS` —
+// `Atomic` is a compiler type with no stdlib file, so each of its methods
+// needs a line saying what it stands for.
+//
+// The values are what these check as much as the count: a word freed early
+// reads as whatever the allocator wrote there next, so a wrong answer here is
+// a wrong answer rather than a quiet leak.
+//
+// Spec: specs/memory/atomics.md — GA1, `Atomic<T>` is the only spelling; GA2,
+// the payload is a machine word.
+import sync.Atomic
+import sync.Ordering
+
+test "mem.atomics — a counter is freed and still reads right" {
+    let a = Atomic<i64>.new(7)
+    assert a.load(Ordering.SeqCst) == 7
+    a.store(42, Ordering.SeqCst)
+    assert a.load(Ordering.SeqCst) == 42
+}
+
+test "mem.atomics — the default constructor too" {
+    let a = Atomic<i64>.default()
+    assert a.load(Ordering.SeqCst) == 0
+    a.store(3, Ordering.SeqCst)
+    assert a.load(Ordering.SeqCst) == 3
+}
+
+test "mem.atomics — fetch_add through a freed handle" {
+    let a = Atomic<i64>.new(10)
+    assert a.fetch_add(5, Ordering.SeqCst) == 10
+    assert a.load(Ordering.SeqCst) == 15
+}
+
+test "mem.atomics — swap" {
+    let a = Atomic<i64>.new(1)
+    assert a.swap(9, Ordering.SeqCst) == 1
+    assert a.load(Ordering.SeqCst) == 9
+}
+
+// `into_inner` frees the block itself, so the frame must not free it again —
+// a second free aborts rather than leaking.
+test "mem.atomics — into_inner consumes it" {
+    let a = Atomic<i64>.new(4)
+    assert a.into_inner() == 4
+}
+
+test "mem.atomics — one consumed, one dropped, in the same frame" {
+    let a = Atomic<i64>.new(1)
+    let b = Atomic<i64>.new(2)
+    assert a.into_inner() == 1
+    assert b.load(Ordering.SeqCst) == 2
+}
+
+// A bool payload, which is the same word to the runtime.
+test "mem.atomics — a bool flag" {
+    let flag = Atomic<bool>.new(false)
+    assert !flag.load(Ordering.SeqCst)
+    flag.store(true, Ordering.SeqCst)
+    assert flag.load(Ordering.SeqCst)
+}
+
+// One per turn, so a missing free shows up as a count rather than as one
+// stray block, and a double free lands on one the next turn has reused.
+test "mem.atomics — an atomic per turn" {
+    mut total = 0
+    for i in 0..8 {
+        let a = Atomic<i64>.new(i.clamp<i64>())
+        a.fetch_add(1, Ordering.SeqCst)
+        total = total + a.load(Ordering.SeqCst)
+    }
+    assert total == 36
+}
+
+// Several alive at once, so the frame's drops don't depend on there being one.
+test "mem.atomics — three at a time" {
+    let a = Atomic<i64>.new(1)
+    let b = Atomic<i64>.new(2)
+    let c = Atomic<i64>.new(3)
+    assert a.load(Ordering.SeqCst) + b.load(Ordering.SeqCst) + c.load(Ordering.SeqCst) == 6
+    a.store(10, Ordering.SeqCst)
+    assert a.load(Ordering.SeqCst) == 10
+    assert b.load(Ordering.SeqCst) == 2
+}

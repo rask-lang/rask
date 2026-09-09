@@ -113,7 +113,13 @@
 # body every turn, so `v` is live out of the block that copies it — reading
 # that as a move left every name in the group either moved-from or with nowhere
 # to put a free, and the container was freed by nobody
-# (#1047, `t39_loop_backedge_container_free.rk` clean).
+# (#1047, `t39_loop_backedge_container_free.rk` clean), and 185 once an
+# `Atomic<T>` had a free at all. One machine word behind an opaque handle and
+# no `rask_atomic_int_free` in the runtime, so every counter in every program
+# leaked eight bytes — the same shape `Random` was in. It hid because
+# `into_inner` reads the word and gives the block back in one call, which is
+# the shape a test reaches for (`t_month_atomics.rk` and
+# `t_atomic_across_tasks.rk` clean).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -169,7 +175,6 @@ t62_trait_object_positions.rk  # 1 allocation
 t65_vec_of_trait_objects.rk  # 10 allocations
 t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
 t_any_error_boxing.rk  # 1 allocation
-t_atomic_across_tasks.rk  # 6 allocations
 t_bare_error_type.rk  # 1 allocation
 t_borrow_param_consume.rk  # 2 allocations
 t_box_replace_payload.rk  # 3 allocations
@@ -186,7 +191,6 @@ t_debug_renders_containers.rk  # 2 allocations
 t_io_buffer.rk  # 17 allocations
 t_json_decode.rk  # 6 allocations
 t_local_box_payload.rk  # 1 allocation
-t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 1 allocation
 t_month_boxes.rk  # 6 allocations
 t_month_panic_observed.rk  # 9 allocations

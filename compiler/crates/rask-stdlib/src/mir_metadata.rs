@@ -382,6 +382,32 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
     ("Random_free", Internal::ConsumesReceiver),
+
+    // ── `Atomic<T>` ─────────────────────────────────────────────
+    // A compiler type with no stdlib file, so every one of its spellings needs
+    // a line here — and it needs them now that `Atomic_new` is a constructor
+    // the drop pass recognises. Nothing here points into the receiver: an
+    // atomic holds one machine word and every operation hands back a copy of
+    // it (mem.atomics/GA1, GA2).
+    ("Atomic_new", Internal::NoReceiver),
+    ("Atomic_default", Internal::NoReceiver),
+    ("Atomic_load", Internal::FreshFromReceiver),
+    ("Atomic_store", Internal::FreshFromReceiver),
+    ("Atomic_swap", Internal::FreshFromReceiver),
+    ("Atomic_compare_exchange", Internal::FreshFromReceiver),
+    ("Atomic_compare_exchange_weak", Internal::FreshFromReceiver),
+    ("Atomic_fetch_add", Internal::FreshFromReceiver),
+    ("Atomic_fetch_sub", Internal::FreshFromReceiver),
+    ("Atomic_fetch_and", Internal::FreshFromReceiver),
+    ("Atomic_fetch_or", Internal::FreshFromReceiver),
+    ("Atomic_fetch_xor", Internal::FreshFromReceiver),
+    ("Atomic_fetch_nand", Internal::FreshFromReceiver),
+    ("Atomic_fetch_max", Internal::FreshFromReceiver),
+    ("Atomic_fetch_min", Internal::FreshFromReceiver),
+    // `into_inner` reads the word and frees the block in the same call, so the
+    // frame must not free it again.
+    ("Atomic_into_inner", Internal::ConsumesReceiver),
+    ("Atomic_free", Internal::ConsumesReceiver),
     ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it

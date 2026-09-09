@@ -1651,6 +1651,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         ));
     }
     entries.push(atomic("Atomic_into_inner", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
+    // The ordinary drop. `into_inner` frees too and hands the value out with
+    // it; this is for an atomic that just goes out of scope.
+    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_int_free", &[types::I64], None, false));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
