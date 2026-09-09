@@ -839,6 +839,10 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     for (int64_t i = 0; i < n_slots; i++) {
         char *dst = (char *)origin[i];
         if (!dst) continue;
+        // The node this one was copied from, so a field can be asked whether it
+        // still shares the original's container — see the VEC case.
+        const char *src_node =
+            (i < r->dir_cap) ? (const char *)r->directory[i] : NULL;
         for (int32_t f = 0; f < r->field_count; f++) {
             void **slot = (void **)(dst + field_offset(r, f));
             switch (field_kind(r, f)) {
@@ -856,9 +860,20 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 break;
             }
             case RASK_RACK_FIELD_VEC: {
-                // The copy shares the original's vector until this runs: the
-                // memcpy above copied the pointer, not the elements.
-                RaskVec *fresh = rask_vec_clone((RaskVec *)*slot);
+                // The copy shares the original's vector until *something*
+                // clones it: the memcpy above copied the pointer, not the
+                // elements. `rask_owned_retain_all` is that something whenever
+                // the node's owned descriptor names this field — so cloning
+                // again here overwrote the handle it wrote and leaked the
+                // vector it had just made. One per node with a
+                // `Vec<Link<T>>` field; `p13_rack_snapshot.rk` leaked nine.
+                //
+                // Asking the original settles it without assuming the two
+                // descriptions agree about which fields they cover.
+                RaskVec *cur = (RaskVec *)*slot;
+                int shares_original =
+                    src_node && cur == *(RaskVec **)(src_node + field_offset(r, f));
+                RaskVec *fresh = shares_original ? rask_vec_clone(cur) : cur;
                 *slot = fresh;
                 int64_t n = rask_vec_len(fresh);
                 for (int64_t e = 0; e < n; e++) {
@@ -870,7 +885,11 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 break;
             }
             case RASK_RACK_FIELD_MAP: {
-                RaskMap *fresh = rask_map_clone((RaskMap *)*slot);
+                // Same as the vector above.
+                RaskMap *cur = (RaskMap *)*slot;
+                int shares_original =
+                    src_node && cur == *(RaskMap **)(src_node + field_offset(r, f));
+                RaskMap *fresh = shares_original ? rask_map_clone(cur) : cur;
                 *slot = fresh;
                 rask_map_remap_link_values(fresh, r, origin, n_slots);
                 rask_link_register_map(fresh);

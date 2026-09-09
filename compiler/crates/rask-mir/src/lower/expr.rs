@@ -2254,7 +2254,20 @@ impl<'a> MirLowerer<'a> {
                 // Resolve field index, type, and byte offset from struct layout.
                 // byte_offset is passed to codegen so it doesn't need to re-derive
                 // the offset (which would require knowing the struct type).
-                let (field_index, result_ty, byte_offset, field_size) = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
+                // A link is the node's address and carries the node's layout, so
+                // `l.field` is an ordinary base+offset projection
+                // (mem.racks/RK2) — the same resolution a struct gets. Left
+                // out, the index fell back to 0, which is right only when the
+                // field happens to be laid out first: a node with its `Vec`
+                // there worked, and one with a `string` there read the string's
+                // header as a vector handle. Two racks over different node
+                // types in one program was enough, and it printed
+                // 2336353779914121313 for a length of 0.
+                let node_layout = match &obj_ty {
+                    MirType::Struct(StructLayoutId { id, .. }) => Some(*id),
+                    other => other.as_link().map(|s| s.id),
+                };
+                let (field_index, result_ty, byte_offset, field_size) = if let Some(id) = &node_layout {
                     if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                         if let Some((idx, fl)) = layout.fields.iter().enumerate()
                             .find(|(_, f)| f.name == *field)

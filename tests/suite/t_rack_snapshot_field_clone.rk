@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Rack.snapshot()` clones a node's container field once, not twice.
+//
+// A snapshot copies each node's bytes and then gives the copy its own
+// reference to everything the node owns — a refcount for a string, a real copy
+// for a nested container. Then it walks the fields again to rewrite the links
+// inside them, and that second walk cloned the container *again* and wrote the
+// new handle over the first one. One vector leaked per node with a
+// `Vec<Link<T>>` field, every snapshot; `p13_rack_snapshot.rk` leaked nine.
+//
+// The second walk now asks the original whether the slot still shares its
+// container, which settles it without assuming the two field descriptions —
+// the owned descriptor and the rack's link fields — cover the same set.
+//
+// The answers are what these check, not the allocation count: two clones where
+// one belongs is a leak, and *no* clone where one belongs would leave the copy
+// pointing at the original's vector, so mutating one would show up in the
+// other. Both directions fail here.
+//
+// Spec: specs/memory/racks.md — a snapshot shares nothing with its source.
+import memory.Rack
+import memory.Link
+
+struct Node {
+    public id: i32
+    public peer: Link<Node>?
+    public kids: Vec<Link<Node>>
+}
+
+struct Tagged {
+    public label: string
+    public kids: Vec<Link<Tagged>>
+}
+
+test "mem.racks — a snapshot's node has its own vector" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 1, peer: none, kids: Vec.new() })
+    let b = r.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    a.kids.push(b)
+
+    let copy = r.snapshot()
+    assert copy.len() == 2
+
+    // Growing the original's vector must not reach the copy.
+    a.kids.push(a)
+    assert a.kids.len() == 2
+    if copy.corresponding(a)? as ca {
+        assert ca.kids.len() == 1
+    } else {
+        assert false
+    }
+}
+
+test "mem.racks — and the other way round" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 5, peer: none, kids: Vec.new() })
+    let b = r.insert(Node { id: 6, peer: none, kids: Vec.new() })
+    a.kids.push(b)
+
+    mut copy = r.snapshot()
+    if copy.corresponding(a)? as ca {
+        ca.kids.push(ca)
+        assert ca.kids.len() == 2
+    } else {
+        assert false
+    }
+    // The original is untouched.
+    assert a.kids.len() == 1
+}
+
+// The link inside the copy's vector points at the copy's node, which is what
+// the second walk is for — so a fix that skipped the walk entirely fails here.
+test "mem.racks — the links inside the copied vector point at the copy" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 1, peer: none, kids: Vec.new() })
+    let b = r.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    a.kids.push(b)
+
+    let copy = r.snapshot()
+    b.id = 999
+
+    if copy.corresponding(a)? as ca {
+        let inner = ca.kids[0]
+        assert inner.id == 2
+        assert copy.contains(inner)
+    } else {
+        assert false
+    }
+}
+
+// A string field beside the container, so the refcount half of the same walk
+// is exercised too.
+test "mem.racks — a string and a vector in one node" {
+    mut r: Rack<Tagged> = Rack.new()
+    let a = r.insert(Tagged { label: "a label long enough to allocate", kids: Vec.new() })
+    let b = r.insert(Tagged { label: "and a second label, also long", kids: Vec.new() })
+    a.kids.push(b)
+
+    let copy = r.snapshot()
+    if copy.corresponding(a)? as ca {
+        assert ca.label == "a label long enough to allocate"
+        assert ca.kids.len() == 1
+        assert ca.kids[0].label == "and a second label, also long"
+    } else {
+        assert false
+    }
+}
+
+// Repeatedly, so a clone left behind shows up as a count rather than as one
+// stray block.
+test "mem.racks — snapshotting in a loop" {
+    mut total: usize = 0
+    for i in 1..6 {
+        mut r: Rack<Node> = Rack.new()
+        let a = r.insert(Node { id: i.clamp<i32>(), peer: none, kids: Vec.new() })
+        let b = r.insert(Node { id: 0, peer: none, kids: Vec.new() })
+        a.kids.push(b)
+        let copy = r.snapshot()
+        total = total + copy.len()
+    }
+    assert total == 10
+}
