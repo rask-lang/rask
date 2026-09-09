@@ -4442,18 +4442,32 @@ impl<'a> MirLowerer<'a> {
         if matches!(val_ty, MirType::Option(_)) {
             return false;
         }
-        // Exact identity match wins.
+        // Identity match wins, on the base name. The pattern carries the type
+        // arguments the source wrote and a layout's name doesn't, so
+        // `r is Refused<i64>` on a `void or Refused<i64>` compared
+        // "Refused<i64>" against "Refused", missed, and fell through to the
+        // "err side is nominally named, so this must be the ok side" rule
+        // below — routing the error arm to tag 0. `Vec.try_push` is declared
+        // `void or GrowError<T>`, so both of its answers read backwards
+        // natively while the interpreter had them right.
+        //
+        // Two instantiations of one generic on the two sides would both match;
+        // the ok side is checked first, which is the same precedence an exact
+        // match had.
         if let Some(ok) = ok_ty {
-            if self.mir_type_name(ok).as_deref() == Some(name) {
+            if self.mir_type_name(ok).is_some_and(|n| same_nominal(&n, name)) {
                 return false;
             }
         }
         if let Some(err) = err_ty {
-            if self.mir_type_name(err).as_deref() == Some(name) {
+            if self.mir_type_name(err).is_some_and(|n| same_nominal(&n, name)) {
                 return true;
             }
             if let MirType::Union(variants) = err {
-                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                if variants
+                    .iter()
+                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
+                {
                     return true;
                 }
             }
@@ -4551,11 +4565,14 @@ impl<'a> MirLowerer<'a> {
             _ => [None, None],
         };
         for side in sides.into_iter().flatten() {
-            if self.mir_type_name(side).as_deref() == Some(name) {
+            if self.mir_type_name(side).is_some_and(|n| same_nominal(&n, name)) {
                 return true;
             }
             if let MirType::Union(variants) = side {
-                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                if variants
+                    .iter()
+                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
+                {
                     return true;
                 }
             }
@@ -5887,6 +5904,19 @@ fn find_top_level_or(s: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Do these two spellings name the same nominal type?
+///
+/// A pattern carries the type arguments the source wrote — `Refused<i64>` — and
+/// a layout's name is the bare one, plus a `$` suffix once monomorphization has
+/// been through it. So the comparison is on what comes before either.
+fn same_nominal(a: &str, b: &str) -> bool {
+    fn base(n: &str) -> &str {
+        let n = n.split('<').next().unwrap_or(n).trim();
+        n.split('$').next().unwrap_or(n).trim()
+    }
+    base(a) == base(b)
 }
 
 fn find_top_level_comma(s: &str) -> Option<usize> {

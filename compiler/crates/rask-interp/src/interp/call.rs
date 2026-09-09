@@ -647,7 +647,7 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
         Value::Enum { name, .. } => Some(name.as_str()),
         Value::Struct(s) => {
             let guard = s.lock().unwrap();
-            if names.iter().any(|n| n == &guard.name) {
+            if names.iter().any(|n| same_nominal(n, &guard.name)) {
                 return true;
             }
             None
@@ -655,9 +655,29 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
         _ => None,
     };
     if let Some(vn) = value_type_name {
-        names.iter().any(|n| n == vn)
+        names.iter().any(|n| same_nominal(n, vn))
     } else {
         false
     }
+}
+
+/// Do these two spellings name the same nominal type?
+///
+/// The declared error type carries the type arguments the source wrote —
+/// `Refused<i64>` — and a runtime value's name is the bare one. Exact equality
+/// therefore missed for every generic error type, so `return Refused.Full(n)`
+/// from a `-> i64 or Refused<i64>` was wrapped as `Result.Ok(…)`: the wrong
+/// side. `catch` then never fired and the error came back as the value.
+///
+/// Native had the same bug in its own spelling — `is Refused<i64>` compared
+/// against a layout named `Refused` and routed to the success arm — so
+/// `Vec.try_push`, declared `void or GrowError<T>`, read backwards on both
+/// backends in different ways.
+fn same_nominal(a: &str, b: &str) -> bool {
+    fn base(n: &str) -> &str {
+        let n = n.split('<').next().unwrap_or(n).trim();
+        n.rsplit('.').next().unwrap_or(n).trim()
+    }
+    base(a) == base(b)
 }
 

@@ -63,10 +63,32 @@ extend Vec<T> {
         self.push(value)
     }
 
-    /// Push every element of `iter`. Hands back the first element that didn't
+    /// Push every element of `items`. Hands back the first one that didn't
     /// fit. `push_all`, not `extend` — that word is the declaration keyword.
-    @unimplemented
-    public func try_push_all(mutate self, iter: Iterator<T>) -> void or GrowError<T> {}
+    ///
+    /// `Vec<T>`, not the `Iterator<T>` this was declared with. A method taking
+    /// `Iterator<T>` couldn't be called at all: the for-loop lowering doesn't
+    /// recognise the type and a collection has no `.iter()` to hand one over
+    /// (SEQ31).
+    ///
+    /// `Sequence<T>` would be the general shape, and SEQ48 says a collection
+    /// stands for its own chain head — but the insertion of `as_sequence()`
+    /// only happens inside Vec's own adapter bodies, not at an arbitrary
+    /// `Sequence<T>` parameter, so `a.try_push_all(b)` wouldn't compile. Widen
+    /// this to `Sequence<T>` when that coercion exists (#1046); it's one word.
+    ///
+    /// Written in Rask so both backends share the rule, like `try_push` next
+    /// to it. Stopping at the first refusal is what the doc says.
+    public func try_push_all(mutate self, items: Vec<T>) -> void or GrowError<T> {
+        mut i = 0
+        while i < items.len() {
+            if self.is_full() {
+                return GrowError.Full(items[i])
+            }
+            self.push(items[i])
+            i = i + 1
+        }
+    }
 
     /// Remove and return the last element.
     @native("rask_vec_pop")
