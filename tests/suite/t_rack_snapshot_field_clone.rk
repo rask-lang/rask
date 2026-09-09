@@ -33,6 +33,11 @@ struct Tagged {
     public kids: Vec<Link<Tagged>>
 }
 
+struct Indexed {
+    public label: string
+    public by_name: Map<string, Link<Indexed>>
+}
+
 test "mem.racks — a snapshot's node has its own vector" {
     mut r: Rack<Node> = Rack.new()
     let a = r.insert(Node { id: 1, peer: none, kids: Vec.new() })
@@ -102,6 +107,37 @@ test "mem.racks — a string and a vector in one node" {
         assert ca.label == "a label long enough to allocate"
         assert ca.kids.len() == 1
         assert ca.kids[0].label == "and a second label, also long"
+    } else {
+        assert false
+    }
+}
+
+// A `Map<K, Link<T>>` field, the other half of the same walk. It has its own
+// clone-and-remap arm and nothing exercised it.
+test "mem.racks — a map field is cloned once and remapped" {
+    mut r: Rack<Indexed> = Rack.new()
+    let x = r.insert(Indexed { label: "the parent label is long enough", by_name: Map.new() })
+    let y = r.insert(Indexed { label: "the child label is long as well", by_name: Map.new() })
+    x.by_name.insert("child", y)
+
+    let copy = r.snapshot()
+    if copy.corresponding(x)? as cx {
+        assert cx.by_name.len() == 1
+        if cx.by_name.get("child")? as cy {
+            assert cy.label == "the child label is long as well"
+            // The copy's map points into the copy, not back at the original.
+            assert copy.contains(cy)
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+    // And growing the original's map doesn't reach the copy.
+    x.by_name.insert("second", x)
+    assert x.by_name.len() == 2
+    if copy.corresponding(x)? as cx {
+        assert cx.by_name.len() == 1
     } else {
         assert false
     }

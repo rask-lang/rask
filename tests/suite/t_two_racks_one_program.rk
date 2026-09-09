@@ -33,6 +33,15 @@ struct Labelled {
     public kids: Vec<Link<Labelled>>
 }
 
+// A `Link<T>?` field rather than a bare one: the option form is the same word
+// with a sentinel, and `MirType::as_link` answers for both — so a fix that
+// only matched the bare spelling would pass everything above and fail here.
+struct Peered {
+    public label: string
+    public peer: Link<Peered>?
+    public n: i32
+}
+
 // A third shape: two scalars ahead of the container.
 struct Counted {
     public a: i64
@@ -103,6 +112,25 @@ test "mem.racks/RK2 — writing a field through a link" {
     assert x.a == 1
     assert x.b == 99
     assert x.kids.len() == 0
+}
+
+test "mem.racks/RK2 — through a `Link<T>?` field" {
+    mut slots: Rack<Slot> = Rack.new()
+    let s = slots.insert(Slot { kids: Vec.new(), n: 1 })
+    assert s.n == 1
+
+    mut peered: Rack<Peered> = Rack.new()
+    let x = peered.insert(Peered { label: "the first label, long enough", peer: none, n: 5 })
+    let y = peered.insert(Peered { label: "the second label, also long", peer: none, n: 6 })
+    x.peer = y
+    if x.peer? as p {
+        assert p.label == "the second label, also long"
+        assert p.n == 6
+    } else {
+        assert false
+    }
+    assert x.n == 5
+    assert x.label == "the first label, long enough"
 }
 
 // Interleaved, so a per-program answer that happened to be set by the first
