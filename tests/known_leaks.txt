@@ -33,7 +33,10 @@
 # list at all — what had kept them off it was a string read out of one container
 # and pushed into another, which took no reference (nine more files clean), and
 # 594 once a rack node's own strings and containers were freed with the node
-# (`t_rack_stale_records.rk` 15 → 2, `p13_rack_snapshot.rk` 21 → 10).
+# (`t_rack_stale_records.rk` 15 → 2, `p13_rack_snapshot.rk` 21 → 10), and 521
+# once a container captured into a closure the frame also drops was freed by
+# the frame rather than by glue no site could agree on — the sequence-adapter
+# family from 152 allocations to 88.
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -88,14 +91,14 @@ t27_error_narrowing.rk  # 2 allocations
 t29_branch_merge.rk  # 9 allocations
 t31_sequence_adapters.rk  # 3 allocations — adapter closures capture self and f, #1045
 t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
-t34_vec_as_sequence.rk  # 13 allocations — the source closure captures self, #1045
-t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
-t38_lazy_collection_adapters.rk  # 20 allocations — a collection's adapters capture the collection, #1035
+t34_vec_as_sequence.rk  # 1 allocation — the source closure captures self, #1045
+t35_returned_sequence.rk  # 2 allocations — a returned chain's captured containers, #1035
+t38_lazy_collection_adapters.rk  # 8 allocations — a collection's adapters capture the collection, #1035
 t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 16 allocations — sequence adapter closures, #1045
 t40_stdlib_renames.rk  # 3 allocations
-t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
-t42_flatten_shaped_header.rk  # 15 allocations — flatten's per-element inner sequences, #1045
+t41_closure_environment_drop.rk  # 28 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
+t42_flatten_shaped_header.rk  # 9 allocations — flatten's per-element inner sequences, #1045
 t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
 t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
@@ -107,11 +110,12 @@ t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
 t_bare_lock_value.rk  # 3 allocations
 t_borrow_param_consume.rk  # 2 allocations
 t_box_replace_payload.rk  # 3 allocations
+t_capture_freed_with_its_closure.rk  # 4 allocations — the string chain's per-element sequences, #1045
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
-t_closure_call_container.rk  # 42 allocations — the source vector each
+t_closure_call_container.rk  # 24 allocations — the source vector each
 t_closure_diverging_return.rk  # 2 allocations
 t_closure_in_collection.rk  # 9 allocations
-t_collection_api_gaps.rk  # 10 allocations
+t_collection_api_gaps.rk  # 8 allocations
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
@@ -156,7 +160,6 @@ t_trait_object_in_field_container.rk  # 7 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 4 allocations
-t_vec_flat_map_sort_by_key.rk  # 11 allocations — lazy collection adapters, #1045
 t_vec_position_reduce.rk  # 6 allocations
 t_week_closures.rk  # 17 allocations
 t_week_imports.rk  # 2 allocations

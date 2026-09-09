@@ -125,11 +125,22 @@ fn env_drop_glue(
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
         let fresh = collect_fresh_containers_with(func, fns, handing_over, targets);
+        // What this frame frees for itself, right after dropping the closure.
+        // The site owns nothing then, which is what lets a site that borrows
+        // its capture and a site that owns one agree — see
+        // `captures_freed_with_the_closure`.
+        // Deliberately the unpruned list: the frame's own copy drops entries
+        // whose value reaches two names, and excluding a superset here costs a
+        // leak where excluding too little costs a double free.
+        let frame_frees: HashSet<(LocalId, u32)> = captures_freed_with_the_closure(func, &fresh)
+            .into_iter()
+            .map(|(owner, offset, _, _)| (owner, offset))
+            .collect();
         let reach = strict_reach(func);
         let def_block = defining_blocks(func);
         for block in &func.blocks {
             for stmt in &block.statements {
-                let MirStmtKind::ClosureCreate { func_name, captures, heap: true, .. } = &stmt.kind
+                let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true } = &stmt.kind
                 else {
                     continue;
                 };
@@ -163,6 +174,7 @@ fn env_drop_glue(
                             == 1
                     })
                     .filter(|c| made_each_turn(c))
+                    .filter(|c| !frame_frees.contains(&(*dst, c.offset)))
                     .filter(|c| {
                         !consumed
                             .get(func_name.as_str())
@@ -731,11 +743,157 @@ fn insert_for_function(
         }
     }
 
+    // A capture the frame frees itself, because it frees the closure too. Those
+    // names are already out of `droppable` — a capture is an escape — so this
+    // adds frees rather than moving any.
+    //
+    // Two guards, both about one value reaching two names. `capturers` inside
+    // that function counts by local, and inlining gives each copy of a chain
+    // its own name for the same vector:
+    //
+    //     let a = v.map(f)          // captures _25
+    //     let b = v.map(g)          // captures _48, the same vector
+    //
+    // so each looked like the only capturer and both freed it. And a group with
+    // a droppable member already has a free coming.
+    let mut with_closure = captures_freed_with_the_closure(func, &fresh);
+    with_closure.retain(|(_, _, local, _)| {
+        let group = groups.iter().find(|g| g.contains(local));
+        match group {
+            Some(g) => !g.iter().any(|id| droppable.contains_key(id)),
+            None => true,
+        }
+    });
+    {
+        let mut seen_group: HashMap<usize, usize> = HashMap::new();
+        for (_, _, local, _) in &with_closure {
+            if let Some(gi) = groups.iter().position(|g| g.contains(local)) {
+                *seen_group.entry(gi).or_default() += 1;
+            }
+        }
+        with_closure.retain(|(_, _, local, _)| {
+            groups
+                .iter()
+                .position(|g| g.contains(local))
+                .is_none_or(|gi| seen_group.get(&gi).copied().unwrap_or(0) == 1)
+        });
+    }
+
     if !droppable.is_empty() {
         insert_drops(func, &droppable, &groups, &consumed);
     }
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
+    }
+    if !with_closure.is_empty() {
+        insert_capture_drops(func, &with_closure);
+    }
+}
+
+/// Captures this frame frees itself, because it also frees the closure holding
+/// them: `(closure local, capture offset, capture local, free)`.
+///
+/// The environment drop glue is named after the closure *function*, so every
+/// site building that closure has to agree about what its environment owns —
+/// and after inlining they routinely don't:
+///
+/// ```text
+/// func Vec_as_sequence(self) { return || … self … }   // self is borrowed
+/// // inlined into main:
+/// _25 = <a fresh vector>
+/// _27 = closure[heap](Vec_as_sequence__closure_0, [_25@0])
+/// ```
+///
+/// The un-inlined function's site owns nothing — its `self` is the caller's —
+/// and main's site owns the vector. Both answers are right for their own site
+/// and there is one glue, so neither got one and every lazy adapter leaked its
+/// source vector: `let evens = v.filter(p)` on a `[1, 2, 3, 4]`.
+///
+/// This is the way out that needs no per-site glue. When the frame also drops
+/// the closure — `closure_drop` right there, which is `insert_closure_drops`
+/// saying this frame owns it — the frame can free the capture straight after,
+/// and the site owns nothing as far as the glue is concerned. So the two sites
+/// above agree on "nothing", the glue is skipped, and main does the freeing.
+fn captures_freed_with_the_closure(
+    func: &MirFunction,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> Vec<(LocalId, u32, LocalId, &'static str)> {
+    // Closures this frame drops. `insert_closure_drops` emits one only for a
+    // closure the frame owns, so its presence is the answer.
+    let dropped: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureDrop { closure } => Some(*closure),
+            _ => None,
+        })
+        .collect();
+    if dropped.is_empty() {
+        return Vec::new();
+    }
+
+    // One capturer only, the same rule the glue uses: two closures holding one
+    // container have two candidate owners and the answer is to leave it alone.
+    let mut capturers: HashMap<LocalId, usize> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else { continue };
+        for c in captures.iter().filter(|c| !c.by_ref) {
+            *capturers.entry(c.local_id).or_default() += 1;
+        }
+    }
+
+    let mut out = Vec::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
+            continue;
+        };
+        if !dropped.contains(dst) {
+            continue;
+        }
+        for c in captures.iter().filter(|c| !c.by_ref) {
+            if capturers.get(&c.local_id).copied().unwrap_or(0) != 1 {
+                continue;
+            }
+            if let Some(free) = fresh.get(&c.local_id) {
+                out.push((*dst, c.offset, c.local_id, *free));
+            }
+        }
+    }
+    out
+}
+
+/// Free each of those captures right after the `closure_drop` that ends the
+/// closure holding it.
+///
+/// After the drop, not before: the environment is what the capture lives in
+/// until then, and `rask_closure_free` reads the block's size header out of it.
+fn insert_capture_drops(
+    func: &mut MirFunction,
+    freed: &[(LocalId, u32, LocalId, &'static str)],
+) {
+    for block_idx in 0..func.blocks.len() {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
+            let MirStmtKind::ClosureDrop { closure } = &stmt.kind else { continue };
+            for (owner, _, local, free) in freed.iter().filter(|(o, _, _, _)| o == closure) {
+                let _ = owner;
+                insertions.push((
+                    si + 1,
+                    MirStmt::new(
+                        MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal((*free).to_string()),
+                            args: vec![MirOperand::Local(*local)],
+                        },
+                        stmt.span,
+                    ),
+                ));
+            }
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            func.blocks[block_idx].statements.insert(idx, stmt);
+        }
     }
 }
 
