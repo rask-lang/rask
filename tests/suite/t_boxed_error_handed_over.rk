@@ -13,9 +13,8 @@
 // functions hand a fresh one back — with the wrapper case added, because a
 // `T or E` returns the box as its error side rather than as the value.
 //
-// Still open (#1147): the case where the error is *discarded*.
-// `classify(-1) catch e => -1` never reads the payload out, so there is no
-// name for the drop to go under.
+// The two harder shapes are below: an error forwarded through a function that
+// only passes on what it called, and a failing call in a loop.
 //
 // These check the message through the box as well as the count. A box freed
 // early reads its vtable out of freed memory, and `message()` through it is a
@@ -135,14 +134,106 @@ test "type.errors — ok and error paths in one place" {
     assert bad == 1
 }
 
-// Not here, and filed instead:
+// A box forwarded through a function that only passes on what it called.
 //
-//   - a box handed back through a function that only *forwards* it
-//     (`return classify(n)`) still leaks one. The forwarding function returns
-//     the wrapper rather than the box, and the hand-back set doesn't tell the
-//     two apart yet.
-//   - a failing call in a loop leaks one box per turn — the same placement gap
-//     as #1145, which is about a box built inside a loop.
+// `wrapped` returns the wrapper, never the box, so "does a return hand back a
+// fresh box" answered no and the caller dropped nothing. It hands one back
+// through the wrapper's error side, which is now its own answer.
 //
-// Both are #1147. Keeping them out of this file is what keeps it a statement
-// about what works.
+// The `try` spelling is the same shape with a step in the middle: it reads the
+// box out and repacks it into a wrapper of its own. Both functions are small
+// enough to inline, so by the time the drop pass runs the box's whole trip
+// through storage is one frame's — stored into an aggregate, moved along with
+// it, read out again under a new name. That last name is the one holding it
+// when it dies.
+func wrapped(n: i64) -> i64 or Error {
+    return classify(n)
+}
+
+func forwarded(n: i64) -> i64 or Error {
+    let v = try classify(n)
+    return v * 2
+}
+
+// Two hops, so an answer that only reached one level out would fail here.
+func twice_forwarded(n: i64) -> i64 or Error {
+    return wrapped(n)
+}
+
+test "type.errors — a box forwarded by a function that only returns it" {
+    let v = wrapped(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and forwarded through `try`, which repacks it" {
+    let v = forwarded(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — two hops" {
+    let v = twice_forwarded(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert false
+}
+
+test "type.errors — forwarded, and the ok path still forwards the value" {
+    assert (wrapped(7) catch e => -1) == 7
+    assert (forwarded(7) catch e => -1) == 14
+    assert (twice_forwarded(7) catch e => -1) == 7
+}
+
+test "type.errors — forwarded and discarded" {
+    assert (wrapped(-1) catch e => -1) == -1
+    assert (forwarded(-1) catch e => -1) == -1
+    assert (twice_forwarded(-1) catch e => -1) == -1
+}
+
+// A failing call in a loop, which leaked one box per turn: a box made on one
+// path of a loop body reaches neither a return nor the back edge from where it
+// is defined, so the same placement rule that fixed the discarded case covers
+// it.
+test "type.errors — a failing call in a loop frees a box per turn" {
+    mut bad = 0
+    for i in 0..6 {
+        let v = classify(0 - i.clamp<i64>() - 1) catch e => {
+            bad = bad + 1
+            continue
+        }
+        assert false
+    }
+    assert bad == 6
+}
+
+test "type.errors — a loop that fails on some turns only" {
+    mut good = 0
+    mut bad = 0
+    for i in 0..8 {
+        if (classify(3 - i.clamp<i64>()) catch e => -1) == -1 {
+            bad = bad + 1
+        } else {
+            good = good + 1
+        }
+    }
+    assert good == 3
+    assert bad == 5
+}
+
+test "type.errors — forwarded, in a loop, reading the message each turn" {
+    mut seen = 0
+    for i in 0..5 {
+        let v = forwarded(-1) catch e => {
+            assert e.message() == "bad"
+            seen = seen + 1
+            0
+        }
+    }
+    assert seen == 5
+}
