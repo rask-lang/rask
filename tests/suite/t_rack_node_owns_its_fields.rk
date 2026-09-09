@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A rack node's strings and containers are freed with the node (#1035).
+//
+// `Rack.insert` already tells the runtime the node type's shape, but only the
+// part it needed: which fields hold links, so the delete-time fixup can find a
+// node's edges (mem.racks/RK3). A `name: string` or a `tags: Vec<string>` never
+// appeared in that list, so nothing freed it — one allocation per node per
+// field, on delete and on the rack going away alike.
+//
+// So the node carries a second descriptor: the same `offset | kind` entries a
+// container's elements use, off the same layout walk. A rack owns its nodes
+// (RK1), so a node's fields are the rack's to give back.
+//
+// `snapshot` is where that gets interesting. It copies payload bytes, so the
+// copy names the original's strings and buffers — both racks would free them.
+// The copy takes its own reference now: a refcount for a string, a real copy
+// for a nested container, which is the same relation `Vec.clone` has to its
+// source.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// values survive: a node deleted out from under a snapshot must leave the
+// snapshot's own copy readable.
+//
+// Strings under sixteen bytes live inside the value with no buffer to share, so
+// the interesting cases here use long ones.
+//
+// Spec: specs/memory/racks.md/RK1 — a rack owns its nodes' lifetime.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    id: i32
+    name: string
+    tags: Vec<string>
+    peer: Link<Node>?
+}
+
+func named(id: i32, name: string) -> Node {
+    mut tags: Vec<string> = Vec.new()
+    tags.push("a tag long enough to need a buffer")
+    return Node { id: id, name: name, tags: tags, peer: none }
+}
+
+test "mem.racks/RK1 — a node's string and vector go with the node" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(named(1, "the first node has a long name"))
+    assert a.name == "the first node has a long name"
+    assert a.tags.len() == 1
+    assert a.tags[0] == "a tag long enough to need a buffer"
+}
+
+test "mem.racks/RK3 — delete frees what the node held" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(named(1, "the first node has a long name"))
+    let b = r.insert(named(2, "the second node has a long name"))
+    r.delete(a)
+    assert r.len() == 1
+    // The survivor's own fields must be untouched.
+    assert b.name == "the second node has a long name"
+    assert b.tags[0] == "a tag long enough to need a buffer"
+}
+
+test "mem.racks — clear frees every node's fields" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(named(1, "the first node has a long name"))
+    let b = r.insert(named(2, "the second node has a long name"))
+    r.clear()
+    assert r.len() == 0
+}
+
+// The copy holds the original's buffers until it takes its own reference.
+test "mem.racks — a snapshot's strings survive the original's delete" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(named(1, "the first node has a long name"))
+    let b = r.insert(named(2, "the second node has a long name"))
+
+    let copy = r.snapshot()
+    assert copy.len() == 2
+
+    r.delete(a)
+    r.delete(b)
+    assert r.len() == 0
+
+    // The snapshot still has both, with readable names.
+    assert copy.len() == 2
+    mut seen = 0
+    for n in copy.nodes() {
+        if n.name == "the first node has a long name" {
+            seen = seen + 1
+        }
+        if n.name == "the second node has a long name" {
+            seen = seen + 1
+        }
+        assert n.tags[0] == "a tag long enough to need a buffer"
+    }
+    assert seen == 2
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.racks/RK1 — nodes with fields in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        mut r: Rack<Node> = Rack.new()
+        let a = r.insert(named(i.clamp<i32>(), "a name that is plenty long here"))
+        assert a.name == "a name that is plenty long here"
+        total = total + a.tags.len().clamp<i64>()
+        r.delete(a)
+    }
+    assert total == 5
+}

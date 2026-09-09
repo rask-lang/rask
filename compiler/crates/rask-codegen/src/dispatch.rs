@@ -934,7 +934,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Rack_free", "rask_rack_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Rack_insert", c_name: "rask_rack_insert",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64, types::I64,
+                types::I64,
+            ],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },

@@ -31,7 +31,9 @@
 # `string.from_utf8` rejects from eight places and leaked its builder from every
 # one), and 629 once `split`, `lines` and `split_whitespace` could join that
 # list at all — what had kept them off it was a string read out of one container
-# and pushed into another, which took no reference (nine more files clean).
+# and pushed into another, which took no reference (nine more files clean), and
+# 594 once a rack node's own strings and containers were freed with the node
+# (`t_rack_stale_records.rk` 15 → 2, `p13_rack_snapshot.rk` 21 → 10).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -79,8 +81,7 @@
 
 p07_heap.rk  # 7 allocations
 p12_rack_link_churn.rk  # 2 allocations
-p13_rack_snapshot.rk  # 21 allocations
-p18_rack_multi_link_fields.rk  # 11 allocations
+p13_rack_snapshot.rk  # 10 allocations
 p21_sequence_adapters.rk  # 4 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
@@ -136,7 +137,7 @@ t_ordering_displayable.rk  # 2 allocations
 t_os_env.rk  # 4 allocations
 t_package_state.rk  # 6 allocations
 t_pool_context_rules.rk  # 4 allocations
-t_rack_stale_records.rk  # 15 allocations
+t_rack_stale_records.rk  # 2 allocations
 t_random_seeded.rk  # 10 allocations
 t_range_element_type.rk  # 2 allocations
 t_runtime_handle_out_of_result.rk  # 1 allocation

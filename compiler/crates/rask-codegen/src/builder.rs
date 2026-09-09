@@ -8080,6 +8080,24 @@ impl<'a> FunctionBuilder<'a> {
             .collect()
     }
 
+    /// What one node payload owns, and where: the `offset | (kind << 28)`
+    /// entries `rask_owned_release` reads.
+    ///
+    /// The same walk a container's struct elements get — a node in a rack and a
+    /// struct in a vector own their fields the same way — so it comes off the
+    /// same function rather than a second copy of the rules.
+    fn node_owned_descriptor(
+        mir_args: &[MirOperand],
+        arg_index: usize,
+        ctx: &CodegenCtx,
+    ) -> Vec<i32> {
+        let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
+        let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
+        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
+        let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
+        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts).unwrap_or_default()
+    }
+
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
     /// Must agree with the `RASK_RACK_FIELD_*` defines in rask_runtime.h.
     fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
@@ -8505,6 +8523,28 @@ impl<'a> FunctionBuilder<'a> {
                         let o = builder.ins().iconst(types::I32, *off as i64);
                         builder.ins().stack_store(k, ss, (i * 8) as i32);
                         builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                // And what the payload *owns* — the same entries a container's
+                // elements carry, off the same layout. `fields` above is the
+                // other question: it lists what holds links, so the fixup can
+                // find a node's edges, and a `name: string` or a
+                // `tags: Vec<string>` never appeared in it.
+                //
+                // The runtime copies both on the first insert, so a stack slot
+                // is enough to hand them over.
+                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    ));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        builder.ins().stack_store(e, ss, (i * 4) as i32);
                     }
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 }

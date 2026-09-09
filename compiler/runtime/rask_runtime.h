@@ -616,8 +616,14 @@ int64_t   rask_rack_contains(const RaskRack *r, const void *link);
 // argument to read `T` off. `fields` is `field_count` pairs of
 // (kind, byte offset), which is what lets the fixup find a node's own edges —
 // and what lets `snapshot` re-point them.
+//
+// `owned` is the other half, and a different question: the `offset | kind`
+// entries `rask_owned_release` reads, one per string or container the payload
+// owns. `fields` only lists what holds *links*, so a node's `name: string` or
+// `tags: Vec<string>` was invisible and leaked one allocation per node.
 void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
-                           int64_t field_count, const int32_t *fields);
+                           int64_t field_count, const int32_t *fields,
+                           int64_t owned_count, const int32_t *owned);
 void      rask_rack_delete(RaskRack *r, void *link);
 void      rask_rack_clear(RaskRack *r);
 RaskVec  *rask_rack_nodes(const RaskRack *r);
