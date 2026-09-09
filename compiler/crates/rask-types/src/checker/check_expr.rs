@@ -3390,7 +3390,18 @@ impl TypeChecker {
             // `len` found for type `fs`".
             let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic")
+                // `Heap` is in this list rather than in the stub registry
+                // because it has no `extend Heap` block to be in: allocation is
+                // the `Heap(expr)` operator and reading is `*ptr`, so it
+                // declares no methods (mem.heap/HP3). Being *absent* is not the
+                // same answer as having none — the branch was skipped, the
+                // receiver went through `infer_expr`, and `Heap.new(1)`
+                // reported "couldn't work out the type of `x`". With an
+                // annotation it type-checked clean and died in codegen as
+                // "Function not found: Heap_new". Every sibling — `Link`,
+                // `Shared`, `Mutex` — says "no method `new` found for type";
+                // `Heap` was the one stdlib name that didn't.
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {

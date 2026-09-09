@@ -661,6 +661,17 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0313")
                 .with_primary(*span, "method not found");
+                // `Heap` has no methods at all, so "check available methods on
+                // `Heap`" is a dead end. Allocation is an operator and reading
+                // is a dereference — say that instead (mem.heap/HP3).
+                if ty_name.split('<').next() == Some("Heap") {
+                    return diag
+                        .with_help("`Heap` has no methods — `Heap(expr)` allocates and `*ptr` reads")
+                        .with_fix("let ptr = Heap(expr)")
+                        .with_why(
+                            "a heap value is made by the `Heap(…)` operator rather than by a constructor, so there is nothing to call on the name [mem.heap/HP3]",
+                        );
+                }
                 match nearest_methods(&ty_name, method) {
                     names if !names.is_empty() => diag
                         .with_help(format!("did you mean `{}`?", names.join("` or `")))
