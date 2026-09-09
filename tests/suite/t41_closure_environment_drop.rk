@@ -167,10 +167,11 @@ test "a flat_map callback that builds a sequence per element" {
 }
 
 // Repeated, because the crash was on the first element and a regression could
-// just as easily be on the second. Deliberately a handful of rounds and not a
-// hundred: each round leaks the sequences the callback returned — that is the
-// per-element half of #1045, not fixed here — and a big loop would bury this
-// file's leak count under one unrelated shape.
+// just as easily be on the second. The per-element sequences used to leak one
+// environment per round: the callback hands its sequence back through a
+// `ClosureCall`, which has no name to look up, so nothing owned it. That half
+// of #1045 is fixed — the caller of a call through a closure owns what comes
+// back, once every body it can reach agrees to hand one over.
 test "the same callback shape driven repeatedly" {
     mut total = 0u64
     mut r = 0
