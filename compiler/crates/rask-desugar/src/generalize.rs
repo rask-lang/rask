@@ -31,11 +31,12 @@
 //! `a + b` on two inferred parameters says the two are the same type and
 //! nothing about which, so it stays concrete as well.
 //!
-//! `func count(items) { items.len() }` is the other half of #904 and is not
-//! this: the table's answer is `<T>(items: Vec<T>) -> usize`, where the
-//! parameter isn't the generic — its *element* is. Getting there means going
-//! from "something with `.len()`" to `Vec<T>`, which is structural-to-nominal
-//! inference the checker doesn't do at all.
+//! `func count(items) { items.len() }` is not this, and it isn't a fix either.
+//! The spec's example table wants `<T>(items: Vec<T>) -> usize` and GC3 wants a
+//! structural requirement, and neither can be written from here: `.len()` names
+//! no trait to read a nominal type out of, and a synthesized `duck trait` would
+//! need `len`'s return type, which this pass runs too early to know. #1141 has
+//! the options.
 
 use std::collections::{HashMap, HashSet};
 

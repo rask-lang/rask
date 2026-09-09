@@ -12,16 +12,26 @@
 //   count(ints)                          // fixes items at Vec<i32>
 //   count(strs)                          // error: expected i32, found string
 //
-// The table's answer is `<T>(items: Vec<T>) -> usize` — the parameter isn't the
-// generic, its *element* is. Getting there means going from "something with a
-// `.len()`" to `Vec<T>` and then generalizing the argument, which is
-// structural-to-nominal inference (GC3) the checker doesn't do at all. The
-// operator half could be written down as a signature because an operator names
-// its trait; `.len()` names nothing — `Vec`, `Map`, `string` and `Set` all have
-// one, and picking `Vec` from the method alone would be a guess.
+// The spec gives two answers here and they disagree, which is why this is a
+// decision rather than a fix — #1141 lays out the three ways out.
 //
-// Until then a method call on an inferred parameter keeps IN2's answer: one
-// concrete type for the whole program, whichever call site arrives first.
+// The example table says `<T>(items: Vec<T>) -> usize`: the parameter isn't the
+// generic, its *element* is. GC3 says the opposite — direct method use produces
+// a *structural* requirement, not a nominal one.
+//
+// Neither is implementable as written. Nominal needs a method→type table
+// somebody has to defend: `.len()` names no trait, and `Vec`, `Map`, `string`
+// and `Set` all have one. The operator half could be written down as a
+// signature because an operator names its trait; `.len()` names nothing.
+// Structural needs the bound to be sayable — `duck trait` is the right
+// mechanism, but the pass that would write it runs before typecheck and can't
+// know `len` returns `usize`, and a trait method needs its return type. A bare
+// `<T>` doesn't help: bodies are checked once, not per instantiation, so
+// `func count<T>(items: T) -> usize { items.len() }` is E0313 today.
+//
+// Until it is decided, a method call on an inferred parameter keeps IN2's
+// answer: one concrete type for the whole program, whichever call site arrives
+// first.
 
 func count(items) {
     return items.len()

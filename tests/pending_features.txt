@@ -18,6 +18,6 @@
 # --- spec-heavy pending features ---
 p09_simd.rk                # type.simd f32x4 etc. vector types — checks, but no SIMD value is ever built below the checker, #1059 (both check)
 p10_binary.rk              # type.binary @binary — the interpreter builds and parses; native generates neither method, so the call doesn't link. #1058 is out of the way: the slice type is deleted, so G1/G3 take a `Vec<u8>` (native compile)
-p11_gradual_generalization.rk # type.gradual GC3 — a method call on an inferred parameter can't read a nominal type out of the method, so the first call site pins it. The operator half of #904 is done and green in t_week_gradual_generics.rk (both check)
+p11_gradual_generalization.rk # type.gradual GC3 — a method call on an inferred parameter pins it at the first call site. Not a fix but a decision: the spec's example table asks for `Vec<T>` and GC3 asks for a structural requirement, and neither is implementable as written — #1141 has the three options. The operator half of #904 is done and green in t_week_gradual_generics.rk (both check)
 
 # --- declared-but-unbuilt stdlib surface ---
