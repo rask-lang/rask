@@ -137,7 +137,14 @@
 # write into the caller's own destination now — six more files clean,
 # `t_month_boxes.rk` among them.
 #
-# 162 across 40 files as of this line. Two of them are `t_heap_box_dropped.rk`,
+# And 155 once a string variable written every turn released what it held. By
+# the time the reference-counting pass sees it the loop-carried write isn't a
+# statement — it's a phi's incoming edge — and the last-use walk looks past it
+# from both sides, so `mut junk = ""` rewritten eight times leaked seven
+# buffers. The release goes at the end of the back-edge block, where the name
+# still points at the value being replaced (`t_string_rc_escapes.rk` clean).
+#
+# 155 across 39 files as of this line. Two of them are `t_heap_box_dropped.rk`,
 # written for the `drop` fix and left on the list because a freed box says
 # nothing about the string and the vector inside it (#1144).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
@@ -215,7 +222,6 @@ t_rack_stale_records.rk  # 2 allocations
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_spawn_join_result.rk  # 2 allocations
 t_string_builder_mutate.rk  # 1 allocation
-t_string_rc_escapes.rk  # 7 allocations
 t_string_unicode.rk  # 3 allocations
 t_supertrait_dispatch.rk  # 2 allocations
 t_trait_object_in_field_container.rk  # 7 allocations

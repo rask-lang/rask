@@ -1184,6 +1184,135 @@ fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
     aborting
 }
 
+/// Loop-carried string phis whose previous value is replaced on the back edge.
+///
+/// `junk = "filler {i}"` inside a loop overwrote the reference the last turn
+/// took, and nothing released it — eight turns leaked seven buffers. At this
+/// point the loop-carried update isn't a statement at all, it's the phi's
+/// incoming edge:
+///
+/// ```text
+/// bb1:  _14 = phi [bb0: _11, bb3: _20]
+/// bb2:  _19 = concat(_18, " padded out")
+///       _20 = _19
+///       rc_inc(_20)
+/// bb3:  goto bb1                          // _14's reference goes nowhere
+/// ```
+///
+/// The last-use walk can't see it from either side: `_14` is not read in bb3
+/// and not live out of it — the phi takes `_20`, not `_14` — so liveness calls
+/// it dead at bb3's entry, which is exactly the branch that would have
+/// released it, and it never fires.
+///
+/// The release belongs at the end of the back-edge block, where `_14` still
+/// names the value about to be replaced. On the last turn the phi runs once
+/// more before the exit, so what leaves the loop is a value this release never
+/// touched.
+///
+/// Three things disqualify an edge:
+///
+///   - the argument *is* `dst`, the shape of a variable the body doesn't write.
+///   - the argument reaches `dst` through copies or an inner phi, which is what
+///     `if cond { s = "new" }` inside the loop lowers to — one arm's value is
+///     the phi's own, and freeing it would be a use-after-free rather than a
+///     leak.
+///   - the body *reads* `dst` anywhere. Then its death inside the loop is the
+///     last-use walk's business and it has already placed a release there;
+///     adding this one drives the count to zero a turn early. `s = "{s}-{i}"`
+///     is the shape — the concatenation reads the old value, so the walk
+///     releases it right after, and a second release left the first eight bytes
+///     of the seed reading as allocator free-list.
+///
+/// This is a string rule and not a container one. A release is per-name —
+/// whoever else holds the value holds their own reference — so it is safe where
+/// the same shape on a `Vec` needs to know who else has it (#1154).
+fn phi_backedge_releases(
+    func: &MirFunction,
+    dom: &DominatorTree,
+    string_locals: &[LocalId],
+) -> Vec<(BlockId, LocalId)> {
+    let mut out = Vec::new();
+    for header in &func.blocks {
+        for stmt in &header.statements {
+            let MirStmtKind::Phi { dst, args } = &stmt.kind else { continue };
+            if !string_locals.contains(dst) {
+                continue;
+            }
+            for (pred, op) in args {
+                let MirOperand::Local(arg) = op else { continue };
+                if arg == dst || !dom.dominates(header.id, *pred) {
+                    continue;
+                }
+                if copies_reach(func, *arg, *dst) || read_in_loop(func, dom, header.id, *pred, *dst) {
+                    continue;
+                }
+                out.push((*pred, *dst));
+            }
+        }
+    }
+    out
+}
+
+/// Is `local` read anywhere in the loop `header` heads?
+///
+/// The body is what the header rules and what can get back to the back edge —
+/// the exit block is dominated by the header too, and a read there is the value
+/// leaving the loop rather than one this release would touch. Phis don't count:
+/// they read their arguments on the incoming edge, not in the block they sit
+/// in.
+fn read_in_loop(
+    func: &MirFunction,
+    dom: &DominatorTree,
+    header: BlockId,
+    latch: BlockId,
+    local: LocalId,
+) -> bool {
+    func.blocks
+        .iter()
+        .filter(|b| dom.dominates(header, b.id))
+        .filter(|b| b.id == latch || cfg::reachable_from(func, b.id).contains(&latch))
+        .any(|b| {
+            b.statements
+                .iter()
+                .filter(|st| !matches!(st.kind, MirStmtKind::Phi { .. }))
+                .any(|st| uses::stmt_reads(st, local))
+                || uses::terminator_reads(&b.terminator, local)
+        })
+}
+
+/// Does `from` hold what `target` holds, by copy or through a phi?
+fn copies_reach(func: &MirFunction, from: LocalId, target: LocalId) -> bool {
+    let mut seen: HashSet<LocalId> = HashSet::new();
+    let mut frontier = vec![from];
+    while let Some(id) = frontier.pop() {
+        if id == target {
+            return true;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if uses::stmt_def(stmt) != Some(id) {
+                continue;
+            }
+            match &stmt.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
+                    frontier.push(*src);
+                }
+                MirStmtKind::Phi { args, .. } => {
+                    for (_, op) in args {
+                        if let MirOperand::Local(src) = op {
+                            frontier.push(*src);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
@@ -1257,6 +1386,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
             }
         }
     }
+
     for block_idx in 0..func.blocks.len() {
         let block_id = func.blocks[block_idx].id;
         let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
@@ -1380,6 +1510,15 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
         insertions.sort_by(|a, b| b.0.cmp(&a.0));
         for (idx, stmt) in insertions {
             func.blocks[block_idx].statements.insert(idx, stmt);
+        }
+    }
+
+    // At the end of the back-edge block, after the last-use loop has had its
+    // say: what the phi held on the way round is replaced, not read again.
+    for (block_id, local) in phi_backedge_releases(func, &dom, string_locals) {
+        if let Some(b) = func.blocks.iter_mut().find(|b| b.id == block_id) {
+            let span = b.terminator.span;
+            b.statements.push(MirStmt::new(MirStmtKind::RcDec { local }, span));
         }
     }
 
