@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A value handed over on one path is still released on the others.
+//
+// `try` on a `Container or E`, inside a function that returns `_ or E`, reads
+// the error out of the wrapper and stores it into the Result going back. That
+// store hands the error to the caller — correctly — and the wrapper's release
+// was refused because of it, everywhere. So the container on the wrapper's
+// *ok* side, which the error path never produced, went with it:
+//
+//     public func read_text(self) -> string or IoError {
+//         let bytes = try self.read_bytes()      // Vec<u8> or IoError
+//         …
+//     }
+//
+// `io.Buffer.read_text` leaked the byte vector it decodes from, on every call,
+// and so did `File`'s — twenty-one allocations in `t_io_seek.rk` alone. A
+// hand-over happens at a *point*, so the release is refused from there on and
+// allowed everywhere else.
+//
+// The tests read the value after the fallible step rather than only counting
+// allocations: a release let through on the wrong path is a use-after-free, so
+// a wrong answer here is the failure that matters.
+import io
+import io.Buffer
+import io.SeekFrom
+
+struct Row {
+    public key: string
+    public n: i64
+}
+
+enum Refused {
+    Empty
+    TooBig(i64)
+}
+
+// The shape from the stdlib: a fresh container in a wrapper, `try`'d, inside a
+// function whose own error side is the same type.
+func numbers(n: i64) -> Vec<i64> or Refused {
+    if n <= 0 {
+        return Refused.Empty
+    }
+    if n > 100 {
+        return Refused.TooBig(n)
+    }
+    mut v: Vec<i64> = Vec.new()
+    for i in 1..(n + 1) {
+        v.push(i.clamp<i64>())
+    }
+    return v
+}
+
+func total(n: i64) -> i64 or Refused {
+    let xs = try numbers(n)
+    mut sum = 0
+    for x in xs {
+        sum = sum + x
+    }
+    return sum
+}
+
+// Strings in the container, so a buffer freed on the wrong path reads wrong
+// rather than only leaking.
+func labelled(n: i64) -> Vec<Row> or Refused {
+    if n <= 0 {
+        return Refused.Empty
+    }
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(Row { key: "the first row has a long enough key", n: 1 })
+    rows.push(Row { key: "and the second one has its own", n: 2 })
+    return rows
+}
+
+func first_key(n: i64) -> string or Refused {
+    let rows = try labelled(n)
+    return rows[0].key
+}
+
+test "mem.ownership — the ok side of a `try`'d wrapper is still freed" {
+    let t = total(4) catch e => {
+        assert false
+        return
+    }
+    assert t == 10
+}
+
+test "mem.ownership — and the error path hands its error on" {
+    if total(0) is Refused as e {
+        match e {
+            Refused.Empty => assert true
+            Refused.TooBig(k) => assert false
+        }
+    } else {
+        assert false
+    }
+    if total(200) is Refused as e {
+        match e {
+            Refused.Empty => assert false
+            Refused.TooBig(k) => assert k == 200
+        }
+    } else {
+        assert false
+    }
+}
+
+test "mem.ownership — a string read out of the container outlives it" {
+    let k = first_key(1) catch e => {
+        assert false
+        return
+    }
+    assert k == "the first row has a long enough key"
+}
+
+test "std.io — Buffer.read_text frees the bytes it decodes from" {
+    mut b = Buffer.new()
+    let _ = b.write_text("hello world")
+    assert b.read_text()! == "hello world"
+    assert b.seek(SeekFrom.Start(6))! == 6
+    assert b.read_text()! == "world"
+}
+
+test "std.io — and on the error side, where there is no text" {
+    mut b = Buffer.new()
+    let _ = b.write_text("plain")
+    let r = b.seek(SeekFrom.Start(-1))
+    if r is IoError as e {
+        assert e.message() == "seek to a negative position"
+    } else {
+        assert false
+    }
+    assert b.read_text()! == "plain"
+}
+
+// Both paths in a loop, alternating, so a container freed on the wrong path
+// lands on one the next turn has already reused.
+test "mem.ownership — both paths in a loop" {
+    mut ok = 0
+    mut refused = 0
+    for i in 0..8 {
+        let t = total(i.clamp<i64>() - 2) catch e => {
+            refused = refused + 1
+            continue
+        }
+        ok = ok + t
+    }
+    assert refused == 3
+    assert ok == 35
+}

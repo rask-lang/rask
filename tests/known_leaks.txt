@@ -48,7 +48,11 @@
 # where control leaves that arm (five more files clean, `t_json_decode.rk`
 # 22 → 7), and 377 once one allocation under several names got freed once
 # instead of not at all — twelve more files clean, and that was the whole of
-# `t_week_closures.rk`, `t_week_ranges.rk` and `t_week_sorting.rk`.
+# `t_week_closures.rk`, `t_week_ranges.rk` and `t_week_sorting.rk`, and 347
+# once a value handed over on one path could still be released on the others —
+# `try` on a `Container or E` inside a function that returns `_ or E` reads the
+# error out of the wrapper and stores it into the Result going back, and the
+# container on the wrapper's *ok* side went with it (`t_io_seek.rk` 21 → 0).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -128,10 +132,8 @@ t_container_ownership.rk  # 1 allocation
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 4 allocations
-t_fs_open_failure.rk  # 2 allocations
 t_io_buffer.rk  # 21 allocations
-t_io_seek.rk  # 21 allocations — the `io.Buffer` locals, the same shape `t_io_buffer.rk` carries
-t_json_decode.rk  # 7 allocations
+t_json_decode.rk  # 6 allocations
 t_local_box_payload.rk  # 1 allocation
 t_module_qualified_variants.rk  # 5 allocations — trait boxes again
 t_month_atomics.rk  # 8 allocations
@@ -140,12 +142,10 @@ t_month_boxes.rk  # 8 allocations
 t_month_panic_observed.rk  # 9 allocations
 t_month_stdlib_modules.rk  # 7 allocations
 t_mutex_payload_kinds.rk  # 10 allocations
-t_net_loopback.rk  # 5 allocations
 t_os_env.rk  # 4 allocations
 t_package_state.rk  # 6 allocations
 t_rack_stale_records.rk  # 2 allocations
 t_random_seeded.rk  # 10 allocations
-t_runtime_handle_out_of_result.rk  # 1 allocation
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_shared_inline_access.rk  # 1 allocation
 t_shared_strategies.rk  # 3 allocations

@@ -465,6 +465,20 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
         }
     }
 
+    // Where a group's value was handed over on *this* path, rather than
+    // everywhere. A `try` on a `Container or E` inside a function that returns
+    // `_ or E` reads the error out of the wrapper and stores it into the
+    // Result being returned — so the wrapper's group was blocked outright, and
+    // the vector on its *ok* side, which that path never produced, went with
+    // it. `Buffer.read_text` leaked the byte vector it decodes from, every
+    // call.
+    //
+    // The hand-over happens at a point, so the release is refused from there
+    // on and allowed everywhere else. Same shape as `container_drop`'s
+    // `blocks_past_a_consume`, and the same reason for the "may" answer:
+    // refusing where the value is still ours only leaks.
+    let mut handed_over_in: HashMap<usize, HashSet<BlockId>> = HashMap::new();
+
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -539,7 +553,9 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         if handles.contains_key(&id) && !aggregates.contains(addr) {
                             continue;
                         }
-                        block_local(&mut blocked, &id);
+                        if let Some(gi) = group_of.get(&id) {
+                            handed_over_in.entry(*gi).or_default().insert(block.id);
+                        }
                     }
                 }
                 MirStmtKind::ArrayStore { value, .. }
@@ -570,11 +586,21 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
         }
     }
 
+    // Filtering renumbers the groups, so the hand-over map has to be
+    // renumbered with it or a release would be refused in another group's
+    // blocks.
+    let mut gone: Vec<HashSet<BlockId>> = Vec::new();
     let groups: Vec<HashSet<LocalId>> = groups
         .into_iter()
         .enumerate()
         .filter(|(gi, _)| !blocked.contains(gi))
-        .map(|(_, g)| g)
+        .map(|(gi, g)| {
+            gone.push(match handed_over_in.get(&gi) {
+                Some(sites) => blocks_past_a_handover(func, sites),
+                None => HashSet::new(),
+            });
+            g
+        })
         .collect();
     if groups.is_empty() {
         return;
@@ -627,14 +653,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     // field was never freed. An early `return` out of a function that reads the
     // field later is the same shape.
     let edge_releases =
-        aggregate_edge_releases(func, &groups, &handles, &views, &live_in, &live_out);
+        aggregate_edge_releases(func, &groups, &handles, &views, &live_in, &live_out, &gone);
 
     for block_idx in 0..func.blocks.len() {
         let stmts_len = func.blocks[block_idx].statements.len();
         let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
 
         for (gi, group) in groups.iter().enumerate() {
-            if live_out[block_idx][gi] {
+            if live_out[block_idx][gi] || gone[gi].contains(&func.blocks[block_idx].id) {
                 continue;
             }
             let mut last = None;
@@ -749,6 +775,7 @@ fn aggregate_edge_releases(
     views: &HashMap<LocalId, LocalId>,
     live_in: &[Vec<bool>],
     live_out: &[Vec<bool>],
+    gone: &[HashSet<BlockId>],
 ) -> Vec<(BlockId, LocalId)> {
     let index_of: HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
@@ -794,12 +821,31 @@ fn aggregate_edge_releases(
                 if !writes[gi].iter().any(|w| dom.dominates(*w, succ)) {
                     continue;
                 }
+                if gone[gi].contains(&succ) {
+                    continue;
+                }
                 out.push((succ, name));
             }
         }
     }
     out.sort_by_key(|(b, l)| (b.0, l.0));
     out.dedup_by_key(|(b, l)| (b.0, l.0));
+    out
+}
+
+/// Every block a group's value might already be gone in: the blocks where it
+/// was handed over, and everything reachable from them.
+fn blocks_past_a_handover(func: &MirFunction, sites: &HashSet<BlockId>) -> HashSet<BlockId> {
+    let mut out: HashSet<BlockId> = sites.clone();
+    let mut frontier: Vec<BlockId> = sites.iter().copied().collect();
+    while let Some(bid) = frontier.pop() {
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        for succ in cfg::successors(&block.terminator) {
+            if out.insert(succ) {
+                frontier.push(succ);
+            }
+        }
+    }
     out
 }
 

@@ -338,13 +338,19 @@ impl fmt::Display for MirFunction {
         }
         writeln!(f, ") -> {} {{", self.ret_ty)?;
 
-        // Locals (non-param)
+        // Locals (non-param). The container kind rides beside the type rather
+        // than in it (`MirType::Container`), so a dump has to say it separately
+        // or "who frees the vector behind this tag" is invisible.
         for local in &self.locals {
             if !local.is_param {
+                let holds = match local.container {
+                    Some(k) => format!(" [{:?}]", k),
+                    None => String::new(),
+                };
                 if let Some(name) = &local.name {
-                    writeln!(f, "  let {}: {}  // _{}", name, local.ty, local.id.0)?;
+                    writeln!(f, "  let {}: {}{}  // _{}", name, local.ty, holds, local.id.0)?;
                 } else {
-                    writeln!(f, "  let _{}: {}", local.id.0, local.ty)?;
+                    writeln!(f, "  let _{}: {}{}", local.id.0, local.ty, holds)?;
                 }
             }
         }
