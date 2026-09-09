@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An element taken *out* of a container is the caller's (#1035).
+//
+// `Vec.get` and `Vec.pop` are both `-> T?` on a container, and no signature
+// tells them apart: one hands back the buffer's own sixteen bytes, the other
+// takes the element out and shortens the vector. Everything read the signature,
+// so both counted as "points into the receiver" and a popped string was
+// released by nobody. The old note in `rc_elide.rs` said as much — "`pop` and
+// `remove` do transfer out, and read the same way from a signature — so they
+// stay elided too, and leak rather than risk the double free".
+//
+// So the ones that transfer are written down now (`TRANSFERS_OUT` in
+// `mir_metadata.rs`). A list rather than a rule, because the cost of being
+// wrong runs both ways: a name missing from it leaks what it handed out, and a
+// name wrongly on it frees something the container still holds.
+//
+// `Map.insert` is on the list too, which is the one that isn't obvious — it
+// hands back the value it displaced.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// container's own elements survive the transfer: freeing a popped string is
+// only right because the vector no longer holds it.
+//
+// Strings under sixteen bytes live inside the value and share no buffer, so
+// every case here uses long ones.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+func drain_lengths(n: i64) -> i64 {
+    mut v: Vec<string> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push("a string long enough to need its own buffer {i}")
+        i = i + 1
+    }
+    mut total = 0
+    while v.len() > 0 {
+        if v.pop()? as s {
+            total = total + s.len().clamp<i64>()
+        }
+    }
+    return total
+}
+
+test "mem.ownership — a popped string is the caller's" {
+    assert drain_lengths(1) == 45
+    assert drain_lengths(4) == 180
+}
+
+test "mem.ownership — remove takes one out and leaves the rest" {
+    mut v: Vec<string> = [
+        "the first entry is long enough",
+        "the second entry is long enough",
+        "the third entry is long enough",
+    ]
+    let taken = v.remove(1)
+    assert taken == "the second entry is long enough"
+    assert v.len() == 2
+    // The two the vector still holds have to be intact — the release for the
+    // one taken out must not have touched them.
+    assert v[0] == "the first entry is long enough"
+    assert v[1] == "the third entry is long enough"
+}
+
+test "mem.ownership — a removed map value is the caller's" {
+    mut m: Map<string, string> = Map.new()
+    m.insert("k1", "the first value is long enough")
+    m.insert("k2", "the second value is long enough")
+
+    if m.remove("k1")? as gone {
+        assert gone == "the first value is long enough"
+    } else {
+        assert false
+    }
+    assert m.len() == 1
+    assert (m.get("k2") ?? "MISSING") == "the second value is long enough"
+}
+
+// The non-obvious one: insert hands back what it displaced.
+test "mem.ownership — insert hands back the value it displaced" {
+    mut m: Map<string, string> = Map.new()
+    let first = m.insert("k", "the original value is long enough")
+    assert first is none
+
+    if m.insert("k", "the replacement value is long enough")? as old {
+        assert old == "the original value is long enough"
+    } else {
+        assert false
+    }
+    assert (m.get("k") ?? "MISSING") == "the replacement value is long enough"
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — taking elements out in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        mut v: Vec<string> = Vec.new()
+        v.push("one entry that is plenty long here")
+        v.push("another entry that is plenty long")
+        let taken = v.remove(0)
+        assert taken == "one entry that is plenty long here"
+        assert v[0] == "another entry that is plenty long"
+        total = total + 1
+    }
+    assert total == 5
+}

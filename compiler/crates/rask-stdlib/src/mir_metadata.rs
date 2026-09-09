@@ -619,7 +619,33 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
 /// parameters — the value came out of the receiver's storage rather than
 /// being made here. `Vec.len() -> usize` doesn't, and neither does
 /// `string.trim() -> string`, which builds a new one.
+/// Declared methods whose result *leaves* the receiver instead of pointing
+/// inside it.
+///
+/// `Vec.get` and `Vec.pop` are both `-> T?` on a container and no signature
+/// tells them apart: one hands back the buffer's own sixteen bytes, the other
+/// takes the element out and shortens the vector. So the ones that transfer are
+/// written down.
+///
+/// A list rather than a rule because the cost of being wrong is asymmetric in
+/// both directions: a name missing from here leaks whatever it handed out, and
+/// a name wrongly on it frees something the container still holds. `Map.insert`
+/// belongs here because it hands back the value it displaced.
+const TRANSFERS_OUT: &[&str] = &[
+    "Vec_pop",
+    "Vec_remove",
+    "Vec_remove_unordered",
+    "Map_insert",
+    "Map_remove",
+    "Pool_remove",
+];
+
 pub fn returns_a_view(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    if TRANSFERS_OUT.contains(&base) {
+        return false;
+    }
     match declared(qualified_name) {
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
