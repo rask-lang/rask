@@ -28,6 +28,13 @@ pub const ELEM_STRING: i64 = 1;
 pub const ELEM_VEC: i64 = 2;
 pub const ELEM_MAP: i64 = 3;
 pub const ELEM_STRUCT_BASE: i64 = 4;
+/// An enum element: `ELEM_ENUM_BASE - index` into the enum layouts.
+///
+/// Below zero because the struct range grows upward without a bound. Where an
+/// enum's string or container sits depends on its tag, so codegen describes one
+/// as a guard per variant rather than a flat list — `RASK_OWNED_TAG_IF` in
+/// `rask_runtime.h`.
+pub const ELEM_ENUM_BASE: i64 = -1;
 
 /// The tag for an element that *is* a container.
 ///
@@ -50,14 +57,17 @@ pub fn container_tag(rendered: &str) -> Option<i64> {
 
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
-/// An enum is `ELEM_NONE`: where its string sits depends on its tag, so a flat
-/// list of offsets can't describe one. Codegen walks the tag branches for an
-/// enum reached any other way, so what is uncovered is narrow — an enum nested
-/// inside a container element.
+/// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a
+/// variant's string is, and codegen walks the tag branches for an enum reached
+/// any other way, so an enum *inside a container element* was the one gap. It
+/// was not a narrow one: every array and object in a decoded `JsonValue` is a
+/// variant payload sitting in a `Vec` or a `Map`, and the elements walk left
+/// all of it behind. Guards close it.
 pub fn tag_of(ty: Option<&MirType>) -> i64 {
     match ty {
         Some(MirType::String) => ELEM_STRING,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
+        Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
         _ => ELEM_NONE,
     }
 }

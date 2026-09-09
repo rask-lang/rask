@@ -115,6 +115,31 @@ typedef struct {
 #define RASK_OWNED_STRING 0
 #define RASK_OWNED_VEC    1
 #define RASK_OWNED_MAP    2
+// A guard, not a thing to free: the entries that follow apply only when the
+// tag at some offset holds a particular value.
+//
+// This is what lets an *enum* be described. Where an enum's string or vector
+// sits depends on which variant it is, so a flat list of offsets can't say —
+// and a wrong offset here frees sixteen bytes that were never a handle. So an
+// enum contributes one guard per variant that owns something, followed by that
+// variant's own entries. `Vec<JsonValue>` is the reason: every array and object
+// inside a decoded document is a variant payload, and the elements walk left
+// all of it behind.
+//
+// The 28 bits an offset would use carry the guard instead:
+//
+//   bits  0..11   the tag's byte offset inside the element
+//   bits 12..19   the tag value this arm is for
+//   bits 20..25   how many entries after this one belong to the arm
+//   bits 26..27   the tag's width: 0 → 1 byte, 1 → 2, 2 → 4, 3 → 8
+//
+// Codegen emits nothing at all for a layout that doesn't fit those fields,
+// which leaks rather than guessing.
+#define RASK_OWNED_TAG_IF 3
+#define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
+#define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
+#define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
+#define RASK_OWNED_TAG_WIDTH(e)  (1 << (((e) >> 26) & 0x3))
 
 // Release, or take a reference to, whatever one entry points at inside `elem`.
 //
@@ -126,6 +151,13 @@ typedef struct {
 void rask_owned_release(char *elem, int32_t entry);
 void rask_owned_retain(char *elem, int32_t entry);
 void rask_owned_adopt(char *elem, int32_t entry);
+
+// The whole list, which is what every caller actually wants: a `RASK_OWNED_TAG_IF`
+// entry decides whether the entries after it apply, so the walk has to be able
+// to skip and cannot be a loop over the single-entry calls above.
+void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
+void rask_owned_adopt_all(char *elem, const int32_t *entries, int64_t count);
 
 // Two maps the runtime needs constantly: a container of bare strings (one
 // string, at offset zero) and one of (string, string) pairs — `split`,

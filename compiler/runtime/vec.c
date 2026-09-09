@@ -92,6 +92,58 @@ void rask_owned_retain(char *elem, int32_t entry) {
     }
 }
 
+// Walk a whole element map, honouring the tag guards.
+//
+// A guard says "the next N entries apply only if the tag at this offset holds
+// this value", so the walk has to be able to skip — which is why this isn't a
+// loop over the three single-entry functions above. Arms nest: a variant whose
+// payload is another enum contributes a guard inside a guard, and the recursion
+// bottoms out because each arm is strictly shorter than the list holding it.
+typedef enum { OWNED_RELEASE, OWNED_RETAIN, OWNED_ADOPT } RaskOwnedOp;
+
+static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+    if (!elem || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        if (((uint32_t)e >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_TAG_IF) {
+            int64_t body = RASK_OWNED_TAG_COUNT(e);
+            // A list that claims more entries than it has is malformed; stop
+            // rather than read past it.
+            if (i + body >= count) return;
+            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
+            int64_t tag;
+            switch (RASK_OWNED_TAG_WIDTH(e)) {
+                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+                default: tag = *(const int64_t *)at;           break;
+            }
+            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+                owned_walk(elem, entries + i + 1, body, op);
+            }
+            i += body;
+            continue;
+        }
+        switch (op) {
+            case OWNED_RELEASE: rask_owned_release(elem, e); break;
+            case OWNED_RETAIN:  rask_owned_retain(elem, e);  break;
+            case OWNED_ADOPT:   rask_owned_adopt(elem, e);   break;
+        }
+    }
+}
+
+void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count) {
+    owned_walk(elem, entries, count, OWNED_RELEASE);
+}
+
+void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
+    owned_walk(elem, entries, count, OWNED_RETAIN);
+}
+
+void rask_owned_adopt_all(char *elem, const int32_t *entries, int64_t count) {
+    owned_walk(elem, entries, count, OWNED_ADOPT);
+}
+
 // Take a reference to everything `count` elements starting at `from` own.
 //
 // A vector derived from another — clone, slice, chunk, skip — copies element
@@ -101,10 +153,7 @@ void rask_owned_retain(char *elem, int32_t entry) {
 static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
     if (!v || !v->strs.offsets || v->strs.count <= 0 || !v->data) return;
     for (int64_t i = from; i < from + count; i++) {
-        char *elem = v->data + i * v->elem_size;
-        for (int64_t k = 0; k < v->strs.count; k++) {
-            rask_owned_retain(elem, v->strs.offsets[k]);
-        }
+        rask_owned_retain_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
     }
 }
 
@@ -164,10 +213,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     // container is adopted rather than copied — see `rask_owned_adopt`.
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
-            char *elem = v->data + i * v->elem_size;
-            for (int64_t k = 0; k < v->strs.count; k++) {
-                rask_owned_adopt(elem, v->strs.offsets[k]);
-            }
+            rask_owned_adopt_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
         }
     }
     return v;
@@ -183,10 +229,7 @@ void rask_vec_free(RaskVec *v) {
     vec_check_no_borrows(v, "free");
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
-            char *elem = v->data + i * v->elem_size;
-            for (int64_t k = 0; k < v->strs.count; k++) {
-                rask_owned_release(elem, v->strs.offsets[k]);
-            }
+            rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
         }
     }
     if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);

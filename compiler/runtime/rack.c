@@ -687,9 +687,7 @@ static void release_slot(RaskRack *r, char *payload) {
     n->rack = NULL;
     n->slot_index = -1;
     // The node owned its strings and containers; the rack owned the node.
-    for (int32_t k = 0; k < r->owned_count; k++) {
-        rask_owned_release(payload, r->owned[k]);
-    }
+    rask_owned_release_all(payload, r->owned, r->owned_count);
     memset(payload, 0, (size_t)r->elem_size);
 
     if (r->free_len == r->free_cap) {
@@ -740,10 +738,7 @@ void rask_rack_free(RaskRack *r) {
     if (!r) return;
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {
-            char *payload = (char *)r->directory[i];
-            for (int32_t k = 0; k < r->owned_count; k++) {
-                rask_owned_release(payload, r->owned[k]);
-            }
+            rask_owned_release_all((char *)r->directory[i], r->owned, r->owned_count);
             RackNode *n = node_of(r->directory[i]);
             RackEdge *e = n->heap_in;   // inline records die with the chunk
             while (e) {
@@ -834,9 +829,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // a nested container. Without it whichever rack died second read memory
         // that was gone, which is the same relation `rask_vec_clone` has to its
         // source.
-        for (int32_t k = 0; k < r->owned_count; k++) {
-            rask_owned_retain((char *)dst, r->owned[k]);
-        }
+        rask_owned_retain_all((char *)dst, r->owned, r->owned_count);
         origin[i] = dst;
     }
 

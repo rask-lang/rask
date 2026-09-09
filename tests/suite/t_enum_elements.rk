@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container whose *elements* are enums (#1035).
+//
+// A container is told once, at construction, where its elements keep the things
+// they own — a flat list of `offset | kind` entries. An enum can't be described
+// that way: where its string or vector sits depends on which variant it is, and
+// a wrong offset frees sixteen bytes that were never a handle. So an enum
+// element used to say "owns nothing", and `Vec<Shape>` walked away from every
+// vector its elements held.
+//
+// The list gained a guard: `RASK_OWNED_TAG_IF` says the entries after it apply
+// only when the tag at some offset holds a particular value, and an enum
+// contributes one guard per variant that owns anything. That is a fourth kind
+// in the 4 bits an entry already had, and it needed the release walk to become
+// a walk over the *list* rather than a loop over single entries — a guard has
+// to be able to skip.
+//
+// Guards nest: a variant whose payload is another enum gets a guard inside a
+// guard, and a variant holding a container just names it — the nested container
+// carries its own element list, so freeing it walks its own elements without
+// this level knowing what they are. That is what makes a recursive shape like
+// `JsonValue.Array(Vec<JsonValue>)` work.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// frees land on the right memory: a guard whose count is wrong reads the
+// following entries as belonging to the wrong variant, which frees a handle
+// that isn't one.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+enum Shape {
+    Nothing
+    Many(Vec<i64>)
+    Named(string, Vec<i64>)
+    Keyed(Map<string, i64>)
+}
+
+func weight(s: Shape) -> i64 {
+    match s {
+        Shape.Nothing => return 0
+        Shape.Many(items) => return items.len().clamp<i64>()
+        Shape.Named(name, items) => return name.len().clamp<i64>() + items.len().clamp<i64>()
+        Shape.Keyed(m) => return m.len().clamp<i64>()
+    }
+}
+
+func total(all: Vec<Shape>) -> i64 {
+    mut sum = 0
+    for s in all {
+        sum = sum + weight(s)
+    }
+    return sum
+}
+
+test "mem.ownership — a Vec of enums holding containers" {
+    let a: Vec<i64> = [1, 2, 3]
+    let b: Vec<i64> = [4]
+    mut all: Vec<Shape> = Vec.new()
+    all.push(Shape.Many(a))
+    all.push(Shape.Many(b))
+    all.push(Shape.Nothing)
+    assert all.len() == 3
+    assert total(all) == 4
+}
+
+// Every variant at once, so a guard that named the wrong count would free a
+// string as a vector or the other way round.
+test "mem.ownership — every variant in one Vec" {
+    let items: Vec<i64> = [1, 2]
+    mut keyed: Map<string, i64> = Map.new()
+    keyed.insert("k", 9)
+
+    mut all: Vec<Shape> = Vec.new()
+    all.push(Shape.Nothing)
+    all.push(Shape.Many(items))
+    all.push(Shape.Named("a name long enough to need a buffer", [7, 8, 9]))
+    all.push(Shape.Keyed(keyed))
+    assert total(all) == 2 + 35 + 3 + 1
+}
+
+test "mem.ownership — a Map whose values are enums" {
+    let items: Vec<i64> = [5, 6]
+    mut by_name: Map<string, Shape> = Map.new()
+    by_name.insert("pair", Shape.Many(items))
+    by_name.insert("none", Shape.Nothing)
+    assert by_name.len() == 2
+    if by_name.get("pair")? as s {
+        assert weight(s) == 2
+    } else {
+        assert false
+    }
+}
+
+// The recursive shape. The outer Vec's elements are enums; one variant holds a
+// Vec whose elements are the same enums again. Freeing the outer walks the
+// guard, frees the inner Vec, and the inner Vec walks its own elements.
+enum Tree {
+    Leaf(i64)
+    Node(Vec<Tree>)
+}
+
+func depth_sum(t: Tree) -> i64 {
+    match t {
+        Tree.Leaf(n) => return n
+        Tree.Node(kids) => {
+            mut sum = 0
+            for k in kids {
+                sum = sum + depth_sum(k)
+            }
+            return sum
+        }
+    }
+}
+
+test "mem.ownership — an enum holding a Vec of itself" {
+    mut inner: Vec<Tree> = Vec.new()
+    inner.push(Tree.Leaf(1))
+    inner.push(Tree.Leaf(2))
+    mut outer: Vec<Tree> = Vec.new()
+    outer.push(Tree.Node(inner))
+    outer.push(Tree.Leaf(10))
+    assert depth_sum(Tree.Node(outer)) == 13
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — enum elements in a loop" {
+    mut sum = 0
+    for i in 1..6 {
+        let items: Vec<i64> = [i, i * 2]
+        mut all: Vec<Shape> = Vec.new()
+        all.push(Shape.Many(items))
+        all.push(Shape.Named("another name long enough to need a buffer", [i]))
+        sum = sum + total(all)
+    }
+    assert sum == 220
+}

@@ -1584,7 +1584,7 @@ impl CodeGenerator {
 
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
-        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts) {
+        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts) {
             self.register_element_offsets(&offsets)?;
         }
 
@@ -2125,6 +2125,7 @@ impl crate::Backend for CodeGenerator {
 fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],
+    enum_layouts: &[rask_mono::EnumLayout],
 ) -> Vec<Vec<i32>> {
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
@@ -2139,9 +2140,9 @@ fn collect_element_offsets(
                 else {
                     continue;
                 };
-                if let Some(offs) =
-                    crate::elem_offsets::string_offsets_for_tag(*tag, struct_layouts)
-                {
+                if let Some(offs) = crate::elem_offsets::string_offsets_for_tag(
+                    *tag, struct_layouts, enum_layouts,
+                ) {
                     lists.push(offs);
                 }
             }

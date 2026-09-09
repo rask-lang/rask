@@ -260,12 +260,8 @@ static void map_rehash(RaskMap *m) {
 // the original with nothing pointing at it. The bytes it writes are what gets
 // inserted, so the entry owns what it names.
 static void map_retain_entry(const RaskMap *m, char *key, char *val) {
-    for (int64_t k = 0; k < m->key_strs.count; k++) {
-        rask_owned_retain(key, m->key_strs.offsets[k]);
-    }
-    for (int64_t k = 0; k < m->val_strs.count; k++) {
-        rask_owned_retain(val, m->val_strs.offsets[k]);
-    }
+    rask_owned_retain_all(key, m->key_strs.offsets, m->key_strs.count);
+    rask_owned_retain_all(val, m->val_strs.offsets, m->val_strs.count);
 }
 
 static RaskMap *map_with_elem_strs(RaskMap *m,
@@ -323,11 +319,13 @@ void rask_map_free(RaskMap *m) {
     if ((has_key || has_val) && m->states) {
         for (int64_t i = 0; i < m->cap; i++) {
             if (m->states[i] != MAP_OCCUPIED) continue;
-            for (int64_t k = 0; has_key && k < m->key_strs.count; k++) {
-                rask_owned_release(m->keys + i * m->key_size, m->key_strs.offsets[k]);
+            if (has_key) {
+                rask_owned_release_all(m->keys + i * m->key_size,
+                                       m->key_strs.offsets, m->key_strs.count);
             }
-            for (int64_t k = 0; has_val && k < m->val_strs.count; k++) {
-                rask_owned_release(m->vals + i * m->val_size, m->val_strs.offsets[k]);
+            if (has_val) {
+                rask_owned_release_all(m->vals + i * m->val_size,
+                                       m->val_strs.offsets, m->val_strs.count);
             }
         }
     }

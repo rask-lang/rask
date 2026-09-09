@@ -7157,7 +7157,7 @@ impl<'a> FunctionBuilder<'a> {
     /// guessed, because a wrong offset here releases sixteen bytes that were
     /// never a string. Those elements leak; see #1027.
     fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts)
+        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts, ctx.enum_layouts)
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -8095,7 +8095,8 @@ impl<'a> FunctionBuilder<'a> {
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
         let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
         let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
-        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts).unwrap_or_default()
+        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
+            .unwrap_or_default()
     }
 
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
