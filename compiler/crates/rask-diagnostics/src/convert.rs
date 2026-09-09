@@ -46,6 +46,10 @@ fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
     let budget = (method.len() / 3).max(1);
     let mut scored: Vec<(usize, &'static str)> = candidates
         .iter()
+        // Never the name that was written. "did you mean `load`?" for a call
+        // that says `load` is worse than no suggestion: it reads as a compiler
+        // that has lost track of itself.
+        .filter(|cand| **cand != method)
         .filter_map(|cand| {
             if cand.contains(method) || method.contains(cand) {
                 Some((0, *cand))
@@ -671,6 +675,23 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_why(
                             "a heap value is made by the `Heap(…)` operator rather than by a constructor, so there is nothing to call on the name [mem.heap/HP3]",
                         );
+                }
+                // The type *does* have this method. Then the name isn't the
+                // problem and "no method found" is the wrong sentence — as is
+                // the suggestion that follows it, which offers back the name
+                // that was written. `a.load(ord, 3)` on an `Atomic<i64>` said
+                // "no method `load` found … did you mean `load`?", because
+                // every arm of the atomic resolver is guarded on the argument
+                // count and the fall-through only knows the name.
+                if rask_stdlib::registry::type_method_names(type_base(&ty_name))
+                    .contains(&method.as_str())
+                {
+                    return Diagnostic::error(format!("`{}.{}` doesn't match this call", ty, method))
+                        .with_code("E0313")
+                        .with_primary(*span, "wrong arguments for this method")
+                        .with_help(format!("`{}` has `{}` — check the arguments against it", ty, method))
+                        .with_fix(format!("check the arguments to `{}`", method))
+                        .with_why(format!("the name resolves — `{}` does have `{}`, and it is the call that didn't fit", ty, method));
                 }
                 match nearest_methods(&ty_name, method) {
                     names if !names.is_empty() => diag

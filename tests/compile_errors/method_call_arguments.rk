@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A method the type does have, called wrong.
+//
+// `Atomic<i64>.into_inner(Ordering.SeqCst)` reported "no method `into_inner`
+// found for type `Atomic<i64>`" and then suggested `into_inner` — the name
+// that had just been written. Every arm of the atomic resolver is guarded on
+// the argument count, so a wrong count falls through to "no such method", and
+// the suggestion machine offered the nearest name, which was the exact one.
+//
+// Two things were wrong and each is worth its own guard: a suggestion is never
+// the name in the source, and a name the type *has* means the name isn't the
+// problem. The message says what didn't fit instead.
+//
+// Rejection is the right answer either way. This file is about which
+// rejection.
+import sync.Atomic
+import sync.Ordering
+
+func too_many() {
+    let a = Atomic<i64>.new(1)
+    // ERROR: `load` takes an ordering and nothing else
+    println(a.load(Ordering.SeqCst, 3))
+    return
+}
+
+func too_few() {
+    let a = Atomic<i64>.new(1)
+    // ERROR: `store` takes a value and an ordering
+    a.store(5)
+    return
+}
+
+func into_inner_takes_none() {
+    let a = Atomic<i64>.new(1)
+    // ERROR: `into_inner` reads the word without an ordering — it consumes the atomic
+    println(a.into_inner(Ordering.SeqCst))
+    return
+}
+
+// And the name genuinely not existing still says so, so the new branch didn't
+// swallow the old one.
+func no_such_name() {
+    let a = Atomic<i64>.new(1)
+    // ERROR: no method `increment` — the name is `fetch_add`
+    println(a.increment(1, Ordering.SeqCst))
+    return
+}
+
+func main() {
+    too_many()
+    too_few()
+    into_inner_takes_none()
+    no_such_name()
+    return
+}
