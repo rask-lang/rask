@@ -7255,8 +7255,31 @@ impl<'a> FunctionBuilder<'a> {
             // this release runs where that struct dies.
             "Rack" => Some("rask_rack_free"),
             "Pool" => Some("rask_pool_free"),
+            // A box in a field. The release is a decrement, so it is right
+            // whether or not somebody else still holds one — which is what
+            // makes a box safe to hand to a task and still free here.
+            //
+            // Which decrement depends on the strategy, because each builds its
+            // own runtime object: `Shared<T, Local>` is a cell,
+            // `Shared<T, Mutex>` is a mutex, and a bare `Shared<T>` is
+            // `Readers` (conc.sync/SH2). `io.Buffer` keeps its read position in
+            // a `Shared<i64, Local>` and leaked two allocations per buffer.
+            "Shared" | "Cell" | "Mutex" => Some(Self::box_release_for(&rendered)),
             _ => None,
         }
+    }
+
+    /// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs,
+    /// read off the strategy in its type arguments.
+    fn box_release_for(rendered: &str) -> &'static str {
+        let args = rendered.split_once('<').map(|(_, rest)| rest).unwrap_or("");
+        if args.contains("Local") || rendered.starts_with("Cell") {
+            return "rask_cell_free";
+        }
+        if args.contains("Mutex") || rendered.starts_with("Mutex") {
+            return "rask_mutex_drop";
+        }
+        "rask_shared_drop_i64"
     }
 
     fn holds_string_ty(ty: &RaskType, ctx: &CodegenCtx, depth: u32) -> bool {
