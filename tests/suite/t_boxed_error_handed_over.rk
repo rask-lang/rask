@@ -100,6 +100,41 @@ test "type.errors — the long spelling behaves the same" {
     assert false
 }
 
+// A discarded error. `catch e => -1` still binds `e`, so a name does own the
+// box — but a definition inside a `catch` dominates no return, so the drop had
+// nowhere to go. It goes where control leaves the region the definition rules
+// now, the same rule `container_drop` uses for a container made in one arm of
+// a branch.
+//
+// This is the shortest way to handle an error and the one a program reaches
+// for most, so it is worth its own tests rather than a note.
+test "type.errors — a discarded error still frees its box" {
+    assert (classify(-1) catch e => -1) == -1
+    assert (classify(7) catch e => -1) == 7
+}
+
+test "type.errors — discarded, from two different error enums" {
+    assert (classify(-50) catch e => -1) == -1
+    assert (classify(0) catch e => -1) == -1
+}
+
+test "type.errors — discarded through the long spelling" {
+    assert (classify_long(-1) catch e => -1) == -1
+    assert (classify_long(4) catch e => -1) == 4
+}
+
+// Both paths in one function, so the tag guard has to pick: the ok side never
+// held a box, and dropping there would free the integer payload as a pointer.
+test "type.errors — ok and error paths in one place" {
+    mut good = 0
+    mut bad = 0
+    if (classify(3) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    if (classify(-3) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    if (classify(9) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    assert good == 2
+    assert bad == 1
+}
+
 // Not here, and filed instead:
 //
 //   - a box handed back through a function that only *forwards* it
@@ -108,8 +143,6 @@ test "type.errors — the long spelling behaves the same" {
 //     two apart yet.
 //   - a failing call in a loop leaks one box per turn — the same placement gap
 //     as #1145, which is about a box built inside a loop.
-//   - a discarded error (`classify(-1) catch e => -1`) never reads the payload
-//     out, so there is no name for the drop to go under.
 //
-// All three are #1147. Keeping them out of this file is what keeps it a
-// statement about what works.
+// Both are #1147. Keeping them out of this file is what keeps it a statement
+// about what works.

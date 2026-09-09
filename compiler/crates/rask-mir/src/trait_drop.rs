@@ -373,6 +373,62 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
 
     let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
 
+    // Drop where control leaves the region the definition rules.
+    //
+    // The return rule above needs the definition to dominate the return, and a
+    // definition inside a `match` arm — or a `catch` — dominates none of them:
+    // the join block is reachable from the other arms too. Its own comment
+    // names the case and stops there, so the box was dropped nowhere.
+    // `classify(-1) catch e => -1` binds the error, so the payload read exists
+    // and owns the box; it just had no site.
+    //
+    // A definition rules a region; control leaves it either at a `return`
+    // inside it or across an edge out of it, and every path out crosses exactly
+    // one of the two. Same rule as `container_drop::exit_edge_drops`, ported
+    // rather than re-derived — including both of the guards that cost a
+    // segfault there.
+    {
+        let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
+        for id in droppable.iter().copied() {
+            let Some(&def_idx) = defined_in_block.get(&id) else { continue };
+            let def = func.blocks[def_idx].id;
+            // Anything outside the region still naming it would read a value
+            // this is about to free — a phi merging this arm's box with
+            // another's is the shape that matters.
+            let named_outside = func.blocks.iter().any(|b| {
+                !dom.dominates(def, b.id)
+                    && (b.statements.iter().any(|st| crate::analysis::uses::stmt_reads(st, id))
+                        || crate::analysis::uses::terminator_reads(&b.terminator, id))
+            });
+            if named_outside {
+                continue;
+            }
+            for (idx, block) in func.blocks.iter().enumerate() {
+                if !dom.dominates(def, block.id) {
+                    continue;
+                }
+                // Every successor, not any: the drop goes at the end of the
+                // block, so a block that can also carry on inside the region
+                // would run it and keep going. And a back-edge target is not an
+                // exit whatever dominance says — `collect_backedge_drops`
+                // already owns those, and dropping in both places is a double
+                // free.
+                let succs = crate::analysis::cfg::successors(&block.terminator);
+                let leaves = !succs.is_empty()
+                    && succs
+                        .iter()
+                        .all(|s| !dom.dominates(def, *s) && !dom.dominates(*s, block.id));
+                if leaves {
+                    extra.entry(idx).or_default().push(id);
+                }
+            }
+        }
+        for (idx, mut locals) in extra {
+            locals.sort_by_key(|l| l.0);
+            drops_to_insert.push((idx, locals));
+        }
+    }
+
     for (block_idx, block) in func.blocks.iter().enumerate() {
         match &block.terminator.kind {
             MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
@@ -398,6 +454,8 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
                     &mut drops_to_insert, block_idx, block.id, *target, &func.blocks, &dom, &defined_in_block,
                 );
             }
+            // Nothing to do here; the exit-edge rule below covers every other
+            // way control leaves a definition's region.
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 collect_backedge_drops(
                     &mut drops_to_insert, block_idx, block.id, *then_block, &func.blocks, &dom, &defined_in_block,
