@@ -693,6 +693,7 @@ typedef struct RaskRng RaskRng;
 
 RaskRng *rask_rng_new(void);
 RaskRng *rask_rng_from_seed(int64_t seed);
+void     rask_rng_free(RaskRng *rng);
 int64_t  rask_rng_u64(RaskRng *rng);
 int64_t  rask_rng_i64(RaskRng *rng);
 double   rask_rng_f64(RaskRng *rng);

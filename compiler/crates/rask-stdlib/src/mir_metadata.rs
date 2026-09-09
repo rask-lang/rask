@@ -381,6 +381,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
+    ("Random_free", Internal::ConsumesReceiver),
     ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it

@@ -116,6 +116,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it
     // leaked (#1048).
+    // A `Random` is a heap block behind an opaque handle — no elements, no
+    // sizes, and nothing was freeing it. Here so the drop pass knows the
+    // caller owns what came back.
+    ("Random_new", 0, 0, "Random_free"),
+    ("Random_from_seed", 0, 0, "Random_free"),
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
     ("Pool_new", 1, 0, "Pool_free"),

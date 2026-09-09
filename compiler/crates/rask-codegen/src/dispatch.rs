@@ -971,6 +971,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
         StdlibEntry::simple("Random_from_seed", "rask_rng_from_seed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_free", "rask_rng_free", &[types::I64], None, false),
         StdlibEntry::simple("Random_u64", "rask_rng_u64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_i64", "rask_rng_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_f64", "rask_rng_f64", &[types::I64], Some(types::F64), false),

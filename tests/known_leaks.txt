@@ -53,9 +53,12 @@
 # `try` on a `Container or E` inside a function that returns `_ or E` reads the
 # error out of the wrapper and stores it into the Result going back, and the
 # container on the wrapper's *ok* side went with it (`t_io_seek.rk` 21 → 0), and
-# 329 once a trait object's drop covered the containers and boxes in the value
-# it holds, not only the strings, and passing one to a function that borrows it
-# stopped counting as handing it over (`t_io_buffer.rk` 21 → 3).
+# 343 once passing a trait object to a function that borrows it stopped counting
+# as handing it over (`t_io_buffer.rk` 21 → 17; covering the containers inside a
+# boxed value as well was tried, double-freed, and backed out — #1144), and 322
+# once a `Random` had a free at all: it is a heap block behind an opaque handle
+# and `rask_rng_free` did not exist, so every `Random.from_seed(n)` leaked its
+# state (three more files clean).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -112,7 +115,6 @@ t35_returned_sequence.rk  # 2 allocations — a returned chain's captured contai
 t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
 t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 14 allocations — sequence adapter closures, #1045
-t40_stdlib_renames.rk  # 3 allocations
 t41_closure_environment_drop.rk  # 10 allocations — a closure made on one branch has nowhere safe to be freed, #1045
 t42_flatten_shaped_header.rk  # 9 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 3 allocations
@@ -135,7 +137,7 @@ t_container_ownership.rk  # 1 allocation
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 4 allocations
-t_io_buffer.rk  # 3 allocations
+t_io_buffer.rk  # 17 allocations
 t_json_decode.rk  # 6 allocations
 t_local_box_payload.rk  # 1 allocation
 t_module_qualified_variants.rk  # 5 allocations — trait boxes again
@@ -143,12 +145,11 @@ t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 1 allocation
 t_month_boxes.rk  # 8 allocations
 t_month_panic_observed.rk  # 9 allocations
-t_month_stdlib_modules.rk  # 7 allocations
+t_month_stdlib_modules.rk  # 1 allocation
 t_mutex_payload_kinds.rk  # 10 allocations
 t_os_env.rk  # 4 allocations
 t_package_state.rk  # 6 allocations
 t_rack_stale_records.rk  # 2 allocations
-t_random_seeded.rk  # 10 allocations
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_shared_inline_access.rk  # 1 allocation
 t_shared_strategies.rk  # 3 allocations
@@ -161,7 +162,6 @@ t_trait_object_in_field_container.rk  # 7 allocations
 t_trait_object_optional_payload.rk  # 6 allocations
 t_vec_element_returns.rk  # 7 allocations
 t_vec_field_filter_map.rk  # 4 allocations
-t_week_imports.rk  # 2 allocations
 t_week_opaque_struct_fields.rk  # 1 allocation
 t_week_traits.rk  # 5 allocations
 t_with_collection_field_writes.rk  # 6 allocations

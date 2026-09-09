@@ -61,6 +61,14 @@ RaskRng *rask_rng_from_seed(int64_t seed) {
     return rng;
 }
 
+// free(rng) — a `Random` is a heap block behind an opaque handle, so the frame
+// that made one gives it back like any other. There was no free at all, so
+// every `Random.from_seed(n)` leaked its state.
+void rask_rng_free(RaskRng *rng) {
+    if (!rng) return;
+    rask_free(rng);
+}
+
 int64_t rask_rng_u64(RaskRng *rng) {
     return (int64_t)rng_next_u64(rng);
 }
