@@ -3939,7 +3939,13 @@ impl<'a> MirLowerer<'a> {
         lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
         lowerer.spawned_closure_names = Self::collect_spawned_names(&fn_decl.body);
 
-        // Resolve Self type from function name: "Document_delete_line" → "Document"
+        // Resolve Self from the function name, for the methods that still
+        // arrive with it: a generic owner's template keeps `Self` because the
+        // per-receiver copy is what knows the layout. Splitting at the first
+        // underscore is right there and only there — a type name with an
+        // underscore in it reads as a different type, which is what made a
+        // dependency's `Helper_liba_describe` look up a `Helper` (#1129). Mono
+        // writes the type in wherever it knows it, so this sees the rest.
         let self_type_name: Option<String> = fn_decl.params.iter()
             .any(|p| p.ty == "Self")
             .then(|| {

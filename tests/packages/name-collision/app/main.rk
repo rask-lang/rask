@@ -2,15 +2,25 @@
 
 import libpkg
 
-// The consumer's own Cat. Nothing here imports libpkg's, and it still loses:
-// a dependency's public names occupy the consumer's namespace whether or not
-// anyone asked for them.
+// The consumer's own Cat, and libpkg's, in one program. They used to be one
+// name with two declarations behind it, so whichever landed second lost —
+// `Cat { legs: 4 }` came back "missing field in `Cat` initializer: `name`",
+// about a struct this file never wrote (#1129).
+//
+// modules/RE2: a type's identity is (origin package, origin name). The two are
+// different types, and both are usable here — the library's only through the
+// name of the package, which is all modules/IM1 gives you for a name you
+// didn't import.
 struct Cat {
     legs: i64
 }
 
 func main() {
-    let c = Cat { legs: 4 }
-    println("{c.legs}")
+    let mine = Cat { legs: 4 }
+    let theirs = libpkg.Cat { name: "mimi" }
+    println("{mine.legs}")
+    println(libpkg.greet(theirs))
+    // And the library's own function still constructs its own type.
+    println(libpkg.greet(libpkg.named("pus")))
     return
 }

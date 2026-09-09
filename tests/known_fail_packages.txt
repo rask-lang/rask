@@ -8,10 +8,6 @@
 # Empty: every fixture builds and matches. #1112, #1123, #1124, #1125 and #1126
 # were all the same root — a dependency's declarations were renamed halfway
 # into the consumer's program, and each package's node and file ids restarted
-# at zero so two packages' nodes collided.
-
-name-collision           # #1129 — a dependency's public names occupy the
-                         # consumer's namespace, so the consumer's own `Cat`
-                         # loses to a library's. E0876 reports the collision
-                         # rather than compiling one of them wrong; a scope
-                         # per package is what would let both exist.
+# at zero so two packages' nodes collided. #1129 was the other half: they were
+# renamed nowhere, so a dependency's names sat in the consumer's namespace and
+# a program couldn't declare a type its dependency had a name for.
