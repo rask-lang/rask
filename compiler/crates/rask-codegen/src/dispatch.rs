@@ -1241,6 +1241,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // Not a method anyone writes: `build` consumes the builder, and this is
+        // the release the drop pass emits for a path that never builds.
+        StdlibEntry::simple("StringBuilder_free", "rask_string_builder_free", &[types::I64], None, false),
         StdlibEntry::simple("StringBuilder_len", "rask_string_builder_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_is_empty", "rask_string_builder_is_empty", &[types::I64], Some(types::I64), false),
 

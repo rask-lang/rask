@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A value taken away on one path, released on the others (#1035).
+//
+// `StringBuilder.build(take self)` takes the builder. The drop pass read that
+// as "handed away", full stop, so no path got a release — including the ones
+// that give up before building. `string.from_utf8` returns a `Utf8Error` from
+// eight places, so every rejected byte sequence leaked the builder and its
+// buffer: 26 allocations in `t_string_from_utf8.rk`.
+//
+// A consuming call is a place now, not a verdict. The release goes wherever no
+// path in has consumed it yet, which is a *may* answer on purpose: freeing
+// where the value is definitely still this frame's leaks nothing and frees
+// nothing twice, and the other way round is a double free.
+//
+// The back-edge needed the same test and didn't get it at first.
+// `markdown_renderer`'s fenced-code branch builds and consumes a builder in one
+// turn of the loop:
+//
+//     _403 = StringBuilder_build(_382)
+//     StringBuilder_free(_382)         // frees it again
+//     goto bb5
+//
+// which segfaulted inside `free` on the second code block.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// built strings still come out right — a builder released before `build()` ran
+// would read freed bytes.
+//
+// Spec: specs/memory/linear.md — consume exactly once.
+import string.StringBuilder
+
+// A primitive can't be an error type — every error owes a `message`
+// (type.errors/ER4) — so the byte position gets a name.
+struct BadByte {
+    at: i64
+}
+
+extend BadByte {
+    public func message(self) -> string {
+        return "byte {self.at} is not ASCII"
+    }
+}
+
+// Gives up on the first byte over 127, so the builder is live at the return.
+func ascii_only(bytes: Vec<u8>) -> string or BadByte {
+    mut out = StringBuilder.new()
+    mut i = 0
+    while i < bytes.len().clamp<i64>() {
+        let b = (bytes.get(i) ?? 0).clamp<i64>()
+        if b > 127 {
+            return BadByte { at: i }
+        }
+        if char.from_u32(b.clamp<u32>())? as c {
+            out.push_char(c)
+        } else {
+            return BadByte { at: i }
+        }
+        i = i + 1
+    }
+    return out.build()
+}
+
+// Built and consumed inside a loop, so the back-edge sees a builder that is
+// already gone.
+func run_together(words: Vec<string>) -> string {
+    mut out: Vec<string> = Vec.new()
+    for w in words {
+        mut piece = StringBuilder.new()
+        piece.push("<")
+        piece.push(w)
+        piece.push(">")
+        out.push(piece.build())
+    }
+    return out.join("")
+}
+
+// Two ways out of the loop, one consuming and one not.
+func until_stop(words: Vec<string>) -> string or BadByte {
+    mut out = StringBuilder.new()
+    mut n = 0
+    for w in words {
+        if w == "stop" {
+            return BadByte { at: n }
+        }
+        out.push(w)
+        n = n + 1
+    }
+    return out.build()
+}
+
+test "mem.linear — the builder is built on the path that finishes" {
+    let bytes: Vec<u8> = [104, 105]
+    if ascii_only(bytes) is string as s {
+        assert s == "hi"
+    } else {
+        assert false
+    }
+}
+
+test "mem.linear — and released on the path that gives up" {
+    let bytes: Vec<u8> = [104, 200, 105]
+    if ascii_only(bytes) is BadByte as e {
+        assert e.at == 1
+    } else {
+        assert false
+    }
+}
+
+test "mem.linear — built and consumed inside a loop" {
+    let words: Vec<string> = ["a", "b", "c"]
+    assert run_together(words) == "<a><b><c>"
+}
+
+test "mem.linear — one loop, two ways out" {
+    let all: Vec<string> = ["x", "y"]
+    if until_stop(all) is string as s {
+        assert s == "xy"
+    } else {
+        assert false
+    }
+
+    let cut: Vec<string> = ["x", "stop", "y"]
+    if until_stop(cut) is BadByte as e {
+        assert e.at == 1
+    } else {
+        assert false
+    }
+}
+
+// Repeatedly, so a builder freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.linear — both paths in a loop" {
+    mut ok = 0
+    mut rejected = 0
+    for i in 1..8 {
+        let bytes: Vec<u8> = [104, (i * 40).clamp<u8>()]
+        if ascii_only(bytes) is string as s {
+            ok = ok + s.len().clamp<i64>()
+        } else {
+            rejected = rejected + 1
+        }
+    }
+    assert ok == 6
+    assert rejected == 4
+}
+
+// The one the whole thing came from: `string.from_utf8` rejecting a sequence.
+test "std.strings/S4 — a rejected sequence leaves nothing behind" {
+    let bad: Vec<u8> = [0xFF, 0x41]
+    assert (string.from_utf8(bad) catch _ => "REJECTED") == "REJECTED"
+
+    let good: Vec<u8> = [0x41, 0x42]
+    assert (string.from_utf8(good) catch _ => "REJECTED") == "AB"
+}

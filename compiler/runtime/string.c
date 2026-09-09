@@ -1673,13 +1673,19 @@ void rask_string_builder_append_char(int64_t handle, int64_t codepoint) {
 }
 
 // Consume the builder, return a string. Zero-copy when possible.
+// Sized releases, so the byte tally comes back down too — `rask_free` is never
+// told how much it released.
+void rask_string_builder_free(int64_t handle) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    if (!sb) return;
+    rask_realloc(sb->data, sb->cap, 0);
+    rask_realloc(sb, (int64_t)sizeof(RaskStringBuilder), 0);
+}
+
 void rask_string_builder_build(RaskStr *out, int64_t handle) {
     RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
     str_make(out, sb->data, sb->len);
-    // Sized releases, so the byte tally comes back down too — `rask_free` is
-    // never told how much it released.
-    rask_realloc(sb->data, sb->cap, 0);
-    rask_realloc(sb, (int64_t)sizeof(RaskStringBuilder), 0);
+    rask_string_builder_free(handle);
 }
 
 int64_t rask_string_builder_len(int64_t handle) {

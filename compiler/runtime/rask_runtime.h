@@ -299,6 +299,10 @@ int64_t     rask_string_builder_with_capacity(int64_t cap);
 void        rask_string_builder_append(int64_t handle, int64_t str_ptr);
 void        rask_string_builder_append_char(int64_t handle, int64_t codepoint);
 void        rask_string_builder_build(RaskStr *out, int64_t handle);
+// `build` consumes the builder. This is the same release on its own, for a path
+// that gives up before building — `string.from_utf8` returns a `Utf8Error` from
+// eight places and leaked the builder from every one of them.
+void        rask_string_builder_free(int64_t handle);
 int64_t     rask_string_builder_len(int64_t handle);
 int64_t     rask_string_builder_is_empty(int64_t handle);
 

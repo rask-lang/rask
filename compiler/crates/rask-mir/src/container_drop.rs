@@ -643,7 +643,7 @@ fn insert_for_function(
     if fresh.is_empty() {
         return;
     }
-    let escaping = find_escaping(func, &fresh, kept);
+    let (escaping, consumed) = find_escaping(func, &fresh, kept);
     let moved_away = find_moved_away(func, &fresh);
     let already_freed = find_already_freed(func, &fresh);
     let fresh: HashMap<LocalId, &'static str> = fresh
@@ -703,7 +703,7 @@ fn insert_for_function(
         }
     }
 
-    let placed = placed_locals(func, &droppable, &groups);
+    let placed = placed_locals(func, &droppable, &groups, &consumed);
     for group in &groups {
         let survivors = group
             .iter()
@@ -732,7 +732,7 @@ fn insert_for_function(
     }
 
     if !droppable.is_empty() {
-        insert_drops(func, &droppable, &groups);
+        insert_drops(func, &droppable, &groups, &consumed);
     }
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
@@ -1138,7 +1138,12 @@ fn cells_this_frame_frees(
             carried.insert(*dst, free);
         }
         follow_copies(func, &mut carried);
-        if !find_escaping(func, &carried, kept).is_empty() {
+        // Consumed counts the same here as escaping: a cell's free runs on the
+        // way out of the frame, so a value already taken away must not be
+        // named at all. The path-sensitivity below is for a frame's own locals,
+        // which have a placement to be sensitive about.
+        let (escapes, taken) = find_escaping(func, &carried, kept);
+        if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
         out.push((*cell, free, *store_block));
@@ -1459,8 +1464,19 @@ fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
-) -> HashSet<LocalId> {
+) -> (HashSet<LocalId>, HashMap<LocalId, HashSet<BlockId>>) {
     let mut escaping = HashSet::new();
+    // Where a container is handed to a stdlib method declared `take self`.
+    //
+    // That is not the same as escaping, and treating it as such is why
+    // `string.from_utf8` leaked a `StringBuilder` for every byte sequence it
+    // rejected: `out.build()` takes the builder away, so every name for it was
+    // marked escaping and no path got a release — including the eight that
+    // return a `Utf8Error` before `build()` is ever reached.
+    //
+    // So it is recorded per block instead, and the placement below frees only
+    // where no path in has consumed it yet.
+    let mut consumed: HashMap<LocalId, HashSet<BlockId>> = HashMap::new();
     let mut mark = |op: &MirOperand, escaping: &mut HashSet<LocalId>| {
         if let MirOperand::Local(id) = op {
             if containers.contains_key(id) {
@@ -1475,8 +1491,18 @@ fn find_escaping(
                 MirStmtKind::Call { func: fref, args, .. } => {
                     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
                     let skip_receiver = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
+                    let takes_receiver =
+                        rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
                     for (i, arg) in args.iter().enumerate() {
                         if skip_receiver && i == 0 {
+                            continue;
+                        }
+                        if takes_receiver && i == 0 {
+                            if let MirOperand::Local(id) = arg {
+                                if containers.contains_key(id) {
+                                    consumed.entry(*id).or_default().insert(block.id);
+                                }
+                            }
                             continue;
                         }
                         if call_keeps_argument(fref, i, kept) {
@@ -1518,7 +1544,7 @@ fn find_escaping(
             _ => {}
         }
     }
-    escaping
+    (escaping, consumed)
 }
 
 /// Copied into another local, or merged through a phi: the new name owns it.
@@ -1551,6 +1577,26 @@ fn find_moved_away(
     moved
 }
 
+/// Every block a consumed container might already be gone in: the consuming
+/// blocks and everything reachable from them.
+///
+/// A *may* answer on purpose. Freeing where the value is definitely still this
+/// frame's leaks nothing and frees nothing twice; the other way round is a
+/// double free, so a block with any consuming path into it is left alone.
+fn blocks_past_a_consume(func: &MirFunction, sites: &HashSet<BlockId>) -> HashSet<BlockId> {
+    let mut out: HashSet<BlockId> = sites.clone();
+    let mut frontier: Vec<BlockId> = sites.iter().copied().collect();
+    while let Some(bid) = frontier.pop() {
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        for succ in crate::analysis::cfg::successors(&block.terminator) {
+            if out.insert(succ) {
+                frontier.push(succ);
+            }
+        }
+    }
+    out
+}
+
 /// Which of `droppable` would actually get a free emitted somewhere.
 ///
 /// The same walk `insert_drops` does, minus the emitting. Split out because
@@ -1560,8 +1606,9 @@ fn placed_locals(
     func: &MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) -> HashSet<LocalId> {
-    plan_drops(func, droppable, groups)
+    plan_drops(func, droppable, groups, consumed)
         .into_iter()
         .flat_map(|(_, locals)| locals)
         .collect()
@@ -1575,8 +1622,9 @@ fn insert_drops(
     func: &mut MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) {
-    for (block_idx, locals) in plan_drops(func, droppable, groups) {
+    for (block_idx, locals) in plan_drops(func, droppable, groups, consumed) {
         for local in locals {
             let free = droppable[&local];
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
@@ -1593,8 +1641,19 @@ fn plan_drops(
     func: &MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) -> Vec<(usize, Vec<LocalId>)> {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
+    // Where each consumed container might already be gone. Blocks with no
+    // entry own nothing consumable and answer "no" for every local.
+    let gone: HashMap<LocalId, HashSet<BlockId>> = consumed
+        .iter()
+        .filter(|(id, _)| droppable.contains_key(id))
+        .map(|(id, sites)| (*id, blocks_past_a_consume(func, sites)))
+        .collect();
+    let still_ours = |id: &LocalId, at: BlockId| {
+        !gone.get(id).is_some_and(|blocks| blocks.contains(&at))
+    };
 
     let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
     // Every local's defining block, not just the droppable ones: a back-edge
@@ -1620,6 +1679,7 @@ fn plan_drops(
                 let drops: Vec<LocalId> = droppable
                     .keys()
                     .copied()
+                    .filter(|id| still_ours(id, block.id))
                     .filter(|id| {
                         defined_in_block.get(id).is_some_and(|&def_idx| {
                             dom.dominates(func.blocks[def_idx].id, block.id)
@@ -1632,16 +1692,16 @@ fn plan_drops(
             }
             MirTerminatorKind::Goto { target } => backedge_drops(
                 &mut to_insert, block_idx, block.id, *target, &func.blocks, &dom,
-                &defined_in_block, &def_of_any, groups,
+                &defined_in_block, &def_of_any, groups, &gone,
             ),
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *then_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups,
+                    &defined_in_block, &def_of_any, groups, &gone,
                 );
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *else_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups,
+                    &defined_in_block, &def_of_any, groups, &gone,
                 );
             }
             _ => {}
@@ -1661,6 +1721,7 @@ fn backedge_drops(
     defined_in_block: &HashMap<LocalId, usize>,
     def_of_any: &HashMap<LocalId, usize>,
     groups: &[HashSet<LocalId>],
+    gone: &HashMap<LocalId, HashSet<BlockId>>,
 ) {
     if !dom.dominates(target, source) {
         return;
@@ -1696,6 +1757,17 @@ fn backedge_drops(
                 .find(|g| g.contains(id))
                 .is_none_or(|g| g.iter().all(inside))
         })
+        // And it has to still be this frame's here. A builder made and built in
+        // one turn of the loop is gone by the back-edge:
+        //
+        //     _403 = StringBuilder_build(_382)   // takes it away
+        //     _404 = Vec_push(_317, _80)
+        //     StringBuilder_free(_382)           // frees it again
+        //     goto bb5
+        //
+        // which is `markdown_renderer`'s fenced-code branch, and it segfaulted
+        // in `free` on the second block.
+        .filter(|(id, _)| !gone.get(id).is_some_and(|blocks| blocks.contains(&source)))
         .map(|(&id, _)| id)
         .collect();
     if !drops.is_empty() {

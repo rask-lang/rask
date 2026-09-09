@@ -179,6 +179,12 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("channel_tx", 0, 0, "Sender_drop"),
     ("channel_rx", 0, 0, "Receiver_drop"),
     ("Sender_clone", 0, 0, "Sender_drop"),
+    // A string builder is the frame's until `build()` takes it away. Nothing
+    // released one on a path that gives up before building, and
+    // `string.from_utf8` returns a `Utf8Error` from eight places — so every
+    // rejected byte sequence leaked the builder and its buffer.
+    ("StringBuilder_new", 0, 0, "StringBuilder_free"),
+    ("StringBuilder_with_capacity", 0, 0, "StringBuilder_free"),
     // A cstring owns the NUL-terminated copy it made, and it is the caller's to
     // free — that is what makes it different from `string.as_ptr()`, which
     // points into a buffer the string still holds (#949).

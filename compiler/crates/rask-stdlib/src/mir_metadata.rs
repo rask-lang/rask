@@ -393,6 +393,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // once both ends are.
     ("Sender_drop", Internal::ConsumesReceiver),
     ("Receiver_drop", Internal::ConsumesReceiver),
+    // The builder's release on a path that never calls `build()`. Nothing
+    // declares it — a builder is given up by going out of scope or by being
+    // built, never by a call the user writes.
+    ("StringBuilder_free", Internal::ConsumesReceiver),
     // The free for the NUL-terminated copy `to_cstring` makes. Nothing declares
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
