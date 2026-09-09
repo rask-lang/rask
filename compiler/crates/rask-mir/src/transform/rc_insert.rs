@@ -148,6 +148,7 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
 
                 _ => {}
             }
+
         }
 
         // Apply insertions in reverse to preserve indices

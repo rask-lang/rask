@@ -179,6 +179,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("channel_tx", 0, 0, "Sender_drop"),
     ("channel_rx", 0, 0, "Receiver_drop"),
     ("Sender_clone", 0, 0, "Sender_drop"),
+    ("string_split", 0, 0, "Vec_free"),
+    ("string_lines", 0, 0, "Vec_free"),
+    ("string_split_whitespace", 0, 0, "Vec_free"),
     // A string builder is the frame's until `build()` takes it away. Nothing
     // released one on a path that gives up before building, and
     // `string.from_utf8` returns a `Utf8Error` from eight places — so every

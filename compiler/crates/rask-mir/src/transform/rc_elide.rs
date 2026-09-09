@@ -73,6 +73,60 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
     owned
 }
 
+/// The two halves `container_touched` merges, kept apart: strings that point
+/// into a container's storage, and strings handed to a call that keeps them.
+///
+/// A view propagates through copies and phis, because the local the call
+/// receives is usually a copy of the one the read produced.
+fn views_and_handovers(
+    func: &MirFunction,
+    string_locals: &HashSet<LocalId>,
+) -> (HashSet<LocalId>, HashSet<LocalId>) {
+    let mut views: HashSet<LocalId> = HashSet::new();
+    let mut handed: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
+        if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+            if let Some(dst) = dst.filter(|d| string_locals.contains(d)) {
+                views.insert(dst);
+            }
+        }
+        for (i, arg) in args.iter().enumerate() {
+            if !rask_stdlib::mir_metadata::keeps_argument(&fref.name, i) {
+                continue;
+            }
+            if let Some(id) =
+                crate::analysis::uses::operand_local(arg).filter(|id| string_locals.contains(id))
+            {
+                handed.insert(id);
+            }
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(MirOperand::Local(src)),
+                } if views.contains(src) => changed |= views.insert(*dst),
+                MirStmtKind::Phi { dst, args } => {
+                    if args
+                        .iter()
+                        .filter_map(|(_, op)| crate::analysis::uses::operand_local(op))
+                        .any(|src| views.contains(&src))
+                    {
+                        changed |= views.insert(*dst);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (views, handed)
+}
+
 /// String locals that cross a stdlib boundary that takes the reference with it.
 fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
     let mut touched: HashSet<LocalId> = HashSet::new();
@@ -177,11 +231,34 @@ fn elide_local_only(func: &mut MirFunction) -> usize {
     // Decide per group, not per local: keeping one local's release while
     // dropping the increment on the copy that outlives it frees the buffer out
     // from under the copy.
+    // Out of one container and into another. `container_touched` lumps both
+    // halves together — a view coming out, a hand-over going in — and either
+    // one alone means the frame owes no release. Both at once is different: the
+    // view carries no reference and the destination will release, so the retain
+    // has to survive.
+    //
+    //     _21 = Vec_get_unchecked(_16, _19)   // a view into _16
+    //     _22 = _21
+    //     _23 = Vec_push(_14, _22)            // _14 points at _16's buffer
+    //
+    // is `fs.read_lines` — split the text, push each piece into the vector it
+    // hands back — and every line read as freed bytes once the split's own
+    // vector started being freed (#1035).
+    let (views, handed_over) = views_and_handovers(func, &string_locals);
+
     let mut keep: HashSet<LocalId> = HashSet::new();
+    // Retain only, for the container-to-container case: the copy's increment is
+    // the reference the destination ends up holding, and there is no release to
+    // keep because this frame never had one to give.
+    let mut keep_retain_only: HashSet<LocalId> = HashSet::new();
     for group in copy_groups(func, &string_locals) {
         let crosses_container = group.iter().any(|l| containers.contains(l));
         let borrowed_in = group.iter().any(|l| owned.contains(l));
-        if borrowed_in && !crosses_container {
+        let container_to_container =
+            group.iter().any(|l| views.contains(l)) && group.iter().any(|l| handed_over.contains(l));
+        if container_to_container {
+            keep_retain_only.extend(group);
+        } else if borrowed_in && !crosses_container {
             keep.extend(group);
         }
     }
@@ -191,10 +268,18 @@ fn elide_local_only(func: &mut MirFunction) -> usize {
         let before = block.statements.len();
         block.statements.retain(|stmt| {
             match &stmt.kind {
-                MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => {
+                MirStmtKind::RcInc { local } => {
+                    escaped.contains(local)
+                        || keep.contains(local)
+                        || keep_retain_only.contains(local)
+                }
+                MirStmtKind::RcDec { local } => {
                     // Keep if the local escapes, or if its reference came from
-                    // somewhere this function has to release.
-                    escaped.contains(local) || keep.contains(local)
+                    // somewhere this function has to release. A
+                    // container-to-container string is neither: the reference
+                    // its retain made went into the destination.
+                    (escaped.contains(local) || keep.contains(local))
+                        && !keep_retain_only.contains(local)
                 }
                 _ => true,
             }
