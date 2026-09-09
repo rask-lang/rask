@@ -276,7 +276,27 @@ fn container_handles_from(
                         // `h.nested.get(0)? as first`. Recorded as a view,
                         // which holds the release back without letting this
                         // local's own verdict decide the container's fate.
-                        let root = views.get(&base).or_else(|| from.get(&base)).copied();
+                        let root = views
+                            .get(&base)
+                            .or_else(|| from.get(&base))
+                            // A *wrapper* read off an aggregate. `h.v` on a
+                            // `Vec<i64>?` field gives the tag and the handle
+                            // together, and `h.v!` reaches the handle through
+                            // it — so neither is a bare pointer off the struct
+                            // and the release ran before the reads. As a view
+                            // it only delays the release; a group member would
+                            // block it.
+                            //
+                            // Wrappers only. Every scalar field read admitted
+                            // here pushes the release to that local's last use,
+                            // which cost four suite files a small leak each.
+                            .or((aggregates.contains(&base)
+                                && matches!(
+                                    ty_of.get(dst),
+                                    Some(MirType::Option(_)) | Some(MirType::Result { .. })
+                                ))
+                            .then_some(&base))
+                            .copied();
                         if let Some(root) = root {
                             if views.insert(*dst, root).is_none() {
                                 changed = true;

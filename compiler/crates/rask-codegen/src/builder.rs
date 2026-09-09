@@ -7399,6 +7399,18 @@ impl<'a> FunctionBuilder<'a> {
         if depth > Self::RC_WALK_DEPTH || !Self::holds_string_ty(ty, ctx, 0) {
             return Ok(());
         }
+        // The value *is* a container. Only a struct's fields used to be checked
+        // for one, so a container reached any other way was walked and nothing
+        // came of it — and the way that matters is a wrapper's payload:
+        //
+        //     json.decode<Vec<Point>>(text) catch e => …
+        //
+        // hands back `Vec<Point> or JsonError`, and releasing the wrapper
+        // released neither side. `holds_string_ty` has always answered "yes" to
+        // this shape, so the walk ran and did nothing at all.
+        if let Some(free_fn) = Self::container_free_for(ty) {
+            return Self::emit_container_release(builder, base, offset, free_fn, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {

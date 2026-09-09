@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container held behind a `?` or an `or` (#1035, #1140).
+//
+// The walk that gives back what a value owns checked a *struct's fields* for a
+// container and nothing else. So a container reached any other way was walked
+// and nothing came of it — and the way that matters is a wrapper's payload:
+// `Vec<i64>?` and `Vec<i64> or E` both keep the handle behind a tag.
+//
+// Releasing it is where the reads get delicate. `h.v!` is reached as a field
+// read off the struct whose result is the *wrapper*, then a read through the
+// tag — not as a bare pointer off the struct — so the placement had to learn
+// that a wrapper read off an aggregate is a view into it. Without that,
+// `h.v!.len()` read a freed buffer and gave -4564918357932735942.
+//
+// Only wrapper reads count as views. Admitting every scalar field read pushes
+// the release to that local's last use, which cost four suite files a small
+// leak each.
+//
+// The other half of this is #1140: a *local* whose type is `Vec<T> or E` still
+// leaks, because that walk goes by MIR type and MIR calls every container a
+// bare `Ptr`. The cases here all reach the container through a declaration the
+// checker's types survive into.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// reads still come out right.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+struct Refused {
+    why: string
+}
+
+extend Refused {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Maybe {
+    label: string
+    items: Vec<i64>?
+}
+
+struct Fallible {
+    label: string
+    items: Vec<i64> or Refused
+}
+
+struct Keyed {
+    lookup: Map<string, i64>?
+}
+
+func present(label: string) -> Maybe {
+    let v: Vec<i64> = [1, 2, 3]
+    return Maybe { label: label, items: v }
+}
+
+func absent(label: string) -> Maybe {
+    return Maybe { label: label, items: none }
+}
+
+test "mem.ownership — a Vec behind a `?` field, read after" {
+    let h = present("here")
+    assert h.label == "here"
+    assert h.v_len() == 3
+}
+
+extend Maybe {
+    func v_len(self) -> i64 {
+        if self.items? as v {
+            return v.len().clamp<i64>()
+        }
+        return -1
+    }
+}
+
+test "mem.ownership — the same field absent" {
+    let h = absent("gone")
+    assert h.v_len() == -1
+    assert h.label == "gone"
+}
+
+// Read straight through the tag at the use site, which is the shape that broke:
+// `h.items!` names the handle inside the wrapper.
+test "mem.ownership — read through the tag at the use site" {
+    let h = present("direct")
+    assert h.items!.len() == 3
+    assert h.items![0] == 1
+    assert h.items![2] == 3
+}
+
+// `or` doesn't auto-wrap at an assignment, only at a `return` (type.errors/ER11),
+// so the field is filled by a small function whose signature says which branch.
+func wrapped(v: Vec<i64>) -> Vec<i64> or Refused {
+    return v
+}
+
+func refused(why: string) -> Vec<i64> or Refused {
+    return Refused { why: why }
+}
+
+test "mem.ownership — a Vec behind an `or` field" {
+    let v: Vec<i64> = [4, 5]
+    let ok = Fallible { label: "ok", items: wrapped(v) }
+    if ok.items is Vec<i64> as items {
+        assert items.len() == 2
+        assert items[1] == 5
+    } else {
+        assert false
+    }
+
+    let bad = Fallible { label: "bad", items: refused("no") }
+    if bad.items is Vec<i64> as items {
+        assert false
+    } else {
+        assert bad.label == "bad"
+    }
+}
+
+test "mem.ownership — a Map behind a `?` field" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    let k = Keyed { lookup: m }
+    assert k.lookup!.len() == 2
+    assert k.lookup!["a"] == 1
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — wrapped containers in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        let h = present("loop")
+        total = total + h.items!.len().clamp<i64>()
+        let g = absent("loop")
+        total = total + g.v_len()
+    }
+    assert total == 10
+}

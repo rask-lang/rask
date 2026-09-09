@@ -40,7 +40,11 @@
 # *through* a closure was owned by its caller (`t41_closure_environment_drop.rk`
 # 28 → 10, which was the per-element half of #1045), and 496 once a container
 # whose *elements* are enums could be described at all — a guard entry per
-# variant, which the suite barely exercises and a decoded document is made of.
+# variant, which the suite barely exercises and a decoded document is made of —,
+# and 490 once a container held behind a `?` or an `or` was released with the
+# value holding it. The other half of that one is #1140: a *local* typed
+# `Vec<T> or E` still leaks, because that walk goes by MIR type and MIR calls
+# every container a bare `Ptr`.
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -126,7 +130,6 @@ t_day_vec.rk  # 2 allocations
 t_debug_renders_containers.rk  # 2 allocations
 t_element_type_resolution.rk  # 4 allocations
 t_fs_open_failure.rk  # 2 allocations
-t_generic_optional_field.rk  # 6 allocations
 t_io_buffer.rk  # 24 allocations
 t_json_decode.rk  # 22 allocations
 t_json_encode_shapes.rk  # 14 allocations
