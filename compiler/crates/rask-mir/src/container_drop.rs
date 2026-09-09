@@ -719,13 +719,50 @@ fn insert_for_function(
     }
 
     let placed = placed_locals(func, &droppable, &groups, &consumed);
+    // One allocation under several names that would each free it: free it once,
+    // under the name whose definition rules the others. Leaving the whole group
+    // alone was the old answer — safe, and it leaked `src` outright the moment
+    // a program used one vector twice:
+    //
+    //     let a = src.map(|x| x * 2).to_vec()
+    //     let b = src.map(|x| x + 1).to_vec()
+    //
+    // Each fused loop copies `src` into its own name, both names reach the
+    // return, and the vector was nobody's (#1143).
+    //
+    // "Rules the others" is dominance on the defining blocks: a free under that
+    // name runs on every path the other names' frees would have, and it runs
+    // once. Where no name dominates the rest the value reaches the end by
+    // different definitions on different paths, and one free can only be right
+    // for one of them — so that keeps the old answer and leaks.
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let def_block: HashMap<LocalId, BlockId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().map(move |st| (b.id, st)))
+        .filter_map(|(bid, st)| crate::analysis::uses::stmt_def(st).map(|d| (d, bid)))
+        .collect();
     for group in &groups {
-        let survivors = group
+        let mut survivors: Vec<LocalId> = group
             .iter()
+            .copied()
             .filter(|id| droppable.contains_key(id) && placed.contains(id))
-            .count();
-        if survivors > 1 {
-            for id in group {
+            .collect();
+        if survivors.len() <= 1 {
+            continue;
+        }
+        // Lowest id among the candidates, not the first one found: a group is a
+        // `HashSet`, and picking by iteration order emitted the free on a
+        // different name per compile.
+        survivors.sort_by_key(|l| l.0);
+        let keeper = survivors.iter().copied().find(|a| {
+            let Some(&da) = def_block.get(a) else { return false };
+            survivors
+                .iter()
+                .all(|b| def_block.get(b).is_some_and(|&db| dom.dominates(da, db)))
+        });
+        for id in group {
+            if Some(*id) != keeper {
                 droppable.remove(id);
             }
         }

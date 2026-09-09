@@ -75,8 +75,8 @@ test "stdlib.collections — a comparator that reads a field" {
     assert v[0].name == "the first one by score"
 }
 
-// One adapter per test on purpose: two chains over one source vector leak the
-// source, which is #1143 and nothing to do with the callback.
+// One adapter per test, so a failure here is about the callback and nothing
+// else. Two chains over one source vector are `t_one_value_many_names.rk`.
 test "stdlib.collections — map takes its callback the same way" {
     let src: Vec<i64> = [1, 2, 3, 4]
     // `.to_vec()` because `map` hands back a sequence — the eager runtime
