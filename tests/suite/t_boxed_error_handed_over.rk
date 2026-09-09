@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A boxed error is the caller's once the callee hands it back.
+//
+// `return Boom.Bad` in a `-> i64 or Error` boxes the enum — `Error` is
+// `any Error`, the erased error box — and returns it. Ownership moves to the
+// caller, so the callee correctly doesn't drop it. The caller didn't either:
+// it read the box out of the wrapper's error side and nothing said that read
+// was fresh ownership rather than a look at storage somebody else keeps. Every
+// failing `or Error` call leaked its box.
+//
+// The fix is the question the closure pass already asks by name — which
+// functions hand a fresh one back — with the wrapper case added, because a
+// `T or E` returns the box as its error side rather than as the value.
+//
+// Still open (#1147): the case where the error is *discarded*.
+// `classify(-1) catch e => -1` never reads the payload out, so there is no
+// name for the drop to go under.
+//
+// These check the message through the box as well as the count. A box freed
+// early reads its vtable out of freed memory, and `message()` through it is a
+// call through that vtable — so a premature drop is a wrong answer or a crash
+// here, not a quiet leak.
+
+enum Boom {
+    Bad
+    Worse
+}
+
+extend Boom {
+    func message(self) -> string {
+        match self {
+            Boom.Bad => return "bad"
+            Boom.Worse => return "worse"
+        }
+    }
+}
+
+enum Other {
+    Nope
+}
+
+extend Other {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func classify(n: i64) -> i64 or Error {
+    if n < -10 { return Boom.Worse }
+    if n < 0 { return Boom.Bad }
+    if n == 0 { return Other.Nope }
+    return n
+}
+
+// The long spelling of the same signature.
+func classify_long(n: i64) -> i64 or any Error {
+    if n < 0 { return Boom.Bad }
+    return n
+}
+
+test "type.errors — the box from a failing call is dropped by the caller" {
+    let v = classify(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and the ok path drops nothing" {
+    let v = classify(7) catch e => {
+        assert false
+        return
+    }
+    assert v == 7
+}
+
+// Two concrete error types through one box, so each has its own vtable.
+test "type.errors — two enums erased to the same box" {
+    let a = classify(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and one from a different enum entirely" {
+    let a = classify(0) catch e => {
+        assert e.message() == "nope"
+        return
+    }
+    assert false
+}
+
+test "type.errors — the long spelling behaves the same" {
+    let v = classify_long(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+// Not here, and filed instead:
+//
+//   - a box handed back through a function that only *forwards* it
+//     (`return classify(n)`) still leaks one. The forwarding function returns
+//     the wrapper rather than the box, and the hand-back set doesn't tell the
+//     two apart yet.
+//   - a failing call in a loop leaks one box per turn — the same placement gap
+//     as #1145, which is about a box built inside a loop.
+//   - a discarded error (`classify(-1) catch e => -1`) never reads the payload
+//     out, so there is no name for the drop to go under.
+//
+// All three are #1147. Keeping them out of this file is what keeps it a
+// statement about what works.

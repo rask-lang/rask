@@ -63,16 +63,116 @@ pub fn insert_trait_drops(fns: &mut [MirFunction]) {
     // counts as escaping here. Erring that way leaks; erring the other way is
     // a double free.
     let callee_escapes = crate::closures::build_callee_escape_map(fns, false);
+    // And which functions hand a fresh box *back*, which makes their caller the
+    // owner. `return Boom.Bad` in a `-> i64 or Error` boxes the enum and
+    // returns it, and the caller read the box out of the wrapper and dropped
+    // nothing — a boxed error leaked on every failing call, which is every
+    // `or Error` in the language.
+    let hands_back = functions_handing_back_a_trait_box(fns);
     for func in fns.iter_mut() {
-        insert_for_function(func, &callee_escapes);
+        insert_for_function(func, &callee_escapes, &hands_back);
     }
+}
+
+/// Functions whose return value is a fresh trait box the caller now owns.
+///
+/// The same question `closures::functions_handing_back_a_closure` asks, and a
+/// fixed point for the same reason: handing one back is transitive, so a
+/// wrapper that just forwards what it called joins the set on a later pass.
+fn functions_handing_back_a_trait_box(fns: &[MirFunction]) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    loop {
+        let before = names.len();
+        for func in fns {
+            if names.contains(&func.name) {
+                continue;
+            }
+            let mut fresh = collect_fresh_trait_locals(func);
+            // A box that came back from a call to something already in the set
+            // is this frame's, and returning it passes it on again.
+            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::Call { dst: Some(dst), func: callee, .. } = &stmt.kind {
+                    if names.contains(&callee.name) {
+                        fresh.insert(*dst);
+                    }
+                }
+            }
+            if fresh.is_empty() {
+                continue;
+            }
+            let returns_one = func.blocks.iter().any(|b| match &b.terminator.kind {
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
+                    fresh.contains(id)
+                }
+                _ => false,
+            });
+            if returns_one {
+                names.insert(func.name.clone());
+            }
+        }
+        if names.len() == before {
+            return names;
+        }
+    }
+}
+
+/// The box a call handed this frame, when the callee is one of the above.
+///
+/// Two shapes. A trait-object-typed destination *is* the box. A wrapper
+/// destination holds it in its payload — `-> i64 or Error` returns the box as
+/// the error side — and the payload read is the name that owns it.
+///
+/// One read per wrapper only. Two reads off the same wrapper name one box, and
+/// a drop under each name would free it twice; refusing there leaks, which is
+/// the safe half.
+fn boxes_handed_over(func: &MirFunction, hands_back: &HashSet<String>) -> HashSet<LocalId> {
+    let ty_of: HashMap<LocalId, MirType> =
+        func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
+    let is_box = |id: &LocalId| matches!(ty_of.get(id), Some(MirType::TraitObject { .. }));
+
+    let mut wrappers: HashSet<LocalId> = HashSet::new();
+    let mut out: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Call { dst: Some(dst), func: callee, .. } = &stmt.kind else { continue };
+        if !hands_back.contains(&callee.name) {
+            continue;
+        }
+        if is_box(dst) {
+            out.insert(*dst);
+        } else if matches!(
+            ty_of.get(dst),
+            Some(MirType::Option(_)) | Some(MirType::Result { .. })
+        ) {
+            wrappers.insert(*dst);
+        }
+    }
+
+    let mut reads: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } = &stmt.kind else {
+            continue;
+        };
+        let Some(base) = crate::analysis::uses::operand_local(base) else { continue };
+        if wrappers.contains(&base) && is_box(dst) {
+            reads.entry(base).or_default().push(*dst);
+        }
+    }
+    for (_, found) in reads {
+        if found.len() == 1 {
+            out.insert(found[0]);
+        }
+    }
+    out
 }
 
 fn insert_for_function(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
+    hands_back: &HashSet<String>,
 ) {
-    let trait_locals = collect_fresh_trait_locals(func);
+    let mut trait_locals = collect_fresh_trait_locals(func);
+    trait_locals.extend(boxes_handed_over(func, hands_back));
     if trait_locals.is_empty() {
         return;
     }
