@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two adapter chains over the same adapter, disagreeing about who owns what
+// the closure hands back.
+//
+// `ClosureTargets` answers "which closure bodies can this call reach" per
+// function, and inlining gives every `flat_map` in the program the same
+// `Vec_flat_map__closure_0` body — so the capture slot holding `f` saw the
+// union over every closure ever passed to `flat_map` anywhere. One member that
+// hands back somebody else's container makes the whole set unusable, which is
+// the right call for that set and the wrong answer for the chain next door.
+//
+// Adding `spread` to a program made `doubled` leak eight allocations, in a
+// function that hadn't changed (#1146). Each disagreeing group of create sites
+// now gets its own copy of the body.
+//
+// The answers are what these check as much as the count: a per-element vector
+// freed twice is a double free rather than a leak, and a const container freed
+// at all is a use-after-free on the next read of it.
+//
+// Each chain gets its own source vector, deliberately. One vector feeding two
+// chains is freed by nobody — that is #1148, a different bug in the same
+// family — and keeping it out is what keeps this file a statement about what
+// works.
+const SHARED: Vec<i64> = [7, 8, 9]
+
+// Hands back a fresh vector per element — the chain owns each one.
+func doubled(v: Vec<i64>) -> Vec<i64> {
+    return v.flat_map(|x| {
+        mut pair: Vec<i64> = []
+        pair.push(x)
+        pair.push(x * 2)
+        return pair
+    }).to_vec()
+}
+
+// Hands back a const the module owns — the chain must not free it.
+func spread(keys: Vec<i64>) -> Vec<i64> {
+    return keys.flat_map(|k| SHARED).to_vec()
+}
+
+// A third shape, so three disagreeing groups get exercised as well as two:
+// fresh again, three per element rather than two.
+func triple(v: Vec<i64>) -> Vec<i64> {
+    return v.flat_map(|x| {
+        mut out: Vec<i64> = []
+        out.push(x)
+        out.push(x)
+        out.push(x)
+        return out
+    }).to_vec()
+}
+
+test "type.sequence — a fresh-per-element chain beside a borrowing one" {
+    let a: Vec<i64> = [1, 2, 3]
+    assert doubled(a).len() == 6
+    let b: Vec<i64> = [1, 2, 3]
+    assert spread(b).len() == 9
+}
+
+test "type.sequence — and the values are right in both" {
+    let a: Vec<i64> = [1, 2]
+    let d = doubled(a)
+    assert d[0] == 1
+    assert d[1] == 2
+    assert d[2] == 2
+    assert d[3] == 4
+
+    let b: Vec<i64> = [1, 2]
+    let s = spread(b)
+    assert s.len() == 6
+    assert s[0] == 7
+    assert s[5] == 9
+}
+
+test "type.sequence — three chains, three answers" {
+    let a: Vec<i64> = [1, 2, 3]
+    assert doubled(a).len() == 6
+    let b: Vec<i64> = [1, 2, 3]
+    assert spread(b).len() == 9
+    let c: Vec<i64> = [1, 2, 3]
+    assert triple(c).len() == 9
+}
+
+// The const survives the chains that read it. A copy that decided the
+// borrowing chain owned `SHARED` would free it, and reading it here would be
+// reading freed memory.
+test "type.sequence — the const is still there afterwards" {
+    let a: Vec<i64> = [1, 2]
+    assert spread(a).len() == 6
+    let b: Vec<i64> = [1, 2]
+    assert doubled(b).len() == 4
+    assert SHARED.len() == 3
+    assert SHARED[0] == 7
+    assert SHARED[2] == 9
+}
+
+// The borrowing chain first in the frame's order, so nothing depends on which
+// group happens to keep the original body's name.
+test "type.sequence — order doesn't decide it" {
+    let a: Vec<i64> = [4]
+    assert spread(a).len() == 3
+    let b: Vec<i64> = [4]
+    assert triple(b).len() == 3
+    let c: Vec<i64> = [4]
+    assert doubled(c).len() == 2
+}

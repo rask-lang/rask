@@ -92,6 +92,12 @@ impl PassManager {
         // Cross-function passes (sequential) — PC2
         pm.add(ClosureOptimizationPass);
         pm.add(InliningPass);
+        // After inlining, deliberately: it may already have given a call site
+        // its own copy of the adapter, and specializing what is left is
+        // cheaper than specializing what inlining would have duplicated
+        // anyway. Before every pass that reads `ClosureTargets`, which is the
+        // whole point (#1146).
+        pm.add(ClosureSpecializationPass);
         // After inlining, deliberately: an inlined chain's environments end up
         // in a frame the pre-inline analysis never saw (#1045).
         pm.add(ClosureDropInsertionPass);
@@ -227,6 +233,17 @@ impl MirPass for StringRcInsertionPass {
         for func in fns.iter_mut() {
             crate::transform::rc_insert::insert_rc_ops(func, &kept);
         }
+    }
+}
+
+/// One adapter body per closure that reaches it, so a mixed target set stops
+/// costing the call site next door its drops (#1146).
+pub struct ClosureSpecializationPass;
+
+impl MirPass for ClosureSpecializationPass {
+    fn name(&self) -> &str { "closure_specialize" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::transform::closure_specialize::specialize_adapters(fns);
     }
 }
 
