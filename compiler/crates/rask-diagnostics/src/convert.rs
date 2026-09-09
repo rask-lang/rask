@@ -1609,6 +1609,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            AtomicOpNeedsNumber { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}` needs a payload it can add, and `{}` isn't one", method, ty
+                ))
+                .with_code("E0402")
+                .with_primary(*span, "no arithmetic on this payload")
+                .with_why(
+                    "`fetch_add` and its siblings are one instruction that reads, adds and \
+                     writes back — the hardware does the adding, so the payload has to be a \
+                     number it can add [mem.atomics/GA3]",
+                )
+                .with_fix(format!(
+                    "read it, work out the new value, and put it back with \
+                     `compare_exchange` — or hold the `{}` in a `Shared<T, Mutex>` instead",
+                    ty
+                ))
+            }
+
             NotIterable { found, span } => {
                 let ty = found.to_string();
                 let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))

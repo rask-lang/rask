@@ -203,11 +203,33 @@ const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
 const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
 const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
+/// A compiler type's methods, each with the argument counts it accepts.
+///
+/// Two lists — one of names, one of arities — is one list too many. This
+/// expands to both from a single set of lines, so a method added to a resolver
+/// can't reach the names and miss the counts, or the other way round.
+///
+/// A name can carry more than one count where it has more than one form. Where
+/// it has exactly one, a call that misses it can be told how many it wanted;
+/// where it has several, no single number is the answer and the diagnostic says
+/// what didn't fit instead (#1150).
+macro_rules! methods_with_arity {
+    ($names:ident, $arities:ident, $($m:literal => [$($n:literal),*]),* $(,)?) => {
+        const $names: &[&str] = &[$($m),*];
+        const $arities: &[(&str, &[usize])] = &[$(($m, &[$($n),*])),*];
+    };
+}
+
 // conc.sync: one box, three strategies. Every verb answers under every
 // strategy — `read`/`write` are the scoped views, the rest are the
 // single-expression shorthands `Cell` used to own.
+//
+// No arities here: `Shared` declares its own in `stdlib/sync.rk`, and a second
+// copy would be a second thing to keep in step. `clone` is the one name this
+// list has that the stdlib file doesn't — it comes from the box family rather
+// than from a declaration.
 const SHARED_METHODS: &[&str] = &[
-    "read", "write", "try_read", "try_write", "clone",
+    "read", "write", "try_read", "try_write", "staged", "clone",
     "get", "set", "replace", "into_inner",
 ];
 
@@ -221,15 +243,25 @@ const SIMD_METHODS: &[&str] = &[
 /// mem.atomics: one type, so one list. Which of these a given payload actually
 /// gets is GA3's business — a `bool` has no `fetch_add` — and the checker
 /// answers that from the payload rather than from a second list here.
-const ATOMIC_METHODS: &[&str] = &[
-    // `new` and `default` are constructors — they answer on the type, not on a
-    // value, the same way `Shared`'s do, so they aren't in this list.
-    "load", "store", "swap",
-    "compare_exchange", "compare_exchange_weak",
-    "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
-    "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
-    "into_inner",
-];
+///
+/// `new` and `default` are constructors — they answer on the type, not on a
+/// value, the same way `Shared`'s do, so they aren't here.
+methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
+    "load" => [1],
+    "store" => [2],
+    "swap" => [2],
+    "compare_exchange" => [4],
+    "compare_exchange_weak" => [4],
+    "fetch_add" => [2],
+    "fetch_sub" => [2],
+    "fetch_and" => [2],
+    "fetch_or" => [2],
+    "fetch_xor" => [2],
+    "fetch_nand" => [2],
+    "fetch_max" => [2],
+    "fetch_min" => [2],
+    "into_inner" => [0],
+);
 
 // ---------------------------------------------------------------------------
 // Module-level functions
@@ -355,6 +387,25 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
 }
 
 /// Get implemented method names for a module.
+/// The argument counts `type_name.method` accepts, where nothing else knows.
+///
+/// Almost every builtin declares its methods in `stdlib/*.rk`, so a wrong count
+/// is caught against the declared signature and the error names the number —
+/// that is why `v.len(3)` has always read correctly. `Atomic` has no stdlib
+/// file at all: it is a compiler type, and its resolver is the only description
+/// of it, so its arities live with its names here and the resolver asks this
+/// before falling through to "no such method" (#1150).
+///
+/// `None` means nothing is known about the name, which is not the same as
+/// "takes no arguments".
+pub fn type_method_arity(type_name: &str, method: &str) -> Option<&'static [usize]> {
+    let table = match type_name {
+        "Atomic" => ATOMIC_ARITIES,
+        _ => return None,
+    };
+    table.iter().find(|(m, _)| *m == method).map(|(_, counts)| *counts)
+}
+
 pub fn module_method_names(module: &str) -> &'static [&'static str] {
     match module {
         "fs" => FS_METHODS,

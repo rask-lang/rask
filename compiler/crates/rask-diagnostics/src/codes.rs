@@ -643,6 +643,12 @@ impl Default for ErrorCodeRegistry {
                 "E0401" => ("arithmetic between an integer and a float", Type,
                     "An integer and a float in the same operation is a conversion, and a conversion that can lose the value isn't implicit (type.primitives/CV1a). Which loss is acceptable is the program's decision, so it's written at the site: `.round<f64>()` for the usual one, `as f64` only at widths where nothing can be lost.\n\nAn unsuffixed literal is not affected — it takes the other operand's type, so `x + 1` on an `f64` is `x + 1.0`.",
                     "let avg = total / count      // error: `f64` and `i64`\n// fix: say what happens to the integer\nlet avg = total / count.round<f64>()"),
+                "E0402" => ("an atomic arithmetic operation on a payload with no arithmetic", Type,
+                    "`fetch_add` and its siblings are one instruction that reads, adds and writes back — the hardware does the adding, so the payload has to be a number it can add (mem.atomics/GA3). The payload fitting a word isn't enough: a struct of two `i32`s is eight bytes and still has no `+`.",
+                    "let a = Atomic<Pair>.new(p)
+a.fetch_add(1, Ordering.SeqCst)   // error: no arithmetic on this payload
+// fix: read, compute, put it back
+let old = a.load(Ordering.SeqCst)"),
                 "E0859" => ("mutation in a frozen context", Ownership,
                     "A `frozen` context clause promises the structure won't change for the duration, which is what lets iteration run without a generation check on every step. A structural mutation inside one would break that promise — remove `frozen`, or move the mutation out.",
                     "func draw(frozen scene: Rack<Node>) {\n    scene.delete(n)          // error: cannot delete in frozen context\n}"),

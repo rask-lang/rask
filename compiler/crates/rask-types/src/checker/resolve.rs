@@ -2622,6 +2622,22 @@ impl TypeChecker {
             // Unrecognized method: hand the receiver on exactly as written
             // rather than inventing an argument the solver never asked for.
             _ => {
+                // The declared signature settles the count. Every arm above is
+                // guarded on it, so a call that misses lands here — and
+                // deferring meant the `HasMethod` constraint reported it once
+                // inference settled, by which point all it could say was that
+                // the call didn't fit: `s.set(1, 2)` read as if `Shared` had no
+                // `set`. The sibling resolver for the non-generic runtime types
+                // already asks the stubs first; this one didn't (#1150).
+                if let Some(stub) = rask_stdlib::lookup_method(type_name, method) {
+                    if args.len() != stub.params.len() {
+                        return Err(TypeError::ArityMismatch {
+                            expected: stub.params.len(),
+                            found: args.len(),
+                            span,
+                        });
+                    }
+                }
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
                         name: type_name.to_string(),
@@ -3724,23 +3740,62 @@ impl TypeChecker {
                 self.unify(ret, &val_ty, span)
             }
 
-            // GA3: adding two structs, or two bools, means nothing.
+            // GA3: adding two structs, or two bools, means nothing. Reported as
+            // what it is rather than as a missing method — the name is right
+            // there in the source, and the argument count is fine, so both of
+            // those messages sent the reader looking for the wrong thing.
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
                 if !Self::is_countable_payload(&val_ty) =>
             {
-                Err(TypeError::NoSuchMethod {
-                    ty: self_ty,
+                Err(TypeError::AtomicOpNeedsNumber {
+                    ty: val_ty,
                     method: method.to_string(),
                     span,
                 })
             }
 
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
+            _ => Err(Self::wrong_arity_for("Atomic", method, args.len(), span)
+                .unwrap_or(TypeError::NoSuchMethod {
+                    ty: self_ty,
+                    method: method.to_string(),
+                    span,
+                })),
         }
+    }
+
+    /// A method the type has, called with the wrong number of arguments.
+    ///
+    /// `Atomic` has no stdlib file — it is a compiler type, and the resolver
+    /// above is the only description of it — so nothing checks a call's
+    /// argument count against a declared signature the way it does for every
+    /// other builtin. Every arm of that resolver is guarded on the count, so a
+    /// wrong one falls through to "no such method", with the name sitting right
+    /// there in the source:
+    ///
+    /// ```text
+    /// error: no method `load` found for type `Atomic<i64>`  — did you mean `load`?
+    /// ```
+    ///
+    /// So its counts live with its names in `rask_stdlib::registry`. Where a
+    /// name accepts exactly one, say which; where it accepts several, no single
+    /// number is the expected one and the caller falls through to the message
+    /// about what didn't fit (#1150).
+    ///
+    /// Nothing else needs this. `Shared` looked like it did and doesn't:
+    /// `stdlib/sync.rk` declares its signatures, and the fix there was to ask
+    /// them rather than to write the counts down twice.
+    fn wrong_arity_for(
+        type_name: &str,
+        method: &str,
+        found: usize,
+        span: Span,
+    ) -> Option<TypeError> {
+        let counts = rask_stdlib::registry::type_method_arity(type_name, method)?;
+        if counts.contains(&found) {
+            return None;
+        }
+        let [expected] = counts else { return None };
+        Some(TypeError::ArityMismatch { expected: *expected, found, span })
     }
 
     /// Check whether a type name is a SIMD vector type.

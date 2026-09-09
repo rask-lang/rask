@@ -1023,6 +1023,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.atomics/GA3: an arithmetic atomic operation on a payload that has no
+    /// arithmetic. The payload fits the word — a two-`i32` struct is eight
+    /// bytes — so `AtomicPayload` isn't the answer; what it lacks is `+`.
+    #[error("`{method}` needs a payload it can add, and {ty} isn't one")]
+    AtomicOpNeedsNumber {
+        ty: Type,
+        method: String,
+        span: Span,
+    },
+
     /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
     /// while compiling, so the name has to be one the compiler knows. A runtime
     /// string has nothing to rewrite to.
@@ -1148,6 +1158,7 @@ impl TypeError {
             }
 
             AtomicPayload { ty, .. } => *ty = f(ty),
+            AtomicOpNeedsNumber { ty, .. } => *ty = f(ty),
 
             CatchOnOptional { found, .. }
             | CoalesceOnNonOptional { found, .. }

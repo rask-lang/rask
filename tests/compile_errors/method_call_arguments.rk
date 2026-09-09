@@ -8,12 +8,22 @@
 // the argument count, so a wrong count falls through to "no such method", and
 // the suggestion machine offered the nearest name, which was the exact one.
 //
-// Two things were wrong and each is worth its own guard: a suggestion is never
-// the name in the source, and a name the type *has* means the name isn't the
-// problem. The message says what didn't fit instead.
+// Three things were wrong, and each has its own answer now.
+//
+// A suggestion is never the name in the source, and a name the type *has*
+// means the name isn't the problem — both are guards in the diagnostics layer.
+// And the count itself is knowable: `Shared` and `Atomic` are compiler types
+// with no stdlib file, so nothing checks a call against a signature before
+// their resolvers run, and the arities had to live somewhere. They live with
+// the names in `rask_stdlib::registry`, one list, so these now read the way
+// `v.len(3)` always has (#1150):
+//
+//     error[E0310]: expected 1 argument, found 2
+//         |             ^^^^^^^^^^^^^^^^^^^^^^ takes 1 argument
 //
 // Rejection is the right answer either way. This file is about which
-// rejection.
+// rejection, and the last case is the one that still has to say the name
+// doesn't exist.
 import sync.Atomic
 import sync.Ordering
 
@@ -47,10 +57,27 @@ func no_such_name() {
     return
 }
 
+// And the argument count being right doesn't make the call right. `fetch_add`
+// on a struct payload is GA3: the payload fits a word — two `i32`s are eight
+// bytes — so it isn't the width, it's that the hardware has nothing to add.
+// That used to report as wrong arguments, which sent the reader to count them.
+struct Pair {
+    public a: i32
+    public b: i32
+}
+
+func no_arithmetic_on_the_payload() {
+    let a = Atomic<Pair>.new(Pair { a: 1, b: 2 })
+    // ERROR: `fetch_add` needs a payload it can add, and `Pair` isn't one
+    println(a.fetch_add(1, Ordering.SeqCst).a)
+    return
+}
+
 func main() {
     too_many()
     too_few()
     into_inner_takes_none()
     no_such_name()
+    no_arithmetic_on_the_payload()
     return
 }
