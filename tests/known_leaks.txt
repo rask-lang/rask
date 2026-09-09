@@ -108,7 +108,12 @@
 # `t41_closure_environment_drop.rk` had written down as unfixable and wasn't.
 # The rule is `container_drop`'s and now lives in `analysis::drop_sites`,
 # because three passes wanted it (`t41` clean,
-# `t_closure_call_container.rk` 6 → 2).
+# `t_closure_call_container.rk` 6 → 2), and 199 once a copy made inside a loop
+# stopped counting as the end of its source. `for x in v` copies `v` into the
+# body every turn, so `v` is live out of the block that copies it — reading
+# that as a move left every name in the group either moved-from or with nowhere
+# to put a free, and the container was freed by nobody
+# (#1047, `t39_loop_backedge_container_free.rk` clean).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -159,7 +164,6 @@ p12_rack_link_churn.rk  # 2 allocations
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t29_branch_merge.rk  # 7 allocations
 t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
-t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 1 allocation
 t65_vec_of_trait_objects.rk  # 10 allocations

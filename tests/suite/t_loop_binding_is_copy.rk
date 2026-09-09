@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `for` binding of a Copy type is Copy.
+//
+// `v.push(i)` on a loop variable reported a move, and then reading `i` again
+// was "use of moved value" with a suggestion to write `i.clone()` on an
+// integer:
+//
+//     for i in 1..4 {
+//         v.push(i)
+//         println("i is {i}")   // error[E0800]: use of moved value: `i`
+//     }
+//
+// The same integer in a `let` was fine, which is what made it look like a
+// `push` problem. It wasn't: the ownership pass records a binding's type only
+// for a `let`, a parameter, a pattern and a *rack* iteration, and a `for`
+// binding over anything else had none. A name with no recorded type reads as
+// not-Copy, which is the safe default for a move analysis and the wrong one
+// for a rejection — the pass's own `definitely_not_copy` says as much: "it
+// would reject on 'couldn't tell'". The checker's type for the node answers
+// where the table doesn't.
+//
+// Spec: mem.ownership — a Copy value is copied at every use, so there is
+// nothing to move and nothing to clone.
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+// Over 16 bytes, so genuinely not Copy and genuinely moved by a push.
+struct Wide {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+test "mem.ownership — a range binding survives being pushed" {
+    mut v: Vec<i64> = []
+    for i in 1..4 {
+        v.push(i)
+        assert i > 0
+    }
+    assert v.len() == 3
+    assert v[2] == 3
+}
+
+test "mem.ownership — and a binding from a vector" {
+    let src: Vec<i64> = [4, 5, 6]
+    mut out: Vec<i64> = []
+    mut total = 0
+    for k in src {
+        out.push(k)
+        total = total + k
+    }
+    assert out.len() == 3
+    assert total == 15
+}
+
+test "mem.ownership — a string binding, which is Copy by std.strings/S1" {
+    let words: Vec<string> = ["a word long enough to allocate", "and a second, also long"]
+    mut seen: Vec<string> = []
+    mut chars: usize = 0
+    for w in words {
+        seen.push(w)
+        chars = chars + w.len()
+    }
+    assert seen.len() == 2
+    assert chars == 53
+    assert seen[0] == "a word long enough to allocate"
+}
+
+// A small struct: Copy by the 16-byte threshold, so pushing one leaves the
+// binding readable.
+test "mem.ownership — a Copy struct binding" {
+    let pts: Vec<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    mut out: Vec<Point> = []
+    mut sum = 0
+    for p in pts {
+        out.push(p)
+        sum = sum + p.x + p.y
+    }
+    assert out.len() == 2
+    assert sum == 10
+    assert out[1].x == 3
+}
+
+// The other direction, so the fix didn't make everything Copy: 24 bytes needs
+// an explicit clone, and this is what that reads like.
+test "mem.ownership — a wide struct still needs the clone" {
+    let ws: Vec<Wide> = [Wide { a: 1, b: 2, c: 3 }]
+    mut out: Vec<Wide> = []
+    for w in ws {
+        out.push(w.clone())
+        assert w.a == 1
+    }
+    assert out.len() == 1
+    assert out[0].c == 3
+}
+
+// A tuple binding, which takes the other arm of the same code.
+test "mem.ownership — a tuple binding from a map" {
+    mut m = Map<string, i64>.new()
+    m.insert("a key long enough to allocate", 7)
+    mut keys: Vec<string> = []
+    mut total = 0
+    for (k, n) in m {
+        keys.push(k)
+        total = total + n
+        assert k.len() > 0
+    }
+    assert keys.len() == 1
+    assert total == 7
+}
+
+// Nested, so the inner binding isn't the only one recorded.
+test "mem.ownership — nested loop bindings" {
+    mut pairs: Vec<i64> = []
+    for i in 1..3 {
+        for j in 1..3 {
+            pairs.push(i * 10 + j)
+            assert i > 0
+            assert j > 0
+        }
+    }
+    assert pairs.len() == 4
+    assert pairs[0] == 11
+    assert pairs[3] == 22
+}

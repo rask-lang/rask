@@ -4584,12 +4584,19 @@ impl<'a> OwnershipChecker<'a> {
             // binding look Copy and `drop(p)` consumed nothing — the leak was
             // reported on a freed value and `drop(p); drop(p)` drew no error at
             // all. Linearity is a property of the box, not of what's in it (#819).
+            // The checker's type for this very node, when the binding table
+            // has nothing. A `for` binding is recorded only for a rack
+            // iteration, so `for i in 1..4 { v.push(i); println("{i}") }` read
+            // as a move of `i` and asked for `i.clone()` on an integer — the
+            // table's silence means "not recorded", and treating it as "not
+            // Copy" is the right default only where there is nothing else to
+            // ask.
+            let ty = self
+                .binding_types
+                .get(name)
+                .or_else(|| self.program.node_types.get(&arg_expr.id));
             let is_copy = !self.owned_bindings.contains(name)
-                && self
-                    .binding_types
-                    .get(name)
-                    .map(|t| self.is_copy(t))
-                    .unwrap_or(false);
+                && ty.map(|t| self.is_copy(t)).unwrap_or(false);
             if !is_copy {
                 self.consume_binding(name, arg_expr.span, sink);
             }

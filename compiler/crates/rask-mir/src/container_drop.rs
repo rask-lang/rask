@@ -1804,13 +1804,31 @@ fn find_moved_away(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
 ) -> HashSet<LocalId> {
+    // A copy only ends the source's life if the source is finished with. In a
+    // loop it isn't: `for x in v` inside a `while` copies `v` into the body
+    // every turn, so `v` is live out of the block that copies it and holds the
+    // value the whole time. Calling that a move left every name in the group
+    // either moved-from or unplaceable, and the vector was freed by nobody —
+    // `t39_loop_backedge_container_free.rk`'s own subject, from the other side
+    // (#1047).
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let live = crate::analysis::liveness::analyze(func, &dom);
     let mut moved = HashSet::new();
     for block in &func.blocks {
-        for stmt in &block.statements {
+        for (si, stmt) in block.statements.iter().enumerate() {
             match &stmt.kind {
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if containers.contains_key(src) && src != dst =>
                 {
+                    // Live on the way out, or read again below in this block:
+                    // either way the copy wasn't the end of it.
+                    let read_below = block.statements[si + 1..]
+                        .iter()
+                        .any(|st| crate::analysis::uses::stmt_reads(st, *src))
+                        || crate::analysis::uses::terminator_reads(&block.terminator, *src);
+                    if live.live_at_exit(block.id, *src) || read_below {
+                        continue;
+                    }
                     moved.insert(*src);
                 }
                 MirStmtKind::Phi { args, .. } => {
