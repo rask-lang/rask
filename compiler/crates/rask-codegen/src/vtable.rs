@@ -29,10 +29,14 @@ pub struct VTableInfo {
     pub concrete_align: u32,
     /// Compatible methods in vtable order (trait declaration order, minus incompatible)
     pub methods: Vec<VTableMethod>,
-    /// Byte offsets, within the concrete value, of fields that hold a
-    /// refcounted string — computed recursively through nested struct
-    /// fields. Empty means trivial drop (the vtable's drop slot stays null).
-    pub drop_string_offsets: Vec<u32>,
+    /// Fields, within the concrete value, that need a release when the boxed
+    /// value dies — computed recursively through nested struct fields. Empty
+    /// means trivial drop (the vtable's drop slot stays null).
+    ///
+    /// This used to be string offsets only, so a `Buffer` boxed as
+    /// `any Reader` leaked its byte vector and its read-position cell on every
+    /// `io.copy`. `crate::drop_fields` decides what frees each one.
+    pub drop_fields: Vec<crate::drop_fields::DropField>,
 }
 
 /// A single method entry in a vtable.

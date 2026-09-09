@@ -251,7 +251,7 @@ fn functions_handing_back_a_closure(
 /// caller is still the owner. `seq.reduce(|a, b| a + b)` is that case — the
 /// `for x in self` desugar captures `f` into a scope-limited yield closure, so
 /// every closure passed to a terminal read as given away and nobody freed it.
-fn build_callee_escape_map(
+pub(crate) fn build_callee_escape_map(
     fns: &[MirFunction],
     heap_captures_only: bool,
 ) -> HashMap<String, Vec<bool>> {

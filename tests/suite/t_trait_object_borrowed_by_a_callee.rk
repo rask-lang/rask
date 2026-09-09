@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A trait object handed to a function that only reads it is still the caller's.
+//
+// Passing a box as an argument counted as handing it over, so the frame that
+// built it stopped dropping it — and the callee, which only reads through it
+// (mem.parameters/PM1), never took it. The box allocation and the strings in
+// the value it copied were nobody's.
+//
+// It hid behind inlining, which is what made it worth a test rather than a
+// glance. One `io.copy` in a file is clean: the call disappears, the box never
+// reaches an argument position, and the frame drops it. Two `io.copy`s are not
+// — and the second one leaked five buffers between them. Reduce the program
+// and the bug goes away with the second call site.
+//
+// The fix reads the callee's body for whether the parameter escapes, the same
+// map the closure pass uses. A bodiless native, or a call through a closure,
+// has no body to read and no answer means it might keep it.
+//
+// Still open: a *container* inside a boxed value leaks (#1144). `TraitBox`
+// copies the value shallowly, so the box and the frame hold the same handle,
+// and a container's release is a free rather than a decrement — it has to
+// happen exactly once, and which side owns it is a design question. A string
+// survives that because a decrement is right whoever holds one.
+//
+// Spec: specs/types/traits.md, specs/memory/parameters.md.
+
+trait Named {
+    func label(self) -> string
+}
+
+struct Crate {
+    public name: string
+    public note: string
+}
+
+extend Crate with Named {
+    public func label(self) -> string {
+        return self.name
+    }
+}
+
+struct Bin {
+    public id: i64
+}
+
+extend Bin with Named {
+    public func label(self) -> string {
+        return "bin {self.id}"
+    }
+}
+
+func describe(n: any Named) -> string {
+    return n.label()
+}
+
+// Two parameters and two call sites below, so this is too big to inline away
+// and the boxes really do reach argument positions.
+func describe_both(a: any Named, b: any Named) -> string {
+    return "{a.label()}/{b.label()}"
+}
+
+test "type.traits — a box passed to a borrowing callee is dropped by the caller" {
+    let c = Crate {
+        name: "a crate name long enough to allocate",
+        note: "and a note that is also long enough",
+    }
+    assert describe(c) == "a crate name long enough to allocate"
+}
+
+test "type.traits — two call sites, so the callee is a real call" {
+    let one = Crate {
+        name: "the first crate has a long name",
+        note: "and the first crate's note is long",
+    }
+    let two = Crate {
+        name: "the second crate has one too",
+        note: "as does the second crate's note",
+    }
+    assert describe_both(one, two) == "the first crate has a long name/the second crate has one too"
+    assert describe(two) == "the second crate has one too"
+}
+
+// A value with nothing to release, so the box allocation itself is the only
+// thing in question.
+test "type.traits — and a boxed value that holds nothing" {
+    let b = Bin { id: 7 }
+    assert describe(b) == "bin 7"
+    let other = Bin { id: 8 }
+    assert describe_both(b, other) == "bin 7/bin 8"
+}
+
+// Mixed concrete types through one parameter, so each gets its own vtable and
+// its own drop glue.
+test "type.traits — two concrete types through the same parameter" {
+    let c = Crate {
+        name: "a crate with a name long enough",
+        note: "and a note long enough as well",
+    }
+    let b = Bin { id: 3 }
+    assert describe_both(c, b) == "a crate with a name long enough/bin 3"
+}
+
+// Repeatedly, straight-line rather than in a loop: a box built *inside* a loop
+// loses one release per turn on a heap string in the value it copied (#1145),
+// which is a different bug and would be the only thing this test measured.
+test "type.traits — the same value boxed again and again" {
+    let c = Crate {
+        name: "a crate name long enough to allocate",
+        note: "and a note that is also long enough",
+    }
+    let b = Bin { id: 5 }
+    mut total: usize = 0
+    total = total + describe(c).len()
+    total = total + describe(c).len()
+    total = total + describe_both(c, b).len()
+    total = total + describe_both(b, c).len()
+    total = total + describe_both(c, c).len()
+    assert total == 229
+}

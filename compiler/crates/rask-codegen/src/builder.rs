@@ -7223,60 +7223,6 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// The same question about a field's declared type. Layouts record fields
-    /// as `rask_types::Type`, so the walk crosses between the two languages.
-    /// The release for a container a field holds, if the field holds one.
-    ///
-    /// A container field's slot holds the *handle*, not the container, so
-    /// freeing it means loading the pointer and passing it — the opposite shape
-    /// from a string field, whose slot is the header and whose release takes
-    /// the slot's address.
-    ///
-    /// A field's type in a layout is a resolved `Type::Generic`, which carries a
-    /// TypeId and no name, and there is no table here to look one up in.
-    /// Rendering it and taking the head is what works.
-    fn container_free_for(ty: &RaskType) -> Option<&'static str> {
-        let rendered = format!("{}", ty);
-        // Only the container itself. `Vec<i64>?` renders with the same head and
-        // is a different thing: the slot holds a tag and a payload, the handle
-        // is behind the tag, and MIR reaches it through the wrapper rather than
-        // straight off the struct — so freeing it here ran before the reads
-        // (`h.v!.len()` gave 1361822157891490808).
-        if rendered.ends_with('?') || rendered.contains(" or ") {
-            return None;
-        }
-        let head = rendered.split('<').next().unwrap_or(&rendered).trim();
-        match head {
-            "Vec" => Some("rask_vec_free"),
-            // A map's tables are the same shape of ownership as a vector's
-            // buffer, and 72 suite files were leaking one: `Set<T>` is a struct
-            // holding a `Map<T, bool>`, so every set leaked its map too.
-            "Map" => Some("rask_map_free"),
-            // A rack owns its nodes' lifetime and a pool owns its slots
-            // (mem.racks/RK1), so whoever owns the arena frees it. A local
-            // already did; a *field* didn't, so every struct with a rack in it
-            // leaked the arena and everything in it — 252 allocations across
-            // six suite files, `p12_rack_link_churn.rk` alone 128.
-            //
-            // The links and handles that outlive a field read don't change
-            // that: they can't outlive the struct that holds the arena, and
-            // this release runs where that struct dies.
-            "Rack" => Some("rask_rack_free"),
-            "Pool" => Some("rask_pool_free"),
-            // A box in a field. The release is a decrement, so it is right
-            // whether or not somebody else still holds one — which is what
-            // makes a box safe to hand to a task and still free here.
-            //
-            // Which decrement depends on the strategy, because each builds its
-            // own runtime object: `Shared<T, Local>` is a cell,
-            // `Shared<T, Mutex>` is a mutex, and a bare `Shared<T>` is
-            // `Readers` (conc.sync/SH2). `io.Buffer` keeps its read position in
-            // a `Shared<i64, Local>` and leaked two allocations per buffer.
-            "Shared" | "Cell" | "Mutex" => Some(Self::box_release_for(&rendered)),
-            _ => None,
-        }
-    }
-
     /// The local's type with its container kind put back into the wrapper's
     /// payload — the one type the release walk gets to see it in.
     fn with_container_kind(ty: &MirType, kind: ContainerKind) -> MirType {
@@ -7304,24 +7250,11 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs,
-    /// read off the strategy in its type arguments.
-    fn box_release_for(rendered: &str) -> &'static str {
-        let args = rendered.split_once('<').map(|(_, rest)| rest).unwrap_or("");
-        if args.contains("Local") || rendered.starts_with("Cell") {
-            return "rask_cell_free";
-        }
-        if args.contains("Mutex") || rendered.starts_with("Mutex") {
-            return "rask_mutex_drop";
-        }
-        "rask_shared_drop_i64"
-    }
-
     fn holds_string_ty(ty: &RaskType, ctx: &CodegenCtx, depth: u32) -> bool {
         if depth > Self::RC_WALK_DEPTH {
             return false;
         }
-        if Self::container_free_for(ty).is_some() {
+        if crate::drop_fields::container_free_for(ty).is_some() {
             return true;
         }
         match ty {
@@ -7386,7 +7319,7 @@ impl<'a> FunctionBuilder<'a> {
                     .map(|f| (f.offset as i32, f.ty.clone()))
                     .collect();
                 for (field_offset, field_ty) in fields {
-                    if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                    if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
                         Self::emit_container_release(
                             builder, base, offset + field_offset, free_fn, ctx,
                         )?;
@@ -7448,7 +7381,7 @@ impl<'a> FunctionBuilder<'a> {
         // hands back `Vec<Point> or JsonError`, and releasing the wrapper
         // released neither side. `holds_string_ty` has always answered "yes" to
         // this shape, so the walk ran and did nothing at all.
-        if let Some(free_fn) = Self::container_free_for(ty) {
+        if let Some(free_fn) = crate::drop_fields::container_free_for(ty) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
         match ty {
@@ -7477,7 +7410,7 @@ impl<'a> FunctionBuilder<'a> {
                         // container behind an `Option`'s tag is reached through
                         // the wrapper instead, and freeing it here ran before
                         // the reads (`h.v!.len()` gave 1361822157891490808).
-                        if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                        if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
                             Self::emit_container_release(
                                 builder, base, offset + field_offset, free_fn, ctx,
                             )?;
@@ -7681,7 +7614,7 @@ impl<'a> FunctionBuilder<'a> {
                 // `enum Shape { Many(Vec<i64>) }` released nothing and every
                 // vector inside one leaked — which is most of what a decoded
                 // `JsonValue` holds.
-                if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
                     Self::emit_container_release(
                         builder, base, offset + field_offset, free_fn, ctx,
                     )?;

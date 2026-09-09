@@ -1483,8 +1483,8 @@ impl CodeGenerator {
             let mut desc = DataDescription::new();
             desc.define(bytes.into_boxed_slice());
 
-            if !vt.drop_string_offsets.is_empty() {
-                let drop_func_id = self.get_or_create_drop_glue(&vt.concrete_type, &vt.drop_string_offsets)?;
+            if !vt.drop_fields.is_empty() {
+                let drop_func_id = self.get_or_create_drop_glue(&vt.concrete_type, &vt.drop_fields)?;
                 let func_ref = self.module.declare_func_in_data(drop_func_id, &mut desc);
                 desc.write_function_addr(crate::vtable::VTABLE_DROP_OFFSET, func_ref);
             }
@@ -1519,14 +1519,11 @@ impl CodeGenerator {
     fn get_or_create_drop_glue(
         &mut self,
         concrete_type: &str,
-        string_offsets: &[u32],
+        fields: &[crate::drop_fields::DropField],
     ) -> CodegenResult<cranelift_module::FuncId> {
         if let Some(&func_id) = self.drop_glue_fns.get(concrete_type) {
             return Ok(func_id);
         }
-
-        let free_id = *self.func_ids.get("rask_string_free")
-            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -1539,7 +1536,20 @@ impl CodeGenerator {
         self.ctx.clear();
         self.ctx.func.signature = sig;
 
-        let free_ref = self.module.declare_func_in_func(free_id, &mut self.ctx.func);
+        // One reference per distinct free, declared up front — a container and
+        // a string field don't share one.
+        let mut free_refs: std::collections::HashMap<&'static str, cranelift_codegen::ir::FuncRef> =
+            std::collections::HashMap::new();
+        for f in fields {
+            if free_refs.contains_key(f.free_fn) {
+                continue;
+            }
+            let id = *self.func_ids.get(f.free_fn).ok_or_else(|| {
+                CodegenError::FunctionNotFound(f.free_fn.to_string())
+            })?;
+            let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
+            free_refs.insert(f.free_fn, r);
+        }
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
         let mut fb = cranelift::prelude::FunctionBuilder::new(&mut self.ctx.func, &mut fn_builder_ctx);
@@ -1550,13 +1560,29 @@ impl CodeGenerator {
         fb.seal_block(entry);
 
         let data_ptr = fb.block_params(entry)[0];
-        for &offset in string_offsets {
-            let field_ptr = if offset == 0 {
-                data_ptr
-            } else {
-                fb.ins().iadd_imm(data_ptr, offset as i64)
-            };
-            fb.ins().call(free_ref, &[field_ptr]);
+        for f in fields {
+            let free_ref = free_refs[f.free_fn];
+            match f.shape {
+                // The slot is the header: pass its address.
+                crate::drop_fields::ReleaseShape::ByAddress => {
+                    let field_ptr = if f.offset == 0 {
+                        data_ptr
+                    } else {
+                        fb.ins().iadd_imm(data_ptr, f.offset as i64)
+                    };
+                    fb.ins().call(free_ref, &[field_ptr]);
+                }
+                // The slot holds a handle: load it and pass the pointer.
+                crate::drop_fields::ReleaseShape::ByHandle => {
+                    let handle = fb.ins().load(
+                        types::I64,
+                        cranelift::prelude::MemFlags::new(),
+                        data_ptr,
+                        f.offset as i32,
+                    );
+                    fb.ins().call(free_ref, &[handle]);
+                }
+            }
         }
         fb.ins().return_(&[]);
         fb.finalize();

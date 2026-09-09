@@ -422,7 +422,7 @@ fn collect_vtables(
                             .unwrap_or(8);
 
                         let mut visited = HashSet::new();
-                        let drop_string_offsets = collect_string_field_offsets(
+                        let drop_fields = rask_codegen::drop_fields::collect_drop_fields(
                             concrete_type, 0, &mono.struct_layouts, &mut visited,
                         );
 
@@ -433,7 +433,7 @@ fn collect_vtables(
                             concrete_size: *concrete_size,
                             concrete_align,
                             methods: vt_methods,
-                            drop_string_offsets,
+                            drop_fields,
                         });
                     }
                 }
@@ -443,39 +443,6 @@ fn collect_vtables(
     vtables
 }
 
-/// Byte offsets of string fields inside `type_name`, found by walking its
-/// struct layout recursively (a nested struct's own string fields land at
-/// their offset plus the parent field's offset). These are exactly the
-/// fields a trait-object drop needs to release (#366) — strings are the
-/// only refcounted type today, so this is what "non-trivial drop" means.
-/// `visited` guards against an (invalid, but not yet rejected elsewhere)
-/// self-referential struct looping forever.
-fn collect_string_field_offsets(
-    type_name: &str,
-    base_offset: u32,
-    struct_layouts: &[rask_mono::StructLayout],
-    visited: &mut HashSet<String>,
-) -> Vec<u32> {
-    if !visited.insert(type_name.to_string()) {
-        return Vec::new();
-    }
-    let Some(layout) = struct_layouts.iter().find(|s| s.name == type_name) else {
-        return Vec::new();
-    };
-    let mut offsets = Vec::new();
-    for field in &layout.fields {
-        match &field.ty {
-            Type::String => offsets.push(base_offset + field.offset),
-            Type::UnresolvedNamed(name) => {
-                offsets.extend(collect_string_field_offsets(
-                    name, base_offset + field.offset, struct_layouts, visited,
-                ));
-            }
-            _ => {}
-        }
-    }
-    offsets
-}
 
 /// `func main() { }` — an entry point for a file that has none and needs one
 /// only so the pipeline can finish.

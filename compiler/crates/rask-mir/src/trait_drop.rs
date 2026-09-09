@@ -51,18 +51,33 @@ use crate::{
 
 /// Insert `TraitDrop` for every non-escaping trait-object local, across all functions.
 pub fn insert_trait_drops(fns: &mut [MirFunction]) {
+    // Which callees keep an argument, read off their bodies — the same map the
+    // closure pass uses, and for the same reason. Passing a box to a function
+    // used to count as handing it over, so `io.copy(src, dst)` left both
+    // buffers to a callee that only reads through them: the boxed value's
+    // containers were freed by nobody. It only looked fixed while `io.copy`
+    // was small enough to inline, which is why one `io.copy` in a file was
+    // clean and two leaked five buffers.
+    //
+    // `heap_captures_only: false` — a parameter captured by *any* closure
+    // counts as escaping here. Erring that way leaks; erring the other way is
+    // a double free.
+    let callee_escapes = crate::closures::build_callee_escape_map(fns, false);
     for func in fns.iter_mut() {
-        insert_for_function(func);
+        insert_for_function(func, &callee_escapes);
     }
 }
 
-fn insert_for_function(func: &mut MirFunction) {
+fn insert_for_function(
+    func: &mut MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) {
     let trait_locals = collect_fresh_trait_locals(func);
     if trait_locals.is_empty() {
         return;
     }
 
-    let escaping = find_escaping(func, &trait_locals);
+    let escaping = find_escaping(func, &trait_locals, callee_escapes);
     let moved_away = find_moved_away(func, &trait_locals);
 
     let droppable: HashSet<LocalId> = trait_locals.iter()
@@ -136,7 +151,11 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
 /// A trait object escapes if it's returned, stored, or passed as a call or
 /// method argument. Being read through `TraitCall`'s receiver position is a
 /// borrow, not an escape.
-fn find_escaping(func: &MirFunction, trait_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
+fn find_escaping(
+    func: &MirFunction,
+    trait_locals: &HashSet<LocalId>,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) -> HashSet<LocalId> {
     let mut escaping = HashSet::new();
 
     let mark_args = |args: &[MirOperand], escaping: &mut HashSet<LocalId>| {
@@ -152,7 +171,29 @@ fn find_escaping(func: &MirFunction, trait_locals: &HashSet<LocalId>) -> HashSet
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
-                MirStmtKind::Call { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
+                // A named callee whose body says it keeps nothing of this
+                // argument leaves the box to this frame. Anything else — a
+                // bodiless native, a call through a closure — has no answer to
+                // read, and no answer means it might keep it.
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    let keeps = callee_escapes.get(&callee.name);
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = crate::analysis::uses::operand_local(arg) else {
+                            continue;
+                        };
+                        if !trait_locals.contains(&id) {
+                            continue;
+                        }
+                        let borrowed = keeps
+                            .and_then(|e| e.get(i))
+                            .map(|escapes| !escapes)
+                            .unwrap_or(false);
+                        if !borrowed {
+                            escaping.insert(id);
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { args, .. } => {
                     mark_args(args, &mut escaping);
                 }
                 MirStmtKind::TraitCall { args, .. } => {
