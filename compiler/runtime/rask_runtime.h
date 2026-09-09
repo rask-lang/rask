@@ -961,7 +961,7 @@ int64_t     rask_args_count(void);
 const char *rask_args_get(int64_t index);
 
 // Environment variables
-const RaskStr *rask_os_env(const RaskStr *name);
+int64_t     rask_os_env(const RaskStr *name, RaskStr *out);
 void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
 
 // ─── Print locking ─────────────────────────────────────────
@@ -1442,7 +1442,8 @@ RaskVec *rask_os_env_vars(void);
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
-int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);
+void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
+void    rask_cell_into_inner(int64_t cell, int64_t out);
 void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
@@ -1451,10 +1452,10 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
 // (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.
 int64_t rask_shared_get(int64_t shared);
 void    rask_shared_set(int64_t shared, int64_t data_ptr);
-int64_t rask_shared_replace(int64_t shared, int64_t data_ptr);
+void    rask_shared_replace(int64_t shared, int64_t data_ptr, int64_t out);
 int64_t rask_mutex_get(int64_t mutex);
 void    rask_mutex_set(int64_t mutex, int64_t data_ptr);
-int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr);
+void    rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 

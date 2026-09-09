@@ -5661,8 +5661,31 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 CallAdapt::PopOutParam(ss) => {
-                    // Value was written to stack slot by callee
-                    builder.ins().stack_load(types::I64, ss, 0)
+                    // Value was written to stack slot by callee.
+                    //
+                    // A float has to be loaded as one. The widening below reads
+                    // a mismatched type as a *number* to convert, not as bits to
+                    // reinterpret, so an integer load of a double came out as
+                    // its bit pattern: `Shared<f64>.local(1.5).replace(2.5)`
+                    // answered 4609434218613702700. Integers keep the word load
+                    // — the callee always writes a full one — and narrow on the
+                    // way into the destination.
+                    //
+                    // An `f32` slot holds a promoted double, so it reads eight
+                    // bytes wide and demotes, which is the pair `load_scalar_slot`
+                    // and `value_to_ptr` already agree on. A four-byte read got
+                    // the double's zero low half and `Shared<f32>.replace` came
+                    // back 0.
+                    let want = dst_local
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .filter(|t| t.is_float())
+                        .unwrap_or(types::I64);
+                    if want == types::F32 {
+                        let wide = builder.ins().stack_load(types::F64, ss, 0);
+                        builder.ins().fdemote(types::F32, wide)
+                    } else {
+                        builder.ins().stack_load(want, ss, 0)
+                    }
                 }
                 CallAdapt::OptionOutParam(ss) => {
                     // Payload is already in place; 1 means it's there (tag 0),
@@ -8587,10 +8610,12 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 CallAdapt::None
             }
-            // Both take the new value by pointer, so a scalar spills to a slot
-            // first. `replace` additionally hands back the old value's address —
-            // returning CallAdapt::None here would leave that pointer as the
-            // result and `let old = c.replace(0)` would print an address.
+            // `into_inner` has no value argument — it only reads — so it takes
+            // the out-param and nothing else.
+            "Cell_into_inner" => Self::append_out_param(builder, args, dst, ctx),
+            // `set` and `replace` both take the new value by pointer, so a
+            // scalar spills to a slot first. `replace` also gives the old value
+            // back, through an out-param of its own.
             "Cell_set" | "Cell_replace"
             | "Shared_set" | "Shared_replace"
             | "Mutex_set" | "Mutex_replace" => {
@@ -8602,13 +8627,19 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 if func_name.ends_with("_replace") {
-                    // The old value comes back by address. `DerefResult` loads a
-                    // scalar through it, which is right for a number and half a
-                    // string: `Shared.local("first").replace("second")` handed
-                    // back eight of sixteen bytes and read as empty. Aggregates
-                    // need the copy-through-the-slot adapter, which is the same
-                    // choice every other by-address return makes.
-                    Self::deref_or_string(dst, ctx)
+                    // The old value goes into the caller's own destination. It
+                    // used to come back by address, which meant the runtime
+                    // allocated a block for it so the pointer would outlive the
+                    // call — and nothing freed that block, so every `replace`
+                    // leaked its payload's width.
+                    //
+                    // An aggregate destination already has the slot to write
+                    // into, and marking it written skips the copy that would
+                    // otherwise be the slot onto itself. A scalar has no slot,
+                    // so it gets a word-sized one to be loaded back out of —
+                    // which is what a returned pointer was doing anyway, one
+                    // dereference later.
+                    Self::append_out_param(builder, args, dst, ctx)
                 } else {
                     CallAdapt::None
                 }

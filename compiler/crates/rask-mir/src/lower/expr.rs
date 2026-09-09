@@ -1954,19 +1954,66 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
                 }
 
-                // drop(ptr) — consume an `Owned<T>` (mem.owned). Whether there's
-                // anything to free depends on whether `own` actually boxed: a
-                // scalar `T` fits an `Owned<T>` slot in place (OW7) and was never
-                // heap-allocated, so freeing it would hand `rask_free` a value
-                // that was never a pointer. Only a genuinely-boxed aggregate
-                // (MIR type `Ptr`) has a block to release.
+                // drop(p) — consume a `Heap<T>` (mem.heap/HP3, mem.owned/OW3),
+                // freeing the block it holds. There isn't always one: a scalar
+                // `T` fits the slot in place (OW7) and was never allocated, so
+                // freeing it would hand `rask_free` a value that was never a
+                // pointer.
+                //
+                // Telling the two apart used to be "is the argument's MIR type
+                // `Ptr`", and that never fired for the boxed case. A `Heap<T>`
+                // is transparent in MIR and in the checker both — a reference to
+                // one has the *payload's* type, because that is what the program
+                // treats it as (OW5) — so the test saw `Struct`, read it as
+                // "nothing to free", and `drop(Heap(Point { … }))` lowered to no
+                // code at all. Every `Heap` of a struct leaked its block.
+                //
+                // The binding is what knows: lowering marks a name a box when
+                // its initialiser turned out to be a pointer, which is the same
+                // decision that made the binding alias the block instead of
+                // copying out of it. A by-address payload is the other half —
+                // `Heap(42)` allocates nothing, and freeing what it hands back
+                // would free the number 42.
                 if func_name == "drop" {
-                    if matches!(arg_mir_types.first(), Some(MirType::Ptr)) {
-                        let arg_op = arg_operands.into_iter().next().unwrap();
+                    let arg_expr = args.first().map(|a| &a.expr);
+                    let boxed = arg_expr.is_some_and(|e| self.expr_yields_owned_box(e))
+                        && arg_mir_types.first().is_some_and(|t| t.passed_by_address());
+                    // Reading a boxed field gives a *copy of the payload*: the
+                    // result local is typed `T`, so codegen sizes it for `T` and
+                    // copies the struct out through the pointer. The pointer
+                    // itself is never named, and freeing the copy's stack slot
+                    // aborted in glibc. Load the field's word instead.
+                    let boxed_field = match arg_expr.map(|e| &e.kind) {
+                        Some(ExprKind::Field { .. }) if boxed => {
+                            self.place_address(arg_expr.unwrap()).map(|addr| {
+                                let ptr = self.builder.alloc_temp(MirType::Ptr);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: ptr,
+                                    rvalue: MirRValue::Deref(addr),
+                                }));
+                                MirOperand::Local(ptr)
+                            })
+                        }
+                        _ => None,
+                    };
+                    // A field whose address lowering can't work out — a call
+                    // result, say — gets no free. The read's operand names a
+                    // *copy* of the payload, so falling back to it would hand
+                    // `rask_free` a stack address, and leaking is the safe half.
+                    let field_arg = matches!(arg_expr.map(|e| &e.kind), Some(ExprKind::Field { .. }));
+                    let box_ptr = match boxed_field {
+                        Some(op) => Some(op),
+                        None if boxed && field_arg => None,
+                        None if boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)) => {
+                            arg_operands.into_iter().next()
+                        }
+                        None => None,
+                    };
+                    if let Some(op) = box_ptr {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
                             func: FunctionRef::internal("rask_free".to_string()),
-                            args: vec![arg_op],
+                            args: vec![op],
                         }));
                     }
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));

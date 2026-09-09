@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `drop(p)` on a `Heap<T>` frees the block.
+//
+// It didn't. `Heap<T>` is transparent — a reference to one has the payload's
+// type, because that is what the program treats it as — so lowering asked "is
+// this argument a pointer?", got "it's a struct", and emitted nothing at all:
+//
+//     let p = Heap(Big { a: 4, b: 5, c: 6 })
+//     drop(p)                                  // lowered to no code
+//
+// Every `Heap` of a struct leaked its block, whatever the program did with it,
+// and the one shape that *did* free was `Heap<i32>` — where there is no block,
+// because a scalar fits the slot.
+//
+// A boxed *field* was a second bug on top. Reading one gives a copy of the
+// payload, since the result local is typed `T` and codegen sizes it for `T`, so
+// the pointer is never named — freeing what the read handed back aborted in
+// glibc on a stack address. `drop(h.inner)` loads the field's word instead.
+//
+// Spec: specs/memory/heap.md — HP3, `drop(ptr)` consumes and deallocates;
+// mem.owned/OW5, a `Heap<T>` reads as a plain `T`; mem.linear/L1–L3, exactly
+// once.
+import memory.Heap
+
+// Over 16 bytes, so it genuinely goes to the heap.
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Holder {
+    public inner: Heap<Big>
+}
+
+// Containers inside the payload, so a block freed early takes readable data
+// with it and the values below say so.
+struct Record {
+    public name: string
+    public marks: Vec<i64>
+}
+
+test "mem.heap/HP3 — a local box is freed and reads right until then" {
+    let p = Heap(Big { a: 1, b: 2, c: 3 })
+    assert p.a == 1
+    assert p.c == 3
+    drop(p)
+}
+
+// Dropped where it was made, with no binding in between.
+test "mem.heap/HP3 — a box dropped where it was made" {
+    drop(Heap(Big { a: 1, b: 2, c: 3 }))
+}
+
+// A scalar payload was never boxed, so `drop` has nothing to free — and must
+// not free the value itself.
+test "mem.heap/HP3 — a scalar payload has no block" {
+    let n: Heap<i64> = Heap(41)
+    assert *n == 41
+    drop(n)
+}
+
+test "mem.heap/HP3 — a boxed field, filled inline" {
+    let h = Holder { inner: Heap(Big { a: 7, b: 8, c: 9 }) }
+    assert h.inner.b == 8
+    drop(h.inner)
+}
+
+// The box moves into the slot rather than being boxed again, so there is one
+// block and one free.
+test "mem.heap/HP3 — a boxed field, filled from a local" {
+    let p = Heap(Big { a: 4, b: 5, c: 6 })
+    let h = Holder { inner: p }
+    assert h.inner.a == 4
+    drop(h.inner)
+}
+
+// HP5: a plain `T` where `Heap<T>` is asked for — the slot allocates.
+test "mem.heap/HP3 — a boxed field, filled from a plain value" {
+    let plain = Big { a: 10, b: 11, c: 12 }
+    let h = Holder { inner: plain }
+    assert h.inner.c == 12
+    drop(h.inner)
+}
+
+// A payload with its own heap data. The block is freed; the string and the
+// vector *inside* it are not — freeing a box says nothing about what the box
+// holds, which is the open half (#1144). What this pins is the other half: the
+// values are all readable right up to the drop, so nothing was freed early.
+test "mem.heap/HP3 — a payload holding a string and a vector" {
+    let r = Heap(Record {
+        name: "a record name long enough to allocate",
+        marks: [1, 2, 3],
+    })
+    assert r.name == "a record name long enough to allocate"
+    assert r.marks.len() == 3
+    assert r.marks[2] == 3
+    drop(r)
+}
+
+// One per turn, so a box freed twice lands on one the next turn has taken.
+test "mem.heap/HP3 — a box per turn" {
+    mut total = 0
+    for i in 1..6 {
+        let p = Heap(Big { a: i, b: i * 2, c: i * 3 })
+        total = total + p.a + p.b + p.c
+        drop(p)
+    }
+    assert total == 90
+}
+
+// Several alive at once, so the frees don't depend on there being one.
+test "mem.heap/HP3 — three at a time, dropped out of order" {
+    let a = Heap(Big { a: 1, b: 0, c: 0 })
+    let b = Heap(Big { a: 2, b: 0, c: 0 })
+    let c = Heap(Big { a: 3, b: 0, c: 0 })
+    drop(b)
+    assert a.a == 1
+    assert c.a == 3
+    drop(c)
+    drop(a)
+}
+
+func main() {}

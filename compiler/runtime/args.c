@@ -45,14 +45,18 @@ static const char *env_lookup(const RaskStr *name) {
     return getenv(buf);
 }
 
-// os.env(name) -> string? — NULL when unset, which codegen turns into `none`.
-// The RaskStr is heap-allocated because the caller copies 16 bytes out of it.
-const RaskStr *rask_os_env(const RaskStr *name) {
+// os.env(name) -> string? — 1 wrote a string, 0 means unset, which codegen
+// turns into `none`.
+//
+// The string header goes straight into the option's payload. Returning a
+// pointer instead meant allocating a 16-byte box for the caller to copy out
+// of and then throw away, and nothing freed it: every `os.env` call leaked
+// sixteen bytes.
+int64_t rask_os_env(const RaskStr *name, RaskStr *out) {
     const char *val = env_lookup(name);
-    if (!val) return NULL;
-    RaskStr *out = (RaskStr *)rask_alloc((int64_t)sizeof(RaskStr));
+    if (!val || !out) return 0;
     rask_string_from(out, val);
-    return out;
+    return 1;
 }
 
 // os.pid() -> i64

@@ -1140,13 +1140,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
 
         // ── os module: environment ──────────────────────────────────
-        // env returns `string?` — the runtime hands back NULL when unset and
-        // DerefOption turns that into `none`, copying the 16-byte string out of
-        // the pointer for the `some` side.
+        // env returns `string?` — the string header is written into the
+        // option's payload and the call answers 1/0 for the tag. It used to
+        // hand back a pointer, which meant the runtime allocated a 16-byte box
+        // purely so codegen could copy out of it, and nobody freed the box.
         StdlibEntry {
             mir_name: "os_env", c_name: "rask_os_env",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
         // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
@@ -1476,8 +1477,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Cell_replace", c_name: "rask_cell_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // The same three under each lock. `get` hands back the slot's address
         // like the Cell version; `set`/`replace` take the lock around the copy.
@@ -1493,8 +1494,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Shared_replace", c_name: "rask_shared_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
             mir_name: "Mutex_get", c_name: "rask_mutex_get",
@@ -1508,16 +1509,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Mutex_replace", c_name: "rask_mutex_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // `into_inner` consumes the cell and yields what it held — the same read
-        // as `get`, just the last one. Freeing the cell here would dangle the
-        // pointer it returns.
+        // `into_inner` consumes the cell and yields what it held. It used to be
+        // `rask_cell_get` — the same read as `get`, just the last one — and
+        // freeing the cell would have dangled the pointer that came back, so
+        // every `into_inner` left the whole cell behind. The value goes to the
+        // caller's own destination now and the cell is freed with it.
         StdlibEntry {
-            mir_name: "Cell_into_inner", c_name: "rask_cell_get",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            mir_name: "Cell_into_inner", c_name: "rask_cell_into_inner",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // `with cell as v { ... }` — same slot address as `Cell_get`, but the
         // block decides for itself whether to load through it or alias it, so no

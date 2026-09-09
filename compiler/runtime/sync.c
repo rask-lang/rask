@@ -577,18 +577,32 @@ void rask_cell_set(int64_t cell, int64_t data_ptr) {
     }
 }
 
-// Swap in the new value, hand back the old one's address. The old value has to
-// outlive the call, so it goes in its own allocation rather than being returned
-// out of the slot we're about to overwrite.
-int64_t rask_cell_replace(int64_t cell, int64_t data_ptr) {
+// Copy the old value out, then swap the new one in. The old value goes to the
+// caller's own destination: returning it by address meant allocating a block
+// for it, which the caller copied out of and nobody freed — every `replace`
+// leaked its payload's width.
+void rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
     RASK_CHECK_NONNULL(c, "Cell.replace: cell is null");
-    void *old = rask_alloc(c->data_size);
-    memcpy(old, c->data, (size_t)c->data_size);
+    if (out) memcpy((void *)(intptr_t)out, c->data, (size_t)c->data_size);
     if (data_ptr) {
         memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)c->data_size);
     }
-    return (int64_t)(intptr_t)old;
+}
+
+// `into_inner` consumes the cell and yields what it held. The payload goes to
+// the caller's destination first, then the cell goes away — which is why it
+// needs the out-param: it used to be `rask_cell_get`, handing back a pointer
+// into the block, and the block had to stay allocated forever to keep that
+// pointer valid.
+//
+// No `box_payload_free` here: whatever the payload owns is the caller's now.
+void rask_cell_into_inner(int64_t cell, int64_t out) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    RASK_CHECK_NONNULL(c, "Cell.into_inner: cell is null");
+    if (out) memcpy((void *)(intptr_t)out, c->data, (size_t)c->data_size);
+    rask_free(c->data);
+    rask_free(c);
 }
 
 void rask_cell_free(int64_t cell) {
@@ -628,17 +642,15 @@ void rask_shared_set(int64_t shared, int64_t data_ptr) {
     pthread_rwlock_unlock(&s->lock);
 }
 
-int64_t rask_shared_replace(int64_t shared, int64_t data_ptr) {
+void rask_shared_replace(int64_t shared, int64_t data_ptr, int64_t out) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     RASK_CHECK_NONNULL(s, "Shared.replace: box is null");
-    void *old = rask_alloc(s->data_size);
     pthread_rwlock_wrlock(&s->lock);
-    memcpy(old, s->data, (size_t)s->data_size);
+    if (out) memcpy((void *)(intptr_t)out, s->data, (size_t)s->data_size);
     if (data_ptr) {
         memcpy(s->data, (const void *)(intptr_t)data_ptr, (size_t)s->data_size);
     }
     pthread_rwlock_unlock(&s->lock);
-    return (int64_t)(intptr_t)old;
 }
 
 int64_t rask_mutex_get(int64_t mutex) {
@@ -656,15 +668,13 @@ void rask_mutex_set(int64_t mutex, int64_t data_ptr) {
     pthread_mutex_unlock(&m->lock);
 }
 
-int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr) {
+void rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     RASK_CHECK_NONNULL(m, "Shared.replace: box is null");
-    void *old = rask_alloc(m->data_size);
     pthread_mutex_lock(&m->lock);
-    memcpy(old, m->data, (size_t)m->data_size);
+    if (out) memcpy((void *)(intptr_t)out, m->data, (size_t)m->data_size);
     if (data_ptr) {
         memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
     }
     pthread_mutex_unlock(&m->lock);
-    return (int64_t)(intptr_t)old;
 }
