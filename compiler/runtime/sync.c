@@ -24,7 +24,26 @@ struct RaskMutex {
     void           *data;
     int64_t         data_size;
     _Atomic int64_t refcount;
+    // What the payload is, so the last release can give it back. See
+    // `box_payload_free`.
+    int64_t         payload_kind;
 };
+
+// A box owns its payload, and a container payload is a handle in the box's
+// slot rather than bytes the box can just free. Which container it is comes
+// from lowering at construction (`elem_strs::box_payload_kind`) — the runtime
+// is the only place that knows when the *last* reference goes, and that is
+// when the container has to be given back.
+static void box_payload_free(int64_t payload_kind, void *data) {
+    if (!data) return;
+    int64_t handle = *(int64_t *)data;
+    if (!handle) return;
+    switch (payload_kind) {
+        case RASK_BOX_PAYLOAD_VEC: rask_vec_free((RaskVec *)(intptr_t)handle); break;
+        case RASK_BOX_PAYLOAD_MAP: rask_map_free((RaskMap *)(intptr_t)handle); break;
+        default: break;
+    }
+}
 
 RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
     if (data_size <= 0) {
@@ -38,6 +57,7 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
     m->data = rask_alloc(data_size);
 
     atomic_store(&m->refcount, 1);
+    m->payload_kind = RASK_BOX_PAYLOAD_NONE;
     memcpy(m->data, initial_data, (size_t)data_size);
     return m;
 }
@@ -46,6 +66,7 @@ void rask_mutex_free(RaskMutex *m) {
     if (!m) return;
     if (atomic_fetch_sub(&m->refcount, 1) > 1) return;
     pthread_mutex_destroy(&m->lock);
+    box_payload_free(m->payload_kind, m->data);
     rask_free(m->data);
     rask_free(m);
 }
@@ -72,6 +93,7 @@ struct RaskShared {
     void            *data;
     int64_t          data_size;
     _Atomic int64_t  refcount;
+    int64_t          payload_kind;
 };
 
 RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
@@ -86,6 +108,7 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
     s->data = rask_alloc(data_size);
 
     atomic_store(&s->refcount, 1);
+    s->payload_kind = RASK_BOX_PAYLOAD_NONE;
     memcpy(s->data, initial_data, (size_t)data_size);
     return s;
 }
@@ -94,6 +117,7 @@ void rask_shared_free(RaskShared *s) {
     if (!s) return;
     if (atomic_fetch_sub(&s->refcount, 1) > 1) return;
     pthread_rwlock_destroy(&s->lock);
+    box_payload_free(s->payload_kind, s->data);
     rask_free(s->data);
     rask_free(s);
 }
@@ -344,8 +368,9 @@ int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure) {
 
 // ─── Mutex i64/ptr codegen wrappers ──────────────────────
 
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size) {
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
     RaskMutex *m = rask_mutex_new((const void *)(intptr_t)data_ptr, data_size);
+    m->payload_kind = payload_kind;
     return (int64_t)(intptr_t)m;
 }
 
@@ -417,8 +442,9 @@ void rask_mutex_drop(int64_t mutex) {
 // the data inside the Shared, not a copy. For write, modifications
 // happen in-place through the pointer (no copy-back needed).
 
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size) {
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
     RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size);
+    s->payload_kind = payload_kind;
     return (int64_t)(intptr_t)s;
 }
 
@@ -518,12 +544,14 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
 typedef struct {
     int64_t data_size;
     void   *data;
+    int64_t payload_kind;
 } RaskCell;
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size) {
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
     if (data_size <= 0) data_size = 8;
     RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
     c->data_size = data_size;
+    c->payload_kind = payload_kind;
     c->data = rask_alloc(data_size);
     if (data_ptr) {
         memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)data_size);
@@ -566,6 +594,7 @@ int64_t rask_cell_replace(int64_t cell, int64_t data_ptr) {
 void rask_cell_free(int64_t cell) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
     if (!c) return;
+    box_payload_free(c->payload_kind, c->data);
     rask_free(c->data);
     rask_free(c);
 }

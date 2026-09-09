@@ -1331,6 +1331,32 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// `(value_ptr, data_size, payload_kind)` — the shape all three box
+    /// constructors take.
+    ///
+    /// The size is computed here, from the MIR argument's type; the payload
+    /// kind comes from lowering, which is the only place that knows a `Ptr` is
+    /// a `Map` (`elem_strs::box_payload_kind`). So the size goes *between* the
+    /// two arguments MIR passed, and a call that predates the kind — nothing
+    /// emits one today, but the tolerant answer costs nothing — reads as
+    /// holding nothing.
+    fn box_new_args(builder: &mut ClifFunctionBuilder, args: &mut Vec<Value>, data_size: i64) {
+        let size = builder.ins().iconst(types::I64, data_size);
+        // Lowering puts the kind last, whatever else it injected — `Shared.new`
+        // pushes a size of its own and `Shared.mutex` doesn't, so the position
+        // is not fixed but "last" is.
+        let kind = if args.len() >= 2 {
+            args[args.len() - 1]
+        } else {
+            builder
+                .ins()
+                .iconst(types::I64, rask_mir::elem_strs::BOX_PAYLOAD_NONE)
+        };
+        args.truncate(1);
+        args.push(size);
+        args.push(kind);
+    }
+
     /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
     /// `from_mir` is the source's MIR type where the caller has it. A Cranelift
     /// type carries no signedness, so without it every widening sign-extends,
@@ -8557,8 +8583,7 @@ impl<'a> FunctionBuilder<'a> {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    let size = builder.ins().iconst(types::I64, data_size);
-                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
+                    Self::box_new_args(builder, args, data_size);
                 }
                 CallAdapt::None
             }
@@ -8601,8 +8626,7 @@ impl<'a> FunctionBuilder<'a> {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    let size = builder.ins().iconst(types::I64, data_size);
-                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
+                    Self::box_new_args(builder, args, data_size);
                 }
                 CallAdapt::None
             }

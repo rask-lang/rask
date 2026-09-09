@@ -1013,7 +1013,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
+    pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
         use rask_types::Type;
         match ty {
             Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),

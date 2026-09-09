@@ -110,6 +110,16 @@ typedef struct {
     int64_t        count;
 } RaskElemStrs;
 
+// What a box's payload is, so the box's last release can give it back. A
+// container payload is a handle in the box's slot rather than bytes the box can
+// free, and only the runtime knows when the last reference goes.
+//
+// Same three integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
+// comment names this one back.
+#define RASK_BOX_PAYLOAD_NONE 0
+#define RASK_BOX_PAYLOAD_VEC  1
+#define RASK_BOX_PAYLOAD_MAP  2
+
 #define RASK_OWNED_KIND_SHIFT 28
 #define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
 #define RASK_OWNED_STRING 0
@@ -1357,7 +1367,7 @@ void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 
 // Pointer-based codegen wrappers for Mutex.
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
@@ -1417,7 +1427,7 @@ int64_t rask_shared_clone_i64(int64_t shared);
 void    rask_shared_drop_i64(int64_t shared);
 
 // Pointer-based wrappers for aggregate types (struct data).
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
@@ -1429,7 +1439,7 @@ void    rask_os_platform(RaskStr *out);
 void    rask_os_arch(RaskStr *out);
 RaskVec *rask_os_env_vars(void);
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
 int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);

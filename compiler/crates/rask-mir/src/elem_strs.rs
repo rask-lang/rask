@@ -55,6 +55,36 @@ pub fn container_tag(rendered: &str) -> Option<i64> {
     }
 }
 
+/// What a box holds, as the number the runtime stores on it.
+///
+/// A box owns its payload: `Shared.mutex(Map.new())` moves the map in, and the
+/// map's free has to happen when the box's last reference goes — which only
+/// the runtime knows, because only it counts them. So the kind travels to the
+/// constructor and lives on the box, the same way a container's element
+/// descriptor does. Without it `Shared<Map<string, i64>, Mutex>` freed the
+/// mutex and left the map and its tables behind.
+///
+/// Only the two byte stores. An arena is not a box's payload, a nested box
+/// would need its own strategy read at the same time, and a string is
+/// refcounted and released by whoever put it in.
+///
+/// These three values are duplicated in `rask_runtime.h` as
+/// `RASK_BOX_PAYLOAD_*`. They are three integers with no other reader; keeping
+/// them in step is a comment because generating them would be more machinery
+/// than the thing itself.
+pub const BOX_PAYLOAD_NONE: i64 = 0;
+pub const BOX_PAYLOAD_VEC: i64 = 1;
+pub const BOX_PAYLOAD_MAP: i64 = 2;
+
+/// The payload kind for a rendered type name.
+pub fn box_payload_kind(rendered: &str) -> i64 {
+    match container_tag(rendered) {
+        Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
+        Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
+        _ => BOX_PAYLOAD_NONE,
+    }
+}
+
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
 /// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a

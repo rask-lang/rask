@@ -5349,6 +5349,27 @@ impl<'a> MirLowerer<'a> {
                                     arg_operands.push(size_op);
                                 }
                             }
+                            // A box owns its payload, and the payload can be a
+                            // container: `Shared.mutex(Map.new())` moves the map
+                            // in. The map's free belongs to whoever drops the
+                            // box's last reference, and only the runtime knows
+                            // when that is — so which container it is travels to
+                            // the constructor and lives on the box, the way a
+                            // container's element descriptor does. Last argument,
+                            // always, which is what codegen's `box_new_args`
+                            // relies on.
+                            if matches!(base_name, "Shared" | "Mutex" | "Cell")
+                                && matches!(method.as_str(), "new" | "mutex" | "local")
+                            {
+                                let kind = args
+                                    .first()
+                                    .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
+                                    .and_then(|ty| self.head_name(&ty))
+                                    .map(|h| crate::elem_strs::box_payload_kind(&h))
+                                    .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
+                            }
+
                             // Pool.new() / Pool.with_capacity(n): inject elem_size
                             // so the pool allocates correctly-sized slots for struct
                             // elements. with_capacity keeps its `n` after elem_size.
@@ -5747,6 +5768,22 @@ impl<'a> MirLowerer<'a> {
         // settled here and nothing about the choice survives into the emitted
         // code — a `Local` box calls the no-lock runtime directly.
         let qualified_name = self.resolve_shared_strategy_call(&qualified_name, object);
+
+        // A box owns its payload, and the payload can be a container:
+        // `Shared.mutex(Map.new())` moves the map in, so the map's free belongs
+        // to whoever drops the box's last reference. Only the runtime knows
+        // when that is, so the kind rides along to the constructor — see
+        // `elem_strs::box_payload_kind`. Left out, every box with a container
+        // in it leaked the container and its storage.
+        if matches!(qualified_name.as_str(), "Mutex_new" | "Cell_new" | "Shared_new") {
+            let kind = args
+                .first()
+                .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
+                .and_then(|ty| self.head_name(&ty))
+                .map(|head| crate::elem_strs::box_payload_kind(&head))
+                .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
+            all_args.push(MirOperand::Constant(MirConst::Int(kind)));
+        }
 
         // A value going into a container's element slot is an argument position,
         // so it gains wrapper layers the same way any other one does. Nothing

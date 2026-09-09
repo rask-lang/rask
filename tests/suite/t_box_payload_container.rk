@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box gives back the container it holds.
+//
+// `Shared.mutex(Map.new())` moves the map into the box, so the map's free
+// belongs to whoever drops the box's last reference. Only the runtime knows
+// when that is — it is the only thing counting the references — and the box
+// had no idea what its payload was. It freed its own slot and left the map and
+// its tables behind, and the same for a `Vec`.
+//
+// So the payload kind travels to the constructor and lives on the box for the
+// rest of its life, the way a container's element descriptor does. Last
+// argument, always, whatever else lowering injected — `Shared.new(v)` pushes a
+// size of its own and `Shared.mutex(v)` doesn't, so the position isn't fixed
+// but "last" is.
+//
+// The three constants live twice, in `elem_strs::BOX_PAYLOAD_*` and
+// `RASK_BOX_PAYLOAD_*`. Three integers with no other reader; each comment
+// names the other.
+//
+// Every test reads the payload back through the box after writing it. A
+// payload freed early reads as an empty or garbage container rather than as a
+// leak, which is the failure worth catching.
+import sync.Shared
+import sync.Mutex
+import sync.Local
+
+struct Registry {
+    public names: Shared<Vec<string>, Mutex>
+}
+
+test "conc.sync — a map behind a mutex is freed with the box" {
+    let boxed: Shared<Map<string, i64>, Mutex> = Shared.mutex(Map.new())
+    with boxed.write() as m {
+        m.insert("a key long enough to need a buffer", 1)
+        m.insert("and a second key that is long too", 2)
+    }
+    with boxed.read() as m {
+        assert m.len() == 2
+        assert m.get("a key long enough to need a buffer")! == 1
+    }
+}
+
+test "conc.sync — and a vector" {
+    let boxed: Shared<Vec<string>, Mutex> = Shared.mutex(Vec.new())
+    with boxed.write() as v {
+        v.push("the first entry is long enough to allocate")
+        v.push("and the second entry is long as well")
+    }
+    with boxed.read() as v {
+        assert v.len() == 2
+        assert v[1] == "and the second entry is long as well"
+    }
+}
+
+test "mem.cell — a `Local` box holds one the same way" {
+    let boxed: Shared<Vec<i64>, Local> = Shared.local(Vec.new())
+    with boxed.write() as v {
+        v.push(7)
+        v.push(8)
+    }
+    with boxed.read() as v {
+        assert v.len() == 2
+        assert v[0] == 7
+    }
+}
+
+// A scalar payload, so the release that now looks at the kind still does
+// nothing when there is nothing to do.
+test "conc.sync — a scalar payload is untouched" {
+    let boxed: Shared<i64, Mutex> = Shared.mutex(5)
+    with boxed.write() as n {
+        n = n + 37
+    }
+    with boxed.read() as n {
+        assert n == 42
+    }
+}
+
+test "conc.sync — a box with a container, in a struct field" {
+    let r = Registry { names: Shared.mutex(Vec.new()) }
+    with r.names.write() as v {
+        v.push("a name long enough to need a buffer")
+    }
+    with r.names.read() as v {
+        assert v.len() == 1
+        assert v[0] == "a name long enough to need a buffer"
+    }
+}
+
+// Repeatedly, so a payload freed twice would land on a container the next turn
+// has already reused.
+test "conc.sync — a box per turn" {
+    mut total: usize = 0
+    for i in 1..6 {
+        let boxed: Shared<Vec<string>, Mutex> = Shared.mutex(Vec.new())
+        with boxed.write() as v {
+            v.push("entry number {i}, long enough to allocate")
+        }
+        with boxed.read() as v {
+            total = total + v[0].len()
+        }
+    }
+    assert total == 195
+}
