@@ -8,6 +8,83 @@ pub use rask_mono::abi::{
     UNION_MEMBER_OFFSET, UNION_PAYLOAD_OFFSET,
 };
 
+/// Which container a handle points at. What frees it is codegen's to name;
+/// this is the vocabulary both ends share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerKind {
+    Vec,
+    Map,
+    Rack,
+    Pool,
+}
+
+impl MirType {
+    /// This type with every container kind stripped back to a bare pointer —
+    /// the spelling MIR stores. See `MirType::Container`.
+    pub fn without_container_kinds(&self) -> MirType {
+        match self {
+            MirType::Container(_) => MirType::Ptr,
+            MirType::Option(inner) => {
+                MirType::Option(Box::new(inner.without_container_kinds()))
+            }
+            MirType::Result { ok, err } => MirType::Result {
+                ok: Box::new(ok.without_container_kinds()),
+                err: Box::new(err.without_container_kinds()),
+            },
+            MirType::Tuple(elems) => {
+                MirType::Tuple(elems.iter().map(|e| e.without_container_kinds()).collect())
+            }
+            MirType::Array { elem, len } => MirType::Array {
+                elem: Box::new(elem.without_container_kinds()),
+                len: *len,
+            },
+            MirType::Union(vs) => {
+                MirType::Union(vs.iter().map(|v| v.without_container_kinds()).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// The container behind this wrapper's good tag, if that is what it holds.
+    ///
+    /// Only a wrapper's own payload. Deeper than that there is nothing to
+    /// record it on, and nothing that needs it: a container in a struct field
+    /// is described by the field's declared type in the layout, and a bare
+    /// handle in a local is freed by the pass that tracks handles.
+    pub fn wrapper_container(&self) -> Option<ContainerKind> {
+        match self {
+            MirType::Option(inner) => match inner.as_ref() {
+                MirType::Container(k) => Some(*k),
+                _ => None,
+            },
+            MirType::Result { ok, .. } => match ok.as_ref() {
+                MirType::Container(k) => Some(*k),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl ContainerKind {
+    /// The kind a rendered type name stands for, if it is a container.
+    ///
+    /// A wrapper is not one: `Vec<i64>?` holds a tag beside the handle, so it
+    /// is the thing this describes the payload *of*.
+    pub fn from_rendered(rendered: &str) -> Option<ContainerKind> {
+        if rendered.ends_with('?') || rendered.contains(" or ") {
+            return None;
+        }
+        match rendered.split('<').next().unwrap_or(rendered).trim() {
+            "Vec" => Some(ContainerKind::Vec),
+            "Map" => Some(ContainerKind::Map),
+            "Rack" => Some(ContainerKind::Rack),
+            "Pool" => Some(ContainerKind::Pool),
+            _ => None,
+        }
+    }
+}
+
 /// MIR type - all sizes known, no generic type parameters
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {
@@ -30,6 +107,24 @@ pub enum MirType {
     F64,
     Char,
     Ptr,
+    /// A container handle, tagged with what frees it.
+    ///
+    /// Every container is a pointer, so `Vec<Point> or JsonError` lowers to
+    /// `ptr or enum#7`: releasing that freed the error's string and walked
+    /// straight past the vector, and `json.decode<Vec<Point>>(t) catch e => …`
+    /// leaked everything it decoded. The checker's type knows which it is;
+    /// this is how lowering says so.
+    ///
+    /// **This never reaches a stored type.** `BlockBuilder` strips it out of
+    /// every local and return type it is handed and keeps the kind on the
+    /// `MirLocal` instead, so MIR's own types are exactly what they were.
+    /// They have to be: equality on `MirType` is how codegen tells an
+    /// already-wrapped return from a bare payload, and a second spelling of
+    /// `Vec<i64>?` made `return none` wrap the option a second time —
+    /// `maybe(0)? as w` took the present branch and called `Vec_len` on the
+    /// tag. Codegen puts the kind back on the one type it walks, in the one
+    /// place that walks it.
+    Container(ContainerKind),
     String,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),
@@ -170,7 +265,7 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
-            | MirType::Handle | MirType::Link(_) => 8,
+            | MirType::Handle | MirType::Link(_) | MirType::Container(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size,

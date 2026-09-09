@@ -471,9 +471,7 @@ mod tests {
 
     fn local(id: u32) -> LocalId { LocalId(id) }
 
-    fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false }
-    }
+    fn string_local(id: u32, name: &str) -> MirLocal { MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, container: None } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

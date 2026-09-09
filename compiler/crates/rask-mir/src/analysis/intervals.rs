@@ -642,7 +642,7 @@ mod tests {
     fn sp() -> crate::Span { crate::Span::new(0, 0) }
 
     fn int_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::I64, is_param: false }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::I64, is_param: false, container: None }
     }
 
     fn assign_const(dst: u32, val: i64) -> MirStmt {
@@ -758,11 +758,11 @@ mod tests {
         let func = MirFunction {
             name: "test".into(),
             params: vec![
-                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true },
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, container: None },
             ],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true },
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, container: None },
                 int_local(1, "len"),
                 int_local(2, "result"),
                 int_local(3, "idx"),
@@ -808,14 +808,14 @@ mod tests {
         let func = MirFunction {
             name: "loop_test".into(),
             params: vec![
-                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true },
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, container: None },
             ],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true },
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, container: None },
                 int_local(1, "len"),
                 int_local(2, "i"),
-                MirLocal { id: local(3), name: Some("cond".into()), ty: MirType::Bool, is_param: false },
+                MirLocal { id: local(3), name: Some("cond".into()), ty: MirType::Bool, is_param: false, container: None },
                 int_local(4, "result"),
                 int_local(5, "i_next"),
             ],

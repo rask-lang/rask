@@ -136,7 +136,7 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
     let mut fresh = |locals: &mut Vec<MirLocal>, ty: MirType| {
         let id = LocalId(next);
         next += 1;
-        locals.push(MirLocal { id, name: None, ty, is_param: false });
+        locals.push(MirLocal { id, name: None, ty, is_param: false, container: None });
         id
     };
 

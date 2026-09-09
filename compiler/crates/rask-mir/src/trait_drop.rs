@@ -332,9 +332,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
     fn block_id(id: u32) -> BlockId { BlockId(id) }
 
-    fn trait_local(id: u32) -> MirLocal {
-        MirLocal { id: local(id), name: None, ty: MirType::TraitObject { trait_name: "Speaker".into() }, is_param: false }
-    }
+    fn trait_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::TraitObject { trait_name: "Speaker".into() }, is_param: false, container: None } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

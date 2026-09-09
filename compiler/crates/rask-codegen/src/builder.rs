@@ -9,7 +9,7 @@ use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilder
 use std::collections::{HashMap, HashSet};
 
 use rask_mir::FieldAccess;
-use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
+use rask_mir::{BinOp, BlockId, ContainerKind, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
@@ -1292,10 +1292,16 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmtKind::RcDecContents { local } => {
-                // An aggregate dying gives back the strings it holds.
-                let Some(ty) = ctx.locals.iter().find(|l| l.id == *local).map(|l| l.ty.clone())
-                else {
+                // An aggregate dying gives back the strings it holds — and the
+                // container behind its tag, if it has one. MIR stores the plain
+                // type and the kind separately (`MirType::Container` says why),
+                // so put them back together for the walk.
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
+                };
+                let ty = match entry.container {
+                    Some(kind) => Self::with_container_kind(&entry.ty, kind),
+                    None => entry.ty.clone(),
                 };
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
@@ -7191,6 +7197,8 @@ impl<'a> FunctionBuilder<'a> {
         }
         match ty {
             MirType::String => true,
+            // A container owns its byte store whatever the elements are.
+            MirType::Container(_) => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7269,6 +7277,33 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// The local's type with its container kind put back into the wrapper's
+    /// payload — the one type the release walk gets to see it in.
+    fn with_container_kind(ty: &MirType, kind: ContainerKind) -> MirType {
+        match ty {
+            MirType::Option(inner) if **inner == MirType::Ptr => {
+                MirType::Option(Box::new(MirType::Container(kind)))
+            }
+            MirType::Result { ok, err } if **ok == MirType::Ptr => MirType::Result {
+                ok: Box::new(MirType::Container(kind)),
+                err: err.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// What frees a container MIR named as one. The type-name route
+    /// (`container_free_for`) reads a field's declared type; this one reads a
+    /// wrapper payload, where the kind travels in the MIR type instead.
+    fn container_free_for_kind(kind: ContainerKind) -> &'static str {
+        match kind {
+            ContainerKind::Vec => "rask_vec_free",
+            ContainerKind::Map => "rask_map_free",
+            ContainerKind::Rack => "rask_rack_free",
+            ContainerKind::Pool => "rask_pool_free",
+        }
+    }
+
     /// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs,
     /// read off the strategy in its type arguments.
     fn box_release_for(rendered: &str) -> &'static str {
@@ -7324,6 +7359,11 @@ impl<'a> FunctionBuilder<'a> {
         }
         match ty {
             MirType::String => Self::emit_string_release(builder, base, offset, ctx),
+            // The slot holds the handle; the release loads it and frees what it
+            // points at, elements and all.
+            MirType::Container(kind) => Self::emit_container_release(
+                builder, base, offset, Self::container_free_for_kind(*kind), ctx,
+            ),
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),

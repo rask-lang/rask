@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container held behind a `?` or an `or`, in a local (#1140).
+//
+// `json.decode<Vec<Point>>(text) catch e => …` hands back `Vec<Point> or
+// JsonError`. MIR calls every container a bare pointer, so that lowered to
+// `ptr or enum#7`: releasing it freed the error's string, walked straight past
+// the vector on the other side, and the whole decoded document leaked. The
+// checker's type knows which container it is, so lowering writes it into the
+// MIR type now — `Vec<Point> or JsonError` lowers to `Vecptr or enum#7`.
+//
+// The order is the other half. The release has to wait for the reads *through*
+// the tag: `pts.len()` is a read of the vector the release is about to free,
+// and getting that wrong gives an answer rather than a leak — it printed
+// 5968453248610433429 for a length of 2. So the kind stops at the wrapper. A
+// local holding the handle itself is a bare pointer again, which is what the
+// drop pass looks for when it decides who owns what.
+//
+// The same shape a step down: `json.encode(p)` on a struct with a `Map` field
+// hands the encoder the field's handle through a scratch word. Treating that
+// store as a hand-over stopped the struct's release from being emitted at all.
+//
+// Spec: specs/stdlib/encoding.md, specs/memory/ownership.md — one owner, and
+// the frame that still holds a value frees it.
+import json
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+struct Tagged {
+    public name: string
+    public counts: Map<string, i64>
+}
+
+test "std.json — a decoded list is read before it is freed" {
+    let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") catch e => {
+        assert false
+        return
+    }
+    assert pts.len() == 2
+    assert pts[0].x == 1
+    assert pts[1].y == 4
+}
+
+test "std.json — and a decoded map, which is the other container" {
+    let m = json.decode<Map<string, i64>>("{{\"a\":1,\"b\":2}}") catch e => {
+        assert false
+        return
+    }
+    assert m.len() == 2
+    assert m.get("a")! == 1
+    assert m.get("b")! == 2
+}
+
+// The error side, so the arm that holds no container at all still releases the
+// message it does hold.
+test "std.json — the error side of the same wrapper" {
+    let pts = json.decode<Vec<Point>>("not json") catch e => {
+        assert e.message().len() > 0
+        return
+    }
+    assert false
+}
+
+test "stdlib.encoding — a Map field survives being handed to the encoder" {
+    mut counts = Map<string, i64>.new()
+    counts.insert("a key long enough to need a buffer", 7)
+    let t = Tagged { name: "a name long enough to need one too", counts: counts }
+    let out = json.encode(t)
+    assert out.contains("\"a key long enough to need a buffer\":7")
+    assert out.contains("\"a name long enough to need one too\"")
+}
+
+// A container behind a `?` written by hand, rather than one json built.
+func maybe_words(n: i64) -> Vec<string>? {
+    if n <= 0 {
+        return none
+    }
+    mut v: Vec<string> = Vec.new()
+    v.push("the first word is long enough to allocate")
+    v.push("and the second one is too")
+    return v
+}
+
+test "mem.ownership — a container behind a `?` is read, then freed" {
+    if maybe_words(1)? as words {
+        assert words.len() == 2
+        assert words[0] == "the first word is long enough to allocate"
+    } else {
+        assert false
+    }
+    if maybe_words(0)? as words {
+        assert false
+    } else {
+        assert true
+    }
+}
+
+// Repeatedly, so a vector freed before its reads would give a wrong length
+// rather than merely leak.
+test "std.json — decoding in a loop" {
+    mut total: usize = 0
+    for i in 1..6 {
+        let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}}]") catch e => {
+            assert false
+            return
+        }
+        total = total + pts.len()
+    }
+    assert total == 5
+}

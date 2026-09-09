@@ -132,10 +132,10 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("s".into()), ty: MirType::String, is_param: false },
-                MirLocal { id: local(1), name: Some("_t".into()), ty: MirType::String, is_param: false },
-                MirLocal { id: local(2), name: Some("arg".into()), ty: MirType::String, is_param: false },
-                MirLocal { id: local(3), name: Some("other".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("s".into()), ty: MirType::String, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("_t".into()), ty: MirType::String, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("arg".into()), ty: MirType::String, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("other".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![MirBlock {
                 id: BlockId(0),

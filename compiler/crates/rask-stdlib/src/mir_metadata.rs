@@ -704,6 +704,27 @@ pub fn keeps_no_arguments(qualified_name: &str) -> bool {
     )
 }
 
+/// Runtime helpers that take a callback, call it, and keep nothing.
+///
+/// A bodiless callee has no entry in the escape map the closure pass reads, so
+/// the answer there is "unaccounted for" — and the pass has to assume the
+/// callee might store the closure, which leaves the frame holding an
+/// environment nobody frees. Right for anything that might; wrong for these
+/// three, where the callback is used up before the call returns.
+/// `v.sort_by(|a, b| …)` leaked its environment on every call, and
+/// `json.encode` on an object goes through one.
+///
+/// Eager helpers only. A sequence that holds a closure past the call *is*
+/// keeping it, so this list must never grow a lazy one.
+const BORROWS_ITS_CALLBACK: &[&str] = &["Vec_sort_by", "Vec_map", "Vec_filter"];
+
+/// Does this call use its callback up before returning?
+pub fn borrows_its_callback(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    BORROWS_ITS_CALLBACK.contains(&base)
+}
+
 /// Does this call take its receiver away — a `take self` method, or one of the
 /// frees this pipeline emits for itself?
 ///

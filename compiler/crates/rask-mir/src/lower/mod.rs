@@ -992,8 +992,8 @@ impl<'a> MirContext<'a> {
                     let ok_str = name[..or_pos].trim();
                     let err_str = name[or_pos + 4..].trim();
                     return MirType::Result {
-                        ok: Box::new(self.resolve_type_str(ok_str)),
-                        err: Box::new(self.resolve_type_str(err_str)),
+                        ok: Box::new(self.payload_from_str(ok_str)),
+                        err: Box::new(self.payload_from_str(err_str)),
                     };
                 }
                 // "Result<T, E>" → MirType::Result
@@ -1003,18 +1003,18 @@ impl<'a> MirContext<'a> {
                         let ok_str = inner[..comma].trim();
                         let err_str = inner[comma + 1..].trim();
                         return MirType::Result {
-                            ok: Box::new(self.resolve_type_str(ok_str)),
-                            err: Box::new(self.resolve_type_str(err_str)),
+                            ok: Box::new(self.payload_from_str(ok_str)),
+                            err: Box::new(self.payload_from_str(err_str)),
                         };
                     }
                 }
                 // "Option<T>" → MirType::Option
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return option_of(self.resolve_type_str(inner));
+                    return option_of(self.payload_from_str(inner));
                 }
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
-                    return option_of(self.resolve_type_str(inner));
+                    return option_of(self.payload_from_str(inner));
                 }
                 // "any TraitName" → TraitObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
@@ -1266,6 +1266,35 @@ impl<'a> MirContext<'a> {
     }
 
     /// Convert a Type from the type checker to MirType.
+    /// A wrapper's payload, from the type's written name — the string route
+    /// into the same rule `payload_to_mir` applies to a checker type.
+    fn payload_from_str(&self, name: &str) -> MirType {
+        let mir = self.resolve_type_str(name);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        match crate::ContainerKind::from_rendered(name) {
+            Some(kind) => MirType::Container(kind),
+            None => mir,
+        }
+    }
+
+    /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
+    /// what it is instead of collapsing to a bare pointer — see
+    /// `MirType::Container`.
+    pub(crate) fn payload_to_mir(&self, ty: &Type) -> MirType {
+        let mir = self.type_to_mir(ty);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        // The rendered name, for the same reason the codegen side reads one: a
+        // resolved `Type::Generic` carries a TypeId and no name.
+        match crate::ContainerKind::from_rendered(&format!("{}", ty)) {
+            Some(kind) => MirType::Container(kind),
+            None => mir,
+        }
+    }
+
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
         match ty {
             Type::Unit | Type::None => MirType::Void,
@@ -1349,13 +1378,13 @@ impl<'a> MirContext<'a> {
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                     MirType::Handle
                 } else {
-                    MirType::Option(Box::new(self.type_to_mir(inner)))
+                    MirType::Option(Box::new(self.payload_to_mir(inner)))
                 }
             }
             // Result<T, E> → tagged union (tag + max(T, E) payload)
             Type::Result { ok, err } => MirType::Result {
-                ok: Box::new(self.type_to_mir(ok)),
-                err: Box::new(self.type_to_mir(err)),
+                ok: Box::new(self.payload_to_mir(ok)),
+                err: Box::new(self.payload_to_mir(err)),
             },
             // Union → tracks variant sizes
             Type::Union(variants) => {

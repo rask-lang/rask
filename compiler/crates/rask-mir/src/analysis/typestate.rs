@@ -810,6 +810,7 @@ mod tests {
             name: Some(name.into()),
             ty: MirType::Handle,
             is_param,
+            container: None,
         }
     }
 
@@ -819,6 +820,7 @@ mod tests {
             name: Some("pool".into()),
             ty: MirType::I64,
             is_param: false,
+            container: None,
         }
     }
 
@@ -1036,6 +1038,7 @@ mod tests {
                     name: Some("pool_b".into()),
                     ty: MirType::I64,
                     is_param: false,
+                    container: None,
                 },
                 handle_local(1, "h_a", false),
                 handle_local(2, "h_b", false),
@@ -1069,6 +1072,7 @@ mod tests {
                 name: Some("x".into()),
                 ty: MirType::I32,
                 is_param: false,
+                container: None,
             }],
             vec![MirBlock {
                 id: block(0),
@@ -1112,12 +1116,8 @@ mod tests {
     /// Interprocedural: callee that removes a handle parameter invalidates it at call site.
     #[test]
     fn interprocedural_invalidation() {
-        let pool_param = MirLocal {
-            id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: true,
-        };
-        let handle_param = MirLocal {
-            id: local(1), name: Some("h".into()), ty: MirType::Handle, is_param: true,
-        };
+        let pool_param = MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: true, container: None, };
+        let handle_param = MirLocal { id: local(1), name: Some("h".into()), ty: MirType::Handle, is_param: true, container: None, };
 
         // Callee: func destroy(pool, handle) { Pool_remove(pool, handle) }
         let callee = MirFunction {

@@ -353,10 +353,18 @@ fn find_escaping_closures(
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
                             if let Some(origin) = aliases.get(&id).copied() {
+                                // A bodiless runtime helper has no escape map
+                                // to read, and "unaccounted for" has to mean
+                                // "might keep it". The ones that demonstrably
+                                // don't are written down instead.
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
-                                    .unwrap_or(false);
+                                    .unwrap_or_else(|| {
+                                        rask_stdlib::mir_metadata::borrows_its_callback(
+                                            &callee.name,
+                                        )
+                                    });
 
                                 if !is_borrow {
                                     escaping.insert(origin);
@@ -802,13 +810,9 @@ mod tests {
         insert_all_closure_drops(fns);
     }
 
-    fn temp(id: u32, ty: MirType) -> MirLocal {
-        MirLocal { id: LocalId(id), name: None, ty, is_param: false }
-    }
+    fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false, container: None } }
 
-    fn param(id: u32, ty: MirType) -> MirLocal {
-        MirLocal { id: LocalId(id), name: None, ty, is_param: true }
-    }
+    fn param(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: true, container: None } }
 
     fn block(id: u32, stmts: Vec<MirStmt>, term: MirTerminator) -> MirBlock {
         MirBlock { id: BlockId(id), statements: stmts, terminator: term }

@@ -56,6 +56,9 @@ impl<'a> MirLowerer<'a> {
         target: &Type,
     ) -> Result<TypedOperand, LoweringError> {
         let target_mir = self.ctx.type_to_mir(target);
+        // The same type as a wrapper's payload: a `Vec<T>` target keeps what it
+        // is there, so releasing the result frees the vector the decoder built.
+        let payload_mir = self.ctx.payload_to_mir(target);
 
         // `decode<JsonValue>` is the untyped path — that's exactly what
         // `json.parse` already does, in Rask, so call it instead of teaching the
@@ -67,7 +70,7 @@ impl<'a> MirLowerer<'a> {
                 .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/json_decode:68"));
             let result_ty = MirType::Result {
-                ok: Box::new(target_mir),
+                ok: Box::new(payload_mir),
                 err: Box::new(err_ty),
             };
             let out = self.builder.alloc_temp(result_ty.clone());
@@ -76,7 +79,9 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("json_parse".to_string()),
                 args: vec![input],
             }));
-            return Ok((MirOperand::Local(out), result_ty));
+            // The kind is on the local now; hand the caller the plain type, the
+            // way every other lowering does (`MirType::Container`).
+            return Ok((MirOperand::Local(out), result_ty.without_container_kinds()));
         }
 
         let Some(shape) = self.emit_shape(target) else {
@@ -135,7 +140,7 @@ impl<'a> MirLowerer<'a> {
             .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
             .unwrap_or_else(|| crate::fallback::i64_fallback("lower/json_decode:136"));
         let result_ty = MirType::Result {
-            ok: Box::new(target_mir.clone()),
+            ok: Box::new(payload_mir),
             err: Box::new(err_ty.clone()),
         };
         let result = self.builder.alloc_temp(result_ty.clone());
@@ -196,7 +201,7 @@ impl<'a> MirLowerer<'a> {
             }));
 
         self.builder.switch_to_block(done_block);
-        Ok((MirOperand::Local(result), result_ty))
+        Ok((MirOperand::Local(result), result_ty.without_container_kinds()))
     }
 
     /// Result tag plus the two ER15 origin words. Decode doesn't attribute an

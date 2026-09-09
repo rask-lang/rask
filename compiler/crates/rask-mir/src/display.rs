@@ -11,6 +11,10 @@ impl fmt::Display for MirType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MirType::Void => write!(f, "void"),
+            // Never stored, so never dumped — see `MirType::Container`. Here
+            // for the exhaustiveness check, and spelled so a dump that somehow
+            // shows one says what went wrong.
+            MirType::Container(k) => write!(f, "{:?}ptr(unerased)", k),
             MirType::Bool => write!(f, "bool"),
             MirType::I8 => write!(f, "i8"),
             MirType::I16 => write!(f, "i16"),

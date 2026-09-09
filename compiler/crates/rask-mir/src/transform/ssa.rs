@@ -18,6 +18,10 @@ use crate::{
     MirStmtKind, MirTerminator, MirTerminatorKind,
 };
 
+/// What a new SSA version of a local copies from the original: its name, its
+/// type, and the container behind its wrapper tag.
+type LocalInfo = (Option<String>, crate::MirType, Option<crate::ContainerKind>);
+
 // ---------------------------------------------------------------------------
 // SSA construction
 // ---------------------------------------------------------------------------
@@ -201,22 +205,22 @@ fn rename_variables(
         .collect();
 
     // Collect original local info for creating new versions.
-    let orig_local_info: Vec<(Option<String>, crate::MirType)> = {
+    let orig_local_info: Vec<LocalInfo> = {
         let mut info = Vec::with_capacity(num_orig_locals);
         for param in &func.params {
-            info.push((param.name.clone(), param.ty.clone()));
+            info.push((param.name.clone(), param.ty.clone(), param.container));
         }
         for local in &func.locals {
             if (local.id.0 as usize) >= info.len() {
                 // Extend to cover gaps
                 while info.len() < local.id.0 as usize {
-                    info.push((None, crate::MirType::I64));
+                    info.push((None, crate::MirType::I64, None));
                 }
-                info.push((local.name.clone(), local.ty.clone()));
+                info.push((local.name.clone(), local.ty.clone(), local.container));
             }
         }
         while info.len() < num_orig_locals {
-            info.push((None, crate::MirType::I64));
+            info.push((None, crate::MirType::I64, None));
         }
         info
     };
@@ -240,7 +244,7 @@ fn new_version(
     func: &mut MirFunction,
     version_counter: &mut [u32],
     version_stack: &mut [Vec<LocalId>],
-    orig_local_info: &[(Option<String>, crate::MirType)],
+    orig_local_info: &[LocalInfo],
     num_orig_locals: usize,
 ) -> LocalId {
     let orig = orig_local.0 as usize;
@@ -252,12 +256,13 @@ fn new_version(
     let version = version_counter[orig];
     let new_id = LocalId((func.locals.len() + func.params.len()) as u32);
 
-    let (ref name, ref ty) = orig_local_info[orig];
+    let (ref name, ref ty, container) = orig_local_info[orig];
     func.locals.push(MirLocal {
         id: new_id,
         name: name.as_ref().map(|n| format!("{}_v{}", n, version)),
         ty: ty.clone(),
         is_param: false,
+        container,
     });
 
     version_stack[orig].push(new_id);
@@ -307,7 +312,7 @@ fn rename_stmt(
     func: &mut MirFunction,
     version_counter: &mut [u32],
     version_stack: &mut [Vec<LocalId>],
-    orig_local_info: &[(Option<String>, crate::MirType)],
+    orig_local_info: &[LocalInfo],
     num_orig_locals: usize,
 ) -> Option<usize> {
     match &mut stmt.kind {
@@ -515,7 +520,7 @@ fn rename_block(
     block_index: &HashMap<BlockId, usize>,
     version_counter: &mut Vec<u32>,
     version_stack: &mut Vec<Vec<LocalId>>,
-    orig_local_info: &[(Option<String>, crate::MirType)],
+    orig_local_info: &[LocalInfo],
     num_orig_locals: usize,
 ) {
     let Some(&bidx) = block_index.get(&block_id) else {
@@ -746,9 +751,7 @@ mod tests {
     fn block(n: u32) -> BlockId { BlockId(n) }
     fn local(n: u32) -> LocalId { LocalId(n) }
 
-    fn make_local(id: u32) -> MirLocal {
-        MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false }
-    }
+    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false, container: None } }
 
     fn assign_const(dst: u32, val: i64) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Assign {
@@ -982,7 +985,7 @@ mod tests {
         // bb3: return p0
         let mut func = MirFunction {
             name: "test".to_string(),
-            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true }],
+            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true, container: None }],
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![

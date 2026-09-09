@@ -45,4 +45,4 @@ pub use rask_ast::expr::ConvertKind;
 pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
 pub use lower::ComptimeGlobalMeta;
 pub use program::MirProgram;
-pub use types::{spawn_payload_is_boxed, MirType, StructLayoutId, EnumLayoutId};
+pub use types::{spawn_payload_is_boxed, ContainerKind, MirType, StructLayoutId, EnumLayoutId};
