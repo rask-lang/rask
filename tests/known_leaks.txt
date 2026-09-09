@@ -22,7 +22,9 @@
 # the struct (seven more files clean, and the rack cluster from 252 allocations
 # to 70 — `p12_rack_link_churn.rk` alone 128 → 2), and 1054 once the last few
 # runtime calls that hand back a fresh Vec were written down as such — nine
-# more clean, `rack.nodes()` being the one that was called in a loop.
+# more clean, `rack.nodes()` being the one that was called in a loop —, and 785
+# once a channel's two ends were released with the frame that made them (ten
+# more clean, `t_select.rk` 74 → 0).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -68,7 +70,6 @@
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-p06_select.rk  # 15 allocations
 p07_heap.rk  # 7 allocations
 p12_rack_link_churn.rk  # 2 allocations
 p13_rack_snapshot.rk  # 21 allocations
@@ -77,21 +78,18 @@ p21_sequence_adapters.rk  # 4 allocations — the adapters' closure environments
 t26_custom_sequence.rk  # 4 allocations
 t27_error_narrowing.rk  # 2 allocations
 t29_branch_merge.rk  # 9 allocations
-t31_channels.rk  # 20 allocations
 t31_sequence_adapters.rk  # 3 allocations — adapter closures capture self and f, #1045
 t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
 t34_vec_as_sequence.rk  # 13 allocations — the source closure captures self, #1045
 t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
-t36_cross_task_ownership.rk  # 16 allocations
 t38_lazy_collection_adapters.rk  # 20 allocations — a collection's adapters capture the collection, #1035
 t39_loop_backedge_container_free.rk  # 10 allocations — a container in a struct field and a map's own storage, #1047
 t40_forwarded_generic_method.rk  # 16 allocations — sequence adapter closures, #1045
-t40_stdlib_renames.rk  # 8 allocations
+t40_stdlib_renames.rk  # 3 allocations
 t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
 t42_flatten_shaped_header.rk  # 15 allocations — flatten's per-element inner sequences, #1045
 t54_strings.rk  # 6 allocations
 t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
-t57_spawn.rk  # 22 allocations
 t62_trait_object_positions.rk  # 3 allocations
 t65_vec_of_trait_objects.rk  # 10 allocations
 t66_stdlib_option_returns.rk  # 10 allocations
@@ -103,9 +101,7 @@ t_bare_lock_value.rk  # 21 allocations
 t_borrow_param_consume.rk  # 2 allocations
 t_box_replace_payload.rk  # 3 allocations
 t_card_method_surface.rk  # 6 allocations
-t_channel_aggregates.rk  # 20 allocations
-t_channel_receive_error.rk  # 16 allocations
-t_channel_try_receive.rk  # 20 allocations
+t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 42 allocations — the source vector each
 t_closure_diverging_return.rk  # 2 allocations
 t_closure_in_collection.rk  # 9 allocations
@@ -129,9 +125,8 @@ t_module_qualified_variants.rk  # 5 allocations — trait boxes again
 t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 1 allocation
 t_month_boxes.rk  # 8 allocations
-t_month_concurrency.rk  # 57 allocations
 t_month_io.rk  # 2 allocations
-t_month_panic_observed.rk  # 11 allocations
+t_month_panic_observed.rk  # 9 allocations
 t_month_stdlib_modules.rk  # 11 allocations
 t_mutex_payload_kinds.rk  # 12 allocations
 t_nested_with_return.rk  # 12 allocations
@@ -145,7 +140,6 @@ t_rack_stale_records.rk  # 15 allocations
 t_random_seeded.rk  # 10 allocations
 t_range_element_type.rk  # 2 allocations
 t_runtime_handle_out_of_result.rk  # 1 allocation
-t_select.rk  # 74 allocations
 t_sequence_join.rk  # 14 allocations
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_shared_inline_access.rk  # 1 allocation
@@ -153,7 +147,6 @@ t_shared_strategies.rk  # 7 allocations
 t_sort_by_closure.rk  # 3 allocations
 t_sort_contracts.rk  # 7 allocations
 t_spawn_join_result.rk  # 2 allocations
-t_spawn_payload_type.rk  # 5 allocations
 t_string_builder_mutate.rk  # 1 allocation
 t_string_field_and_enum_clone.rk  # 2 allocations
 t_string_from_utf8.rk  # 26 allocations

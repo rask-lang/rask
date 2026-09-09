@@ -388,6 +388,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Shared_drop", Internal::ConsumesReceiver),
     ("Mutex_drop", Internal::ConsumesReceiver),
     ("Cell_drop", Internal::ConsumesReceiver),
+    // One end of a channel closing. Same shape one refcount down: the handle
+    // is gone as far as this frame is concerned, and the channel goes with it
+    // once both ends are.
+    ("Sender_drop", Internal::ConsumesReceiver),
+    ("Receiver_drop", Internal::ConsumesReceiver),
     // The free for the NUL-terminated copy `to_cstring` makes. Nothing declares
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
@@ -667,6 +672,21 @@ pub fn keeps_no_arguments(qualified_name: &str) -> bool {
         internal_spelling(base),
         Some(Internal::FreshFromReceiver) | Some(Internal::NoReceiver)
     )
+}
+
+/// Does this call take its receiver away — a `take self` method, or one of the
+/// frees this pipeline emits for itself?
+///
+/// The opposite question from `borrows_receiver`, and not its negation: a
+/// static method has no receiver at all, so both are false for it. Unaccounted
+/// for answers `false`, which leaks rather than freeing something twice.
+pub fn consumes_receiver(qualified_name: &str) -> bool {
+    if let Some(m) = declared(qualified_name) {
+        return m.takes_self && m.take_self;
+    }
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::ConsumesReceiver))
 }
 
 /// Does this call borrow its receiver rather than consume it? True for

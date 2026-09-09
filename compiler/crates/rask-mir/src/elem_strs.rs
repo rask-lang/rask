@@ -165,6 +165,20 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
     ("Shared_new", 0, 0, "Shared_drop"),
+    // The two halves of a channel. `let (tx, rx) = Channel<T>.buffered(n)`
+    // reaches MIR as the constructor plus one accessor per half, and the
+    // accessor's result is the handle — one sender, one receiver, which is
+    // what the channel's counts are initialised to. Dropping a handle closes
+    // that end, and the channel and its buffer go when both ends are gone;
+    // `rask_sender_drop` and `rask_recver_drop` have done all of that since
+    // channels were written, with nothing calling them. Seven suite files were
+    // carrying it — `t_select.rk` 74 allocations, fifteen channels' worth.
+    //
+    // The constructor itself is deliberately absent: what it hands back is the
+    // channel, which the two drops own between them.
+    ("channel_tx", 0, 0, "Sender_drop"),
+    ("channel_rx", 0, 0, "Receiver_drop"),
+    ("Sender_clone", 0, 0, "Sender_drop"),
     // A cstring owns the NUL-terminated copy it made, and it is the caller's to
     // free — that is what makes it different from `string.as_ptr()`, which
     // points into a buffer the string still holds (#949).

@@ -940,6 +940,27 @@ impl<'a> MirLowerer<'a> {
 
     /// Resolve a numeric field name on a tuple type.
     /// Returns (field_index, element_type, byte_offset, field_size).
+    /// `channel_tx` or `channel_rx` when `object.field` names one half of a
+    /// channel pair, otherwise `None`.
+    ///
+    /// The checker types `Channel<T>.buffered(n)` as `(Sender<T>, Receiver<T>)`.
+    /// MIR doesn't: what it carries is the channel, in one word, and each half
+    /// is a handle a call builds on demand.
+    fn channel_half_extractor(&self, object: &Expr, field: &str) -> Option<&'static str> {
+        let which = match field {
+            "0" => "channel_tx",
+            "1" => "channel_rx",
+            _ => return None,
+        };
+        let rask_types::Type::Tuple(elems) = self.ctx.lookup_raw_type(object.id)? else {
+            return None;
+        };
+        if elems.len() != 2 {
+            return None;
+        }
+        format!("{}", elems[0]).starts_with("Sender").then_some(which)
+    }
+
     pub(super) fn resolve_tuple_field(
         ty: &MirType,
         field: &str,
@@ -2206,6 +2227,29 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
+
+                // `let ch = Channel<T>.buffered(n)` then `ch.0`/`ch.1`. The
+                // checker types that as `(Sender<T>, Receiver<T>)` but MIR
+                // carries the channel itself in one word, so a tuple field read
+                // would load from inside the channel. The destructuring form
+                // (`let (tx, rx) = …`) has always gone through these two calls;
+                // this is the same value reached the other way.
+                //
+                // It used to work by accident: the constructor returned a
+                // 16-byte heap pair of the two handles, so `.0` and `.1` landed
+                // on them — and nothing could free that pair, because either
+                // accessor might be the last to read it. Making each accessor
+                // build its own handle is what removed it, and this is the read
+                // that has to come along.
+                if let Some(extract) = self.channel_half_extractor(object, field) {
+                    let dst = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(dst),
+                        func: FunctionRef::internal(extract.to_string()),
+                        args: vec![obj_op],
+                    }));
+                    return Ok((MirOperand::Local(dst), MirType::I64));
+                }
 
                 // Resolve field index, type, and byte offset from struct layout.
                 // byte_offset is passed to codegen so it doesn't need to re-derive

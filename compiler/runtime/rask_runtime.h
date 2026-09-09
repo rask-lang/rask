@@ -1188,9 +1188,13 @@ void rask_sender_drop(RaskSender *tx);
 void rask_recver_drop(RaskRecver *rx);
 
 // i64-based channel wrappers for codegen dispatch table.
+// `let (tx, rx) = Channel<T>.buffered(n)`: `new` hands back the channel and
+// each accessor makes the one handle of its kind. Nothing between the calls
+// owns anything, which is the point — the 16-byte pair that used to carry the
+// two handles could be freed by neither accessor and leaked once per channel.
 int64_t rask_channel_new_i64(int64_t capacity);
-int64_t rask_channel_get_tx(int64_t pair);
-int64_t rask_channel_get_rx(int64_t pair);
+int64_t rask_channel_get_tx(int64_t chan);
+int64_t rask_channel_get_rx(int64_t chan);
 int64_t rask_channel_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_recv_i64(int64_t rx);
 void    rask_sender_drop_i64(int64_t tx);

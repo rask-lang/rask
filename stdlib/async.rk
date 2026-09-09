@@ -101,9 +101,12 @@ extend Sender<T> {
     @native("rask_channel_try_send_i64")
     public func try_send(self, value: T) -> void or TrySendError {}
 
-    /// Explicitly close the sender.
+    /// Explicitly close this end. Consumes the sender: closing *is* dropping
+    /// it, and the channel closes when the last sender goes. Declaring it
+    /// `self` said the handle survived the call, so the frame dropped it a
+    /// second time on the way out — `tx.close()!` then aborted the process.
     @native("rask_sender_close_i64")
-    public func close(self) -> void or CloseError {}
+    public func close(take self) -> void or CloseError {}
 }
 
 public struct Receiver<T> { }
@@ -117,9 +120,10 @@ extend Receiver<T> {
     @native("rask_channel_try_recv_into")
     public func try_receive(self) -> T or TryReceiveError {}
 
-    /// Explicitly close the receiver.
+    /// Explicitly close this end. Consumes the receiver, for the same reason
+    /// `Sender.close` consumes the sender.
     @native("rask_recver_close_i64")
-    public func close(self) -> void or CloseError {}
+    public func close(take self) -> void or CloseError {}
 }
 
 // --- Channel errors ---

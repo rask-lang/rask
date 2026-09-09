@@ -102,6 +102,20 @@ fn env_drop_glue(
         }
     }
 
+    // What each closure body gives up by itself, by capture offset. A capture
+    // the body consumes is not the glue's to free:
+    //
+    //     spawn(own || { for i in 1..n { tx.send(i) }  tx.close() })
+    //
+    // `close` takes the sender away — closing an end *is* dropping it — so the
+    // glue freeing it again on the way out aborted the process on a double
+    // free. Nothing had noticed because until channels were released at all,
+    // no capture was both owned and consumable.
+    let consumed: HashMap<&str, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .collect();
+
     // One glue per closure *function*, because the block header holds a
     // function address and the name is all codegen has to find it by. So every
     // site that builds this closure has to agree about what its environment
@@ -111,11 +125,32 @@ fn env_drop_glue(
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
         let fresh = collect_fresh_containers_with(func, fns, handing_over, targets);
+        let reach = strict_reach(func);
+        let def_block = defining_blocks(func);
         for block in &func.blocks {
             for stmt in &block.statements {
                 let MirStmtKind::ClosureCreate { func_name, captures, heap: true, .. } = &stmt.kind
                 else {
                     continue;
+                };
+                // One create site can still run many times. A loop is how that
+                // happens, and `capturers` counts sites, so it can't see it —
+                //
+                //     for id in 0..n { spawn(own || { tx.send(x) }).detach() }
+                //
+                // handed every task's glue the same sender, and the second
+                // drop closed the channel: the tutorial's `estimate_pi` began
+                // reading "receive on closed channel". A capture *defined
+                // inside the same loop* is the opposite case and the one the
+                // glue exists for — `.map()` in a loop builds a fresh
+                // environment each turn and each closure owns its own.
+                let create_repeats = reach.get(&block.id).is_some_and(|r| r.contains(&block.id));
+                let made_each_turn = |c: &crate::ClosureCapture| {
+                    !create_repeats
+                        || def_block.get(&c.local_id).is_some_and(|d| {
+                            reach.get(&block.id).is_some_and(|r| r.contains(d))
+                                && reach.get(d).is_some_and(|r| r.contains(&block.id))
+                        })
                 };
                 let mut owned: Vec<(u32, &'static str)> = captures
                     .iter()
@@ -126,6 +161,12 @@ fn env_drop_glue(
                             .copied()
                             .unwrap_or(0)
                             == 1
+                    })
+                    .filter(|c| made_each_turn(c))
+                    .filter(|c| {
+                        !consumed
+                            .get(func_name.as_str())
+                            .is_some_and(|offs| offs.contains(&c.offset))
                     })
                     .filter_map(|c| fresh.get(&c.local_id).map(|free| (c.offset, *free)))
                     .collect();
@@ -146,6 +187,100 @@ fn env_drop_glue(
             continue;
         }
         out.push(build_env_drop(&name, first, source_file));
+    }
+    out
+}
+
+/// Which blocks each block can reach in one step or more.
+///
+/// One step *or more* is the point: a block that appears in its own set is on
+/// a cycle, which is how "this statement runs many times" is asked here.
+fn strict_reach(func: &MirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
+    let mut reach: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+    for block in &func.blocks {
+        reach.insert(
+            block.id,
+            crate::analysis::cfg::successors(&block.terminator).into_iter().collect(),
+        );
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &func.blocks {
+            let onward: HashSet<BlockId> = reach[&block.id]
+                .iter()
+                .filter_map(|s| reach.get(s))
+                .flatten()
+                .copied()
+                .collect();
+            let set = reach.get_mut(&block.id).unwrap();
+            let before = set.len();
+            set.extend(onward);
+            changed |= set.len() != before;
+        }
+    }
+    reach
+}
+
+/// Where each local is written. SSA, so one place each — a phi's destination
+/// belongs to the block holding the phi.
+fn defining_blocks(func: &MirFunction) -> HashMap<LocalId, BlockId> {
+    let mut out = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
+                out.entry(dst).or_insert(block.id);
+            }
+        }
+    }
+    out
+}
+
+/// The capture offsets this function's body takes away itself — loaded out of
+/// the environment and handed to something declared `take self`.
+///
+/// Conservative on purpose: a body that consumes a capture on only one path
+/// still counts, because the glue runs on every path and freeing twice is
+/// worse than not freeing at all.
+fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
+    // Which capture each local came from. A capture is loaded once and then
+    // copied around, so the copies have to carry the offset with them.
+    let mut from_capture: HashMap<LocalId, u32> = HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::LoadCapture { dst, offset, .. } => {
+                    if from_capture.insert(*dst, *offset).is_none() {
+                        changed = true;
+                    }
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(MirOperand::Local(src)),
+                } => {
+                    if let Some(&off) = from_capture.get(src) {
+                        if from_capture.insert(*dst, off).is_none() {
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+        if !rask_stdlib::mir_metadata::consumes_receiver(&fref.name) {
+            continue;
+        }
+        let Some(recv) = args.first().and_then(crate::analysis::uses::operand_local) else { continue };
+        if let Some(&off) = from_capture.get(&recv) {
+            out.insert(off);
+        }
     }
     out
 }
