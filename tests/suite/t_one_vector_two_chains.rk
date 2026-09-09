@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One vector, two adapter chains, one free.
+//
+// A capture is an escape, so the name holding the source is out of the frame's
+// own drops and the free rides along with the closure instead —
+// `captures_freed_with_the_closure`. That counts capturers by *local*, and
+// inlining gives each copy of a chain its own name for the same vector, so
+// each looked like the only capturer and both freed it: a double free.
+//
+// Refusing both was the first answer to that and it leaks, because nothing
+// else is going to free the source. `doubled(v)` twice left `[1, 2, 3]`
+// behind (#1148). One free per value now, placed after the last of the closure
+// drops — until then some environment still holds the handle, after it none
+// does.
+//
+// The answers matter as much as the count here: freeing the source too early
+// means the second chain reads freed memory, and freeing it twice aborts. Both
+// show up as a wrong answer or a crash rather than as a leak.
+
+func doubled(v: Vec<i64>) -> Vec<i64> {
+    return v.flat_map(|x| {
+        mut pair: Vec<i64> = []
+        pair.push(x)
+        pair.push(x * 2)
+        return pair
+    }).to_vec()
+}
+
+func tripled(v: Vec<i64>) -> Vec<i64> {
+    return v.flat_map(|x| {
+        mut out: Vec<i64> = []
+        out.push(x)
+        out.push(x)
+        out.push(x)
+        return out
+    }).to_vec()
+}
+
+test "type.sequence — one vector through the same chain twice" {
+    let v: Vec<i64> = [1, 2, 3]
+    let a = doubled(v)
+    let b = doubled(v)
+    assert a.len() == 6
+    assert b.len() == 6
+    // Read both afterwards: a source freed after the first chain would make
+    // the second one's elements garbage.
+    assert a[0] == 1
+    assert a[5] == 6
+    assert b[0] == 1
+    assert b[5] == 6
+    // And the source is still readable, which it wouldn't be if the free went
+    // in before the last chain was done with it.
+    assert v.len() == 3
+    assert v[2] == 3
+}
+
+test "type.sequence — and through two different chains" {
+    let v: Vec<i64> = [2, 4]
+    let a = doubled(v)
+    let b = tripled(v)
+    assert a.len() == 4
+    assert b.len() == 6
+    assert a[3] == 8
+    assert b[5] == 4
+    assert v[0] == 2
+}
+
+test "type.sequence — three chains over one vector" {
+    let v: Vec<i64> = [5]
+    assert doubled(v).len() == 2
+    assert tripled(v).len() == 3
+    assert doubled(v).len() == 2
+    assert v[0] == 5
+}
+
+// In a loop, so a source freed twice lands on one the next turn has already
+// reused, and a source freed too early reads as a wrong total.
+test "type.sequence — two chains per turn" {
+    mut total: usize = 0
+    for i in 1..5 {
+        let v: Vec<i64> = [i, i * 2, i * 3]
+        total = total + doubled(v).len() + tripled(v).len()
+    }
+    assert total == 60
+}
+
+// The chains inline into one frame here rather than into two, which is the
+// other way the two capture sites arise.
+test "type.sequence — both chains written inline" {
+    let v: Vec<i64> = [1, 2, 3]
+    let a = v.flat_map(|x| {
+        mut pair: Vec<i64> = []
+        pair.push(x)
+        pair.push(x * 2)
+        return pair
+    }).to_vec()
+    let b = v.flat_map(|x| {
+        mut one: Vec<i64> = []
+        one.push(x * 10)
+        return one
+    }).to_vec()
+    assert a.len() == 6
+    assert b.len() == 3
+    assert b[2] == 30
+    assert v.len() == 3
+}

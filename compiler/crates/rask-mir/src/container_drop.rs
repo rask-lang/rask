@@ -804,20 +804,7 @@ fn insert_for_function(
             None => true,
         }
     });
-    {
-        let mut seen_group: HashMap<usize, usize> = HashMap::new();
-        for (_, _, local, _) in &with_closure {
-            if let Some(gi) = groups.iter().position(|g| g.contains(local)) {
-                *seen_group.entry(gi).or_default() += 1;
-            }
-        }
-        with_closure.retain(|(_, _, local, _)| {
-            groups
-                .iter()
-                .position(|g| g.contains(local))
-                .is_none_or(|gi| seen_group.get(&gi).copied().unwrap_or(0) == 1)
-        });
-    }
+    with_closure = one_free_per_group(func, with_closure, &groups);
 
     if !droppable.is_empty() {
         insert_drops(func, &droppable, &groups, &consumed);
@@ -901,6 +888,72 @@ fn captures_freed_with_the_closure(
         }
     }
     out
+}
+
+/// One free per value, however many closures hold it.
+///
+/// Two chains over one vector give each copy its own name, so each looks like
+/// the only capturer and both got a free — a double free. Refusing both was the
+/// first answer and it leaks: nothing else frees the source, because a capture
+/// is an escape and the name is already out of `droppable`. `doubled(v)` twice
+/// leaked `[1, 2, 3]` (#1148).
+///
+/// The free belongs after the *last* of the closure drops. Until then some
+/// environment still holds the handle; after it, none does. So a group whose
+/// drops all sit in one block keeps the entry that comes last there.
+///
+/// Drops spread across blocks keep none, which is the old answer. Whether one
+/// runs after the other is a dominance question and the two can be arms of a
+/// branch, where neither does — and picking wrong there is the double free
+/// this exists to avoid.
+fn one_free_per_group(
+    func: &MirFunction,
+    with_closure: Vec<(LocalId, u32, LocalId, &'static str)>,
+    groups: &[HashSet<LocalId>],
+) -> Vec<(LocalId, u32, LocalId, &'static str)> {
+    // Where each closure is dropped, by the last `closure_drop` naming it.
+    let mut dropped_at: HashMap<LocalId, (usize, usize)> = HashMap::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let MirStmtKind::ClosureDrop { closure } = &stmt.kind {
+                dropped_at.insert(*closure, (bi, si));
+            }
+        }
+    }
+
+    let mut per_group: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut ungrouped: Vec<usize> = Vec::new();
+    for (i, (_, _, local, _)) in with_closure.iter().enumerate() {
+        match groups.iter().position(|g| g.contains(local)) {
+            Some(gi) => per_group.entry(gi).or_default().push(i),
+            None => ungrouped.push(i),
+        }
+    }
+
+    let mut keep: HashSet<usize> = ungrouped.into_iter().collect();
+    for (_, entries) in per_group {
+        if entries.len() == 1 {
+            keep.insert(entries[0]);
+            continue;
+        }
+        let sites: Option<Vec<(usize, usize, usize)>> = entries
+            .iter()
+            .map(|&i| dropped_at.get(&with_closure[i].0).map(|&(b, s)| (b, s, i)))
+            .collect();
+        let Some(mut sites) = sites else { continue };
+        if sites.iter().any(|(b, _, _)| *b != sites[0].0) {
+            continue;
+        }
+        sites.sort();
+        keep.insert(sites.last().expect("non-empty").2);
+    }
+
+    with_closure
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(_, e)| e)
+        .collect()
 }
 
 /// Free each of those captures right after the `closure_drop` that ends the
