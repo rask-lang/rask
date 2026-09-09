@@ -78,7 +78,12 @@
 # its own wrapper, and once that function is inlined the whole trip is one
 # frame's: stored into an aggregate, moved with it, read out again under a new
 # name. That last name owns the box (`t_any_error_boxing.rk` 4 → 2,
-# `t_bare_error_type.rk` 3 → 1).
+# `t_bare_error_type.rk` 3 → 1), and 268 once a string handed back by a trait
+# call got released. MIR has three kinds of call — direct, through a closure,
+# through a vtable — and the elision pass's test for "did this frame take this
+# reference itself" listed only the direct one, so `n.label()` on a boxed value
+# came back with a reference nobody gave back (#1145,
+# `t_module_qualified_variants.rk` clean).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -139,7 +144,7 @@ t42_flatten_shaped_header.rk  # 9 allocations — flatten's per-element inner se
 t62_trait_object_positions.rk  # 1 allocation
 t65_vec_of_trait_objects.rk  # 10 allocations
 t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
-t_any_error_boxing.rk  # 2 allocations
+t_any_error_boxing.rk  # 1 allocation
 t_atomic_across_tasks.rk  # 6 allocations
 t_bare_error_type.rk  # 1 allocation
 t_borrow_param_consume.rk  # 2 allocations
@@ -157,7 +162,6 @@ t_debug_renders_containers.rk  # 2 allocations
 t_io_buffer.rk  # 17 allocations
 t_json_decode.rk  # 6 allocations
 t_local_box_payload.rk  # 1 allocation
-t_module_qualified_variants.rk  # 1 allocation — trait boxes again
 t_month_atomics.rk  # 8 allocations
 t_month_borrowing.rk  # 1 allocation
 t_month_boxes.rk  # 6 allocations

@@ -41,6 +41,19 @@ pub fn elide_rc_ops(func: &mut MirFunction) {
 /// Owned-from-elsewhere: anything but a copy of another string local or a
 /// string constant. Being wrong in that direction costs an RC pair; being wrong
 /// the other way costs the buffer.
+///
+/// A call is the shape that hands one over, and MIR has three kinds of call:
+/// direct, through a closure, and through a vtable. Only the direct one was
+/// listed. So `n.label()` on a trait object came back with a reference nobody
+/// released, and every boxed value with a string field leaked it (#1145).
+///
+/// This list is call kinds and not "everything that isn't a copy" on purpose. A
+/// `Phi` and a `LoadCapture` also write a string local without a copy, and
+/// `rc_insert` gives neither one an increment — a phi renames a value at a
+/// merge and a capture read looks into the closure's environment. Calling
+/// those owned keeps a release with no retain behind it, which frees the
+/// buffer under whoever still holds it: `words.filter(…)` joined its elements
+/// out of freed memory.
 fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
     // Not parameters: those are borrowed from the caller, which keeps its own
     // reference. `rc_insert` gives them no release for the same reason, and the
@@ -61,8 +74,13 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                         owned.insert(*dst);
                     }
                 }
-                // A call writing into a string local hands over its reference.
-                MirStmtKind::Call { dst: Some(dst), .. } if string_locals.contains(dst) => {
+                // A call writing into a string local hands over its reference —
+                // all three ways of calling something, not just the direct one.
+                MirStmtKind::Call { dst: Some(dst), .. }
+                | MirStmtKind::ClosureCall { dst: Some(dst), .. }
+                | MirStmtKind::TraitCall { dst: Some(dst), .. }
+                    if string_locals.contains(dst) =>
+                {
                     owned.insert(*dst);
                 }
                 _ => {}
