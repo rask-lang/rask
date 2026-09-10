@@ -1999,13 +1999,12 @@ impl Parser {
             } else {
                 let err = self.trait_body_error();
                 if !self.record_error(err) { break; }
-                self.synchronize_to_next_method();
+                self.synchronize_to_next_trait_member();
             }
             self.skip_newlines();
-            // Nothing above consumed a token — advance rather than spin. Reachable
-            // when synchronize_to_next_method returns on the offending token
-            // itself (`public`, `@`), which it treats as a method start. Skip
-            // newlines after, or the terminator becomes a second error.
+            // Backstop against a hang: nothing above consumed a token. The
+            // synchronize should always move, but a spin is the one failure
+            // mode here worth being certain about.
             if self.pos == saved_pos && !self.at_end() {
                 self.advance();
                 self.skip_newlines();
@@ -2014,6 +2013,45 @@ impl Parser {
 
         self.expect(&TokenKind::RBrace)?;
         Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, attrs, doc }))
+    }
+
+    /// Skip the rest of a malformed trait-body member: to the newline that ends
+    /// it, or to the closing brace.
+    ///
+    /// `synchronize_to_next_method` can't do this job. It stops on `@`, `public`
+    /// and friends without moving, because in an impl block those legitimately
+    /// start the next method — a trait body allows none of them. So recovery
+    /// from `@allow(dead_code)` advanced a single token, landed on `allow`, and
+    /// the shorthand branch parsed `allow(dead_code)` as a method signature:
+    /// untyped params are legal (GC1), so it succeeded and invented a trait
+    /// method nobody wrote. A conformer providing exactly the real methods was
+    /// then told it was missing `allow` — the same wrong-blame this whole change
+    /// set is about.
+    ///
+    /// A member is one line, or one braced block, so the line is the unit to
+    /// skip. Brace depth carries `struct Nested { a: i64 }` past its own
+    /// newlines.
+    fn synchronize_to_next_trait_member(&mut self) {
+        let mut brace_depth: i32 = 0;
+        while !self.at_end() {
+            match self.current_kind() {
+                TokenKind::LBrace => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                TokenKind::RBrace if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    self.advance();
+                }
+                // The body's own closing brace — the caller's loop ends on it.
+                TokenKind::RBrace => return,
+                TokenKind::Newline if brace_depth == 0 => {
+                    self.advance();
+                    return;
+                }
+                _ => { self.advance(); }
+            }
+        }
     }
 
     /// A trait body holds method signatures and nothing else. `type` gets its own
