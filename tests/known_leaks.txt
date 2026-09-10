@@ -273,6 +273,7 @@ t_capture_freed_with_its_closure.rk  # 2 allocations — two strings the chain's
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
+t_closure_heap_string_capture.rk  # 1 allocation — a string overwritten through a by-ref capture, never released (#1162)
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a

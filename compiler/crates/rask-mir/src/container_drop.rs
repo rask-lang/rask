@@ -65,6 +65,24 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
 /// the only thing the two sides need to agree on.
 pub const ENV_DROP_SUFFIX: &str = "__env_drop";
 
+/// One slot of a closure environment that the environment itself has to give
+/// back, and how.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct EnvSlot {
+    offset: u32,
+    holds: Holds,
+}
+
+/// What lives in the slot — which decides how the glue reaches it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Holds {
+    /// A container handle: one word, and the free takes it by value.
+    Handle(&'static str),
+    /// A string: the 16-byte value sits in the slot, so the release takes the
+    /// slot's address.
+    Str,
+}
+
 /// One function per closure that *owns* a container it captured, freeing what
 /// the environment holds.
 ///
@@ -121,7 +139,7 @@ fn env_drop_glue(
     // site that builds this closure has to agree about what its environment
     // owns — inlining copies a create site into each caller, and a site that
     // owns nothing must not get a glue that frees something.
-    let mut answers: HashMap<String, Vec<Vec<(u32, &'static str)>>> = HashMap::new();
+    let mut answers: HashMap<String, Vec<Vec<EnvSlot>>> = HashMap::new();
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
         let fresh = collect_fresh_containers_with(func, fns, handing_over, targets);
@@ -163,7 +181,12 @@ fn env_drop_glue(
                                 && reach.get(d).is_some_and(|r| r.contains(&block.id))
                         })
                 };
-                let mut owned: Vec<(u32, &'static str)> = captures
+                let gone = |c: &crate::ClosureCapture| {
+                    consumed
+                        .get(func_name.as_str())
+                        .is_some_and(|offs| offs.contains(&c.offset))
+                };
+                let mut owned: Vec<EnvSlot> = captures
                     .iter()
                     .filter(|c| !c.by_ref)
                     .filter(|c| {
@@ -175,13 +198,29 @@ fn env_drop_glue(
                     })
                     .filter(|c| made_each_turn(c))
                     .filter(|c| !frame_frees.contains(&(*dst, c.offset)))
-                    .filter(|c| {
-                        !consumed
-                            .get(func_name.as_str())
-                            .is_some_and(|offs| offs.contains(&c.offset))
+                    .filter(|c| !gone(c))
+                    .filter_map(|c| {
+                        fresh.get(&c.local_id).map(|free| EnvSlot {
+                            offset: c.offset,
+                            holds: Holds::Handle(free),
+                        })
                     })
-                    .filter_map(|c| fresh.get(&c.local_id).map(|free| (c.offset, *free)))
                     .collect();
+                // A string capture needs none of the reasoning above. The
+                // environment holds a *reference* — `rc_insert` retains it at
+                // the create — so however many closures capture the same string
+                // and however many turns of a loop build one, each has its own
+                // count and gives back exactly its own. That is the whole
+                // difference from a container, where the handle is the thing
+                // itself and two owners is a double free.
+                owned.extend(
+                    captures
+                        .iter()
+                        .filter(|c| !c.by_ref)
+                        .filter(|c| !gone(c))
+                        .filter(|c| func.local_ty(c.local_id) == Some(&MirType::String))
+                        .map(|c| EnvSlot { offset: c.offset, holds: Holds::Str }),
+                );
                 owned.sort();
                 if !answers.contains_key(func_name) {
                     order.push((func_name.clone(), func.source_file.clone()));
@@ -297,26 +336,28 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
-/// `<closure>__env_drop(env: ptr)` — load each owned container out of the
-/// environment and free it.
+/// `<closure>__env_drop(env: ptr)` — give back everything the environment owns.
 ///
 /// `LoadCapture` is the same statement the closure's own body reads a capture
-/// with, so the offsets can't drift from how they were written.
+/// with, so the offsets can't drift from how they were written. Which access it
+/// asks for is what the two kinds of slot differ in: a handle is loaded out of
+/// the slot, a string *is* the slot and the release takes its address.
 fn build_env_drop(
     closure_name: &str,
-    owned: &[(u32, &'static str)],
+    owned: &[EnvSlot],
     source_file: Option<String>,
 ) -> MirFunction {
     let env = LocalId(0);
-    let mut locals = vec![crate::MirLocal {
+    let param = crate::MirLocal {
         id: env,
         name: Some("__env".to_string()),
         ty: MirType::Ptr,
         is_param: true,
         container: None,
-    }];
+    };
+    let mut locals = vec![param.clone()];
     let mut statements = Vec::new();
-    for (i, (offset, free)) in owned.iter().enumerate() {
+    for (i, slot) in owned.iter().enumerate() {
         let held = LocalId(i as u32 + 1);
         locals.push(crate::MirLocal {
             id: held,
@@ -325,11 +366,15 @@ fn build_env_drop(
             is_param: false,
             container: None,
         });
+        let (access, free) = match slot.holds {
+            Holds::Handle(free) => (crate::CaptureAccess::Value, free),
+            Holds::Str => (crate::CaptureAccess::Owned, "rask_string_free"),
+        };
         statements.push(MirStmt::dummy(MirStmtKind::LoadCapture {
             dst: held,
             env_ptr: env,
-            offset: *offset,
-            access: crate::CaptureAccess::Value,
+            offset: slot.offset,
+            access,
         }));
         statements.push(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
@@ -340,13 +385,7 @@ fn build_env_drop(
     let entry = BlockId(0);
     MirFunction {
         name: format!("{closure_name}{ENV_DROP_SUFFIX}"),
-        params: vec![crate::MirLocal {
-            id: env,
-            name: Some("__env".to_string()),
-            ty: MirType::Ptr,
-            is_param: true,
-            container: None,
-        }],
+        params: vec![param],
         ret_ty: MirType::Void,
         locals,
         blocks: vec![MirBlock {

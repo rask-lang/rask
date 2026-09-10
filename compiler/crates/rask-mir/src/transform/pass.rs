@@ -90,7 +90,11 @@ impl PassManager {
     pub fn default_pipeline() -> Self {
         let mut pm = Self::new();
         // Cross-function passes (sequential) — PC2
-        pm.add(ClosureOptimizationPass);
+        //
+        // The stack/heap decision is not here: `addr_taken::run_all` makes it
+        // before SSA, because the borrow-withdrawal it does there needs the
+        // answer (see its doc). It used to be this pass, first in line, with
+        // nothing between the two.
         pm.add(InliningPass);
         // After inlining, deliberately: it may already have given a call site
         // its own copy of the adapter, and specializing what is left is
@@ -146,16 +150,6 @@ impl MirPass for ContainerDropInsertionPass {
     fn name(&self) -> &str { "container_drop_insertion" }
     fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::insert_container_drops(fns);
-    }
-}
-
-/// Cross-function closure escape analysis and stack/heap allocation decisions.
-pub struct ClosureOptimizationPass;
-
-impl MirPass for ClosureOptimizationPass {
-    fn name(&self) -> &str { "closure_optimization" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::optimize_all_closures(fns);
     }
 }
 

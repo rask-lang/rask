@@ -196,113 +196,35 @@ pub fn unprepared_capture(func: &MirFunction) -> Option<LocalId> {
 /// data or a pointer to it" — its own doc records what went wrong when callers
 /// spelled out their own lists instead.
 fn is_scalar(func: &MirFunction, id: LocalId) -> bool {
-    local_ty(func, id).is_some_and(|ty| !ty.passed_by_address() && *ty != MirType::Void)
+    func.local_ty(id).is_some_and(|ty| !ty.passed_by_address() && *ty != MirType::Void)
 }
 
-fn local_ty(func: &MirFunction, id: LocalId) -> Option<&MirType> {
-    func.locals
-        .iter()
-        .chain(func.params.iter())
-        .find(|l| l.id == id)
-        .map(|l| &l.ty)
-}
-
-/// Prepare every function: withdraw the borrow from closures that outlive the
-/// frame they were built in, then make the remaining captured scalars
-/// memory-resident.
+/// Settle the closure-environment questions that have to be answered before
+/// SSA, then make the remaining captured scalars memory-resident.
 ///
-/// The withdrawal has to happen across the whole program, because the flag
-/// lives in two places that must agree — the `ClosureCreate` that builds the
-/// environment and the `LoadCapture`s in the closure's own function, which is
-/// a separate `MirFunction`.
+/// Three steps, in this order and for this reason:
+///
+///   1. Decide stack or heap for every environment. It is the first thing
+///      because step 2 reads the answer: whether a capture may stay a borrow
+///      turns on whether the *other* closure holding it escapes.
+///   2. Withdraw the borrow from closures the frame hands on. Whole-program,
+///      because the flag lives in two places that must agree — the
+///      `ClosureCreate` that builds the environment and the `LoadCapture`s in
+///      the closure's own function, which is a separate `MirFunction`.
+///   3. Rewrite the still-borrowed scalars into loads and stores, per function.
+///
+/// Step 1 used to be the pipeline's first pass, which ran after this. Nothing
+/// else sat between them, so moving it here changes only what step 2 gets to
+/// read.
 pub fn run_all(fns: &mut [MirFunction]) {
-    let by_value = closures_outliving_their_frame(fns);
+    crate::optimize_all_closures(fns);
+    let by_value = crate::closures::closures_handed_on(fns);
     if !by_value.is_empty() {
         withdraw_borrows(fns, &by_value);
     }
     for func in fns.iter_mut() {
         run(func);
     }
-}
-
-/// Closure functions whose environment may outlive the frame that built it.
-///
-/// Borrowing is only safe while the frame the addresses point into is alive.
-/// `func adder(k: i32) -> func(i32) -> i32 { return |x| x + k }` hands its
-/// environment to the caller, so `k`'s address is stale the moment `adder`
-/// returns — those captures have to be copies.
-///
-/// Conservative: a closure the function returns, stores through a pointer, puts
-/// in an array, or boxes as a trait object loses its borrow. One passed to a
-/// call keeps it, which is what the sequence protocol needs — `seq(|x| { … })`
-/// hands the closure to something that only calls it, and that is the shape
-/// every `for` loop over a sequence lowers to.
-///
-/// A closure that escapes is separately unsound today: lowering marks only
-/// `own` closures as heap, so a returned scope-limited closure is stack
-/// allocated and dangles whether its captures are copies or addresses (#1045).
-/// This keeps such a program behaving as it did rather than making it worse.
-fn closures_outliving_their_frame(fns: &[MirFunction]) -> HashSet<String> {
-    let mut escaping = HashSet::new();
-
-    for func in fns {
-        // Which closure function each local holds, following plain copies —
-        // lowering routinely assigns the `ClosureCreate` result on before
-        // returning it, and reading only the original destination missed that.
-        let mut holds: Vec<(LocalId, String)> = Vec::new();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for block in &func.blocks {
-                for stmt in &block.statements {
-                    let (dst, name) = match &stmt.kind {
-                        MirStmtKind::ClosureCreate { dst, func_name, captures, .. }
-                            if captures.iter().any(|c| c.by_ref) =>
-                        {
-                            (*dst, func_name.clone())
-                        }
-                        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
-                            match holds.iter().find(|(id, _)| id == src) {
-                                Some((_, name)) => (*dst, name.clone()),
-                                None => continue,
-                            }
-                        }
-                        _ => continue,
-                    };
-                    if !holds.iter().any(|(id, n)| *id == dst && *n == name) {
-                        holds.push((dst, name));
-                        changed = true;
-                    }
-                }
-            }
-        }
-        if holds.is_empty() {
-            continue;
-        }
-        let held_by = |id: LocalId| holds.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone());
-
-        for block in &func.blocks {
-            for stmt in &block.statements {
-                let leaked = match &stmt.kind {
-                    MirStmtKind::Store { value: MirOperand::Local(id), .. }
-                    | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
-                    | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => held_by(*id),
-                    _ => None,
-                };
-                escaping.extend(leaked);
-            }
-            let returned = match &block.terminator.kind {
-                crate::MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-                | crate::MirTerminatorKind::CleanupReturn {
-                    value: Some(MirOperand::Local(id)), ..
-                } => held_by(*id),
-                _ => None,
-            };
-            escaping.extend(returned);
-        }
-    }
-
-    escaping
 }
 
 /// Turn the named closures' captures back into copies, on both sides.

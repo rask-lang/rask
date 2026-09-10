@@ -146,6 +146,31 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                     )));
                 }
 
+                // Copied into a heap closure's environment, which is the same
+                // thing one step further out: the environment can outlive this
+                // frame, so its copy needs a reference of its own. The release
+                // is in the environment's drop glue
+                // (`container_drop::env_drop_glue`).
+                //
+                // Without the retain, the dec at the string's last use — which
+                // *is* this statement, nothing after it names the string — freed
+                // the buffer while the closure still pointed at it, and
+                // `fns.push(|x| "{prefix}:{x}")` printed an empty line (#1160).
+                //
+                // A stack environment needs neither: it dies with the frame, so
+                // the frame's own reference covers it, and it has no glue to
+                // release from.
+                MirStmtKind::ClosureCreate { captures, heap: true, .. } => {
+                    for cap in captures.iter().filter(|c| !c.by_ref) {
+                        if string_set.contains(&cap.local_id) {
+                            insertions.push((si, MirStmt::new(
+                                MirStmtKind::RcInc { local: cap.local_id },
+                                stmt.span,
+                            )));
+                        }
+                    }
+                }
+
                 _ => {}
             }
 
