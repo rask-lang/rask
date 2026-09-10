@@ -146,7 +146,16 @@
 # `t_vec_element_returns.rk` with it — `Vec.remove`/`Vec.pop` hand an element
 # out into a name a loop then writes over, which is the same shape).
 #
-# 148 across 38 files as of this line. Two of them are `t_heap_box_dropped.rk`,
+# And 134 once the frame owned a boxed value's contents rather than the box.
+# `TraitBox` copies the value shallowly, so the box and the frame's own local
+# hold the same container handle, and two boxes of one value hold it twice — a
+# free has to happen exactly once, and the box is not a place where "exactly
+# once" can be arranged. Calling the boxing a hand-over left the contents to
+# the box's drop glue, which can't do it. `TraitDrop` is to a box what
+# `ClosureDrop` is to a closure, so its presence is the answer to "does the
+# frame outlive this box" (#1144, `t_io_buffer.rk` 17 → 3).
+#
+# 134 across 38 files as of this line. Two of them are `t_heap_box_dropped.rk`,
 # written for the `drop` fix and left on the list because a freed box says
 # nothing about the string and the vector inside it (#1144).
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
@@ -206,6 +215,7 @@ t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is t
 t_any_error_boxing.rk  # 1 allocation
 t_bare_error_type.rk  # 1 allocation
 t_borrow_param_consume.rk  # 2 allocations
+t_boxed_value_contents.rk  # 22 allocations — a box the frame doesn't drop, #1144's remaining half
 t_capture_freed_with_its_closure.rk  # 2 allocations — the string chain's per-element sequences, #1045
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — a chain's intermediate environments, #1045
@@ -216,7 +226,7 @@ t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee
 t_container_ownership.rk  # 1 allocation
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_debug_renders_containers.rk  # 2 allocations
-t_io_buffer.rk  # 17 allocations
+t_io_buffer.rk  # 3 allocations — a box the frame doesn't drop, #1144's remaining half
 t_json_decode.rk  # 6 allocations
 t_heap_box_dropped.rk  # 2 allocations — the string and the vector inside a boxed payload, #1144
 t_month_panic_observed.rk  # 9 allocations

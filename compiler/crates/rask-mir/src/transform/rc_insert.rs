@@ -411,6 +411,82 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     }
     let holds_one: HashSet<LocalId> = holding_closures.iter().map(|(c, _)| *c).collect();
 
+    // A trait box the frame drops doesn't take the value away either, and for
+    // the same reason: `TraitDrop` is what `trait_drop` emits for a box the
+    // frame owns, this pass runs after it, so the drop's presence answers "does
+    // the frame outlive this box".
+    //
+    // The frame owns a boxed value's contents; the box borrows them
+    // (mem.boxes, #1144). `TraitBox` copies the value *shallowly*, so the box
+    // and the frame's own local hold the same container handle, and two boxes
+    // of one value hold it twice — a free has to happen exactly once and the
+    // box is not a place where "exactly once" can be arranged. Calling the
+    // boxing a hand-over left the contents to the box's drop glue, which can't
+    // do it; so the frame keeps them, one release however many boxes exist.
+    //
+    // A box the frame *doesn't* drop can outlive the frame, and releasing then
+    // is a use-after-free rather than a leak — so that one still blocks.
+    let dropped_boxes: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::TraitDrop { trait_object } => Some(*trait_object),
+            _ => None,
+        })
+        .collect();
+    // The drop is rarely on the boxing site's own name. Inlining copies the box
+    // into the callee's parameter local and the drop lands there, so
+    // `describe_one(one)` boxes into `_22` and drops `_32`. Follow the copies
+    // forward from the box and ask whether any name it reaches is dropped.
+    let mut copied_into: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } =
+            &stmt.kind
+        {
+            copied_into.entry(*src).or_default().push(*dst);
+        }
+    }
+    // Every name the box reaches that the frame drops. The *dropped* name is
+    // what has to hold the group live, not the boxing site's: `_22`'s last use
+    // is the copy into `_32`, so registering `_22` put the release after the
+    // first `TraitDrop` while a later box of the same value was still reading
+    // it — `two.counts.len()` came back 12209367259287946116.
+    let drops_reached = |start: LocalId| {
+        let mut seen: HashSet<LocalId> = HashSet::new();
+        let mut found: Vec<LocalId> = Vec::new();
+        let mut frontier = vec![start];
+        while let Some(id) = frontier.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if dropped_boxes.contains(&id) {
+                found.push(id);
+            }
+            if let Some(next) = copied_into.get(&id) {
+                frontier.extend(next.iter().copied());
+            }
+        }
+        found
+    };
+    let mut holding_boxes: Vec<(LocalId, LocalId)> = Vec::new();
+    let mut boxes_one: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::TraitBox { dst, value, .. } = &stmt.kind else { continue };
+        let dropped = drops_reached(*dst);
+        if dropped.is_empty() {
+            continue;
+        }
+        if let Some(id) = uses::operand_local(value) {
+            if aggregates.contains(&id) {
+                boxes_one.insert(*dst);
+                for d in dropped {
+                    holding_boxes.push((d, id));
+                }
+            }
+        }
+    }
+
     // One group per value. SSA renames an aggregate at every copy, and a
     // payload read out of a wrapper names the same bytes rather than copying
     // them — so `r`, `r.0`, and every SSA name of either are one thing that
@@ -428,8 +504,12 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     // Neither a handle nor a view is a name the release can walk — the release
     // takes an aggregate apart field by field, and both of these point *into*
     // one.
-    let not_a_name =
-        |l: &LocalId| handles.contains_key(l) || views.contains_key(l) || holds_one.contains(l);
+    let not_a_name = |l: &LocalId| {
+        handles.contains_key(l)
+            || views.contains_key(l)
+            || holds_one.contains(l)
+            || boxes_one.contains(l)
+    };
 
     /// The aggregate a chain of views and handles ultimately reads out of.
     fn resolve_root(
@@ -596,8 +676,19 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         }
                     }
                 }
-                MirStmtKind::ArrayStore { value, .. }
-                | MirStmtKind::TraitBox { value, .. } => {
+                MirStmtKind::ArrayStore { value, .. } => {
+                    if let Some(id) = uses::operand_local(value) {
+                        block_local(&mut blocked, &id);
+                    }
+                }
+                // A box the frame drops leaves the value the frame's — see
+                // `holding_boxes` above. One it doesn't own can outlive the
+                // frame, so that still blocks.
+                MirStmtKind::TraitBox { dst, value, .. } => {
+                    if boxes_one.contains(dst) {
+                        continue;
+                    }
+                    let _ = dst;
                     if let Some(id) = uses::operand_local(value) {
                         block_local(&mut blocked, &id);
                     }
@@ -682,6 +773,15 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
             if let Some(&gi) = member_of.get(&root) {
                 if !groups[gi].contains(local) {
                     reaches[gi].insert(*local);
+                }
+            }
+        }
+        // And a trait box holding one of the group's names, so the group stays
+        // live until the `TraitDrop` and the release lands after it.
+        for (boxed, member) in &holding_boxes {
+            if let Some(&gi) = member_of.get(member) {
+                if !groups[gi].contains(boxed) {
+                    reaches[gi].insert(*boxed);
                 }
             }
         }

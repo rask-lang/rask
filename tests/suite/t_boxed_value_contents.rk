@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The frame owns a boxed value's contents; the box borrows them.
+//
+// A `Vec`, `Map` or box field inside a value boxed as `any Trait` was freed by
+// nobody. `io.copy(src, dst)` on two `io.Buffer`s leaked both buffers' vectors
+// and both of their read positions — `t_io_buffer.rk` was 17 allocations and
+// this is most of them.
+//
+// The obvious fix is a two-line change to the vtable's drop glue and it double
+// frees. `TraitBox` copies the value *shallowly*, so the box and the frame's
+// own local hold the same container handle, and two boxes of one value hold it
+// twice. A string field survives that because its release is a decrement,
+// right whoever holds one; a container's release is a free, so it has to happen
+// exactly once and the box is not a place where "exactly once" can be
+// arranged.
+//
+// So the frame keeps them: one release however many boxes exist. `TraitDrop` is
+// to a box what `ClosureDrop` is to a closure, and this runs after the pass
+// that emits it, so the drop's presence is the answer to "does the frame
+// outlive this box".
+//
+// The answers are what this file pins, not the counts, and it is on
+// `known_leaks.txt` for the counts. Two halves, and only one is done: where the
+// frame drops the box, the contents come back — `io.copy(src, dst)` is that
+// shape and `t_io_buffer.rk` went 17 → 3. Where it doesn't, they still leak,
+// and a bare `through_a_box(h)` below is that shape.
+//
+// So what these guard is the half that is easy to get wrong in the other
+// direction. A release placed after the *first* box's drop, while a later box
+// of the same value is still reading, gives a wrong length rather than a leak:
+// `two.counts.len()` came back 12209367259287946116 on the way here, and every
+// assertion below would have caught it.
+//
+// Spec: mem.boxes — a box's contents belong to whoever outlives it.
+
+trait Describes {
+    func describe(self) -> string
+}
+
+// A container and a string beside each other, so the release walks a whole
+// aggregate rather than one field.
+struct Holder {
+    public label: string
+    public counts: Vec<i64>
+}
+
+extend Holder with Describes {
+    public func describe(self) -> string {
+        return "{self.label}:{self.counts.len()}"
+    }
+}
+
+// Two containers, so one field being right isn't the whole answer.
+struct Ledger {
+    public name: string
+    public amounts: Vec<i64>
+    public tags: Vec<string>
+}
+
+extend Ledger with Describes {
+    public func describe(self) -> string {
+        return "{self.name}:{self.amounts.len()}:{self.tags.len()}"
+    }
+}
+
+func through_a_box(d: any Describes) -> string {
+    return d.describe()
+}
+
+func two_boxes(a: any Describes, b: any Describes) -> string {
+    return "{a.describe()}|{b.describe()}"
+}
+
+test "mem.boxes — a container field read through a box" {
+    let h = Holder {
+        label: "a label long enough to allocate its own buffer",
+        counts: [1, 2, 3],
+    }
+    assert through_a_box(h) == "a label long enough to allocate its own buffer:3"
+    // And still readable afterwards: the box borrowed it.
+    assert h.counts.len() == 3
+    assert h.counts[2] == 3
+}
+
+// The shape that double-freed. One value, two boxes alive at once.
+test "mem.boxes — one value in two boxes at once" {
+    let h = Holder {
+        label: "the shared label, long enough to allocate",
+        counts: [4, 5],
+    }
+    assert two_boxes(h, h) == "the shared label, long enough to allocate:2|the shared label, long enough to allocate:2"
+    assert h.counts.len() == 2
+}
+
+// Boxed again after a box of it has already died. A release that ran at the
+// first drop makes this one read freed bytes.
+test "mem.boxes — boxed again after the first box died" {
+    let h = Holder {
+        label: "the reused label, long enough to allocate",
+        counts: [6, 7, 8, 9],
+    }
+    assert through_a_box(h) == "the reused label, long enough to allocate:4"
+    assert through_a_box(h) == "the reused label, long enough to allocate:4"
+    assert through_a_box(h) == "the reused label, long enough to allocate:4"
+    assert h.counts[3] == 9
+}
+
+// Two different values, one box each, so the releases don't get confused about
+// which group they belong to.
+test "mem.boxes — two values, a box each" {
+    let a = Holder { label: "the a label, long enough to allocate", counts: [1] }
+    let b = Holder { label: "the b label, long enough to allocate", counts: [2, 3] }
+    assert two_boxes(a, b) == "the a label, long enough to allocate:1|the b label, long enough to allocate:2"
+    assert a.counts.len() == 1
+    assert b.counts.len() == 2
+}
+
+test "mem.boxes — two container fields behind one box" {
+    let l = Ledger {
+        name: "the ledger's name, long enough to allocate",
+        amounts: [10, 20, 30],
+        tags: ["one tag long enough to allocate", "and a second, also long"],
+    }
+    assert through_a_box(l) == "the ledger's name, long enough to allocate:3:2"
+    assert l.amounts[2] == 30
+    assert l.tags[1] == "and a second, also long"
+}
+
+// In a loop, so a value released twice lands on one the next turn has reused.
+test "mem.boxes — a boxed value per turn" {
+    mut total: usize = 0
+    for i in 1..5 {
+        let h = Holder { label: "turn {i}, long enough to allocate a buffer", counts: [i, i * 2] }
+        total = total + through_a_box(h).len()
+        assert h.counts.len() == 2
+    }
+    assert total == 168
+}
+
+func main() {}
