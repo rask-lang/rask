@@ -20,7 +20,8 @@
 //!   2            the element *is* a Vec
 //!   3            the element *is* a Map
 //!   4            the element *is* a closure — a pointer to its block
-//!   5 + index    a struct with that layout
+//!   5            the element *is* a trait box — a `[data, vtable]` fat pointer
+//!   6 + index    a struct with that layout
 
 use crate::MirType;
 
@@ -33,7 +34,16 @@ pub const ELEM_MAP: i64 = 3;
 /// header words before the pointer, so releasing one needs nothing
 /// type-specific and retaining one is a count on the same header (#1149).
 pub const ELEM_CLOSURE: i64 = 4;
-pub const ELEM_STRUCT_BASE: i64 = 5;
+/// The element is a trait box: a `[data, vtable]` fat pointer whose `data`
+/// block the container has to free. The block's size is the vtable's first
+/// word, so releasing one needs nothing generated either (#1149).
+///
+/// Its *contents* are a separate question with no answer yet: a box in a
+/// container has no frame outliving it, and #1144's rule is that the frame owns
+/// them. So this frees the block and leaves what the value holds — which is
+/// what happened to every box before, minus the block.
+pub const ELEM_TRAITBOX: i64 = 5;
+pub const ELEM_STRUCT_BASE: i64 = 6;
 /// An enum element: `ELEM_ENUM_BASE - index` into the enum layouts.
 ///
 /// Below zero because the struct range grows upward without a bound. Where an
@@ -106,6 +116,7 @@ pub fn tag_of(ty: Option<&MirType>) -> i64 {
         // describable as offsets inside the element: the element *is* the
         // pointer. So it gets its own kind rather than a struct layout.
         Some(MirType::FuncPtr(_)) => ELEM_CLOSURE,
+        Some(MirType::TraitObject { .. }) => ELEM_TRAITBOX,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
         Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
         _ => ELEM_NONE,

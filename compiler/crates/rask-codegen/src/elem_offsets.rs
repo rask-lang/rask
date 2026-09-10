@@ -22,7 +22,8 @@
 //! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
 
 use rask_mir::elem_strs::{
-    ELEM_CLOSURE, ELEM_ENUM_BASE, ELEM_MAP, ELEM_STRING, ELEM_STRUCT_BASE, ELEM_VEC,
+    ELEM_CLOSURE, ELEM_ENUM_BASE, ELEM_MAP, ELEM_STRING, ELEM_STRUCT_BASE, ELEM_TRAITBOX,
+    ELEM_VEC,
 };
 use rask_mono::{EnumLayout, FieldLayout, StructLayout};
 use rask_types::Type as RaskType;
@@ -43,6 +44,9 @@ const KIND_TAG_IF: i32 = 3;
 /// The element is a pointer to a closure block, which describes itself: its
 /// size and its environment-drop glue are the header words before it (#1149).
 const KIND_CLOSURE: i32 = 4;
+/// The element is a `[data, vtable]` fat pointer; the block `data` names is the
+/// container's to free, and its size is the vtable's first word (#1149).
+const KIND_TRAITBOX: i32 = 5;
 
 fn entry(offset: i32, kind: i32) -> i32 {
     offset | (kind << KIND_SHIFT)
@@ -86,6 +90,7 @@ pub fn string_offsets_for_tag(
         // The element *is* the pointer, so there is nothing to flatten: one
         // entry at offset zero saying what kind of block it names.
         ELEM_CLOSURE => Some(vec![entry(0, KIND_CLOSURE)]),
+        ELEM_TRAITBOX => Some(vec![entry(0, KIND_TRAITBOX)]),
         n if n >= ELEM_STRUCT_BASE => {
             let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
             let layout = layouts.get(idx)?;

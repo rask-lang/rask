@@ -154,6 +154,18 @@ typedef struct {
 // and retaining one is a count on the same header (#1149).
 #define RASK_OWNED_CLOSURE 4
 
+// A trait box element: the 16 bytes are `[data, vtable]`, and the block `data`
+// names belongs to the container. Its size is the vtable's first word, so a
+// release needs nothing type-specific and a copy needs no generated glue —
+// which is what a *derived* container (clone, slice, chunk) takes.
+//
+// The block only. What the boxed value holds is a separate question with no
+// answer yet: a box inside a container has no frame outliving it, and #1144's
+// rule is that a boxed value's contents belong to the frame. So a `Vec<any
+// Trait>` of values with containers in them still leaks those — as every box
+// did before #1144 — minus the block.
+#define RASK_OWNED_TRAITBOX 5
+
 #define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
 #define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)

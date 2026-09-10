@@ -56,6 +56,14 @@ void rask_owned_release(char *elem, int32_t entry) {
         case RASK_OWNED_CLOSURE:
             rask_closure_free(*(void **)at);
             break;
+        // The fat pointer's data half. The vtable half points at static data
+        // and is nobody's to free.
+        case RASK_OWNED_TRAITBOX: {
+            int64_t *fat = (int64_t *)at;
+            rask_free((void *)(intptr_t)fat[0]);
+            fat[0] = 0;
+            break;
+        }
         default:
             break;
     }
@@ -86,6 +94,24 @@ void rask_owned_retain(char *elem, int32_t entry) {
         case RASK_OWNED_CLOSURE:
             rask_closure_retain(*(void **)at);
             break;
+        // A copy of the block, so the derived container has one of its own to
+        // free — the size is the vtable's first word, which is why this needs
+        // no per-type glue. The copy is shallow, so a value holding a container
+        // ends up named twice; that's the contents question above, and a leak
+        // rather than a double free, since neither block's release touches what
+        // the value holds.
+        case RASK_OWNED_TRAITBOX: {
+            int64_t *fat = (int64_t *)at;
+            const void *data = (const void *)(intptr_t)fat[0];
+            const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
+            if (data && vt) {
+                int64_t size = vt[0] < 8 ? 8 : vt[0];
+                void *copy = rask_alloc(size);
+                memcpy(copy, data, (size_t)size);
+                fat[0] = (int64_t)(intptr_t)copy;
+            }
+            break;
+        }
         default:
             break;
     }

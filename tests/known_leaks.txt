@@ -194,6 +194,18 @@
 # Every predecessor having it live on the way in is the same rule stated
 # properly. `t_collection_api_gaps.rk` 8 → clean.
 #
+# Thirty-two more when a container started freeing the `data` half of a trait
+# box element's fat pointer (#1149). Nine files' leaks were nothing but those
+# blocks — `RASK_LEAK_TRACE` put every one at a boxing site in the test's own
+# source, eight bytes apiece, which is `max(concrete_size, 8)`. The block's size
+# is the vtable's first word, so this needs no generated glue either, and a
+# derived container copies the block for the same reason.
+#
+# The block only. What a boxed value *holds* is still open: a box inside a
+# container has no frame outliving it, and #1144's rule is that a boxed value's
+# contents belong to the frame. No suite file boxes a value with a container in
+# it, so nothing here measures that half.
+#
 # Don't write the running total here. This line used to, and it drifted 22 out
 # from the sum of the lines below — a fix that emptied a file removed its entry
 # without touching the prose, so the tally read like a measurement and was a
@@ -242,49 +254,41 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
-
-
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
 # are files that branch added, the rest leak there for shapes the fixes
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
-p12_rack_link_churn.rk  # 2 allocations
+p12_rack_link_churn.rk  # 2 allocations — one Vec (handle and data)
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t29_branch_merge.rk  # 7 allocations — a container reassigned inside a loop, #1154
 t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
-t62_trait_object_positions.rk  # 1 allocation
-t65_vec_of_trait_objects.rk  # 10 allocations
-t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
-t_any_error_boxing.rk  # 1 allocation
-t_bare_error_type.rk  # 1 allocation
-t_borrow_param_consume.rk  # 2 allocations
-t_capture_freed_with_its_closure.rk  # 2 allocations — the string chain's per-element sequences, #1045
+t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only
+t_any_error_boxing.rk  # 1 allocation — one boxed error's block, returned rather than held in a container (#1149)
+t_bare_error_type.rk  # 1 allocation — one boxed error's block, same shape (#1149)
+t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
+t_capture_freed_with_its_closure.rk  # 2 allocations — two strings the chain's environment holds (the trace says `str_alloc_header`, not the sequences the old note claimed)
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
-t_closure_call_container.rk  # 2 allocations — a chain's intermediate environments, #1045
-t_closure_diverging_return.rk  # 2 allocations
+t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
+t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
-t_container_ownership.rk  # 1 allocation
+t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
-t_debug_renders_containers.rk  # 2 allocations
+t_debug_renders_containers.rk  # 2 allocations — one Vec (handle and data)
 t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
-t_json_decode.rk  # 6 allocations
+t_json_decode.rk  # 6 allocations — three Vecs from `rask_vec_with_capacity`, handle and data each — same site as t38_lazy_collection_adapters
 t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
-t_month_panic_observed.rk  # 9 allocations
-t_rack_stale_records.rk  # 2 allocations
+t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel — a task killed by a panic doesn't unwind its captures
+t_rack_stale_records.rk  # 2 allocations — one Vec (handle and data)
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
-t_spawn_join_result.rk  # 2 allocations
-t_string_builder_mutate.rk  # 1 allocation
-t_string_unicode.rk  # 3 allocations
-t_supertrait_dispatch.rk  # 2 allocations
-t_trait_object_in_field_container.rk  # 7 allocations
-t_trait_object_optional_payload.rk  # 6 allocations
-t_vec_field_filter_map.rk  # 4 allocations
-t_week_opaque_struct_fields.rk  # 1 allocation
-t_week_traits.rk  # 5 allocations
-t_with_collection_field_writes.rk  # 6 allocations
+t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
+t_string_builder_mutate.rk  # 1 allocation — the builder's own header
+t_string_unicode.rk  # 3 allocations — two Vec handles and one data buffer
+t_vec_field_filter_map.rk  # 4 allocations — two Vecs from a literal, plus one grown buffer
+t_week_opaque_struct_fields.rk  # 1 allocation — the RNG state behind `rng_from_seed`
+t_with_collection_field_writes.rk  # 6 allocations — four Vec handles and two grown buffers
                         # same trait-box leak as the two lines below. Nothing to
                         # do with the aggregate return the file is named for:
                         # every other test in it is clean.
