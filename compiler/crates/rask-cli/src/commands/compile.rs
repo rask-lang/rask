@@ -411,7 +411,7 @@ fn collect_vtables(
                                 rask_codegen::vtable::VTableMethod {
                                     name: method_name.clone(),
                                     func_name: format!("{}_{}", concrete_type, method_name),
-                                    vtable_offset: 24 + (i as u32) * 8,
+                                    vtable_offset: rask_codegen::vtable::method_offset(i),
                                 }
                             })
                             .collect();
@@ -421,11 +421,6 @@ fn collect_vtables(
                             .map(|s| s.align)
                             .unwrap_or(8);
 
-                        let mut visited = HashSet::new();
-                        let drop_fields = rask_codegen::drop_fields::collect_drop_fields(
-                            concrete_type, 0, &mono.struct_layouts, &mut visited,
-                        );
-
                         vtables.push(rask_codegen::vtable::VTableInfo {
                             data_name: vtable_name.clone(),
                             concrete_type: concrete_type.clone(),
@@ -433,7 +428,6 @@ fn collect_vtables(
                             concrete_size: *concrete_size,
                             concrete_align,
                             methods: vt_methods,
-                            drop_fields,
                         });
                     }
                 }

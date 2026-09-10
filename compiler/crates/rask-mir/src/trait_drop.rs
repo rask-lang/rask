@@ -709,7 +709,7 @@ mod tests {
             dst: None,
             trait_object: receiver,
             method_name: "speak".into(),
-            vtable_offset: 24,
+            vtable_offset: crate::vtable_layout::method_offset(0),
             args: vec![],
         })
     }

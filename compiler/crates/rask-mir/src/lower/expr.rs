@@ -9569,7 +9569,7 @@ impl<'a> MirLowerer<'a> {
         if let MirType::TraitObject { ref trait_name } = obj_ty {
             if let Some(methods) = self.ctx.trait_methods.get(trait_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
-                    let vtable_offset = 24 + (idx as u32) * 8;
+                    let vtable_offset = crate::vtable_layout::method_offset(idx);
                     let mut arg_operands = Vec::new();
                     for arg in args {
                         let (op, _) = self.lower_expr(&arg.expr)?;

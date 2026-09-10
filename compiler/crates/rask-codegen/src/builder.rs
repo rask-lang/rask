@@ -1222,44 +1222,17 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => Self::lower_trait_call(builder, dst, trait_object, method_name, vtable_offset, args, ctx)?,
 
+            // A box dying frees its block and nothing inside it. The value's
+            // strings and containers are the frame's — the box holds the same
+            // buffer and the same handle, so releasing from both sides is one
+            // release too many (mem.boxes, #1144). `rc_insert` puts the frame's
+            // release after this statement.
             MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitDrop: trait object variable not found".to_string()
                     ))?);
-
-                // Load data_ptr and vtable_ptr
                 let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
-
-                // Load drop_fn from vtable
-                let drop_fn = builder.ins().load(types::I64, MemFlags::new(), vtable_ptr, crate::vtable::VTABLE_DROP_OFFSET as i32);
-
-                // If drop_fn != null, call it
-                let null = builder.ins().iconst(types::I64, 0);
-                let is_null = builder.ins().icmp(IntCC::Equal, drop_fn, null);
-
-                let drop_block = builder.create_block();
-                let free_block = builder.create_block();
-
-                builder.ins().brif(is_null, free_block, &[], drop_block, &[]);
-
-                // Drop block: call drop_fn(data_ptr), then fall through to free.
-                // Its only predecessor is the brif above, already emitted —
-                // safe to seal right away, matching every other conditional
-                // block pair in this file (bounds checks, tag comparisons, …).
-                builder.switch_to_block(drop_block);
-                builder.seal_block(drop_block);
-                let mut drop_sig = Signature::new(isa::CallConv::SystemV);
-                drop_sig.params.push(AbiParam::new(types::I64));
-                let sig_ref = builder.import_signature(drop_sig);
-                builder.ins().call_indirect(sig_ref, drop_fn, &[data_ptr]);
-                builder.ins().jump(free_block, &[]);
-
-                // Free block: rask_free(data_ptr). Both predecessors (the
-                // brif's null arm and drop_block's jump) are already emitted.
-                builder.switch_to_block(free_block);
-                builder.seal_block(free_block);
                 let free_ref = ctx.func_refs.get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[data_ptr]);

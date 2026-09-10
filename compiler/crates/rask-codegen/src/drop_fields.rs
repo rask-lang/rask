@@ -2,32 +2,13 @@
 
 //! What frees a field, by the field's declared type.
 //!
-//! One answer, two readers: the release walk in `builder.rs` for a value dying
-//! in a frame, and the vtable drop glue for a value dying inside a trait
-//! object. What each may release differs — see `collect_drop_fields` on why a
-//! container is a frame's to free and never a box's.
+//! One reader: the release walk in `builder.rs`, for a value dying in a frame.
+//! A value dying inside a trait object used to have a second answer here, a
+//! per-type list the vtable's drop slot pointed at — it went away with the slot
+//! when the frame became the owner of a boxed value's contents (mem.boxes,
+//! #1144).
 
 use rask_types::Type as RaskType;
-
-/// How a field's release is called.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseShape {
-    /// The slot *is* the value's header, so the release takes the slot's
-    /// address — a `string`.
-    ByAddress,
-    /// The slot holds a handle, so the release loads it and passes the pointer
-    /// — every container and every box.
-    ByHandle,
-}
-
-/// A field to release when a value dies: where it sits, what frees it, and how
-/// that free is called.
-#[derive(Debug, Clone, Copy)]
-pub struct DropField {
-    pub offset: u32,
-    pub free_fn: &'static str,
-    pub shape: ReleaseShape,
-}
 
 /// The release for a container or a box a field holds, if it holds one.
 ///
@@ -92,50 +73,4 @@ pub fn box_release_for(rendered: &str) -> &'static str {
         return "rask_mutex_drop";
     }
     "rask_shared_drop_i64"
-}
-
-/// Every field of `type_name` that needs a release, flattened to offsets from
-/// the start of the value.
-///
-/// Flat on purpose: this feeds a vtable's drop glue, which is a straight list
-/// of calls with no value to branch on. An enum field is therefore left out —
-/// where its string sits depends on its tag, and saying so needs the guard
-/// encoding the container element descriptors use. A `T?` or `T or E` field is
-/// out for the same reason.
-pub fn collect_drop_fields(
-    type_name: &str,
-    base_offset: u32,
-    struct_layouts: &[rask_mono::StructLayout],
-    visited: &mut std::collections::HashSet<String>,
-) -> Vec<DropField> {
-    if !visited.insert(type_name.to_string()) {
-        return Vec::new();
-    }
-    let Some(layout) = struct_layouts.iter().find(|s| s.name == type_name) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for field in &layout.fields {
-        let at = base_offset + field.offset;
-        // Containers are deliberately *not* here. `TraitBox` copies the value
-        // shallowly, so the box and the frame's own local hold the same handle
-        // — and two boxes of one value hold it twice. A string field survives
-        // that because its release is a decrement; a container's is a free, so
-        // it has to happen exactly once and the box is not the place. Which
-        // means a container inside a boxed value still leaks: that is #1144,
-        // and it needs a decision about who owns a boxed value's contents
-        // rather than another release site.
-        match &field.ty {
-            RaskType::String => out.push(DropField {
-                offset: at,
-                free_fn: "rask_string_free",
-                shape: ReleaseShape::ByAddress,
-            }),
-            RaskType::UnresolvedNamed(name) => {
-                out.extend(collect_drop_fields(name, at, struct_layouts, visited));
-            }
-            _ => {}
-        }
-    }
-    out
 }

@@ -11,6 +11,7 @@ pub mod analysis;
 mod builder;
 pub mod dispatch_trace;
 pub mod elem_strs;
+pub mod vtable_layout;
 pub mod fallback;
 mod closure_targets;
 mod closures;

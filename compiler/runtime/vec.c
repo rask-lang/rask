@@ -54,20 +54,6 @@ void rask_owned_release(char *elem, int32_t entry) {
     }
 }
 
-// What a container built from element bytes it was *given* has to do.
-//
-// `rask_vec_from_static` is handed a literal's elements and takes them over:
-// the array they came from is a temporary the frame never frees. A string still
-// needs the reference, because the locals that built `["{a}", "{b}"]` release
-// their own on the way out — but a nested container is not refcounted, so
-// cloning it here would leave the original with no owner at all. The new
-// container adopts the handle it was given.
-void rask_owned_adopt(char *elem, int32_t entry) {
-    if (((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_STRING) {
-        rask_string_clone((const RaskStr *)(elem + (entry & RASK_OWNED_OFFSET_MASK)));
-    }
-}
-
 void rask_owned_retain(char *elem, int32_t entry) {
     char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
     switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
@@ -99,7 +85,7 @@ void rask_owned_retain(char *elem, int32_t entry) {
 // loop over the three single-entry functions above. Arms nest: a variant whose
 // payload is another enum contributes a guard inside a guard, and the recursion
 // bottoms out because each arm is strictly shorter than the list holding it.
-typedef enum { OWNED_RELEASE, OWNED_RETAIN, OWNED_ADOPT } RaskOwnedOp;
+typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
 
 static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
     if (!elem || !entries) return;
@@ -127,7 +113,6 @@ static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOw
         switch (op) {
             case OWNED_RELEASE: rask_owned_release(elem, e); break;
             case OWNED_RETAIN:  rask_owned_retain(elem, e);  break;
-            case OWNED_ADOPT:   rask_owned_adopt(elem, e);   break;
         }
     }
 }
@@ -138,10 +123,6 @@ void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count) {
 
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
     owned_walk(elem, entries, count, OWNED_RETAIN);
-}
-
-void rask_owned_adopt_all(char *elem, const int32_t *entries, int64_t count) {
-    owned_walk(elem, entries, count, OWNED_ADOPT);
 }
 
 // Take a reference to everything `count` elements starting at `from` own.
@@ -206,16 +187,19 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
-    // The elements are copied in, so this vector is a second owner of whatever
-    // they hold. A literal's sentinel refcount makes that free; a `["{a}",
-    // "{b}"]` built at runtime is the case that needs it, since the locals that
-    // made those strings release their own reference on the way out. A nested
-    // container is adopted rather than copied — see `rask_owned_adopt`.
-    if (v->strs.offsets && v->strs.count > 0 && v->data) {
-        for (int64_t i = 0; i < v->len; i++) {
-            rask_owned_adopt_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
-        }
-    }
+    // No retain on the elements. The array these bytes came from owns a
+    // reference already — lowering emits an `rc_inc` before storing a string
+    // header into a literal's slot and an `rc_dec` on the name afterwards, so
+    // the slot is the owner by the time this runs — and the array is a
+    // temporary the frame never releases. Taking the bytes over takes that
+    // reference with them.
+    //
+    // Taking a second one on top leaked the buffer once per runtime-built
+    // element: `let v: Vec<string> = ["built {n}", "a literal"]` never gave
+    // the first one back. A literal element carries a sentinel refcount that
+    // every release walks away from, which is why an all-literal vector was
+    // fine and this went unseen — as did the version of
+    // `t_boxed_value_contents.rk` whose strings were all literals.
     return v;
 }
 

@@ -160,14 +160,12 @@ typedef struct {
 // back into the element — which is the deep clone `.clone()` is supposed to be.
 void rask_owned_release(char *elem, int32_t entry);
 void rask_owned_retain(char *elem, int32_t entry);
-void rask_owned_adopt(char *elem, int32_t entry);
 
 // The whole list, which is what every caller actually wants: a `RASK_OWNED_TAG_IF`
 // entry decides whether the entries after it apply, so the walk has to be able
 // to skip and cannot be a loop over the single-entry calls above.
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
-void rask_owned_adopt_all(char *elem, const int32_t *entries, int64_t count);
 
 // Two maps the runtime needs constantly: a container of bare strings (one
 // string, at offset zero) and one of (string, string) pairs — `split`,

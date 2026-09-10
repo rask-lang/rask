@@ -481,6 +481,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
             if aggregates.contains(&id) {
                 boxes_one.insert(*dst);
                 for d in dropped {
+                    // The dropped name is a fat pointer too, so it can't be the
+                    // name the release walks either — and it is the one the
+                    // placement below sees, because it's what keeps the group
+                    // live. Naming it emitted `rc_dec_contents(_40)` on an
+                    // `any Describes`, which the walk has no case for and
+                    // silently does nothing about: the `Vec` inside the boxed
+                    // value leaked exactly as before the change.
+                    boxes_one.insert(d);
                     holding_boxes.push((d, id));
                 }
             }
