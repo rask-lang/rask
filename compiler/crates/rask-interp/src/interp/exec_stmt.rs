@@ -250,37 +250,77 @@ impl Interpreter {
                 if let Some((start, end, inclusive, step, descending, bounded)) =
                     crate::interp::as_range(&iter_val)
                 {
-                    let end = if bounded { end } else { i64::MAX };
                     let (first, walk_step) = if descending {
                         (start, -step)
                     } else {
                         (start, step)
                     };
-                    let n = if descending {
-                        crate::value::range_count(start, end, inclusive, -step)
-                    } else {
-                        crate::value::range_count(start, end, inclusive, step)
+                    // An unbounded range has no count, so it gets none. This
+                    // used to substitute `i64::MAX` for the missing end and
+                    // count from there, which made `for x in (big..) { }` stop
+                    // at `i64::MAX - 1` and *finish* — where R3 and OV2 say it
+                    // panics on overflow. The walk below is `wrapping_`, so a
+                    // count is the only thing that was ever stopping it, and
+                    // the checked step at the end of the body is what stops it
+                    // now.
+                    let n = match bounded {
+                        true if descending => {
+                            Some(crate::value::range_count(start, end, inclusive, -step))
+                        }
+                        true => Some(crate::value::range_count(start, end, inclusive, step)),
+                        // Downward from an unbounded start has nowhere to go:
+                        // the empty range SP2 asks for, same as `Range.step`
+                        // and `Range.rev` answer for one.
+                        false if descending => Some(0),
+                        false => None,
                     };
-                    for k in 0..n {
+                    let mut k: i64 = 0;
+                    loop {
+                        if n.is_some_and(|n| k >= n) {
+                            break;
+                        }
                         let i = first.wrapping_add(k.wrapping_mul(walk_step));
                         self.env.push_scope();
                         self.define_for_binding(binding, Value::int(i));
-                        match self.exec_stmts(body) {
-                            Ok(_) => {}
-                            Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                self.env.pop_scope();
-                                break;
-                            }
-                            Err(diag) if continues_here(&diag.error, loop_label) => {
-                                self.env.pop_scope();
-                                continue;
-                            }
-                            Err(e) => {
-                                self.env.pop_scope();
-                                return Err(e);
-                            }
-                        }
+                        let outcome = self.exec_stmts(body);
                         self.env.pop_scope();
+                        match outcome {
+                            Ok(_) => {}
+                            Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                            // Falls through to the step below rather than
+                            // taking Rust's `continue`. This was `continue`
+                            // when the walk was `for k in 0..n`, where it
+                            // advanced the iterator; against the counter below
+                            // it skipped the step and re-ran the same value
+                            // forever. `t48_loops.rk`, `t_loop_labels.rk` and
+                            // `t05_control_flow.rk` all hung.
+                            Err(diag) if continues_here(&diag.error, loop_label) => {}
+                            Err(e) => return Err(e),
+                        }
+                        k += 1;
+                        // Only the unbounded loop needs checked arithmetic, and
+                        // it needs it to end at all: nothing else stops it, and
+                        // R3 says an overflow panic is one of the four ways out.
+                        // A counted loop can't reach it — `k` stops at `n` —
+                        // and this fast path exists to be cheap, so it doesn't
+                        // pay for the check.
+                        if n.is_none() {
+                            crate::interp::overflow::checked_binop(
+                                crate::value::IntKind::I64,
+                                crate::interp::overflow::ArithOp::Mul,
+                                k,
+                                walk_step,
+                            )
+                            .and_then(|off| {
+                                crate::interp::overflow::checked_binop(
+                                    crate::value::IntKind::I64,
+                                    crate::interp::overflow::ArithOp::Add,
+                                    first,
+                                    off,
+                                )
+                            })
+                            .map_err(|e| RuntimeDiagnostic::new(e, iter.span))?;
+                        }
                     }
                     return Ok(Value::Unit);
                 }

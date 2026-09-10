@@ -1780,7 +1780,23 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.emit(" in ");
+                // A range with no end needs parentheses here, because the `{`
+                // that follows would otherwise be read as part of the range:
+                // `for x in 5.. {` doesn't parse, while `for x in (5..) {`
+                // does. Nothing in the corpus had the shape until an unbounded
+                // `for` loop started compiling, so `fmt` had been printing
+                // source it couldn't read back.
+                let bare_endless = matches!(
+                    &iter.kind,
+                    ExprKind::Range { end: None, .. }
+                );
+                if bare_endless {
+                    self.emit("(");
+                }
                 self.format_expr(iter);
+                if bare_endless {
+                    self.emit(")");
+                }
                 self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;
@@ -1845,7 +1861,23 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.emit(" in ");
+                // A range with no end needs parentheses here, because the `{`
+                // that follows would otherwise be read as part of the range:
+                // `for x in 5.. {` doesn't parse, while `for x in (5..) {`
+                // does. Nothing in the corpus had the shape until an unbounded
+                // `for` loop started compiling, so `fmt` had been printing
+                // source it couldn't read back.
+                let bare_endless = matches!(
+                    &iter.kind,
+                    ExprKind::Range { end: None, .. }
+                );
+                if bare_endless {
+                    self.emit("(");
+                }
                 self.format_expr(iter);
+                if bare_endless {
+                    self.emit(")");
+                }
                 self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;

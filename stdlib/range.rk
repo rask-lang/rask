@@ -68,7 +68,23 @@ extend Range<T> where T: Integer {
     /// The same values, other way round (RV1). Ascending becomes descending
     /// from the last value down to the original start, which is why the result
     /// is inclusive: that start is a value.
+    ///
+    /// A range with no end has no last value to start from, so there is nothing
+    /// to reverse and the answer is the empty range — the same answer SP1/SP2
+    /// give a direction mismatch, and what `step` gives a negative step on one.
+    /// It used to read `end`, which is only a copy of `start` when unbounded,
+    /// and the interpreter answered `9223372036854775806`.
     public func rev(self) -> Range<T> {
+        if !self.bounded {
+            return Range {
+                start: self.start,
+                end: self.start,
+                step: self.step,
+                inclusive: false,
+                descending: false,
+                bounded: true,
+            }
+        }
         if self.is_empty() {
             return Range {
                 start: self.start,
@@ -93,6 +109,25 @@ extend Range<T> where T: Integer {
     /// `(10..0).step(-1)` is 10, 9, … 1; the magnitude is what gets stored.
     public func step(self, s: T) -> Range<T> {
         if s < 0 {
+            // Downward needs somewhere to go. SP2 wants `start > end`, and an
+            // unbounded range has no end at all, so this is the direction
+            // mismatch SP1/SP2 answer with an empty range — the same answer
+            // `(0..10).step(-1)` already gives.
+            //
+            // It used to keep `bounded: false` and descend anyway, against an
+            // `end` that is only a copy of `start`. `(5..).step(-2).take(4)`
+            // came back with one value natively and overflowed on the
+            // interpreter.
+            if !self.bounded {
+                return Range {
+                    start: self.start,
+                    end: self.start,
+                    step: 0 - s,
+                    inclusive: false,
+                    descending: false,
+                    bounded: true,
+                }
+            }
             return Range {
                 start: self.start,
                 end: self.end,

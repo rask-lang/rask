@@ -2867,10 +2867,15 @@ impl<'a> MirLowerer<'a> {
         } else {
             (MirOperand::Constant(MirConst::Int(0)), MirType::I64)
         };
-        let (end_op, _) = if let Some(e) = end {
-            self.lower_expr(e)?
-        } else {
-            return Err(LoweringError::InvalidConstruct("Unbounded range in for loop".to_string()));
+        // `for i in (5..)` has no end to compare against, so it gets no
+        // comparison — the loop runs until something in the body leaves it, or
+        // the counter's `+ 1` overflows and panics. That is what R3 asks for
+        // ("terminates via `break`, `return`, `.take()`, or overflow panic"),
+        // and it used to be an outright lowering error: the interpreter ran
+        // `for x in (5..) { … break }` and native refused to compile it.
+        let end_op = match end {
+            Some(e) => Some(self.lower_expr(e)?.0),
+            None => None,
         };
 
         // Mutable counter initialized to start
@@ -2882,11 +2887,14 @@ impl<'a> MirLowerer<'a> {
         }));
 
         // Evaluate end once
-        let end_local = self.builder.alloc_temp(start_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: end_local,
-            rvalue: MirRValue::Use(end_op),
-        }));
+        let end_local = end_op.map(|op| {
+            let local = self.builder.alloc_temp(start_ty);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Use(op),
+            }));
+            local
+        });
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
@@ -2897,21 +2905,30 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(check_block);
 
         // counter < end (or <= for inclusive)
-        let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
-        let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: cond,
-            rvalue: MirRValue::BinaryOp {
-                op: cmp_op,
-                left: MirOperand::Local(counter),
-                right: MirOperand::Local(end_local),
-            },
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(cond),
-            then_block: body_block,
-            else_block: exit_block,
-        }));
+        match end_local {
+            Some(end_local) => {
+                let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
+                let cond = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: cond,
+                    rvalue: MirRValue::BinaryOp {
+                        op: cmp_op,
+                        left: MirOperand::Local(counter),
+                        right: MirOperand::Local(end_local),
+                    },
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(cond),
+                    then_block: body_block,
+                    else_block: exit_block,
+                }));
+            }
+            None => {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: body_block,
+                }));
+            }
+        }
 
         self.builder.switch_to_block(body_block);
         let ensure_depth = self.ensure_stack.len();
@@ -3006,13 +3023,9 @@ impl<'a> MirLowerer<'a> {
         } else {
             (MirOperand::Constant(MirConst::Int(0)), MirType::I64)
         };
-        let (end_op, _) = match range.end {
-            Some(e) => self.lower_expr(e)?,
-            None => {
-                return Err(LoweringError::InvalidConstruct(
-                    "range adapter on an unbounded range".to_string(),
-                ))
-            }
+        let end_op = match range.end {
+            Some(e) => Some(self.lower_expr(e)?.0),
+            None => None,
         };
         let (step_op, _) = match range.step {
             Some(s) => self.lower_expr(s)?,
@@ -3025,16 +3038,50 @@ impl<'a> MirLowerer<'a> {
             local
         };
         let start_l = define(self, &start_ty, MirRValue::Use(start_op));
-        let end_l = define(self, &start_ty, MirRValue::Use(end_op));
         let step_l = define(self, &start_ty, MirRValue::Use(step_op));
 
         let bin = |op: BinOp, left: MirOperand, right: MirOperand| MirRValue::BinaryOp { op, left, right };
-        let diff = define(self, &start_ty, bin(
-            BinOp::Sub, MirOperand::Local(end_l), MirOperand::Local(start_l),
-        ));
-        let q = define(self, &start_ty, bin(
-            BinOp::Div, MirOperand::Local(diff), MirOperand::Local(step_l),
-        ));
+
+        // No end, no count — the loop below is `value = start + k * step` over
+        // a rising `k`, and without a bound it just never stops on its own.
+        // What decides whether it runs at all is the step's sign: upward from
+        // an unbounded start runs until the body leaves or the arithmetic
+        // overflows and panics (R3), while a negative step has nowhere to
+        // descend to, which SP2 answers with an empty range — the same answer
+        // `(0..10).step(-1)` gives, and the one `(5..).step(-2).take(4)` gives
+        // through `Range.step`. `step` doesn't change inside the loop, so this
+        // is a loop-invariant compare rather than a real test.
+        //
+        // Before this, both shapes were a lowering error and the interpreter
+        // ran them: `for x in (5..).step(2) { … break }` didn't compile.
+        let count = match end_op {
+            None => None,
+            Some(end_op) => {
+                let end_l = define(self, &start_ty, MirRValue::Use(end_op));
+                let diff = define(self, &start_ty, bin(
+                    BinOp::Sub, MirOperand::Local(end_l), MirOperand::Local(start_l),
+                ));
+                let q = define(self, &start_ty, bin(
+                    BinOp::Div, MirOperand::Local(diff), MirOperand::Local(step_l),
+                ));
+                Some((diff, q))
+            }
+        };
+        let (diff, q) = match count {
+            Some(pair) => pair,
+            // `.rev()` has no last value to start from without an end, so it
+            // reverses nothing and the loop runs zero times — which is what
+            // `Range.rev()` answers for the same range, and what SP1/SP2 give
+            // a direction mismatch. Passing a step of zero is how that's said
+            // here: the loop below runs while the step is positive.
+            None if range.rev => {
+                let zero = define(self, &start_ty, MirRValue::Use(
+                    MirOperand::Constant(MirConst::Int(0)),
+                ));
+                return self.lower_for_unbounded_range(label, binding, start_l, zero, body);
+            }
+            None => return self.lower_for_unbounded_range(label, binding, start_l, step_l, body),
+        };
 
         // Element count. Inclusive is q+1 flat; exclusive is q, rounded up when
         // the span doesn't divide evenly ((0..10).step(3) → 0,3,6,9, not 3).
@@ -3136,6 +3183,89 @@ impl<'a> MirLowerer<'a> {
             dst: next,
             rvalue: bin(BinOp::Add, MirOperand::Local(k), MirOperand::Constant(MirConst::Int(1))),
         }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: k,
+            rvalue: MirRValue::Use(MirOperand::Local(next)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
+
+        self.loop_stack.pop();
+        self.ensure_stack.truncate(ensure_depth);
+        self.builder.switch_to_block(exit_block);
+        Ok(())
+    }
+
+    /// `for i in (start..).step(s)` — a stepped range with no end.
+    ///
+    /// Same shape as the counted loop above, `value = start + k * step` over a
+    /// rising `k`, minus the count: what gates it is the step's sign, which
+    /// doesn't change, so `step > 0` runs until the body leaves or `start + k *
+    /// step` overflows and panics (R3), and a negative step runs zero times
+    /// (SP2's direction mismatch, the empty range).
+    fn lower_for_unbounded_range(
+        &mut self,
+        label: Option<&str>,
+        binding: &str,
+        start_l: crate::LocalId,
+        step_l: crate::LocalId,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let ty = self.builder.local_type(start_l).unwrap_or(MirType::I64);
+        let mut define = |this: &mut Self, t: &MirType, rvalue: MirRValue| {
+            let local = this.builder.alloc_temp(t.clone());
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
+            local
+        };
+        let bin = |op: BinOp, left: MirOperand, right: MirOperand| MirRValue::BinaryOp { op, left, right };
+
+        let k = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: k,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        let value = self.builder.alloc_local(binding.to_string(), ty.clone());
+        self.locals.insert(binding.to_string(), (value, ty.clone()));
+
+        let check_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let inc_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
+        self.builder.switch_to_block(check_block);
+        let rising = define(self, &MirType::Bool, bin(
+            BinOp::Gt, MirOperand::Local(step_l), MirOperand::Constant(MirConst::Int(0)),
+        ));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(rising),
+            then_block: body_block,
+            else_block: exit_block,
+        }));
+
+        self.builder.switch_to_block(body_block);
+        let offset = define(self, &ty, bin(
+            BinOp::Mul, MirOperand::Local(k), MirOperand::Local(step_l),
+        ));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: bin(BinOp::Add, MirOperand::Local(start_l), MirOperand::Local(offset)),
+        }));
+
+        let ensure_depth = self.ensure_stack.len();
+        self.loop_stack.push(LoopContext {
+            label: label.map(|s| s.to_string()),
+            continue_block: inc_block,
+            exit_block,
+            result_local: None,
+            ensure_depth,
+        });
+        self.lower_body_scoped(body)?;
+        self.close_loop_body(ensure_depth, inc_block);
+
+        self.builder.switch_to_block(inc_block);
+        let next = define(self, &ty, bin(
+            BinOp::Add, MirOperand::Local(k), MirOperand::Constant(MirConst::Int(1)),
+        ));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: k,
             rvalue: MirRValue::Use(MirOperand::Local(next)),

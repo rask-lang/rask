@@ -49,12 +49,14 @@ for i in 0..10 {
 |------|-------------|
 | **RV1: Explicit rev** | Reverse iteration requires `.rev()` adapter |
 | **RV2: Backwards empty** | `10..0` is empty (not reverse) — use `(0..10).rev()` |
+| **RV3: No end, nothing to reverse** | `(0..).rev()` is empty — reversing starts from the last value and an unbounded range has none |
 
 | Range | Values |
 |-------|--------|
 | `0..10` | 0, 1, 2, ..., 9 |
 | `10..0` | (empty) |
 | `(0..10).rev()` | 9, 8, 7, ..., 0 |
+| `(0..).rev()` | (empty) |
 
 ## Step Ranges
 
@@ -64,6 +66,7 @@ for i in 0..10 {
 | **SP2: Negative step** | `start > end` required, iterates downward |
 | **SP3: Zero step** | Compile error |
 | **SP4: Uneven step** | Last value before exceeding bound |
+| **SP5: Negative step, no end** | `(0..).step(-1)` is empty — SP2 wants somewhere to descend to and there is no end. A positive step on an unbounded range iterates per R3 |
 
 <!-- test: parse -->
 ```rask
@@ -79,6 +82,8 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 | `(10..0).step(-2)` | 10, 8, 6, 4, 2 |
 | `(10..=0).step(-2)` | 10, 8, 6, 4, 2, 0 |
 | `(0..10).step(-1)` | (empty — direction mismatch) |
+| `(0..).step(2)` | 0, 2, 4, … until `break`/`return`/`.take()`/overflow (R3) |
+| `(0..).step(-1)` | (empty — nothing to descend to, SP5) |
 
 ## Overflow Behavior
 

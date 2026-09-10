@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A range with no end, on both backends.
+//
+// R3 says an unbounded range "terminates via `break`, `return`, `.take()`, or
+// overflow panic". Native couldn't compile one at all:
+//
+//     for x in (5..) { … break }          // MIR lowering: Unbounded range in for loop
+//     for x in (5..).step(2) { … break }  // MIR lowering: range adapter on an unbounded range
+//
+// while the interpreter ran both and gave the right answers. The counted fast
+// path is why: `for i in a..b` lowers to `value = start + k * step` over a
+// rising `k`, and the count is what makes `.rev()` possible at all — there
+// isn't one without an end. So an unbounded range gets no count, and what
+// decides whether it runs is the step's sign, which doesn't change.
+//
+// Which settles the three shapes that had no answer, or three different ones:
+//
+//   - Upward runs until the body leaves it, or `start + k * step` overflows and
+//     panics (R3, OV2). The interpreter used to substitute `i64::MAX` for the
+//     missing end and count from there, so a loop from near the top stopped at
+//     `i64::MAX - 1` and *finished* instead of panicking.
+//   - A negative step has nowhere to descend to. SP2 wants `start > end` and
+//     there is no end, so it's the direction mismatch SP1/SP2 answer with an
+//     empty range — the same answer `(0..10).step(-1)` already gave. It used to
+//     yield exactly one value natively and overflow on the interpreter.
+//   - `.rev()` has no last value to start from, so it reverses nothing and is
+//     empty too. It used to read `end`, which is only a copy of `start` when
+//     unbounded, and the interpreter answered 9223372036854775806.
+//
+// The overflow case isn't here because a test that panics can't pass. It's
+// checked by hand: `for x in (9223372036854775800..) { }` panics on both.
+//
+// Spec: control.ranges/R3, SP1, SP2, RV1, and type.overflow/OV2.
+
+test "control.ranges/R3 — an unbounded range ends on break" {
+    mut seen = 0
+    mut last = 0
+    for x in (5..) {
+        seen = seen + 1
+        last = x
+        if seen >= 4 {
+            break
+        }
+    }
+    assert seen == 4
+    assert last == 8
+}
+
+test "control.ranges/R3 — an unbounded stepped range ends on break" {
+    mut seen = 0
+    mut last = 0
+    for x in (5..).step(2) {
+        seen = seen + 1
+        last = x
+        if seen >= 4 {
+            break
+        }
+    }
+    assert seen == 4
+    assert last == 11
+}
+
+// `return` out of the loop, the other terminator R3 names.
+func first_over(limit: i64) -> i64 {
+    for x in (0..).step(3) {
+        if x > limit {
+            return x
+        }
+    }
+    return -1
+}
+
+test "control.ranges/R3 — an unbounded range ends on return" {
+    assert first_over(10) == 12
+    assert first_over(0) == 3
+}
+
+test "control.ranges/R3 — `.take()` bounds an unbounded range" {
+    let v: Vec<i64> = (5..).step(2).take(4).to_vec()
+    assert v.len() == 4
+    assert v[0] == 5
+    assert v[3] == 11
+}
+
+// The three empty cases, which all used to answer differently.
+test "control.ranges/SP2 — a negative step on an endless range is empty" {
+    mut seen = 0
+    for x in (5..).step(-2) {
+        seen = seen + 1
+        if seen >= 4 {
+            break
+        }
+    }
+    assert seen == 0
+
+    let v: Vec<i64> = (5..).step(-2).take(4).to_vec()
+    assert v.len() == 0
+}
+
+test "control.ranges/SP2 — a bounded direction mismatch is empty, unchanged" {
+    let v: Vec<i64> = (0..10).step(-1).to_vec()
+    assert v.len() == 0
+}
+
+test "control.ranges/RV1 — reversing an endless range is empty" {
+    mut seen = 0
+    for x in (5..).rev() {
+        seen = seen + 1
+        if seen >= 4 {
+            break
+        }
+    }
+    assert seen == 0
+}
+
+// A bounded range still takes the counted path, so these are the guard that
+// none of the above changed it.
+test "control.ranges — the bounded cases still answer as they did" {
+    let plain: Vec<i64> = (0..5).to_vec()
+    assert plain.len() == 5
+    assert plain[4] == 4
+
+    let stepped: Vec<i64> = (0..10).step(3).to_vec()
+    assert stepped.len() == 4
+    assert stepped[3] == 9
+
+    let down: Vec<i64> = (10..0).step(-2).to_vec()
+    assert down.len() == 5
+    assert down[0] == 10
+    assert down[4] == 2
+
+    let reversed: Vec<i64> = (0..5).rev().to_vec()
+    assert reversed.len() == 5
+    assert reversed[0] == 4
+    assert reversed[4] == 0
+}
+
+func main() {}

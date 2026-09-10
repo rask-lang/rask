@@ -424,7 +424,14 @@ int64_t rask_process_spawn(
         proc_close(&err_pipe[1]);
         proc_close(&exec_pipe[1]);
         int child_errno = 0;
-        ssize_t got = read(exec_pipe[0], &child_errno, sizeof(child_errno));
+        // Retried on EINTR, like the `waitpid` below. A signal landing here
+        // used to leave `got` short of the full int, which reads exactly like
+        // "the child never wrote anything, so exec succeeded" — and the caller
+        // got a process handle for a spawn whose outcome nobody had looked at.
+        ssize_t got;
+        do {
+            got = read(exec_pipe[0], &child_errno, sizeof(child_errno));
+        } while (got < 0 && errno == EINTR);
         proc_close(&exec_pipe[0]);
         if (got == (ssize_t)sizeof(child_errno) && child_errno != 0) {
             // Never started. Reap the shell-status child and report why.
