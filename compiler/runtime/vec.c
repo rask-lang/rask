@@ -56,11 +56,24 @@ void rask_owned_release(char *elem, int32_t entry) {
         case RASK_OWNED_CLOSURE:
             rask_closure_free(*(void **)at);
             break;
-        // The fat pointer's data half. The vtable half points at static data
-        // and is nobody's to free.
+        // A box in a container owns its value — it was moved in, which the
+        // checker enforces (using the local again after `v.push(h)` is E0800).
+        // So the value's own contents go first, through the vtable's
+        // `owned_release`, and then the block. The vtable half points at static
+        // data and is nobody's to free.
+        //
+        // `TraitDrop` deliberately doesn't do this: that one is a box built for
+        // a call, which borrows, and the frame still owns what's inside.
         case RASK_OWNED_TRAITBOX: {
             int64_t *fat = (int64_t *)at;
-            rask_free((void *)(intptr_t)fat[0]);
+            void *data = (void *)(intptr_t)fat[0];
+            const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
+            void (*owned_release)(void *) = NULL;
+            if (vt) {
+                owned_release =
+                    (void (*)(void *))(intptr_t)vt[RASK_VTABLE_OWNED_RELEASE_WORD];
+            }
+            rask_box_release(data, owned_release);
             fat[0] = 0;
             break;
         }
@@ -94,24 +107,15 @@ void rask_owned_retain(char *elem, int32_t entry) {
         case RASK_OWNED_CLOSURE:
             rask_closure_retain(*(void **)at);
             break;
-        // A copy of the block, so the derived container has one of its own to
-        // free — the size is the vtable's first word, which is why this needs
-        // no per-type glue. The copy is shallow, so a value holding a container
-        // ends up named twice; that's the contents question above, and a leak
-        // rather than a double free, since neither block's release touches what
-        // the value holds.
-        case RASK_OWNED_TRAITBOX: {
-            int64_t *fat = (int64_t *)at;
-            const void *data = (const void *)(intptr_t)fat[0];
-            const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
-            if (data && vt) {
-                int64_t size = vt[0] < 8 ? 8 : vt[0];
-                void *copy = rask_alloc(size);
-                memcpy(copy, data, (size_t)size);
-                fat[0] = (int64_t)(intptr_t)copy;
-            }
+        case RASK_OWNED_TRAITBOX:
+            rask_box_retain((void *)(intptr_t)*(int64_t *)at);
             break;
-        }
+        // A reference to the same box, not a copy of it. A derived container
+        // copies element bytes and a box's element is a pointer, so without
+        // this the second release would free one block twice. Copying the value
+        // instead would mean copying whatever it holds, and Rask doesn't deep
+        // clone implicitly — so `boxes.clone()` shares its boxes, the way a
+        // cloned `Vec<func>` shares its closures.
         default:
             break;
     }

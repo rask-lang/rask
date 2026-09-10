@@ -326,6 +326,46 @@ void rask_closure_free(void *ptr) {
     rask_realloc((void *)base, base[0], 0);
 }
 
+// ─── Trait object blocks ───────────────────────────────────
+//
+// A box's block is `[refs | value...]` and the fat pointer's data half points
+// at the value, so `self` reaches a method unchanged and nothing but these
+// three functions knows the count is there.
+//
+// The count is for a *derived* container. `boxes.clone()`, `.skip(n)`,
+// `.take(n)` and `.chunks(n)` all copy element bytes, and a box's element is a
+// pointer — so without one, two vectors would name one block and the second
+// release would free it again (a segfault, reproducibly). Copying the value
+// instead would mean copying whatever it holds, and Rask doesn't deep clone
+// implicitly: the cost stays visible, so the copy shares.
+//
+// Sharing rather than cloning is also what a closure block does, and for the
+// same reason — the environment's layout is known only to its generated glue,
+// as a boxed value's contents are known only to its `owned_release`.
+void *rask_box_alloc(int64_t value_size) {
+    int64_t total = (value_size < 8 ? 8 : value_size) + 8;
+    int64_t *base = (int64_t *)rask_alloc(total);
+    base[0] = 1;
+    return (void *)(base + 1);
+}
+
+void rask_box_retain(void *value) {
+    if (!value) return;
+    int64_t *base = ((int64_t *)value) - 1;
+    base[0] += 1;
+}
+
+// `owned_release` is the vtable's, for a box that owns its value — null for a
+// borrowed box, whose contents belong to the frame that boxed it (#1144). It
+// runs only when the last reference goes.
+void rask_box_release(void *value, void (*owned_release)(void *)) {
+    if (!value) return;
+    int64_t *base = ((int64_t *)value) - 1;
+    if ((base[0] -= 1) > 0) return;
+    if (owned_release) owned_release(value);
+    rask_free((void *)base);
+}
+
 void rask_free(void *ptr) {
     if (ptr) {
         leak_trace_forget(ptr);

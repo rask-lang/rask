@@ -421,6 +421,14 @@ fn collect_vtables(
                             .map(|s| s.align)
                             .unwrap_or(8);
 
+                        // What the concrete value owns, for a box that owns
+                        // it. Containers and strings both: a moved-in box has
+                        // no second holder for either.
+                        let mut visited = HashSet::new();
+                        let owned = rask_codegen::drop_fields::owned_fields(
+                            concrete_type, 0, &mono.struct_layouts, &mut visited,
+                        );
+
                         vtables.push(rask_codegen::vtable::VTableInfo {
                             data_name: vtable_name.clone(),
                             concrete_type: concrete_type.clone(),
@@ -428,6 +436,7 @@ fn collect_vtables(
                             concrete_size: *concrete_size,
                             concrete_align,
                             methods: vt_methods,
+                            owned,
                         });
                     }
                 }

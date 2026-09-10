@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box that owns its value releases what the value holds. A borrowed one
+// doesn't. Both rules, in one file, because each is the other's double free.
+//
+// The checker draws the line and always did:
+//
+//     boxes.push(h)      // error[E0800]: use of moved value: `h`
+//     through_a_box(h)   // fine — `h` is still usable afterwards
+//
+// A box built for a call *borrows*: the frame outlives it, still owns the
+// string and the vector inside, and releases them itself — so the box must not,
+// which is #1144. A box a value was *moved* into owns it, because the frame
+// gave it up, so whoever frees the block frees what's inside.
+//
+// The vtable's `owned_release` is how the second half happens, and it is only
+// reached from the paths where the box owns — a container element's release, a
+// struct field's, a wrapper payload's. `TraitDrop`, which is emitted for the
+// borrowed case alone, passes a null hook. Getting that asymmetry wrong is what
+// #1144 was: the slot used to run for every box and release the value's
+// strings, so a borrowed box decremented a buffer the frame still held and the
+// next read came back as 0xDE fill.
+//
+// Nothing here is copied to make it work. A move is a transfer, and Rask does
+// not deep clone on its own — the cost would be invisible.
+//
+// What that rules out is copying a box when a container is *derived* from
+// another: `clone`, `skip`, `take` and `chunks` all copy element bytes, and a
+// box's element is a pointer. Copying the block gave two containers one value
+// and the second release segfaulted; copying the value means copying whatever
+// it holds. So the block counts references and a derived container shares —
+// which is what a `Vec<func>` already does with its closures.
+//
+// Every string here is built at runtime. A literal carries a sentinel refcount
+// that every release walks away from, which is how the first version of
+// `t_boxed_value_contents.rk` passed with a double decrement still in it.
+//
+// A box in a *struct field* is a move too, and is deliberately not here: the
+// struct's release is placed before the last read of the box, and `trait_drop`
+// drops the view read back out of the field, so two paths release one block
+// (#1161). Container elements are the shape that works, and the shape this
+// pins.
+//
+// Spec: mem.boxes, and mem.ownership/O1 for the move that decides which rule
+// applies.
+
+trait Describes {
+    func describe(self) -> string
+}
+
+// A string and a container side by side, so the release walks a whole
+// aggregate rather than one field.
+struct Holder {
+    public label: string
+    public counts: Vec<i64>
+}
+
+extend Holder with Describes {
+    public func describe(self) -> string {
+        return "{self.label}:{self.counts.len()}"
+    }
+}
+
+func through_a_box(d: any Describes) -> string {
+    return d.describe()
+}
+
+func made(n: i64) -> Holder {
+    return Holder { label: "value {n}, long enough to allocate a buffer", counts: [n, n * 2] }
+}
+
+// ── The box owns it: moved in ───────────────────────────────
+
+test "mem.boxes — a container of boxes releases what the values hold" {
+    mut boxes: Vec<any Describes> = []
+    boxes.push(made(1))
+    boxes.push(made(2))
+    assert boxes.len() == 2
+    assert boxes[0].describe() == "value 1, long enough to allocate a buffer:2"
+    assert boxes[1].describe() == "value 2, long enough to allocate a buffer:2"
+}
+
+// One per turn, so a value released twice lands on one the next turn reused.
+test "mem.boxes — a boxed value per turn, all owned by the container" {
+    mut boxes: Vec<any Describes> = []
+    for i in 1..5 {
+        boxes.push(made(i))
+    }
+    assert boxes.len() == 4
+    assert boxes[0].describe() == "value 1, long enough to allocate a buffer:2"
+    assert boxes[3].describe() == "value 4, long enough to allocate a buffer:2"
+}
+
+// The shape that segfaulted. Two containers, one set of boxes, and the second
+// release must not free a block the first already gave back.
+test "mem.boxes — a derived container shares its boxes" {
+    mut boxes: Vec<any Describes> = []
+    boxes.push(made(5))
+    boxes.push(made(6))
+
+    let copy = boxes.clone()
+    assert copy.len() == 2
+    assert copy[0].describe() == "value 5, long enough to allocate a buffer:2"
+    assert boxes[1].describe() == "value 6, long enough to allocate a buffer:2"
+}
+
+test "mem.boxes — skip and take share boxes too" {
+    mut boxes: Vec<any Describes> = []
+    boxes.push(made(7))
+    boxes.push(made(8))
+    boxes.push(made(9))
+
+    let rest: Vec<any Describes> = boxes.skip(1).to_vec()
+    assert rest.len() == 2
+    assert rest[0].describe() == "value 8, long enough to allocate a buffer:2"
+
+    let first: Vec<any Describes> = boxes.take(1).to_vec()
+    assert first.len() == 1
+    assert first[0].describe() == "value 7, long enough to allocate a buffer:2"
+
+    // And the original is still readable — sharing, not moving out of it.
+    assert boxes[2].describe() == "value 9, long enough to allocate a buffer:2"
+}
+
+// ── The frame owns it: borrowed ─────────────────────────────
+
+test "mem.boxes — a box built for a call borrows, and the frame keeps the value" {
+    let h = made(11)
+    assert through_a_box(h) == "value 11, long enough to allocate a buffer:2"
+    // Still readable, which is what borrowing means — and if the box had
+    // released the contents, these would read freed memory.
+    assert h.label == "value 11, long enough to allocate a buffer"
+    assert h.counts.len() == 2
+    assert h.counts[1] == 22
+}
+
+// Boxed for a call more than once. Each box borrows, so the value survives all
+// of them and one release runs at the end.
+test "mem.boxes — borrowed by several boxes in turn" {
+    let h = made(12)
+    assert through_a_box(h) == "value 12, long enough to allocate a buffer:2"
+    assert through_a_box(h) == "value 12, long enough to allocate a buffer:2"
+    assert through_a_box(h) == "value 12, long enough to allocate a buffer:2"
+    assert h.counts[0] == 12
+    assert h.label.len() == 42
+}
+
+func main() {}

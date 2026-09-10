@@ -40,6 +40,12 @@ void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *));
 void  rask_closure_free(void *ptr);
 void  rask_closure_retain(void *ptr);
 
+// A trait object's block: `[refs | value...]`, with the fat pointer's data half
+// pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
+void *rask_box_alloc(int64_t value_size);
+void  rask_box_retain(void *value);
+void  rask_box_release(void *value, void (*owned_release)(void *));
+
 // `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
 // the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says
 // which runtime function is holding them.
@@ -165,6 +171,10 @@ typedef struct {
 // Trait>` of values with containers in them still leaks those — as every box
 // did before #1144 — minus the block.
 #define RASK_OWNED_TRAITBOX 5
+
+// Word index of the vtable's `owned_release`, which has to agree with
+// `rask_mir::vtable_layout` — byte offset 16, so the third word.
+#define RASK_VTABLE_OWNED_RELEASE_WORD 2
 
 #define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)

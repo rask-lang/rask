@@ -1222,20 +1222,26 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => Self::lower_trait_call(builder, dst, trait_object, method_name, vtable_offset, args, ctx)?,
 
-            // A box dying frees its block and nothing inside it. The value's
-            // strings and containers are the frame's — the box holds the same
-            // buffer and the same handle, so releasing from both sides is one
-            // release too many (mem.boxes, #1144). `rc_insert` puts the frame's
-            // release after this statement.
+            // This is only ever the *borrowed* box — the one built for a
+            // call, which `trait_drop` emits a drop for because the frame
+            // outlives it. So the block goes and nothing inside it does: the
+            // value's strings and containers are the frame's, and the box holds
+            // the same buffer and the same handle (mem.boxes, #1144).
+            // `rc_insert` puts the frame's own release after this statement.
+            //
+            // Hence the null hook. A box the value was *moved* into owns its
+            // contents and passes the vtable's `owned_release` here instead,
+            // which is what a container element's release does.
             MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitDrop: trait object variable not found".to_string()
                     ))?);
                 let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let free_ref = ctx.func_refs.get("rask_free")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
-                builder.ins().call(*free_ref, &[data_ptr]);
+                let none = builder.ins().iconst(types::I64, 0);
+                let release_ref = ctx.func_refs.get("rask_box_release")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
+                builder.ins().call(*release_ref, &[data_ptr, none]);
             }
 
             MirStmtKind::Phi { .. } => {
@@ -3085,10 +3091,12 @@ impl<'a> FunctionBuilder<'a> {
         concrete_size: &u32,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        let alloc_ref = ctx.func_refs.get("rask_alloc")
-            .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+        let alloc_ref = ctx.func_refs.get("rask_box_alloc")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_alloc".to_string()))?;
 
-        // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
+        // The block carries a reference count in the word before the value, so
+        // a derived container can share it — see `rask_box_alloc`. The pointer
+        // that comes back is the value's, so nothing downstream changes.
         let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
         let size_val = builder.ins().iconst(types::I64, alloc_size);
         let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
