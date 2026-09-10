@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A channel's two ends are released when the frame that made them ends (#1035).
+//
+// `rask_sender_drop` and `rask_recver_drop` have done the right thing since
+// channels were written — close that end, and free the channel and its buffer
+// when both ends are gone — with nothing calling them. Seven suite files were
+// carrying it; `t_select.rk` alone was fifteen channels, 74 allocations.
+//
+// Three things had to line up:
+//
+//   - `Channel<T>.buffered(n)` used to hand back a 16-byte heap pair of the two
+//     handles, which neither accessor could free because either might be the
+//     last to read it. It hands back the channel now and each accessor builds
+//     its own handle, so there is nothing in between to own. `ch.0`/`ch.1` go
+//     through the same two calls as `let (tx, rx) = …`.
+//   - `close()` was declared `self` and drops the handle, so the frame dropped
+//     it a second time on the way out. It is `take self` now, which is what it
+//     always did.
+//   - a capture the closure body consumes is not the environment glue's to
+//     free. `spawn(own || { … tx.close() })` was a double free.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that
+// values still make it across, and that a closed end reads as closed rather
+// than as a crash.
+//
+// The one place still leaking is the last test: `own` capturing a sender copies
+// the handle without taking a reference, so a closure built in a loop shares
+// one sender between every task. The drop pass leaves those alone rather than
+// freeing one twice — #1139 has the real fix.
+//
+// Spec: specs/concurrency/ — a channel closes when its last sender goes.
+import async.spawn
+
+func drain(n: i64) -> i64 {
+    let (tx, rx) = Channel<i64>.buffered(8)
+    mut i = 0
+    while i < n {
+        tx.send(i + 1)
+        i = i + 1
+    }
+    mut total = 0
+    mut got = 0
+    while got < n {
+        if rx.try_receive() is i64 as v {
+            total = total + v
+        }
+        got = got + 1
+    }
+    return total
+}
+
+test "concurrency.channels — a channel made and drained in one frame" {
+    assert drain(4) == 10
+}
+
+// The pair-versus-channel distinction: reaching the halves by tuple index
+// rather than by destructuring used to read raw memory at offsets 0 and 8.
+test "concurrency.channels — the halves reached by index rather than name" {
+    let ch = Channel<i64>.buffered(4)
+    let tx = ch.0
+    let rx = ch.1
+    tx.send(11)
+    tx.send(22)
+    mut total = 0
+    if rx.try_receive() is i64 as a {
+        total = total + a
+    }
+    if rx.try_receive() is i64 as b {
+        total = total + b
+    }
+    assert total == 33
+}
+
+// `close()` consumes the sender. The frame must not drop it again.
+test "concurrency.channels — closing one end explicitly" {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    tx.send(7)
+    let _ = tx.close()
+    // The value already sent is still there; the next read reports closed.
+    assert rx.try_receive() is i64
+    assert !(rx.try_receive() is i64)
+}
+
+// A struct through a channel, so the element carries a string the receiver has
+// to end up owning.
+struct Note {
+    id: i64
+    text: string
+}
+
+test "concurrency.channels — a struct with a string crosses" {
+    let (tx, rx) = Channel<Note>.buffered(2)
+    tx.send(Note { id: 1, text: "first" })
+    tx.send(Note { id: 2, text: "second" })
+    mut joined = ""
+    if rx.try_receive() is Note as a {
+        joined = "{a.id}:{a.text}"
+    }
+    if rx.try_receive() is Note as b {
+        joined = "{joined} {b.id}:{b.text}"
+    }
+    assert joined == "1:first 2:second"
+}
+
+// Repeatedly, so a channel freed and handed back out would read wrong rather
+// than merely leak.
+test "concurrency.channels — channels in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        total = total + drain(i.clamp<i64>())
+    }
+    assert total == 35
+}
+
+// A spawned producer closing the channel it was handed. The body consumes the
+// capture, so the environment glue must leave it alone.
+func spawned_sum(n: i64) -> i64 {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(4)
+        let producer = spawn(own || {
+            mut i = 0
+            while i < n {
+                tx.send(i + 1)
+                i = i + 1
+            }
+            let _ = tx.close()
+        })
+        mut total = 0
+        loop {
+            let r = rx.receive()
+            if r? as v {
+                total = total + v
+            } else {
+                break
+            }
+        }
+        let _ = producer.join()
+        return total
+    }
+}
+
+test "concurrency.channels — a spawned producer that closes its end" {
+    assert spawned_sum(5) == 15
+}
+
+// Many tasks sharing one sender. #1139: `own` copies the handle without taking
+// a reference, so this leaks the copies rather than closing the channel early.
+func fan_in(tasks: i64) -> i64 {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(8)
+        for id in 0..tasks {
+            spawn(own || {
+                tx.send(id + 1)
+            }).detach()
+        }
+        mut total = 0
+        mut got = 0
+        while got < tasks {
+            if rx.receive()? as v {
+                total = total + v
+            }
+            got = got + 1
+        }
+        return total
+    }
+}
+
+test "concurrency.channels — several tasks sending into one channel" {
+    assert fan_in(4) == 10
+}

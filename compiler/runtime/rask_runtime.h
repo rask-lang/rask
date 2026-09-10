@@ -36,8 +36,21 @@ void  rask_alloc_stats(RaskAllocStats *out);
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
-void *rask_closure_alloc(int64_t block_size);
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *));
 void  rask_closure_free(void *ptr);
+void  rask_closure_retain(void *ptr);
+
+// A trait object's block: `[refs | value...]`, with the fat pointer's data half
+// pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
+void *rask_box_alloc(int64_t value_size);
+void  rask_box_retain(void *value);
+void  rask_box_release(void *value, void (*owned_release)(void *));
+
+// `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
+// the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says
+// which runtime function is holding them.
+void  rask_leak_trace_init(void);
+void  rask_leak_trace_report(void);
 
 // Overflow-checked arithmetic for allocation sizes.
 _Noreturn void rask_panic(const char *msg);
@@ -93,10 +106,97 @@ typedef struct RaskVec RaskVec;
 //
 // `offsets` is NULL and `count` 0 when the elements own nothing. Built by
 // codegen's `string_offsets_of` from the element tag lowering emitted.
+//
+// Each entry is one int32: the byte offset in the low 28 bits, and what lives
+// there in the top 4. The kind exists because a `Vec<Order>` whose `Order`
+// holds a `Vec<Item>` has to free each element's inner vector, and a bare
+// offset can only mean "string". A plain offset still reads as a string at
+// that offset, so every hand-written list below keeps its meaning.
 typedef struct {
     const int32_t *offsets;
     int64_t        count;
 } RaskElemStrs;
+
+// What a box's payload is, so the box's last release can give it back. A
+// container payload is a handle in the box's slot rather than bytes the box can
+// free, and only the runtime knows when the last reference goes.
+//
+// Same three integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
+// comment names this one back.
+#define RASK_BOX_PAYLOAD_NONE 0
+#define RASK_BOX_PAYLOAD_VEC  1
+#define RASK_BOX_PAYLOAD_MAP  2
+
+#define RASK_OWNED_KIND_SHIFT 28
+#define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
+#define RASK_OWNED_STRING 0
+#define RASK_OWNED_VEC    1
+#define RASK_OWNED_MAP    2
+// A guard, not a thing to free: the entries that follow apply only when the
+// tag at some offset holds a particular value.
+//
+// This is what lets an *enum* be described. Where an enum's string or vector
+// sits depends on which variant it is, so a flat list of offsets can't say —
+// and a wrong offset here frees sixteen bytes that were never a handle. So an
+// enum contributes one guard per variant that owns something, followed by that
+// variant's own entries. `Vec<JsonValue>` is the reason: every array and object
+// inside a decoded document is a variant payload, and the elements walk left
+// all of it behind.
+//
+// The 28 bits an offset would use carry the guard instead:
+//
+//   bits  0..11   the tag's byte offset inside the element
+//   bits 12..19   the tag value this arm is for
+//   bits 20..25   how many entries after this one belong to the arm
+//   bits 26..27   the tag's width: 0 → 1 byte, 1 → 2, 2 → 4, 3 → 8
+//
+// Codegen emits nothing at all for a layout that doesn't fit those fields,
+// which leaks rather than guessing.
+
+// The element *is* a pointer to a closure block, so there is no offset list
+// inside it: one entry at offset zero. The block describes itself —
+// `rask_closure_free` reads its size and its environment-drop glue out of the
+// header words before the pointer — so releasing one needs nothing type-specific
+// and retaining one is a count on the same header (#1149).
+#define RASK_OWNED_CLOSURE 4
+
+// A trait box element: the 16 bytes are `[data, vtable]`, and the block `data`
+// names belongs to the container. Its size is the vtable's first word, so a
+// release needs nothing type-specific and a copy needs no generated glue —
+// which is what a *derived* container (clone, slice, chunk) takes.
+//
+// The block only. What the boxed value holds is a separate question with no
+// answer yet: a box inside a container has no frame outliving it, and #1144's
+// rule is that a boxed value's contents belong to the frame. So a `Vec<any
+// Trait>` of values with containers in them still leaks those — as every box
+// did before #1144 — minus the block.
+#define RASK_OWNED_TRAITBOX 5
+
+// Word index of the vtable's `owned_release`, which has to agree with
+// `rask_mir::vtable_layout` — byte offset 16, so the third word.
+#define RASK_VTABLE_OWNED_RELEASE_WORD 2
+
+#define RASK_OWNED_TAG_IF 3
+#define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
+#define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
+#define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
+#define RASK_OWNED_TAG_WIDTH(e)  (1 << (((e) >> 26) & 0x3))
+
+// Release, or take a reference to, whatever one entry points at inside `elem`.
+//
+// `retain` is what makes a derived container an owner: a clone, a slice or a
+// chunk copies element bytes, so two containers name one string buffer or one
+// nested vector, and whichever is freed second reads memory that is gone. For a
+// string that's a refcount; for a nested container it's a real copy, written
+// back into the element — which is the deep clone `.clone()` is supposed to be.
+void rask_owned_release(char *elem, int32_t entry);
+void rask_owned_retain(char *elem, int32_t entry);
+
+// The whole list, which is what every caller actually wants: a `RASK_OWNED_TAG_IF`
+// entry decides whether the entries after it apply, so the walk has to be able
+// to skip and cannot be a loop over the single-entry calls above.
+void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
 
 // Two maps the runtime needs constantly: a container of bare strings (one
 // string, at offset zero) and one of (string, string) pairs — `split`,
@@ -138,6 +238,9 @@ void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
 int64_t  rask_vec_reserve(RaskVec *v, int64_t additional);
+int64_t  rask_vec_allocated(const RaskVec *v);
+void     rask_vec_shrink_to_fit(RaskVec *v);
+void     rask_vec_shrink_to(RaskVec *v, int64_t min_capacity);
 int64_t  rask_vec_is_empty(const RaskVec *v);
 int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
 int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
@@ -267,6 +370,10 @@ int64_t     rask_string_builder_with_capacity(int64_t cap);
 void        rask_string_builder_append(int64_t handle, int64_t str_ptr);
 void        rask_string_builder_append_char(int64_t handle, int64_t codepoint);
 void        rask_string_builder_build(RaskStr *out, int64_t handle);
+// `build` consumes the builder. This is the same release on its own, for a path
+// that gives up before building — `string.from_utf8` returns a `Utf8Error` from
+// eight places and leaked the builder from every one of them.
+void        rask_string_builder_free(int64_t handle);
 int64_t     rask_string_builder_len(int64_t handle);
 int64_t     rask_string_builder_is_empty(int64_t handle);
 
@@ -580,8 +687,14 @@ int64_t   rask_rack_contains(const RaskRack *r, const void *link);
 // argument to read `T` off. `fields` is `field_count` pairs of
 // (kind, byte offset), which is what lets the fixup find a node's own edges —
 // and what lets `snapshot` re-point them.
+//
+// `owned` is the other half, and a different question: the `offset | kind`
+// entries `rask_owned_release` reads, one per string or container the payload
+// owns. `fields` only lists what holds *links*, so a node's `name: string` or
+// `tags: Vec<string>` was invisible and leaked one allocation per node.
 void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
-                           int64_t field_count, const int32_t *fields);
+                           int64_t field_count, const int32_t *fields,
+                           int64_t owned_count, const int32_t *owned);
 void      rask_rack_delete(RaskRack *r, void *link);
 void      rask_rack_clear(RaskRack *r);
 RaskVec  *rask_rack_nodes(const RaskRack *r);
@@ -619,6 +732,7 @@ typedef struct RaskRng RaskRng;
 
 RaskRng *rask_rng_new(void);
 RaskRng *rask_rng_from_seed(int64_t seed);
+void     rask_rng_free(RaskRng *rng);
 int64_t  rask_rng_u64(RaskRng *rng);
 int64_t  rask_rng_i64(RaskRng *rng);
 double   rask_rng_f64(RaskRng *rng);
@@ -671,6 +785,11 @@ void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 int64_t     rask_file_is_null(int64_t file);
+// std.io/K1, K3. `whence` follows `SeekFrom`'s declaration order —
+// 0 = Start, 1 = End, 2 = Current — not SEEK_SET's numbering. Both hand back
+// the absolute position, or -1 with errno set.
+int64_t     rask_file_seek(int64_t file, int64_t whence, int64_t offset);
+int64_t     rask_file_position(int64_t file);
 void        rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and
@@ -871,7 +990,7 @@ int64_t     rask_args_count(void);
 const char *rask_args_get(int64_t index);
 
 // Environment variables
-const RaskStr *rask_os_env(const RaskStr *name);
+int64_t     rask_os_env(const RaskStr *name, RaskStr *out);
 void           rask_os_env_or(RaskStr *out, const RaskStr *name, const RaskStr *def);
 
 // ─── Print locking ─────────────────────────────────────────
@@ -1156,9 +1275,13 @@ void rask_sender_drop(RaskSender *tx);
 void rask_recver_drop(RaskRecver *rx);
 
 // i64-based channel wrappers for codegen dispatch table.
+// `let (tx, rx) = Channel<T>.buffered(n)`: `new` hands back the channel and
+// each accessor makes the one handle of its kind. Nothing between the calls
+// owns anything, which is the point — the 16-byte pair that used to carry the
+// two handles could be freed by neither accessor and leaked once per channel.
 int64_t rask_channel_new_i64(int64_t capacity);
-int64_t rask_channel_get_tx(int64_t pair);
-int64_t rask_channel_get_rx(int64_t pair);
+int64_t rask_channel_get_tx(int64_t chan);
+int64_t rask_channel_get_rx(int64_t chan);
 int64_t rask_channel_send_i64(int64_t tx, int64_t value);
 int64_t rask_channel_recv_i64(int64_t rx);
 void    rask_sender_drop_i64(int64_t tx);
@@ -1178,7 +1301,23 @@ int64_t rask_process_run(const RaskStr *program, const RaskVec *args, const Rask
                          const RaskStr *dir, int64_t stdin_mode, int64_t stdout_mode,
                          int64_t stderr_mode);
 void    rask_process_stdout(RaskStr *out);
-void    rask_process_stderr(RaskStr *out);
+void     rask_process_stderr(RaskStr *out);
+
+// std.os/C3–C4: a spawned child, reached through an opaque handle `Process`
+// carries as an i64. `spawn` answers a handle or a negative errno.
+int64_t  rask_process_spawn(const RaskStr *program, const RaskVec *args,
+                            const RaskVec *envs, const RaskStr *dir,
+                            int64_t stdin_mode, int64_t stdout_mode,
+                            int64_t stderr_mode);
+int64_t  rask_process_pid(int64_t handle);
+int64_t  rask_process_wait(int64_t handle);
+int64_t  rask_process_kill_and_wait(int64_t handle);
+int64_t  rask_process_poll(int64_t handle);
+int64_t  rask_process_write_stdin(int64_t handle, const RaskStr *data);
+void     rask_process_read_stdout(RaskStr *out, int64_t handle);
+void     rask_process_captured_stdout(RaskStr *out, int64_t handle);
+void     rask_process_captured_stderr(RaskStr *out, int64_t handle);
+void     rask_process_release(int64_t handle);
 
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.
@@ -1257,7 +1396,7 @@ void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 
 // Pointer-based codegen wrappers for Mutex.
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
@@ -1317,7 +1456,7 @@ int64_t rask_shared_clone_i64(int64_t shared);
 void    rask_shared_drop_i64(int64_t shared);
 
 // Pointer-based wrappers for aggregate types (struct data).
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size);
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 int64_t rask_os_pid(void);
@@ -1329,10 +1468,11 @@ void    rask_os_platform(RaskStr *out);
 void    rask_os_arch(RaskStr *out);
 RaskVec *rask_os_env_vars(void);
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size);
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
-int64_t rask_cell_replace(int64_t cell, int64_t data_ptr);
+void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
+void    rask_cell_into_inner(int64_t cell, int64_t out);
 void    rask_cell_free(int64_t cell);
 int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
@@ -1341,10 +1481,10 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
 // (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.
 int64_t rask_shared_get(int64_t shared);
 void    rask_shared_set(int64_t shared, int64_t data_ptr);
-int64_t rask_shared_replace(int64_t shared, int64_t data_ptr);
+void    rask_shared_replace(int64_t shared, int64_t data_ptr, int64_t out);
 int64_t rask_mutex_get(int64_t mutex);
 void    rask_mutex_set(int64_t mutex, int64_t data_ptr);
-int64_t rask_mutex_replace(int64_t mutex, int64_t data_ptr);
+void    rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 

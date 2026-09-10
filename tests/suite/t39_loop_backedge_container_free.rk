@@ -150,3 +150,91 @@ test "a vector in a field, iterated inside a loop" {
     }
     assert total == 15
 }
+
+// The other side of the same question, and what #1047's residue was: a copy
+// made inside a loop is not the end of the source.
+//
+// `for x in v` copies `v` into the body every turn, so `v` is live out of the
+// block that copies it and holds the value the whole time. Reading that as a
+// move left every name in the group either moved-from or with nowhere to put
+// a free, and the container was freed by nobody — the tests above answered
+// right and leaked while doing it.
+//
+// A copy the source *is* finished with still ends it, which is what the rest
+// of the suite leans on: one free, under the last name holding the value.
+
+test "the source is still live after a loop that copies it" {
+    mut v = Vec<i64>.new()
+    v.push(1)
+    v.push(2)
+    mut r = 0
+    while r < 3 {
+        for x in v {
+            r = r + 0
+        }
+        r = r + 1
+    }
+    // Readable after the loop, so nothing freed it on a back edge.
+    assert v.len() == 2
+    assert v[1] == 2
+}
+
+test "two loops over one container" {
+    mut v = Vec<i64>.new()
+    v.push(4)
+    v.push(5)
+    mut a = 0
+    mut r = 0
+    while r < 2 {
+        for x in v {
+            a = a + x
+        }
+        r = r + 1
+    }
+    mut b = 0
+    mut q = 0
+    while q < 3 {
+        for x in v {
+            b = b + x
+        }
+        q = q + 1
+    }
+    assert a == 18
+    assert b == 27
+    assert v.len() == 2
+}
+
+test "a map iterated by two loops" {
+    mut m = Map<string, i64>.new()
+    m.insert("a key long enough to allocate", 3)
+    m.insert("and a second, also long enough", 4)
+    mut a = 0
+    mut r = 0
+    while r < 2 {
+        for (k, val) in m {
+            a = a + val
+        }
+        r = r + 1
+    }
+    for (k, val) in m {
+        a = a + val
+    }
+    assert a == 21
+    assert m.len() == 2
+}
+
+// A container built inside the loop still belongs to the turn that built it —
+// the half the back-edge free is for. Two per turn, so a missing free shows up
+// as a count rather than as one stray block.
+test "a container built in the loop is still the turn's" {
+    mut total: usize = 0
+    for i in 1..6 {
+        mut scratch = Vec<i64>.new()
+        scratch.push(i)
+        scratch.push(i * 2)
+        mut names = Vec<string>.new()
+        names.push("entry {i}, long enough to allocate")
+        total = total + scratch.len() + names.len()
+    }
+    assert total == 15
+}

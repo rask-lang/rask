@@ -74,11 +74,11 @@ test "clone survives a round trip through a Vec" {
     assert describe(bottom) == "Insert@1:hello"
 }
 
-test "a sliced Vec<string> joins as strings, not as numbers" {
+test "a run of a Vec<string> joins as strings, not as numbers" {
     mut parts: Vec<string> = Vec.new()
     for p in "i 0 first line".split_whitespace() {
         parts.push(p.to_string())
     }
-    assert parts[2..].join(" ") == "first line"
+    assert parts.skip(2).join(" ") == "first line"
     assert parts.join(",") == "i,0,first,line"
 }

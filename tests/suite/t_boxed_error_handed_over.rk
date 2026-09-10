@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A boxed error is the caller's once the callee hands it back.
+//
+// `return Boom.Bad` in a `-> i64 or Error` boxes the enum — `Error` is
+// `any Error`, the erased error box — and returns it. Ownership moves to the
+// caller, so the callee correctly doesn't drop it. The caller didn't either:
+// it read the box out of the wrapper's error side and nothing said that read
+// was fresh ownership rather than a look at storage somebody else keeps. Every
+// failing `or Error` call leaked its box.
+//
+// The fix is the question the closure pass already asks by name — which
+// functions hand a fresh one back — with the wrapper case added, because a
+// `T or E` returns the box as its error side rather than as the value.
+//
+// The two harder shapes are below: an error forwarded through a function that
+// only passes on what it called, and a failing call in a loop.
+//
+// These check the message through the box as well as the count. A box freed
+// early reads its vtable out of freed memory, and `message()` through it is a
+// call through that vtable — so a premature drop is a wrong answer or a crash
+// here, not a quiet leak.
+
+enum Boom {
+    Bad
+    Worse
+}
+
+extend Boom {
+    func message(self) -> string {
+        match self {
+            Boom.Bad => return "bad"
+            Boom.Worse => return "worse"
+        }
+    }
+}
+
+enum Other {
+    Nope
+}
+
+extend Other {
+    func message(self) -> string {
+        return "nope"
+    }
+}
+
+func classify(n: i64) -> i64 or Error {
+    if n < -10 { return Boom.Worse }
+    if n < 0 { return Boom.Bad }
+    if n == 0 { return Other.Nope }
+    return n
+}
+
+// The long spelling of the same signature.
+func classify_long(n: i64) -> i64 or any Error {
+    if n < 0 { return Boom.Bad }
+    return n
+}
+
+test "type.errors — the box from a failing call is dropped by the caller" {
+    let v = classify(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and the ok path drops nothing" {
+    let v = classify(7) catch e => {
+        assert false
+        return
+    }
+    assert v == 7
+}
+
+// Two concrete error types through one box, so each has its own vtable.
+test "type.errors — two enums erased to the same box" {
+    let a = classify(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and one from a different enum entirely" {
+    let a = classify(0) catch e => {
+        assert e.message() == "nope"
+        return
+    }
+    assert false
+}
+
+test "type.errors — the long spelling behaves the same" {
+    let v = classify_long(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+// A discarded error. `catch e => -1` still binds `e`, so a name does own the
+// box — but a definition inside a `catch` dominates no return, so the drop had
+// nowhere to go. It goes where control leaves the region the definition rules
+// now, the same rule `container_drop` uses for a container made in one arm of
+// a branch.
+//
+// This is the shortest way to handle an error and the one a program reaches
+// for most, so it is worth its own tests rather than a note.
+test "type.errors — a discarded error still frees its box" {
+    assert (classify(-1) catch e => -1) == -1
+    assert (classify(7) catch e => -1) == 7
+}
+
+test "type.errors — discarded, from two different error enums" {
+    assert (classify(-50) catch e => -1) == -1
+    assert (classify(0) catch e => -1) == -1
+}
+
+test "type.errors — discarded through the long spelling" {
+    assert (classify_long(-1) catch e => -1) == -1
+    assert (classify_long(4) catch e => -1) == 4
+}
+
+// Both paths in one function, so the tag guard has to pick: the ok side never
+// held a box, and dropping there would free the integer payload as a pointer.
+test "type.errors — ok and error paths in one place" {
+    mut good = 0
+    mut bad = 0
+    if (classify(3) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    if (classify(-3) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    if (classify(9) catch e => -1) == -1 { bad = bad + 1 } else { good = good + 1 }
+    assert good == 2
+    assert bad == 1
+}
+
+// A box forwarded through a function that only passes on what it called.
+//
+// `wrapped` returns the wrapper, never the box, so "does a return hand back a
+// fresh box" answered no and the caller dropped nothing. It hands one back
+// through the wrapper's error side, which is now its own answer.
+//
+// The `try` spelling is the same shape with a step in the middle: it reads the
+// box out and repacks it into a wrapper of its own. Both functions are small
+// enough to inline, so by the time the drop pass runs the box's whole trip
+// through storage is one frame's — stored into an aggregate, moved along with
+// it, read out again under a new name. That last name is the one holding it
+// when it dies.
+func wrapped(n: i64) -> i64 or Error {
+    return classify(n)
+}
+
+func forwarded(n: i64) -> i64 or Error {
+    let v = try classify(n)
+    return v * 2
+}
+
+// Two hops, so an answer that only reached one level out would fail here.
+func twice_forwarded(n: i64) -> i64 or Error {
+    return wrapped(n)
+}
+
+test "type.errors — a box forwarded by a function that only returns it" {
+    let v = wrapped(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — and forwarded through `try`, which repacks it" {
+    let v = forwarded(-1) catch e => {
+        assert e.message() == "bad"
+        return
+    }
+    assert false
+}
+
+test "type.errors — two hops" {
+    let v = twice_forwarded(-50) catch e => {
+        assert e.message() == "worse"
+        return
+    }
+    assert false
+}
+
+test "type.errors — forwarded, and the ok path still forwards the value" {
+    assert (wrapped(7) catch e => -1) == 7
+    assert (forwarded(7) catch e => -1) == 14
+    assert (twice_forwarded(7) catch e => -1) == 7
+}
+
+test "type.errors — forwarded and discarded" {
+    assert (wrapped(-1) catch e => -1) == -1
+    assert (forwarded(-1) catch e => -1) == -1
+    assert (twice_forwarded(-1) catch e => -1) == -1
+}
+
+// A failing call in a loop, which leaked one box per turn: a box made on one
+// path of a loop body reaches neither a return nor the back edge from where it
+// is defined, so the same placement rule that fixed the discarded case covers
+// it.
+test "type.errors — a failing call in a loop frees a box per turn" {
+    mut bad = 0
+    for i in 0..6 {
+        let v = classify(0 - i.clamp<i64>() - 1) catch e => {
+            bad = bad + 1
+            continue
+        }
+        assert false
+    }
+    assert bad == 6
+}
+
+test "type.errors — a loop that fails on some turns only" {
+    mut good = 0
+    mut bad = 0
+    for i in 0..8 {
+        if (classify(3 - i.clamp<i64>()) catch e => -1) == -1 {
+            bad = bad + 1
+        } else {
+            good = good + 1
+        }
+    }
+    assert good == 3
+    assert bad == 5
+}
+
+test "type.errors — forwarded, in a loop, reading the message each turn" {
+    mut seen = 0
+    for i in 0..5 {
+        let v = forwarded(-1) catch e => {
+            assert e.message() == "bad"
+            seen = seen + 1
+            0
+        }
+    }
+    assert seen == 5
+}

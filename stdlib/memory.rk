@@ -32,7 +32,7 @@ extend Rack<T> {
 
     /// Insert a node, returning a link to it.
     @native("rask_rack_insert")
-    public func insert(mutate self, node: T) -> Link<T> {}
+    public func insert(mutate self, take node: T) -> Link<T> {}
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
     /// returns. Takes the link: after this the caller's name for that node is
@@ -111,15 +111,22 @@ extend Pool<T> {
     /// Insert an element, returning a handle to it. Panics on allocation
     /// failure (mem.pools/PL3, PL8) — use `try_insert` to handle capacity.
     @native("rask_pool_insert_packed_sized")
-    public func insert(mutate self, value: T) -> Handle<T> {}
+    public func insert(mutate self, take value: T) -> Handle<T> {}
 
     /// Get element by handle (borrows).
     @native("rask_pool_get_packed")
     public func get(self, handle: Handle<T>) -> Option<T> {}
 
-    /// Get a clone of element by handle.
-    @unimplemented
-    public func get_clone(self, handle: Handle<T>) -> Option<T> {}
+    // No `get_clone`. It was declared and `@unimplemented`, and it earns
+    // nothing: `p.get(h)? as v` then `v.clone()` is the same two steps at the
+    // call site, spelled the way every other clone in Rask is. A method whose
+    // whole body is "call the one next to it and clone the answer" is a Rust
+    // reflex, not a Rask API (`specs/stdlib/api-design.md`).
+    //
+    // It also can't be written in Rask today: a Rask body on `Pool` can't reach
+    // the pool's own native methods through `self` on the interpreter, and
+    // `get_clone` came back `none` for a live handle there — #1142. Deleting
+    // this doesn't depend on that being fixed.
 
     /// Read element through a closure.
     @native
@@ -152,7 +159,7 @@ extend Pool<T> {
 
     /// Try to insert, returning none if at capacity.
     @native("rask_pool_try_insert_packed_sized")
-    public func try_insert(mutate self, value: T) -> Handle<T>? {}
+    public func try_insert(mutate self, take value: T) -> Handle<T>? {}
 
     /// Remove all elements, returning them as a Vec.
     @native("rask_pool_drain")

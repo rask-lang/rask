@@ -3381,7 +3381,6 @@ impl<'a> OwnershipChecker<'a> {
                 elem: Box::new(Self::substitute_generic_field(elem, subst)),
                 len: *len,
             },
-            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_generic_field(elem, subst))),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
             ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
             Type::Generic { base, args } => Type::Generic {
@@ -3424,9 +3423,6 @@ impl<'a> OwnershipChecker<'a> {
             Type::Tuple(elems) => {
                 elems.iter().all(|t| self.is_copy(t)) && self.type_size(ty) <= 16
             }
-
-            // Slices are Copy (borrowed view)
-            Type::Slice(_) => true,
 
             // Option (T or none): Copy if inner is Copy and size <= 16 bytes
             ty if ty.is_option() => {
@@ -3612,8 +3608,8 @@ impl<'a> OwnershipChecker<'a> {
                     8
                 }
             }
-            // Pointers/references/slices/trait objects: fat pointer
-            Type::String | Type::Slice(_) | Type::Fn { .. } | Type::TraitObject { .. } => 16,
+            // Strings, closures and trait objects: fat pointer
+            Type::String | Type::Fn { .. } | Type::TraitObject { .. } => 16,
             _ => 8,
         }
     }
@@ -4588,12 +4584,19 @@ impl<'a> OwnershipChecker<'a> {
             // binding look Copy and `drop(p)` consumed nothing — the leak was
             // reported on a freed value and `drop(p); drop(p)` drew no error at
             // all. Linearity is a property of the box, not of what's in it (#819).
+            // The checker's type for this very node, when the binding table
+            // has nothing. A `for` binding is recorded only for a rack
+            // iteration, so `for i in 1..4 { v.push(i); println("{i}") }` read
+            // as a move of `i` and asked for `i.clone()` on an integer — the
+            // table's silence means "not recorded", and treating it as "not
+            // Copy" is the right default only where there is nothing else to
+            // ask.
+            let ty = self
+                .binding_types
+                .get(name)
+                .or_else(|| self.program.node_types.get(&arg_expr.id));
             let is_copy = !self.owned_bindings.contains(name)
-                && self
-                    .binding_types
-                    .get(name)
-                    .map(|t| self.is_copy(t))
-                    .unwrap_or(false);
+                && ty.map(|t| self.is_copy(t)).unwrap_or(false);
             if !is_copy {
                 self.consume_binding(name, arg_expr.span, sink);
             }
@@ -5390,7 +5393,7 @@ fn collect_generic_instances(
             collect_generic_instances(err, out);
         }
         Type::Array { elem, .. } => collect_generic_instances(elem, out),
-        Type::Slice(inner) | Type::RawPtr(inner) => collect_generic_instances(inner, out),
+        Type::RawPtr(inner) => collect_generic_instances(inner, out),
         Type::Tuple(elems) | Type::Union(elems) => {
             for e in elems {
                 collect_generic_instances(e, out);
@@ -5424,7 +5427,6 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
             elem: Box::new(substitute_params(elem, subst)),
             len: *len,
         },
-        Type::Slice(inner) => Type::Slice(Box::new(substitute_params(inner, subst))),
         Type::RawPtr(inner) => Type::RawPtr(Box::new(substitute_params(inner, subst))),
         Type::Tuple(elems) => {
             Type::Tuple(elems.iter().map(|e| substitute_params(e, subst)).collect())

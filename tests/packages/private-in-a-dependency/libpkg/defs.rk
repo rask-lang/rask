@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A public surface and a private helper behind it. Every declaration is merged
+// into the program — that is what lets `greet` call `polish` at all (#1100) —
+// and each package's own namespace is what keeps the helper out of reach.
+
+public struct Cat {
+    public name: string
+}
+
+func polish(n: string) -> string {
+    return "*{n}*"
+}
+
+public func greet(c: Cat) -> string {
+    return "hei {polish(c.name)}"
+}

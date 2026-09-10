@@ -9,7 +9,7 @@ use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilder
 use std::collections::{HashMap, HashSet};
 
 use rask_mir::FieldAccess;
-use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
+use rask_mir::{BinOp, BlockId, ContainerKind, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
@@ -1222,47 +1222,26 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => Self::lower_trait_call(builder, dst, trait_object, method_name, vtable_offset, args, ctx)?,
 
+            // This is only ever the *borrowed* box — the one built for a
+            // call, which `trait_drop` emits a drop for because the frame
+            // outlives it. So the block goes and nothing inside it does: the
+            // value's strings and containers are the frame's, and the box holds
+            // the same buffer and the same handle (mem.boxes, #1144).
+            // `rc_insert` puts the frame's own release after this statement.
+            //
+            // Hence the null hook. A box the value was *moved* into owns its
+            // contents and passes the vtable's `owned_release` here instead,
+            // which is what a container element's release does.
             MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitDrop: trait object variable not found".to_string()
                     ))?);
-
-                // Load data_ptr and vtable_ptr
                 let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
-
-                // Load drop_fn from vtable
-                let drop_fn = builder.ins().load(types::I64, MemFlags::new(), vtable_ptr, crate::vtable::VTABLE_DROP_OFFSET as i32);
-
-                // If drop_fn != null, call it
-                let null = builder.ins().iconst(types::I64, 0);
-                let is_null = builder.ins().icmp(IntCC::Equal, drop_fn, null);
-
-                let drop_block = builder.create_block();
-                let free_block = builder.create_block();
-
-                builder.ins().brif(is_null, free_block, &[], drop_block, &[]);
-
-                // Drop block: call drop_fn(data_ptr), then fall through to free.
-                // Its only predecessor is the brif above, already emitted —
-                // safe to seal right away, matching every other conditional
-                // block pair in this file (bounds checks, tag comparisons, …).
-                builder.switch_to_block(drop_block);
-                builder.seal_block(drop_block);
-                let mut drop_sig = Signature::new(isa::CallConv::SystemV);
-                drop_sig.params.push(AbiParam::new(types::I64));
-                let sig_ref = builder.import_signature(drop_sig);
-                builder.ins().call_indirect(sig_ref, drop_fn, &[data_ptr]);
-                builder.ins().jump(free_block, &[]);
-
-                // Free block: rask_free(data_ptr). Both predecessors (the
-                // brif's null arm and drop_block's jump) are already emitted.
-                builder.switch_to_block(free_block);
-                builder.seal_block(free_block);
-                let free_ref = ctx.func_refs.get("rask_free")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
-                builder.ins().call(*free_ref, &[data_ptr]);
+                let none = builder.ins().iconst(types::I64, 0);
+                let release_ref = ctx.func_refs.get("rask_box_release")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
+                builder.ins().call(*release_ref, &[data_ptr, none]);
             }
 
             MirStmtKind::Phi { .. } => {
@@ -1292,10 +1271,16 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmtKind::RcDecContents { local } => {
-                // An aggregate dying gives back the strings it holds.
-                let Some(ty) = ctx.locals.iter().find(|l| l.id == *local).map(|l| l.ty.clone())
-                else {
+                // An aggregate dying gives back the strings it holds — and the
+                // container behind its tag, if it has one. MIR stores the plain
+                // type and the kind separately (`MirType::Container` says why),
+                // so put them back together for the walk.
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
+                };
+                let ty = match entry.container {
+                    Some(kind) => Self::with_container_kind(&entry.ty, kind),
+                    None => entry.ty.clone(),
                 };
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
@@ -1323,6 +1308,32 @@ impl<'a> FunctionBuilder<'a> {
         } else {
             Self::lower_ordinary_call(builder, dst, func, args, ctx)
         }
+    }
+
+    /// `(value_ptr, data_size, payload_kind)` — the shape all three box
+    /// constructors take.
+    ///
+    /// The size is computed here, from the MIR argument's type; the payload
+    /// kind comes from lowering, which is the only place that knows a `Ptr` is
+    /// a `Map` (`elem_strs::box_payload_kind`). So the size goes *between* the
+    /// two arguments MIR passed, and a call that predates the kind — nothing
+    /// emits one today, but the tolerant answer costs nothing — reads as
+    /// holding nothing.
+    fn box_new_args(builder: &mut ClifFunctionBuilder, args: &mut Vec<Value>, data_size: i64) {
+        let size = builder.ins().iconst(types::I64, data_size);
+        // Lowering puts the kind last, whatever else it injected — `Shared.new`
+        // pushes a size of its own and `Shared.mutex` doesn't, so the position
+        // is not fixed but "last" is.
+        let kind = if args.len() >= 2 {
+            args[args.len() - 1]
+        } else {
+            builder
+                .ins()
+                .iconst(types::I64, rask_mir::elem_strs::BOX_PAYLOAD_NONE)
+        };
+        args.truncate(1);
+        args.push(size);
+        args.push(kind);
     }
 
     /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
@@ -1986,7 +1997,7 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
-            | RaskType::Fn { .. } | RaskType::Slice(_) => false,
+            | RaskType::Fn { .. } => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
             // A named type is an aggregate when it's a user struct or enum —
@@ -2206,7 +2217,7 @@ impl<'a> FunctionBuilder<'a> {
                 let is_aggregate = matches!(
                     local_ty,
                     Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
-                         | MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+                         | MirType::Tuple(_) | MirType::Option(_)
                          | MirType::Result { .. } | MirType::Union(_))
                 );
 
@@ -2946,8 +2957,17 @@ impl<'a> FunctionBuilder<'a> {
             // capture layout.
             let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
+            // The environment's drop glue, when this closure owns a container
+            // it captured. `container_drop` generates the function and names it
+            // after the closure; the name is the whole agreement between the
+            // two sides (`ENV_DROP_SUFFIX`).
+            let glue_name = format!("{func_name}{}", rask_mir::ENV_DROP_SUFFIX);
+            let env_drop = match ctx.func_refs.get(glue_name.as_str()) {
+                Some(glue) => builder.ins().func_addr(types::I64, *glue),
+                None => builder.ins().iconst(types::I64, 0),
+            };
             crate::closures::allocate_closure_heap(
-                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop,
             )?
         } else {
             // Non-escaping closure: stack-allocate
@@ -3071,10 +3091,12 @@ impl<'a> FunctionBuilder<'a> {
         concrete_size: &u32,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        let alloc_ref = ctx.func_refs.get("rask_alloc")
-            .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+        let alloc_ref = ctx.func_refs.get("rask_box_alloc")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_alloc".to_string()))?;
 
-        // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
+        // The block carries a reference count in the word before the value, so
+        // a derived container can share it — see `rask_box_alloc`. The pointer
+        // that comes back is the value's, so nothing downstream changes.
         let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
         let size_val = builder.ins().iconst(types::I64, alloc_size);
         let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
@@ -3887,6 +3909,42 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Compare two enums: tags first, then the payload of the shared variant.
     /// Different tags short-circuit to "not equal".
+    /// Load an enum's variant tag at the width the layout gives it.
+    ///
+    /// An `I64` load here reads past the end of a fieldless enum — its whole
+    /// storage is the tag, one byte of it — so `a == b` answered from whatever
+    /// sat next to the slot. It agreed with itself often enough to look right
+    /// and flipped under `RASK_POISON_STACK=1`: `cmp(a, b) == Ordering.Greater`
+    /// inside a generic body was simply false. `EnumTag` and `emit_option_eq`
+    /// already read the declared width; this is the third place that has to.
+    fn load_enum_tag(
+        builder: &mut ClifFunctionBuilder,
+        ctx: &CodegenCtx,
+        ptr: Value,
+        idx: usize,
+    ) -> Value {
+        let (offset, ty) = match ctx.enum_layouts.get(idx) {
+            Some(layout) => {
+                let (tag_size, _) =
+                    rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                let ty = match tag_size {
+                    8 => types::I64,
+                    4 => types::I32,
+                    2 => types::I16,
+                    _ => types::I8,
+                };
+                (layout.tag_offset as i32, ty)
+            }
+            None => (0, types::I8),
+        };
+        let raw = builder.ins().load(ty, MemFlags::new(), ptr, offset);
+        if ty == types::I64 {
+            raw
+        } else {
+            builder.ins().uextend(types::I64, raw)
+        }
+    }
+
     fn emit_enum_eq(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
@@ -3908,8 +3966,9 @@ impl<'a> FunctionBuilder<'a> {
             (layout.tag_offset as i32, vs)
         };
 
-        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
-        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let _ = tag_off;
+        let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
+        let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tags_eq = builder.ins().icmp(IntCC::Equal, tag_l, tag_r);
 
         // Fieldless enum (plain tag union): equality is just tag equality.
@@ -3991,7 +4050,7 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().icmp(IntCC::Equal, a, b))
             }
-            // Option/Result/Slice and friends as a nested element: compare the
+            // Option/Result and friends as a nested element: compare the
             // raw slot bytes. Correct for POD payloads; heap payloads nested
             // this deep aren't content-compared yet.
             _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, ty.size())),
@@ -4205,8 +4264,9 @@ impl<'a> FunctionBuilder<'a> {
             (layout.tag_offset as i32, vs)
         };
 
-        let tag_l = builder.ins().load(types::I64, MemFlags::new(), lhs, tag_off);
-        let tag_r = builder.ins().load(types::I64, MemFlags::new(), rhs, tag_off);
+        let _ = tag_off;
+        let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
+        let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tag_cmp = Self::emit_signed_three_way(builder, tag_l, tag_r);
 
         if variants.iter().all(|(_, _, f)| f.is_empty()) {
@@ -5582,8 +5642,31 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 CallAdapt::PopOutParam(ss) => {
-                    // Value was written to stack slot by callee
-                    builder.ins().stack_load(types::I64, ss, 0)
+                    // Value was written to stack slot by callee.
+                    //
+                    // A float has to be loaded as one. The widening below reads
+                    // a mismatched type as a *number* to convert, not as bits to
+                    // reinterpret, so an integer load of a double came out as
+                    // its bit pattern: `Shared<f64>.local(1.5).replace(2.5)`
+                    // answered 4609434218613702700. Integers keep the word load
+                    // — the callee always writes a full one — and narrow on the
+                    // way into the destination.
+                    //
+                    // An `f32` slot holds a promoted double, so it reads eight
+                    // bytes wide and demotes, which is the pair `load_scalar_slot`
+                    // and `value_to_ptr` already agree on. A four-byte read got
+                    // the double's zero low half and `Shared<f32>.replace` came
+                    // back 0.
+                    let want = dst_local
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .filter(|t| t.is_float())
+                        .unwrap_or(types::I64);
+                    if want == types::F32 {
+                        let wide = builder.ins().stack_load(types::F64, ss, 0);
+                        builder.ins().fdemote(types::F32, wide)
+                    } else {
+                        builder.ins().stack_load(want, ss, 0)
+                    }
                 }
                 CallAdapt::OptionOutParam(ss) => {
                     // Payload is already in place; 1 means it's there (tag 0),
@@ -6919,7 +7002,7 @@ impl<'a> FunctionBuilder<'a> {
                 Some((offset + max_align - 1) & !(max_align - 1))
             }
             MirType::String => Some(16),
-            MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
+            MirType::TraitObject { .. } => Some(ty.size()),
             // `[member:8][member bytes]` — the index word counts, or the slot
             // comes up 8 bytes short and the widest member's tail lands past its
             // end (#776).
@@ -7110,7 +7193,7 @@ impl<'a> FunctionBuilder<'a> {
     /// guessed, because a wrong offset here releases sixteen bytes that were
     /// never a string. Those elements leak; see #1027.
     fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts)
+        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts, ctx.enum_layouts)
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -7144,6 +7227,8 @@ impl<'a> FunctionBuilder<'a> {
         }
         match ty {
             MirType::String => true,
+            // A container owns its byte store whatever the elements are.
+            MirType::Container(_) => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7168,32 +7253,30 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// The same question about a field's declared type. Layouts record fields
-    /// as `rask_types::Type`, so the walk crosses between the two languages.
-    /// The release for a container a field holds, if the field holds one.
-    ///
-    /// A container field's slot holds the *handle*, not the container, so
-    /// freeing it means loading the pointer and passing it — the opposite shape
-    /// from a string field, whose slot is the header and whose release takes
-    /// the slot's address.
-    ///
-    /// A field's type in a layout is a resolved `Type::Generic`, which carries a
-    /// TypeId and no name, and there is no table here to look one up in.
-    /// Rendering it and taking the head is what works.
-    fn container_free_for(ty: &RaskType) -> Option<&'static str> {
-        let rendered = format!("{}", ty);
-        // Only the container itself. `Vec<i64>?` renders with the same head and
-        // is a different thing: the slot holds a tag and a payload, the handle
-        // is behind the tag, and MIR reaches it through the wrapper rather than
-        // straight off the struct — so freeing it here ran before the reads
-        // (`h.v!.len()` gave 1361822157891490808).
-        if rendered.ends_with('?') || rendered.contains(" or ") {
-            return None;
+    /// The local's type with its container kind put back into the wrapper's
+    /// payload — the one type the release walk gets to see it in.
+    fn with_container_kind(ty: &MirType, kind: ContainerKind) -> MirType {
+        match ty {
+            MirType::Option(inner) if **inner == MirType::Ptr => {
+                MirType::Option(Box::new(MirType::Container(kind)))
+            }
+            MirType::Result { ok, err } if **ok == MirType::Ptr => MirType::Result {
+                ok: Box::new(MirType::Container(kind)),
+                err: err.clone(),
+            },
+            other => other.clone(),
         }
-        let head = rendered.split('<').next().unwrap_or(&rendered).trim();
-        match head {
-            "Vec" => Some("rask_vec_free"),
-            _ => None,
+    }
+
+    /// What frees a container MIR named as one. The type-name route
+    /// (`container_free_for`) reads a field's declared type; this one reads a
+    /// wrapper payload, where the kind travels in the MIR type instead.
+    fn container_free_for_kind(kind: ContainerKind) -> &'static str {
+        match kind {
+            ContainerKind::Vec => "rask_vec_free",
+            ContainerKind::Map => "rask_map_free",
+            ContainerKind::Rack => "rask_rack_free",
+            ContainerKind::Pool => "rask_pool_free",
         }
     }
 
@@ -7201,7 +7284,7 @@ impl<'a> FunctionBuilder<'a> {
         if depth > Self::RC_WALK_DEPTH {
             return false;
         }
-        if Self::container_free_for(ty).is_some() {
+        if crate::drop_fields::container_free_for(ty).is_some() {
             return true;
         }
         match ty {
@@ -7239,6 +7322,11 @@ impl<'a> FunctionBuilder<'a> {
         }
         match ty {
             MirType::String => Self::emit_string_release(builder, base, offset, ctx),
+            // The slot holds the handle; the release loads it and frees what it
+            // points at, elements and all.
+            MirType::Container(kind) => Self::emit_container_release(
+                builder, base, offset, Self::container_free_for_kind(*kind), ctx,
+            ),
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
@@ -7261,7 +7349,7 @@ impl<'a> FunctionBuilder<'a> {
                     .map(|f| (f.offset as i32, f.ty.clone()))
                     .collect();
                 for (field_offset, field_ty) in fields {
-                    if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                    if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
                         Self::emit_container_release(
                             builder, base, offset + field_offset, free_fn, ctx,
                         )?;
@@ -7314,6 +7402,18 @@ impl<'a> FunctionBuilder<'a> {
         if depth > Self::RC_WALK_DEPTH || !Self::holds_string_ty(ty, ctx, 0) {
             return Ok(());
         }
+        // The value *is* a container. Only a struct's fields used to be checked
+        // for one, so a container reached any other way was walked and nothing
+        // came of it — and the way that matters is a wrapper's payload:
+        //
+        //     json.decode<Vec<Point>>(text) catch e => …
+        //
+        // hands back `Vec<Point> or JsonError`, and releasing the wrapper
+        // released neither side. `holds_string_ty` has always answered "yes" to
+        // this shape, so the walk ran and did nothing at all.
+        if let Some(free_fn) = crate::drop_fields::container_free_for(ty) {
+            return Self::emit_container_release(builder, base, offset, free_fn, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {
@@ -7340,7 +7440,7 @@ impl<'a> FunctionBuilder<'a> {
                         // container behind an `Option`'s tag is reached through
                         // the wrapper instead, and freeing it here ran before
                         // the reads (`h.v!.len()` gave 1361822157891490808).
-                        if let Some(free_fn) = Self::container_free_for(&field_ty) {
+                        if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
                             Self::emit_container_release(
                                 builder, base, offset + field_offset, free_fn, ctx,
                             )?;
@@ -7539,6 +7639,17 @@ impl<'a> FunctionBuilder<'a> {
             builder.switch_to_block(hit);
             builder.seal_block(hit);
             for (field_offset, field_ty) in fields {
+                // A variant's own container field, the same as a struct's. Only
+                // `release_strings_ty`'s *nested struct* arm looked for one, so
+                // `enum Shape { Many(Vec<i64>) }` released nothing and every
+                // vector inside one leaked — which is most of what a decoded
+                // `JsonValue` holds.
+                if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
+                    Self::emit_container_release(
+                        builder, base, offset + field_offset, free_fn, ctx,
+                    )?;
+                    continue;
+                }
                 Self::release_strings_ty(
                     builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
                 )?;
@@ -7856,7 +7967,6 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Tuple(_)
                     | MirType::Option(_)
                     | MirType::Result { .. }
-                    | MirType::Slice(_)
                     | MirType::Union(_)
                     | MirType::TraitObject { .. }
                 ))
@@ -7955,7 +8065,6 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::Tuple(_)
                 | MirType::Option(_)
                 | MirType::Result { .. }
-                | MirType::Slice(_)
                 | MirType::Union(_)
                 | MirType::TraitObject { .. }
             ))
@@ -7984,6 +8093,25 @@ impl<'a> FunctionBuilder<'a> {
             .iter()
             .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
             .collect()
+    }
+
+    /// What one node payload owns, and where: the `offset | (kind << 28)`
+    /// entries `rask_owned_release` reads.
+    ///
+    /// The same walk a container's struct elements get — a node in a rack and a
+    /// struct in a vector own their fields the same way — so it comes off the
+    /// same function rather than a second copy of the rules.
+    fn node_owned_descriptor(
+        mir_args: &[MirOperand],
+        arg_index: usize,
+        ctx: &CodegenCtx,
+    ) -> Vec<i32> {
+        let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
+        let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
+        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
+        let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
+        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
+            .unwrap_or_default()
     }
 
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
@@ -8414,6 +8542,28 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
                 }
+                // And what the payload *owns* — the same entries a container's
+                // elements carry, off the same layout. `fields` above is the
+                // other question: it lists what holds links, so the fixup can
+                // find a node's edges, and a `name: string` or a
+                // `tags: Vec<string>` never appeared in it.
+                //
+                // The runtime copies both on the first insert, so a stack slot
+                // is enough to hand them over.
+                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    ));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        builder.ins().stack_store(e, ss, (i * 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
                 CallAdapt::None
             }
 
@@ -8437,15 +8587,16 @@ impl<'a> FunctionBuilder<'a> {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    let size = builder.ins().iconst(types::I64, data_size);
-                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
+                    Self::box_new_args(builder, args, data_size);
                 }
                 CallAdapt::None
             }
-            // Both take the new value by pointer, so a scalar spills to a slot
-            // first. `replace` additionally hands back the old value's address —
-            // returning CallAdapt::None here would leave that pointer as the
-            // result and `let old = c.replace(0)` would print an address.
+            // `into_inner` has no value argument — it only reads — so it takes
+            // the out-param and nothing else.
+            "Cell_into_inner" => Self::append_out_param(builder, args, dst, ctx),
+            // `set` and `replace` both take the new value by pointer, so a
+            // scalar spills to a slot first. `replace` also gives the old value
+            // back, through an out-param of its own.
             "Cell_set" | "Cell_replace"
             | "Shared_set" | "Shared_replace"
             | "Mutex_set" | "Mutex_replace" => {
@@ -8457,13 +8608,19 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 if func_name.ends_with("_replace") {
-                    // The old value comes back by address. `DerefResult` loads a
-                    // scalar through it, which is right for a number and half a
-                    // string: `Shared.local("first").replace("second")` handed
-                    // back eight of sixteen bytes and read as empty. Aggregates
-                    // need the copy-through-the-slot adapter, which is the same
-                    // choice every other by-address return makes.
-                    Self::deref_or_string(dst, ctx)
+                    // The old value goes into the caller's own destination. It
+                    // used to come back by address, which meant the runtime
+                    // allocated a block for it so the pointer would outlive the
+                    // call — and nothing freed that block, so every `replace`
+                    // leaked its payload's width.
+                    //
+                    // An aggregate destination already has the slot to write
+                    // into, and marking it written skips the copy that would
+                    // otherwise be the slot onto itself. A scalar has no slot,
+                    // so it gets a word-sized one to be loaded back out of —
+                    // which is what a returned pointer was doing anyway, one
+                    // dereference later.
+                    Self::append_out_param(builder, args, dst, ctx)
                 } else {
                     CallAdapt::None
                 }
@@ -8481,8 +8638,7 @@ impl<'a> FunctionBuilder<'a> {
                         let val = args[0];
                         args[0] = Self::value_to_ptr(builder, val);
                     }
-                    let size = builder.ins().iconst(types::I64, data_size);
-                    if args.len() >= 2 { args[1] = size; } else { args.push(size); }
+                    Self::box_new_args(builder, args, data_size);
                 }
                 CallAdapt::None
             }

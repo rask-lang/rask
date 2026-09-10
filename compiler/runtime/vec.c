@@ -33,7 +33,142 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op);
 const int32_t rask_elem_strs_one[1] = {0};
 const int32_t rask_elem_strs_pair[2] = {0, 16};
 
-// Take a reference to every string in `count` elements starting at `from`.
+// One entry of an element map. Shared by every container's free and retain
+// walks — the encoding is described next to `RaskElemStrs` in the header.
+void rask_owned_release(char *elem, int32_t entry) {
+    char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
+    switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_STRING:
+            rask_string_free((const RaskStr *)at);
+            break;
+        case RASK_OWNED_VEC:
+            rask_vec_free(*(RaskVec **)at);
+            *(RaskVec **)at = NULL;
+            break;
+        case RASK_OWNED_MAP:
+            rask_map_free(*(RaskMap **)at);
+            *(RaskMap **)at = NULL;
+            break;
+        // The block describes itself, so there is nothing to look up: the
+        // release is a decrement and the last one runs `env_drop` and gives
+        // the bytes back. The slot is left alone — unlike a nested container's,
+        // whose handle is rewritten, because a count needs no new pointer.
+        case RASK_OWNED_CLOSURE:
+            rask_closure_free(*(void **)at);
+            break;
+        // A box in a container owns its value — it was moved in, which the
+        // checker enforces (using the local again after `v.push(h)` is E0800).
+        // So the value's own contents go first, through the vtable's
+        // `owned_release`, and then the block. The vtable half points at static
+        // data and is nobody's to free.
+        //
+        // `TraitDrop` deliberately doesn't do this: that one is a box built for
+        // a call, which borrows, and the frame still owns what's inside.
+        case RASK_OWNED_TRAITBOX: {
+            int64_t *fat = (int64_t *)at;
+            void *data = (void *)(intptr_t)fat[0];
+            const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
+            void (*owned_release)(void *) = NULL;
+            if (vt) {
+                owned_release =
+                    (void (*)(void *))(intptr_t)vt[RASK_VTABLE_OWNED_RELEASE_WORD];
+            }
+            rask_box_release(data, owned_release);
+            fat[0] = 0;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void rask_owned_retain(char *elem, int32_t entry) {
+    char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
+    switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_STRING:
+            rask_string_clone((const RaskStr *)at);
+            break;
+        // A nested container can't be shared by two owners, so the copy gets
+        // one of its own. The handle written back is what makes the derived
+        // container's element point at it.
+        case RASK_OWNED_VEC: {
+            RaskVec *inner = *(RaskVec **)at;
+            if (inner) *(RaskVec **)at = rask_vec_clone(inner);
+            break;
+        }
+        case RASK_OWNED_MAP: {
+            RaskMap *inner = *(RaskMap **)at;
+            if (inner) *(RaskMap **)at = rask_map_clone(inner);
+            break;
+        }
+        // A count rather than a copy. The env layout is known only to the
+        // closure's generated `env_drop`, so a real copy would have to retain
+        // whatever the captures own and there is no glue to ask.
+        case RASK_OWNED_CLOSURE:
+            rask_closure_retain(*(void **)at);
+            break;
+        case RASK_OWNED_TRAITBOX:
+            rask_box_retain((void *)(intptr_t)*(int64_t *)at);
+            break;
+        // A reference to the same box, not a copy of it. A derived container
+        // copies element bytes and a box's element is a pointer, so without
+        // this the second release would free one block twice. Copying the value
+        // instead would mean copying whatever it holds, and Rask doesn't deep
+        // clone implicitly — so `boxes.clone()` shares its boxes, the way a
+        // cloned `Vec<func>` shares its closures.
+        default:
+            break;
+    }
+}
+
+// Walk a whole element map, honouring the tag guards.
+//
+// A guard says "the next N entries apply only if the tag at this offset holds
+// this value", so the walk has to be able to skip — which is why this isn't a
+// loop over the three single-entry functions above. Arms nest: a variant whose
+// payload is another enum contributes a guard inside a guard, and the recursion
+// bottoms out because each arm is strictly shorter than the list holding it.
+typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
+
+static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+    if (!elem || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        if (((uint32_t)e >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_TAG_IF) {
+            int64_t body = RASK_OWNED_TAG_COUNT(e);
+            // A list that claims more entries than it has is malformed; stop
+            // rather than read past it.
+            if (i + body >= count) return;
+            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
+            int64_t tag;
+            switch (RASK_OWNED_TAG_WIDTH(e)) {
+                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+                default: tag = *(const int64_t *)at;           break;
+            }
+            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+                owned_walk(elem, entries + i + 1, body, op);
+            }
+            i += body;
+            continue;
+        }
+        switch (op) {
+            case OWNED_RELEASE: rask_owned_release(elem, e); break;
+            case OWNED_RETAIN:  rask_owned_retain(elem, e);  break;
+        }
+    }
+}
+
+void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count) {
+    owned_walk(elem, entries, count, OWNED_RELEASE);
+}
+
+void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
+    owned_walk(elem, entries, count, OWNED_RETAIN);
+}
+
+// Take a reference to everything `count` elements starting at `from` own.
 //
 // A vector derived from another — clone, slice, chunk, skip — copies element
 // bytes. Two vectors then point at one string buffer, and whichever is freed
@@ -42,10 +177,7 @@ const int32_t rask_elem_strs_pair[2] = {0, 16};
 static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
     if (!v || !v->strs.offsets || v->strs.count <= 0 || !v->data) return;
     for (int64_t i = from; i < from + count; i++) {
-        const char *elem = v->data + i * v->elem_size;
-        for (int64_t k = 0; k < v->strs.count; k++) {
-            rask_string_clone((const RaskStr *)(elem + v->strs.offsets[k]));
-        }
+        rask_owned_retain_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
     }
 }
 
@@ -98,11 +230,19 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
-    // The elements are copied in, so this vector is a second owner of whatever
-    // they hold. A literal's sentinel refcount makes that free; a `["{a}",
-    // "{b}"]` built at runtime is the case that needs it, since the locals that
-    // made those strings release their own reference on the way out.
-    vec_retain_elems(v, 0, v->len);
+    // No retain on the elements. The array these bytes came from owns a
+    // reference already — lowering emits an `rc_inc` before storing a string
+    // header into a literal's slot and an `rc_dec` on the name afterwards, so
+    // the slot is the owner by the time this runs — and the array is a
+    // temporary the frame never releases. Taking the bytes over takes that
+    // reference with them.
+    //
+    // Taking a second one on top leaked the buffer once per runtime-built
+    // element: `let v: Vec<string> = ["built {n}", "a literal"]` never gave
+    // the first one back. A literal element carries a sentinel refcount that
+    // every release walks away from, which is why an all-literal vector was
+    // fine and this went unseen — as did the version of
+    // `t_boxed_value_contents.rk` whose strings were all literals.
     return v;
 }
 
@@ -116,10 +256,7 @@ void rask_vec_free(RaskVec *v) {
     vec_check_no_borrows(v, "free");
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
-            const char *elem = v->data + i * v->elem_size;
-            for (int64_t k = 0; k < v->strs.count; k++) {
-                rask_string_free((const RaskStr *)(elem + v->strs.offsets[k]));
-            }
+            rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
         }
     }
     if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
@@ -305,7 +442,47 @@ void rask_vec_clear(RaskVec *v) {
 
 int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
     if (!v) return -1;
-    return vec_grow(v, v->len + additional);
+    if (additional < 0) rask_panic("Vec.reserve needs a non-negative count");
+    int64_t needed = rask_safe_add(v->len, additional);
+    if (v->bound >= 0 && needed > v->bound) {
+        rask_panic_fmt("Vec.reserve(%lld) exceeds the capacity bound of %lld",
+                       (long long)additional, (long long)v->bound);
+    }
+    return vec_grow(v, needed);
+}
+
+// How many elements the buffer has room for. Same unit as `len()` — bytes would
+// make the pair read wrong.
+int64_t rask_vec_allocated(const RaskVec *v) {
+    return v ? v->cap : 0;
+}
+
+// Give back everything past `min_cap` elements, keeping at least `len`. A
+// bounded vector is pre-allocated at its bound (CP3) and stays that way:
+// shrinking one would make a later push reallocate past its own promise.
+static void vec_shrink(RaskVec *v, int64_t min_cap) {
+    if (!v || v->bound >= 0) return;
+    vec_check_no_borrows(v, "shrink");
+    int64_t want = v->len > min_cap ? v->len : min_cap;
+    if (want >= v->cap) return;
+    if (want == 0) {
+        if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+        v->data = NULL;
+        v->cap = 0;
+        return;
+    }
+    char *new_data = (char *)rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size),
+                                          rask_safe_mul(want, v->elem_size));
+    v->data = new_data;
+    v->cap = want;
+}
+
+void rask_vec_shrink_to_fit(RaskVec *v) {
+    vec_shrink(v, 0);
+}
+
+void rask_vec_shrink_to(RaskVec *v, int64_t min_capacity) {
+    vec_shrink(v, min_capacity < 0 ? 0 : min_capacity);
 }
 
 int64_t rask_vec_is_empty(const RaskVec *v) {
@@ -518,22 +695,6 @@ void rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind) {
 // copying another's elements is an owner only once it has done this.
 void rask_vec_retain_all(RaskVec *v) {
     if (v) vec_retain_elems(v, 0, v->len);
-}
-
-// slice(vec, start, end) — returns a new Vec with elements [start..end).
-RaskVec *rask_vec_slice(const RaskVec *src, int64_t start, int64_t end) {
-    if (!src) return rask_vec_new(8, NULL, 0);
-    if (start < 0) start = 0;
-    if (end > src->len) end = src->len;
-    int64_t new_len = end - start;
-    if (new_len <= 0) return rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
-    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len,
-                                          src->strs.offsets, src->strs.count);
-    memcpy(dst->data, src->data + start * src->elem_size,
-           (size_t)(new_len * src->elem_size));
-    dst->len = new_len;
-    vec_retain_elems(dst, 0, dst->len);
-    return dst;
 }
 
 // chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.

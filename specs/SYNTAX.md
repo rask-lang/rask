@@ -525,7 +525,7 @@ extend LogSource with Reader, Displayable, Error {
 
 **Runtime polymorphism:** Use `any Trait` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.traits/TR5`):
 ```rask
-let widgets: []any Widget = [
+let widgets: Vec<any Widget> = [
     button as any Widget,
     textbox as any Widget,
     slider as any Widget,

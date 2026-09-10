@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string variable written every turn releases what it held.
+//
+// It didn't. Eight turns leaked seven buffers:
+//
+//     mut junk = ""
+//     for i in 0..8 {
+//         junk = "filler string number {i} padded out"
+//     }
+//
+// By the time the reference-counting pass sees it, the loop-carried write isn't
+// a statement at all — it's a phi's incoming edge, `_14 = phi [bb0: _11,
+// bb3: _20]` — so there is no assignment to hang a release off. And the
+// last-use walk looks past it from both sides: `_14` isn't read in the
+// back-edge block and isn't live out of it (the phi takes `_20`, not `_14`), so
+// liveness calls it dead at that block's entry, which is exactly the branch
+// that would have released it.
+//
+// The release goes at the end of the back-edge block, where the name still
+// points at the value about to be replaced. On the last turn the phi runs once
+// more before the loop exits, so what leaves is a value that release never
+// touched.
+//
+// What must *not* get one is a value the phi is about to adopt again rather
+// than replace: `if cond { s = "new" }` leaves one arm carrying the phi's own
+// value, and freeing that is a use-after-free rather than a leak. Hence the
+// answers below, not just the counts — a release placed too early reads as
+// whatever the allocator wrote next.
+//
+// Spec: std.strings/S1 — a string is a shared, reference-counted buffer, so a
+// release is per name and the other holders keep their own.
+
+// Every string here is over 15 bytes; anything shorter lives inline in the
+// header and has no buffer to leak.
+
+test "std.strings — a variable rewritten every turn" {
+    mut junk = ""
+    for i in 0..8 {
+        junk = "filler string number {i} padded out"
+    }
+    assert junk == "filler string number 7 padded out"
+}
+
+// Rebuilt from itself: the concatenation reads the old value before the write,
+// so releasing it afterwards is right and releasing it before would lose the
+// bytes.
+test "std.strings — rebuilt from its own value" {
+    mut s = "seed value long enough to allocate"
+    for i in 0..5 {
+        s = "{s}-{i}"
+    }
+    assert s == "seed value long enough to allocate-0-1-2-3-4"
+}
+
+// One arm writes, the other carries the same value round. The carried one is
+// the phi's own, so the back edge must leave it alone.
+test "std.strings — written on one arm only" {
+    mut a = "the first value, long enough to allocate a buffer"
+    mut seen = 0
+    for i in 0..6 {
+        if i % 2 == 0 {
+            a = "an even turn's value, long enough to allocate"
+        }
+        seen = seen + a.len()
+    }
+    assert a == "an even turn's value, long enough to allocate"
+    assert seen == 270
+}
+
+// Never written in the body: nothing to replace, and the value has to survive
+// every turn.
+test "std.strings — read every turn, never written" {
+    let c = "a constant value, long enough to allocate a buffer"
+    mut n: usize = 0
+    for i in 0..5 {
+        n = n + c.len()
+    }
+    assert n == 250
+    assert c == "a constant value, long enough to allocate a buffer"
+}
+
+// Twice per turn, so the release for the first write is a separate one from the
+// back edge's.
+test "std.strings — written twice per turn" {
+    mut d = "start value, long enough to allocate"
+    for i in 0..4 {
+        d = "first write of turn {i}, long enough"
+        d = "second write of turn {i}, long enough"
+    }
+    assert d == "second write of turn 3, long enough"
+}
+
+// A nested loop, so the inner back edge isn't the only one.
+test "std.strings — nested loops both rewriting" {
+    mut outer = ""
+    mut inner = ""
+    for i in 0..3 {
+        outer = "outer value for turn {i}, long enough to allocate"
+        for j in 0..3 {
+            inner = "inner value for {i} and {j}, long enough to allocate"
+        }
+    }
+    assert outer == "outer value for turn 2, long enough to allocate"
+    assert inner == "inner value for 2 and 2, long enough to allocate"
+}
+
+// The value that leaves the loop is still readable, and pushing it into a
+// container keeps it that way — the container takes its own reference.
+test "std.strings — the last value survives the loop" {
+    mut s = ""
+    mut out: Vec<string> = []
+    for i in 0..4 {
+        s = "value number {i}, long enough to allocate a buffer"
+        out.push(s)
+    }
+    assert out.len() == 4
+    assert out[0] == "value number 0, long enough to allocate a buffer"
+    assert out[3] == "value number 3, long enough to allocate a buffer"
+    assert s == "value number 3, long enough to allocate a buffer"
+}
+
+// A while loop rather than a `for`, which is the same phi with a different
+// header.
+test "std.strings — a while loop rewriting its own binding" {
+    mut s = "initial value, long enough to allocate"
+    mut n = 0
+    while n < 5 {
+        s = "turn number {n}, long enough to allocate a buffer"
+        n = n + 1
+    }
+    assert s == "turn number 4, long enough to allocate a buffer"
+    assert n == 5
+}
+
+func main() {}

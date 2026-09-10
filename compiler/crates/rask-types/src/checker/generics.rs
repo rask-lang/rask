@@ -198,9 +198,6 @@ impl TypeChecker {
                 elem: Box::new(Self::substitute_type_params(elem, subst)),
                 len: *len,
             },
-            Type::Slice(elem) => {
-                Type::Slice(Box::new(Self::substitute_type_params(elem, subst)))
-            }
             // Every other compound type recursed; pointers didn't, so a method
             // returning `*T` — `Vec<T>.as_ptr()` — kept a literal `T` here. The
             // freshening pass right after this then turned that surviving `T`
@@ -325,7 +322,6 @@ impl TypeChecker {
                 elem: Box::new(self.freshen_free_type_params(elem, seen)),
                 len: *len,
             },
-            Type::Slice(inner) => Type::Slice(Box::new(self.freshen_free_type_params(inner, seen))),
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.freshen_free_type_params(inner, seen))),
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
@@ -373,7 +369,7 @@ impl TypeChecker {
                     self.collect_type_vars(e, subst);
                 }
             }
-            Type::Array { elem, .. } | Type::Slice(elem) => {
+            Type::Array { elem, .. } => {
                 self.collect_type_vars(elem, subst);
             }
             Type::Result { ok, err } => {
@@ -419,9 +415,6 @@ impl TypeChecker {
                 elem: Box::new(self.apply_type_var_substitution(elem, substitution)),
                 len: *len,
             },
-            Type::Slice(elem) => {
-                Type::Slice(Box::new(self.apply_type_var_substitution(elem, substitution)))
-            }
             Type::Result { ok, err } if **err == Type::None => {
                 Type::option(self.apply_type_var_substitution(ok, substitution))
             }

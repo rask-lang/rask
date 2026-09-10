@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// #1129 — this `Cat` and the consumer's are two types by modules/RE2, and one
-// namespace by implementation. E0876 says so at the collision; the fixture
-// exists so the day scoping lands, the gate notices the error stopped firing.
+// #1129 — this `Cat` and the consumer's are two types by modules/RE2, and both
+// exist: a dependency's declarations carry the package they came from, so
+// `Cat` here is `Cat_libpkg` from the merge onward and the consumer's `Cat`
+// stays `Cat`.
 
 public struct Cat {
-    name: string
+    public name: string
 }
 
 public func greet(c: Cat) -> string {
     return "hei {c.name}"
+}
+
+// A function that constructs its own package's type. The bodies have to be
+// rewritten along with the declarations or this returns a type that no longer
+// exists (#1112).
+public func named(n: string) -> Cat {
+    return Cat { name: n }
 }

@@ -33,6 +33,58 @@ use crate::value::Value;
 
 pub(crate) mod binary;
 
+/// A `Range<T>` value: the stdlib struct `stdlib/range.rk` declares, which is
+/// also what native builds for a range literal.
+///
+/// It used to be a `Value::Range` variant of its own, which meant a range had
+/// no fields to read and so no way to carry the sequence surface — every
+/// adapter and terminal on a range had to be a compiler special case, and none
+/// were (#920). `step` is a magnitude here; `descending` carries the sign.
+pub(crate) fn range_value(
+    start: i64,
+    end: i64,
+    inclusive: bool,
+    step: i64,
+    descending: bool,
+    bounded: bool,
+) -> Value {
+    let mut fields = IndexMap::new();
+    fields.insert("start".to_string(), Value::int(start));
+    fields.insert("end".to_string(), Value::int(end));
+    fields.insert("step".to_string(), Value::int(step));
+    fields.insert("inclusive".to_string(), Value::Bool(inclusive));
+    fields.insert("descending".to_string(), Value::Bool(descending));
+    fields.insert("bounded".to_string(), Value::Bool(bounded));
+    Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
+        name: "Range".to_string(),
+        fields,
+        resource_id: None,
+    })))
+}
+
+/// The five fields a range's loop and slice paths read, or `None` when the
+/// value isn't a range.
+pub(crate) fn as_range(v: &Value) -> Option<(i64, i64, bool, i64, bool, bool)> {
+    let Value::Struct(s) = v else { return None };
+    let guard = s.lock().unwrap();
+    if guard.name != "Range" {
+        return None;
+    }
+    let int = |name: &str| match guard.fields.get(name) {
+        Some(Value::Int(n, _)) => Some(*n),
+        _ => None,
+    };
+    let flag = |name: &str| matches!(guard.fields.get(name), Some(Value::Bool(true)));
+    Some((
+        int("start")?,
+        int("end")?,
+        flag("inclusive"),
+        int("step")?,
+        flag("descending"),
+        flag("bounded"),
+    ))
+}
+
 /// Declarations collected during registration.
 struct RegisteredProgram {
     entry_fn: Option<FnDecl>,

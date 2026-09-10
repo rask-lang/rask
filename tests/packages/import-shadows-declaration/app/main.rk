@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// modules/IM8: an unqualified import and a local declaration can't share a
+// name. `import libpkg.Cat` brings `Cat` in bare, and this file declares one
+// too — two things under one name in one scope.
+//
+// This is the rule that keeps #1129 closed from the other side. Merely
+// *depending* on `libpkg` is fine, and `tests/packages/name-collision` is that
+// case: both `Cat`s exist and the library's is reached as `libpkg.Cat`. It is
+// the unqualified import that has to be rejected, because resolving it either
+// way loses one of them silently.
+
+import libpkg
+import libpkg.Cat
+
+struct Cat {
+    legs: i64
+}
+
+func main() {
+    let c = Cat { legs: 4 }
+    println("{c.legs}")
+    return
+}

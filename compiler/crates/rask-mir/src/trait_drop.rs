@@ -51,18 +51,303 @@ use crate::{
 
 /// Insert `TraitDrop` for every non-escaping trait-object local, across all functions.
 pub fn insert_trait_drops(fns: &mut [MirFunction]) {
+    // Which callees keep an argument, read off their bodies — the same map the
+    // closure pass uses, and for the same reason. Passing a box to a function
+    // used to count as handing it over, so `io.copy(src, dst)` left both
+    // buffers to a callee that only reads through them: the boxed value's
+    // containers were freed by nobody. It only looked fixed while `io.copy`
+    // was small enough to inline, which is why one `io.copy` in a file was
+    // clean and two leaked five buffers.
+    //
+    // `heap_captures_only: false` — a parameter captured by *any* closure
+    // counts as escaping here. Erring that way leaks; erring the other way is
+    // a double free.
+    let callee_escapes = crate::closures::build_callee_escape_map(fns, false);
+    // And which functions hand a fresh box *back*, which makes their caller the
+    // owner. `return Boom.Bad` in a `-> i64 or Error` boxes the enum and
+    // returns it, and the caller read the box out of the wrapper and dropped
+    // nothing — a boxed error leaked on every failing call, which is every
+    // `or Error` in the language.
+    let hands_back = functions_handing_back_a_trait_box(fns);
     for func in fns.iter_mut() {
-        insert_for_function(func);
+        insert_for_function(func, &callee_escapes, &hands_back);
     }
 }
 
-fn insert_for_function(func: &mut MirFunction) {
-    let trait_locals = collect_fresh_trait_locals(func);
+/// Functions whose return value is a fresh trait box the caller now owns.
+///
+/// The same question `closures::functions_handing_back_a_closure` asks, and a
+/// fixed point for the same reason: handing one back is transitive, so a
+/// wrapper that just forwards what it called joins the set on a later pass.
+fn functions_handing_back_a_trait_box(fns: &[MirFunction]) -> HashSet<String> {
+    let mut names: HashSet<String> = HashSet::new();
+    loop {
+        let before = names.len();
+        for func in fns {
+            if names.contains(&func.name) {
+                continue;
+            }
+            let mut fresh = collect_fresh_trait_locals(func);
+            // A box that came back from a call to something already in the set
+            // is this frame's, and passing it on hands it over again. Which
+            // *name* holds it is the same question the caller's side asks, so
+            // ask it the same way: a trait-object destination is the box, and
+            // a wrapper destination holds it in its payload.
+            fresh.extend(boxes_handed_over(func, &names));
+            fresh.extend(boxes_parked_in_a_wrapper(func, &fresh));
+            if fresh.is_empty() {
+                continue;
+            }
+            if hands_one_back(func, &fresh) {
+                names.insert(func.name.clone());
+            }
+        }
+        if names.len() == before {
+            return names;
+        }
+    }
+}
+
+/// Whether a returning path gives the caller a box this frame owns.
+///
+/// Two shapes, the same two as on the caller's side. Returning the box is one.
+/// Returning a *wrapper* with the box in its payload is the other: `-> i64 or
+/// Error` hands the box back as the error side, so the returned local is the
+/// wrapper and never the box itself. Only the first shape was recognised, so a
+/// function that forwards what it called — `let v = try classify(n)`, which
+/// reads the box out and repacks it into its own wrapper — was not in the set,
+/// and its caller dropped nothing (#1147).
+///
+/// A wrapper holding a box this frame does *not* own settles the whole function
+/// the other way. `return e` for a boxed parameter hands back something whose
+/// owner is the caller already; calling that fresh frees it twice. A path that
+/// stores no box at all — the ok side of a `T or E` — says nothing either way.
+fn hands_one_back(func: &MirFunction, fresh: &HashSet<LocalId>) -> bool {
+    let ty_of = local_types(func);
+    let mut found = false;
+    for block in &func.blocks {
+        let returned = match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => *id,
+            _ => continue,
+        };
+        if fresh.contains(&returned) {
+            found = true;
+            continue;
+        }
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
+                continue;
+            };
+            if *addr != returned || !is_box(&ty_of, v) {
+                continue;
+            }
+            if !fresh.contains(v) {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+/// A box parked in one of this frame's own wrappers and read back out.
+///
+/// `let v = try classify(n)` reads the box out of the callee's wrapper on the
+/// error side and repacks it into a wrapper of its own. Once the forwarding
+/// function is inlined — and it always is, it's three statements — both
+/// wrappers are locals of one frame, so the box's trip through storage happens
+/// entirely inside it:
+///
+/// ```text
+/// _38 = _33.0          // the box, out of what classify returned
+/// *(_26+24) = _38      // parked in this frame's wrapper
+/// _11 = _26            // the wrapper, moved
+/// _18 = _11.0          // and the box, out again
+/// ```
+///
+/// `_38` is moved-from — the store hands the box to the aggregate — so
+/// dropping there would free it while `_18` still reads through it. `_18` is
+/// the name holding it when it dies, which is the name to drop, and nothing
+/// said so: a `Field` read is an alias of somebody else's storage by default,
+/// for the good reason in the module doc.
+///
+/// What makes this one different is that the storage is a local the frame
+/// controls. So the wrapper has to *stay* here: one that gets returned hands
+/// the box to the caller instead (`hands_one_back`), and freeing it here as
+/// well is a double free. And one box-typed read per wrapper only, the same
+/// discipline `boxes_handed_over` keeps — two reads name one box.
+fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> HashSet<LocalId> {
+    let ty_of = local_types(func);
+    let mut out: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
+            continue;
+        };
+        if fresh.contains(v) && is_box(&ty_of, v) {
+            out.extend(box_read_out_of(func, *addr, &ty_of));
+        }
+    }
+    out
+}
+
+/// The one name that ends up owning the box in `wrapper`'s payload.
+///
+/// The wrapper is followed through plain moves first. `_11 = _24` renames the
+/// aggregate and the payload read comes off the new name, which is how a plain
+/// `return classify(n)` forward stayed leaking after the `try` form was fixed:
+/// the call's destination was the only name anyone looked at.
+///
+/// One box-typed read across the whole group, and the group has to stay in this
+/// frame. Two reads name one box and a drop under each frees it twice; a
+/// wrapper that leaves hands the box to whoever gets it. Both answer "no
+/// owner here", which leaks — the safe half.
+fn box_read_out_of(
+    func: &MirFunction,
+    wrapper: LocalId,
+    ty_of: &HashMap<LocalId, MirType>,
+) -> Option<LocalId> {
+    let carriers = names_the_aggregate_reaches(func, wrapper);
+    if !wrapper_stays_here(func, &carriers) {
+        return None;
+    }
+    let reads: Vec<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } => {
+                let base = crate::analysis::uses::operand_local(base)?;
+                (carriers.contains(&base) && is_box(ty_of, dst)).then_some(*dst)
+            }
+            _ => None,
+        })
+        .collect();
+    match reads.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    }
+}
+
+/// Every name an aggregate reaches by a plain move, itself included.
+fn names_the_aggregate_reaches(func: &MirFunction, start: LocalId) -> HashSet<LocalId> {
+    let mut reached: HashSet<LocalId> = HashSet::new();
+    reached.insert(start);
+    loop {
+        let before = reached.len();
+        for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } =
+                &st.kind
+            {
+                if reached.contains(src) {
+                    reached.insert(*dst);
+                }
+            }
+        }
+        if reached.len() == before {
+            return reached;
+        }
+    }
+}
+
+fn local_types(func: &MirFunction) -> HashMap<LocalId, MirType> {
+    func.locals.iter().map(|l| (l.id, l.ty.clone())).collect()
+}
+
+fn is_box(ty_of: &HashMap<LocalId, MirType>, id: &LocalId) -> bool {
+    matches!(ty_of.get(id), Some(MirType::TraitObject { .. }))
+}
+
+/// Whether a wrapper, and every name it moves to, is only ever assembled,
+/// read, and moved along — never handed anywhere else.
+///
+/// A whitelist rather than a list of ways to escape: a shape nobody thought
+/// about should read as "handed away", because that answer leaks and the other
+/// one double-frees.
+fn wrapper_stays_here(func: &MirFunction, carriers: &HashSet<LocalId>) -> bool {
+    let touches = |st: &MirStmt| {
+        carriers.iter().any(|c| crate::analysis::uses::stmt_reads(st, *c))
+    };
+    for block in &func.blocks {
+        for st in &block.statements {
+            if !touches(st) {
+                continue;
+            }
+            let allowed = match &st.kind {
+                // Writing a slot of the wrapper. Writing the wrapper itself
+                // into something else is a hand-off.
+                MirStmtKind::Store { addr, value, .. } => {
+                    carriers.contains(addr)
+                        && !matches!(
+                            crate::analysis::uses::operand_local(value),
+                            Some(v) if carriers.contains(&v)
+                        )
+                }
+                // Reading a slot, reading the tag, or moving the whole wrapper
+                // to a name that is itself a carrier.
+                MirStmtKind::Assign { rvalue: MirRValue::Field { .. }, .. }
+                | MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. } => true,
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(_)) } => {
+                    carriers.contains(dst)
+                }
+                _ => false,
+            };
+            if !allowed {
+                return false;
+            }
+        }
+        // Returned, or read by a terminator any other way.
+        if carriers
+            .iter()
+            .any(|c| crate::analysis::uses::terminator_reads(&block.terminator, *c))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// The box a call handed this frame, when the callee is one of the above.
+///
+/// Two shapes. A trait-object-typed destination *is* the box. A wrapper
+/// destination holds it in its payload — `-> i64 or Error` returns the box as
+/// the error side — and the payload read is the name that owns it.
+///
+/// Which name owns the wrapper's payload is `box_read_out_of`'s question, and
+/// the same one for a wrapper this frame assembled itself.
+fn boxes_handed_over(func: &MirFunction, hands_back: &HashSet<String>) -> HashSet<LocalId> {
+    let ty_of = local_types(func);
+    let mut out: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Call { dst: Some(dst), func: callee, .. } = &stmt.kind else { continue };
+        if !hands_back.contains(&callee.name) {
+            continue;
+        }
+        if is_box(&ty_of, dst) {
+            out.insert(*dst);
+        } else if matches!(
+            ty_of.get(dst),
+            Some(MirType::Option(_)) | Some(MirType::Result { .. })
+        ) {
+            out.extend(box_read_out_of(func, *dst, &ty_of));
+        }
+    }
+    out
+}
+
+fn insert_for_function(
+    func: &mut MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+    hands_back: &HashSet<String>,
+) {
+    let mut trait_locals = collect_fresh_trait_locals(func);
+    trait_locals.extend(boxes_handed_over(func, hands_back));
+    trait_locals.extend(boxes_parked_in_a_wrapper(func, &trait_locals));
     if trait_locals.is_empty() {
         return;
     }
 
-    let escaping = find_escaping(func, &trait_locals);
+    let escaping = find_escaping(func, &trait_locals, callee_escapes);
     let moved_away = find_moved_away(func, &trait_locals);
 
     let droppable: HashSet<LocalId> = trait_locals.iter()
@@ -136,7 +421,11 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
 /// A trait object escapes if it's returned, stored, or passed as a call or
 /// method argument. Being read through `TraitCall`'s receiver position is a
 /// borrow, not an escape.
-fn find_escaping(func: &MirFunction, trait_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
+fn find_escaping(
+    func: &MirFunction,
+    trait_locals: &HashSet<LocalId>,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) -> HashSet<LocalId> {
     let mut escaping = HashSet::new();
 
     let mark_args = |args: &[MirOperand], escaping: &mut HashSet<LocalId>| {
@@ -152,7 +441,29 @@ fn find_escaping(func: &MirFunction, trait_locals: &HashSet<LocalId>) -> HashSet
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
-                MirStmtKind::Call { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
+                // A named callee whose body says it keeps nothing of this
+                // argument leaves the box to this frame. Anything else — a
+                // bodiless native, a call through a closure — has no answer to
+                // read, and no answer means it might keep it.
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    let keeps = callee_escapes.get(&callee.name);
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = crate::analysis::uses::operand_local(arg) else {
+                            continue;
+                        };
+                        if !trait_locals.contains(&id) {
+                            continue;
+                        }
+                        let borrowed = keeps
+                            .and_then(|e| e.get(i))
+                            .map(|escapes| !escapes)
+                            .unwrap_or(false);
+                        if !borrowed {
+                            escaping.insert(id);
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { args, .. } => {
                     mark_args(args, &mut escaping);
                 }
                 MirStmtKind::TraitCall { args, .. } => {
@@ -232,6 +543,35 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
 
     let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
 
+    // Drop where control leaves the region the definition rules.
+    //
+    // The return rule above needs the definition to dominate the return, and a
+    // definition inside a `match` arm — or a `catch` — dominates none of them:
+    // the join block is reachable from the other arms too. Its own comment
+    // names the case and stops there, so the box was dropped nowhere.
+    // `classify(-1) catch e => -1` binds the error, so the payload read exists
+    // and owns the box; it just had no site.
+    //
+    // A definition rules a region; control leaves it either at a `return`
+    // inside it or across an edge out of it, and every path out crosses exactly
+    // one of the two. Same rule as `container_drop::exit_edge_drops`, ported
+    // rather than re-derived — including both of the guards that cost a
+    // segfault there.
+    {
+        let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
+        for id in droppable.iter().copied() {
+            let Some(&def_idx) = defined_in_block.get(&id) else { continue };
+            let def = func.blocks[def_idx].id;
+            for idx in crate::analysis::drop_sites::where_control_leaves(func, &dom, def, id) {
+                extra.entry(idx).or_default().push(id);
+            }
+        }
+        for (idx, mut locals) in extra {
+            locals.sort_by_key(|l| l.0);
+            drops_to_insert.push((idx, locals));
+        }
+    }
+
     for (block_idx, block) in func.blocks.iter().enumerate() {
         match &block.terminator.kind {
             MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
@@ -257,6 +597,8 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
                     &mut drops_to_insert, block_idx, block.id, *target, &func.blocks, &dom, &defined_in_block,
                 );
             }
+            // Nothing to do here; the exit-edge rule below covers every other
+            // way control leaves a definition's region.
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 collect_backedge_drops(
                     &mut drops_to_insert, block_idx, block.id, *then_block, &func.blocks, &dom, &defined_in_block,
@@ -332,9 +674,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
     fn block_id(id: u32) -> BlockId { BlockId(id) }
 
-    fn trait_local(id: u32) -> MirLocal {
-        MirLocal { id: local(id), name: None, ty: MirType::TraitObject { trait_name: "Speaker".into() }, is_param: false }
-    }
+    fn trait_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::TraitObject { trait_name: "Speaker".into() }, is_param: false, container: None } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {
@@ -369,7 +709,7 @@ mod tests {
             dst: None,
             trait_object: receiver,
             method_name: "speak".into(),
-            vtable_offset: 24,
+            vtable_offset: crate::vtable_layout::method_offset(0),
             args: vec![],
         })
     }

@@ -63,9 +63,9 @@ pub struct CodeGenerator {
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
-    /// Per-concrete-type drop glue, generated once and shared across every
-    /// vtable that boxes the same type behind a different trait.
-    drop_glue_fns: HashMap<String, cranelift_module::FuncId>,
+    /// Per-concrete-type owned-value release, generated once and shared across
+    /// every vtable that boxes the same type behind a different trait.
+    owned_release_fns: HashMap<String, cranelift_module::FuncId>,
     /// Collected debug info per function (debug builds only)
     debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
     /// Line map for converting byte offsets to line:col (debug builds)
@@ -115,7 +115,7 @@ impl CodeGenerator {
             fn_ret_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
-            drop_glue_fns: HashMap::new(),
+            owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
@@ -169,7 +169,7 @@ impl CodeGenerator {
             fn_ret_types: HashMap::new(),
             build_mode,
             vtable_data: HashMap::new(),
-            drop_glue_fns: HashMap::new(),
+            owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
@@ -801,9 +801,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64) -> i64 (pointer past the header)
+        // rask_closure_alloc(block_size: i64, env_drop: i64) -> i64
+        // (pointer past the two header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
             let id = self.module
@@ -820,6 +822,40 @@ impl CodeGenerator {
                 .declare_function("rask_closure_free", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_closure_free".to_string(), id);
+        }
+
+        // rask_box_alloc(value_size: i64) -> ptr — a trait object's block, with
+        // a reference count in the word before the value it returns.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_box_alloc", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_box_alloc".to_string(), id);
+        }
+
+        // rask_box_retain(value: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_box_retain", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_box_retain".to_string(), id);
+        }
+
+        // rask_box_release(value: i64, owned_release: i64) -> void — the hook
+        // is null for a borrowed box, whose contents are the frame's (#1144).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_box_release", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_box_release".to_string(), id);
         }
 
         // rask_bench_run(fn_ptr: i64, name_ptr: i64) -> void
@@ -1475,16 +1511,17 @@ impl CodeGenerator {
             bytes[0..8].copy_from_slice(&(vt.concrete_size as i64).to_le_bytes());
             // Write align at offset 8
             bytes[8..16].copy_from_slice(&(vt.concrete_align as i64).to_le_bytes());
-            // Drop fn at offset 16 stays null for a genuinely trivial type —
-            // only types with a refcounted (string) field need one (#366).
-
             let mut desc = DataDescription::new();
             desc.define(bytes.into_boxed_slice());
 
-            if !vt.drop_string_offsets.is_empty() {
-                let drop_func_id = self.get_or_create_drop_glue(&vt.concrete_type, &vt.drop_string_offsets)?;
-                let func_ref = self.module.declare_func_in_data(drop_func_id, &mut desc);
-                desc.write_function_addr(crate::vtable::VTABLE_DROP_OFFSET, func_ref);
+            // The release for a value this box owns, when it owns anything.
+            // Only a moved-in box reads it — a container element, a struct
+            // field, a return. `TraitDrop` is the borrowed case and frees the
+            // block alone.
+            if !vt.owned.is_empty() {
+                let func_id = self.get_or_create_owned_release(&vt.concrete_type, &vt.owned)?;
+                let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
+                desc.write_function_addr(crate::vtable::VTABLE_OWNED_RELEASE_OFFSET, func_ref);
             }
 
             // Write function pointer relocations for each method
@@ -1509,38 +1546,53 @@ impl CodeGenerator {
         Ok(())
     }
 
-    /// Build (or reuse) the drop-glue function for a concrete type behind a
-    /// trait object: `fn(data_ptr: i64)` that releases each of its string
-    /// fields, at the byte offsets `collect_string_field_offsets` found.
-    /// This is what `TraitDrop` calls through the vtable's drop slot before
-    /// freeing the boxed allocation itself (#366).
-    fn get_or_create_drop_glue(
+    /// Build (or reuse) the release for a concrete type behind a box that owns
+    /// it: `fn(data_ptr: i64)` that frees each container and each string the
+    /// value holds, at the offsets `owned_fields` found.
+    ///
+    /// One per concrete type, shared across every vtable that boxes it behind a
+    /// different trait, because the answer depends on the value and not on the
+    /// trait.
+    fn get_or_create_owned_release(
         &mut self,
         concrete_type: &str,
-        string_offsets: &[u32],
+        fields: &[crate::drop_fields::DropField],
     ) -> CodegenResult<cranelift_module::FuncId> {
-        if let Some(&func_id) = self.drop_glue_fns.get(concrete_type) {
+        if let Some(&func_id) = self.owned_release_fns.get(concrete_type) {
             return Ok(func_id);
         }
-
-        let free_id = *self.func_ids.get("rask_string_free")
-            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
 
-        let name = format!(".dropglue.{}", concrete_type);
-        let func_id = self.module
+        let name = format!(".ownedrelease.{}", concrete_type);
+        let func_id = self
+            .module
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         self.ctx.clear();
         self.ctx.func.signature = sig;
 
-        let free_ref = self.module.declare_func_in_func(free_id, &mut self.ctx.func);
+        // One reference per distinct free, declared up front — a container and
+        // a string field don't share one.
+        let mut free_refs: std::collections::HashMap<&'static str, cranelift_codegen::ir::FuncRef> =
+            std::collections::HashMap::new();
+        for f in fields {
+            if free_refs.contains_key(f.free_fn) {
+                continue;
+            }
+            let id = *self
+                .func_ids
+                .get(f.free_fn)
+                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.to_string()))?;
+            let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
+            free_refs.insert(f.free_fn, r);
+        }
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
-        let mut fb = cranelift::prelude::FunctionBuilder::new(&mut self.ctx.func, &mut fn_builder_ctx);
+        let mut fb =
+            cranelift::prelude::FunctionBuilder::new(&mut self.ctx.func, &mut fn_builder_ctx);
 
         let entry = fb.create_block();
         fb.append_block_params_for_function_params(entry);
@@ -1548,13 +1600,29 @@ impl CodeGenerator {
         fb.seal_block(entry);
 
         let data_ptr = fb.block_params(entry)[0];
-        for &offset in string_offsets {
-            let field_ptr = if offset == 0 {
-                data_ptr
-            } else {
-                fb.ins().iadd_imm(data_ptr, offset as i64)
-            };
-            fb.ins().call(free_ref, &[field_ptr]);
+        for f in fields {
+            let free_ref = free_refs[f.free_fn];
+            match f.shape {
+                // The slot is the header: pass its address.
+                crate::drop_fields::ReleaseShape::ByAddress => {
+                    let field_ptr = if f.offset == 0 {
+                        data_ptr
+                    } else {
+                        fb.ins().iadd_imm(data_ptr, f.offset as i64)
+                    };
+                    fb.ins().call(free_ref, &[field_ptr]);
+                }
+                // The slot holds a handle: load it and pass the pointer.
+                crate::drop_fields::ReleaseShape::ByHandle => {
+                    let handle = fb.ins().load(
+                        types::I64,
+                        cranelift::prelude::MemFlags::new(),
+                        data_ptr,
+                        f.offset as i32,
+                    );
+                    fb.ins().call(free_ref, &[handle]);
+                }
+            }
         }
         fb.ins().return_(&[]);
         fb.finalize();
@@ -1563,7 +1631,7 @@ impl CodeGenerator {
             .define_function(func_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
-        self.drop_glue_fns.insert(concrete_type.to_string(), func_id);
+        self.owned_release_fns.insert(concrete_type.to_string(), func_id);
         Ok(func_id)
     }
 
@@ -1582,7 +1650,7 @@ impl CodeGenerator {
 
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
-        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts) {
+        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts) {
             self.register_element_offsets(&offsets)?;
         }
 
@@ -2123,6 +2191,7 @@ impl crate::Backend for CodeGenerator {
 fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],
+    enum_layouts: &[rask_mono::EnumLayout],
 ) -> Vec<Vec<i32>> {
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
@@ -2137,9 +2206,9 @@ fn collect_element_offsets(
                 else {
                     continue;
                 };
-                if let Some(offs) =
-                    crate::elem_offsets::string_offsets_for_tag(*tag, struct_layouts)
-                {
+                if let Some(offs) = crate::elem_offsets::string_offsets_for_tag(
+                    *tag, struct_layouts, enum_layouts,
+                ) {
                     lists.push(offs);
                 }
             }

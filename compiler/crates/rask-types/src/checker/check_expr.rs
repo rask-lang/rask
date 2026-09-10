@@ -282,7 +282,7 @@ impl TypeChecker {
     /// members, and forcing one would pin them to a variable.
     fn collection_elem_type(&self, expected: &Type) -> Option<Type> {
         let elem = match expected {
-            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            Type::Array { elem, .. } => (**elem).clone(),
             Type::Generic { base, args } if self.types.type_name(*base).split('<').next() == Some("Vec") => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
@@ -730,7 +730,12 @@ impl TypeChecker {
 
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
-                self.check_index_types(&obj_ty, &idx_ty, is_range, index.span);
+                // A rejected index has no result to constrain, and registering
+                // one would report the same error a second time when the
+                // deferred check runs.
+                if self.check_index_types(&obj_ty, &idx_ty, is_range, index.span) {
+                    return Type::Error;
+                }
                 match self.index_result_type(&obj_ty, is_range) {
                     Some(elem) => elem,
                     None => {
@@ -1010,7 +1015,19 @@ impl TypeChecker {
             ExprKind::StructLit { name, fields, spread } => {
                 // A struct-lit name may carry explicit generic args:
                 // `Ring<i64> { ... }`. Look up the base, remember the args.
-                let base_name = name.split('<').next().unwrap_or(name);
+                //
+                // And it may carry the module that exports it. Types are filed
+                // under the bare name, so `http.Response { … }` missed the
+                // lookup and skipped *everything* below — the field types went
+                // unchecked and FD4's "every field must be given" never fired,
+                // which left `headers` uninitialized in a literal the checker
+                // had accepted (the same last-segment rule as #1097, #1108 and
+                // #1113). `strip_module_qualifier` only strips a head that
+                // really is a module, so an enum variant's `A4.N { v: 5 }` is
+                // untouched.
+                let base_name = rask_stdlib::modules::strip_module_qualifier(
+                    name.split('<').next().unwrap_or(name),
+                );
                 // Annotations are comptime data — attached with @name(...),
                 // read through reflect, never constructed as runtime values.
                 if self.annotation_types.contains(base_name) {
@@ -2404,11 +2421,9 @@ impl TypeChecker {
 
     pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
         match obj_ty {
-            Type::Array { elem, .. } | Type::Slice(elem) => Some(if is_range {
-                Type::Slice(elem.clone())
-            } else {
-                *elem.clone()
-            }),
+            // A range index on an array is rejected in `check_index_types` —
+            // there is no slice type — so only the scalar read has a result.
+            Type::Array { elem, .. } if !is_range => Some(*elem.clone()),
             // `[]` on a string means bytes in both forms (std.strings/U1b):
             // a range slices, a scalar index reads one byte. It used to yield
             // a `char` at a *character* index, so the same bracket counted two
@@ -2427,11 +2442,9 @@ impl TypeChecker {
                 };
                 let elem_arg = if is_map { args.get(1) } else { args.first() };
                 match elem_arg {
-                    Some(GenericArg::Type(elem)) => Some(if is_range {
-                        Type::Slice(elem.clone())
-                    } else {
-                        *elem.clone()
-                    }),
+                    // As above: a range index has no type to be, and the error
+                    // is already reported.
+                    Some(GenericArg::Type(elem)) if !is_range => Some(*elem.clone()),
                     _ => None,
                 }
             }
@@ -2658,7 +2671,15 @@ impl TypeChecker {
 
         let func_ty = self.infer_expr(func);
 
-        // Substitute type param names with fresh vars in the function signature
+        // Substitute type param names with fresh vars in the function signature.
+        // Applied first: a return type the checker inferred sits behind a
+        // variable, and substitution matches on the *name*, so `func f<T>(x: T)
+        // { return x + 1 }` handed its callers the bare `T` — "no method `eq`
+        // on `T`" for `f(4) == 5`.
+        let func_ty = match &generic_subst {
+            Some(_) => self.ctx.apply(&func_ty),
+            None => func_ty,
+        };
         let func_ty = if let Some(ref pairs) = generic_subst {
             let subst: std::collections::HashMap<&str, Type> = pairs.iter()
                 .map(|(k, v)| (k.as_str(), v.clone()))
@@ -3369,7 +3390,18 @@ impl TypeChecker {
             // `len` found for type `fs`".
             let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
             if !shadowed
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic")
+                // `Heap` is in this list rather than in the stub registry
+                // because it has no `extend Heap` block to be in: allocation is
+                // the `Heap(expr)` operator and reading is `*ptr`, so it
+                // declares no methods (mem.heap/HP3). Being *absent* is not the
+                // same answer as having none — the branch was skipped, the
+                // receiver went through `infer_expr`, and `Heap.new(1)`
+                // reported "couldn't work out the type of `x`". With an
+                // annotation it type-checked clean and died in codegen as
+                // "Function not found: Heap_new". Every sibling — `Link`,
+                // `Shared`, `Mutex` — says "no method `new` found for type";
+                // `Heap` was the one stdlib name that didn't.
+                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
@@ -5398,10 +5430,25 @@ impl TypeChecker {
     /// is rejected immediately; every other index is deferred to
     /// `validate_pending_index` so a literal index can adapt to the key/element
     /// type after constraint solving.
-    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) {
+    /// Returns true when the index itself is rejected, so the caller stops
+    /// asking what its result type would be.
+    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) -> bool {
         match self.classify_index_container(container) {
             Some(IndexContainer::Sequence) => {
-                // A range index is a valid slice; a scalar index must be integer.
+                // A range slices a string into another string (std.strings/U1b).
+                // On a Vec or an array it has nothing to produce: there is no
+                // slice type, so the result would need to be a `Vec<T>` copy
+                // and that hides an allocation. `v.skip(a).take(n)` is the
+                // spelling, and it fuses.
+                if is_range && !matches!(container, Type::String) {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: container.clone(),
+                        found: index.clone(),
+                        kind: IndexErrorKind::NoSliceType,
+                        span,
+                    });
+                    return true;
+                }
                 if !is_range {
                     self.pending_index.push(PendingIndex {
                         container: container.clone(),
@@ -5469,13 +5516,14 @@ impl TypeChecker {
                 }
             }
         }
+        false
     }
 
     /// Recognize the indexable stdlib containers. Returns `None` for anything
     /// whose index type we don't police (user generics, type vars, `Handle`).
     fn classify_index_container(&self, ty: &Type) -> Option<IndexContainer> {
         match ty {
-            Type::Array { .. } | Type::Slice(_) | Type::String => Some(IndexContainer::Sequence),
+            Type::Array { .. } | Type::String => Some(IndexContainer::Sequence),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),
@@ -5514,7 +5562,7 @@ impl TypeChecker {
             }
         };
         match ty {
-            Type::Array { elem, .. } | Type::Slice(elem) => {
+            Type::Array { elem, .. } => {
                 ContainerElem::Known((**elem).clone())
             }
             // Still open, a generic parameter, or already errored — the body

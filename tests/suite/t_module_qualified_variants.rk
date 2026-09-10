@@ -101,14 +101,20 @@ test "a method on a variant value is not a module path" {
 // uppercase or named an `import c` namespace. Once it parsed, native
 // segfaulted — layouts are filed under the bare name, so the whole spelling
 // missed and every field store went through an address nobody had written.
+// Every field, including `headers` — FD4 is checked through the module
+// spelling now. It wasn't: types are filed under the bare name, so
+// `http.Response` missed the lookup and skipped the whole check, and the
+// literal left `headers` pointing at whatever the stack held. Nothing read it
+// until a map in a struct field started being freed, and then the free was
+// handed that.
 test "a struct literal through its module" {
-    let r = http.Response { status: 201, body: "made" }
+    let r = http.Response { status: 201, headers: http.Headers.new(), body: "made" }
     assert r.status == 201
     assert r.body == "made"
 }
 
 test "and through an alias" {
-    let r = h.Response { status: 202, body: "aliased" }
+    let r = h.Response { status: 202, headers: h.Headers.new(), body: "aliased" }
     assert r.status == 202
     assert r.body == "aliased"
 }

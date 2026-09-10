@@ -53,6 +53,7 @@ builtin and had no methods at all until #1017 — `Set.new()` type-checked and
 | **CP1: Unbounded** | `capacity() == none`, grows indefinitely. `with_capacity(n)` is a pre-allocation hint, not a bound — it stays unbounded |
 | **CP2: Bounded** | `capacity()` present with value `n`, cannot exceed `n` elements. `is_bounded()` says which, `is_full()` says whether it's there, `remaining()` says how much room is left (`none` when unbounded) |
 | **CP3: Fixed** | Bounded + pre-allocated at creation — `Vec.fixed(n)`. A bound of 0 is legal: the vector is permanently full |
+| **CP4: A Vec can be bounded; a Map can't** | There is no `Map.fixed(n)`, so a map has no way to *become* bounded — which makes `capacity()`, `is_bounded()` and `try_insert` on one methods with a single possible answer. They're gone. `try_` variants exist for the collection that can refuse |
 
 ## Allocation
 
@@ -67,7 +68,6 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `T or E
 | `vec.reserve(n)` | `void` | Panics |
 | `vec.try_reserve(n)` | `void or ReserveError` | Returns why; nothing was rejected, so nothing comes back |
 | `map.insert(k, v)` | `V?` | Panics |
-| `map.try_insert(k, v)` | `V? or GrowError<V>` | Returns `GrowError.Full(V)` or `GrowError.NoMemory(V)` |
 
 <!-- test: parse -->
 ```rask
@@ -346,31 +346,6 @@ let idx = vec.push_with(|slot| {
 
 Avoids constructing on stack then moving. Useful for large types.
 
-## Slice Descriptors
-
-Slices (`[]T`) are ephemeral fat pointers that can't be stored. `SliceDescriptor<T>` stores the "recipe" instead.
-
-<!-- test: parse -->
-```rask
-struct SliceDescriptor<T> {
-    handle: Handle<T>,    // 8 bytes
-    range: Range,         // 8 bytes (start..end)
-}
-```
-
-| Rule | Description |
-|------|-------------|
-| **SD1: Copyable** | Exactly 16 bytes, copyable by value semantics |
-| **SD2: Storable** | Can be stored in structs, collections, channels |
-| **SD3: Lazy bounds** | Bounds checked at access time, not creation |
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `handle.slice(range)` | `SliceDescriptor<T>` | Create descriptor |
-| `desc.len()` | `usize` | Length of range |
-| `desc.is_empty()` | `bool` | Range is empty |
-| `for x in desc` | `Sequence<T>` | Iterate (requires ambient pool) |
-
 ## Capacity Introspection
 
 | Method | Returns | Semantics |
@@ -379,7 +354,7 @@ struct SliceDescriptor<T> {
 | `vec.capacity()` | `usize?` | `none` = unbounded, value = max capacity |
 | `vec.is_bounded()` | `bool` | `capacity()?` |
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
-| `vec.allocated()` | `usize` | Current allocation size (may exceed len) |
+| `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink_to_fit()` gives the difference back |
 
 ## Comptime Collections with Freeze
 
@@ -498,10 +473,10 @@ FIX: Use try_push to handle capacity limits:
 - 2+ statements: `with vec[i] as v { ... }`
 - Error propagation: `with vec[i] as v { try validate(v) }`
 
-**Slice descriptors — when to use:**
-- Storing references to substrings or sub-vectors
-- Event systems with text ranges
-- Undo buffers with slices of document state
+**Storing part of a collection:** there is no slice type, so a run of elements
+is a sequence over the source (`v.skip(a).take(n)`) and a *stored* run is either
+`.to_vec()` — its own value, its own elements — or the two indices, kept as what
+they are. For text, `StringView` is the storable form (`std.strings/V1`).
 
 ### See Also
 

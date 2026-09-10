@@ -196,10 +196,29 @@ impl Interpreter {
 
         if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
             let guard_diag = RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0));
-            // E3: a guard (R5/H1) firing while we're already unwinding from the
-            // body's own panic is a secondary panic — contained and reported,
-            // not a replacement for the original.
-            if matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::Panic(_))) {
+            // E3: a guard (R5/H1) firing while the body is already failing is a
+            // secondary panic — contained and reported, not a replacement for
+            // the original.
+            //
+            // Any failure, not just a panic. A body that dies on `no method
+            // seek on type File` leaves its resource unconsumed *because* it
+            // died, so replacing the error with "resource leak: File 'f' not
+            // consumed" hides the only line that says what went wrong — and
+            // points at the import instead of the call. Return, break,
+            // continue and `try` are control flow rather than failure, and a
+            // resource leaked on the way out through one of those is the real
+            // problem, so those still lose to the guard.
+            let body_failed = matches!(
+                &result,
+                Err(diag) if !matches!(
+                    diag.error,
+                    RuntimeError::Return(_)
+                        | RuntimeError::TryError(_)
+                        | RuntimeError::Break(_, _)
+                        | RuntimeError::Continue(_)
+                )
+            );
+            if body_failed {
                 self.report_secondary_panic(&guard_diag);
             } else {
                 self.type_bindings.pop();
@@ -628,7 +647,7 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
         Value::Enum { name, .. } => Some(name.as_str()),
         Value::Struct(s) => {
             let guard = s.lock().unwrap();
-            if names.iter().any(|n| n == &guard.name) {
+            if names.iter().any(|n| same_nominal(n, &guard.name)) {
                 return true;
             }
             None
@@ -636,9 +655,29 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
         _ => None,
     };
     if let Some(vn) = value_type_name {
-        names.iter().any(|n| n == vn)
+        names.iter().any(|n| same_nominal(n, vn))
     } else {
         false
     }
+}
+
+/// Do these two spellings name the same nominal type?
+///
+/// The declared error type carries the type arguments the source wrote —
+/// `Refused<i64>` — and a runtime value's name is the bare one. Exact equality
+/// therefore missed for every generic error type, so `return Refused.Full(n)`
+/// from a `-> i64 or Refused<i64>` was wrapped as `Result.Ok(…)`: the wrong
+/// side. `catch` then never fired and the error came back as the value.
+///
+/// Native had the same bug in its own spelling — `is Refused<i64>` compared
+/// against a layout named `Refused` and routed to the success arm — so
+/// `Vec.try_push`, declared `void or GrowError<T>`, read backwards on both
+/// backends in different ways.
+fn same_nominal(a: &str, b: &str) -> bool {
+    fn base(n: &str) -> &str {
+        let n = n.split('<').next().unwrap_or(n).trim();
+        n.rsplit('.').next().unwrap_or(n).trim()
+    }
+    base(a) == base(b)
 }
 

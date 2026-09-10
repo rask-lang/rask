@@ -131,11 +131,11 @@ mod tests {
     }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, container: None }
     }
 
     fn int_local(id: u32) -> MirLocal {
-        MirLocal { id: local(id), name: None, ty: MirType::I64, is_param: false }
+        MirLocal { id: local(id), name: None, ty: MirType::I64, is_param: false, container: None }
     }
 
     #[test]

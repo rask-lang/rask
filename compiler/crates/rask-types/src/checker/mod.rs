@@ -938,7 +938,7 @@ impl TypeChecker {
     fn contains_type_var(ty: &Type) -> bool {
         match ty {
             Type::Var(_) => true,
-            Type::RawPtr(inner) | Type::Slice(inner)
+            Type::RawPtr(inner)
             | Type::Array { elem: inner, .. } => Self::contains_type_var(inner),
             Type::Result { ok, err } => {
                 Self::contains_type_var(ok) || Self::contains_type_var(err)

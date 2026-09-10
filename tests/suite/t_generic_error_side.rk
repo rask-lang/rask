@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `is <ErrorType>` when the error type is generic (type.errors/ER12).
+//
+// `r is Refused<i64>` on a `void or Refused<i64>` answered *backwards* on
+// native while the interpreter had it right. Both arms, so a failure read as
+// success and a success read as a failure.
+//
+// The pattern carries the type arguments the source wrote and a layout's name
+// doesn't: "Refused<i64>" was compared against "Refused", missed, and fell
+// through to the rule below it — "the err side is nominally named, so this
+// pattern must be the ok side" — which routes to tag 0. Comparing base names
+// fixes it. The non-generic `void or Refused` always worked, which is what made
+// this hard to see.
+//
+// `Vec.try_push` is declared `void or GrowError<T>`, so a shipped stdlib method
+// read backwards on native. `try_push_all` next to it is new here, and finding
+// this is what it was written for.
+//
+// Spec: specs/types/error-types.md — `T or E`, and `is E` to test the error
+// side.
+
+enum Refused<T> {
+    Full(T)
+    Closed
+}
+
+extend Refused<T> {
+    public func message(self) -> string {
+        match self {
+            Refused.Full(v) => return "full"
+            Refused.Closed => return "closed"
+        }
+    }
+}
+
+func accept(n: i64) -> void or Refused<i64> {
+    if n > 10 {
+        return Refused.Full(n)
+    }
+}
+
+func fetch(n: i64) -> i64 or Refused<i64> {
+    if n > 10 {
+        return Refused.Full(n)
+    }
+    return n * 2
+}
+
+test "type.errors/ER12 — a generic error on a void success side" {
+    if accept(1) is Refused<i64> as e {
+        assert false
+    } else {
+        assert true
+    }
+    if accept(20) is Refused<i64> as e {
+        assert e.message() == "full"
+    } else {
+        assert false
+    }
+}
+
+test "type.errors/ER12 — and on a value success side" {
+    if fetch(3) is Refused<i64> as e {
+        assert false
+    } else {
+        assert true
+    }
+    if fetch(30) is Refused<i64> as e {
+        assert e.message() == "full"
+    } else {
+        assert false
+    }
+}
+
+// The bare name for the same type: `is Refused` rather than `is Refused<i64>`.
+// Both spell the one error side a `T or E` has.
+test "type.errors/ER12 — the bare name names the same side" {
+    if accept(20) is Refused as e {
+        assert e.message() == "full"
+    } else {
+        assert false
+    }
+    if accept(1) is Refused as e {
+        assert false
+    } else {
+        assert true
+    }
+}
+
+// `catch` rather than `is`, since it reads the same tag from the other side.
+// The expression form, not a block that returns — a `return` out of a catch
+// inside a `test` block reads as a pass either way, which is a bad test.
+test "type.errors — catch on a generic error type" {
+    let refused = fetch(30) catch e => -1
+    assert refused == -1
+    let got = fetch(4) catch e => -1
+    assert got == 8
+}
+
+// The stdlib method that was reading backwards.
+test "stdlib.collections — try_push on a bounded Vec" {
+    mut ok: Vec<i64> = Vec.new()
+    if ok.try_push(1) is GrowError<i64> as e {
+        assert false
+    } else {
+        assert ok.len() == 1
+    }
+
+    mut full: Vec<i64> = Vec.fixed(1)
+    full.push(5)
+    if full.try_push(6) is GrowError<i64> as e {
+        assert full.len() == 1
+    } else {
+        assert false
+    }
+}
+
+test "stdlib.collections — try_push_all stops at the first refusal" {
+    mut dst: Vec<i64> = Vec.new()
+    let src: Vec<i64> = [1, 2, 3]
+    if dst.try_push_all(src) is GrowError<i64> as e {
+        assert false
+    } else {
+        assert dst.len() == 3
+        assert dst[0] == 1
+        assert dst[2] == 3
+    }
+
+    mut bounded: Vec<i64> = Vec.fixed(2)
+    let more: Vec<i64> = [7, 8, 9]
+    if bounded.try_push_all(more) is GrowError<i64> as e {
+        // The two that fitted are in; the third came back.
+        assert bounded.len() == 2
+        assert bounded[0] == 7
+        assert bounded[1] == 8
+    } else {
+        assert false
+    }
+}
+
+// Repeatedly, in case the tag depended on which arm ran first.
+test "type.errors/ER12 — both arms in a loop" {
+    mut refused = 0
+    mut accepted = 0
+    for i in 1..21 {
+        if accept(i.clamp<i64>()) is Refused<i64> as e {
+            refused = refused + 1
+        } else {
+            accepted = accepted + 1
+        }
+    }
+    assert accepted == 10
+    assert refused == 10
+}

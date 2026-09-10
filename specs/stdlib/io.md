@@ -42,10 +42,10 @@ enum IoError {
 <!-- test: skip -->
 ```rask
 trait Reader {
-    func read(self, mutate buf: []u8) -> usize or IoError
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
-    func read_exact(self, mutate buf: []u8) -> void or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
 }
 ```
 
@@ -54,7 +54,7 @@ read-only unless it says so (`mem.parameters/PM2`), and without the marker the
 trait couldn't be implemented at all: every body that wrote into `buf` was
 rejected.
 
-Owned byte results are `Vec<u8>`; byte inputs are `[]u8` views — everywhere in the I/O surface.
+Owned byte results are `Vec<u8>`; byte inputs are `Vec<u8>` views — everywhere in the I/O surface.
 
 ## Writer Trait
 
@@ -68,8 +68,8 @@ Owned byte results are `Vec<u8>`; byte inputs are `[]u8` views — everywhere in
 <!-- test: parse -->
 ```rask
 trait Writer {
-    func write(self, data: []u8) -> usize or IoError
-    func write_bytes(self, data: []u8) -> void or IoError
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
     func flush(self) -> void or IoError
 }
@@ -83,7 +83,7 @@ trait Writer {
 | **K2: SeekFrom** | Position specified as `SeekFrom.Start(n)`, `SeekFrom.End(n)`, or `SeekFrom.Current(n)` |
 | **K3: Position** | `position()` returns the current stream position without seeking |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum SeekFrom {
     Start(i64)
@@ -98,6 +98,8 @@ trait Seeker {
 ```
 
 `File` and `Buffer` implement `Seeker`. Standard streams do not — they are sequential.
+
+Past the end is legal — the position moves and a read from there gives nothing. A negative *absolute* position is not, and the trait bodies reject it rather than leaving it to the backends: C's `fseek` fails on one and Rust's `SeekFrom::Start` takes a `u64` and would clamp.
 
 ## Buffered Wrappers
 
@@ -171,8 +173,8 @@ let result = string.from_utf8(buf.to_bytes())  // "hello world"
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `Buffer.new()` | `Buffer` | Empty buffer |
-| `Buffer.from(data: []u8)` | `Buffer` | Initialized with data, position at 0 |
-| `to_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy, which is what `to_` says: a borrowed slice into a struct field isn't expressible yet |
+| `Buffer.from(data: Vec<u8>)` | `Buffer` | Initialized with data, position at 0 |
+| `to_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy, which is what `to_` says |
 | `len(self)` | `usize` | Total bytes written |
 
 No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.

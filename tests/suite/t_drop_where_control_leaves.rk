@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two things nobody was freeing.
+//
+// **A callback used up during the call.** `v.sort_by(|a, b| …)` hands the
+// comparator to a runtime helper, and a helper has no body for the closure
+// pass to read — so the answer was "unaccounted for", which has to mean "might
+// keep it", and the frame left the environment to a callee that never took it.
+// `sort_by`, `map` and `filter` all finish with the callback before they
+// return, so they are written down as not keeping it.
+//
+// **A container made inside one arm of a branch.** Frees go before every
+// `return` the container's definition dominates, and a definition inside a
+// `match` arm dominates none: the join block is reachable from the other arms
+// too. So there was nowhere to put it and nothing freed it —
+//
+//     JsonValue.Object(map) => {
+//         for entry in sorted_entries(map) { … }   // a fresh Vec, per object
+//     }
+//
+// is `JsonValue.to_string`, and it leaked one vector per object in the
+// document. A definition rules a region of the control flow; control leaves it
+// either at a `return` inside it or across an edge out of it, so the free goes
+// on that edge.
+//
+// Spec: specs/memory/ownership.md — one owner, and the frame still holding a
+// value is the one that frees it.
+import string.StringBuilder
+
+struct Ranked {
+    public name: string
+    public score: i64
+}
+
+enum Tree {
+    Leaf(i64)
+    Node(Map<string, Tree>)
+}
+
+func entries(m: Map<string, Tree>) -> Vec<(string, Tree)> {
+    mut out: Vec<(string, Tree)> = Vec.new()
+    for (k, v) in m {
+        out.push((k, v))
+    }
+    out.sort_by(|a, b| a.0.compare(b.0))
+    return out
+}
+
+func render(t: Tree, mutate out: StringBuilder) {
+    match t {
+        Tree.Leaf(n) => out.push("leaf")
+        Tree.Node(m) => {
+            for entry in entries(m) {
+                out.push(entry.0)
+                render(entry.1, mutate out)
+            }
+        }
+    }
+}
+
+test "stdlib.collections — a comparator closure belongs to the frame" {
+    mut v: Vec<i64> = [3, 1, 2]
+    v.sort_by(|a, b| a.compare(b))
+    assert v[0] == 1
+    assert v[2] == 3
+}
+
+test "stdlib.collections — a comparator that reads a field" {
+    mut v: Vec<Ranked> = [
+        Ranked { name: "the third one by score", score: 3 },
+        Ranked { name: "the first one by score", score: 1 },
+    ]
+    v.sort_by(|a, b| a.score.compare(b.score))
+    assert v[0].score == 1
+    assert v[0].name == "the first one by score"
+}
+
+// One adapter per test, so a failure here is about the callback and nothing
+// else. Two chains over one source vector are `t_one_value_many_names.rk`.
+test "stdlib.collections — map takes its callback the same way" {
+    let src: Vec<i64> = [1, 2, 3, 4]
+    // `.to_vec()` because `map` hands back a sequence — the eager runtime
+    // helper behind it is what takes the closure.
+    let doubled = src.map(|x| x * 2).to_vec()
+    assert doubled.len() == 4
+    assert doubled[3] == 8
+}
+
+test "stdlib.collections — and so does filter" {
+    let src: Vec<i64> = [1, 2, 3, 4]
+    let even = src.filter(|x| x % 2 == 0).to_vec()
+    assert even.len() == 2
+    assert even[1] == 4
+}
+
+test "mem.ownership — a container made in one arm of a match" {
+    mut inner = Map<string, Tree>.new()
+    inner.insert("a key long enough to need a buffer", Tree.Leaf(1))
+    inner.insert("another key that is also long", Tree.Leaf(2))
+    let root = Tree.Node(inner)
+    mut sb = StringBuilder.new()
+    render(root, mutate sb)
+    let text = sb.build()
+    assert text.contains("a key long enough to need a buffer")
+    assert text.contains("leaf")
+}
+
+// Nested, so the arm's container is made again on each level down.
+test "mem.ownership — and again one level deeper" {
+    mut leaves = Map<string, Tree>.new()
+    leaves.insert("the innermost key is long too", Tree.Leaf(9))
+    mut mid = Map<string, Tree>.new()
+    mid.insert("the middle key is long as well", Tree.Node(leaves))
+    let root = Tree.Node(mid)
+    mut sb = StringBuilder.new()
+    render(root, mutate sb)
+    assert sb.build().contains("the innermost key is long too")
+}
+
+// Repeatedly, so a vector freed too early would give a wrong answer rather
+// than merely leak.
+test "mem.ownership — the arm's container in a loop" {
+    mut total: usize = 0
+    for i in 1..5 {
+        mut inner = Map<string, Tree>.new()
+        inner.insert("a key long enough to need a buffer", Tree.Leaf(i.clamp<i64>()))
+        let root = Tree.Node(inner)
+        mut sb = StringBuilder.new()
+        render(root, mutate sb)
+        total = total + sb.build().len()
+    }
+    assert total == 152
+}

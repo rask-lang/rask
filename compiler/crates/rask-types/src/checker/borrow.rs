@@ -50,6 +50,10 @@ pub(crate) struct ViewCreation {
     pub(crate) yields_sequence: bool,
     pub(crate) mode: BorrowMode,
     pub(crate) viewed_id: NodeId,
+    /// Set when the view is `source[a..b]`. Only a string slices — on anything
+    /// else the index itself is the error (there is no slice type), so the view
+    /// rules have nothing left to say about it.
+    pub(crate) from_range_index: bool,
 }
 
 /// A view binding whose source type was still a type variable during the walk
@@ -63,6 +67,7 @@ pub(crate) struct PendingViewBinding {
     pub(crate) source_ty: Type,
     pub(crate) slice_span: Span,
     pub(crate) store_span: Span,
+    pub(crate) from_range_index: bool,
 }
 
 /// A persistent borrow that lasts until block scope exit (ESAD Phase 2).
@@ -313,7 +318,7 @@ impl TypeChecker {
         let resolved = self.ctx.apply(ty);
         match &resolved {
             Type::String => SourceStability::Fixed,
-            Type::Array { .. } | Type::Slice(_) => SourceStability::Fixed,
+            Type::Array { .. } => SourceStability::Fixed,
             Type::Named(id) => {
                 let name = self.types.type_name(*id);
                 match name.as_str() {
@@ -419,7 +424,9 @@ impl TypeChecker {
             // Range indexing: source[start..end]
             ExprKind::Index { object, index } => {
                 if matches!(&index.kind, ExprKind::Range { .. }) {
-                    return Self::viewed(object, expr, BorrowMode::Shared);
+                    let mut view = Self::viewed(object, expr, BorrowMode::Shared)?;
+                    view.from_range_index = true;
+                    return Some(view);
                 }
                 None
             }
@@ -453,6 +460,7 @@ impl TypeChecker {
             root,
             mode,
             viewed_id: object.id,
+            from_range_index: false,
         })
     }
 
@@ -674,6 +682,7 @@ impl TypeChecker {
                         source_ty: resolved,
                         slice_span: init.span,
                         store_span: stmt_span,
+                        from_range_index: view.from_range_index,
                     });
                     return;
                 }
@@ -687,6 +696,13 @@ impl TypeChecker {
                         slice_span: init.span,
                         store_span: stmt_span,
                     });
+                    return;
+                }
+                // Only a string slices with a range. On a Vec, a Map or an
+                // array the index expression is itself rejected — there is no
+                // slice type for it to produce — so a second error about
+                // holding the view would name a value that can't exist.
+                if view.from_range_index {
                     return;
                 }
                 match self.classify_source(&resolved) {
@@ -728,7 +744,9 @@ impl TypeChecker {
                     slice_span: pending.slice_span,
                     store_span: pending.store_span,
                 });
-            } else if matches!(self.classify_source(&resolved), SourceStability::Growable) {
+            } else if !pending.from_range_index
+                && matches!(self.classify_source(&resolved), SourceStability::Growable)
+            {
                 self.errors.push(TypeError::VolatileViewStored {
                     source_var: pending.display,
                     view_var: pending.binding,

@@ -180,8 +180,17 @@ extend Sequence<T> {
     }
 
     /// Reduce without one. `none` on an empty sequence.
-    @unimplemented
-    public func reduce(self, f: func(T, T) -> T) -> T? {}
+    public func reduce(self, f: func(T, T) -> T) -> T? {
+        mut acc: T? = none
+        for x in self {
+            if acc? as a {
+                acc = f(a, x)
+            } else {
+                acc = x
+            }
+        }
+        return acc
+    }
 
     /// How many items the sequence yields.
     public func count(self) -> usize {
@@ -192,21 +201,75 @@ extend Sequence<T> {
         return n
     }
 
-    /// Smallest by comparator.
-    @unimplemented
-    public func min_by(self, cmp: func(T, T) -> i32) -> T? {}
+    /// Smallest by comparator. The comparator answers with an `Ordering`, the
+    /// same as `Vec.sort_by` — `|a, b| a - b` is a type error, not a subtraction
+    /// trick that happens to work.
+    public func min_by(self, cmp: func(T, T) -> Ordering) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if cmp(x, b) == Ordering.Less {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
 
     /// Largest by comparator.
-    @unimplemented
-    public func max_by(self, cmp: func(T, T) -> i32) -> T? {}
+    public func max_by(self, cmp: func(T, T) -> Ordering) -> T? {
+        mut best: T? = none
+        for x in self {
+            if best? as b {
+                if cmp(x, b) == Ordering.Greater {
+                    best = x
+                }
+            } else {
+                best = x
+            }
+        }
+        return best
+    }
 
-    /// Smallest by extracted key.
-    @unimplemented
-    public func min_by_key<K>(self, key: func(T) -> K) -> T? {}
+    /// Smallest by extracted key. Ties keep the first item seen.
+    public func min_by_key<K: Comparable>(self, key: func(T) -> K) -> T? {
+        mut best: T? = none
+        mut best_key: K? = none
+        for x in self {
+            let k = key(x)
+            if best_key? as bk {
+                if k < bk {
+                    best = x
+                    best_key = k
+                }
+            } else {
+                best = x
+                best_key = k
+            }
+        }
+        return best
+    }
 
-    /// Largest by extracted key.
-    @unimplemented
-    public func max_by_key<K>(self, key: func(T) -> K) -> T? {}
+    /// Largest by extracted key. Ties keep the first item seen.
+    public func max_by_key<K: Comparable>(self, key: func(T) -> K) -> T? {
+        mut best: T? = none
+        mut best_key: K? = none
+        for x in self {
+            let k = key(x)
+            if best_key? as bk {
+                if k > bk {
+                    best = x
+                    best_key = k
+                }
+            } else {
+                best = x
+                best_key = k
+            }
+        }
+        return best
+    }
 
     /// True if any item satisfies `pred`. Stops at the first that does.
     public func any(self, pred: func(T) -> bool) -> bool {

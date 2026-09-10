@@ -46,6 +46,10 @@ fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
     let budget = (method.len() / 3).max(1);
     let mut scored: Vec<(usize, &'static str)> = candidates
         .iter()
+        // Never the name that was written. "did you mean `load`?" for a call
+        // that says `load` is worse than no suggestion: it reads as a compiler
+        // that has lost track of itself.
+        .filter(|cand| **cand != method)
         .filter_map(|cand| {
             if cand.contains(method) || method.contains(cand) {
                 Some((0, *cand))
@@ -661,6 +665,34 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0313")
                 .with_primary(*span, "method not found");
+                // `Heap` has no methods at all, so "check available methods on
+                // `Heap`" is a dead end. Allocation is an operator and reading
+                // is a dereference — say that instead (mem.heap/HP3).
+                if ty_name.split('<').next() == Some("Heap") {
+                    return diag
+                        .with_help("`Heap` has no methods — `Heap(expr)` allocates and `*ptr` reads")
+                        .with_fix("let ptr = Heap(expr)")
+                        .with_why(
+                            "a heap value is made by the `Heap(…)` operator rather than by a constructor, so there is nothing to call on the name [mem.heap/HP3]",
+                        );
+                }
+                // The type *does* have this method. Then the name isn't the
+                // problem and "no method found" is the wrong sentence — as is
+                // the suggestion that follows it, which offers back the name
+                // that was written. `a.load(ord, 3)` on an `Atomic<i64>` said
+                // "no method `load` found … did you mean `load`?", because
+                // every arm of the atomic resolver is guarded on the argument
+                // count and the fall-through only knows the name.
+                if rask_stdlib::registry::type_method_names(type_base(&ty_name))
+                    .contains(&method.as_str())
+                {
+                    return Diagnostic::error(format!("`{}.{}` doesn't match this call", ty, method))
+                        .with_code("E0313")
+                        .with_primary(*span, "wrong arguments for this method")
+                        .with_help(format!("`{}` has `{}` — check the arguments against it", ty, method))
+                        .with_fix(format!("check the arguments to `{}`", method))
+                        .with_why(format!("the name resolves — `{}` does have `{}`, and it is the call that didn't fit", ty, method));
+                }
                 match nearest_methods(&ty_name, method) {
                     names if !names.is_empty() => diag
                         .with_help(format!("did you mean `{}`?", names.join("` or `")))
@@ -1577,6 +1609,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            AtomicOpNeedsNumber { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}` needs a payload it can add, and `{}` isn't one", method, ty
+                ))
+                .with_code("E0402")
+                .with_primary(*span, "no arithmetic on this payload")
+                .with_why(
+                    "`fetch_add` and its siblings are one instruction that reads, adds and \
+                     writes back — the hardware does the adding, so the payload has to be a \
+                     number it can add [mem.atomics/GA3]",
+                )
+                .with_fix(format!(
+                    "read it, work out the new value, and put it back with \
+                     `compare_exchange` — or hold the `{}` in a `Shared<T, Mutex>` instead",
+                    ty
+                ))
+            }
+
             NotIterable { found, span } => {
                 let ty = found.to_string();
                 let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))
@@ -2468,8 +2518,16 @@ impl ToDiagnostic for rask_types::TypeError {
                     ),
                     K::NotSliceable => (
                         format!("cannot slice `{}` with a range", container),
-                        "range indexing produces a slice — only Vec, arrays, slices, and strings support it [std.collections/V1]".to_string(),
+                        "a range index reads a run of positions, and a map or a pool has none — it is keyed [std.collections/V1]".to_string(),
                         None,
+                    ),
+                    K::NoSliceType => (
+                        format!("cannot slice `{}` with a range", container),
+                        "there is no slice type, so this has nothing to be. A run of \
+                         elements is a `Vec<T>` and part of one is a sequence over it; \
+                         only a string slices to another string [type.operators/IX4]"
+                            .to_string(),
+                        Some("take the part you want: `v.skip(a).take(b - a)` — add `.to_vec()` for a copy".to_string()),
                     ),
                     K::NotPositioned => (
                         format!("`{}` has no positions to index", container),
@@ -2495,28 +2553,6 @@ impl ToDiagnostic for rask_types::TypeError {
                 diag
             }
             FixedArrayGrowth { method, array, span } => {
-                // A slice reaches here too. Rendering one through the array
-                // template printed `[[i32]; 0]` and called it a fixed array,
-                // which is two wrong things about a type the author can see.
-                if let rask_types::Type::Slice(elem) = array {
-                    return Diagnostic::error(format!(
-                        "`{}` doesn't exist on a slice",
-                        method
-                    ))
-                    .with_code("E0843")
-                    .with_primary(
-                        *span,
-                        format!("`[{}]` is a view into storage it doesn't own", elem),
-                    )
-                    .with_fix(format!(
-                        "copy it first: `mut v: Vec<{}> = s.to_vec()`, then grow `v`",
-                        elem
-                    ))
-                    .with_why(
-                        "a slice borrows somebody else's elements and has no say over how many there are — growing one would have to move the storage out from under its owner [std.collections/V1]"
-                            .to_string(),
-                    );
-                }
                 let (elem, len) = match array {
                     rask_types::Type::Array { elem, len } => (elem.to_string(), *len),
                     other => (other.to_string(), 0),

@@ -325,7 +325,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
-    ("Vec_slice", Internal::FreshFromReceiver),
     ("Map_entries", Internal::FreshFromReceiver),
     ("Sender_clone", Internal::FreshFromReceiver),
     // Every strategy's clone hands back another handle on the same cell, so
@@ -382,6 +381,33 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
+    ("Random_free", Internal::ConsumesReceiver),
+
+    // ── `Atomic<T>` ─────────────────────────────────────────────
+    // A compiler type with no stdlib file, so every one of its spellings needs
+    // a line here — and it needs them now that `Atomic_new` is a constructor
+    // the drop pass recognises. Nothing here points into the receiver: an
+    // atomic holds one machine word and every operation hands back a copy of
+    // it (mem.atomics/GA1, GA2).
+    ("Atomic_new", Internal::NoReceiver),
+    ("Atomic_default", Internal::NoReceiver),
+    ("Atomic_load", Internal::FreshFromReceiver),
+    ("Atomic_store", Internal::FreshFromReceiver),
+    ("Atomic_swap", Internal::FreshFromReceiver),
+    ("Atomic_compare_exchange", Internal::FreshFromReceiver),
+    ("Atomic_compare_exchange_weak", Internal::FreshFromReceiver),
+    ("Atomic_fetch_add", Internal::FreshFromReceiver),
+    ("Atomic_fetch_sub", Internal::FreshFromReceiver),
+    ("Atomic_fetch_and", Internal::FreshFromReceiver),
+    ("Atomic_fetch_or", Internal::FreshFromReceiver),
+    ("Atomic_fetch_xor", Internal::FreshFromReceiver),
+    ("Atomic_fetch_nand", Internal::FreshFromReceiver),
+    ("Atomic_fetch_max", Internal::FreshFromReceiver),
+    ("Atomic_fetch_min", Internal::FreshFromReceiver),
+    // `into_inner` reads the word and frees the block in the same call, so the
+    // frame must not free it again.
+    ("Atomic_into_inner", Internal::ConsumesReceiver),
+    ("Atomic_free", Internal::ConsumesReceiver),
     ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
@@ -389,6 +415,15 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Shared_drop", Internal::ConsumesReceiver),
     ("Mutex_drop", Internal::ConsumesReceiver),
     ("Cell_drop", Internal::ConsumesReceiver),
+    // One end of a channel closing. Same shape one refcount down: the handle
+    // is gone as far as this frame is concerned, and the channel goes with it
+    // once both ends are.
+    ("Sender_drop", Internal::ConsumesReceiver),
+    ("Receiver_drop", Internal::ConsumesReceiver),
+    // The builder's release on a path that never calls `build()`. Nothing
+    // declares it — a builder is given up by going out of scope or by being
+    // built, never by a call the user writes.
+    ("StringBuilder_free", Internal::ConsumesReceiver),
     // The free for the NUL-terminated copy `to_cstring` makes. Nothing declares
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
@@ -611,7 +646,33 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
 /// parameters — the value came out of the receiver's storage rather than
 /// being made here. `Vec.len() -> usize` doesn't, and neither does
 /// `string.trim() -> string`, which builds a new one.
+/// Declared methods whose result *leaves* the receiver instead of pointing
+/// inside it.
+///
+/// `Vec.get` and `Vec.pop` are both `-> T?` on a container and no signature
+/// tells them apart: one hands back the buffer's own sixteen bytes, the other
+/// takes the element out and shortens the vector. So the ones that transfer are
+/// written down.
+///
+/// A list rather than a rule because the cost of being wrong is asymmetric in
+/// both directions: a name missing from here leaks whatever it handed out, and
+/// a name wrongly on it frees something the container still holds. `Map.insert`
+/// belongs here because it hands back the value it displaced.
+const TRANSFERS_OUT: &[&str] = &[
+    "Vec_pop",
+    "Vec_remove",
+    "Vec_remove_unordered",
+    "Map_insert",
+    "Map_remove",
+    "Pool_remove",
+];
+
 pub fn returns_a_view(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    if TRANSFERS_OUT.contains(&base) {
+        return false;
+    }
     match declared(qualified_name) {
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
@@ -643,6 +704,67 @@ fn declared_prefix_of(base: &str) -> Option<&'static StdlibMethodMeta> {
 /// What an internal spelling stands for, by the name MIR uses.
 fn internal_spelling(base: &str) -> Option<Internal> {
     INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
+}
+
+/// Does this call demonstrably keep none of what it is handed?
+///
+/// A stronger claim than `keeps_argument` can make. That one answers "keeps
+/// everything" for a name nobody wrote down, so a caller reading it can't tell
+/// "declared not to keep it" from "unaccounted for" — and the drop pass has to
+/// treat both as a reason to leave the value alone. Here the default is `false`
+/// and only a line in `INTERNAL_SPELLINGS` says otherwise, which is what makes
+/// a `true` worth acting on.
+///
+/// `FreshFromReceiver` and `NoReceiver` both say it in words: the receiver is
+/// borrowed or absent, no argument is kept, and nothing handed back points
+/// inside. The rack registrars are the family that needed this —
+/// `Link_register_struct(h)` hands the whole struct to the runtime so it can
+/// record which fields hold links, and a struct reaching *any* call was reason
+/// enough to give up on releasing it. So every struct with a rack in it leaked
+/// the arena and everything in it.
+pub fn keeps_no_arguments(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(
+        internal_spelling(base),
+        Some(Internal::FreshFromReceiver) | Some(Internal::NoReceiver)
+    )
+}
+
+/// Runtime helpers that take a callback, call it, and keep nothing.
+///
+/// A bodiless callee has no entry in the escape map the closure pass reads, so
+/// the answer there is "unaccounted for" — and the pass has to assume the
+/// callee might store the closure, which leaves the frame holding an
+/// environment nobody frees. Right for anything that might; wrong for these
+/// three, where the callback is used up before the call returns.
+/// `v.sort_by(|a, b| …)` leaked its environment on every call, and
+/// `json.encode` on an object goes through one.
+///
+/// Eager helpers only. A sequence that holds a closure past the call *is*
+/// keeping it, so this list must never grow a lazy one.
+const BORROWS_ITS_CALLBACK: &[&str] = &["Vec_sort_by", "Vec_map", "Vec_filter"];
+
+/// Does this call use its callback up before returning?
+pub fn borrows_its_callback(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    BORROWS_ITS_CALLBACK.contains(&base)
+}
+
+/// Does this call take its receiver away — a `take self` method, or one of the
+/// frees this pipeline emits for itself?
+///
+/// The opposite question from `borrows_receiver`, and not its negation: a
+/// static method has no receiver at all, so both are false for it. Unaccounted
+/// for answers `false`, which leaks rather than freeing something twice.
+pub fn consumes_receiver(qualified_name: &str) -> bool {
+    if let Some(m) = declared(qualified_name) {
+        return m.takes_self && m.take_self;
+    }
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::ConsumesReceiver))
 }
 
 /// Does this call borrow its receiver rather than consume it? True for

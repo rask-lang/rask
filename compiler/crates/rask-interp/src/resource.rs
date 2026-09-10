@@ -107,6 +107,16 @@ impl ResourceTracker {
         }
     }
 
+    /// Hand a consumed resource back to a new owner. A `take self` method
+    /// receives the resource and may pass it on to another one — that is one
+    /// move per owner, not two consumptions of the same value, so the callee's
+    /// frame sees it live again (mem.linear/L2).
+    pub fn revive(&mut self, id: u64) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.state = ResourceState::Live;
+        }
+    }
+
     /// Nothing is being tracked, so nothing needs walking.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

@@ -4,6 +4,7 @@
 
 pub mod addr_taken;
 pub mod bounds_elim;
+pub mod closure_specialize;
 pub mod clone_elision;
 pub mod dce;
 pub mod gen_coalesce;

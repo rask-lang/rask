@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A dependency's private helper isn't the program's to call (E0877). The
+// public one that uses it is, and the message says which of the two this is
+// rather than "check the spelling" — the name does exist, `libpkg` just kept
+// it.
+
+import libpkg
+
+func main() {
+    let c = libpkg.Cat { name: "mimi" }
+    println(libpkg.greet(c))
+    println(polish("no"))
+    return
+}

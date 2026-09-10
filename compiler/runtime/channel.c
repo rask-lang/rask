@@ -407,26 +407,31 @@ void rask_recver_drop(RaskRecver *rx) {
 // The dispatch table passes all values as i64. These wrappers bridge
 // between i64 calling convention and the typed channel API.
 
+// `let (tx, rx) = Channel<T>.buffered(n)` reaches codegen as three calls: one
+// to make the channel, then one for each half. What travels between them is the
+// channel itself.
+//
+// It used to be a 16-byte heap pair holding the two handles, which nothing
+// could free — both accessors read it and neither could know it was the last —
+// so every channel leaked the pair on top of the two handles nobody dropped.
+// Handing the channel over instead leaves nothing between the calls to own, and
+// each accessor makes the one handle of its kind: `channel_alloc` initialises
+// both counts to 1, so the handle it returns *is* that count, and dropping it
+// is what closes that end.
 int64_t rask_channel_new_i64(int64_t capacity) {
-    RaskSender *tx;
-    RaskRecver *rx;
-    rask_channel_new(sizeof(int64_t), capacity, &tx, &rx);
-
-    // Pack sender + receiver into a heap pair [tx, rx]
-    void **pair = (void **)rask_alloc(16);
-    pair[0] = tx;
-    pair[1] = rx;
-    return (int64_t)(intptr_t)pair;
+    return (int64_t)(intptr_t)channel_alloc(sizeof(int64_t), capacity);
 }
 
-int64_t rask_channel_get_tx(int64_t pair) {
-    void **p = (void **)(intptr_t)pair;
-    return (int64_t)(intptr_t)p[0];
+int64_t rask_channel_get_tx(int64_t chan) {
+    RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
+    tx->chan = (RaskChannel *)(intptr_t)chan;
+    return (int64_t)(intptr_t)tx;
 }
 
-int64_t rask_channel_get_rx(int64_t pair) {
-    void **p = (void **)(intptr_t)pair;
-    return (int64_t)(intptr_t)p[1];
+int64_t rask_channel_get_rx(int64_t chan) {
+    RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
+    rx->chan = (RaskChannel *)(intptr_t)chan;
+    return (int64_t)(intptr_t)rx;
 }
 
 int64_t rask_channel_send_i64(int64_t tx, int64_t value) {
@@ -529,14 +534,13 @@ extern int  rask_green_task_is_cancelled(void);
 // - recv_ptr: receives elem_size bytes into out_ptr
 
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity) {
-    RaskSender *tx;
-    RaskRecver *rx;
-    rask_channel_new(elem_size, capacity, &tx, &rx);
-
-    void **pair = (void **)rask_alloc(16);
-    pair[0] = tx;
-    pair[1] = rx;
-    return (int64_t)(intptr_t)pair;
+    if (elem_size <= 0) {
+        rask_panic("channel element size must be positive");
+    }
+    if (capacity < 0) {
+        rask_panic("channel capacity must be non-negative");
+    }
+    return (int64_t)(intptr_t)channel_alloc(elem_size, capacity);
 }
 
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr) {

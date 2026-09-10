@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The frame owns a boxed value's contents; the box borrows them.
+//
+// A `Vec`, `Map` or box field inside a value boxed as `any Trait` was freed by
+// nobody. `io.copy(src, dst)` on two `io.Buffer`s leaked both buffers' vectors
+// and both of their read positions — `t_io_buffer.rk` was 17 allocations and
+// this is most of them.
+//
+// The obvious fix is a two-line change to the vtable's drop glue and it double
+// frees. `TraitBox` copies the value *shallowly*, so the box and the frame's
+// own local hold the same container handle, and two boxes of one value hold it
+// twice. A container's release is a free, so it has to happen exactly once, and
+// the box is not a place where "exactly once" can be arranged.
+//
+// So the frame keeps them: one release however many boxes exist. `TraitDrop` is
+// to a box what `ClosureDrop` is to a closure, and the pass that emits it runs
+// first, so the drop's presence is the answer to "does the frame outlive this
+// box".
+//
+// Which leaves the box's drop with nothing to release. It used to free the
+// value's *string* fields through a per-type glue function in the vtable —
+// right when the box was the owner, one decrement too many once the frame is.
+// A string field is easy to think of as safe there, since a release is a
+// decrement and a decrement is right for whoever holds a reference; but the box
+// never took one. The glue and the vtable's drop slot are gone, and a box dying
+// now frees its block and nothing inside it.
+//
+// Every string here is built at runtime for that reason. A literal carries a
+// sentinel refcount that `rask_string_free` walks away from, so the version of
+// this file that used literals throughout passed with the double decrement
+// still in — the second release landed on a buffer nothing would ever free.
+//
+// A release placed after the *first* box's drop, while a later box of the same
+// value is still reading, gives a wrong length rather than a leak:
+// `two.counts.len()` came back 12209367259287946116 on the way here, and every
+// assertion below would have caught it.
+//
+// Spec: mem.boxes — a box's contents belong to whoever outlives it.
+
+trait Describes {
+    func describe(self) -> string
+}
+
+// A container and a string beside each other, so the release walks a whole
+// aggregate rather than one field.
+struct Holder {
+    public label: string
+    public counts: Vec<i64>
+}
+
+extend Holder with Describes {
+    public func describe(self) -> string {
+        return "{self.label}:{self.counts.len()}"
+    }
+}
+
+// Two containers, so one field being right isn't the whole answer.
+struct Ledger {
+    public name: string
+    public amounts: Vec<i64>
+    public tags: Vec<string>
+}
+
+extend Ledger with Describes {
+    public func describe(self) -> string {
+        return "{self.name}:{self.amounts.len()}:{self.tags.len()}"
+    }
+}
+
+func through_a_box(d: any Describes) -> string {
+    return d.describe()
+}
+
+func two_boxes(a: any Describes, b: any Describes) -> string {
+    return "{a.describe()}|{b.describe()}"
+}
+
+test "mem.boxes — a container field read through a box" {
+    let n = 1
+    let h = Holder {
+        label: "label {n}, long enough to allocate its own buffer",
+        counts: [1, 2, 3],
+    }
+    assert through_a_box(h) == "label 1, long enough to allocate its own buffer:3"
+    // And still readable afterwards: the box borrowed it.
+    assert h.counts.len() == 3
+    assert h.counts[2] == 3
+}
+
+// The shape that double-freed. One value, two boxes alive at once.
+test "mem.boxes — one value in two boxes at once" {
+    let n = 2
+    let h = Holder {
+        label: "shared label {n}, long enough to allocate",
+        counts: [4, 5],
+    }
+    assert two_boxes(h, h) == "shared label 2, long enough to allocate:2|shared label 2, long enough to allocate:2"
+    assert h.counts.len() == 2
+}
+
+// Boxed again after a box of it has already died. A release that ran at the
+// first drop makes this one read freed bytes.
+test "mem.boxes — boxed again after the first box died" {
+    let n = 3
+    let h = Holder {
+        label: "reused label {n}, long enough to allocate",
+        counts: [6, 7, 8, 9],
+    }
+    assert through_a_box(h) == "reused label 3, long enough to allocate:4"
+    assert through_a_box(h) == "reused label 3, long enough to allocate:4"
+    assert through_a_box(h) == "reused label 3, long enough to allocate:4"
+    assert h.counts[3] == 9
+    // Read after every box of it has died. A release the box did as well as
+    // the frame lands here, on a buffer that is already gone.
+    assert h.label == "reused label 3, long enough to allocate"
+    assert h.label.len() == 39
+}
+
+// Two different values, one box each, so the releases don't get confused about
+// which group they belong to.
+test "mem.boxes — two values, a box each" {
+    let n = 4
+    let a = Holder { label: "a label {n}, long enough to allocate", counts: [1] }
+    let b = Holder { label: "b label {n}, long enough to allocate", counts: [2, 3] }
+    assert two_boxes(a, b) == "a label 4, long enough to allocate:1|b label 4, long enough to allocate:2"
+    assert a.counts.len() == 1
+    assert b.counts.len() == 2
+}
+
+test "mem.boxes — two container fields behind one box" {
+    let n = 5
+    let l = Ledger {
+        name: "ledger {n}, with a name long enough to allocate",
+        amounts: [10, 20, 30],
+        tags: ["tag {n}, long enough to allocate", "and a second, also long"],
+    }
+    assert through_a_box(l) == "ledger 5, with a name long enough to allocate:3:2"
+    assert l.amounts[2] == 30
+    assert l.tags[1] == "and a second, also long"
+    assert l.name.len() == 45
+}
+
+// In a loop, so a value released twice lands on one the next turn has reused.
+test "mem.boxes — a boxed value per turn" {
+    mut total: usize = 0
+    for i in 1..5 {
+        let h = Holder { label: "turn {i}, long enough to allocate a buffer", counts: [i, i * 2] }
+        total = total + through_a_box(h).len()
+        assert h.counts.len() == 2
+    }
+    assert total == 168
+}
+
+func main() {}

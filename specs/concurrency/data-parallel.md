@@ -37,7 +37,7 @@ The whole design rests on one split: building the plan is free and can't fail; r
 <!-- test: skip -->
 ```rask
 // A library function takes the device; it doesn't open one (placement is the app's call)
-func normalize(data: []f32, dev: Device) -> Vec[f32] or GpuError {
+func normalize(data: Vec<f32>, dev: Device) -> Vec[f32] or GpuError {
     let xs    = data.to(dev)            // upload → resident on dev  (explicit transfer)
     let total = xs.sum()                // stage a reduce  (pending f32, not run)
     let ys    = xs.map(|x| x / total)   // stage a map     (Wide[f32], not run)
@@ -68,7 +68,7 @@ The GPU can express *less* than the CPU — pure lane work, no recursion, no dyn
 | **W3: CPU run is the reference semantics** | What a plan *means* is defined by its CPU execution. A device backend is correct iff it matches, modulo documented float reassociation in reductions (`type.simd/R2`). This gives a test oracle: run any plan on CPU and device, diff. |
 | **W4: A device is a resource, not a context** | You acquire a device with `with Device.gpu(n) as dev`, the same way you open a file. It is **not** a `using` runtime like `Multitasking`, and it is **not exclusive** — hold several devices at once (`with Device.gpu(0) as a, Device.gpu(1) as b`). Config rides on acquisition: `Device.gpu(1, mem_limit: 4.GB)`. |
 | **W5: The three targets are three different things** | *Host-inline* (single core, vectorized) is a codegen choice — it **is** `type.simd`, re-expressed; `Vec[T, N]` is its fixed-width corner. *Host-pool* (across cores) uses the existing `using ThreadPool` runtime. *Device* is a resource (W4). They are not one `using Width` construct — treating them uniformly was a mistake. |
-| **W6: Placement flows from data, and is explicit** | `data.to(dev)` uploads (a visible transfer); an op runs where its inputs live; `.read()`/`await` brings results home. A plan built from host data runs on the CPU; a plan built from `dev`-resident data runs on `dev`. *Representation* is in the type (`Wide[T]` vs `[]T`); *location* is tracked like a borrow — surfaced by tooling, not stamped into the signature, so it never becomes a viral type parameter. |
+| **W6: Placement flows from data, and is explicit** | `data.to(dev)` uploads (a visible transfer); an op runs where its inputs live; `.read()`/`await` brings results home. A plan built from host data runs on the CPU; a plan built from `dev`-resident data runs on `dev`. *Representation* is in the type (`Wide[T]` vs `Vec<T>`); *location* is tracked like a borrow — surfaced by tooling, not stamped into the signature, so it never becomes a viral type parameter. |
 | **W7: "As fast as possible" is a value, not a context** | Best-effort placement is `Device.fastest()` (or a policy value) that resolves to the widest available target — device if present, else cores. It's a device you pick, not a magic block, and it may resolve to the CPU for small inputs where launch overhead loses. |
 
 Portability is *structural*, not hoped-for: because the subset is fixed by what the GPU can do (W1), the question was never *can* the CPU run a plan — a superset always can — only whether it runs it *fast*.
@@ -117,7 +117,7 @@ Two lanes writing the same index is the one place the algebra can't stay purely 
 
 | Rule | Description |
 |------|-------------|
-| **D1: The type carries the representation, not the location** | `Wide[T]` is a distinct type from `[]T` — it says "this is a staged lane computation," which is honest. *Which device* it's resident on is not in the type; that's tracked like a borrow and surfaced by tooling (W6). Representation is typed; location is flow-tracked. Neither infects function signatures. |
+| **D1: The type carries the representation, not the location** | `Wide[T]` is a distinct type from `Vec<T>` — it says "this is a staged lane computation," which is honest. *Which device* it's resident on is not in the type; that's tracked like a borrow and surfaced by tooling (W6). Representation is typed; location is flow-tracked. Neither infects function signatures. |
 | **D2: Functions stay uncolored** | A `func` or closure used in a `map` needs no annotation. `square(x)` is ordinary Rask, usable on host and in a plan alike. No `@gpu`, no `__device__`, no second copy. |
 | **D3: Reachability compiles device code** | The compiler emits device code for every pure function reachable from a submitted plan — `rask-mono` retargeted to SPIR-V. This is a reachability closure, not a signature annotation. |
 | **D4: Non-closable calls are rejected** | Function pointers, dynamic dispatch, closures over host state, and unbounded recursion inside a staged op are compile errors — the device-code closure can't resolve them. The error points at the call, with the reason. |

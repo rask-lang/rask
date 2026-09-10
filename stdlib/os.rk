@@ -62,6 +62,40 @@ extend os {
     func process_stdout() -> string {}
     @native("rask_process_stderr")
     func process_stderr() -> string {}
+
+    /// Start a child and hand back a handle, or a negative errno if it never
+    /// started (C3). A piped stream stays open in the parent, which is the
+    /// whole difference from `process_run`.
+    @native("rask_process_spawn")
+    func process_spawn(program: string, args: Vec<string>, envs: Vec<string>, dir: string, stdin_mode: i64, stdout_mode: i64, stderr_mode: i64) -> i64 {}
+    @native("rask_process_pid")
+    func process_pid(handle: i64) -> i64 {}
+
+    /// Wait for the child, closing its stdin first — one that reads to EOF
+    /// would never exit otherwise, and waiting is what "done writing" means.
+    @native("rask_process_wait")
+    func process_wait(handle: i64) -> i64 {}
+    @native("rask_process_kill_and_wait")
+    func process_kill_and_wait(handle: i64) -> i64 {}
+
+    /// `-1` while the child is still running; its status once it has exited.
+    @native("rask_process_poll")
+    func process_poll(handle: i64) -> i64 {}
+    @native("rask_process_write_stdin")
+    func process_write_stdin(handle: i64, data: string) -> i64 {}
+
+    /// Everything the child has written to stdout, up to EOF.
+    @native("rask_process_read_stdout")
+    func process_read_stdout(handle: i64) -> string {}
+
+    /// What `wait` collected, read separately for the same reason `run`'s two
+    /// readers are separate: no struct crosses the FFI boundary.
+    @native("rask_process_captured_stdout")
+    func process_captured_stdout(handle: i64) -> string {}
+    @native("rask_process_captured_stderr")
+    func process_captured_stderr(handle: i64) -> string {}
+    @native("rask_process_release")
+    func process_release(handle: i64) -> void {}
 }
 
 /// I/O configuration for subprocess stdin/stdout/stderr.
@@ -178,9 +212,32 @@ extend Command {
         }
     }
 
-    /// Spawn command as a background process.
-    @unimplemented
-    public func spawn(self) -> Process or IoError {}
+    /// Start the command in the background and hand back its handle (C3).
+    ///
+    /// Unlike `run`, the piped streams stay open: stdout so `read_stdout` has
+    /// something to read, stdin so `write_stdin` has somewhere to write.
+    public func spawn(take self) -> Process or IoError {
+        let h = os.process_spawn(self.program, self.args, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
+        if h < 0 {
+            if h == -2 { return IoError.NotFound(self.program) }
+            if h == -13 { return IoError.PermissionDenied(self.program) }
+            return IoError.Other("could not start `{self.program}`")
+        }
+        return Process {
+            handle: h,
+            stdin_piped: is_piped(self.stdin_cfg),
+            stdout_piped: is_piped(self.stdout_cfg),
+        }
+    }
+}
+
+/// Was this stream given a pipe. `Process` remembers, so "there is nothing to
+/// write to" is a message about the configuration rather than a raw errno.
+func is_piped(cfg: Stdio) -> bool {
+    match cfg {
+        Stdio.Piped => return true
+        _ => return false
+    }
 }
 
 /// The number the runtime reads for a stream's configuration.
@@ -206,35 +263,99 @@ extend Output {
     }
 }
 
-/// A running subprocess handle. Must be consumed via wait() or kill_and_wait().
+/// A running subprocess handle. Must be consumed via wait() or kill_and_wait()
+/// (C4) — forgetting leaves a zombie, and `@resource` makes that a compile
+/// error rather than a habit.
+///
+/// The field is the address of the runtime's own record. Nothing about the
+/// child's layout crosses the FFI boundary, the same as `File` and `Rng`.
 @resource
 public struct Process {
+    handle: i64
+    /// Whether `spawn` gave stdin a pipe (C3). Kept here so `write_stdin` can
+    /// say "not piped" instead of handing back the errno for a missing fd.
+    stdin_piped: bool
+    /// Same for stdout, for `read_stdout`.
+    stdout_piped: bool
 }
 
 extend Process {
     /// Wait for the process to finish and return its output.
-    @unimplemented
-    public func wait(self) -> Output or IoError {}
+    ///
+    /// Closes the child's stdin first: one that reads to EOF would never exit,
+    /// and waiting for it is exactly the point at which nothing more will be
+    /// written. Anything `read_stdout` already took is not in `Output.stdout` —
+    /// the two read the same pipe.
+    public func wait(take self) -> Output or IoError {
+        let status = os.process_wait(self.handle)
+        return self.finish(status)
+    }
 
-    /// Kill the process and wait for it to finish.
-    @unimplemented
-    public func kill_and_wait(self) -> Output or IoError {}
+    /// Kill the process and wait for it to finish. The consumption method for
+    /// an `ensure`, which is why it exists next to `wait`.
+    public func kill_and_wait(take self) -> Output or IoError {
+        let status = os.process_kill_and_wait(self.handle)
+        return self.finish(status)
+    }
 
-    /// Check if the process has exited without blocking.
-    @unimplemented
-    public func poll(self) -> Option<Output> or IoError {}
+    /// Collect the answer and release the handle. Shared by the two consuming
+    /// methods so they can't drift about what an `Output` holds.
+    func finish(take self, status: i64) -> Output or IoError {
+        if status < 0 {
+            os.process_release(self.handle)
+            return IoError.Other("the child could not be waited for")
+        }
+        let out = Output {
+            status: status.clamp<i32>(),
+            stdout: os.process_captured_stdout(self.handle),
+            stderr: os.process_captured_stderr(self.handle),
+        }
+        os.process_release(self.handle)
+        return out
+    }
 
-    /// Get the process ID.
-    @unimplemented
-    public func pid(self) -> i64 {}
+    /// Has it exited? `none` while it is still running (C5). The handle is
+    /// still yours afterwards — `wait` is what consumes it, and on an exited
+    /// child it answers immediately.
+    public func poll(self) -> Output? or IoError {
+        let status = os.process_poll(self.handle)
+        if status < 0 {
+            return none
+        }
+        return Output {
+            status: status.clamp<i32>(),
+            stdout: os.process_captured_stdout(self.handle),
+            stderr: os.process_captured_stderr(self.handle),
+        }
+    }
 
-    /// Write data to the process stdin (requires Stdio.Piped).
-    @unimplemented
-    public func write_stdin(self, data: string) -> void or IoError {}
+    /// The child's process id.
+    public func pid(self) -> u32 {
+        return os.process_pid(self.handle).clamp<u32>()
+    }
 
-    /// Read from the process stdout (requires Stdio.Piped).
-    @unimplemented
-    public func read_stdout(self) -> string or IoError {}
+    /// Write to the child's stdin. Needs `Stdio.Piped` on stdin — otherwise
+    /// there is no pipe to write to and this is an error rather than a silent
+    /// discard.
+    public func write_stdin(self, data: string) -> void or IoError {
+        if !self.stdin_piped {
+            return IoError.Other("stdin not piped")
+        }
+        let code = os.process_write_stdin(self.handle, data)
+        if code < 0 {
+            return IoError.Other("could not write to the child's stdin")
+        }
+        return
+    }
+
+    /// Everything the child has written to stdout, up to EOF. Needs
+    /// `Stdio.Piped`; blocks until the child closes the stream.
+    public func read_stdout(self) -> string or IoError {
+        if !self.stdout_piped {
+            return IoError.Other("stdout not piped")
+        }
+        return os.process_read_stdout(self.handle)
+    }
 }
 
 /// Portable signal types.

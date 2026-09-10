@@ -391,6 +391,7 @@ fn try_inline_call(
             name: param.name.clone(),
             ty: param.ty.clone(),
             is_param: false,
+            container: param.container,
         });
     }
 
@@ -407,6 +408,7 @@ fn try_inline_call(
             name: local.name.clone(),
             ty: local.ty.clone(),
             is_param: false,
+            container: local.container,
         });
     }
 
@@ -1079,6 +1081,7 @@ mod tests {
             name: Some(name.to_string()),
             ty,
             is_param,
+            container: None,
         }
     }
 

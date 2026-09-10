@@ -39,10 +39,25 @@ known_leak() {
   grep -qE "^$1([[:space:]]|#|$)" "$KNOWN"
 }
 
+# The count a ledger line claims, or empty if it doesn't say.
+#
+# Checked against the measured one below, because a line's number is the only
+# part of this file nothing verified. A fix that took a file from 22 allocations
+# to 3 left "# 22 allocations" sitting there reading like a measurement, and the
+# running total in the prose drifted 22 out from the sum of the lines — which is
+# how a ledger stops being evidence and becomes a story about the past.
+declared_count() {
+  [ -f "$KNOWN" ] || return 0
+  grep -E "^$1([[:space:]]|#|$)" "$KNOWN" | head -1 |
+    sed -nE 's/.*#[[:space:]]*([0-9]+)[[:space:]]+allocation.*/\1/p'
+}
+
 green=0
 leaked=0
 expected=0
 broken=0
+total=0
+stale=()
 fixed=()
 failures=()
 unran=()
@@ -63,6 +78,12 @@ for file in "$SUITE"/*.rk; do
     [ -n "$detail" ] || detail="exit $rc"
     if known_leak "$name"; then
       expected=$((expected + 1))
+      measured="$(echo "$detail" | sed -nE 's/^rask: ([0-9]+) allocation.*/\1/p')"
+      declared="$(declared_count "$name")"
+      total=$((total + ${measured:-0}))
+      if [ -n "$measured" ] && [ -n "$declared" ] && [ "$measured" != "$declared" ]; then
+        stale+=("$name — the line says $declared, it leaks $measured")
+      fi
     else
       leaked=$((leaked + 1))
       failures+=("$name — $detail")
@@ -89,13 +110,16 @@ done
 for f in "${fixed[@]:-}"; do
   [ -n "$f" ] && echo "NO LONGER LEAKS (delete its line from known_leaks.txt): $f"
 done
+for f in "${stale[@]:-}"; do
+  [ -n "$f" ] && echo "STALE COUNT (update its line in known_leaks.txt): $f"
+done
 for f in "${unran[@]:-}"; do
   [ -n "$f" ] && echo "NOT MEASURED (failed before the leak check): $f"
 done
 echo "──────────────────────────────────────────────────"
-echo "leak gate: $green clean, $expected known-leaking, $leaked new, $broken not measured"
+echo "leak gate: $green clean, $expected known-leaking ($total allocations), $leaked new, $broken not measured"
 
-if [ "$leaked" -gt 0 ] || [ "${#fixed[@]}" -gt 0 ]; then
+if [ "$leaked" -gt 0 ] || [ "${#fixed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
   exit 1
 fi
 exit 0

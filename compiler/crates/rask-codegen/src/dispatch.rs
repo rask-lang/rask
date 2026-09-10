@@ -272,6 +272,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("Vec_capacity", "rask_vec_bound", &[types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("Vec_remaining", "rask_vec_remaining", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_is_bounded", "rask_vec_is_bounded", &[types::I64], Some(types::I64), false),
+        // `allocated()` is the room the buffer has, in elements — the same unit
+        // as `len()`. `capacity()` above answers a different question (the
+        // bound), which is why both exist.
+        StdlibEntry::simple("Vec_allocated", "rask_vec_allocated", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Vec_reserve", "rask_vec_reserve", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Vec_shrink_to_fit", "rask_vec_shrink_to_fit", &[types::I64], None, false),
+        StdlibEntry::simple("Vec_shrink_to", "rask_vec_shrink_to", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
         // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
         // with_capacity. The difference is the bound it sets.
@@ -320,7 +327,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_release_elem", "rask_vec_release_elem", &[types::I64], None, false),
 
-        StdlibEntry::simple("Vec_slice", "rask_vec_slice", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_chunks", "rask_vec_chunks", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {
@@ -928,7 +934,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Rack_free", "rask_rack_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Rack_insert", c_name: "rask_rack_insert",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64, types::I64,
+                types::I64,
+            ],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
@@ -962,6 +971,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_new", "rask_rng_new", &[], Some(types::I64), false),
         StdlibEntry::simple("Random_from_seed", "rask_rng_from_seed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Random_free", "rask_rng_free", &[types::I64], None, false),
         StdlibEntry::simple("Random_u64", "rask_rng_u64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_i64", "rask_rng_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Random_f64", "rask_rng_f64", &[types::I64], Some(types::F64), false),
@@ -1041,6 +1051,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("fs_open_handle", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create_handle", "rask_fs_create", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("File_is_null", "rask_file_is_null", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_seek_raw", "rask_file_seek", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_position_raw", "rask_file_position", &[types::I64], Some(types::I64), false),
         // `fs.metadata` and `Metadata`'s accessors used to live here. It's a
         // plain Rask struct built by Rask code now — see stdlib/fs.rk (#674).
 
@@ -1128,13 +1140,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
 
         // ── os module: environment ──────────────────────────────────
-        // env returns `string?` — the runtime hands back NULL when unset and
-        // DerefOption turns that into `none`, copying the 16-byte string out of
-        // the pointer for the `some` side.
+        // env returns `string?` — the string header is written into the
+        // option's payload and the call answers 1/0 for the tag. It used to
+        // hand back a pointer, which meant the runtime allocated a 16-byte box
+        // purely so codegen could copy out of it, and nobody freed the box.
         StdlibEntry {
             mir_name: "os_env", c_name: "rask_os_env",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
         // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
@@ -1180,6 +1193,36 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `spawn` and the six methods on the handle it hands back (std.os/C3).
+        // The handle is an i64 the runtime hands out and `Process` carries; the
+        // three string readers take an out-parameter, the same convention
+        // `process_stdout` uses.
+        StdlibEntry::simple(
+            "os_process_spawn", "rask_process_spawn",
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            Some(types::I64), false,
+        ),
+        StdlibEntry::simple("os_process_pid", "rask_process_pid", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_wait", "rask_process_wait", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_kill_and_wait", "rask_process_kill_and_wait", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_poll", "rask_process_poll", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("os_process_write_stdin", "rask_process_write_stdin", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "os_process_read_stdout", c_name: "rask_process_read_stdout",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_captured_stdout", c_name: "rask_process_captured_stdout",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "os_process_captured_stderr", c_name: "rask_process_captured_stderr",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("os_process_release", "rask_process_release", &[types::I64], None, false),
 
         // ── StringBuilder ───────────────────────────────────────────
         // cstring: the `const char*` half of the C surface (#949). The handle is
@@ -1205,6 +1248,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // Not a method anyone writes: `build` consumes the builder, and this is
+        // the release the drop pass emits for a path that never builds.
+        StdlibEntry::simple("StringBuilder_free", "rask_string_builder_free", &[types::I64], None, false),
         StdlibEntry::simple("StringBuilder_len", "rask_string_builder_len", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("StringBuilder_is_empty", "rask_string_builder_is_empty", &[types::I64], Some(types::I64), false),
 
@@ -1406,7 +1452,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Shared<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Shared_new", c_name: "rask_shared_new_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
@@ -1416,7 +1462,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // hands back the slot address for codegen to load or copy from.
         StdlibEntry {
             mir_name: "Cell_new", c_name: "rask_cell_new",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -1431,8 +1477,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Cell_replace", c_name: "rask_cell_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // The same three under each lock. `get` hands back the slot's address
         // like the Cell version; `set`/`replace` take the lock around the copy.
@@ -1448,8 +1494,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Shared_replace", c_name: "rask_shared_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
             mir_name: "Mutex_get", c_name: "rask_mutex_get",
@@ -1463,16 +1509,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Mutex_replace", c_name: "rask_mutex_replace",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::DerefOrString,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // `into_inner` consumes the cell and yields what it held — the same read
-        // as `get`, just the last one. Freeing the cell here would dangle the
-        // pointer it returns.
+        // `into_inner` consumes the cell and yields what it held. It used to be
+        // `rask_cell_get` — the same read as `get`, just the last one — and
+        // freeing the cell would have dangled the pointer that came back, so
+        // every `into_inner` left the whole cell behind. The value goes to the
+        // caller's own destination now and the cell is freed with it.
         StdlibEntry {
-            mir_name: "Cell_into_inner", c_name: "rask_cell_get",
-            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+            mir_name: "Cell_into_inner", c_name: "rask_cell_into_inner",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // `with cell as v { ... }` — same slot address as `Cell_get`, but the
         // block decides for itself whether to load through it or alias it, so no
@@ -1515,7 +1563,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Mutex<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Mutex_new", c_name: "rask_mutex_new_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
@@ -1606,6 +1654,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         ));
     }
     entries.push(atomic("Atomic_into_inner", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
+    // The ordinary drop. `into_inner` frees too and hands the value out with
+    // it; this is for an atomic that just goes out of scope.
+    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_int_free", &[types::I64], None, false));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
@@ -1886,7 +1937,6 @@ mod tests {
     const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
     "FieldInfo.get",
     "FieldInfo.has",
-    "Map.capacity",
     "Map.modify",
     "Map.modify_with_default",
     "Map.read",

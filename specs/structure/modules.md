@@ -232,6 +232,18 @@ ERROR [struct.modules/PS3]: mutable global
 
 **RE2 (origin-based identity):** `std.Vec` (re-export of `core.Vec`) and `collections.Vec` (also `core.Vec`) are the same type. Preserves composability across re-export chains.
 
+The other half of the same rule is that two types with one name are *not* the
+same type. A dependency's declarations carry the package they came from, so a
+library's `Cat` and a program's own `Cat` both exist; the library's is reached
+as `libpkg.Cat`, which is all IM1 gives you for a name you didn't import.
+Merely depending on a package never takes a name away from you.
+
+IM8 is where that stops: `import libpkg.Cat` brings the name in bare, and a
+program that also declares `Cat` then has two things under one name in one
+scope. That's an error at the import, with the alias (IM3) as the way out —
+resolving it either way loses one of them silently, which is what used to
+happen to the whole merged program.
+
 ### Patterns
 
 **Factory-first struct:**

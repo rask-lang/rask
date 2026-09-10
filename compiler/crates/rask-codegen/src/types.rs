@@ -61,6 +61,7 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::F64 => Ok(types::F64),
         MirType::Char => Ok(types::I32), // Unicode scalar value
         MirType::Ptr => Ok(types::I64),  // Pointer
+        MirType::Container(_) => Ok(types::I64), // Container handle
         MirType::String => Ok(types::I64), // String data pointer
         MirType::Struct(_) => Ok(types::I64), // Pointer to struct
         MirType::Enum(_) => Ok(types::I64),   // Pointer to enum
@@ -69,7 +70,6 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::Handle => Ok(types::I64),     // Packed handle (index:32 | gen:32)
         MirType::Link(_) => Ok(types::I64),    // Node address (mem.racks/RK2)
         MirType::Tuple(_) => Ok(types::I64),   // Pointer to tuple on stack
-        MirType::Slice(_) => Ok(types::I64),   // Pointer to (ptr, len) pair
         MirType::Option(_) => Ok(types::I64),  // Pointer to tagged union
         MirType::Result { .. } => Ok(types::I64), // Pointer to tagged union
         MirType::Union(_) => Ok(types::I64),   // Pointer to union

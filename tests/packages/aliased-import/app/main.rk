@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The fix E0876 suggests, working: alias the unqualified import and both names
+// live side by side.
+//
+// `import libpkg.Cat as LibCat` binds the library's type under a name the
+// program picked, so `Cat` stays the program's own. Same value, two spellings
+// of where it came from — modules/IM3 for the alias, IM4 for the unqualified
+// form it aliases.
+
+import libpkg
+import libpkg.Cat as LibCat
+import libpkg.Mood as LibMood
+
+struct Cat {
+    legs: i64
+}
+
+extend Cat {
+    func describe(self) -> string {
+        return "{self.legs} legs"
+    }
+}
+
+func main() {
+    let mine = Cat { legs: 4 }
+    let theirs = LibCat { name: "mimi" }
+    println(mine.describe())
+    println(libpkg.greet(theirs))
+
+    // The alias is the type, so it works in a signature and in a match.
+    let m: LibMood = libpkg.mood(true)
+    println(m.word())
+    println(libpkg.mood(false).word())
+
+    // And the qualified spelling still names the same type: `theirs` was
+    // built through the alias and `greet` takes `libpkg.Cat`.
+    let also: LibCat = theirs
+    println(also.name)
+    return
+}

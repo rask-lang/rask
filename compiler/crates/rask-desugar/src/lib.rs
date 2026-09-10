@@ -14,6 +14,7 @@
 
 mod annotation_defaults;
 mod defaults;
+mod generalize;
 mod trait_defaults;
 pub use defaults::is_valid_default_expr;
 
@@ -79,6 +80,11 @@ fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<
     // copies get desugared with everything else — and so `scan_error_message_types`
     // sees a `message()` a trait supplied by default.
     let injected = trait_defaults::inject(decls);
+
+    // Before anything rewrites an operator: this reads the body's operators as
+    // written, and turns an inferred parameter that is only ever an operand
+    // into a real type parameter with the operator's bound (type.gradual/IN3).
+    generalize::generalize_inferred_params(decls);
 
     let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
     desugarer.scan_error_message_types(decls);

@@ -38,7 +38,6 @@ fn receiver_takes_generic_clone(receiver: &Value) -> bool {
         | Value::Uint128(_)
         | Value::Float(..)
         | Value::Char(_)
-        | Value::Range { .. }
         | Value::Duration(_)
         | Value::Instant(_)
         | Value::Handle { .. }
@@ -243,37 +242,6 @@ impl Interpreter {
                 return self.call_string_builder_method(&Arc::clone(buf), method, args)
             }
             Value::Iterator(iter) => return self.call_iterator_method(&Arc::clone(iter), method, args),
-            // ctrl.ranges RV1 / SP1–SP4 — the two range adapters. Both hand
-            // back a range, so they chain in either order.
-            Value::Range { start, end, inclusive, step, rev } => {
-                return match method {
-                    "rev" => Ok(Value::Range {
-                        start: *start, end: *end, inclusive: *inclusive,
-                        step: *step, rev: !*rev,
-                    }),
-                    "step" => {
-                        let n = match args.first() {
-                            Some(Value::Int(n, _)) => *n,
-                            _ => return Err(RuntimeError::TypeError(
-                                "step() takes an integer stride".to_string(),
-                            )),
-                        };
-                        if n == 0 {
-                            return Err(RuntimeError::Panic(
-                                "ctrl.ranges/SP3: step must be non-zero".to_string(),
-                            ));
-                        }
-                        Ok(Value::Range {
-                            start: *start, end: *end, inclusive: *inclusive,
-                            step: n, rev: *rev,
-                        })
-                    }
-                    _ => Err(RuntimeError::NoSuchMethod {
-                        ty: "Range".to_string(),
-                        method: method.to_string(),
-                    }),
-                };
-            }
             #[cfg(not(target_arch = "wasm32"))]
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
             #[cfg(not(target_arch = "wasm32"))]
@@ -460,15 +428,27 @@ impl Interpreter {
             let consumes_self = method_fn.params.first()
                 .map(|p| p.name == "self" && p.is_take)
                 .unwrap_or(false);
+            let mut taken = None;
             if consumes_self {
                 if let Some(id) = self.get_resource_id(&receiver) {
                     self.resource_tracker.mark_consumed(id)
                         .map_err(|msg| RuntimeError::Panic(msg))?;
+                    // The callee owns it now, so it is live for the body: a
+                    // `take self` method is free to hand the resource on to
+                    // another one, and that is a move rather than a second
+                    // consumption.
+                    self.resource_tracker.revive(id);
+                    taken = Some(id);
                 }
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            let answer = self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            if let Some(id) = taken {
+                // Whatever the body did with it, the caller gave it up.
+                let _ = self.resource_tracker.mark_consumed(id);
+            }
+            return answer;
         }
 
         // `type Id = u64 with (Hashable)` delegates whatever it doesn't define

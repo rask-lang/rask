@@ -38,6 +38,7 @@ use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 // pipeline themselves rather than going through `finalize_compile`, and they
 // have to run this pass too — a derived `compare` that only `rask run`
 // generates is a method that exists or doesn't depending on the subcommand.
+pub mod package_scope;
 pub mod derive;
 mod comptime_eval;
 
@@ -107,6 +108,10 @@ pub struct CheckResult {
     pub typed: TypedProgram,
     pub decls: Vec<Decl>,
     pub package_names: Vec<String>,
+    /// Each dependency's declarations, original name against the qualified one
+    /// the rest of the pipeline uses. Kept so a diagnostic raised after the
+    /// check can still say `libpkg.Cat` rather than `Cat_libpkg`.
+    pub qualified_names: HashMap<String, HashMap<String, String>>,
     pub source_files: Vec<(PathBuf, String)>,
     pub effects: EffectMap,
     pub effect_warnings: Vec<EffectWarning>,
@@ -275,7 +280,7 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 /// produce two nodes with the same id — the same rules `rask-resolve`'s package
 /// loader follows, for the same reasons.
 fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<CheckResult> {
-    let mut diags = Vec::new();
+    let mut diags: Vec<Diagnostic> = Vec::new();
     let mut source_files: Vec<(PathBuf, String)> = Vec::new();
     let mut decls: Vec<Decl> = Vec::new();
     let mut next_id: u32 = 0;
@@ -408,6 +413,7 @@ fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<C
             typed,
             decls: parse_result.decls,
             package_names,
+            qualified_names: HashMap::new(),
             source_files: source_files.clone(),
             effects,
             effect_warnings,
@@ -495,7 +501,21 @@ pub fn check_package(
     pkg_ctx: &mut PackageContext,
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
-    let mut diags = Vec::new();
+    let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut out = check_package_scoped(pkg_ctx, config, &mut exports);
+    // Every diagnostic, including the ones raised before the check got far
+    // enough to produce a result — those are the ones most likely to name a
+    // dependency's type.
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
+    out
+}
+
+fn check_package_scoped(
+    pkg_ctx: &mut PackageContext,
+    config: &CompilerConfig,
+    exports: &mut HashMap<String, HashMap<String, String>>,
+) -> PipelineOutput<CheckResult> {
+    let mut diags: Vec<Diagnostic> = Vec::new();
 
     // Every package's files, placed at the slot its spans name. The list used
     // to hold only the root's, so a diagnostic about a dependency's
@@ -525,76 +545,71 @@ pub fn check_package(
     // never wrote (#1112).
     let mut package_names = Vec::new();
 
-    // What each declared name belongs to, so a second claim on it can say
-    // where the first one came from. The consumer's own declarations go in
-    // first — they are the ones a reader is holding in their head.
-    let mut claimed: HashMap<String, (String, Span)> = HashMap::new();
-    for decl in &pkg_ctx.all_decls {
-        if let Some(name) = declared_name(decl) {
-            claimed.entry(name).or_insert((String::from("this program"), decl.span));
-        }
-    }
-
     // Names another package declared but did not make public, and where. A
     // package's own declarations are all merged now (#1100), so nothing stops
     // the program naming a dependency's internals — checked after resolve,
-    // where the use sites are.
+    // where the use sites are. Keyed by the name as the dependency's author
+    // wrote it, which is the name a program would try.
     let mut private_elsewhere: HashMap<String, (rask_resolve::PackageId, String, Span)> =
         HashMap::new();
 
+    // A dependency's declarations carry where they came from: `Cat` in
+    // `libpkg` becomes `libpkg_Cat`, and every reference to it inside the
+    // package with it. Two `Cat`s can then both exist, which is what
+    // modules/RE2 says they are — a type's identity is (origin package, origin
+    // name) and not the name alone (#1129).
+    //
+    // Every declaration is merged, not just the public ones. A package's own
+    // bodies call its private helpers by their bare names, so leaving those
+    // out means the package can't be resolved at all — and they reached MIR
+    // anyway, through a separate list merged *after* resolve. A subdirectory is
+    // a package (modules/PO1), so this is what made the ordinary `src/` layout
+    // fail: `func main()` in `src/main.rk` is a private declaration by this
+    // rule (#1100). Those keep sharing the program's namespace — renaming that
+    // `main` leaves the program without an entry point.
+    let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
             continue;
         }
         package_names.push(pkg.name.clone());
-        // Every declaration, not just the public ones. A package's own
-        // bodies call its private helpers by their bare names, so leaving
-        // those out means the package can't be resolved at all — and they
-        // reached MIR anyway, through a separate list merged *after* resolve.
-        // A subdirectory is a package (modules/PO1), so this is what made the
-        // ordinary `src/` layout fail: `func main()` in `src/main.rk` is a
-        // private declaration by this rule (#1100).
-        for decl in pkg.all_decls() {
-            // One program, one namespace — for now. A dependency's public
-            // declarations are merged into the consumer's, so two `Cat`s are
-            // one `Cat` and whichever lands second silently loses. That used
-            // to produce a nonsense error inside a file the consumer never
-            // wrote ("no field `legs` on type `Cat`"), or worse, no error at
-            // all. modules/RE2 says the two are different types — a type's
-            // identity is where it was declared — and giving each package its
-            // own scope is what makes that true. Until then, say so at the
-            // collision rather than compiling one of them wrong (#1129).
+        let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
+        for decl in &decls {
             if !is_public_decl(decl) {
                 if let Some(name) = declared_name(decl) {
-                    private_elsewhere
-                        .insert(name, (pkg.id, pkg.name.clone(), decl.span));
+                    private_elsewhere.insert(name, (pkg.id, pkg.name.clone(), decl.span));
                 }
             }
-
-            if let Some(name) = declared_name(decl) {
-                if let Some((owner, first)) = claimed.get(&name) {
-                    diags.push(
-                        Diagnostic::error(format!(
-                            "`{}` is declared by both `{}` and {}",
-                            name, pkg.name, owner
-                        ))
-                        .with_code("E0876")
-                        .with_primary(decl.span, format!("`{}` declares `{}` here", pkg.name, name))
-                        .with_secondary(*first, "and it is already declared here")
-                        .with_help(format!(
-                            "rename one of them — every package's declarations share \
-                             one namespace with the program that uses them, so `{}` \
-                             can only mean one thing here",
-                            name
-                        )),
-                    );
-                    continue;
-                }
-                claimed.insert(name, (format!("`{}`", pkg.name), decl.span));
-            }
-
-            pkg_ctx.all_decls.push(decl.clone());
         }
+        if pkg.is_external {
+            let map = package_scope::qualify_declarations(&mut decls, &pkg.name);
+            exports.insert(pkg.name.clone(), map);
+        }
+        merged.push((pkg.id, decls));
+    }
+
+    // Now that every dependency's names are settled, point each package's
+    // references at them — the program's `libpkg.Cat` and `libpkg.greet(c)`,
+    // and a dependency's references to its own dependencies. Aliases come from
+    // the importing package's own `import … as` lines, so this is per package
+    // rather than program-wide.
+    if !exports.is_empty() {
+        let root_visible = visible_packages(&pkg_ctx.all_decls, exports);
+        package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible);
+        let (imported, shadowed) =
+            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_visible);
+        package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported);
+        diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
+        for (_, decls) in merged.iter_mut() {
+            let visible = visible_packages(decls, exports);
+            package_scope::qualify_references(decls, &visible);
+            let (imported, shadowed) = package_scope::unqualified_imports(decls, &visible);
+            package_scope::qualify_imported_names(decls, &imported);
+            diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
+        }
+    }
+    for (_, decls) in merged {
+        pkg_ctx.all_decls.extend(decls);
     }
     if diags.iter().any(|d| d.severity == Severity::Error) {
         return PipelineOutput::fail_with_sources(diags, source_files);
@@ -633,9 +648,17 @@ pub fn check_package(
         Ok(r) => r,
         Err(errors) => {
             for e in &errors {
-                diags.push(e.to_diagnostic());
+                // A dependency's private helper is no longer in the program's
+                // namespace at all, so resolve reports it as a name that
+                // doesn't exist. It does exist — the package just kept it —
+                // and saying so is the difference between "check the spelling"
+                // and "this isn't part of that library's surface".
+                match private_declaration_named(e, &private_elsewhere) {
+                    Some(d) => diags.push(d),
+                    None => diags.push(e.to_diagnostic()),
+                }
             }
-            return PipelineOutput::fail(diags);
+            return PipelineOutput::fail_with_sources(diags, source_files);
         }
     };
 
@@ -735,6 +758,7 @@ pub fn check_package(
             typed,
             decls: std::mem::take(&mut pkg_ctx.all_decls),
             package_names,
+            qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,
             effect_warnings,
@@ -867,6 +891,23 @@ fn finalize_compile(
         Some(c) => c,
         None => return PipelineOutput::fail_with_sources(diags, pkg_source_files),
     };
+    // Where the check's diagnostics were rewritten already; from here on the
+    // back half of the pipeline adds its own, and mono in particular names
+    // types.
+    let qualified = check.qualified_names.clone();
+    let mut out = finalize_compile_inner(check, package_modules, config, transform, diags, pkg_source_files);
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &qualified);
+    return out;
+}
+
+fn finalize_compile_inner(
+    mut check: CheckResult,
+    package_modules: HashSet<String>,
+    config: &CompilerConfig,
+    transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
+    mut diags: Vec<Diagnostic>,
+    pkg_source_files: Vec<(PathBuf, String)>,
+) -> PipelineOutput<CompileResult> {
 
     // --- Write inferred parameter types back into the declarations ---
     // Everything after this point reads a parameter's type off its declaration
@@ -1019,6 +1060,81 @@ fn is_public_decl(decl: &Decl) -> bool {
 ///
 /// `extend` blocks have none — they attach to a type that is named elsewhere —
 /// and neither do imports, exports or the package block itself.
+/// E0877 for a resolve failure that is really a dependency's own declaration.
+fn private_declaration_named(
+    e: &rask_resolve::ResolveError,
+    private_elsewhere: &HashMap<String, (rask_resolve::PackageId, String, Span)>,
+) -> Option<Diagnostic> {
+    let name = match &e.kind {
+        rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
+        _ => return None,
+    };
+    let base = name.split('<').next().unwrap_or(name);
+    let (_, owner_name, decl_span) = private_elsewhere.get(base)?;
+    Some(
+        Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
+            .with_code("E0877")
+            .with_primary(e.span, format!("`{}` can't be named from here", base))
+            .with_secondary(*decl_span, "declared here, without `public`")
+            .with_help(format!(
+                "`{}` keeps this one to itself — mark it `public` there if it \
+                 belongs in the API, or reach for something that is",
+                owner_name
+            )),
+    )
+}
+
+/// modules/IM8: an unqualified import and a local declaration want one name.
+fn shadowed_import_diagnostic(s: &package_scope::ShadowedImport) -> Diagnostic {
+    let qualified = format!("{}.{}", s.package, s.original);
+    // `libpkg` + `Cat` → `LibpkgCat`, so the alias reads as the type it is.
+    let mut alias = String::new();
+    let mut head = s.package.chars();
+    if let Some(c) = head.next() {
+        alias.extend(c.to_uppercase());
+        alias.push_str(head.as_str());
+    }
+    alias.push_str(&s.original);
+    Diagnostic::error(format!(
+        "importing `{}` collides with the `{}` declared here",
+        qualified, s.name
+    ))
+    .with_code("E0876")
+    .with_primary(s.import_at, format!("this brings `{}` in as `{}`", qualified, s.name))
+    .with_secondary(s.declared_at, format!("and `{}` is declared here", s.name))
+    .with_fix(format!("import {}.{} as {}", s.package, s.original, alias))
+    .with_help(format!(
+        "or drop the unqualified import and write `{}` where you need it — \
+         depending on `{}` is fine either way, the two are different types \
+         (modules/RE2)",
+        qualified, s.package
+    ))
+}
+
+/// What each package binding in these declarations makes available.
+///
+/// `import libpkg` binds `libpkg`; `import libpkg as l` binds `l`. A package's
+/// own name is always visible to itself, so a library referring to its own
+/// declarations by `mylib.Name` works too.
+fn visible_packages(
+    decls: &[Decl],
+    exports: &HashMap<String, HashMap<String, String>>,
+) -> HashMap<String, HashMap<String, String>> {
+    let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for decl in decls {
+        let DeclKind::Import(import) = &decl.kind else { continue };
+        let Some(pkg) = import.path.first() else { continue };
+        let Some(map) = exports.get(pkg) else { continue };
+        let binding = match (&import.alias, import.path.len()) {
+            // `import pkg.Name as N` renames the member, not the package.
+            (Some(alias), 1) => alias.clone(),
+            _ => pkg.clone(),
+        };
+        out.insert(binding, map.clone());
+    }
+    out
+}
+
 fn declared_name(decl: &Decl) -> Option<String> {
     match &decl.kind {
         DeclKind::Fn(f) => Some(f.name.clone()),

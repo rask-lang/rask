@@ -371,7 +371,7 @@ impl<'a> TraitChecker<'a> {
             Type::Result { ok, err } if matches!(**err, Type::None) => {
                 self.type_is_encodable(ok, visited)
             }
-            Type::Array { elem, .. } | Type::Slice(elem) => self.type_is_encodable(elem, visited),
+            Type::Array { elem, .. } => self.type_is_encodable(elem, visited),
             Type::Tuple(elems) => elems.iter().all(|e| self.type_is_encodable(e, visited)),
             Type::Named(id) => self.named_is_encodable(*id, &[], visited),
             Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
@@ -617,7 +617,6 @@ impl<'a> TraitChecker<'a> {
                 elem: Box::new(Self::apply_subst(elem, subst)),
                 len: *len,
             },
-            Type::Slice(elem) => Type::Slice(Box::new(Self::apply_subst(elem, subst))),
             Type::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| Self::apply_subst(e, subst)).collect())
             }
@@ -901,10 +900,12 @@ pub fn builtin_trait_methods(trait_name: &str) -> Option<Vec<MethodSig>> {
             "Integer" => {
                 let mut sigs = numeric_method_sigs();
                 sigs.extend(integer_overflow_hatch_method_sigs());
+                sigs.extend(ordered_method_sigs());
                 Some(sigs)
             }
             "Float" => {
                 let mut sigs = numeric_method_sigs();
+                sigs.extend(ordered_method_sigs());
                 sigs.push(MethodSig {
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
@@ -1076,7 +1077,6 @@ impl<'a> TraitChecker<'a> {
                 err: Box::new(self.normalize(err)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.normalize(e)).collect()),
-            Type::Slice(inner) => Type::Slice(Box::new(self.normalize(inner))),
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.normalize(inner))),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.normalize(elem)),
@@ -1204,6 +1204,20 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
 }
 
 /// The eight methods the roster gives `Numeric`.
+/// Comparison and remainder — what every `Integer` and `Float` member has and
+/// `Numeric` alone doesn't declare.
+///
+/// A bound has to declare a method for a generic body to call it, and membership
+/// in these two sets is decided by what the type *is* — so a `T: Integer` that
+/// couldn't be compared was the bound describing less than it knows. That's what
+/// stopped `stdlib/range.rk` from asking `self.start < self.end`.
+fn ordered_method_sigs() -> Vec<MethodSig> {
+    let mut sigs = builtin_trait_methods("Comparable").unwrap_or_default();
+    sigs.extend(builtin_trait_methods("Equal").unwrap_or_default());
+    sigs.extend(builtin_trait_methods("Rem").unwrap_or_default());
+    sigs
+}
+
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         owner_patterns: Vec::new(),

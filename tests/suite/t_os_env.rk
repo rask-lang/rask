@@ -53,6 +53,45 @@ test "std.os — env_vars sees what set_env wrote" {
     os.remove_env("RASK_TEST_ENV_LISTED")
 }
 
+// A value long enough to have its own buffer, so the string coming out of the
+// option is a real heap string rather than a small one living in the header.
+// A header read out of freed storage gives a garbage pointer, and this
+// comparison is what notices.
+test "std.os — a long value survives the trip out" {
+    let long = "a value long enough that the string keeps its own buffer"
+    os.set_env("RASK_TEST_ENV_LONG", long)
+    let got = os.env("RASK_TEST_ENV_LONG") ?? "-"
+    assert got == long
+    assert got.len() == 56
+    os.remove_env("RASK_TEST_ENV_LONG")
+}
+
+// One read per turn, so a header written into storage the last turn owned
+// reads as the wrong value rather than as nothing.
+test "std.os — one read per turn" {
+    os.set_env("RASK_TEST_ENV_LOOP", "the value each turn reads back, long enough to allocate")
+    mut hits = 0
+    for i in 0..16 {
+        let v = os.env("RASK_TEST_ENV_LOOP") ?? "-"
+        if v == "the value each turn reads back, long enough to allocate" {
+            hits = hits + 1
+        }
+    }
+    assert hits == 16
+    os.remove_env("RASK_TEST_ENV_LOOP")
+}
+
+// A hit and a miss in the same frame: the miss must not disturb the slot the
+// hit wrote, which is the same slot when both reads share a destination.
+test "std.os — a hit and a miss side by side" {
+    os.set_env("RASK_TEST_ENV_PRESENT", "present and long enough to allocate")
+    let hit = os.env("RASK_TEST_ENV_PRESENT")
+    let miss = os.env("RASK_TEST_ENV_ABSENT_QQQ")
+    assert miss is none
+    assert (hit ?? "-") == "present and long enough to allocate"
+    os.remove_env("RASK_TEST_ENV_PRESENT")
+}
+
 // The values depend on the machine, so this checks the shape rather than the
 // answer — the point is that both backends have one at all.
 test "std.os — platform, arch, args and pid" {

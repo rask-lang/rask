@@ -1,51 +1,60 @@
+// The spec used to give two answers here and they disagreed, which is why this
+// was a decision rather than a fix. It is decided: GC13. A direct method call
+// that names no trait pins the parameter, because a shape requirement is what
+// GC3(b) states and nothing yet solves one. That is a limit of what's built,
+// not a claim about what the shape means — the structural bound is where this
+// is going, and `duck trait` is the spelling it will use.
+//
+// So this file stays pending, and now it is pending on the *direction* rather
+// than on an argument. What it needs is the requirement collected in the
+// checker instead of in desugar: the pass that would write the bound runs
+// before typecheck and can't know `len` returns `usize`, and a trait method
+// needs its return type. A bare `<T>` doesn't help either — bodies are checked
+// once, not per instantiation, so `func count<T>(items: T) -> usize` is E0313.
+//
+// The other answer, a method→type table mapping `.len()` to `Vec<T>`, is the
+// one GC13 rules out: `Vec`, `Map`, `string` and `Set` all have a `.len()`, so
+// every row is a guess, and guessing wrong makes `count(a_map)` an error in a
+// program that reads fine. The operator half could be written down because an
+// operator names its trait; `.len()` names nothing.
+
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Generalizing an inferred parameter — #904. Unbuilt, not broken.
+// Reading a nominal type out of method use — #904's remaining half. Unbuilt.
 //
-// type.gradual-constraints/IN1 says the compiler infers the most general type
-// satisfying the constraints, and IN3 says constraints coming from operators or
-// trait methods produce a *generic* signature. IN2's concrete answer is only for
-// a body whose sole information is a literal default.
+// The operator half is done and lives in `t_week_gradual_generics.rk`:
+// `func double(x) { x * 2 }` comes out as `<T: Numeric>(x: T) -> T` and takes
+// an int and a float from the same program, which is the first row of
+// `gradual-constraints.md`'s table.
 //
-// What exists today is IN2 and nothing else. An omitted parameter type becomes
-// one type variable shared by the whole program, so whatever pins it first wins:
-//
-//   func double(x) { return x * 2 }      // `2` defaults to i32, so x is i32
-//   double(1.5)                          // error: `*` between f64 and i32
+// This is the fourth row, and it needs something different:
 //
 //   func count(items) { return items.len() }
 //   count(ints)                          // fixes items at Vec<i32>
 //   count(strs)                          // error: expected i32, found string
 //
-// Two separate pieces are missing, and neither is a small fix:
+// The spec gives two answers here and they disagree, which is why this is a
+// decision rather than a fix — #1141 lays out the three ways out.
 //
-//   Generalization. The parameter has to become a real type parameter that each
-//   call site instantiates fresh, rather than a single variable every call site
-//   unifies against. Nothing in the pipeline turns an inferred parameter into
-//   one — `pre_register_inferred_fns` mints a var and that is the whole story.
+// The example table says `<T>(items: Vec<T>) -> usize`: the parameter isn't the
+// generic, its *element* is. GC3 says the opposite — direct method use produces
+// a *structural* requirement, not a nominal one.
 //
-//   Reading a nominal type out of method use (GC3). The table's own answer for
-//   `count` is `<T>(items: Vec<T>) -> usize` — the parameter isn't the generic,
-//   its *element* is. Getting there means going from "something with `.len()`"
-//   to `Vec<T>` and then generalizing the argument, which is structural-to-
-//   nominal inference the checker doesn't do at all.
+// Neither is implementable as written. Nominal needs a method→type table
+// somebody has to defend: `.len()` names no trait, and `Vec`, `Map`, `string`
+// and `Set` all have one. The operator half could be written down as a
+// signature because an operator names its trait; `.len()` names nothing.
+// Structural needs the bound to be sayable — `duck trait` is the right
+// mechanism, but the pass that would write it runs before typecheck and can't
+// know `len` returns `usize`, and a trait method needs its return type. A bare
+// `<T>` doesn't help: bodies are checked once, not per instantiation, so
+// `func count<T>(items: T) -> usize { items.len() }` is E0313 today.
 //
-// The concrete half, and the explicit signature these should infer, are green in
-// `t_week_gradual_generics.rk`.
-
-func double(x) {
-    return x * 2
-}
+// Until it is decided, a method call on an inferred parameter keeps IN2's
+// answer: one concrete type for the whole program, whichever call site arrives
+// first.
 
 func count(items) {
     return items.len()
-}
-
-// IN3: `*` desugars to `.mul()`, so the body's constraint is a trait method and
-// the signature should be `<T: Numeric>(x: T) -> T`.
-test "type.gradual-constraints — IN3: an operator body infers a Numeric generic" {
-    assert double(21) == 42
-    let f: f64 = 1.5
-    assert double(f) == 3.0
 }
 
 // GC3/IN1: `.len()` says nothing about the element, so the element generalizes

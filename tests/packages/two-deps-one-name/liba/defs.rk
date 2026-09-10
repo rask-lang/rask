@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Helper` here holds an `i64`. `libb`'s holds a `string`. Both used to be one
+// name in the merged program, and the loser's fields were read off the
+// winner's layout — so `from_a()` was type-checked against `libb`'s `Helper`,
+// inside `liba`'s own body (#1129).
+
+public struct Helper {
+    public n: i64
+}
+
+extend Helper {
+    public func describe(self) -> string {
+        return "a:{self.n}"
+    }
+}
+
+public func from_a() -> Helper {
+    return Helper { n: 7 }
+}
+
+// A private name that collides too. Both packages have a `combine`, and
+// nothing stops a program from having one either — private declarations are
+// merged as well, because a package's own bodies call them by their bare
+// names (#1100).
+func combine(h: Helper) -> string {
+    return "{h.describe()}!"
+}
+
+public func shout() -> string {
+    return combine(from_a())
+}

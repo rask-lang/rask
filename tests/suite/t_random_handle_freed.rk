@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Random` is given back (std.random).
+//
+// `Random` is an empty struct whose constructors are natives handing back a
+// heap block — the generator's state, behind an opaque handle. There was no
+// `rask_rng_free` in the runtime at all, so every `Random.from_seed(n)` and
+// every `Random.new()` leaked its state and nothing on either side said so.
+//
+// The fix is the same list every other handle-shaped constructor is on: the
+// two constructors say what frees what they hand back, and the drop pass does
+// the rest.
+//
+// The tests check the numbers as well as the count. A generator freed early
+// would read its state out of freed memory, and the same seed twice is what
+// catches that — determinism/D7 says a seeded generator is reproducible, so a
+// wrong answer here is a wrong answer, not a flake.
+import random.Random
+
+test "std.random — a seeded generator is freed and still deterministic" {
+    mut a = Random.from_seed(12345)
+    mut b = Random.from_seed(12345)
+    for i in 0..8 {
+        assert a.i64() == b.i64()
+    }
+}
+
+test "std.random — different seeds, different sequences" {
+    mut a = Random.from_seed(1)
+    mut b = Random.from_seed(2)
+    mut same = 0
+    for i in 0..8 {
+        if a.i64() == b.i64() {
+            same = same + 1
+        }
+    }
+    assert same == 0
+}
+
+test "std.random — range stays inside its bounds" {
+    mut r = Random.from_seed(99)
+    for i in 0..20 {
+        let n = r.range(10, 20)
+        assert n >= 10
+        assert n < 20
+    }
+}
+
+test "std.random — an unseeded generator is freed too" {
+    mut r = Random.new()
+    let n = r.range(0, 100)
+    assert n >= 0
+    assert n < 100
+}
+
+// Many generators in one frame, so a missing free shows up as a count rather
+// than as one stray block.
+test "std.random — one per turn" {
+    mut total = 0
+    for i in 1..11 {
+        mut r = Random.from_seed(i.clamp<i64>())
+        total = total + r.range(0, 2)
+    }
+    assert total >= 0
+    assert total <= 10
+}
+
+// A generator that outlives the loop it was used in, so the free lands at the
+// end of the frame rather than on the back edge.
+test "std.random — one generator across a loop" {
+    mut r = Random.from_seed(7)
+    mut drawn = 0
+    for i in 0..12 {
+        if r.bool() {
+            drawn = drawn + 1
+        }
+    }
+    assert drawn >= 0
+    assert drawn <= 12
+    // Still usable after the loop: nothing freed it early.
+    assert r.range(0, 5) < 5
+}

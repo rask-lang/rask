@@ -78,6 +78,8 @@ These are "should never happen" failures — most callers `try` them upward or c
 | **C2: Run** | `command.run()` executes to completion and captures output |
 | **C3: Spawn** | `command.spawn()` starts the process and returns a linear `Process` handle |
 | **C4: Process resource** | `Process` is `@resource` — must be consumed via `wait()` or `kill_and_wait()` |
+| **C5: Poll doesn't consume** | `poll()` answers `none` while the child runs and its `Output` once it has exited, either way leaving the handle to be consumed later |
+| **C6: Piped streams stay open** | `spawn` leaves the configured pipes open in the parent, so `write_stdin` has somewhere to write and `read_stdout` something to read. `wait` closes stdin first — a child reading to EOF would never exit |
 
 <!-- test: skip -->
 ```rask
@@ -93,8 +95,8 @@ extend Command {
     func stdout(take self, cfg: Stdio) -> Command
     func stderr(take self, cfg: Stdio) -> Command
 
-    func run(self) -> Output or IoError
-    func spawn(self) -> Process or IoError
+    func run(take self) -> Output or IoError
+    func spawn(take self) -> Process or IoError
 }
 
 enum Stdio { Inherit, Piped, Null }
@@ -245,6 +247,9 @@ FIX: Remove unreachable code or move os.exit() to end of block.
 | `wait()` on exited process | C4 | Returns cached Output |
 | `write_stdin` without `Stdio.Piped` | C3 | `IoError.Other("stdin not piped")` |
 | `read_stdout` without `Stdio.Piped` | C3 | `IoError.Other("stdout not piped")` |
+| `read_stdout` then `wait()` | C6 | What `read_stdout` took is not in `Output.stdout` — the two read one pipe |
+| `poll()` after the child exited | C5 | Answers its `Output`, and the handle is still yours to consume |
+| Killed child's status | C4 | 128+signal, the number a shell reports |
 | Program not found | C2 | `IoError.NotFound` |
 | Signal receiver dropped | SG3 | Default OS signal behavior restored |
 | Multiple receivers for same signal | SG2 | Last registration wins, previous receiver gets closed |

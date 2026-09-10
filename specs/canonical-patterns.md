@@ -99,7 +99,6 @@ Name encodes the cost. A developer — or a tool — knows what happens from the
 ```rask
 // as_* — cheap view, no allocation
 let bytes = s.as_bytes()
-let slice = vec.as_slice()
 let str = path.as_string()
 
 // to_* — allocates a new value, doesn't consume source
@@ -120,7 +119,7 @@ let vec = list.into_vec()
 |---------------|---------|---------|----------|
 | `from_*` | Construction from source | `Self` or `Self or E` | `Path.from(s)`, `from_utf8(b)` — suffix only when the source type needs disambiguating |
 | `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
-| `as_*` | Cheap view or cast — hands back what the value already has, allocating nothing | a primitive, a raw pointer, a slice, a `string`, or a field read as it stands | `as_ptr()`, `as_string()` |
+| `as_*` | Cheap view or cast — hands back what the value already has, allocating nothing | a primitive, a raw pointer, a `string`, or a field read as it stands | `as_ptr()`, `as_string()` |
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
 | `display` | Render for a person | `string` | `Displayable` — `point.display()` |
 | `debug` | Render for a developer | `string` | `Debug` — `value.debug()` |
@@ -132,7 +131,7 @@ let vec = list.into_vec()
 
 **`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse<T>`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
 
-**Rendering is not conversion:** `to_string()` is for types that already hold text — a `StringView`, a slice, a `Span`, a `cstring`. `display()` is for turning a value into something a person reads. A `Point` has no text in it to convert, so it gets `display()`; keeping one verb for both also collided with fallible conversions like `cstring.to_string() -> string or Utf8Error`, which no `Displayable` signature can match (`std.fmt/D1`).
+**Rendering is not conversion:** `to_string()` is for types that already hold text — a `StringView`, a string slice, a `Span`, a `cstring`. `display()` is for turning a value into something a person reads. A `Point` has no text in it to convert, so it gets `display()`; keeping one verb for both also collided with fallible conversions like `cstring.to_string() -> string or Utf8Error`, which no `Displayable` signature can match (`std.fmt/D1`).
 
 **Text units — bytes for machines, graphemes for humans, scalars never:** every index and length is a byte offset; anything a person sees or counts (`width`, `truncate`, `graphemes`, `reverse`) works in graphemes or display columns; Unicode scalars reach user code only through `chars()`. A method taking a "character index" is the anti-pattern — it reads like array indexing and costs a scan from the start, which is how a cursor loop silently goes quadratic (`std.strings/U1`–`U3`).
 

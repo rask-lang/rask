@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string that came back from a trait call is released.
+//
+// MIR has three kinds of call — direct, through a closure, through a vtable —
+// and each hands its return value's reference to the caller. The elision pass
+// decides which releases it may delete, and its test for "did this frame take
+// this reference itself" listed only the direct kind. So a string returned
+// through a vtable looked like a local the frame had made and copied, both its
+// RC ops were deleted as a balanced pair, and the buffer leaked.
+//
+// Every boxed value with a string field hits this: `n.label()` on an
+// `any Named` is a vtable call returning a string. #1145 found it in a loop and
+// read it as a placement bug, but a loop has nothing to do with it — boxing
+// twice in a row leaks two.
+//
+// A string literal short enough to sit inline hides the whole thing, because
+// there is no allocation to lose. Every string here is long enough to need a
+// buffer.
+//
+// Spec: specs/compiler/string-refcount-elision.md — RE2 skips the RC ops on a
+// string the frame made itself, which a call's return value is not.
+trait Named {
+    func label(self) -> string
+    func tag(self) -> string
+}
+
+struct Crate {
+    public name: string
+}
+
+extend Crate with Named {
+    public func label(self) -> string {
+        return self.name
+    }
+
+    public func tag(self) -> string {
+        return "tag: {self.name}"
+    }
+}
+
+struct Boxed {
+    public inner: string
+    public n: i64
+}
+
+extend Boxed with Named {
+    public func label(self) -> string {
+        return self.inner
+    }
+
+    public func tag(self) -> string {
+        return "{self.inner} #{self.n}"
+    }
+}
+
+func describe(n: any Named) -> string {
+    return n.label()
+}
+
+test "std.string — a field read back through a vtable" {
+    let c = Crate { name: "a crate name long enough to allocate" }
+    let boxed: any Named = c
+    assert boxed.label() == "a crate name long enough to allocate"
+}
+
+test "std.string — and through a function that only forwards the box" {
+    let c = Crate { name: "another crate name, also long enough" }
+    assert describe(c) == "another crate name, also long enough"
+}
+
+// The shape from the issue: boxed twice in a row, which leaked two.
+test "std.string — boxed twice in one frame" {
+    mut total: usize = 0
+    let i = 1
+    let c = Crate { name: "crate number {i} with a long name" }
+    total = total + describe(c).len()
+    let j = 2
+    let d = Crate { name: "crate number {j} with a long name" }
+    total = total + describe(d).len()
+    assert total == 62
+}
+
+// And in a loop, one per turn.
+test "std.string — a box per turn" {
+    mut total: usize = 0
+    for i in 1..5 {
+        let c = Crate { name: "crate number {i} with a long name" }
+        total = total + describe(c).len()
+    }
+    assert total == 124
+}
+
+// A method that *builds* a string rather than handing back a field, so the
+// reference the caller gets is a fresh allocation rather than a retained one.
+test "std.string — a trait method that builds its answer" {
+    let c = Crate { name: "the name that goes inside the tag" }
+    let boxed: any Named = c
+    assert boxed.tag() == "tag: the name that goes inside the tag"
+}
+
+// Two concrete types through one trait, so each vtable's slot is exercised.
+test "std.string — two implementations, one trait" {
+    let a: any Named = Crate { name: "the crate implementation's name" }
+    let b: any Named = Boxed { inner: "the boxed implementation's name", n: 7 }
+    assert a.label() == "the crate implementation's name"
+    assert b.label() == "the boxed implementation's name"
+    assert b.tag() == "the boxed implementation's name #7"
+}
+
+// Through a closure, the third kind of call. A closure returning a string hands
+// its reference over the same way, and it was on the same missing list.
+test "std.string — a string back from a closure call" {
+    let make = |n: i64| { return "a built string, number {n}, long enough" }
+    mut total: usize = 0
+    for i in 1..5 {
+        total = total + make(i).len()
+    }
+    assert total == 148
+}
+
+// The answer matters as much as the count: a string released once too often
+// reads as freed bytes rather than as a leak, so each of these compares the
+// text and not only the length.
+test "std.string — the text survives a chain of trait calls" {
+    mut joined = ""
+    for i in 1..4 {
+        let c = Crate { name: "name number {i} that is long enough" }
+        let boxed: any Named = c
+        joined = "{joined}|{boxed.label()}"
+    }
+    assert joined == "|name number 1 that is long enough|name number 2 that is long enough|name number 3 that is long enough"
+}

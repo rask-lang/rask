@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container owns the blocks its trait-box elements point at.
+//
+// It freed the vector and left them. Nine suite files leaked nothing but those
+// blocks — `RASK_LEAK_TRACE` put every allocation at a boxing site in the
+// test's own source, eight bytes apiece, which is `max(concrete_size, 8)` from
+// `lower_trait_box`. `t65_vec_of_trait_objects.rk` was ten of them.
+//
+// A trait box element is a `[data, vtable]` fat pointer, so the release is the
+// `data` half and the vtable half is static data nobody frees. Nothing
+// type-specific is needed: the block's size is the vtable's first word, which
+// is also what lets a *derived* container — clone, slice, chunk — take a copy
+// of the block so it has one of its own to free.
+//
+// The block only. What the boxed value *holds* is a separate question and it
+// has no answer yet: a box inside a container has no frame outliving it, and
+// #1144's rule is that a boxed value's contents belong to the frame. So a
+// boxed value with a `Vec` or a `string` field still leaks that, exactly as
+// every box did before #1144 — minus the block. Nothing below boxes such a
+// value, deliberately: these pin the half that is settled.
+//
+// The copy a derived container takes is shallow for the same reason. Two blocks
+// then name one inner container, which is a leak and not a double free, since
+// neither block's release touches what the value holds.
+//
+// Spec: mem.boxes — a container owns what its elements own.
+
+trait Shape {
+    func area(self) -> i64
+}
+
+struct Square {
+    side: i64
+}
+
+extend Square with Shape {
+    public func area(self) -> i64 {
+        return self.side * self.side
+    }
+}
+
+struct Rect {
+    w: i64
+    h: i64
+}
+
+extend Rect with Shape {
+    public func area(self) -> i64 {
+        return self.w * self.h
+    }
+}
+
+test "mem.boxes — a Vec of trait boxes frees their blocks" {
+    mut shapes: Vec<any Shape> = []
+    shapes.push(Square { side: 3 })
+    shapes.push(Rect { w: 2, h: 5 })
+    assert shapes.len() == 2
+    assert shapes[0].area() == 9
+    assert shapes[1].area() == 10
+}
+
+// A literal rather than pushes, so the tag comes off the first element's type
+// instead of the annotation.
+test "mem.boxes — a literal of trait boxes" {
+    let shapes: Vec<any Shape> = [Square { side: 4 }, Rect { w: 3, h: 3 }]
+    assert shapes.len() == 2
+    assert shapes[0].area() == 16
+    assert shapes[1].area() == 9
+}
+
+// The retain path: two vectors, and each must free its own block rather than
+// both freeing one.
+test "mem.boxes — a cloned Vec of trait boxes" {
+    mut shapes: Vec<any Shape> = []
+    shapes.push(Square { side: 5 })
+    let copy = shapes.clone()
+    assert copy.len() == 1
+    assert copy[0].area() == 25
+    assert shapes[0].area() == 25
+}
+
+test "mem.boxes — a Map of trait boxes" {
+    mut by_name: Map<string, any Shape> = Map.new()
+    by_name.insert("sq", Square { side: 6 })
+    by_name.insert("re", Rect { w: 4, h: 2 })
+    assert by_name.len() == 2
+    let s = by_name["sq"]
+    assert s.area() == 36
+}
+
+// One per turn, so a block released twice lands on one the next turn reused.
+test "mem.boxes — a boxed element per turn" {
+    mut total = 0
+    for i in 1..5 {
+        mut shapes: Vec<any Shape> = []
+        shapes.push(Square { side: i })
+        total = total + shapes[0].area()
+    }
+    assert total == 30
+}
+
+// Nested, so the outer release has to reach through the inner container's
+// descriptor to the blocks.
+test "mem.boxes — a Vec of Vecs of trait boxes" {
+    mut outer: Vec<Vec<any Shape>> = []
+    mut inner: Vec<any Shape> = []
+    inner.push(Rect { w: 7, h: 2 })
+    outer.push(inner)
+    assert outer[0][0].area() == 14
+}
+
+// A container of boxes held in a struct field, whose release runs where the
+// struct dies rather than where a local would.
+struct Scene {
+    items: Vec<any Shape>
+}
+
+test "mem.boxes — boxed elements in a struct's Vec field" {
+    mut s = Scene { items: [] }
+    s.items.push(Square { side: 2 })
+    s.items.push(Rect { w: 5, h: 1 })
+    assert s.items.len() == 2
+    assert s.items[0].area() == 4
+    assert s.items[1].area() == 5
+}
+
+func main() {}

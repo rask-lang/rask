@@ -353,7 +353,6 @@ impl InferenceContext {
                 elem: Box::new(self.apply(elem)),
                 len: *len,
             },
-            Type::Slice(inner) => Type::Slice(Box::new(self.apply(inner))),
             // These three carry a type and used to fall through to the clone,
             // so a variable inside one stayed spelled as a variable even after
             // it was solved. `let b = unsafe v.as_ptr()` on an inferred `Vec`
@@ -401,7 +400,7 @@ impl InferenceContext {
             }
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Type::Array { elem, .. } => self.occurs_in(var, elem),
-            Type::Slice(inner) | Type::RawPtr(inner) => self.occurs_in(var, inner),
+            Type::RawPtr(inner) => self.occurs_in(var, inner),
             Type::Union(members) => members.iter().any(|t| self.occurs_in(var, t)),
             Type::SimdVector { elem, .. } => self.occurs_in(var, elem),
             Type::Result { ok, err } => self.occurs_in(var, ok) || self.occurs_in(var, err),

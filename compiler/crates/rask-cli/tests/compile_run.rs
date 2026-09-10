@@ -13,6 +13,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// like `rask_ctest_<pid>_1.rk` from different threads — one thread deletes
 /// the file before another's rask subprocess can read it. Sharing one counter
 /// guarantees unique IDs across the test binary.
+///
+/// The counter is unique *within* a binary, which isn't enough on its own:
+/// two of them run at once whenever the debug and release suites overlap, and
+/// a path built from the counter alone collides across them. `rask_cmp_msg_9`
+/// did, and the failure read as "reading /tmp/rask_cmp_msg_9/cmp.rk: No such
+/// file or directory" — one run's cleanup deleting the other run's input. So
+/// every path here carries the pid as well; most already did.
+///
+/// Mixing the pid *into* this number instead doesn't work: it makes the
+/// filename big enough that `string_assertion_message_shows_the_strings_not_addresses`
+/// reads the path in an assertion message as a pointer.
 static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
 
 fn next_tmp_id() -> u64 {
@@ -4936,7 +4947,8 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
              func main() {{ println(\"x\") }}\n\
              test \"t\" {{ {assertion} }}\n"
         );
-        let dir = std::env::temp_dir().join(format!("rask_cmp_msg_{}", next_tmp_id()));
+        let dir = std::env::temp_dir()
+            .join(format!("rask_cmp_msg_{}_{}", std::process::id(), next_tmp_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("cmp.rk");
         std::fs::write(&file, &src).unwrap();
@@ -4977,7 +4989,8 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
 /// Build a package from (filename, source) pairs, run it, return (ok, output).
 fn build_and_run_package(tag: &str, files: &[(&str, &str)]) -> (bool, String) {
     let rask = rask_binary();
-    let dir = std::env::temp_dir().join(format!("rask_{}_{}", tag, next_tmp_id()));
+    let dir = std::env::temp_dir()
+        .join(format!("rask_{}_{}_{}", tag, std::process::id(), next_tmp_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for (name, src) in files {
@@ -5091,7 +5104,8 @@ fn panic_reports_the_line_it_happened_on() {
 #[test]
 fn editing_a_sub_package_invalidates_the_build_cache() {
     let rask = rask_binary();
-    let dir = std::env::temp_dir().join(format!("rask_subpkg_{}", next_tmp_id()));
+    let dir = std::env::temp_dir()
+        .join(format!("rask_subpkg_{}_{}", std::process::id(), next_tmp_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("helpers")).unwrap();
 
@@ -5281,7 +5295,8 @@ const store = Shared.mutex(Store.new())
 
 fn interp_output(src: &str) -> String {
     let rask = rask_binary();
-    let dir = std::env::temp_dir().join(format!("rask_interp_{}", next_tmp_id()));
+    let dir = std::env::temp_dir()
+        .join(format!("rask_interp_{}_{}", std::process::id(), next_tmp_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("m.rk");
@@ -5746,7 +5761,8 @@ fn method_dispatch_never_falls_back_to_guessing() {
             .arg("compile")
             .arg(fixture(name))
             .arg("-o")
-            .arg(std::env::temp_dir().join(format!("rask_disp_{}", next_tmp_id())))
+            .arg(std::env::temp_dir()
+                .join(format!("rask_disp_{}_{}", std::process::id(), next_tmp_id())))
             .env("RASK_RUNTIME_DIR", runtime_dir())
             .env("RASK_TRACE_DISPATCH", "1")
             .output()

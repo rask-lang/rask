@@ -389,6 +389,7 @@ mod tests {
             name: None,
             ty,
             is_param: false,
+            container: None,
         }
     }
 
@@ -398,6 +399,7 @@ mod tests {
             name: None,
             ty,
             is_param: true,
+            container: None,
         }
     }
 

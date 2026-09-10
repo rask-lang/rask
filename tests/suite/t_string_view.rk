@@ -96,12 +96,14 @@ test "type.ranges — an inclusive range slice includes its last index" {
     v.push(2)
     v.push(3)
     v.push(4)
+    // A Vec has no slice — only a string does — so the same "up to and
+    // including index 2" is a `take`, and the off-by-one is the count.
     mut inclusive_total = 0
-    for x in v[0..=2] {
+    for x in v.take(3) {
         inclusive_total = inclusive_total + x
     }
     mut exclusive_total = 0
-    for x in v[0..2] {
+    for x in v.take(2) {
         exclusive_total = exclusive_total + x
     }
     assert inclusive_total == 6

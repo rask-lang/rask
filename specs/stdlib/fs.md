@@ -22,14 +22,14 @@ struct File {
 }
 
 extend File with Reader {
-    func read(self, buf: []u8) -> usize or IoError
+    func read(self, buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
 
 extend File with Writer {
-    func write(self, data: []u8) -> usize or IoError
-    func write_bytes(self, data: []u8) -> void or IoError
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
     func flush(self) -> void or IoError
 }
@@ -56,7 +56,7 @@ Same vocabulary as the `Reader`/`Writer` methods — `fs.read_text(path)` is `op
 | `fs.read_bytes` | `(path: string) -> Vec<u8> or IoError` |
 | `fs.read_lines` | `(path: string) -> Vec<string> or IoError` |
 | `fs.write_text` | `(path: string, content: string) -> void or IoError` |
-| `fs.write_bytes` | `(path: string, data: []u8) -> void or IoError` |
+| `fs.write_bytes` | `(path: string, data: Vec<u8>) -> void or IoError` |
 | `fs.append_text` | `(path: string, content: string) -> void or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 

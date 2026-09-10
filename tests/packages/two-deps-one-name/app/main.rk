@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import liba
+import libb
+
+// Three names — `Helper`, `combine`, `shout` — declared by both dependencies,
+// and `Helper` again here. Four declarations, one spelling, and each is its own
+// thing: modules/RE2 says identity is (origin package, origin name).
+//
+// The `describe()` answers are what settles it. `a:` comes from `liba`'s body
+// and `b:` from `libb`'s, so a program that picked one layout for both would
+// print the same prefix twice, or read an `i64` field as a string handle.
+struct Helper {
+    own: string
+}
+
+extend Helper {
+    func describe(self) -> string {
+        return "app:{self.own}"
+    }
+}
+
+func main() {
+    let mine = Helper { own: "here" }
+    println(mine.describe())
+
+    let a = liba.from_a()
+    let b = libb.from_b()
+    println(a.describe())
+    println(b.describe())
+
+    // Each library's own private `combine`, reached through the public
+    // function that calls it.
+    println(liba.shout())
+    println(libb.shout())
+
+    // An enum and a variant across the boundary.
+    println(libb.mood_of(9).word())
+    println(libb.mood_of(1).word())
+    return
+}

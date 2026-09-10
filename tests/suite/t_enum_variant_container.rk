@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container held by an enum variant (#1035).
+//
+// Releasing an aggregate walks it and gives back what it holds. A struct's own
+// container field was covered; an enum *variant's* wasn't — the walk looked for
+// one only when it reached a nested struct, so `enum Shape { Many(Vec<i64>) }`
+// released nothing at all and every vector inside one leaked. That is most of
+// what a decoded `JsonValue` holds.
+//
+// The release is tag-dependent, which is why enums have their own walk: it
+// loads the tag, compares against each variant that holds something, and frees
+// that variant's fields on the matching branch.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// frees land on the right memory — the payload read out of a variant is the
+// same handle the enum holds, so freeing both would be a double free.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+enum Shape {
+    Nothing
+    Many(Vec<i64>)
+    Named(string, Vec<i64>)
+    Keyed(Map<string, i64>)
+}
+
+func count(s: Shape) -> i64 {
+    match s {
+        Shape.Nothing => return 0
+        Shape.Many(items) => return items.len().clamp<i64>()
+        Shape.Named(name, items) => return name.len().clamp<i64>() + items.len().clamp<i64>()
+        Shape.Keyed(m) => return m.len().clamp<i64>()
+    }
+}
+
+test "mem.ownership — a variant holding a Vec" {
+    let v: Vec<i64> = [1, 2, 3]
+    let s = Shape.Many(v)
+    assert count(s) == 3
+}
+
+test "mem.ownership — a variant holding a string and a Vec" {
+    let v: Vec<i64> = [1, 2]
+    let s = Shape.Named("ab", v)
+    assert count(s) == 4
+}
+
+test "mem.ownership — a variant holding a Map" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    let s = Shape.Keyed(m)
+    assert count(s) == 2
+}
+
+test "mem.ownership — the variant with no payload releases nothing" {
+    assert count(Shape.Nothing) == 0
+}
+
+// The payload binding names the same handle the enum holds, so a release on
+// both would be a double free. Reading through it after the match is what
+// catches that.
+test "mem.ownership — reading the payload out and using it" {
+    let v: Vec<i64> = [4, 5, 6]
+    let s = Shape.Many(v)
+    match s {
+        Shape.Many(items) => {
+            assert items.len() == 3
+            assert items[0] == 4
+            assert items[2] == 6
+        }
+        Shape.Nothing => assert false
+        Shape.Named(n, i) => assert false
+        Shape.Keyed(m) => assert false
+    }
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — the same shapes in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        let v: Vec<i64> = [i, i * 2]
+        total = total + count(Shape.Many(v))
+    }
+    assert total == 10
+
+    mut named = 0
+    for i in 1..4 {
+        let v: Vec<i64> = [i]
+        named = named + count(Shape.Named("xy", v))
+    }
+    assert named == 9
+}

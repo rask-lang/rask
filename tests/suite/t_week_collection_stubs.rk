@@ -17,12 +17,13 @@
 //     real logic and the two a reader reaches for first. Filtering in place is
 //     a week-one operation and without them it's a manual index loop.
 //
-// Map.try_insert is also blocked behind #903: Map.insert doesn't return the
-// displaced value at all on native, so try_insert's `Option<V> or GrowError<V>`
-// has nothing to build from.
-//
-// These are unbuilt, not broken, so this file is registered in
-// pending_features.txt rather than known_divergences.txt.
+// `Map.capacity`, `Map.is_bounded` and `Map.try_insert` are not here, and not
+// implemented either: they are deleted. A map has no way to *become* bounded —
+// CP3 names `Vec.fixed(n)` and there is no `Map.fixed` in the spec or the
+// runtime — so `capacity()` could only ever answer `none`, `is_bounded()` only
+// `false`, and `try_insert` had nothing to be fallible about. Three methods
+// that can each give one answer are worse than none (they also took #903 with
+// them, which was about `try_insert` having no displaced value to report).
 
 struct Big {
     a: i64
@@ -72,6 +73,29 @@ test "std.collections — try_reserve reports failure instead of panicking" {
     assert v.len() == 1
 }
 
+// CP2: only a bounded vector can refuse. `reserve` panics on the same request,
+// which is the pair `push`/`try_push` makes elsewhere.
+test "std.collections — try_reserve refuses past a bound" {
+    mut v: Vec<i32> = Vec.fixed(4)
+    let ok = v.try_reserve(4)
+    assert !(ok is ReserveError)
+    let no = v.try_reserve(5)
+    assert no is ReserveError
+}
+
+// The allocation is in elements, like `len()`. `capacity()` is the bound and
+// answers `none` here, which is the distinction the two names carry.
+test "std.collections — allocated counts elements, capacity is the bound" {
+    mut v: Vec<i32> = Vec.new()
+    v.reserve(16)
+    assert v.allocated() >= 16u64
+    assert v.capacity() is none
+    assert !v.is_bounded()
+    mut f: Vec<i32> = Vec.fixed(4)
+    assert f.capacity()! == 4u64
+    assert f.allocated() >= 4u64
+}
+
 test "std.collections — shrink_to_fit and shrink_to release capacity" {
     mut v: Vec<i32> = Vec.new()
     v.reserve(64)
@@ -90,18 +114,6 @@ test "std.collections — Map.get_clone hands back an independent copy" {
     let got: Big? = m.get_clone("k")
     assert got!.a == 1
     assert m.get_clone("zzz") is none
-}
-
-test "std.collections — Map.try_insert reports a growth failure" {
-    mut m: Map<string, i32> = Map.new()
-    let r = m.try_insert("a", 1)
-    assert !(r is GrowError)
-    assert m.get("a")! == 1
-}
-
-test "std.collections — Map.is_bounded" {
-    mut m: Map<string, i32> = Map.new()
-    assert !m.is_bounded()
 }
 
 func main() {}

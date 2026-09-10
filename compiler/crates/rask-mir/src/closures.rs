@@ -30,7 +30,7 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 ///
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns);
+    let callee_escapes = build_callee_escape_map(fns, false);
 
     for func in fns.iter_mut() {
         decide_allocation(func, &callee_escapes);
@@ -54,16 +54,22 @@ pub fn optimize_all_closures(fns: &mut [MirFunction]) {
 /// that ends up holding the thing, so it can only be asked once inlining has
 /// settled which frame that is.
 pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns);
+    let callee_escapes = build_callee_escape_map(fns, true);
 
     // A function that hands a heap closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
     // free. Which functions those are can only be read off the finished
     // allocation decisions, so it waits for every function to have one.
-    let hands_back = functions_handing_back_a_closure(fns);
+    // Which bodies a call *through* a closure can reach, so the same question
+    // can be asked of a callback. `flat_map(|x| upto(x))` builds a sequence per
+    // element and hands it back through a `ClosureCall`, which has no name to
+    // look up — so nothing owned any of them and each element leaked its
+    // environment (#1045).
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let hands_back = functions_handing_back_a_closure(fns, &targets);
 
     for func in fns.iter_mut() {
-        insert_drops(func, &callee_escapes, &hands_back);
+        insert_drops(func, &callee_escapes, &hands_back, &targets);
     }
 }
 
@@ -102,6 +108,7 @@ fn insert_drops(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) {
     let mut owned: HashMap<LocalId, bool> = HashMap::new();
     for block in &func.blocks {
@@ -114,6 +121,18 @@ fn insert_drops(
                     if hands_back.contains(&callee.name) =>
                 {
                     owned.insert(*dst, true);
+                }
+                // A third way: take one back from a call *through* a closure.
+                // Same rule as the named case, asked of every body the call can
+                // reach — one that hands back somebody else's closure is the
+                // whole set's answer, the way `flat_map(|k| SHARED_SEQ)` would
+                // be.
+                MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
+                    if let Some(bodies) = targets.known(&func.name, *closure) {
+                        if bodies.iter().all(|b| hands_back.contains(b)) {
+                            owned.insert(*dst, true);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -158,29 +177,63 @@ fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
 }
 
 /// Functions whose return value is a heap closure the caller now owns.
-fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
+fn functions_handing_back_a_closure(
+    fns: &[MirFunction],
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashSet<String> {
     let mut names = HashSet::new();
-    for func in fns {
-        let heap: HashMap<LocalId, bool> = created_closures(func)
-            .into_iter()
-            .filter(|(_, heap)| *heap)
-            .collect();
-        if heap.is_empty() {
-            continue;
-        }
-        let aliases = closure_aliases(func, &heap);
-        for block in &func.blocks {
-            let returned = match &block.terminator.kind {
-                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => *id,
-                _ => continue,
-            };
-            if aliases.contains_key(&returned) {
-                names.insert(func.name.clone());
+    // A fixed point, because handing one back is transitive. `|x| upto(x)`
+    // creates no closure of its own — it calls `upto` and returns what came
+    // back — so a single pass left it out, and `flat_map` over it owned nothing
+    // and freed nothing. One environment per element (#1045).
+    loop {
+        let before = names.len();
+        for func in fns {
+            if names.contains(&func.name) {
+                continue;
+            }
+            let mut owned: HashMap<LocalId, bool> = created_closures(func)
+                .into_iter()
+                .filter(|(_, heap)| *heap)
+                .collect();
+            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                match &stmt.kind {
+                    MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                        if names.contains(&callee.name) =>
+                    {
+                        owned.insert(*dst, true);
+                    }
+                    MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
+                        if let Some(bodies) = targets.known(&func.name, *closure) {
+                            if bodies.iter().all(|b| names.contains(b)) {
+                                owned.insert(*dst, true);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if owned.is_empty() {
+                continue;
+            }
+            let aliases = closure_aliases(func, &owned);
+            for block in &func.blocks {
+                let returned = match &block.terminator.kind {
+                    MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                    | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
+                        *id
+                    }
+                    _ => continue,
+                };
+                if aliases.contains_key(&returned) {
+                    names.insert(func.name.clone());
+                }
             }
         }
+        if names.len() == before {
+            return names;
+        }
     }
-    names
 }
 
 /// Build a map of callee name → per-parameter escape info.
@@ -188,11 +241,24 @@ fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
 /// For each function, checks whether each parameter escapes (appears in
 /// Call args, Store, or Return within the function body). A non-escaping
 /// parameter means the function only uses it locally (e.g., via ClosureCall).
-fn build_callee_escape_map(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+/// Which parameters each function gives away, by name.
+///
+/// `heap_captures_only` picks how strictly a captured parameter counts. While
+/// allocation is still being decided there is no answer to "does the closure
+/// that captured it escape", so every capture counts (a leak beats a
+/// use-after-free). Once the decisions are made, only a *heap* capture takes
+/// the parameter anywhere: a stack environment dies with the frame, so the
+/// caller is still the owner. `seq.reduce(|a, b| a + b)` is that case — the
+/// `for x in self` desugar captures `f` into a scope-limited yield closure, so
+/// every closure passed to a terminal read as given away and nobody freed it.
+pub(crate) fn build_callee_escape_map(
+    fns: &[MirFunction],
+    heap_captures_only: bool,
+) -> HashMap<String, Vec<bool>> {
     let mut map = HashMap::new();
     for func in fns {
         let escapes: Vec<bool> = func.params.iter()
-            .map(|p| param_escapes_from(func, p.id))
+            .map(|p| param_escapes_from(func, p.id, heap_captures_only))
             .collect();
         map.insert(func.name.clone(), escapes);
     }
@@ -203,7 +269,7 @@ fn build_callee_escape_map(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
 ///
 /// A parameter "escapes" if it appears in a Call arg, Store value, or Return.
 /// If it only appears in ClosureCall position, the function merely borrows it.
-fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
+fn param_escapes_from(func: &MirFunction, param_id: LocalId, heap_captures_only: bool) -> bool {
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -219,8 +285,10 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId) -> bool {
                 // is decided, so there is no "does the closure escape" to ask
                 // yet. Erring toward escaping costs a leak; erring the other way
                 // costs a use-after-free.
-                MirStmtKind::ClosureCreate { captures, .. } => {
-                    if captures.iter().any(|c| c.local_id == param_id) {
+                MirStmtKind::ClosureCreate { captures, heap, .. } => {
+                    if (*heap || !heap_captures_only)
+                        && captures.iter().any(|c| c.local_id == param_id)
+                    {
                         return true;
                     }
                 }
@@ -285,10 +353,18 @@ fn find_escaping_closures(
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
                             if let Some(origin) = aliases.get(&id).copied() {
+                                // A bodiless runtime helper has no escape map
+                                // to read, and "unaccounted for" has to mean
+                                // "might keep it". The ones that demonstrably
+                                // don't are written down instead.
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
-                                    .unwrap_or(false);
+                                    .unwrap_or_else(|| {
+                                        rask_stdlib::mir_metadata::borrows_its_callback(
+                                            &callee.name,
+                                        )
+                                    });
 
                                 if !is_borrow {
                                     escaping.insert(origin);
@@ -615,7 +691,13 @@ fn insert_closure_drops(
         for stmt in &block.statements {
             let dst = match &stmt.kind {
                 MirStmtKind::ClosureCreate { dst, .. } => Some(*dst),
-                MirStmtKind::Call { dst: Some(dst), .. } => Some(*dst),
+                // A call through a closure counts the same way: `flat_map`'s
+                // callback hands back a sequence per element and this is where
+                // that arrives. Without an entry here the placement filter read
+                // it as "not made in this function" and dropped it from every
+                // candidate site, so each element's environment leaked (#1045).
+                MirStmtKind::Call { dst: Some(dst), .. }
+                | MirStmtKind::ClosureCall { dst: Some(dst), .. } => Some(*dst),
                 _ => None,
             };
             if let Some(dst) = dst.filter(|d| heap_closures.contains(d)) {
@@ -701,6 +783,50 @@ fn insert_closure_drops(
         }
     }
 
+    // And where control *leaves* the region the closure's definition rules.
+    //
+    // A closure made on one branch of an `if` inside a loop reaches neither
+    // boundary above: the loop's back edge doesn't dominate the arm that made
+    // it, and the return is outside the loop. So nothing freed it and every
+    // even-numbered turn of `if r % 2 == 0 { counter(r).count() }` leaked an
+    // environment.
+    //
+    // The rule `container_drop` uses answers it: the last place the value is
+    // certainly alive and certainly finished with is the edge out of the
+    // region its definition dominates. Both of that rule's guards carry over,
+    // and both exist because of a crash — every successor has to be outside
+    // (a loop header branches to its own body as well as to the exit), and a
+    // back-edge target doesn't count, because the back-edge case above already
+    // frees there.
+    let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
+    for id in heap_closures.iter().copied() {
+        let Some(&def_idx) = closure_block.get(&id) else { continue };
+        let def = func.blocks[def_idx].id;
+        // Returned, or handed anywhere a later block still names it: the frame
+        // is not the one that finishes with it here.
+        let returned = func.blocks.iter().any(|b| {
+            matches!(
+                &b.terminator.kind,
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(v)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), .. }
+                    if aliases.get(v).copied().unwrap_or(*v) == id
+            )
+        });
+        if returned {
+            continue;
+        }
+        // Already freed at one of the boundaries above.
+        if drops_to_insert.iter().any(|(_, locals)| locals.contains(&id)) {
+            continue;
+        }
+        for idx in crate::analysis::drop_sites::where_control_leaves(func, &dom, def, id) {
+            extra.entry(idx).or_default().push(id);
+        }
+    }
+    for (idx, locals) in extra {
+        drops_to_insert.push((idx, locals));
+    }
+
     for (block_idx, locals) in drops_to_insert {
         for local_id in expand_owned(&locals, owned_by) {
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::ClosureDrop {
@@ -728,13 +854,9 @@ mod tests {
         insert_all_closure_drops(fns);
     }
 
-    fn temp(id: u32, ty: MirType) -> MirLocal {
-        MirLocal { id: LocalId(id), name: None, ty, is_param: false }
-    }
+    fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false, container: None } }
 
-    fn param(id: u32, ty: MirType) -> MirLocal {
-        MirLocal { id: LocalId(id), name: None, ty, is_param: true }
-    }
+    fn param(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: true, container: None } }
 
     fn block(id: u32, stmts: Vec<MirStmt>, term: MirTerminator) -> MirBlock {
         MirBlock { id: BlockId(id), statements: stmts, terminator: term }

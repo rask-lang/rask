@@ -26,7 +26,7 @@ use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 /// (`Duration.from_millis`) still means that type, and still gets checked.
 fn sequence_index_params(recv: &str, method: &str) -> &'static [usize] {
     match recv {
-        "Vec" | "Slice" | "string" | "Array" => match method {
+        "Vec" | "string" | "Array" => match method {
             // `set`/`insert` are (index, value) — only the index is a position.
             "get" | "get_clone" | "remove" | "remove_at" | "skip" | "take" | "limit"
             | "chunks" | "truncate" | "split_at" | "repeat" | "with_capacity"
@@ -533,7 +533,7 @@ impl TypeChecker {
             // the interpreter refused at run time with "no method to_string on
             // type Vec", so the two backends disagreed about a program that
             // shouldn't compile. `{v:debug}` renders it and needs nothing.
-            Type::Tuple(_) | Type::Array { .. } | Type::Slice(_) => false,
+            Type::Tuple(_) | Type::Array { .. } => false,
             Type::UnresolvedGeneric { name, .. } => !matches!(
                 name.as_str(),
                 "Vec" | "Map" | "Set" | "Pool" | "Rack" | "Iterator"
@@ -1047,7 +1047,10 @@ impl TypeChecker {
                             }
                         }).unwrap_or(false);
                         if is_fieldless {
-                            let vec_ty = Type::Slice(Box::new(ty));
+                            let vec_ty = Type::UnresolvedGeneric {
+                                name: "Vec".to_string(),
+                                args: vec![GenericArg::Type(Box::new(ty))],
+                            };
                             self.unify(&vec_ty, &ret, span)
                         } else {
                             Err(TypeError::NoSuchMethod {
@@ -1109,7 +1112,7 @@ impl TypeChecker {
                 self.resolve_string_method(&method, &args, &ret, &written, span)
             }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
-            Type::Array { .. } | Type::Slice(_) => {
+            Type::Array { .. } => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span)
             }
             Type::UnresolvedNamed(name) if name == "File" => {
@@ -1170,32 +1173,6 @@ impl TypeChecker {
                         self.unify(&ret, &opt_ty, span)
                     }
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
-            // ctrl.ranges — the range adapters. Both return a range so they
-            // chain, and `for i in (0..5).rev()` still sees something iterable.
-            Type::UnresolvedNamed(name) if name == "Range" => {
-                match method.as_str() {
-                    "rev" if args.is_empty() => {
-                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
-                    }
-                    "step" if args.len() == 1 => {
-                        self.unify(&args[0], &Type::I64, span)?;
-                        self.unify(&ret, &Type::UnresolvedNamed("Range".to_string()), span)
-                    }
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
-            // The adapters hand back the same range, element type included, so
-            // `for i in (0..5).rev()` still knows what `i` is.
-            Type::UnresolvedGeneric { name, .. } if name == "Range" => {
-                match method.as_str() {
-                    "rev" if args.is_empty() => self.unify(&ret, &ty, span),
-                    "step" if args.len() == 1 => {
-                        self.unify(&args[0], &Type::I64, span)?;
-                        self.unify(&ret, &ty, span)
-                    }
                     _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
@@ -1689,7 +1666,6 @@ impl TypeChecker {
                 ok: Box::new(Self::substitute_self_placeholder(ok, receiver)),
                 err: Box::new(Self::substitute_self_placeholder(err, receiver)),
             },
-            Type::Slice(elem) => Type::Slice(Box::new(Self::substitute_self_placeholder(elem, receiver))),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_self_placeholder(elem, receiver)),
                 len: *len,
@@ -2047,7 +2023,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         // Neither a fixed array nor a slice has a growth surface: one has a
         // length in its type, the other is a view into somebody else's storage.
-        if matches!(array_ty, Type::Array { .. } | Type::Slice(_))
+        if matches!(array_ty, Type::Array { .. })
             && Self::changes_length(method)
         {
             return Err(TypeError::FixedArrayGrowth {
@@ -2069,7 +2045,7 @@ impl TypeChecker {
         // on receiver of unresolved type". The same call on a `Vec<i64>` was
         // always fine (#1026).
         let elem = match array_ty {
-            Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+            Type::Array { elem, .. } => (**elem).clone(),
             _ => self.ctx.fresh_var(),
         };
         let type_args = vec![GenericArg::Type(Box::new(elem))];
@@ -2646,6 +2622,22 @@ impl TypeChecker {
             // Unrecognized method: hand the receiver on exactly as written
             // rather than inventing an argument the solver never asked for.
             _ => {
+                // The declared signature settles the count. Every arm above is
+                // guarded on it, so a call that misses lands here — and
+                // deferring meant the `HasMethod` constraint reported it once
+                // inference settled, by which point all it could say was that
+                // the call didn't fit: `s.set(1, 2)` read as if `Shared` had no
+                // `set`. The sibling resolver for the non-generic runtime types
+                // already asks the stubs first; this one didn't (#1150).
+                if let Some(stub) = rask_stdlib::lookup_method(type_name, method) {
+                    if args.len() != stub.params.len() {
+                        return Err(TypeError::ArityMismatch {
+                            expected: stub.params.len(),
+                            found: args.len(),
+                            span,
+                        });
+                    }
+                }
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
                         name: type_name.to_string(),
@@ -2928,7 +2920,7 @@ impl TypeChecker {
                 // Extract element type from the argument (array literal or Vec)
                 // and produce Vec<T>.
                 let elem_ty = match &args[0] {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
+                    Type::Array { elem, .. } => *elem.clone(),
                     Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
                         if let Some(GenericArg::Type(t)) = type_args.first() {
                             *t.clone()
@@ -3748,23 +3740,62 @@ impl TypeChecker {
                 self.unify(ret, &val_ty, span)
             }
 
-            // GA3: adding two structs, or two bools, means nothing.
+            // GA3: adding two structs, or two bools, means nothing. Reported as
+            // what it is rather than as a missing method — the name is right
+            // there in the source, and the argument count is fine, so both of
+            // those messages sent the reader looking for the wrong thing.
             "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
                 if !Self::is_countable_payload(&val_ty) =>
             {
-                Err(TypeError::NoSuchMethod {
-                    ty: self_ty,
+                Err(TypeError::AtomicOpNeedsNumber {
+                    ty: val_ty,
                     method: method.to_string(),
                     span,
                 })
             }
 
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
+            _ => Err(Self::wrong_arity_for("Atomic", method, args.len(), span)
+                .unwrap_or(TypeError::NoSuchMethod {
+                    ty: self_ty,
+                    method: method.to_string(),
+                    span,
+                })),
         }
+    }
+
+    /// A method the type has, called with the wrong number of arguments.
+    ///
+    /// `Atomic` has no stdlib file — it is a compiler type, and the resolver
+    /// above is the only description of it — so nothing checks a call's
+    /// argument count against a declared signature the way it does for every
+    /// other builtin. Every arm of that resolver is guarded on the count, so a
+    /// wrong one falls through to "no such method", with the name sitting right
+    /// there in the source:
+    ///
+    /// ```text
+    /// error: no method `load` found for type `Atomic<i64>`  — did you mean `load`?
+    /// ```
+    ///
+    /// So its counts live with its names in `rask_stdlib::registry`. Where a
+    /// name accepts exactly one, say which; where it accepts several, no single
+    /// number is the expected one and the caller falls through to the message
+    /// about what didn't fit (#1150).
+    ///
+    /// Nothing else needs this. `Shared` looked like it did and doesn't:
+    /// `stdlib/sync.rk` declares its signatures, and the fix there was to ask
+    /// them rather than to write the counts down twice.
+    fn wrong_arity_for(
+        type_name: &str,
+        method: &str,
+        found: usize,
+        span: Span,
+    ) -> Option<TypeError> {
+        let counts = rask_stdlib::registry::type_method_arity(type_name, method)?;
+        if counts.contains(&found) {
+            return None;
+        }
+        let [expected] = counts else { return None };
+        Some(TypeError::ArityMismatch { expected: *expected, found, span })
     }
 
     /// Check whether a type name is a SIMD vector type.
@@ -3811,18 +3842,24 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], &elem_ty, span);
                 self.unify(ret, &self_ty, span)
             }
-            // load(slice) → vec (static method)
+            // load(v) → vec (static method)
             "load" if args.len() == 1 => {
-                let slice_ty = Type::Slice(Box::new(elem_ty.clone()));
-                let _ = self.unify(&args[0], &slice_ty, span);
+                let src_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem_ty.clone()))],
+                };
+                let _ = self.unify(&args[0], &src_ty, span);
                 self.unify(ret, &self_ty, span)
             }
 
             // ── Memory ──────────────────────────────────────
-            // store(slice) → ()
+            // store(v) → ()
             "store" if args.len() == 1 => {
-                let slice_ty = Type::Slice(Box::new(elem_ty.clone()));
-                let _ = self.unify(&args[0], &slice_ty, span);
+                let dst_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(elem_ty.clone()))],
+                };
+                let _ = self.unify(&args[0], &dst_ty, span);
                 self.unify(ret, &Type::Unit, span)
             }
 

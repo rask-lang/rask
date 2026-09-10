@@ -73,7 +73,7 @@ struct IpHeader {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Parse** | `.parse(data)` returns `(T, []u8) or ParseError` |
+| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or ParseError` |
 | **G2: Build** | `.build()` returns `Vec<u8>` |
 | **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
@@ -81,9 +81,9 @@ struct IpHeader {
 <!-- test: skip -->
 ```rask
 extend T {
-    func parse(data: []u8) -> (T, []u8) or ParseError
+    func parse(data: Vec<u8>) -> (T, Vec<u8>) or ParseError
     func build(self) -> Vec<u8>
-    func build_into(self, buffer: []u8) -> usize or BuildError
+    func build_into(self, buffer: Vec<u8>) -> usize or BuildError
     let SIZE: usize
     let SIZE_BITS: usize
 }

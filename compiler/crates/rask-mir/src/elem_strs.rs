@@ -17,24 +17,108 @@
 //!
 //!   0            the elements own nothing
 //!   1            the element *is* a string
-//!   2 + index    a struct with that layout
+//!   2            the element *is* a Vec
+//!   3            the element *is* a Map
+//!   4            the element *is* a closure — a pointer to its block
+//!   5            the element *is* a trait box — a `[data, vtable]` fat pointer
+//!   6 + index    a struct with that layout
 
 use crate::MirType;
 
 pub const ELEM_NONE: i64 = 0;
 pub const ELEM_STRING: i64 = 1;
-pub const ELEM_STRUCT_BASE: i64 = 2;
+pub const ELEM_VEC: i64 = 2;
+pub const ELEM_MAP: i64 = 3;
+/// The element is a closure: one pointer to a block that describes itself.
+/// `rask_closure_free` reads its size and its environment-drop glue out of the
+/// header words before the pointer, so releasing one needs nothing
+/// type-specific and retaining one is a count on the same header (#1149).
+pub const ELEM_CLOSURE: i64 = 4;
+/// The element is a trait box: a `[data, vtable]` fat pointer whose `data`
+/// block the container has to free. The block's size is the vtable's first
+/// word, so releasing one needs nothing generated either (#1149).
+///
+/// Its *contents* are a separate question with no answer yet: a box in a
+/// container has no frame outliving it, and #1144's rule is that the frame owns
+/// them. So this frees the block and leaves what the value holds — which is
+/// what happened to every box before, minus the block.
+pub const ELEM_TRAITBOX: i64 = 5;
+pub const ELEM_STRUCT_BASE: i64 = 6;
+/// An enum element: `ELEM_ENUM_BASE - index` into the enum layouts.
+///
+/// Below zero because the struct range grows upward without a bound. Where an
+/// enum's string or container sits depends on its tag, so codegen describes one
+/// as a guard per variant rather than a flat list — `RASK_OWNED_TAG_IF` in
+/// `rask_runtime.h`.
+pub const ELEM_ENUM_BASE: i64 = -1;
+
+/// The tag for an element that *is* a container.
+///
+/// MIR types a nested container as `Ptr`, which is what every pointer is — so
+/// `tag_of` can't tell `Map<string, Vec<i32>>`'s values from a raw address and
+/// answered "owns nothing". The checker's type knows, so this takes the
+/// rendered name. `Vec<i64>?` and `Vec<i64> or E` are wrappers around the
+/// handle rather than the handle, and a `Pool` or `Rack` is an arena whose
+/// contents outlive any one element (mem.pools, mem.racks).
+pub fn container_tag(rendered: &str) -> Option<i64> {
+    if rendered.ends_with('?') || rendered.contains(" or ") {
+        return None;
+    }
+    match rendered.split('<').next().unwrap_or(rendered).trim() {
+        "Vec" => Some(ELEM_VEC),
+        "Map" => Some(ELEM_MAP),
+        _ => None,
+    }
+}
+
+/// What a box holds, as the number the runtime stores on it.
+///
+/// A box owns its payload: `Shared.mutex(Map.new())` moves the map in, and the
+/// map's free has to happen when the box's last reference goes — which only
+/// the runtime knows, because only it counts them. So the kind travels to the
+/// constructor and lives on the box, the same way a container's element
+/// descriptor does. Without it `Shared<Map<string, i64>, Mutex>` freed the
+/// mutex and left the map and its tables behind.
+///
+/// Only the two byte stores. An arena is not a box's payload, a nested box
+/// would need its own strategy read at the same time, and a string is
+/// refcounted and released by whoever put it in.
+///
+/// These three values are duplicated in `rask_runtime.h` as
+/// `RASK_BOX_PAYLOAD_*`. They are three integers with no other reader; keeping
+/// them in step is a comment because generating them would be more machinery
+/// than the thing itself.
+pub const BOX_PAYLOAD_NONE: i64 = 0;
+pub const BOX_PAYLOAD_VEC: i64 = 1;
+pub const BOX_PAYLOAD_MAP: i64 = 2;
+
+/// The payload kind for a rendered type name.
+pub fn box_payload_kind(rendered: &str) -> i64 {
+    match container_tag(rendered) {
+        Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
+        Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
+        _ => BOX_PAYLOAD_NONE,
+    }
+}
 
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
-/// An enum is `ELEM_NONE`: where its string sits depends on its tag, so a flat
-/// list of offsets can't describe one. Codegen walks the tag branches for an
-/// enum reached any other way, so what is uncovered is narrow — an enum nested
-/// inside a container element.
+/// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a
+/// variant's string is, and codegen walks the tag branches for an enum reached
+/// any other way, so an enum *inside a container element* was the one gap. It
+/// was not a narrow one: every array and object in a decoded `JsonValue` is a
+/// variant payload sitting in a `Vec` or a `Map`, and the elements walk left
+/// all of it behind. Guards close it.
 pub fn tag_of(ty: Option<&MirType>) -> i64 {
     match ty {
         Some(MirType::String) => ELEM_STRING,
+        // A closure owns a block the container has to free, and it isn't
+        // describable as offsets inside the element: the element *is* the
+        // pointer. So it gets its own kind rather than a struct layout.
+        Some(MirType::FuncPtr(_)) => ELEM_CLOSURE,
+        Some(MirType::TraitObject { .. }) => ELEM_TRAITBOX,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
+        Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
         _ => ELEM_NONE,
     }
 }
@@ -83,6 +167,16 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it
     // leaked (#1048).
+    // A `Random` is a heap block behind an opaque handle — no elements, no
+    // sizes, and nothing was freeing it. Here so the drop pass knows the
+    // caller owns what came back.
+    ("Random_new", 0, 0, "Random_free"),
+    ("Random_from_seed", 0, 0, "Random_free"),
+    // An `Atomic<T>` is the same shape: one heap word behind an opaque handle,
+    // with a free that didn't exist. Every counter in a program leaked eight
+    // bytes, and `Atomic<T>` is what mem.atomics/GA1 makes you write.
+    ("Atomic_new", 0, 0, "Atomic_free"),
+    ("Atomic_default", 0, 0, "Atomic_free"),
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
     ("Pool_new", 1, 0, "Pool_free"),
@@ -94,6 +188,44 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Pool_handles", 0, 0, "Vec_free"),
     ("Pool_drain", 0, 0, "Vec_free"),
     ("Pool_values", 0, 0, "Vec_free"),
+    // `entries` is the fourth of that family and was the one left out. Its
+    // elements are (handle, value) pairs copied out of the slots with no
+    // element map, so freeing it gives back the byte store and leaves the
+    // strings to the pool — which is what the other three do too.
+    ("Pool_entries", 0, 0, "Vec_free"),
+    // `rack.nodes()` walks the directory and pushes each node's address into a
+    // fresh Vec. The elements are links, which own nothing — freeing the
+    // vector doesn't touch a node. `for n in s.nodes()` leaked one vector per
+    // call, which is most of what the snapshot files were carrying.
+    ("Rack_nodes", 0, 0, "Vec_free"),
+    // Clone the elements into a new vector and clear the source, so the result
+    // owns them and carries the source's element map. The source keeps its own
+    // allocation, empty.
+    ("Vec_take_all", 0, 0, "Vec_free"),
+    // Not `fs.read_lines`, `fs.read_bytes` or `File.lines`, even though the
+    // runtime has a function for each: those three are written in Rask now, so
+    // these names reach MIR as ordinary functions with bodies and the pass
+    // works out the answer itself — including that each hands its vector back
+    // *inside* a `Vec<T> or IoError`, which a line here can't say. Listing
+    // them overrode that with "a bare Vec" and the caller freed the wrapper as
+    // one: `fs.read_lines(p) catch _ => Vec.new()` tripped the borrow guard.
+    //
+    // `chars()` yields scalars and `graphemes()` copies each cluster into a
+    // fresh string. Neither points into the source — unlike the splitters
+    // below, which look identical from here and are not.
+    ("string_chars", 0, 0, "Vec_free"),
+    ("string_graphemes", 0, 0, "Vec_free"),
+    // The three the runtime builds from the OS: each copies what it found into
+    // fresh strings and carries the element map, so the vector it hands back is
+    // the caller's to free — elements and all. They were the largest single
+    // leak left in the suite once the closures were fixed: 150 strings for one
+    // `os.env_vars()`, and `t_os_env.rk` and `t41_os.rk` between them held 304.
+    //
+    // Unlike the string splitters below, nothing here is a view into a source
+    // the caller still holds.
+    ("os_env_vars", 0, 0, "Vec_free"),
+    ("os_args", 0, 0, "Vec_free"),
+    ("fs_list_dir", 0, 0, "Vec_free"),
     // A `Shared` box carries no element tag — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing
@@ -104,6 +236,29 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
     ("Shared_new", 0, 0, "Shared_drop"),
+    // The two halves of a channel. `let (tx, rx) = Channel<T>.buffered(n)`
+    // reaches MIR as the constructor plus one accessor per half, and the
+    // accessor's result is the handle — one sender, one receiver, which is
+    // what the channel's counts are initialised to. Dropping a handle closes
+    // that end, and the channel and its buffer go when both ends are gone;
+    // `rask_sender_drop` and `rask_recver_drop` have done all of that since
+    // channels were written, with nothing calling them. Seven suite files were
+    // carrying it — `t_select.rk` 74 allocations, fifteen channels' worth.
+    //
+    // The constructor itself is deliberately absent: what it hands back is the
+    // channel, which the two drops own between them.
+    ("channel_tx", 0, 0, "Sender_drop"),
+    ("channel_rx", 0, 0, "Receiver_drop"),
+    ("Sender_clone", 0, 0, "Sender_drop"),
+    ("string_split", 0, 0, "Vec_free"),
+    ("string_lines", 0, 0, "Vec_free"),
+    ("string_split_whitespace", 0, 0, "Vec_free"),
+    // A string builder is the frame's until `build()` takes it away. Nothing
+    // released one on a path that gives up before building, and
+    // `string.from_utf8` returns a `Utf8Error` from eight places — so every
+    // rejected byte sequence leaked the builder and its buffer.
+    ("StringBuilder_new", 0, 0, "StringBuilder_free"),
+    ("StringBuilder_with_capacity", 0, 0, "StringBuilder_free"),
     // A cstring owns the NUL-terminated copy it made, and it is the caller's to
     // free — that is what makes it different from `string.as_ptr()`, which
     // points into a buffer the string still holds (#949).

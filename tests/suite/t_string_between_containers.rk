@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string read out of one container and put into another (#1035).
+//
+// Reading an element gives you the buffer's own sixteen bytes, not a copy — the
+// source container releases them when it dies. Handing that to something that
+// *keeps* it makes the destination a second holder, and the view had no
+// reference to give. So the destination pointed at a buffer the source then
+// freed:
+//
+//     _21 = Vec_get_unchecked(_16, _19)   // a view into _16
+//     _22 = _21
+//     _23 = Vec_push(_14, _22)            // _14 points at _16's buffer
+//     …
+//     Vec_free(_16)                       // and it's gone
+//
+// The RC elision had one question where two were needed. "Crosses a container"
+// covered both a view coming out and a hand-over going in, and either one alone
+// does mean this frame owes no release — so the retain and the release were
+// dropped as a pair. Both at once is the case that needs the retain kept and
+// the release dropped.
+//
+// This is what kept `split`, `lines` and `split_whitespace` off the list of
+// calls that hand back a container the caller owns. Registering them cleared
+// their leak and broke two examples — `simple_grep` found nothing and
+// `markdown_renderer` aborted on `malloc(): unaligned tcache chunk` — and the
+// note in `elem_strs.rs` blamed the pieces being views into the source string.
+// They aren't: `rask_string_split` copies each piece with `str_make`. The
+// dangling read was this, one level up, in `fs.read_lines` — split the text,
+// push each piece into the vector it hands back.
+//
+// Only strings over fifteen bytes are affected. A shorter one lives inside the
+// sixteen-byte value with no buffer to share, so every reduction with short
+// strings comes out right.
+//
+// Spec: specs/memory/ownership.md — a value is freed once, where its last owner
+// ends.
+
+// The shape from `fs.read_lines`: a vector built out of a temporary's elements.
+func collect_lines(text: string) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for line in text.lines() {
+        out.push(line)
+    }
+    return out
+}
+
+// Into a Map instead, and the key as well as the value.
+func index_words(text: string) -> Map<string, string> {
+    mut out: Map<string, string> = Map.new()
+    for w in text.split(",") {
+        out.insert(w.clone(), w)
+    }
+    return out
+}
+
+// Vector to vector, no splitter involved — the same relation.
+func copy_long_ones(src: Vec<string>) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for s in src {
+        if s.len() > 15 {
+            out.push(s)
+        }
+    }
+    return out
+}
+
+test "mem.ownership — lines pushed into a vector outlive the split" {
+    let text = "alpha the first line is long\nbeta the second line is long\ngamma the third is long"
+    let lines = collect_lines(text)
+    assert lines.len() == 3
+    assert lines[0] == "alpha the first line is long"
+    assert lines[1] == "beta the second line is long"
+    assert lines[2] == "gamma the third is long"
+}
+
+test "mem.ownership — split pieces used as map keys and values" {
+    let text = "the first entry is long,the second entry is long"
+    let m = index_words(text)
+    assert m.len() == 2
+    assert (m.get("the first entry is long") ?? "MISSING") == "the first entry is long"
+    assert (m.get("the second entry is long") ?? "MISSING") == "the second entry is long"
+}
+
+test "mem.ownership — vector to vector" {
+    let src: Vec<string> = [
+        "short",
+        "this one is definitely long enough",
+        "tiny",
+        "and so is this second long one",
+    ]
+    let long = copy_long_ones(src)
+    assert long.len() == 2
+    assert long[0] == "this one is definitely long enough"
+    assert long[1] == "and so is this second long one"
+    // The source still has its own.
+    assert src[1] == "this one is definitely long enough"
+}
+
+// Short strings live inside the value with no buffer to share. They were always
+// right, which is what made this hard to reduce — worth pinning so a fix that
+// starts retaining them shows up here.
+test "mem.ownership — short strings, which have no buffer" {
+    let lines = collect_lines("a\nbb\nccc")
+    assert lines.len() == 3
+    assert lines[0] == "a"
+    assert lines[2] == "ccc"
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "mem.ownership — the same chains in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        let text = "one line that is plenty long\nanother line that is plenty long"
+        let lines = collect_lines(text)
+        assert lines[0] == "one line that is plenty long"
+        total = total + lines.len().clamp<i64>()
+    }
+    assert total == 10
+}

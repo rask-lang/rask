@@ -5,6 +5,220 @@
 #
 # When a file stops leaking, delete its line. The gate says so by name.
 #
+# The counts are re-measured when a leak fix lands. 2462 allocations across the
+# suite became 2080 with the closure work (64 files improved,
+# `t27_own_closure_state.rk` off the list), 1952 once a `Map` in a struct field
+# started being freed (four more files clean), 1641 once the vectors the OS
+# hands over became the caller's (`t41_os.rk` clean, `t_os_env.rk` 160 → 4),
+# 1492 once a struct handed to a callee that doesn't keep it went back to
+# being the caller's (ten more files clean, `t_subprocess.rk` among them), and
+# 1411 once a group whose death falls on an edge rather than in a block got its
+# release there (eight more, `t_iterate_field_collection.rk` among them), and
+# 1345 once a container inside a container element was freed with the element
+# (seven more, and `t_week_nested_data.rk` halved), and 1319 once a call through
+# a closure could say which bodies it reaches (`t_vec_flat_map_sort_by_key.rk`
+# 33 → 11), and 1311 once an enum variant's own container field was released
+# with the enum, and 1120 once a rack or a pool in a struct field was freed with
+# the struct (seven more files clean, and the rack cluster from 252 allocations
+# to 70 — `p12_rack_link_churn.rk` alone 128 → 2), and 1054 once the last few
+# runtime calls that hand back a fresh Vec were written down as such — nine
+# more clean, `rack.nodes()` being the one that was called in a loop —, and 785
+# once a channel's two ends were released with the frame that made them (ten
+# more clean, `t_select.rk` 74 → 0), and 729 once a box in a struct field was
+# released with the struct (`t_io_buffer.rk` 42 → 26 — an `io.Buffer` keeps its
+# read position in a `Shared<i64, Local>`), and 701 once a value taken away on
+# one path was still released on the others (`t_string_from_utf8.rk` 26 → 0 —
+# `string.from_utf8` rejects from eight places and leaked its builder from every
+# one), and 629 once `split`, `lines` and `split_whitespace` could join that
+# list at all — what had kept them off it was a string read out of one container
+# and pushed into another, which took no reference (nine more files clean), and
+# 594 once a rack node's own strings and containers were freed with the node
+# (`t_rack_stale_records.rk` 15 → 2, `p13_rack_snapshot.rk` 21 → 10), and 521
+# once a container captured into a closure the frame also drops was freed by
+# the frame rather than by glue no site could agree on — the sequence-adapter
+# family from 152 allocations to 88 —, and 498 once a closure handed back
+# *through* a closure was owned by its caller (`t41_closure_environment_drop.rk`
+# 28 → 10, which was the per-element half of #1045), and 496 once a container
+# whose *elements* are enums could be described at all — a guard entry per
+# variant, which the suite barely exercises and a decoded document is made of —,
+# and 490 once a container held behind a `?` or an `or` was released with the
+# value holding it, and 453 once MIR could say which container a wrapper's
+# payload is (#1140), a runtime helper that uses a callback up was written down
+# as not keeping it, and a container made inside one arm of a branch got a free
+# where control leaves that arm (five more files clean, `t_json_decode.rk`
+# 22 → 7), and 377 once one allocation under several names got freed once
+# instead of not at all — twelve more files clean, and that was the whole of
+# `t_week_closures.rk`, `t_week_ranges.rk` and `t_week_sorting.rk`, and 347
+# once a value handed over on one path could still be released on the others —
+# `try` on a `Container or E` inside a function that returns `_ or E` reads the
+# error out of the wrapper and stores it into the Result going back, and the
+# container on the wrapper's *ok* side went with it (`t_io_seek.rk` 21 → 0), and
+# 343 once passing a trait object to a function that borrows it stopped counting
+# as handing it over (`t_io_buffer.rk` 21 → 17; covering the containers inside a
+# boxed value as well was tried, double-freed, and backed out — #1144), and 322
+# once a `Random` had a free at all: it is a heap block behind an opaque handle
+# and `rask_rng_free` did not exist, so every `Random.from_seed(n)` leaked its
+# state (three more files clean), and 297 once a box gave back a container it
+# holds: `Shared.mutex(Map.new())` moves the map in, so the map's free belongs
+# to whoever drops the box's last reference — which only the runtime knows, so
+# the payload kind travels to the constructor and lives on the box (four more
+# files clean), and 287 once `Rack.snapshot()` stopped cloning a node's
+# `Vec`/`Map` field twice and dropping the first copy (`p13_rack_snapshot.rk`
+# 10 → 0), and 279 once a function that hands back a fresh trait box made its
+# caller the owner — `return Boom.Bad` in a `-> i64 or Error` boxes the enum,
+# and every failing `or Error` call leaked the box (four files improved).
+#
+# The rest of that one was #1147, and it is closed: 274 once a trait box got
+# dropped where control leaves the region its definition rules, the same rule
+# `container_drop` already uses — `classify(-1) catch e => -1` binds the error,
+# so a name did own the box, but a definition inside a `catch` dominates no
+# return, so it had nowhere to be dropped (`t_bare_error_type.rk` 6 → 3) — and
+# 270 once the frame could follow a box through a wrapper it holds itself. A
+# forwarding function reads the box out of what it called and repacks it into
+# its own wrapper, and once that function is inlined the whole trip is one
+# frame's: stored into an aggregate, moved with it, read out again under a new
+# name. That last name owns the box (`t_any_error_boxing.rk` 4 → 2,
+# `t_bare_error_type.rk` 3 → 1), and 268 once a string handed back by a trait
+# call got released. MIR has three kinds of call — direct, through a closure,
+# through a vtable — and the elision pass's test for "did this frame take this
+# reference itself" listed only the direct one, so `n.label()` on a boxed value
+# came back with a reference nobody gave back (#1145,
+# `t_module_qualified_variants.rk` clean), and 250 once a closure body could
+# stop being shared by two chains that disagree. Inlining copies a `flat_map`
+# *create* site into each caller and leaves one body behind it, so the capture
+# slot holding `f` saw the union over every closure ever passed to `flat_map`
+# anywhere — one member handing back somebody else's container made the whole
+# set unusable, and the chain next door leaked. Each disagreeing group of
+# create sites gets its own copy of the body now (#1146,
+# `t_closure_call_container.rk` 24 → 6), and 243 once one vector feeding two
+# chains got one free rather than none. A capture is an escape, so the source's
+# free rides along with the closure — and that counts capturers by local, so
+# two inlined copies of a chain each looked like the only one and both freed
+# it. Refusing both was the first answer and it leaks; the free goes after the
+# last of the closure drops instead (#1148, `t42_flatten_shaped_header.rk`
+# 9 → 3, `t34_vec_as_sequence.rk` clean), and 223 once a struct handed to a
+# closure the frame also drops stayed the frame's. Any capture read as handing
+# the aggregate away, so a sequence built over a struct's `Vec` field left the
+# container to nobody — every `h.walk()` shape. The closure is a name that
+# reaches the group now, the way a handle read out of one is: alive for
+# placement, never the name released (`t40_forwarded_generic_method.rk`,
+# `t26_custom_sequence.rk` and `t35_returned_sequence.rk` all clean), and 209
+# once a closure made on one branch inside a loop got a drop at all — neither
+# the back edge nor the return dominates the arm that made it, which
+# `t41_closure_environment_drop.rk` had written down as unfixable and wasn't.
+# The rule is `container_drop`'s and now lives in `analysis::drop_sites`,
+# because three passes wanted it (`t41` clean,
+# `t_closure_call_container.rk` 6 → 2), and 199 once a copy made inside a loop
+# stopped counting as the end of its source. `for x in v` copies `v` into the
+# body every turn, so `v` is live out of the block that copies it — reading
+# that as a move left every name in the group either moved-from or with nowhere
+# to put a free, and the container was freed by nobody
+# (#1047, `t39_loop_backedge_container_free.rk` clean), and 185 once an
+# `Atomic<T>` had a free at all. One machine word behind an opaque handle and
+# no `rask_atomic_int_free` in the runtime, so every counter in every program
+# leaked eight bytes — the same shape `Random` was in. It hid because
+# `into_inner` reads the word and gives the block back in one call, which is
+# the shape a test reaches for (`t_month_atomics.rk` and
+# `t_atomic_across_tasks.rk` clean), and 180 once `os.env` stopped allocating a
+# box for its answer. The runtime heap-allocated a 16-byte string header purely
+# so codegen could copy out of it, and nothing freed the header — the string
+# goes straight into the option's payload now (`t_os_env.rk` and
+# `t_month_stdlib_modules.rk` clean), and 173 once `drop(p)` on a `Heap<T>`
+# freed the block. `Heap<T>` is transparent — a reference to one has the
+# payload's type, because that is what the program treats it as — so lowering
+# asked "is this argument a pointer?", was told "a struct", and emitted no code
+# at all. Every `Heap` of a struct leaked its block, and the one shape that
+# *did* free was `Heap<i32>`, where there is no block to free
+# (`p07_heap.rk` 7 → 2), and 162 once a box could hand its payload back without
+# allocating a block for it. `Cell.replace` copied the old value into a fresh
+# block so the pointer it returned would outlive the call, and nobody freed the
+# block; `Cell.into_inner` was `Cell.get` under another name, so freeing the
+# cell would have dangled that pointer and the whole cell stayed behind. Both
+# write into the caller's own destination now — six more files clean,
+# `t_month_boxes.rk` among them.
+#
+# And 155 once a string variable written every turn released what it held. By
+# the time the reference-counting pass sees it the loop-carried write isn't a
+# statement — it's a phi's incoming edge — and the last-use walk looks past it
+# from both sides, so `mut junk = ""` rewritten eight times leaked seven
+# buffers. The release goes at the end of the back-edge block, where the name
+# still points at the value being replaced (`t_string_rc_escapes.rk` clean, and
+# `t_vec_element_returns.rk` with it — `Vec.remove`/`Vec.pop` hand an element
+# out into a name a loop then writes over, which is the same shape).
+#
+# And 134 once the frame owned a boxed value's contents rather than the box.
+# `TraitBox` copies the value shallowly, so the box and the frame's own local
+# hold the same container handle, and two boxes of one value hold it twice — a
+# free has to happen exactly once, and the box is not a place where "exactly
+# once" can be arranged. Calling the boxing a hand-over left the contents to
+# the box's drop glue, which can't do it. `TraitDrop` is to a box what
+# `ClosureDrop` is to a closure, so its presence is the answer to "does the
+# frame outlive this box" (#1144, `t_io_buffer.rk` 17 → 3).
+#
+# Two things had to change together for that, and the first hid the second. The
+# release was landing on the box's own name — `rc_dec_contents(_40)` on an
+# `any Describes`, which the release walk has no case for and quietly does
+# nothing about — so the container inside the boxed value leaked exactly as
+# before. With the release on the value instead, the box's drop glue turned into
+# a double release: it freed the value's *string* fields, right when the box was
+# the owner and one decrement too many once the frame is. `TraitBox` never took
+# a reference to copy, so the glue and the vtable's drop slot are gone, and a
+# box dying frees its block and nothing inside it.
+#
+# One buffer per runtime-built element came back when a `Vec<string>` literal
+# stopped taking a second reference to it. `rask_vec_from_static` is handed a
+# temporary array the frame never frees, and lowering has already put a
+# reference in its slots — so taking the bytes over takes the reference with
+# them, and retaining on top of that leaked one buffer per element. A literal
+# element carries a sentinel refcount every release walks away from, which is
+# why an all-literal vector was fine and this sat unnoticed.
+#
+# Nine more when a container started freeing the closure blocks its elements
+# point at (#1149). The element descriptor had no kind for a closure, so the
+# free walk skipped it and a `Vec<func>` left one block per element. A block
+# describes itself — its size and its environment-drop glue are the header words
+# before the pointer — so one kind covers every closure with nothing
+# type-specific to generate. The block carries a reference count now, because a
+# *derived* container (clone, slice, chunk, concat) copies element bytes and two
+# vectors naming one block would free it twice; a deep copy isn't available,
+# since the environment's layout is known only to that generated glue and there
+# is no `env_retain` to ask. `t_closure_in_collection.rk` 9 → clean.
+#
+# Eight more when a fused loop reading a struct field started giving the
+# field's container back. `r.xs.zip(other)` reads the handle straight off the
+# struct, and a bare handle is never the name a release walks — so the release
+# belongs on the edge where the group dies, which is the loop's exit block.
+# `aggregate_edge_releases` is that mechanism and it asked for the exit to have
+# exactly one predecessor, which is the easy case of the rule it wanted. A fused
+# `zip` has two ways out, one per side running out, so neither edge qualified.
+# Every predecessor having it live on the way in is the same rule stated
+# properly. `t_collection_api_gaps.rk` 8 → clean.
+#
+# Thirty-two more when a container started freeing the `data` half of a trait
+# box element's fat pointer (#1149). Nine files' leaks were nothing but those
+# blocks — `RASK_LEAK_TRACE` put every one at a boxing site in the test's own
+# source, eight bytes apiece, which is `max(concrete_size, 8)`. The block's size
+# is the vtable's first word, so this needs no generated glue either, and a
+# derived container copies the block for the same reason.
+#
+# The block only. What a boxed value *holds* is still open: a box inside a
+# container has no frame outliving it, and #1144's rule is that a boxed value's
+# contents belong to the frame. No suite file boxes a value with a container in
+# it, so nothing here measures that half.
+#
+# Don't write the running total here. This line used to, and it drifted 22 out
+# from the sum of the lines below — a fix that emptied a file removed its entry
+# without touching the prose, so the tally read like a measurement and was a
+# story about a state two commits back. `leak_gate.sh` prints the count and the
+# file total on every run, and fails on a line whose number no longer matches
+# what the file leaks, which is where that belongs.
+#
+# Two of the entries are `t_heap_box_dropped.rk`, written for the `drop` fix and
+# left on the list because a freed box says nothing about the vector inside its
+# payload — a different question from #1144's, which is about `any Trait`.
+# `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
+# is how each cause was found — `docs/leak-tracing.md` has the recipe.
+#
 # Why this file went from empty to 180 lines in one commit: the gate decided by
 # grepping the output of `rask test` for the leak report, and `rask test` was
 # reading the test binary's stderr and dropping it. The report never reached the
@@ -40,172 +254,52 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
-
-
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
 # are files that branch added, the rest leak there for shapes the fixes
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-p06_select.rk  # 15 allocations
-p07_heap.rk  # 7 allocations
-p11_rack_link.rk  # 18 allocations
-p12_rack_link_churn.rk  # 129 allocations
-p13_rack_snapshot.rk  # 27 allocations
-p14_deleting_mode.rk  # 10 allocations
-p15_read_only_graph.rk  # 37 allocations
-p16_rack_link_holders.rk  # 4 allocations
-p18_rack_multi_link_fields.rk  # 11 allocations
-p19_mutate_param_link_write.rk  # 19 allocations
-t25_iterator_adapters.rk  # 4 allocations
-t26_custom_sequence.rk  # 4 allocations
-t27_error_narrowing.rk  # 2 allocations
-t27_own_closure_state.rk  # 4 allocations
-t29_branch_merge.rk  # 4 allocations
-t30_nested_container_take.rk  # 6 allocations — nested containers, #1047
-t31_channels.rk  # 20 allocations
-t31_sequence_adapters.rk  # 40 allocations — adapter closures capture self and f, #1045
-t33_fresh_container_release.rk  # 2 allocations — `take`/`skip` are lazy now, so the closure they build leaks, #1045
-t34_vec_as_sequence.rk  # 17 allocations — the source closure captures self, #1045
-t35_returned_sequence.rk  # 16 allocations — a returned chain's captured containers, #1035
-t36_cross_task_ownership.rk  # 18 allocations
-t36_extend_self_type_args.rk  # 4 allocations — the pair sequence's source closure, #1045
-t37_extend_header_binding.rk  # 4 allocations — a container in a struct field, #1047
-t38_lazy_collection_adapters.rk  # 24 allocations — a collection's adapters capture the collection, #1035
-t39_loop_backedge_container_free.rk  # 12 allocations — a container in a struct field and a map's own storage, #1047
-t40_forwarded_generic_method.rk  # 44 allocations — sequence adapter closures, #1045
-t40_stdlib_renames.rk  # 8 allocations
-t41_closure_environment_drop.rk  # 30 allocations — a closure made on one branch has nowhere safe to be freed, and a flat_map callback's per-element sequences are nobody's, #1045
-t41_os.rk  # 149 allocations
-t42_flatten_shaped_header.rk  # 26 allocations — flatten's per-element inner sequences, #1045
-t54_strings.rk  # 8 allocations
-t56_vec_adapters.rk  # 4 allocations — lazy collection adapters, #1045
-t57_spawn.rk  # 24 allocations
-t62_trait_object_positions.rk  # 3 allocations
-t65_vec_of_trait_objects.rk  # 10 allocations
-t66_stdlib_option_returns.rk  # 20 allocations
-t_aggregate_returns.rk  # 2 allocations — the `Vec<any Describes>`, which is the
+p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
+p12_rack_link_churn.rk  # 2 allocations — one Vec (handle and data)
+p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
+t29_branch_merge.rk  # 7 allocations — a container reassigned inside a loop, #1154
+t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
+t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
+t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only
+t_any_error_boxing.rk  # 1 allocation — one boxed error's block, returned rather than held in a container (#1149)
+t_bare_error_type.rk  # 1 allocation — one boxed error's block, same shape (#1149)
+t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
+t_capture_freed_with_its_closure.rk  # 2 allocations — two strings the chain's environment holds (the trace says `str_alloc_header`, not the sequences the old note claimed)
+t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
+t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
+t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
+t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
+t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
+t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
+t_debug_renders_containers.rk  # 2 allocations — one Vec (handle and data)
+t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
+t_json_decode.rk  # 6 allocations — three Vecs from `rask_vec_with_capacity`, handle and data each — same site as t38_lazy_collection_adapters
+t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
+t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel — a task killed by a panic doesn't unwind its captures
+t_rack_stale_records.rk  # 2 allocations — one Vec (handle and data)
+t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
+t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
+t_string_builder_mutate.rk  # 1 allocation — the builder's own header
+t_string_unicode.rk  # 3 allocations — two Vec handles and one data buffer
+t_vec_field_filter_map.rk  # 4 allocations — two Vecs from a literal, plus one grown buffer
+t_week_opaque_struct_fields.rk  # 1 allocation — the RNG state behind `rng_from_seed`
+t_with_collection_field_writes.rk  # 6 allocations — four Vec handles and two grown buffers
                         # same trait-box leak as the two lines below. Nothing to
                         # do with the aggregate return the file is named for:
                         # every other test in it is clean.
-t_any_error_boxing.rk  # 5 allocations
-t_bare_error_type.rk  # 9 allocations — same trait-box leak as the line above
-t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
+                            # chain captures (#1035's closure half), and
+                            # the `SHARED` paths on purpose: one closure
+                            # handing back a const's vector rejects the
+                            # whole callee set, which is the point of the
+                            # third test
                              # small enough to inline, so there is no call left
                              # to read a handoff off (#1117's other half)
-t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
                   # `cstring or NullByteError`, and a container returned in a
                   # `T or E` is freed by nobody (#1117)
-t_module_qualified_variants.rk  # 9 allocations — trait boxes again
-t_array_method_surface.rk  # 10 allocations
-t_atomic_across_tasks.rk  # 6 allocations
-t_bare_lock_value.rk  # 21 allocations
-t_borrow_param_consume.rk  # 7 allocations
-t_box_replace_payload.rk  # 9 allocations
-t_card_method_surface.rk  # 9 allocations
-t_channel_aggregates.rk  # 21 allocations
-t_channel_receive_error.rk  # 16 allocations
-t_channel_try_receive.rk  # 20 allocations
-t_closure_diverging_return.rk  # 2 allocations
-t_closure_in_collection.rk  # 11 allocations
-t_collection_api_gaps.rk  # 28 allocations
-t_collection_literal.rk  # 8 allocations
-t_container_ownership.rk  # 3 allocations
                              # field (#1035, #1047); the clones themselves are freed
-t_container_through_field.rk  # 32 allocations
-t_container_turbofish.rk  # 4 allocations
-t_day_map.rk  # 8 allocations
-t_day_strings.rk  # 7 allocations
-t_day_vec.rk  # 4 allocations
-t_debug_container_elision.rk  # 2 allocations
-t_debug_renders_containers.rk  # 2 allocations
-t_element_type_resolution.rk  # 26 allocations
-t_for_mutate_early_exit.rk  # 2 allocations
-t_for_tuple_binding_dispatch.rk  # 4 allocations — leaks the same 4 on main; main's `rask test` discarded the report
-t_fs_open_failure.rk  # 4 allocations
-t_generic_clone_any_t.rk  # 8 allocations
-t_generic_index_clone.rk  # 4 allocations
-t_generic_method_return.rk  # 4 allocations
-t_generic_optional_field.rk  # 6 allocations
-t_index_through_field.rk  # 64 allocations
-t_io_buffer.rk  # 71 allocations
-t_iterate_field_collection.rk  # 29 allocations
-t_json_decode.rk  # 69 allocations
-t_json_encode_shapes.rk  # 17 allocations
-t_link_in_collection.rk  # 2 allocations
-t_local_box_payload.rk  # 19 allocations
-t_map_struct_values.rk  # 16 allocations
-t_modify_writeback.rk  # 15 allocations
-t_module_exports.rk  # 12 allocations
-t_month_atomics.rk  # 8 allocations
-t_month_borrowing.rk  # 13 allocations
-t_month_boxes.rk  # 20 allocations
-t_month_concurrency.rk  # 61 allocations
-t_month_ensure_block_scope.rk  # 22 allocations
-t_month_io.rk  # 7 allocations
-t_month_json.rk  # 6 allocations
-t_month_panic_observed.rk  # 15 allocations
-t_month_qualified_module_types.rk  # 16 allocations
-t_month_resource_ensure.rk  # 10 allocations
-t_month_stdlib_modules.rk  # 14 allocations
-t_mutate_handle_field.rk  # 12 allocations
-t_mutex_payload_kinds.rk  # 20 allocations
-t_named_context_resolves_by_type.rk  # 4 allocations
-t_nested_with_return.rk  # 12 allocations
-t_net_loopback.rk  # 8 allocations
-t_niche_handle_option.rk  # 18 allocations
-t_ordering_displayable.rk  # 2 allocations
-t_os_env.rk  # 157 allocations
-t_package_state.rk  # 12 allocations
-t_path_module.rk  # 11 allocations
-t_borrow_aliasing_rules.rk  # 17 allocations — Vec fields (#1035, #1047) plus
-                            # the clones themselves, which have no free (#1050)
-t_pool_context_rules.rk  # 4 allocations
-t_pool_entries.rk  # 7 allocations
-t_pool_iter_handles.rk  # 20 allocations
-t_rack_stale_records.rk  # 23 allocations
-t_random_seeded.rk  # 13 allocations
-t_range_element_type.rk  # 2 allocations
-t_runtime_handle_out_of_result.rk  # 1 allocation
-t_select.rk  # 74 allocations
-t_sequence_join.rk  # 25 allocations
-t_set.rk  # 28 allocations
-t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
-t_shared_inline_access.rk  # 1 allocation
-t_shared_strategies.rk  # 15 allocations
-t_sort_by_closure.rk  # 3 allocations
-t_sort_contracts.rk  # 7 allocations
-t_spawn_join_result.rk  # 2 allocations
-t_spawn_payload_type.rk  # 5 allocations
-t_string_builder_mutate.rk  # 3 allocations
-t_string_field_and_enum_clone.rk  # 6 allocations
-t_string_from_utf8.rk  # 29 allocations
-t_string_rc_escapes.rk  # 10 allocations
-t_string_unicode.rk  # 5 allocations
-t_string_view.rk  # 4 allocations
-t_subprocess.rk  # 24 allocations
-t_supertrait_dispatch.rk  # 4 allocations
-t_text_units.rk  # 9 allocations
-t_trait_object_in_field_container.rk  # 24 allocations
-t_trait_object_optional_payload.rk  # 6 allocations
-t_try_coalesce_diverge.rk  # 2 allocations
-t_try_payload_type.rk  # 6 allocations
-t_user_iterator_method.rk  # 12 allocations — Maps inside struct fields
-                           # (#1035) and the keys() Vec each loop builds
-t_vec_elem_from_call.rk  # 2 allocations
-t_vec_element_returns.rk  # 7 allocations
-t_vec_field_filter_map.rk  # 16 allocations
-t_vec_flat_map_sort_by_key.rk  # 39 allocations — lazy collection adapters, #1045
-t_vec_position_reduce.rk  # 6 allocations
-t_week_closures.rk  # 20 allocations
-t_week_imports.rk  # 2 allocations
-t_week_nested_data.rk  # 51 allocations
-t_week_opaque_struct_fields.rk  # 1 allocation
-t_week_parse_format.rk  # 2 allocations
-t_week_ranges.rk  # 6 allocations
-t_week_results.rk  # 4 allocations
-t_week_sorting.rk  # 15 allocations
-t_week_traits.rk  # 5 allocations
-t_while_presence_binding.rk  # 8 allocations
-t_with_collection_field_writes.rk  # 14 allocations
                    # the Vec/Pool of structs holding strings (#1035)

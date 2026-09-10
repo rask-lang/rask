@@ -119,14 +119,14 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Whether an expression can be iterated directly — a Vec, array or slice.
+    /// Whether an expression can be iterated directly — a Vec or an array.
     ///
     /// Deliberately narrow: `setup_iter_chain_loop` indexes the source with
     /// `Vec_len` plus element loads, so anything that isn't laid out that way
     /// must keep falling through to normal method dispatch.
     fn is_iterable_source(&self, expr: &Expr) -> bool {
         match self.ctx.lookup_raw_type(expr.id) {
-            Some(Type::Array { .. }) | Some(Type::Slice(_)) => return true,
+            Some(Type::Array { .. }) => return true,
             Some(Type::UnresolvedGeneric { name, .. }) if name == "Vec" => return true,
             Some(Type::UnresolvedNamed(name)) if name == "Vec" => return true,
             // A field access (`t.deps`, `pool[h].field`) resolves through the

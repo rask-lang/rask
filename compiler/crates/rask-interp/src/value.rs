@@ -1024,13 +1024,6 @@ pub enum Value {
     /// Range value (for iteration). `step` and `rev` carry the ctrl.ranges
     /// adapters: `(0..10).step(2)` sets step, `.rev()` walks the same element
     /// set backwards. A plain range is step 1, not reversed.
-    Range {
-        start: i64,
-        end: i64,
-        inclusive: bool,
-        step: i64,
-        rev: bool,
-    },
     /// Vec (growable array) with interior mutability
     Vec(Arc<Mutex<VecData>>),
     /// Tuple — fixed arity, heterogeneous, immutable (type.tuples).
@@ -1388,7 +1381,6 @@ impl Value {
             Value::Enum { .. } => "enum",
             Value::Function { .. } => "func",
             Value::Builtin(_) => "builtin",
-            Value::Range { .. } => "range",
             Value::Vec(_) => "Vec",
             Value::Tuple(_) => "tuple",
             Value::Wide(_) => "Wide",
@@ -1650,20 +1642,6 @@ impl fmt::Display for Value {
             }
             Value::Function { name } => write!(f, "<func {}>", name),
             Value::Builtin(kind) => write!(f, "<builtin {:?}>", kind),
-            Value::Range { start, end, inclusive, step, rev } => {
-                if *inclusive {
-                    write!(f, "{}..={}", start, end)?;
-                } else {
-                    write!(f, "{}..{}", start, end)?;
-                }
-                if *step != 1 {
-                    write!(f, ".step({})", step)?;
-                }
-                if *rev {
-                    write!(f, ".rev()")?;
-                }
-                Ok(())
-            }
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();
                 write!(f, "[")?;

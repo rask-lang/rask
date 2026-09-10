@@ -73,8 +73,6 @@ pub enum Type {
         elem: Box<Type>,
         len: usize,
     },
-    /// Slice type (view into array/vec)
-    Slice(Box<Type>),
     /// Result type — also represents `T?` when err = Type::None.
     Result {
         ok: Box<Type>,
@@ -118,7 +116,7 @@ impl Type {
         match self {
             Type::Var(_) => true,
             Type::Result { ok, err } => ok.has_unsolved_var() || err.has_unsolved_var(),
-            Type::RawPtr(inner) | Type::Slice(inner) => inner.has_unsolved_var(),
+            Type::RawPtr(inner) => inner.has_unsolved_var(),
             Type::Array { elem, .. } => elem.has_unsolved_var(),
             Type::Tuple(elems) | Type::Union(elems) => {
                 elems.iter().any(Type::has_unsolved_var)
@@ -315,7 +313,6 @@ impl fmt::Display for Type {
                 write!(f, ")")
             }
             Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
-            Type::Slice(elem) => write!(f, "[{}]", elem),
             Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
             Type::Union(types) => {

@@ -643,6 +643,12 @@ impl Default for ErrorCodeRegistry {
                 "E0401" => ("arithmetic between an integer and a float", Type,
                     "An integer and a float in the same operation is a conversion, and a conversion that can lose the value isn't implicit (type.primitives/CV1a). Which loss is acceptable is the program's decision, so it's written at the site: `.round<f64>()` for the usual one, `as f64` only at widths where nothing can be lost.\n\nAn unsuffixed literal is not affected — it takes the other operand's type, so `x + 1` on an `f64` is `x + 1.0`.",
                     "let avg = total / count      // error: `f64` and `i64`\n// fix: say what happens to the integer\nlet avg = total / count.round<f64>()"),
+                "E0402" => ("an atomic arithmetic operation on a payload with no arithmetic", Type,
+                    "`fetch_add` and its siblings are one instruction that reads, adds and writes back — the hardware does the adding, so the payload has to be a number it can add (mem.atomics/GA3). The payload fitting a word isn't enough: a struct of two `i32`s is eight bytes and still has no `+`.",
+                    "let a = Atomic<Pair>.new(p)
+a.fetch_add(1, Ordering.SeqCst)   // error: no arithmetic on this payload
+// fix: read, compute, put it back
+let old = a.load(Ordering.SeqCst)"),
                 "E0859" => ("mutation in a frozen context", Ownership,
                     "A `frozen` context clause promises the structure won't change for the duration, which is what lets iteration run without a generation check on every step. A structural mutation inside one would break that promise — remove `frozen`, or move the mutation out.",
                     "func draw(frozen scene: Rack<Node>) {\n    scene.delete(n)          // error: cannot delete in frozen context\n}"),
@@ -685,9 +691,9 @@ impl Default for ErrorCodeRegistry {
                 "E0858" => ("a C function returns a struct by value", Type,
                     "Handing a struct *to* a C function works — it goes in registers, or on the stack when it is too big. Getting one *back* is a different ABI rule, and it isn't built yet, so the compiler rejects the call rather than reading back a value nobody wrote.\n\nAn out-parameter is the way through: the C side takes `Rect *out` and writes into a struct you already own.",
                     "let r = c.make_rect(3, 4)    // error: returns `c.Rect` by value\n// fix: hand it somewhere to write\nmut r = c.Rect { width: 0, height: 0 }\nc.fill_rect(&r, 3, 4)"),
-                "E0876" => ("two packages declare the same name", Type,
-                    "A dependency's public declarations are merged into the program that uses it, and they all share one namespace — so a `Config` in a library and a `Config` in the program that depends on it are one name with two declarations behind it, and whichever lands second silently loses. What you see then is a nonsense error inside a file you never wrote, or no error at all and the wrong type.\n\nmodules/RE2 says the two are different types — identity is where a type was declared, not what it is called — and giving each package its own scope is what will make that true. Until then the collision is reported instead of compiled.",
-                    "// libpkg declares `public struct Cat`\nstruct Cat { legs: i64 }     // error: `Cat` is declared by both\n// fix: rename one of them\nstruct HouseCat { legs: i64 }"),
+                "E0876" => ("an import shadows a declaration here", Type,
+                    "`import libpkg.Cat` brings the name `Cat` in bare, and a program that also declares `Cat` then has two things under one name in one scope. modules/IM8 makes that an error rather than letting one win.\n\nMerely *depending* on a package is fine — a library's `Cat` and a program's own `Cat` are different types by modules/RE2, and the library's is reachable as `libpkg.Cat` whether or not the program has one of its own. It is the unqualified import that collides, and it has two ways out: alias it, or drop it and write the qualified name.",
+                    "import libpkg.Cat\nstruct Cat { legs: i64 }      // error: the import already binds `Cat`\n// fix: alias the import\nimport libpkg.Cat as LibCat\n// or drop it and qualify at the use site\nimport libpkg\nlet theirs = libpkg.Cat { name: \"mimi\" }"),
                 "E0877" => ("naming another package's private declaration", Type,
                     "A package's declarations are all merged into the program that uses it, private ones included — that is what lets the package call its own helpers. It does not make them yours to call: a declaration without `public` is that package's internals, and `structure.modules` says only the public surface crosses the boundary.\n\nThis is the check for that, rather than a name that silently resolves to something a library never offered.",
                     "// helpers/lib.rk declares `func delay()`, no `public`\nprintln(\"{delay()}\")          // error: `delay` is private to `helpers`\n// fix: export it on purpose\npublic func delay() -> i64 { … }"),

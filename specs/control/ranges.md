@@ -20,8 +20,9 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 | Rule | Description |
 |------|-------------|
 | **R6: One range type** | Every iterable range is a `Range<T>` — one nominal type carrying start, end, step, and whether the end is included. Not a family of seven types. `.rev()` and `.step(s)` return a `Range<T>`, so they chain, and the whole `Sequence` surface attaches once |
-| **R7: `..n` and `..` are index syntax** | The open forms exist only inside `[]`, where they slice. They are not values, have no type you can name, and cannot be iterated — there is nothing to iterate from |
-| **R8: A range is a sequence** | `Range<T>` exposes `iter(self) -> Sequence<T>`, so every adapter and terminal in `type.sequence` reaches ranges. `(0..n).map(f)`, `(1..n).sum()`, `(0..4).to_vec()` are that method's, not new surface |
+| **R7: `..n` and `..` are index syntax** | The open forms exist only inside `[]`, where they slice a string (`type.operators/IX4`). They are not values, have no type you can name, and cannot be iterated — there is nothing to iterate from |
+| **R8: A range is a sequence** | A range is its own chain head, the way a collection is (`type.sequence/SEQ48`): `(0..n).map(f)`, `(1..n).sum()`, `(0..4).to_vec()` are the sequence surface reaching ranges, not new surface. The `as_sequence()` behind them is compiler-facing, and there is no `.iter()` |
+| **R9: The surface wants an integer** | `Range<T>`'s adapters and terminals are `extend Range<T> where T: Integer`. A float range steps by accumulation and has no exact last value, so `.rev()` can't be right for one; `for x in (0.0..1.0).step(0.1)` is the fused loop and stays that |
 
 | Syntax | Value | Behavior |
 |--------|-------|----------|
@@ -34,7 +35,7 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 
 **Why one type.** Four shapes of range times a 28-method sequence surface is either four copies of that surface or a trait to unify them, and the difference between them is two fields. Step and inclusivity are runtime state on one type. The common `0..n` — step 1, end excluded, both literal at the loop head — constant-folds back to the same loop it always was, and the uncommon ones stop being separate types nobody implemented.
 
-**Terminals may be computed** (`type.sequence/SEQ42`): a range knows its length without walking, so `count()` is arithmetic and `sum()` is closed form. Same answers, no yield closure.
+**Terminals may be computed** (`type.sequence/SEQ42`): a range knows its length without walking, so `count()` and `sum()` *could* be arithmetic. They aren't yet — the closed form needs `T` as a `usize`, and a body generic in `T` can't spell that conversion — so both walk the values. `stdlib/range.rk` says so where the next person will be looking.
 
 ```rask
 for i in 0..10 {
@@ -48,12 +49,14 @@ for i in 0..10 {
 |------|-------------|
 | **RV1: Explicit rev** | Reverse iteration requires `.rev()` adapter |
 | **RV2: Backwards empty** | `10..0` is empty (not reverse) — use `(0..10).rev()` |
+| **RV3: No end, nothing to reverse** | `(0..).rev()` is empty — reversing starts from the last value and an unbounded range has none |
 
 | Range | Values |
 |-------|--------|
 | `0..10` | 0, 1, 2, ..., 9 |
 | `10..0` | (empty) |
 | `(0..10).rev()` | 9, 8, 7, ..., 0 |
+| `(0..).rev()` | (empty) |
 
 ## Step Ranges
 
@@ -63,6 +66,7 @@ for i in 0..10 {
 | **SP2: Negative step** | `start > end` required, iterates downward |
 | **SP3: Zero step** | Compile error |
 | **SP4: Uneven step** | Last value before exceeding bound |
+| **SP5: Negative step, no end** | `(0..).step(-1)` is empty — SP2 wants somewhere to descend to and there is no end. A positive step on an unbounded range iterates per R3 |
 
 <!-- test: parse -->
 ```rask
@@ -78,6 +82,8 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 | `(10..0).step(-2)` | 10, 8, 6, 4, 2 |
 | `(10..=0).step(-2)` | 10, 8, 6, 4, 2, 0 |
 | `(0..10).step(-1)` | (empty — direction mismatch) |
+| `(0..).step(2)` | 0, 2, 4, … until `break`/`return`/`.take()`/overflow (R3) |
+| `(0..).step(-1)` | (empty — nothing to descend to, SP5) |
 
 ## Overflow Behavior
 

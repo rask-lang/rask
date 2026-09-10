@@ -4,7 +4,7 @@
 
 # Bits Module
 
-Bit manipulation utilities, byte order conversion, and binary data parsing/building on integer types and byte slices.
+Bit manipulation utilities, byte order conversion, and binary data parsing/building on integer types and `Vec<u8>`.
 
 ## Bit Operations
 
@@ -44,10 +44,10 @@ Network byte order is big-endian — use `x.to_be()` / `u16.from_be(x)` directly
 
 | Rule | Description |
 |------|-------------|
-| **P1: unpack** | `data.unpack(types...)` parses multiple values from a byte slice, returns `(T..., []u8) or ParseError` |
+| **P1: unpack** | `data.unpack(types...)` parses multiple values from the front of a `Vec<u8>`, returns `(T..., Vec<u8>) or ParseError` — the second half is what's left |
 | **P2: Type specifiers** | Specifiers encode type and endianness: `u8`, `u16be`, `u32le`, `f64be`, etc. |
-| **P3: Slice read methods** | `data.read_u8()`, `data.read_u16be()`, etc. return `(T, []u8) or ParseError` |
-| **P4: take** | `data.take(n)` splits off first n bytes: `([]u8, []u8)` |
+| **P3: Slice read methods** | `data.read_u8()`, `data.read_u16be()`, etc. return `(T, Vec<u8>) or ParseError` |
+| **P4: take** | `data.take(n)` splits off first n bytes: `(Vec<u8>, Vec<u8>)` |
 
 <!-- test: skip -->
 ```rask
@@ -66,7 +66,7 @@ Type specifiers for `unpack`: `u8`, `i8`, `u16be`, `u16le`, `i16be`, `i16le`, `u
 
 | Rule | Description |
 |------|-------------|
-| **K1: pack** | `bits.pack(values...)` builds a `Vec<u8>` from typed values. Module function — the inverse `unpack` is a method on the data because it has a source slice to hang off; `pack` doesn't |
+| **K1: pack** | `bits.pack(values...)` builds a `Vec<u8>` from typed values. Module function — the inverse `unpack` is a method on the data because it has a source to hang off; `pack` doesn't |
 | **K2: BinaryBuilder** | Builder pattern for incremental construction via `write_*` methods |
 | **K3: Buffer write** | `buffer[cursor..].write_*(value)` for zero-allocation building, returns bytes written |
 
@@ -124,15 +124,15 @@ ERROR [std.bits/P3]: unexpected end of data
 
 WHY: Read methods require enough bytes for the target type.
 
-FIX: Verify slice length or handle the error with try/match.
+FIX: Check the length first, or handle the error with try/match.
 ```
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Empty slice to `unpack` | P1 | Returns `ParseError.UnexpectedEnd` |
-| Zero-length `take(0)` | P4 | Returns `(empty_slice, original)` |
+| Empty input to `unpack` | P1 | Returns `ParseError.UnexpectedEnd` |
+| Zero-length `take(0)` | P4 | Returns `(empty, original)` |
 | `pack()` with no args | K1 | Returns empty `Vec<u8>` |
 | Buffer too small for write | K3 | Panics (bounds check) |
 
@@ -160,7 +160,7 @@ FIX: Verify slice length or handle the error with try/match.
 
 ### Performance
 
-- Parsing is zero-copy where possible (returns slices into original data)
+- Parsing reads in place where it can, and what it hands back is the remainder
 - `unpack` validates all lengths upfront (single bounds check)
 - Builder pre-allocates when total size is known at comptime
 

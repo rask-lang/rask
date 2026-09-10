@@ -163,6 +163,16 @@ int64_t rask_atomic_int_fetch_min(int64_t ptr, int64_t val, int64_t ordering) {
 
 // ── Non-atomic access ───────────────────────────────────────
 
+// Give the block back. `into_inner` already does this and hands the value out
+// with it; this is the ordinary drop, for an atomic that just goes out of
+// scope — `Atomic<i64>.new(0)` had no free at all, so every counter in a
+// program leaked its eight bytes.
+void rask_atomic_int_free(int64_t ptr) {
+    RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
+    if (!a) return;
+    rask_free(a);
+}
+
 int64_t rask_atomic_int_into_inner(int64_t ptr) {
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t val = atomic_load_explicit(&a->value, memory_order_relaxed);

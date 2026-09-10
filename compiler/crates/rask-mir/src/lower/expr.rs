@@ -113,7 +113,6 @@ fn is_aggregate(ty: &MirType) -> bool {
             | MirType::Enum(_)
             | MirType::Tuple(_)
             | MirType::Array { .. }
-            | MirType::Slice(_)
             | MirType::Link(_)
             | MirType::Result { .. }
     )
@@ -941,6 +940,27 @@ impl<'a> MirLowerer<'a> {
 
     /// Resolve a numeric field name on a tuple type.
     /// Returns (field_index, element_type, byte_offset, field_size).
+    /// `channel_tx` or `channel_rx` when `object.field` names one half of a
+    /// channel pair, otherwise `None`.
+    ///
+    /// The checker types `Channel<T>.buffered(n)` as `(Sender<T>, Receiver<T>)`.
+    /// MIR doesn't: what it carries is the channel, in one word, and each half
+    /// is a handle a call builds on demand.
+    fn channel_half_extractor(&self, object: &Expr, field: &str) -> Option<&'static str> {
+        let which = match field {
+            "0" => "channel_tx",
+            "1" => "channel_rx",
+            _ => return None,
+        };
+        let rask_types::Type::Tuple(elems) = self.ctx.lookup_raw_type(object.id)? else {
+            return None;
+        };
+        if elems.len() != 2 {
+            return None;
+        }
+        format!("{}", elems[0]).starts_with("Sender").then_some(which)
+    }
+
     pub(super) fn resolve_tuple_field(
         ty: &MirType,
         field: &str,
@@ -1934,19 +1954,66 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
                 }
 
-                // drop(ptr) — consume an `Owned<T>` (mem.owned). Whether there's
-                // anything to free depends on whether `own` actually boxed: a
-                // scalar `T` fits an `Owned<T>` slot in place (OW7) and was never
-                // heap-allocated, so freeing it would hand `rask_free` a value
-                // that was never a pointer. Only a genuinely-boxed aggregate
-                // (MIR type `Ptr`) has a block to release.
+                // drop(p) — consume a `Heap<T>` (mem.heap/HP3, mem.owned/OW3),
+                // freeing the block it holds. There isn't always one: a scalar
+                // `T` fits the slot in place (OW7) and was never allocated, so
+                // freeing it would hand `rask_free` a value that was never a
+                // pointer.
+                //
+                // Telling the two apart used to be "is the argument's MIR type
+                // `Ptr`", and that never fired for the boxed case. A `Heap<T>`
+                // is transparent in MIR and in the checker both — a reference to
+                // one has the *payload's* type, because that is what the program
+                // treats it as (OW5) — so the test saw `Struct`, read it as
+                // "nothing to free", and `drop(Heap(Point { … }))` lowered to no
+                // code at all. Every `Heap` of a struct leaked its block.
+                //
+                // The binding is what knows: lowering marks a name a box when
+                // its initialiser turned out to be a pointer, which is the same
+                // decision that made the binding alias the block instead of
+                // copying out of it. A by-address payload is the other half —
+                // `Heap(42)` allocates nothing, and freeing what it hands back
+                // would free the number 42.
                 if func_name == "drop" {
-                    if matches!(arg_mir_types.first(), Some(MirType::Ptr)) {
-                        let arg_op = arg_operands.into_iter().next().unwrap();
+                    let arg_expr = args.first().map(|a| &a.expr);
+                    let boxed = arg_expr.is_some_and(|e| self.expr_yields_owned_box(e))
+                        && arg_mir_types.first().is_some_and(|t| t.passed_by_address());
+                    // Reading a boxed field gives a *copy of the payload*: the
+                    // result local is typed `T`, so codegen sizes it for `T` and
+                    // copies the struct out through the pointer. The pointer
+                    // itself is never named, and freeing the copy's stack slot
+                    // aborted in glibc. Load the field's word instead.
+                    let boxed_field = match arg_expr.map(|e| &e.kind) {
+                        Some(ExprKind::Field { .. }) if boxed => {
+                            self.place_address(arg_expr.unwrap()).map(|addr| {
+                                let ptr = self.builder.alloc_temp(MirType::Ptr);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: ptr,
+                                    rvalue: MirRValue::Deref(addr),
+                                }));
+                                MirOperand::Local(ptr)
+                            })
+                        }
+                        _ => None,
+                    };
+                    // A field whose address lowering can't work out — a call
+                    // result, say — gets no free. The read's operand names a
+                    // *copy* of the payload, so falling back to it would hand
+                    // `rask_free` a stack address, and leaking is the safe half.
+                    let field_arg = matches!(arg_expr.map(|e| &e.kind), Some(ExprKind::Field { .. }));
+                    let box_ptr = match boxed_field {
+                        Some(op) => Some(op),
+                        None if boxed && field_arg => None,
+                        None if boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)) => {
+                            arg_operands.into_iter().next()
+                        }
+                        None => None,
+                    };
+                    if let Some(op) = box_ptr {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
                             func: FunctionRef::internal("rask_free".to_string()),
-                            args: vec![arg_op],
+                            args: vec![op],
                         }));
                     }
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
@@ -2208,10 +2275,46 @@ impl<'a> MirLowerer<'a> {
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
+                // `let ch = Channel<T>.buffered(n)` then `ch.0`/`ch.1`. The
+                // checker types that as `(Sender<T>, Receiver<T>)` but MIR
+                // carries the channel itself in one word, so a tuple field read
+                // would load from inside the channel. The destructuring form
+                // (`let (tx, rx) = …`) has always gone through these two calls;
+                // this is the same value reached the other way.
+                //
+                // It used to work by accident: the constructor returned a
+                // 16-byte heap pair of the two handles, so `.0` and `.1` landed
+                // on them — and nothing could free that pair, because either
+                // accessor might be the last to read it. Making each accessor
+                // build its own handle is what removed it, and this is the read
+                // that has to come along.
+                if let Some(extract) = self.channel_half_extractor(object, field) {
+                    let dst = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(dst),
+                        func: FunctionRef::internal(extract.to_string()),
+                        args: vec![obj_op],
+                    }));
+                    return Ok((MirOperand::Local(dst), MirType::I64));
+                }
+
                 // Resolve field index, type, and byte offset from struct layout.
                 // byte_offset is passed to codegen so it doesn't need to re-derive
                 // the offset (which would require knowing the struct type).
-                let (field_index, result_ty, byte_offset, field_size) = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
+                // A link is the node's address and carries the node's layout, so
+                // `l.field` is an ordinary base+offset projection
+                // (mem.racks/RK2) — the same resolution a struct gets. Left
+                // out, the index fell back to 0, which is right only when the
+                // field happens to be laid out first: a node with its `Vec`
+                // there worked, and one with a `string` there read the string's
+                // header as a vector handle. Two racks over different node
+                // types in one program was enough, and it printed
+                // 2336353779914121313 for a length of 0.
+                let node_layout = match &obj_ty {
+                    MirType::Struct(StructLayoutId { id, .. }) => Some(*id),
+                    other => other.as_link().map(|s| s.id),
+                };
+                let (field_index, result_ty, byte_offset, field_size) = if let Some(id) = &node_layout {
                     if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                         if let Some((idx, fl)) = layout.fields.iter().enumerate()
                             .find(|(_, f)| f.name == *field)
@@ -2422,92 +2525,40 @@ impl<'a> MirLowerer<'a> {
 
             // Index access
             ExprKind::Index { object, index } => {
-                // Range index → slice operation: vec[start..end] or string[start..end]
+                // A range index slices a string, and only a string
+                // (type.operators/IX4) — the checker rejects it on a Vec or an
+                // array, where there is no slice type for the result to have.
                 if let ExprKind::Range { start, end, inclusive } = &index.kind {
-                    let (obj_op, obj_ty) = self.lower_expr(object)?;
-
-                    // Determine if receiver is a string (MIR type, type checker, or local prefix)
-                    let is_string = matches!(obj_ty, MirType::String)
-                        || self.ctx.lookup_raw_type(object.id)
-                            .map(|ty| matches!(ty, rask_types::Type::String))
-                            .unwrap_or(false)
-                        || if let ExprKind::Ident(var_name) = &object.kind {
-                            self.meta(var_name)
-                                .and_then(|m| m.type_prefix.as_deref())
-                                .map(|p| p == "string")
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-
+                    let (obj_op, _obj_ty) = self.lower_expr(object)?;
                     let start_op = if let Some(s) = start {
                         let (op, _) = self.lower_expr(s)?;
                         op
                     } else {
                         MirOperand::Constant(MirConst::Int(0))
                     };
-
-                    if is_string {
-                        // String slice: string_substr(s, start, end)
-                        let end_op = if let Some(e) = end {
-                            let (op, _) = self.lower_expr(e)?;
-                            // `..=` includes its last index, and the runtime
-                            // takes a half-open pair. Dropping the flag here
-                            // made `s[0..=4]` four bytes on native and five on
-                            // the interpreter — the same `Range { .., .. }`
-                            // slip that made the E0303 message quote `s[0..4]`
-                            // for code that said `s[0..=4]` (#694).
-                            self.bump_inclusive_end(op, *inclusive)
-                        } else {
-                            let len_local = self.builder.alloc_temp(MirType::I64);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(len_local),
-                                func: FunctionRef::internal("string_len".to_string()),
-                                args: vec![obj_op.clone()],
-                            }));
-                            MirOperand::Local(len_local)
-                        };
-                        let result_local = self.builder.alloc_temp(MirType::String);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(result_local),
-                            func: FunctionRef::internal("string_substr".to_string()),
-                            args: vec![obj_op, start_op, end_op],
-                        }));
-                        return Ok((MirOperand::Local(result_local), MirType::String));
-                    }
-
-                    // `Vec_slice` reads a `RaskVec` header, and a `[T; N]`
-                    // local is just its buffer — no header, no length word. So
-                    // `v[0..2]` on a fixed array handed the first element over
-                    // as the header: `s.len()` happened to answer 2 and every
-                    // read through the slice segfaulted. Same materialization
-                    // the array's borrowed `Vec` methods already get.
-                    let (obj_op, _obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
-                        Some(v) => v,
-                        None => (obj_op, obj_ty),
-                    };
-
-                    // Vec slice: Vec_slice(v, start, end)
-                    // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
                         let (op, _) = self.lower_expr(e)?;
+                        // `..=` includes its last index, and the runtime takes
+                        // a half-open pair. Dropping the flag here made
+                        // `s[0..=4]` four bytes on native and five on the
+                        // interpreter (#694).
                         self.bump_inclusive_end(op, *inclusive)
                     } else {
                         let len_local = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(len_local),
-                            func: FunctionRef::internal("Vec_len".to_string()),
+                            func: FunctionRef::internal("string_len".to_string()),
                             args: vec![obj_op.clone()],
                         }));
                         MirOperand::Local(len_local)
                     };
-                    let result_local = self.builder.alloc_temp(MirType::Ptr);
+                    let result_local = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),
-                        func: FunctionRef::internal("Vec_slice".to_string()),
+                        func: FunctionRef::internal("string_substr".to_string()),
                         args: vec![obj_op, start_op, end_op],
                     }));
-                    return Ok((MirOperand::Local(result_local), MirType::Ptr));
+                    return Ok((MirOperand::Local(result_local), MirType::String));
                 }
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -2641,7 +2692,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(node_ty) = self.ctx.node_types.get(&expr.id).cloned() {
                     if self.generic_head(&node_ty).is_some_and(|(n, _)| n == "Vec") {
                         let elem_hint = self.collection_elem_of_checker_type(&node_ty);
-                        return self.lower_vec_from_array_with(elems, elem_hint);
+                        return self.lower_vec_from_array_with(elems, elem_hint, Some(expr.id));
                     }
                 }
                 // The element type is the checker's, not the first element's.
@@ -3464,25 +3515,74 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Range expression
+            // A range *value* — `let r = 0..n`, `(0..n).map(f)`. `for i in 0..n`
+            // and `s[a..b]` never reach here: both match the range in place,
+            // above, and stay a fused loop and a substring.
+            //
+            // `Range<T>` is one ordinary stdlib struct (ctrl.ranges/R6), so the
+            // literal is six field stores. It used to call a `range()` the
+            // runtime never had, which is why a range bound to a name failed to
+            // link at all (#920).
             ExprKind::Range { start, end, inclusive } => {
-                let result_ty = MirType::Ptr; // Range is an opaque struct
-                let result_local = self.builder.alloc_temp(result_ty.clone());
-                let mut args = Vec::new();
-                if let Some(s) = start {
-                    let (op, _) = self.lower_expr(s)?;
-                    args.push(op);
+                // The instance layout when there is one, else the declaration's
+                // own — a `Range<T>`'s fields are all `T` or `bool`, so its
+                // layout doesn't vary with the element and mono keeps one
+                // (`struct#N` for every instantiation of the methods too).
+                let Some((idx, sl)) = self
+                    .ctx
+                    .generic_instance_struct(self.ctx.lookup_raw_type(expr.id))
+                    .or_else(|| self.ctx.find_struct("Range"))
+                else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "no layout for `Range` — the stdlib declaration is missing".into()
+                    ));
+                };
+                let layout_ty = MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
+                let offsets: Vec<(String, u32, u32)> = sl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.offset, f.size))
+                    .collect();
+                let result_local = self.builder.alloc_temp(layout_ty.clone());
+
+                let (start_op, start_ty) = match start {
+                    Some(s) => self.lower_expr(s)?,
+                    None => (MirOperand::Constant(MirConst::Int(0)), MirType::I64),
+                };
+                // An unbounded `0..` has no end to store; `bounded` is what the
+                // sequence reads, and the slot keeps `start` so it is never a
+                // stale word (R3).
+                let end_op = match end {
+                    Some(e) => {
+                        let (op, _) = self.lower_expr(e)?;
+                        op
+                    }
+                    None => start_op.clone(),
+                };
+                let one = match start_ty {
+                    MirType::F32 | MirType::F64 => MirOperand::Constant(MirConst::Float(1.0)),
+                    _ => MirOperand::Constant(MirConst::Int(1)),
+                };
+                let values: [(&str, MirOperand); 6] = [
+                    ("start", start_op),
+                    ("end", end_op),
+                    ("step", one),
+                    ("inclusive", MirOperand::Constant(MirConst::Bool(*inclusive))),
+                    ("descending", MirOperand::Constant(MirConst::Bool(false))),
+                    ("bounded", MirOperand::Constant(MirConst::Bool(end.is_some()))),
+                ];
+                for (name, value) in values {
+                    let Some((_, offset, size)) = offsets.iter().find(|(n, _, _)| n == name) else {
+                        continue;
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: result_local,
+                        offset: *offset,
+                        value,
+                        store_size: Some(*size),
+                    }));
                 }
-                if let Some(e) = end {
-                    let (op, _) = self.lower_expr(e)?;
-                    args.push(op);
-                }
-                let func_name = if *inclusive { "range_inclusive" } else { "range" };
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef::internal(func_name.to_string()),
-                    args,
-                }));
-                Ok((MirOperand::Local(result_local), result_ty))
+                Ok((MirOperand::Local(result_local), layout_ty))
             }
 
             // Array repeat ([value; count])
@@ -5309,6 +5409,27 @@ impl<'a> MirLowerer<'a> {
                                     arg_operands.push(size_op);
                                 }
                             }
+                            // A box owns its payload, and the payload can be a
+                            // container: `Shared.mutex(Map.new())` moves the map
+                            // in. The map's free belongs to whoever drops the
+                            // box's last reference, and only the runtime knows
+                            // when that is — so which container it is travels to
+                            // the constructor and lives on the box, the way a
+                            // container's element descriptor does. Last argument,
+                            // always, which is what codegen's `box_new_args`
+                            // relies on.
+                            if matches!(base_name, "Shared" | "Mutex" | "Cell")
+                                && matches!(method.as_str(), "new" | "mutex" | "local")
+                            {
+                                let kind = args
+                                    .first()
+                                    .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
+                                    .and_then(|ty| self.head_name(&ty))
+                                    .map(|h| crate::elem_strs::box_payload_kind(&h))
+                                    .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
+                            }
+
                             // Pool.new() / Pool.with_capacity(n): inject elem_size
                             // so the pool allocates correctly-sized slots for struct
                             // elements. with_capacity keeps its `n` after elem_size.
@@ -5329,9 +5450,7 @@ impl<'a> MirLowerer<'a> {
                                 // What the elements are, settled here and kept
                                 // by the container for the rest of its life —
                                 // see `elem_strs`.
-                                let tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
-                                );
+                                let tag = self.container_elem_tag(expr.id, 0);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
                             }
                             // Map.new(): inject key_size, val_size
@@ -5340,12 +5459,8 @@ impl<'a> MirLowerer<'a> {
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
-                                let key_tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 0).as_ref(),
-                                );
-                                let val_tag = crate::elem_strs::tag_of(
-                                    self.container_elem_mir_type(expr.id, 1).as_ref(),
-                                );
+                                let key_tag = self.container_elem_tag(expr.id, 0);
+                                let val_tag = self.container_elem_tag(expr.id, 1);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
                             }
@@ -5713,6 +5828,22 @@ impl<'a> MirLowerer<'a> {
         // settled here and nothing about the choice survives into the emitted
         // code — a `Local` box calls the no-lock runtime directly.
         let qualified_name = self.resolve_shared_strategy_call(&qualified_name, object);
+
+        // A box owns its payload, and the payload can be a container:
+        // `Shared.mutex(Map.new())` moves the map in, so the map's free belongs
+        // to whoever drops the box's last reference. Only the runtime knows
+        // when that is, so the kind rides along to the constructor — see
+        // `elem_strs::box_payload_kind`. Left out, every box with a container
+        // in it leaked the container and its storage.
+        if matches!(qualified_name.as_str(), "Mutex_new" | "Cell_new" | "Shared_new") {
+            let kind = args
+                .first()
+                .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
+                .and_then(|ty| self.head_name(&ty))
+                .map(|head| crate::elem_strs::box_payload_kind(&head))
+                .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
+            all_args.push(MirOperand::Constant(MirConst::Int(kind)));
+        }
 
         // A value going into a container's element slot is an argument position,
         // so it gains wrapper layers the same way any other one does. Nothing
@@ -7533,7 +7664,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The half-open end index for a range's written end.
     ///
-    /// `a..=b` includes `b`, while `string_substr` and `Vec_slice` both take a
+    /// `a..=b` includes `b`, while `string_substr` takes a
     /// half-open pair — so an inclusive range ends one past its last index.
     fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
         if !inclusive {
@@ -9438,7 +9569,7 @@ impl<'a> MirLowerer<'a> {
         if let MirType::TraitObject { ref trait_name } = obj_ty {
             if let Some(methods) = self.ctx.trait_methods.get(trait_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
-                    let vtable_offset = 24 + (idx as u32) * 8;
+                    let vtable_offset = crate::vtable_layout::method_offset(idx);
                     let mut arg_operands = Vec::new();
                     for arg in args {
                         let (op, _) = self.lower_expr(&arg.expr)?;

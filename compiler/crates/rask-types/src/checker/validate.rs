@@ -29,7 +29,7 @@ fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
             collect_result_nodes(ok, out);
             collect_result_nodes(err, out);
         }
-        Type::Slice(inner) | Type::RawPtr(inner) => collect_result_nodes(inner, out),
+        Type::RawPtr(inner) => collect_result_nodes(inner, out),
         Type::Array { elem, .. } | Type::SimdVector { elem, .. } => collect_result_nodes(elem, out),
         Type::Tuple(elems) | Type::Union(elems) => {
             for e in elems {
@@ -254,8 +254,7 @@ fn collect_result_errors(
             collect_result_errors(ok, span, checker, errs);
             collect_result_errors(err, span, checker, errs);
         }
-        Type::Slice(inner)
-        | Type::RawPtr(inner) => collect_result_errors(inner, span, checker, errs),
+        Type::RawPtr(inner) => collect_result_errors(inner, span, checker, errs),
         Type::Array { elem, .. } | Type::SimdVector { elem, .. } => {
             collect_result_errors(elem, span, checker, errs)
         }

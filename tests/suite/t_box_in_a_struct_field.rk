@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box held by a struct field (#1035).
+//
+// The walk that releases a struct's own container fields knew `Vec`, `Map`,
+// `Rack` and `Pool`. It didn't know the box family, so `io.Buffer` — which
+// keeps its read position in a `Shared<i64, Local>` — leaked two allocations
+// per buffer, and so did every other struct with a box in it.
+//
+// The release is a decrement, not a free, which is what makes it right even
+// when somebody else still holds a handle: hand a box to a task and the task's
+// handle keeps the storage alive past this frame.
+//
+// Which decrement depends on the strategy, because each builds its own runtime
+// object (conc.sync/SH2): `Shared<T, Local>` is a cell, `Shared<T, Mutex>` is a
+// mutex, and a bare `Shared<T>` is `Readers`. Freeing one as another reads a
+// cell as a lock.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// values still read right — a box released while a `with` binding was live
+// would read freed storage.
+//
+// Spec: specs/memory/boxes.md — a box's storage lives as long as the last
+// handle on it.
+import sync.Shared
+import sync.Local
+import sync.Mutex
+
+struct Counter {
+    name: string
+    hits: Shared<i64, Local>
+}
+
+struct Guarded {
+    total: Shared<i64, Mutex>
+}
+
+struct ReadMostly {
+    config: Shared<i64>
+}
+
+func fresh_counter(name: string) -> Counter {
+    return Counter { name: name, hits: Shared.local(0) }
+}
+
+test "mem.boxes — a Local box in a field" {
+    let c = fresh_counter("clicks")
+    with c.hits.write() as n {
+        n = n + 3
+    }
+    with c.hits.read() as n {
+        assert n == 3
+    }
+    assert c.name == "clicks"
+}
+
+test "mem.boxes — a Mutex box in a field" {
+    let g = Guarded { total: Shared.mutex(10) }
+    with g.total.write() as t {
+        t = t * 2
+    }
+    with g.total.read() as t {
+        assert t == 20
+    }
+}
+
+test "mem.boxes — a Readers box in a field" {
+    let r = ReadMostly { config: Shared.new(7) }
+    with r.config.read() as v {
+        assert v == 7
+    }
+}
+
+// All three at once, so a release that picked the wrong one of the three
+// runtime objects would read a cell as a lock.
+test "mem.boxes — the three strategies side by side" {
+    let c = fresh_counter("mixed")
+    let g = Guarded { total: Shared.mutex(1) }
+    let r = ReadMostly { config: Shared.new(2) }
+    with c.hits.write() as n {
+        n = 4
+    }
+    with g.total.write() as t {
+        t = t + 1
+    }
+    mut sum = 0
+    with c.hits.read() as n {
+        sum = sum + n
+    }
+    with g.total.read() as t {
+        sum = sum + t
+    }
+    with r.config.read() as v {
+        sum = sum + v
+    }
+    assert sum == 8
+}
+
+// Repeatedly, so a box freed and handed back out would read wrong rather than
+// merely leak.
+test "mem.boxes — boxes in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        let c = fresh_counter("loop")
+        with c.hits.write() as n {
+            n = i.clamp<i64>()
+        }
+        with c.hits.read() as n {
+            total = total + n
+        }
+    }
+    assert total == 15
+}

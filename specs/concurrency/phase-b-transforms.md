@@ -28,11 +28,11 @@ The runtime lives in a process-global slot (`conc.runtime`), so vtable ABI never
 <!-- test: skip -->
 ```rask
 trait Reader {
-    func read(self, buf: []u8) -> usize or IoError
+    func read(self, buf: Vec<u8>) -> usize or IoError
 }
 
 // Vtable entry at ABI level:
-// fn(data: *u8, buf: []u8) -> usize or IoError
+// fn(data: *u8, buf: Vec<u8>) -> usize or IoError
 ```
 
 ### Vtable layout
@@ -94,10 +94,10 @@ For in-memory implementations (Buffer), `io_future.poll()` returns Ready immedia
 | **FP2: Runtime discovery is internal** | Any closure that performs async-capable I/O reads `RUNTIME_SLOT` at execution time, no caller cooperation needed |
 | **FP3: Indirect calls are potential pause points** | Inside spawn closures, calls through function pointers or storable closures generate state machine yield variants (if the callee might read the slot) |
 
-The function pointer type `Func([]u8) -> usize or IoError` has the ABI signature:
+The function pointer type `Func(Vec<u8>) -> usize or IoError` has the ABI signature:
 
 ```
-fn(env: *u8, buf: []u8) -> usize or IoError
+fn(env: *u8, buf: Vec<u8>) -> usize or IoError
 ```
 
 Matches vtable entries (VT1). All indirect calls use the same convention.

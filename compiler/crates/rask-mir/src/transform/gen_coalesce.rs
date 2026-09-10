@@ -265,13 +265,13 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(4), name: Some("pool2".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(5), name: Some("h2".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(6), name: Some("t2".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(4), name: Some("pool2".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(5), name: Some("h2".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(6), name: Some("t2".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![MirBlock {
                 id: BlockId(0),
@@ -459,10 +459,10 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![
                 MirBlock {
@@ -497,12 +497,12 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(4), name: Some("t2".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(5), name: Some("t3".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(4), name: Some("t2".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(5), name: Some("t3".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![
                 MirBlock {
@@ -562,11 +562,11 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(4), name: Some("t2".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(4), name: Some("t2".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![
                 MirBlock {
@@ -616,10 +616,10 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![
                 MirBlock {
@@ -657,10 +657,10 @@ mod tests {
             params: vec![],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false },
-                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("h".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(2), name: Some("t0".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(3), name: Some("t1".into()), ty: MirType::I64, is_param: false, container: None },
             ],
             blocks: vec![
                 MirBlock {

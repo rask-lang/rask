@@ -8,6 +8,7 @@ mod builder;
 pub mod closures;
 mod debug_info;
 pub mod dispatch;
+pub mod drop_fields;
 mod elem_offsets;
 pub mod layouts;
 mod module;

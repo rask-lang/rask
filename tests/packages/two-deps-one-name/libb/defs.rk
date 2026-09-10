@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The same three names as `liba`, with different shapes behind them: a
+// `string` field where `liba` has an `i64`, and an enum on top so a variant
+// path crosses the boundary too.
+
+public struct Helper {
+    public label: string
+}
+
+extend Helper {
+    public func describe(self) -> string {
+        return "b:{self.label}"
+    }
+}
+
+public enum Mood {
+    Calm
+    Loud
+}
+
+extend Mood {
+    public func word(self) -> string {
+        match self {
+            Mood.Calm => return "calm"
+            Mood.Loud => return "loud"
+        }
+    }
+}
+
+public func from_b() -> Helper {
+    return Helper { label: "bee" }
+}
+
+func combine(h: Helper) -> string {
+    return "{h.describe()}?"
+}
+
+public func shout() -> string {
+    return combine(from_b())
+}
+
+// A variant of its own enum, matched in its own body.
+public func mood_of(n: i64) -> Mood {
+    if n > 3 {
+        return Mood.Loud
+    }
+    return Mood.Calm
+}

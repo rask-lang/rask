@@ -56,6 +56,9 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     // found 2". `Vec.min` never had the problem only because collections.rk
     // already loads first (#1046).
     ("sequence.rk", include_str!("../../../../stdlib/sequence.rk")),
+    // Same reason, and after sequence.rk because its adapters forward there:
+    // `Range.min`/`max` would otherwise take the bare `min`/`max` off builtins.
+    ("range.rk", include_str!("../../../../stdlib/range.rk")),
     ("builtins.rk", include_str!("../../../../stdlib/builtins.rk")),
     ("fs.rk", include_str!("../../../../stdlib/fs.rk")),
     ("net.rk", include_str!("../../../../stdlib/net.rk")),
@@ -782,8 +785,10 @@ mod tests {
     #[test]
     fn map_full_api() {
         let reg = StubRegistry::load();
+        // No `capacity`/`is_bounded`/`try_insert`: a map has no way to become
+        // bounded (std.collections/CP4), so each could give exactly one answer.
         let expected = [
-            "new", "with_capacity", "len", "is_empty", "capacity", "is_bounded",
+            "new", "with_capacity", "len", "is_empty",
             "insert", "remove", "clear", "get", "get_clone", "contains_key",
             "read", "modify", "insert_if_missing", "modify_with_default",
             "keys", "values", "freeze",

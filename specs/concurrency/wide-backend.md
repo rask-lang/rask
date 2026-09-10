@@ -49,7 +49,7 @@ trait Backend {
     func info() -> BackendInfo
 
     // Devices this backend can reach right now. May be empty (no GPU present).
-    func devices() -> []DeviceInfo
+    func devices() -> Vec<DeviceInfo>
 
     // What running `plan` on `device` would cost — WITHOUT running it.
     // Powers `explain` (conc.data-parallel/O1). Memory near-exact; timing best-effort.
@@ -62,7 +62,7 @@ trait Backend {
 trait Session {
     // Enqueue with these inputs. Non-blocking — returns a must-use completion
     // handle. The device starts here. This is what `Wide.submit` calls.
-    func submit(inputs: []Input) -> Submission or BackendError
+    func submit(inputs: Vec<Input>) -> Submission or BackendError
 
     // Release device resources. Runs when the device resource `with` block exits;
     // the backend must drain in-flight submissions first (a device can't be torn
@@ -73,7 +73,7 @@ trait Session {
 trait Submission {
     // Block until this submission's fence passes, then hand back the outputs.
     // This is what `Wide.await` / `.read()` calls. Failure surfaces here (N5).
-    func await(take self) -> []Output or BackendError
+    func await(take self) -> Vec<Output> or BackendError
 
     // Fire-and-forget: stop tracking, but the runtime still drains it at release.
     func detach(take self)
@@ -93,7 +93,7 @@ trait Submission {
 ```rask
 struct BackendInfo {
     name: string
-    formats: []KernelFormat     // kernel IRs it accepts; SpirV is the default slot
+    formats: Vec<KernelFormat>     // kernel IRs it accepts; SpirV is the default slot
     primitives: PrimitiveSet    // which algebra primitives it can run
     caps: Capabilities          // optional features — additive
 }
@@ -124,7 +124,7 @@ This is the escape valve for the one hard tech-tie-down. If SPIR-V is ever the w
 <!-- test: skip -->
 ```rask
 enum Input {
-    Host([]u8)          // upload this
+    Host(Vec<u8>)          // upload this
     Resident(Token)     // a buffer kept on-device from a prior submission on THIS backend
 }
 
@@ -150,7 +150,7 @@ struct PlanCost {
     peak_bytes: usize           // near-exact device-memory high-water mark
     transfers: TransferBytes    // host<->device bytes, in and out
     time: Duration?             // best-effort estimate, or none if the backend can't
-    fusion: []KernelGroup       // how primitives fuse — feeds explain's kernel view
+    fusion: Vec<KernelGroup>       // how primitives fuse — feeds explain's kernel view
 }
 ```
 

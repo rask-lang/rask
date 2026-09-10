@@ -138,7 +138,6 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (n, n)
         }
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
-        Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         ty if ty.is_option() => {
             let inner = ty.as_option().unwrap();
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
@@ -406,14 +405,9 @@ pub fn parse_field_type(s: &str) -> Type {
         };
     }
 
-    // Slice: []T
-    if let Some(elem) = s.strip_prefix("[]") {
-        return Type::Slice(Box::new(parse_field_type(elem)));
-    }
-
-    // Fixed array `[T; N]`, and `[T]` for a slice written the other way. Without
-    // this the whole bracket form fell through to the unknown-name branch below
-    // and every fixed array field was sized as a pointer (#895).
+    // Fixed array `[T; N]`. Without this the whole bracket form fell through to
+    // the unknown-name branch below and every fixed array field was sized as a
+    // pointer (#895).
     if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
         match inner.split_once(';') {
             Some((elem, len)) => {
@@ -428,7 +422,7 @@ pub fn parse_field_type(s: &str) -> Type {
                     };
                 }
             }
-            None => return Type::Slice(Box::new(parse_field_type(inner))),
+            None => {}
         }
     }
 

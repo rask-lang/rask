@@ -92,6 +92,14 @@ struct RaskRack {
     int64_t   free_cap;
     int32_t  *fields;         // (kind, byte offset) pairs — see RASK_RACK_FIELD_*
     int32_t   field_count;
+    // What a node payload *owns*: the `offset | (kind << 28)` entries
+    // `rask_owned_release` reads, the same encoding a container's elements use.
+    // `fields` above is a different question — it lists the fields holding
+    // links, so the delete-time fixup can find a node's edges — and a node's
+    // string or vector is invisible to it. So a rack of nodes with a
+    // `Vec<Link<T>>` or a `name: string` in them leaked one per node.
+    int32_t  *owned;
+    int32_t   owned_count;
     int32_t   inline_count;   // LINK-kind fields: one inline edge record each
     int32_t   header_bytes;   // inline records + RackNode, i.e. payload's distance from slot start
     RackEdge *edge_pool;      // recycled edge records
@@ -494,9 +502,18 @@ static void *payload_at(const RaskRack *r, int64_t index) {
 // The node type's shape arrives with the first insert, not here: `Rack.new()`
 // has no argument to read `T` off, exactly as `Pool.new()` doesn't.
 static void rack_describe(RaskRack *r, int64_t elem_size, int32_t field_count,
-                          const int32_t *fields) {
+                          const int32_t *fields, int32_t owned_count,
+                          const int32_t *owned) {
     if (r->elem_size != 0) return;
     r->elem_size = elem_size > 0 ? elem_size : 8;
+    if (owned_count > 0 && owned) {
+        int64_t bytes = (int64_t)owned_count * (int64_t)sizeof(int32_t);
+        r->owned = (int32_t *)rask_alloc(bytes);
+        if (r->owned) {
+            memcpy(r->owned, owned, (size_t)bytes);
+            r->owned_count = owned_count;
+        }
+    }
     if (field_count > 0 && fields) {
         int64_t bytes = (int64_t)field_count * 2 * (int64_t)sizeof(int32_t);
         r->fields = (int32_t *)rask_alloc(bytes);
@@ -543,9 +560,11 @@ int64_t rask_rack_contains(const RaskRack *r, const void *link) {
 }
 
 void *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
-                       int64_t field_count, const int32_t *fields) {
+                       int64_t field_count, const int32_t *fields,
+                       int64_t owned_count, const int32_t *owned) {
     if (!r) return NULL;
-    rack_describe(r, elem_size, (int32_t)field_count, fields);
+    rack_describe(r, elem_size, (int32_t)field_count, fields,
+                  (int32_t)owned_count, owned);
 
     int64_t index;
     if (r->free_len > 0) {
@@ -667,6 +686,8 @@ static void release_slot(RaskRack *r, char *payload) {
 
     n->rack = NULL;
     n->slot_index = -1;
+    // The node owned its strings and containers; the rack owned the node.
+    rask_owned_release_all(payload, r->owned, r->owned_count);
     memset(payload, 0, (size_t)r->elem_size);
 
     if (r->free_len == r->free_cap) {
@@ -717,6 +738,7 @@ void rask_rack_free(RaskRack *r) {
     if (!r) return;
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {
+            rask_owned_release_all((char *)r->directory[i], r->owned, r->owned_count);
             RackNode *n = node_of(r->directory[i]);
             RackEdge *e = n->heap_in;   // inline records die with the chunk
             while (e) {
@@ -737,6 +759,7 @@ void rask_rack_free(RaskRack *r) {
     rask_free(r->directory);
     rask_free(r->free_list);
     rask_free(r->fields);
+    rask_free(r->owned);
     rask_free(r->origin_map);
     rask_free(r);
 }
@@ -782,7 +805,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     if (!r) return NULL;
     RaskRack *copy = rask_rack_new();
     if (!copy) return NULL;
-    rack_describe(copy, r->elem_size, r->field_count, r->fields);
+    rack_describe(copy, r->elem_size, r->field_count, r->fields, r->owned_count, r->owned);
 
     // Copy every node first, so every target exists before any edge is rewritten.
     // `origin` maps original slot index -> copied payload.
@@ -797,9 +820,16 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // the *original* nodes at this point, and registering them would make
         // the original's deletes reach into the copy.
         char *src = (char *)r->directory[i];
-        void *dst = rask_rack_insert(copy, NULL, r->elem_size, r->field_count, r->fields);
+        void *dst = rask_rack_insert(copy, NULL, r->elem_size, r->field_count, r->fields,
+                                     r->owned_count, r->owned);
         if (!dst) continue;
         memcpy(dst, src, (size_t)r->elem_size);
+        // The copy holds the original's strings and containers now, so it needs
+        // its own reference to each — a refcount for a string, a real copy for
+        // a nested container. Without it whichever rack died second read memory
+        // that was gone, which is the same relation `rask_vec_clone` has to its
+        // source.
+        rask_owned_retain_all((char *)dst, r->owned, r->owned_count);
         origin[i] = dst;
     }
 
@@ -809,6 +839,10 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     for (int64_t i = 0; i < n_slots; i++) {
         char *dst = (char *)origin[i];
         if (!dst) continue;
+        // The node this one was copied from, so a field can be asked whether it
+        // still shares the original's container — see the VEC case.
+        const char *src_node =
+            (i < r->dir_cap) ? (const char *)r->directory[i] : NULL;
         for (int32_t f = 0; f < r->field_count; f++) {
             void **slot = (void **)(dst + field_offset(r, f));
             switch (field_kind(r, f)) {
@@ -826,9 +860,20 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 break;
             }
             case RASK_RACK_FIELD_VEC: {
-                // The copy shares the original's vector until this runs: the
-                // memcpy above copied the pointer, not the elements.
-                RaskVec *fresh = rask_vec_clone((RaskVec *)*slot);
+                // The copy shares the original's vector until *something*
+                // clones it: the memcpy above copied the pointer, not the
+                // elements. `rask_owned_retain_all` is that something whenever
+                // the node's owned descriptor names this field — so cloning
+                // again here overwrote the handle it wrote and leaked the
+                // vector it had just made. One per node with a
+                // `Vec<Link<T>>` field; `p13_rack_snapshot.rk` leaked nine.
+                //
+                // Asking the original settles it without assuming the two
+                // descriptions agree about which fields they cover.
+                RaskVec *cur = (RaskVec *)*slot;
+                int shares_original =
+                    src_node && cur == *(RaskVec **)(src_node + field_offset(r, f));
+                RaskVec *fresh = shares_original ? rask_vec_clone(cur) : cur;
                 *slot = fresh;
                 int64_t n = rask_vec_len(fresh);
                 for (int64_t e = 0; e < n; e++) {
@@ -840,7 +885,11 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 break;
             }
             case RASK_RACK_FIELD_MAP: {
-                RaskMap *fresh = rask_map_clone((RaskMap *)*slot);
+                // Same as the vector above.
+                RaskMap *cur = (RaskMap *)*slot;
+                int shares_original =
+                    src_node && cur == *(RaskMap **)(src_node + field_offset(r, f));
+                RaskMap *fresh = shares_original ? rask_map_clone(cur) : cur;
                 *slot = fresh;
                 rask_map_remap_link_values(fresh, r, origin, n_slots);
                 rask_link_register_map(fresh);

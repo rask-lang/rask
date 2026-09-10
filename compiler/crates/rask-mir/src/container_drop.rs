@@ -39,15 +39,324 @@ fn free_for(ctor: &str) -> Option<&'static str> {
     crate::elem_strs::free_fn(ctor)
 }
 
-pub fn insert_container_drops(fns: &mut [MirFunction]) {
-    let handing_over = functions_that_hand_a_container_back(fns);
+pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
+    // Which bodies a call through a closure can reach, so the by-name answer
+    // below covers those calls too (#943). Built first: it reads only the MIR,
+    // and the "hands a container back" fixed point needs it.
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let kept = params_a_callee_keeps(fns);
     // A snapshot, because tracing a container through a capture cell has to
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
     for func in fns.iter_mut() {
-        insert_for_function(func, &snapshot, &handing_over, &kept);
+        insert_for_function(func, &snapshot, &handing_over, &kept, &targets);
+    }
+    let glue = env_drop_glue(fns, &handing_over, &targets);
+    fns.extend(glue);
+}
+
+/// The suffix a closure's environment-drop function carries.
+///
+/// Codegen looks the name up rather than being told: a closure block is freed
+/// by whichever frame ends up holding it, which is usually not the one that
+/// built it, so the block has to carry how to release what it owns. The name is
+/// the only thing the two sides need to agree on.
+pub const ENV_DROP_SUFFIX: &str = "__env_drop";
+
+/// One function per closure that *owns* a container it captured, freeing what
+/// the environment holds.
+///
+/// A heap closure with a by-value capture owns that value — `own` moves it in,
+/// and `find_escaping` below keeps the frame from freeing it as well. Nothing
+/// then released it: `closure_drop` gave back the block and left the vector
+/// inside it, which is the leak #1045 closed around ("the block would need drop
+/// glue next to its size"). Every adapter chain captures its source, so this is
+/// most of what the sequence files leak.
+///
+/// A *by-ref* capture is not this: the slot holds an address into the frame that
+/// built the closure, and that frame still owns the value.
+fn env_drop_glue(
+    fns: &[MirFunction],
+    handing_over: &HashMap<String, HandBack>,
+    targets: &crate::closure_targets::ClosureTargets,
+) -> Vec<MirFunction> {
+    // How many escaping closures capture each container by value, per frame.
+    // Two means the container has two candidate owners and the answer is to
+    // leave it alone: two glues freeing one vector is a use-after-free, where
+    // none is a leak. `v.map(f)` twice off one vector is exactly that shape —
+    // the receiver is *borrowed* (`mem.parameters/PM1`), so the frame owns it
+    // and neither chain may release it.
+    let mut capturers: HashMap<(String, LocalId), usize> = HashMap::new();
+    for func in fns {
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else {
+                    continue;
+                };
+                for c in captures.iter().filter(|c| !c.by_ref) {
+                    *capturers.entry((func.name.clone(), c.local_id)).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    // What each closure body gives up by itself, by capture offset. A capture
+    // the body consumes is not the glue's to free:
+    //
+    //     spawn(own || { for i in 1..n { tx.send(i) }  tx.close() })
+    //
+    // `close` takes the sender away — closing an end *is* dropping it — so the
+    // glue freeing it again on the way out aborted the process on a double
+    // free. Nothing had noticed because until channels were released at all,
+    // no capture was both owned and consumable.
+    let consumed: HashMap<&str, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .collect();
+
+    // One glue per closure *function*, because the block header holds a
+    // function address and the name is all codegen has to find it by. So every
+    // site that builds this closure has to agree about what its environment
+    // owns — inlining copies a create site into each caller, and a site that
+    // owns nothing must not get a glue that frees something.
+    let mut answers: HashMap<String, Vec<Vec<(u32, &'static str)>>> = HashMap::new();
+    let mut order: Vec<(String, Option<String>)> = Vec::new();
+    for func in fns {
+        let fresh = collect_fresh_containers_with(func, fns, handing_over, targets);
+        // What this frame frees for itself, right after dropping the closure.
+        // The site owns nothing then, which is what lets a site that borrows
+        // its capture and a site that owns one agree — see
+        // `captures_freed_with_the_closure`.
+        // Deliberately the unpruned list: the frame's own copy drops entries
+        // whose value reaches two names, and excluding a superset here costs a
+        // leak where excluding too little costs a double free.
+        let frame_frees: HashSet<(LocalId, u32)> = captures_freed_with_the_closure(func, &fresh)
+            .into_iter()
+            .map(|(owner, offset, _, _)| (owner, offset))
+            .collect();
+        let reach = strict_reach(func);
+        let def_block = defining_blocks(func);
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true } = &stmt.kind
+                else {
+                    continue;
+                };
+                // One create site can still run many times. A loop is how that
+                // happens, and `capturers` counts sites, so it can't see it —
+                //
+                //     for id in 0..n { spawn(own || { tx.send(x) }).detach() }
+                //
+                // handed every task's glue the same sender, and the second
+                // drop closed the channel: the tutorial's `estimate_pi` began
+                // reading "receive on closed channel". A capture *defined
+                // inside the same loop* is the opposite case and the one the
+                // glue exists for — `.map()` in a loop builds a fresh
+                // environment each turn and each closure owns its own.
+                let create_repeats = reach.get(&block.id).is_some_and(|r| r.contains(&block.id));
+                let made_each_turn = |c: &crate::ClosureCapture| {
+                    !create_repeats
+                        || def_block.get(&c.local_id).is_some_and(|d| {
+                            reach.get(&block.id).is_some_and(|r| r.contains(d))
+                                && reach.get(d).is_some_and(|r| r.contains(&block.id))
+                        })
+                };
+                let mut owned: Vec<(u32, &'static str)> = captures
+                    .iter()
+                    .filter(|c| !c.by_ref)
+                    .filter(|c| {
+                        capturers
+                            .get(&(func.name.clone(), c.local_id))
+                            .copied()
+                            .unwrap_or(0)
+                            == 1
+                    })
+                    .filter(|c| made_each_turn(c))
+                    .filter(|c| !frame_frees.contains(&(*dst, c.offset)))
+                    .filter(|c| {
+                        !consumed
+                            .get(func_name.as_str())
+                            .is_some_and(|offs| offs.contains(&c.offset))
+                    })
+                    .filter_map(|c| fresh.get(&c.local_id).map(|free| (c.offset, *free)))
+                    .collect();
+                owned.sort();
+                if !answers.contains_key(func_name) {
+                    order.push((func_name.clone(), func.source_file.clone()));
+                }
+                answers.entry(func_name.clone()).or_default().push(owned);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (name, source_file) in order {
+        let sites = &answers[&name];
+        let first = &sites[0];
+        if first.is_empty() || sites.iter().any(|s| s != first) {
+            continue;
+        }
+        out.push(build_env_drop(&name, first, source_file));
+    }
+    out
+}
+
+/// Which blocks each block can reach in one step or more.
+///
+/// One step *or more* is the point: a block that appears in its own set is on
+/// a cycle, which is how "this statement runs many times" is asked here.
+fn strict_reach(func: &MirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
+    let mut reach: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+    for block in &func.blocks {
+        reach.insert(
+            block.id,
+            crate::analysis::cfg::successors(&block.terminator).into_iter().collect(),
+        );
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &func.blocks {
+            let onward: HashSet<BlockId> = reach[&block.id]
+                .iter()
+                .filter_map(|s| reach.get(s))
+                .flatten()
+                .copied()
+                .collect();
+            let set = reach.get_mut(&block.id).unwrap();
+            let before = set.len();
+            set.extend(onward);
+            changed |= set.len() != before;
+        }
+    }
+    reach
+}
+
+/// Where each local is written. SSA, so one place each — a phi's destination
+/// belongs to the block holding the phi.
+fn defining_blocks(func: &MirFunction) -> HashMap<LocalId, BlockId> {
+    let mut out = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
+                out.entry(dst).or_insert(block.id);
+            }
+        }
+    }
+    out
+}
+
+/// The capture offsets this function's body takes away itself — loaded out of
+/// the environment and handed to something declared `take self`.
+///
+/// Conservative on purpose: a body that consumes a capture on only one path
+/// still counts, because the glue runs on every path and freeing twice is
+/// worse than not freeing at all.
+fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
+    // Which capture each local came from. A capture is loaded once and then
+    // copied around, so the copies have to carry the offset with them.
+    let mut from_capture: HashMap<LocalId, u32> = HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::LoadCapture { dst, offset, .. } => {
+                    if from_capture.insert(*dst, *offset).is_none() {
+                        changed = true;
+                    }
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(MirOperand::Local(src)),
+                } => {
+                    if let Some(&off) = from_capture.get(src) {
+                        if from_capture.insert(*dst, off).is_none() {
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+        if !rask_stdlib::mir_metadata::consumes_receiver(&fref.name) {
+            continue;
+        }
+        let Some(recv) = args.first().and_then(crate::analysis::uses::operand_local) else { continue };
+        if let Some(&off) = from_capture.get(&recv) {
+            out.insert(off);
+        }
+    }
+    out
+}
+
+/// `<closure>__env_drop(env: ptr)` — load each owned container out of the
+/// environment and free it.
+///
+/// `LoadCapture` is the same statement the closure's own body reads a capture
+/// with, so the offsets can't drift from how they were written.
+fn build_env_drop(
+    closure_name: &str,
+    owned: &[(u32, &'static str)],
+    source_file: Option<String>,
+) -> MirFunction {
+    let env = LocalId(0);
+    let mut locals = vec![crate::MirLocal {
+        id: env,
+        name: Some("__env".to_string()),
+        ty: MirType::Ptr,
+        is_param: true,
+        container: None,
+    }];
+    let mut statements = Vec::new();
+    for (i, (offset, free)) in owned.iter().enumerate() {
+        let held = LocalId(i as u32 + 1);
+        locals.push(crate::MirLocal {
+            id: held,
+            name: None,
+            ty: MirType::Ptr,
+            is_param: false,
+            container: None,
+        });
+        statements.push(MirStmt::dummy(MirStmtKind::LoadCapture {
+            dst: held,
+            env_ptr: env,
+            offset: *offset,
+            access: crate::CaptureAccess::Value,
+        }));
+        statements.push(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(free.to_string()),
+            args: vec![MirOperand::Local(held)],
+        }));
+    }
+    let entry = BlockId(0);
+    MirFunction {
+        name: format!("{closure_name}{ENV_DROP_SUFFIX}"),
+        params: vec![crate::MirLocal {
+            id: env,
+            name: Some("__env".to_string()),
+            ty: MirType::Ptr,
+            is_param: true,
+            container: None,
+        }],
+        ret_ty: MirType::Void,
+        locals,
+        blocks: vec![MirBlock {
+            id: entry,
+            statements,
+            terminator: crate::MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+        }],
+        entry_block: entry,
+        is_extern_c: false,
+        source_file,
     }
 }
 
@@ -77,7 +386,7 @@ pub fn insert_container_drops(fns: &mut [MirFunction]) {
 ///
 /// Grows to a fixed point because "passed on to something that keeps it" is
 /// itself one of these answers.
-fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
 
@@ -186,7 +495,7 @@ fn param_is_kept_by(
 /// A function this pass can see answers for itself. Anything else — a runtime
 /// function, a stdlib method — falls back to the declared metadata, whose own
 /// unmapped default leans to leaking rather than to a double free.
-fn call_keeps_argument(
+pub(crate) fn call_keeps_argument(
     fref: &FunctionRef,
     index: usize,
     kept: &HashMap<String, Vec<bool>>,
@@ -212,7 +521,10 @@ fn call_keeps_argument(
 /// this pass can see count: a container from the runtime (`split`, `map.keys`)
 /// still has no owner named here, because reading an element out of one
 /// doesn't take a reference — #1035.
-fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, HandBack> {
+fn functions_that_hand_a_container_back(
+    fns: &[MirFunction],
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashMap<String, HandBack> {
     let mut handing: HashMap<String, HandBack> = HashMap::new();
     loop {
         let mut grew = false;
@@ -220,7 +532,7 @@ fn functions_that_hand_a_container_back(fns: &[MirFunction]) -> HashMap<String, 
             if handing.contains_key(&func.name) {
                 continue;
             }
-            let fresh = collect_fresh_containers_with(func, fns, &handing);
+            let fresh = collect_fresh_containers_with(func, fns, &handing, targets);
             if fresh.is_empty() {
                 continue;
             }
@@ -340,12 +652,13 @@ fn insert_for_function(
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     kept: &HashMap<String, Vec<bool>>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) {
-    let fresh = collect_fresh_containers_with(func, all, handing_over);
+    let fresh = collect_fresh_containers_with(func, all, handing_over, targets);
     if fresh.is_empty() {
         return;
     }
-    let escaping = find_escaping(func, &fresh, kept);
+    let (escaping, consumed) = find_escaping(func, &fresh, kept);
     let moved_away = find_moved_away(func, &fresh);
     let already_freed = find_already_freed(func, &fresh);
     let fresh: HashMap<LocalId, &'static str> = fresh
@@ -405,14 +718,51 @@ fn insert_for_function(
         }
     }
 
-    let placed = placed_locals(func, &droppable, &groups);
+    let placed = placed_locals(func, &droppable, &groups, &consumed);
+    // One allocation under several names that would each free it: free it once,
+    // under the name whose definition rules the others. Leaving the whole group
+    // alone was the old answer — safe, and it leaked `src` outright the moment
+    // a program used one vector twice:
+    //
+    //     let a = src.map(|x| x * 2).to_vec()
+    //     let b = src.map(|x| x + 1).to_vec()
+    //
+    // Each fused loop copies `src` into its own name, both names reach the
+    // return, and the vector was nobody's (#1143).
+    //
+    // "Rules the others" is dominance on the defining blocks: a free under that
+    // name runs on every path the other names' frees would have, and it runs
+    // once. Where no name dominates the rest the value reaches the end by
+    // different definitions on different paths, and one free can only be right
+    // for one of them — so that keeps the old answer and leaks.
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let def_block: HashMap<LocalId, BlockId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().map(move |st| (b.id, st)))
+        .filter_map(|(bid, st)| crate::analysis::uses::stmt_def(st).map(|d| (d, bid)))
+        .collect();
     for group in &groups {
-        let survivors = group
+        let mut survivors: Vec<LocalId> = group
             .iter()
+            .copied()
             .filter(|id| droppable.contains_key(id) && placed.contains(id))
-            .count();
-        if survivors > 1 {
-            for id in group {
+            .collect();
+        if survivors.len() <= 1 {
+            continue;
+        }
+        // Lowest id among the candidates, not the first one found: a group is a
+        // `HashSet`, and picking by iteration order emitted the free on a
+        // different name per compile.
+        survivors.sort_by_key(|l| l.0);
+        let keeper = survivors.iter().copied().find(|a| {
+            let Some(&da) = def_block.get(a) else { return false };
+            survivors
+                .iter()
+                .all(|b| def_block.get(b).is_some_and(|&db| dom.dominates(da, db)))
+        });
+        for id in group {
+            if Some(*id) != keeper {
                 droppable.remove(id);
             }
         }
@@ -433,11 +783,210 @@ fn insert_for_function(
         }
     }
 
+    // A capture the frame frees itself, because it frees the closure too. Those
+    // names are already out of `droppable` — a capture is an escape — so this
+    // adds frees rather than moving any.
+    //
+    // Two guards, both about one value reaching two names. `capturers` inside
+    // that function counts by local, and inlining gives each copy of a chain
+    // its own name for the same vector:
+    //
+    //     let a = v.map(f)          // captures _25
+    //     let b = v.map(g)          // captures _48, the same vector
+    //
+    // so each looked like the only capturer and both freed it. And a group with
+    // a droppable member already has a free coming.
+    let mut with_closure = captures_freed_with_the_closure(func, &fresh);
+    with_closure.retain(|(_, _, local, _)| {
+        let group = groups.iter().find(|g| g.contains(local));
+        match group {
+            Some(g) => !g.iter().any(|id| droppable.contains_key(id)),
+            None => true,
+        }
+    });
+    with_closure = one_free_per_group(func, with_closure, &groups);
+
     if !droppable.is_empty() {
-        insert_drops(func, &droppable, &groups);
+        insert_drops(func, &droppable, &groups, &consumed);
     }
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
+    }
+    if !with_closure.is_empty() {
+        insert_capture_drops(func, &with_closure);
+    }
+}
+
+/// Captures this frame frees itself, because it also frees the closure holding
+/// them: `(closure local, capture offset, capture local, free)`.
+///
+/// The environment drop glue is named after the closure *function*, so every
+/// site building that closure has to agree about what its environment owns —
+/// and after inlining they routinely don't:
+///
+/// ```text
+/// func Vec_as_sequence(self) { return || … self … }   // self is borrowed
+/// // inlined into main:
+/// _25 = <a fresh vector>
+/// _27 = closure[heap](Vec_as_sequence__closure_0, [_25@0])
+/// ```
+///
+/// The un-inlined function's site owns nothing — its `self` is the caller's —
+/// and main's site owns the vector. Both answers are right for their own site
+/// and there is one glue, so neither got one and every lazy adapter leaked its
+/// source vector: `let evens = v.filter(p)` on a `[1, 2, 3, 4]`.
+///
+/// This is the way out that needs no per-site glue. When the frame also drops
+/// the closure — `closure_drop` right there, which is `insert_closure_drops`
+/// saying this frame owns it — the frame can free the capture straight after,
+/// and the site owns nothing as far as the glue is concerned. So the two sites
+/// above agree on "nothing", the glue is skipped, and main does the freeing.
+fn captures_freed_with_the_closure(
+    func: &MirFunction,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> Vec<(LocalId, u32, LocalId, &'static str)> {
+    // Closures this frame drops. `insert_closure_drops` emits one only for a
+    // closure the frame owns, so its presence is the answer.
+    let dropped: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureDrop { closure } => Some(*closure),
+            _ => None,
+        })
+        .collect();
+    if dropped.is_empty() {
+        return Vec::new();
+    }
+
+    // One capturer only, the same rule the glue uses: two closures holding one
+    // container have two candidate owners and the answer is to leave it alone.
+    let mut capturers: HashMap<LocalId, usize> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else { continue };
+        for c in captures.iter().filter(|c| !c.by_ref) {
+            *capturers.entry(c.local_id).or_default() += 1;
+        }
+    }
+
+    let mut out = Vec::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
+            continue;
+        };
+        if !dropped.contains(dst) {
+            continue;
+        }
+        for c in captures.iter().filter(|c| !c.by_ref) {
+            if capturers.get(&c.local_id).copied().unwrap_or(0) != 1 {
+                continue;
+            }
+            if let Some(free) = fresh.get(&c.local_id) {
+                out.push((*dst, c.offset, c.local_id, *free));
+            }
+        }
+    }
+    out
+}
+
+/// One free per value, however many closures hold it.
+///
+/// Two chains over one vector give each copy its own name, so each looks like
+/// the only capturer and both got a free — a double free. Refusing both was the
+/// first answer and it leaks: nothing else frees the source, because a capture
+/// is an escape and the name is already out of `droppable`. `doubled(v)` twice
+/// leaked `[1, 2, 3]` (#1148).
+///
+/// The free belongs after the *last* of the closure drops. Until then some
+/// environment still holds the handle; after it, none does. So a group whose
+/// drops all sit in one block keeps the entry that comes last there.
+///
+/// Drops spread across blocks keep none, which is the old answer. Whether one
+/// runs after the other is a dominance question and the two can be arms of a
+/// branch, where neither does — and picking wrong there is the double free
+/// this exists to avoid.
+fn one_free_per_group(
+    func: &MirFunction,
+    with_closure: Vec<(LocalId, u32, LocalId, &'static str)>,
+    groups: &[HashSet<LocalId>],
+) -> Vec<(LocalId, u32, LocalId, &'static str)> {
+    // Where each closure is dropped, by the last `closure_drop` naming it.
+    let mut dropped_at: HashMap<LocalId, (usize, usize)> = HashMap::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let MirStmtKind::ClosureDrop { closure } = &stmt.kind {
+                dropped_at.insert(*closure, (bi, si));
+            }
+        }
+    }
+
+    let mut per_group: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut ungrouped: Vec<usize> = Vec::new();
+    for (i, (_, _, local, _)) in with_closure.iter().enumerate() {
+        match groups.iter().position(|g| g.contains(local)) {
+            Some(gi) => per_group.entry(gi).or_default().push(i),
+            None => ungrouped.push(i),
+        }
+    }
+
+    let mut keep: HashSet<usize> = ungrouped.into_iter().collect();
+    for (_, entries) in per_group {
+        if entries.len() == 1 {
+            keep.insert(entries[0]);
+            continue;
+        }
+        let sites: Option<Vec<(usize, usize, usize)>> = entries
+            .iter()
+            .map(|&i| dropped_at.get(&with_closure[i].0).map(|&(b, s)| (b, s, i)))
+            .collect();
+        let Some(mut sites) = sites else { continue };
+        if sites.iter().any(|(b, _, _)| *b != sites[0].0) {
+            continue;
+        }
+        sites.sort();
+        keep.insert(sites.last().expect("non-empty").2);
+    }
+
+    with_closure
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(_, e)| e)
+        .collect()
+}
+
+/// Free each of those captures right after the `closure_drop` that ends the
+/// closure holding it.
+///
+/// After the drop, not before: the environment is what the capture lives in
+/// until then, and `rask_closure_free` reads the block's size header out of it.
+fn insert_capture_drops(
+    func: &mut MirFunction,
+    freed: &[(LocalId, u32, LocalId, &'static str)],
+) {
+    for block_idx in 0..func.blocks.len() {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
+            let MirStmtKind::ClosureDrop { closure } = &stmt.kind else { continue };
+            for (owner, _, local, free) in freed.iter().filter(|(o, _, _, _)| o == closure) {
+                let _ = owner;
+                insertions.push((
+                    si + 1,
+                    MirStmt::new(
+                        MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal((*free).to_string()),
+                            args: vec![MirOperand::Local(*local)],
+                        },
+                        stmt.span,
+                    ),
+                ));
+            }
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            func.blocks[block_idx].statements.insert(idx, stmt);
+        }
     }
 }
 
@@ -459,6 +1008,7 @@ fn collect_fresh_containers_with(
     func: &MirFunction,
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
     // Calls whose result is a wrapper holding the container, rather than the
@@ -478,6 +1028,34 @@ fn collect_fresh_containers_with(
                         unwrap_for.insert(*dst, back.free);
                     } else {
                         fresh.insert(*dst, back.free);
+                    }
+                }
+            }
+            // A call through a closure, once every body it can reach agrees it
+            // hands one back. `flat_map`'s closure builds a `Vec` per element,
+            // and nothing owned it — the name-keyed answer above has no name to
+            // look up (#943). One body that hands back somebody else's is the
+            // whole set's answer, which is what keeps `|k| lookup()` returning
+            // a const's vector from being freed per key.
+            if let MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } = &stmt.kind {
+                if let Some(bodies) = targets.known(&func.name, *closure) {
+                    let mut agreed: Option<&'static str> = None;
+                    let all_hand_back = bodies.iter().all(|body| {
+                        match handing_over.get(body) {
+                            // A wrapper needs the unwrap step below, which is
+                            // keyed on the call's own destination — one closure
+                            // returning a bare container and another a wrapped
+                            // one have no single answer, so neither gets one.
+                            Some(back) if !back.wrapped => {
+                                let same = agreed.is_none_or(|f| f == back.free);
+                                agreed = Some(back.free);
+                                same
+                            }
+                            _ => false,
+                        }
+                    });
+                    if let (true, Some(free)) = (all_hand_back, agreed) {
+                        fresh.insert(*dst, free);
                     }
                 }
             }
@@ -532,7 +1110,10 @@ fn collect_fresh_containers_with(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Call { dst: Some(dst), .. } => Some(*dst),
+            // A call through a closure counts the same way: its destination is
+            // the definition, not a copy of some other name (#943).
+            MirStmtKind::Call { dst: Some(dst), .. }
+            | MirStmtKind::ClosureCall { dst: Some(dst), .. } => Some(*dst),
             _ => None,
         })
         .filter(|id| fresh.contains_key(id))
@@ -808,7 +1389,12 @@ fn cells_this_frame_frees(
             carried.insert(*dst, free);
         }
         follow_copies(func, &mut carried);
-        if !find_escaping(func, &carried, kept).is_empty() {
+        // Consumed counts the same here as escaping: a cell's free runs on the
+        // way out of the frame, so a value already taken away must not be
+        // named at all. The path-sensitivity below is for a frame's own locals,
+        // which have a placement to be sensitive about.
+        let (escapes, taken) = find_escaping(func, &carried, kept);
+        if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
         out.push((*cell, free, *store_block));
@@ -855,6 +1441,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, &'static str, Bl
                 name: None,
                 ty: MirType::Ptr,
                 is_param: false,
+                container: None,
             });
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Assign {
                 dst: tmp,
@@ -1129,8 +1716,19 @@ fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
-) -> HashSet<LocalId> {
+) -> (HashSet<LocalId>, HashMap<LocalId, HashSet<BlockId>>) {
     let mut escaping = HashSet::new();
+    // Where a container is handed to a stdlib method declared `take self`.
+    //
+    // That is not the same as escaping, and treating it as such is why
+    // `string.from_utf8` leaked a `StringBuilder` for every byte sequence it
+    // rejected: `out.build()` takes the builder away, so every name for it was
+    // marked escaping and no path got a release — including the eight that
+    // return a `Utf8Error` before `build()` is ever reached.
+    //
+    // So it is recorded per block instead, and the placement below frees only
+    // where no path in has consumed it yet.
+    let mut consumed: HashMap<LocalId, HashSet<BlockId>> = HashMap::new();
     let mut mark = |op: &MirOperand, escaping: &mut HashSet<LocalId>| {
         if let MirOperand::Local(id) = op {
             if containers.contains_key(id) {
@@ -1145,8 +1743,18 @@ fn find_escaping(
                 MirStmtKind::Call { func: fref, args, .. } => {
                     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
                     let skip_receiver = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
+                    let takes_receiver =
+                        rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
                     for (i, arg) in args.iter().enumerate() {
                         if skip_receiver && i == 0 {
+                            continue;
+                        }
+                        if takes_receiver && i == 0 {
+                            if let MirOperand::Local(id) = arg {
+                                if containers.contains_key(id) {
+                                    consumed.entry(*id).or_default().insert(block.id);
+                                }
+                            }
                             continue;
                         }
                         if call_keeps_argument(fref, i, kept) {
@@ -1188,7 +1796,7 @@ fn find_escaping(
             _ => {}
         }
     }
-    escaping
+    (escaping, consumed)
 }
 
 /// Copied into another local, or merged through a phi: the new name owns it.
@@ -1196,13 +1804,31 @@ fn find_moved_away(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
 ) -> HashSet<LocalId> {
+    // A copy only ends the source's life if the source is finished with. In a
+    // loop it isn't: `for x in v` inside a `while` copies `v` into the body
+    // every turn, so `v` is live out of the block that copies it and holds the
+    // value the whole time. Calling that a move left every name in the group
+    // either moved-from or unplaceable, and the vector was freed by nobody —
+    // `t39_loop_backedge_container_free.rk`'s own subject, from the other side
+    // (#1047).
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let live = crate::analysis::liveness::analyze(func, &dom);
     let mut moved = HashSet::new();
     for block in &func.blocks {
-        for stmt in &block.statements {
+        for (si, stmt) in block.statements.iter().enumerate() {
             match &stmt.kind {
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if containers.contains_key(src) && src != dst =>
                 {
+                    // Live on the way out, or read again below in this block:
+                    // either way the copy wasn't the end of it.
+                    let read_below = block.statements[si + 1..]
+                        .iter()
+                        .any(|st| crate::analysis::uses::stmt_reads(st, *src))
+                        || crate::analysis::uses::terminator_reads(&block.terminator, *src);
+                    if live.live_at_exit(block.id, *src) || read_below {
+                        continue;
+                    }
                     moved.insert(*src);
                 }
                 MirStmtKind::Phi { args, .. } => {
@@ -1221,6 +1847,26 @@ fn find_moved_away(
     moved
 }
 
+/// Every block a consumed container might already be gone in: the consuming
+/// blocks and everything reachable from them.
+///
+/// A *may* answer on purpose. Freeing where the value is definitely still this
+/// frame's leaks nothing and frees nothing twice; the other way round is a
+/// double free, so a block with any consuming path into it is left alone.
+fn blocks_past_a_consume(func: &MirFunction, sites: &HashSet<BlockId>) -> HashSet<BlockId> {
+    let mut out: HashSet<BlockId> = sites.clone();
+    let mut frontier: Vec<BlockId> = sites.iter().copied().collect();
+    while let Some(bid) = frontier.pop() {
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        for succ in crate::analysis::cfg::successors(&block.terminator) {
+            if out.insert(succ) {
+                frontier.push(succ);
+            }
+        }
+    }
+    out
+}
+
 /// Which of `droppable` would actually get a free emitted somewhere.
 ///
 /// The same walk `insert_drops` does, minus the emitting. Split out because
@@ -1230,8 +1876,9 @@ fn placed_locals(
     func: &MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) -> HashSet<LocalId> {
-    plan_drops(func, droppable, groups)
+    plan_drops(func, droppable, groups, consumed)
         .into_iter()
         .flat_map(|(_, locals)| locals)
         .collect()
@@ -1245,8 +1892,9 @@ fn insert_drops(
     func: &mut MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) {
-    for (block_idx, locals) in plan_drops(func, droppable, groups) {
+    for (block_idx, locals) in plan_drops(func, droppable, groups, consumed) {
         for local in locals {
             let free = droppable[&local];
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
@@ -1263,8 +1911,19 @@ fn plan_drops(
     func: &MirFunction,
     droppable: &HashMap<LocalId, &'static str>,
     groups: &[HashSet<LocalId>],
+    consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) -> Vec<(usize, Vec<LocalId>)> {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
+    // Where each consumed container might already be gone. Blocks with no
+    // entry own nothing consumable and answer "no" for every local.
+    let gone: HashMap<LocalId, HashSet<BlockId>> = consumed
+        .iter()
+        .filter(|(id, _)| droppable.contains_key(id))
+        .map(|(id, sites)| (*id, blocks_past_a_consume(func, sites)))
+        .collect();
+    let still_ours = |id: &LocalId, at: BlockId| {
+        !gone.get(id).is_some_and(|blocks| blocks.contains(&at))
+    };
 
     let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
     // Every local's defining block, not just the droppable ones: a back-edge
@@ -1290,6 +1949,7 @@ fn plan_drops(
                 let drops: Vec<LocalId> = droppable
                     .keys()
                     .copied()
+                    .filter(|id| still_ours(id, block.id))
                     .filter(|id| {
                         defined_in_block.get(id).is_some_and(|&def_idx| {
                             dom.dominates(func.blocks[def_idx].id, block.id)
@@ -1302,23 +1962,74 @@ fn plan_drops(
             }
             MirTerminatorKind::Goto { target } => backedge_drops(
                 &mut to_insert, block_idx, block.id, *target, &func.blocks, &dom,
-                &defined_in_block, &def_of_any, groups,
+                &defined_in_block, &def_of_any, groups, &gone,
             ),
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *then_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups,
+                    &defined_in_block, &def_of_any, groups, &gone,
                 );
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *else_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups,
+                    &defined_in_block, &def_of_any, groups, &gone,
                 );
             }
             _ => {}
         }
     }
 
+    exit_edge_drops(func, droppable, &dom, &defined_in_block, &still_ours, &mut to_insert);
+
     to_insert
+}
+
+/// Free where control leaves the region the definition rules.
+///
+/// A container made inside one arm of a branch never reaches a `return` its
+/// definition dominates, so the rule above finds no home for it:
+///
+/// ```text
+/// Node.Branch(m) => {
+///     for entry in entries(m) { … }   // a fresh Vec, made in this arm
+/// }
+/// ```
+///
+/// leaves `write` with the vector live on that arm only, and the join block
+/// the arm goes to is reachable from the other arm too. `JsonValue.to_string`
+/// on an object leaked one vector per object that way.
+///
+/// The definition dominates a region of the CFG. Control leaves it either at a
+/// `return` inside it — which the rule above covers — or across an edge to a
+/// block outside it, which is this one. Every path out crosses exactly one of
+/// those, so between them each allocation is freed once.
+fn exit_edge_drops(
+    func: &MirFunction,
+    droppable: &HashMap<LocalId, &'static str>,
+    dom: &crate::analysis::dominators::DominatorTree,
+    defined_in_block: &HashMap<LocalId, usize>,
+    still_ours: &impl Fn(&LocalId, BlockId) -> bool,
+    out: &mut Vec<(usize, Vec<LocalId>)>,
+) {
+    let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
+    for (&id, &def_idx) in defined_in_block {
+        if !droppable.contains_key(&id) {
+            continue;
+        }
+        let def = func.blocks[def_idx].id;
+        let sites = crate::analysis::drop_sites::where_control_leaves(func, dom, def, id);
+        for idx in sites {
+            // And not where the value has already been handed over on this
+            // path — the one question the shared rule can't answer, because
+            // only this pass tracks it.
+            if still_ours(&id, func.blocks[idx].id) {
+                extra.entry(idx).or_default().push(id);
+            }
+        }
+    }
+    for (idx, mut locals) in extra {
+        locals.sort_by_key(|l| l.0);
+        out.push((idx, locals));
+    }
 }
 
 fn backedge_drops(
@@ -1331,6 +2042,7 @@ fn backedge_drops(
     defined_in_block: &HashMap<LocalId, usize>,
     def_of_any: &HashMap<LocalId, usize>,
     groups: &[HashSet<LocalId>],
+    gone: &HashMap<LocalId, HashSet<BlockId>>,
 ) {
     if !dom.dominates(target, source) {
         return;
@@ -1366,6 +2078,17 @@ fn backedge_drops(
                 .find(|g| g.contains(id))
                 .is_none_or(|g| g.iter().all(inside))
         })
+        // And it has to still be this frame's here. A builder made and built in
+        // one turn of the loop is gone by the back-edge:
+        //
+        //     _403 = StringBuilder_build(_382)   // takes it away
+        //     _404 = Vec_push(_317, _80)
+        //     StringBuilder_free(_382)           // frees it again
+        //     goto bb5
+        //
+        // which is `markdown_renderer`'s fenced-code branch, and it segfaulted
+        // in `free` on the second block.
+        .filter(|(id, _)| !gone.get(id).is_some_and(|blocks| blocks.contains(&source)))
         .map(|(&id, _)| id)
         .collect();
     if !drops.is_empty() {

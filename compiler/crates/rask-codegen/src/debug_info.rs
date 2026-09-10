@@ -226,7 +226,6 @@ fn mir_type_to_var_info(
             (format!("Option<{}>", inner.type_name), inner.byte_size + 8, TypeKind::Other)
         }
         rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
-        rask_mir::MirType::Slice(_) => ("slice".into(), 16, TypeKind::Other),
         _ => ("unknown".into(), 8, TypeKind::Other),
     };
     VarInfo { name: name.to_owned(), type_name, byte_size, type_kind }

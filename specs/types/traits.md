@@ -38,7 +38,7 @@ The vtable only contains slots for compatible methods. Incompatible methods have
 |------|-------------|
 | **TR5: Explicit conversion** | Converting a concrete value to `any Trait` requires `value as any Trait` — at assignment, function arguments, collection elements, and struct fields alike. No implicit boxing |
 | **TR6: Cast form** | `let w = button as any Widget` — the one conversion syntax, whether or not the target type is otherwise known |
-| **TR7: Collection type** | `[]any Widget`, `Map<string, any Handler>` — heterogeneous collections; each element is converted explicitly |
+| **TR7: Collection type** | `Vec<any Widget>`, `Map<string, any Handler>` — heterogeneous collections; each element is converted explicitly |
 
 <!-- test: parse -->
 ```rask
@@ -46,7 +46,7 @@ func render(widget: any Widget) {
     widget.draw()
 }
 
-func render_all(widgets: []any Widget) {
+func render_all(widgets: Vec<any Widget>) {
     for w in widgets { w.draw() }
 }
 ```
@@ -59,7 +59,7 @@ let button = Button { label: "OK" }
 
 let w = button as any Widget
 render(button as any Widget)
-let widgets: []any Widget = [
+let widgets: Vec<any Widget> = [
     button as any Widget,
     slider as any Widget,
     label as any Widget,
@@ -115,7 +115,7 @@ Overhead is one pointer indirection per call plus a heap allocation per value. N
 | Clone of `any` value | TR11 | Not automatic; requires explicit Cloneable trait method |
 | Assignment | TR11 | Moves (never copies) |
 | Concurrency | — | `any` values sendable if underlying type is sendable |
-| Pool element | — | Not supported; use `[]any Trait` for heterogeneous collections |
+| Pool element | — | Not supported; use `Vec<any Trait>` for heterogeneous collections |
 
 ## Error Messages
 
@@ -186,7 +186,7 @@ trait Widget {
 }
 
 struct Container {
-    children: []any Widget
+    children: Vec<any Widget>
 }
 
 extend Container {
@@ -226,17 +226,17 @@ extend Container {
 
 | Use Case | Example | Why `any` |
 |----------|---------|-----------|
-| HTTP handlers | `[]any Handler` | Different handlers for different routes |
-| UI widgets | `[]any Widget` | Mix buttons, text, sliders in one view |
-| Plugin systems | `[]any Plugin` | Load unknown types at runtime |
-| Event listeners | `[]any Listener` | Different callbacks for same event |
+| HTTP handlers | `Vec<any Handler>` | Different handlers for different routes |
+| UI widgets | `Vec<any Widget>` | Mix buttons, text, sliders in one view |
+| Plugin systems | `Vec<any Plugin>` | Load unknown types at runtime |
+| Event listeners | `Vec<any Listener>` | Different callbacks for same event |
 | Heterogeneous caches | `Map<Key, any Value>` | Store different value types |
 
 **When NOT to use `any Trait`:**
 
 | Situation | Use Instead |
 |-----------|-------------|
-| All items same type | Regular generics `[]T` |
+| All items same type | Regular generics `Vec<T>` |
 | Known set of types | Enum with variants |
 | Performance critical hot loop | Generics (specialized code) or enum |
 | Need type-specific fields | Enum or separate collections |
@@ -264,7 +264,7 @@ match shape {
 }
 
 // any: open set, methods only
-mut shapes: []any Drawable = [circle, rect, custom_shape]
+mut shapes: Vec<any Drawable> = [circle, rect, custom_shape]
 for s in shapes { s.draw() }  // Only trait methods
 ```
 
@@ -310,7 +310,7 @@ trait Plugin {
 }
 
 struct App {
-    plugins: []any Plugin
+    plugins: Vec<any Plugin>
 }
 
 extend App {

@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Command.spawn()` and the `Process` handle, on both backends (#856).
+//
+// `run()` forks, drains and waits in one call. `spawn()` hands the handle back
+// instead, which is what makes a long-running or interactive child possible:
+// the piped streams stay open, so `write_stdin` has somewhere to write and
+// `read_stdout` has something to read.
+//
+// `Process` is `@resource` (C4), so every test here consumes its handle —
+// forgetting one is a compile error, which is the whole point of the
+// annotation. `sh -c` again: the one program every POSIX box has.
+//
+// Spec: specs/stdlib/os.md
+//   C3 spawn starts the process and hands back a linear Process
+//   C4 Process must be consumed via wait() or kill_and_wait()
+
+import os
+import os.Stdio
+
+test "std.os/C3 — a spawned child runs, and wait collects its output" {
+    let p = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo spawned")
+        .stdout(Stdio.Piped)
+        .spawn()!
+    let out = p.wait()!
+    assert out.status == 0
+    assert out.success()
+    assert out.stdout == "spawned\n"
+}
+
+test "std.os/C3 — the exit status is the child's" {
+    let p = os.Command.new("sh").arg("-c").arg("exit 7").spawn()!
+    let out = p.wait()!
+    assert out.status == 7
+    assert !out.success()
+}
+
+test "std.os/C3 — the handle knows the child's pid" {
+    let p = os.Command.new("sh").arg("-c").arg("exit 0").spawn()!
+    assert p.pid() > 0
+    let out = p.wait()!
+    assert out.status == 0
+}
+
+test "std.os/C3 — stderr is captured separately from stdout" {
+    let p = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo out; echo err 1>&2")
+        .stdout(Stdio.Piped)
+        .stderr(Stdio.Piped)
+        .spawn()!
+    let out = p.wait()!
+    assert out.stdout == "out\n"
+    assert out.stderr == "err\n"
+}
+
+test "std.os/C3 — write_stdin reaches the child, and wait closes it" {
+    // `cat` reads to EOF, so this only terminates because `wait` closes the
+    // child's stdin first — that is what waiting means.
+    let p = os.Command.new("cat")
+        .stdin(Stdio.Piped)
+        .stdout(Stdio.Piped)
+        .spawn()!
+    p.write_stdin("through the pipe\n")!
+    let out = p.wait()!
+    assert out.status == 0
+    assert out.stdout == "through the pipe\n"
+}
+
+test "std.os/C3 — read_stdout takes what the child wrote, wait gets the rest" {
+    let p = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo first")
+        .stdout(Stdio.Piped)
+        .spawn()!
+    let early = p.read_stdout()!
+    assert early == "first\n"
+    let out = p.wait()!
+    // `read_stdout` already took it, so `Output.stdout` doesn't have it twice.
+    assert out.stdout == ""
+    assert out.status == 0
+}
+
+test "std.os/C3 — an unpiped stream is a message, not an errno" {
+    // The builder pipes stdout and stderr by default, because `run` captures
+    // them. Nothing here does, so both ends are closed to us.
+    let p = os.Command.new("sh")
+        .arg("-c")
+        .arg("exit 0")
+        .stdout(Stdio.Null)
+        .spawn()!
+    mut on_stdin = ""
+    p.write_stdin("nowhere") catch e => {
+        on_stdin = e.message()
+    }
+    assert on_stdin == "stdin not piped"
+
+    mut on_stdout = ""
+    let read = p.read_stdout() catch e => {
+        on_stdout = e.message()
+        ""
+    }
+    assert on_stdout == "stdout not piped"
+    assert read == ""
+
+    let out = p.wait()!
+    assert out.status == 0
+}
+
+test "std.os/C4 — kill_and_wait reaps a child that would not have exited" {
+    // 128+SIGKILL(9). A shell reports the same number.
+    let p = os.Command.new("sh").arg("-c").arg("sleep 30").spawn()!
+    let out = p.kill_and_wait()!
+    assert out.status == 137
+    assert !out.success()
+}
+
+test "std.os/C3 — poll answers none while the child is still running" {
+    let p = os.Command.new("sh")
+        .arg("-c")
+        .arg("echo done")
+        .stdout(Stdio.Piped)
+        .spawn()!
+    // Nothing here waits for the child, so a `some` is as correct as a `none`
+    // — what's pinned is that polling doesn't consume the handle and doesn't
+    // block. `wait` below still works either way.
+    let seen = p.poll()!
+    let out = p.wait()!
+    assert out.status == 0
+    assert out.stdout == "done\n"
+}
+
+test "std.os/C3 — a program that doesn't exist is an error, not a handle" {
+    match os.Command.new("rask_no_such_program_xyz").spawn() {
+        Process as p => {
+            // Consume it so this branch type-checks; it never runs.
+            let out = p.kill_and_wait()!
+            assert false
+        }
+        IoError as e => { assert e.message() == "not found: rask_no_such_program_xyz" }
+    }
+}

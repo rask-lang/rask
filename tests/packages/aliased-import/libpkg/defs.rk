@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A public type whose name the consumer also wants.
+
+public struct Cat {
+    public name: string
+}
+
+public func greet(c: Cat) -> string {
+    return "hei {c.name}"
+}
+
+public enum Mood {
+    Calm
+    Loud
+}
+
+extend Mood {
+    public func word(self) -> string {
+        match self {
+            Mood.Calm => return "calm"
+            Mood.Loud => return "loud"
+        }
+    }
+}
+
+public func mood(loud: bool) -> Mood {
+    if loud {
+        return Mood.Loud
+    }
+    return Mood.Calm
+}

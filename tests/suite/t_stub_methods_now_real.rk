@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two declarations that were `@unimplemented` and are now bodies.
+//
+// A stub wearing a real name is worse than a missing one: the call
+// type-checks, so nothing tells you until it runs. These two were both
+// implementable out of methods that already existed.
+//
+// `Vec.remove_unordered` is `swap` plus `pop`. It was already named in
+// `TRANSFERS_OUT` — the list that says which calls hand an element *out* of a
+// container so the caller owes it a release — which is a declaration claiming
+// ownership semantics for a method that did nothing.
+//
+// `Pool.get_clone` went the other way and was deleted. It earned nothing:
+// `p.get(h)? as v` then `v.clone()` is the same two steps at the call site,
+// spelled the way every other clone in Rask is. That composition is what the
+// last two tests here check, since it is now the only spelling.
+//
+// Spec: specs/stdlib/collections.md, specs/memory/pools.md.
+import memory.Pool
+
+struct Note {
+    id: i64
+    text: string
+    extra: i64
+}
+
+test "stdlib.collections — remove_unordered takes one out and swaps in the last" {
+    mut v: Vec<i64> = [10, 20, 30, 40]
+    let taken = v.remove_unordered(1)
+    assert taken == 20
+    assert v.len() == 3
+    // The last element moved into the hole; order isn't preserved, which is
+    // the whole point.
+    assert v[0] == 10
+    assert v[1] == 40
+    assert v[2] == 30
+}
+
+test "stdlib.collections — removing the last element needs no swap" {
+    mut v: Vec<i64> = [1, 2, 3]
+    assert v.remove_unordered(2) == 3
+    assert v.len() == 2
+    assert v[0] == 1
+    assert v[1] == 2
+}
+
+test "stdlib.collections — down to empty, one at a time" {
+    mut v: Vec<i64> = [7, 8]
+    assert v.remove_unordered(0) == 7
+    assert v.len() == 1
+    assert v[0] == 8
+    assert v.remove_unordered(0) == 8
+    assert v.len() == 0
+    assert v.is_empty()
+}
+
+// Strings, so the element taken out has a buffer the caller ends up owning and
+// the ones left behind keep theirs.
+test "stdlib.collections — remove_unordered on strings" {
+    mut v: Vec<string> = [
+        "the first entry is long enough",
+        "the second entry is long enough",
+        "the third entry is long enough",
+    ]
+    let taken = v.remove_unordered(0)
+    assert taken == "the first entry is long enough"
+    assert v.len() == 2
+    assert v[0] == "the third entry is long enough"
+    assert v[1] == "the second entry is long enough"
+}
+
+test "mem.pools — get then clone is the way to an owned copy" {
+    mut p: Pool<Note> = Pool.new()
+    let h = p.insert(Note { id: 1, text: "a note long enough to need a buffer", extra: 7 })
+    if p.get(h)? as borrowed {
+        let mine = borrowed.clone()
+        assert mine.id == 1
+        assert mine.text == "a note long enough to need a buffer"
+    } else {
+        assert false
+    }
+    // The pool still has its own.
+    if p.get(h)? as still {
+        assert still.id == 1
+    } else {
+        assert false
+    }
+}
+
+test "mem.pools — and nothing to clone once the handle is gone" {
+    mut p: Pool<Note> = Pool.new()
+    let h = p.insert(Note { id: 2, text: "another note that is long enough", extra: 0 })
+    let _ = p.remove(h)
+    if p.get(h)? as n {
+        assert false
+    } else {
+        assert p.len() == 0
+    }
+}
+
+// Repeatedly, so a buffer freed and handed back out would read wrong rather
+// than merely leak.
+test "stdlib — both in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        mut v: Vec<i64> = [i, i * 2, i * 3]
+        total = total + v.remove_unordered(0)
+
+        mut p: Pool<Note> = Pool.new()
+        let h = p.insert(Note { id: i.clamp<i64>(), text: "a note that is plenty long", extra: 0 })
+        if p.get(h)? as borrowed {
+            total = total + borrowed.clone().id
+        } else {
+            assert false
+        }
+    }
+    assert total == 30
+}

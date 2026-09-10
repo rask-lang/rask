@@ -656,6 +656,26 @@ int64_t rask_file_is_null(int64_t file) {
     return file == 0 ? 1 : 0;
 }
 
+// std.io/K1, K3. `whence` is 0 = Start, 1 = End, 2 = Current, which is the
+// order `SeekFrom`'s variants are declared in — the enum is the source and this
+// follows it rather than SEEK_SET's numbering.
+//
+// Both hand back the absolute position they landed on, or -1 with errno set,
+// which is the shape every other file native here uses.
+int64_t rask_file_seek(int64_t file, int64_t whence, int64_t offset) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return -1;
+    int w = whence == 1 ? SEEK_END : (whence == 2 ? SEEK_CUR : SEEK_SET);
+    if (fseek(f, (long)offset, w) != 0) return -1;
+    return (int64_t)ftell(f);
+}
+
+int64_t rask_file_position(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return -1;
+    return (int64_t)ftell(f);
+}
+
 int64_t rask_fs_open(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");
@@ -2258,6 +2278,8 @@ int main(int argc, char **argv) {
     if (leak_env && leak_env[0] == '1') {
         rask_leak_check_enabled = 1;
     }
+    // Before the first allocation, or the table starts with holes in it.
+    rask_leak_trace_init();
     rask_args_init(argc, argv);
     rask_poison_stack();
     rask_main();

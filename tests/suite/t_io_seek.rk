@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Seeker` — repositioning a stream (std.io/K1–K3).
+//
+// Specced and declared nowhere. `stdlib/io.rk` had a `Buffer.reset()` stub
+// instead, which the spec says shouldn't exist — "no `reset` —
+// `buf.seek(SeekFrom.Start(0))` is the one way to rewind" — and which nothing
+// implemented either, so neither spelling worked. So `reset` is gone and this
+// is the spelling.
+//
+// The `SeekFrom` is taken apart in Rask, once, in the trait bodies. A buffer's
+// seek is then arithmetic on the cursor it already keeps; a file's is two
+// natives that hand back a position or -1. Neither backend repeats the enum
+// walk, which is what keeps them from disagreeing about it.
+//
+// One thing had to be decided rather than left to the backends: a negative
+// absolute position. C's `fseek` fails on it and Rust's `SeekFrom::Start` takes
+// a `u64` and would clamp, so the trait body rejects it and both agree.
+//
+// Past the end is a different case and legal — the position moves, and reading
+// from there gives nothing.
+import fs
+import io
+import io.Buffer
+import io.SeekFrom
+
+test "std.io/K3 — a fresh buffer is at zero" {
+    mut b = Buffer.new()
+    assert b.position()! == 0
+    let _ = b.write_text("hello world")
+    // Writing appends; it doesn't move the read cursor.
+    assert b.position()! == 0
+}
+
+test "std.io/K1 — reading moves the position, seek moves it back" {
+    mut b = Buffer.new()
+    let _ = b.write_text("hello world")
+    assert b.read_text()! == "hello world"
+    assert b.position()! == 11
+
+    assert b.seek(SeekFrom.Start(0))! == 0
+    assert b.read_text()! == "hello world"
+}
+
+test "std.io/K2 — all three origins" {
+    mut b = Buffer.new()
+    let _ = b.write_text("hello world")
+
+    assert b.seek(SeekFrom.Start(6))! == 6
+    assert b.read_text()! == "world"
+
+    assert b.seek(SeekFrom.End(-5))! == 6
+    assert b.read_text()! == "world"
+
+    assert b.seek(SeekFrom.Start(0))! == 0
+    assert b.seek(SeekFrom.Current(6))! == 6
+    assert b.read_text()! == "world"
+}
+
+test "std.io/K1 — past the end is legal and reads empty" {
+    mut b = Buffer.new()
+    let _ = b.write_text("hello")
+    assert b.seek(SeekFrom.Start(99))! == 99
+    assert b.read_text()! == ""
+}
+
+test "std.io/K1 — a negative absolute position is an error" {
+    mut b = Buffer.new()
+    let _ = b.write_text("hello")
+    let r = b.seek(SeekFrom.Start(-1))
+    if r is IoError as e {
+        assert e.message() == "seek to a negative position"
+    } else {
+        assert false
+    }
+    // And the cursor didn't move.
+    assert b.position()! == 0
+}
+
+test "std.io/K1 — a file seeks the same way" {
+    let p = "/tmp/rask_t_io_seek.txt"
+    let _ = fs.write_text(p, "hello world")
+    mut f = fs.open(p) catch e => {
+        assert false
+        return
+    }
+    assert f.position()! == 0
+    assert f.seek(SeekFrom.Start(6))! == 6
+    assert f.position()! == 6
+    assert f.seek(SeekFrom.End(0))! == 11
+    assert f.seek(SeekFrom.Current(-5))! == 6
+    f.close()
+    let _ = fs.remove_file(p)
+}
+
+test "std.io/K1 — a file rejects a negative absolute position too" {
+    let p = "/tmp/rask_t_io_seek_neg.txt"
+    let _ = fs.write_text(p, "abc")
+    mut f = fs.open(p) catch e => {
+        assert false
+        return
+    }
+    let r = f.seek(SeekFrom.Start(-4))
+    if r is IoError as e {
+        assert e.message() == "seek to a negative position"
+    } else {
+        assert false
+    }
+    f.close()
+    let _ = fs.remove_file(p)
+}
+
+// Repeatedly, so a cursor left somewhere odd would show up as a wrong read
+// rather than nothing at all.
+test "std.io/K1 — seeking in a loop" {
+    mut b = Buffer.new()
+    let _ = b.write_text("0123456789")
+    mut total = 0
+    for i in 0..5 {
+        let at = b.seek(SeekFrom.Start(i.clamp<i64>() * 2))!
+        total = total + at
+        assert b.read_text()!.len() == (10 - at).wrap<usize>()
+    }
+    assert total == 20
+}

@@ -71,7 +71,7 @@ comptime {
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fields<T>()` | `-> []FieldInfo` | All fields of a struct (compile error if not a struct) |
+| `fields<T>()` | `-> Vec<FieldInfo>` | All fields of a struct (compile error if not a struct) |
 | `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name |
 
 <!-- test: parse -->
@@ -110,7 +110,7 @@ So there are two different questions and they have different answers:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `methods<T>()` | `-> []MethodInfo` | All methods of a type |
+| `methods<T>()` | `-> Vec<MethodInfo>` | All methods of a type |
 | `has_method<T>(name: string)` | `-> bool` | Whether type has a method with this name |
 
 <!-- test: parse -->
@@ -128,7 +128,7 @@ struct MethodInfo {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `implements<T, Trait>()` | `-> bool` | Whether T satisfies Trait (structural or explicit) |
-| `trait_names<T>()` | `-> []string` | Names of traits T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
+| `trait_names<T>()` | `-> Vec<string>` | Names of traits T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
 `implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 
@@ -136,7 +136,7 @@ struct MethodInfo {
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `variants<T>()` | `-> []VariantInfo` | All variants of an enum (compile error if not an enum) |
+| `variants<T>()` | `-> Vec<VariantInfo>` | All variants of an enum (compile error if not an enum) |
 
 <!-- test: parse -->
 ```rask
@@ -144,7 +144,7 @@ struct VariantInfo {
     name: string
     has_fields: bool
     field_count: usize
-    fields: []FieldInfo       // payload fields (empty for unit variants)
+    fields: Vec<FieldInfo>       // payload fields (empty for unit variants)
     serial_name: string       // @rename value, or same as name
 }
 ```

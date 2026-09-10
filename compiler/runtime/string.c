@@ -211,6 +211,9 @@ void rask_leak_check(void) {
         fprintf(stderr, "  %lld of them %s a heap string still holding a reference\n",
                 (long long)live_strings, live_strings == 1 ? "is" : "are");
     }
+    // `RASK_LEAK_TRACE=1` adds where they came from; without it, a hint that
+    // the question is answerable.
+    rask_leak_trace_report();
     fflush(stderr);
     _exit(97);
 }
@@ -1670,13 +1673,19 @@ void rask_string_builder_append_char(int64_t handle, int64_t codepoint) {
 }
 
 // Consume the builder, return a string. Zero-copy when possible.
+// Sized releases, so the byte tally comes back down too — `rask_free` is never
+// told how much it released.
+void rask_string_builder_free(int64_t handle) {
+    RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
+    if (!sb) return;
+    rask_realloc(sb->data, sb->cap, 0);
+    rask_realloc(sb, (int64_t)sizeof(RaskStringBuilder), 0);
+}
+
 void rask_string_builder_build(RaskStr *out, int64_t handle) {
     RaskStringBuilder *sb = (RaskStringBuilder *)(uintptr_t)handle;
     str_make(out, sb->data, sb->len);
-    // Sized releases, so the byte tally comes back down too — `rask_free` is
-    // never told how much it released.
-    rask_realloc(sb->data, sb->cap, 0);
-    rask_realloc(sb, (int64_t)sizeof(RaskStringBuilder), 0);
+    rask_string_builder_free(handle);
 }
 
 int64_t rask_string_builder_len(int64_t handle) {

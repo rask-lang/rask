@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One allocation under several names gets freed once (#1143).
+//
+// Inlining gives each use of a container its own name for it. `v.min()` and
+// `v.max()` each copy the vector into their own parameter local, so one
+// `Vec.new()` reached two surviving names and each one freed it — a double
+// free. The answer then was to leave the whole group alone, which traded that
+// for leaking the vector outright:
+//
+//     let a = src.map(|x| x * 2).to_vec()
+//     let b = src.map(|x| x + 1).to_vec()
+//
+// Two fused loops, each copying `src` into its own name, both reaching the
+// return — and `src` was nobody's. Neither answer was right; freeing it once
+// is. The name it goes on is the one whose definition rules the others, so the
+// free runs on every path the others' would have, and runs once.
+//
+// Every test here is a wrong answer or a crash if the count comes out wrong,
+// not just a leak: a vector freed twice is a segfault in `free`, and one freed
+// early reads back a length the allocator left behind.
+//
+// Spec: specs/memory/ownership.md — one owner, one release.
+import string.StringBuilder
+
+struct Sample {
+    public label: string
+    public value: i64
+}
+
+test "mem.ownership — two adapter chains over one vector" {
+    let src: Vec<i64> = [1, 2, 3, 4]
+    let doubled = src.map(|x| x * 2).to_vec()
+    let plussed = src.map(|x| x + 1).to_vec()
+    assert doubled[3] == 8
+    assert plussed[3] == 5
+    // And the source is still whole after both.
+    assert src.len() == 4
+    assert src[0] == 1
+}
+
+test "mem.ownership — a filter and a map over one vector" {
+    let src: Vec<i64> = [1, 2, 3, 4, 5, 6]
+    let even = src.filter(|x| x % 2 == 0).to_vec()
+    let tripled = src.map(|x| x * 3).to_vec()
+    assert even.len() == 3
+    assert even[2] == 6
+    assert tripled[5] == 18
+    assert src.len() == 6
+}
+
+// Two methods that each take the vector by value into an inlined parameter —
+// the shape the old rule was written for.
+test "mem.ownership — two calls that each copy the vector in" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(4)
+    v.push(9)
+    v.push(2)
+    assert v.min()! == 2
+    assert v.max()! == 9
+    assert v.len() == 3
+}
+
+// Strings, so a buffer freed twice or early shows up in the text rather than
+// only in the allocation count.
+test "mem.ownership — the same string vector read three ways" {
+    let words: Vec<string> = [
+        "the first word is long enough to allocate",
+        "and the second one is long as well",
+    ]
+    let lengths = words.map(|w| w.len().wrap<i64>()).to_vec()
+    let longest = words.filter(|w| w.len() > 35).to_vec()
+    assert lengths[0] == 41
+    assert longest.len() == 1
+    assert longest[0] == "the first word is long enough to allocate"
+    assert words[1] == "and the second one is long as well"
+}
+
+test "mem.ownership — a vector of structs used twice" {
+    let rows: Vec<Sample> = [
+        Sample { label: "the first row has a long label", value: 1 },
+        Sample { label: "the second row also has one", value: 2 },
+    ]
+    let values = rows.map(|r| r.value).to_vec()
+    let big = rows.filter(|r| r.value > 1).to_vec()
+    assert values[1] == 2
+    assert big.len() == 1
+    assert big[0].label == "the second row also has one"
+}
+
+// Repeatedly, so a vector freed twice would land on a fresh allocation rather
+// than on one nothing has reused yet.
+test "mem.ownership — many names for one vector, in a loop" {
+    mut out = StringBuilder.new()
+    mut total = 0
+    for i in 1..6 {
+        let src: Vec<i64> = [i.clamp<i64>(), i.clamp<i64>() * 2]
+        let a = src.map(|x| x + 1).to_vec()
+        let b = src.filter(|x| x > 1).to_vec()
+        total = total + a[0] + b.len().wrap<i64>()
+        out.push("row")
+    }
+    assert total == 29
+    assert out.build().len() == 15
+}

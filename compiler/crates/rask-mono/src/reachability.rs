@@ -355,6 +355,34 @@ fn methods_of(decl: &Decl) -> &[FnDecl] {
     }
 }
 
+/// A method with `self`'s type written down.
+///
+/// `self` parses as `self: Self` and nothing substituted it, so MIR lowering
+/// recovered the receiver's type by splitting the mangled function name at its
+/// first underscore — `Document_delete_line` → `Document`. That is only right
+/// while no type name contains an underscore. A dependency's declarations
+/// carry the package they came from (`Helper_liba`), so all of them do, and
+/// `Helper_liba_describe` read its receiver as a type called `Helper`: `self.n`
+/// found no such field and fell back to `i64`, printing the receiver's address
+/// where the field's value belongs (#1129).
+///
+/// Both places that file a method under `Type_method` know the type, so both
+/// write it in. A generic owner keeps `Self` — the per-receiver copy in `run`
+/// substitutes the instantiated layout, which the template's `Wrapper<T>`
+/// couldn't say.
+fn with_self_type(method: &FnDecl, type_name: &str) -> FnDecl {
+    let mut method = method.clone();
+    if type_name.contains('<') {
+        return method;
+    }
+    if let Some(p) = method.params.first_mut() {
+        if p.name == "self" && p.ty == "Self" {
+            p.ty = type_name.to_string();
+        }
+    }
+    method
+}
+
 /// Wrap a method FnDecl as a top-level Decl and register it under its
 /// qualified name (Type_method). Also records the bare→qualified mapping.
 fn register_method(
@@ -389,6 +417,8 @@ fn register_method(
         method_owners.insert(format!("{}_{}", owner.base, method.name), owner.clone());
         method_owners.insert(qualified.clone(), owner);
     }
+    let method = with_self_type(method, type_name);
+    let method = &method;
     let wrapped = Decl {
         id: parent_decl.id,
         kind: DeclKind::Fn(method.clone()),
@@ -734,9 +764,6 @@ impl<'a> Monomorphizer<'a> {
                 elem: Box::new(Self::concretize(elem, type_args, bindings)?),
                 len: *len,
             }),
-            Type::Slice(elem) => Some(Type::Slice(Box::new(Self::concretize(
-                elem, type_args, bindings,
-            )?))),
             Type::RawPtr(inner) => Some(Type::RawPtr(Box::new(Self::concretize(
                 inner, type_args, bindings,
             )?))),
@@ -810,7 +837,7 @@ impl<'a> Monomorphizer<'a> {
                     if owns_name {
                         self.method_table.insert(qualified, Decl {
                             id: decl.id,
-                            kind: DeclKind::Fn(method.clone()),
+                            kind: DeclKind::Fn(with_self_type(method, &type_name)),
                             span: decl.span,
                         });
                     }
@@ -1019,14 +1046,51 @@ impl<'a> Monomorphizer<'a> {
                         original, &param_names, &bound_args,
                         &mut self.next_instantiated_id,
                     );
-                // The receiver's own layout. `self` is spelled `Self`, which
-                // nothing substitutes, so a copy made for `One<Big>` otherwise
-                // kept the shared placeholder layout for it while its caller
-                // passed the 24-byte one (#814).
+                // The receiver's own layout. A copy made for `One<Big>`
+                // otherwise kept the shared placeholder layout for it while its
+                // caller passed the 24-byte one (#814).
+                //
+                // Whatever the template said, this instance's receiver is this
+                // instance's type: the test used to be `p.ty == "Self"`, and
+                // once mono started writing the owner's name in where it knows
+                // it, a generic owner's `self: Wrapper` stopped matching and
+                // every instance shared one layout again.
                 if let (Some(self_ty), DeclKind::Fn(f)) = (self_ty, &mut cloned.kind) {
                     if let Some(p) = f.params.first_mut() {
-                        if p.name == "self" && p.ty == "Self" {
+                        if p.name == "self" {
                             p.ty = self_ty;
+                        }
+                    }
+                }
+                // A function with no declared return type has the one the
+                // checker inferred, and that answer can name a type parameter:
+                // `func plus_one<T>(x: T) { return x + 1 }` infers `T`. Nothing
+                // substituted it into the copy, so the instance's signature came
+                // out `-> ptr` while its body returned an `f64`, and the caller
+                // read a float as a pointer — `plus_one(2.5)` answered 3 while
+                // the interpreter said 3.5.
+                if let DeclKind::Fn(f) = &mut cloned.kind {
+                    if f.ret_ty.is_none() {
+                        // Keyed by the declaration's name, which carries an
+                        // explicit `<T>` list where the work item doesn't.
+                        let base = |n: &str| {
+                            n.split('<').next().unwrap_or(n).to_string()
+                        };
+                        let want = base(&item.name);
+                        let inferred = self.typed.and_then(|t| {
+                            t.inferred_fn_ret.get(&item.name).or_else(|| {
+                                t.inferred_fn_ret
+                                    .iter()
+                                    .find(|(k, _)| base(k) == want)
+                                    .map(|(_, v)| v)
+                            })
+                        });
+                        if let Some(ty) = inferred {
+                            f.ret_ty = Some(crate::instantiate::substitute_type_in_string(
+                                &format!("{}", ty),
+                                &param_names,
+                                &bound_args,
+                            ));
                         }
                     }
                 }

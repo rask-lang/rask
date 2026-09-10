@@ -47,7 +47,6 @@ pub struct Resolver {
     scopes: ScopeTree,
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
-    current_function: Option<SymbolId>,
     /// CC2: the types of the enclosing function's *unnamed* `using` clauses.
     /// An unnamed clause enables `h.field` auto-resolution and binds nothing,
     /// so a structural call through a name reads as an undefined symbol — this
@@ -112,7 +111,6 @@ impl Resolver {
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
             errors: Vec::new(),
-            current_function: None,
             current_unnamed_contexts: Vec::new(),
             current_package: None,
             package_bindings: HashMap::new(),
@@ -1764,18 +1762,18 @@ impl Resolver {
                 }
                 DeclKind::Struct(struct_decl) => {
                     for method in &struct_decl.methods {
-                        self.resolve_function_with_type_params(method, &struct_decl.type_params);
+                        self.resolve_method(method, &struct_decl.type_params);
                     }
                 }
                 DeclKind::Enum(enum_decl) => {
                     for method in &enum_decl.methods {
-                        self.resolve_function_with_type_params(method, &enum_decl.type_params);
+                        self.resolve_method(method, &enum_decl.type_params);
                     }
                 }
                 DeclKind::Trait(trait_decl) => {
                     for method in &trait_decl.methods {
                         if !method.body.is_empty() {
-                            self.resolve_function(method);
+                            self.resolve_method(method, &[]);
                         }
                     }
                 }
@@ -1819,14 +1817,23 @@ impl Resolver {
     }
 
     fn resolve_function(&mut self, fn_decl: &FnDecl) {
-        self.resolve_function_with_type_params(fn_decl, &[]);
+        let fn_sym = self.scopes.lookup(Self::base_name(&fn_decl.name));
+        self.resolve_function_body(fn_decl, &[], fn_sym);
     }
 
-    fn resolve_function_with_type_params(&mut self, fn_decl: &FnDecl, outer_type_params: &[TypeParam]) {
-        let base = Self::base_name(&fn_decl.name);
-        let fn_sym = self.scopes.lookup(base);
-        self.current_function = fn_sym;
+    /// A method owns no name in module scope — its name belongs to its type. So
+    /// it gets no symbol: looking one up by name would find a same-named free
+    /// function and overwrite that function's parameters with this method's.
+    fn resolve_method(&mut self, fn_decl: &FnDecl, outer_type_params: &[TypeParam]) {
+        self.resolve_function_body(fn_decl, outer_type_params, None);
+    }
 
+    fn resolve_function_body(
+        &mut self,
+        fn_decl: &FnDecl,
+        outer_type_params: &[TypeParam],
+        fn_sym: Option<SymbolId>,
+    ) {
         let scope_kind = if let Some(sym_id) = fn_sym {
             ScopeKind::Function(sym_id)
         } else {
@@ -1931,7 +1938,6 @@ impl Resolver {
 
         self.pop_type_params();
         self.scopes.pop();
-        self.current_function = None;
         self.current_unnamed_contexts.clear();
     }
 
@@ -1940,7 +1946,7 @@ impl Resolver {
         let base = Self::base_name(&impl_decl.target_ty).to_string();
         let outer_params = self.type_param_map.get(&base).cloned().unwrap_or_default();
         for method in &impl_decl.methods {
-            self.resolve_function_with_type_params(method, &outer_params);
+            self.resolve_method(method, &outer_params);
         }
     }
 
@@ -3216,6 +3222,69 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }
+    }
+
+    /// A method's name belongs to its type, not to the module. It used to be
+    /// looked up in module scope anyway, so `extend Job { func spawn(self) }`
+    /// found the free `spawn` and handed it `[self]` as its parameter list —
+    /// after which every call to the free `spawn` was checked against one
+    /// parameter of type `Self`. One user struct with an unlucky method name
+    /// broke the stdlib's own `spawn` calls.
+    #[test]
+    fn test_a_method_does_not_take_over_a_free_functions_parameters() {
+        use rask_ast::decl::{ImplDecl, Param};
+
+        let param = |name: &str, ty: &str| Param {
+            name: name.to_string(),
+            name_span: Span::new(0, 1),
+            ty: ty.to_string(),
+            is_take: false,
+            is_mutate: false,
+            is_deleting: false,
+            default: None,
+        };
+
+        let mut free = make_fn_decl("work");
+        if let DeclKind::Fn(f) = &mut free.kind {
+            f.params = vec![param("a", "i32"), param("b", "i32")];
+        }
+
+        let mut method = make_fn_decl("work");
+        if let DeclKind::Fn(f) = &mut method.kind {
+            f.params = vec![param("self", "Job")];
+        }
+        let DeclKind::Fn(method) = method.kind else { unreachable!() };
+
+        let decls = vec![
+            free,
+            make_struct_decl("Job"),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Impl(ImplDecl {
+                    trait_names: vec![],
+                    target_ty: "Job".to_string(),
+                    methods: vec![method],
+                    is_unsafe: false,
+                    is_scoped: false,
+                    where_bounds: vec![],
+                    doc: None,
+                }),
+                span: Span::new(0, 10),
+            },
+        ];
+
+        let resolved = Resolver::resolve(&decls).expect("should resolve");
+        let sym = resolved
+            .symbols
+            .iter()
+            .find(|s| s.name == "work" && matches!(s.kind, SymbolKind::Function { .. }))
+            .expect("the free `work` should have a symbol");
+        let SymbolKind::Function { params, .. } = &sym.kind else { unreachable!() };
+        assert_eq!(
+            params.len(),
+            2,
+            "the free `work` takes two parameters, not the method's `self`"
+        );
     }
 
     #[test]

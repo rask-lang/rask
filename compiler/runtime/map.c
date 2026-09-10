@@ -251,16 +251,17 @@ static void map_rehash(RaskMap *m) {
 
 // ─── Public API ─────────────────────────────────────────────
 
-// Take a reference to the strings in one key/value pair, for a map that copied
-// them out of another. Without it the clone and the original point at one
-// buffer and the second free reads memory that is already gone.
-static void map_retain_entry(const RaskMap *m, const char *key, const char *val) {
-    for (int64_t k = 0; k < m->key_strs.count; k++) {
-        rask_string_clone((const RaskStr *)(key + m->key_strs.offsets[k]));
-    }
-    for (int64_t k = 0; k < m->val_strs.count; k++) {
-        rask_string_clone((const RaskStr *)(val + m->val_strs.offsets[k]));
-    }
+// Take a reference to what one key/value pair owns, for a map that copied it
+// out of another. Without it the clone and the original point at one buffer and
+// the second free reads memory that is already gone.
+//
+// Into a scratch copy rather than in place: retaining a *nested container*
+// replaces the handle with a clone, and doing that to the source would leave
+// the original with nothing pointing at it. The bytes it writes are what gets
+// inserted, so the entry owns what it names.
+static void map_retain_entry(const RaskMap *m, char *key, char *val) {
+    rask_owned_retain_all(key, m->key_strs.offsets, m->key_strs.count);
+    rask_owned_retain_all(val, m->val_strs.offsets, m->val_strs.count);
 }
 
 static RaskMap *map_with_elem_strs(RaskMap *m,
@@ -318,11 +319,13 @@ void rask_map_free(RaskMap *m) {
     if ((has_key || has_val) && m->states) {
         for (int64_t i = 0; i < m->cap; i++) {
             if (m->states[i] != MAP_OCCUPIED) continue;
-            for (int64_t k = 0; has_key && k < m->key_strs.count; k++) {
-                rask_string_free((const RaskStr *)(m->keys + i * m->key_size + m->key_strs.offsets[k]));
+            if (has_key) {
+                rask_owned_release_all(m->keys + i * m->key_size,
+                                       m->key_strs.offsets, m->key_strs.count);
             }
-            for (int64_t k = 0; has_val && k < m->val_strs.count; k++) {
-                rask_string_free((const RaskStr *)(m->vals + i * m->val_size + m->val_strs.offsets[k]));
+            if (has_val) {
+                rask_owned_release_all(m->vals + i * m->val_size,
+                                       m->val_strs.offsets, m->val_strs.count);
             }
         }
     }
@@ -546,12 +549,18 @@ RaskMap *rask_map_clone(const RaskMap *m) {
     RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);
     map_with_elem_strs(dst, m->key_strs.offsets, m->key_strs.count,
                        m->val_strs.offsets, m->val_strs.count);
+    char *key_copy = (char *)rask_alloc(m->key_size);
+    char *val_copy = (char *)rask_alloc(m->val_size);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
-            rask_map_insert(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
-            map_retain_entry(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
+            memcpy(key_copy, m->keys + i * m->key_size, (size_t)m->key_size);
+            memcpy(val_copy, m->vals + i * m->val_size, (size_t)m->val_size);
+            map_retain_entry(dst, key_copy, val_copy);
+            rask_map_insert(dst, key_copy, val_copy);
         }
     }
+    rask_realloc(key_copy, m->key_size, 0);
+    rask_realloc(val_copy, m->val_size, 0);
     return dst;
 }
 

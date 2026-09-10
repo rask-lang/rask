@@ -1644,13 +1644,17 @@ impl Interpreter {
                 } else {
                     i64::MAX
                 };
-                Ok(Value::Range {
-                    start: start_val,
-                    end: end_val,
-                    inclusive: *inclusive,
-                    step: 1,
-                    rev: false,
-                })
+                // `Range<T>` is one ordinary stdlib struct (ctrl.ranges/R6), so
+                // this is the struct value native builds too — the methods in
+                // `stdlib/range.rk` read these fields on either backend.
+                Ok(crate::interp::range_value(
+                    start_val,
+                    end_val,
+                    *inclusive,
+                    1,
+                    false,
+                    end.is_some(),
+                ))
             }
 
             ExprKind::StructLit { name, fields, spread } => {
@@ -2074,19 +2078,6 @@ impl Interpreter {
                             )),
                         }
                     }
-                    (Value::Vec(v), Value::Range { start, end, inclusive, .. }) => {
-                        let vec = v.lock().unwrap();
-                        let len = vec.len() as i64;
-                        let start_idx = (*start).max(0).min(len) as usize;
-                        let end_idx = if *end == i64::MAX {
-                            vec.len()
-                        } else {
-                            let e = if *inclusive { *end + 1 } else { *end };
-                            e.max(0).min(len) as usize
-                        };
-                        let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
-                        Ok(Value::vec(slice))
-                    }
                     // `[]` on a string means bytes in both forms
                     // (std.strings/U1b): a range slices, a scalar index reads
                     // one byte. It used to yield the character at index `i`,
@@ -2113,7 +2104,11 @@ impl Interpreter {
                     // match `rask_string_substr` — an empty range used to reach
                     // Rust's slicing and abort the process with a Rust panic
                     // instead of a Rask one.
-                    (Value::String(s), Value::Range { start, end, inclusive, .. }) => {
+                    (Value::String(s), idx_range) if crate::interp::as_range(idx_range).is_some() => {
+                        let (start, end, inclusive, _, _, bounded) =
+                            crate::interp::as_range(idx_range).unwrap();
+                        let (start, end, inclusive) =
+                            (&start, &if bounded { end } else { i64::MAX }, &inclusive);
                         let str_val = s.lock().unwrap();
                         let len = str_val.len() as i64;
                         let start_idx = (*start).max(0).min(len) as usize;

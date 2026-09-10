@@ -271,7 +271,6 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
             | MirType::Option(_)
             | MirType::Union(_)
             | MirType::Array { .. }
-            | MirType::Slice(_)
             | MirType::SimdVector { .. }
             | MirType::String
             | MirType::TraitObject { .. }
@@ -925,14 +924,11 @@ impl<'a> MirContext<'a> {
             "StringView" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
-                // "[T; N]" → fixed-size array, "[]T" / "[T]" → slice. Without
-                // these an annotated `const a: [i32; 5]` fell through to the
-                // pointer default, and the array's length was gone by the time
-                // `a.len()` looked for it — the call failed dispatch outright
-                // while the same code without the annotation worked.
-                if let Some(inner) = name.strip_prefix("[]") {
-                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
-                }
+                // "[T; N]" → fixed-size array. Without this an annotated
+                // `const a: [i32; 5]` fell through to the pointer default, and
+                // the array's length was gone by the time `a.len()` looked for
+                // it — the call failed dispatch outright while the same code
+                // without the annotation worked.
                 if name.starts_with('[') && name.ends_with(']') {
                     let inner = &name[1..name.len() - 1];
                     if let Some(semi) = inner.rfind(';') {
@@ -955,7 +951,6 @@ impl<'a> MirContext<'a> {
                             .unwrap_or(0);
                         return MirType::Array { elem: Box::new(elem), len };
                     }
-                    return MirType::Slice(Box::new(self.resolve_type_str(inner)));
                 }
                 // "(A | B)" → Union. Before the tuple branch: an error union is
                 // written in parentheses, so the tuple case claimed it and
@@ -997,8 +992,8 @@ impl<'a> MirContext<'a> {
                     let ok_str = name[..or_pos].trim();
                     let err_str = name[or_pos + 4..].trim();
                     return MirType::Result {
-                        ok: Box::new(self.resolve_type_str(ok_str)),
-                        err: Box::new(self.resolve_type_str(err_str)),
+                        ok: Box::new(self.payload_from_str(ok_str)),
+                        err: Box::new(self.payload_from_str(err_str)),
                     };
                 }
                 // "Result<T, E>" → MirType::Result
@@ -1008,18 +1003,18 @@ impl<'a> MirContext<'a> {
                         let ok_str = inner[..comma].trim();
                         let err_str = inner[comma + 1..].trim();
                         return MirType::Result {
-                            ok: Box::new(self.resolve_type_str(ok_str)),
-                            err: Box::new(self.resolve_type_str(err_str)),
+                            ok: Box::new(self.payload_from_str(ok_str)),
+                            err: Box::new(self.payload_from_str(err_str)),
                         };
                     }
                 }
                 // "Option<T>" → MirType::Option
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return option_of(self.resolve_type_str(inner));
+                    return option_of(self.payload_from_str(inner));
                 }
                 // "T?" → MirType::Option (shorthand syntax from type annotations)
                 if let Some(inner) = name.strip_suffix('?') {
-                    return option_of(self.resolve_type_str(inner));
+                    return option_of(self.payload_from_str(inner));
                 }
                 // "any TraitName" → TraitObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
@@ -1271,6 +1266,35 @@ impl<'a> MirContext<'a> {
     }
 
     /// Convert a Type from the type checker to MirType.
+    /// A wrapper's payload, from the type's written name — the string route
+    /// into the same rule `payload_to_mir` applies to a checker type.
+    fn payload_from_str(&self, name: &str) -> MirType {
+        let mir = self.resolve_type_str(name);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        match crate::ContainerKind::from_rendered(name) {
+            Some(kind) => MirType::Container(kind),
+            None => mir,
+        }
+    }
+
+    /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
+    /// what it is instead of collapsing to a bare pointer — see
+    /// `MirType::Container`.
+    pub(crate) fn payload_to_mir(&self, ty: &Type) -> MirType {
+        let mir = self.type_to_mir(ty);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        // The rendered name, for the same reason the codegen side reads one: a
+        // resolved `Type::Generic` carries a TypeId and no name.
+        match crate::ContainerKind::from_rendered(&format!("{}", ty)) {
+            Some(kind) => MirType::Container(kind),
+            None => mir,
+        }
+    }
+
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
         match ty {
             Type::Unit | Type::None => MirType::Void,
@@ -1341,8 +1365,6 @@ impl<'a> MirContext<'a> {
                 elem: Box::new(self.type_to_mir(elem)),
                 len: *len as u32,
             },
-            // Slice → fat pointer (ptr + len)
-            Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
             // Option (T or none): niche-optimized handle, or a tagged union.
             //
             // A handle keeps the collapsed spelling — `type_to_mir` gives bare
@@ -1356,13 +1378,13 @@ impl<'a> MirContext<'a> {
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                     MirType::Handle
                 } else {
-                    MirType::Option(Box::new(self.type_to_mir(inner)))
+                    MirType::Option(Box::new(self.payload_to_mir(inner)))
                 }
             }
             // Result<T, E> → tagged union (tag + max(T, E) payload)
             Type::Result { ok, err } => MirType::Result {
-                ok: Box::new(self.type_to_mir(ok)),
-                err: Box::new(self.type_to_mir(err)),
+                ok: Box::new(self.payload_to_mir(ok)),
+                err: Box::new(self.payload_to_mir(err)),
             },
             // Union → tracks variant sizes
             Type::Union(variants) => {
@@ -2521,7 +2543,7 @@ impl<'a> MirLowerer<'a> {
                 // An unresolved element is no answer — it lowers to Ptr, which
                 // reads as a real aggregate element and shadows the fallbacks
                 // below that do know.
-                Type::Array { elem, .. } | Type::Slice(elem)
+                Type::Array { elem, .. }
                     if !matches!(**elem, Type::Var(_)) =>
                 {
                     return Some(self.ctx.type_to_mir(elem))
@@ -2939,7 +2961,7 @@ impl<'a> MirLowerer<'a> {
     /// data — an aggregate's stack address, or a heap pointer (Vec/Map/String).
     /// Capturing such a value by value is capture-by-reference: the ensure hook
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
-    /// stale), as are fat pointers (Slice/TraitObject — 16 bytes, don't fit an
+    /// stale), as are fat pointers (a trait object — 16 bytes, doesn't fit an
     /// 8-byte env slot).
     /// Collect every name this body reassigns. Walks closure and spawn bodies
     /// too: a closure writing an outer name reassigns it just the same.
@@ -3917,7 +3939,13 @@ impl<'a> MirLowerer<'a> {
         lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
         lowerer.spawned_closure_names = Self::collect_spawned_names(&fn_decl.body);
 
-        // Resolve Self type from function name: "Document_delete_line" → "Document"
+        // Resolve Self from the function name, for the methods that still
+        // arrive with it: a generic owner's template keeps `Self` because the
+        // per-receiver copy is what knows the layout. Splitting at the first
+        // underscore is right there and only there — a type name with an
+        // underscore in it reads as a different type, which is what made a
+        // dependency's `Helper_liba_describe` look up a `Helper` (#1129). Mono
+        // writes the type in wherever it knows it, so this sees the rest.
         let self_type_name: Option<String> = fn_decl.params.iter()
             .any(|p| p.ty == "Self")
             .then(|| {
@@ -4257,7 +4285,6 @@ impl<'a> MirLowerer<'a> {
                     })
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
-                Type::Slice(elem) => return Some(self.ctx.type_to_mir(elem)),
                 // Pool iteration yields handles (packed i64)
                 Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
                 Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
@@ -4450,18 +4477,32 @@ impl<'a> MirLowerer<'a> {
         if matches!(val_ty, MirType::Option(_)) {
             return false;
         }
-        // Exact identity match wins.
+        // Identity match wins, on the base name. The pattern carries the type
+        // arguments the source wrote and a layout's name doesn't, so
+        // `r is Refused<i64>` on a `void or Refused<i64>` compared
+        // "Refused<i64>" against "Refused", missed, and fell through to the
+        // "err side is nominally named, so this must be the ok side" rule
+        // below — routing the error arm to tag 0. `Vec.try_push` is declared
+        // `void or GrowError<T>`, so both of its answers read backwards
+        // natively while the interpreter had them right.
+        //
+        // Two instantiations of one generic on the two sides would both match;
+        // the ok side is checked first, which is the same precedence an exact
+        // match had.
         if let Some(ok) = ok_ty {
-            if self.mir_type_name(ok).as_deref() == Some(name) {
+            if self.mir_type_name(ok).is_some_and(|n| same_nominal(&n, name)) {
                 return false;
             }
         }
         if let Some(err) = err_ty {
-            if self.mir_type_name(err).as_deref() == Some(name) {
+            if self.mir_type_name(err).is_some_and(|n| same_nominal(&n, name)) {
                 return true;
             }
             if let MirType::Union(variants) = err {
-                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                if variants
+                    .iter()
+                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
+                {
                     return true;
                 }
             }
@@ -4559,11 +4600,14 @@ impl<'a> MirLowerer<'a> {
             _ => [None, None],
         };
         for side in sides.into_iter().flatten() {
-            if self.mir_type_name(side).as_deref() == Some(name) {
+            if self.mir_type_name(side).is_some_and(|n| same_nominal(&n, name)) {
                 return true;
             }
             if let MirType::Union(variants) = side {
-                if variants.iter().any(|v| self.mir_type_name(v).as_deref() == Some(name)) {
+                if variants
+                    .iter()
+                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
+                {
                     return true;
                 }
             }
@@ -4834,6 +4878,14 @@ impl<'a> MirLowerer<'a> {
                 // aggregate. Loaded as a word instead, the member index came
                 // back as if it were the union's address (#776).
                 | MirType::Union(_)
+                // A `T?` or `T or E` in a payload is inline bytes too — tag
+                // plus payload — so it is reached by address like the rest.
+                // Loaded as a word instead, `maybe(0)!` on a `T? or E` read the
+                // inner option's *tag* and dereferenced it as the option's
+                // address (segfault at the unwrap).
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Array { .. }
         )
     }
 
@@ -5693,7 +5745,7 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
         }
         Type::Tuple(elems) | Type::Union(elems) => elems.iter().find_map(type_names_a_parameter),
         Type::Array { elem, .. } => type_names_a_parameter(elem),
-        Type::Slice(inner) | Type::RawPtr(inner) => type_names_a_parameter(inner),
+        Type::RawPtr(inner) => type_names_a_parameter(inner),
         Type::Result { ok, err } => {
             type_names_a_parameter(ok).or_else(|| type_names_a_parameter(err))
         }
@@ -5889,6 +5941,19 @@ fn find_top_level_or(s: &str) -> Option<usize> {
     None
 }
 
+/// Do these two spellings name the same nominal type?
+///
+/// A pattern carries the type arguments the source wrote — `Refused<i64>` — and
+/// a layout's name is the bare one, plus a `$` suffix once monomorphization has
+/// been through it. So the comparison is on what comes before either.
+fn same_nominal(a: &str, b: &str) -> bool {
+    fn base(n: &str) -> &str {
+        let n = n.split('<').next().unwrap_or(n).trim();
+        n.split('$').next().unwrap_or(n).trim()
+    }
+    base(a) == base(b)
+}
+
 fn find_top_level_comma(s: &str) -> Option<usize> {
     let mut depth = 0usize;
     for (i, c) in s.char_indices() {
@@ -5937,7 +6002,7 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
         // .join(" ")` is `Vec_join`. Without this the call fell through to the
         // name-policy table, which guesses "a two-argument `join` means Vec" —
         // right here, and only by luck.
-        Type::Slice(_) | Type::Array { .. } => Some("Vec"),
+        Type::Array { .. } => Some("Vec"),
         _ => None,
     }
 }

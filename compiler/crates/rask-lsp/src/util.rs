@@ -56,7 +56,7 @@ pub fn type_to_stub_name(
         rask_types::Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
         ty if ty.is_option() => Some("Option".to_string()),
         rask_types::Type::Result { .. } => Some("Result".to_string()),
-        rask_types::Type::Array { .. } | rask_types::Type::Slice(_) => Some("Vec".to_string()),
+        rask_types::Type::Array { .. } => Some("Vec".to_string()),
         _ => None,
     }
 }

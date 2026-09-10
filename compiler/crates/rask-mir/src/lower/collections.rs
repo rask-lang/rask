@@ -18,7 +18,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_vec_from_array_with(elems, None)
+        self.lower_vec_from_array_with(elems, None, None)
     }
 
     /// `lower_vec_from_array`, told what the elements are.
@@ -30,6 +30,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
         elem_hint: Option<MirType>,
+        literal_id: Option<rask_ast::NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
         let mut elem_ty = MirType::I64;
         let mut lowered = Vec::new();
@@ -80,6 +81,32 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let elem_raw = elems
+            .first()
+            .and_then(|e| self.ctx.lookup_raw_type(e.id).cloned());
+        let elem_head = elem_raw.as_ref().and_then(|ty| self.head_name(ty));
+        let elem_tag = elem_head
+            .as_deref()
+            .and_then(crate::elem_strs::container_tag)
+            .or_else(|| {
+                // As in `container_elem_tag`: a closure lowers to `Ptr` and has
+                // no head name, so only the checker's type says the element
+                // owns a block (#1149).
+                matches!(elem_raw, Some(rask_types::Type::Fn { .. }))
+                    .then_some(crate::elem_strs::ELEM_CLOSURE)
+            })
+            .unwrap_or_else(|| crate::elem_strs::tag_of(Some(&elem_ty)));
+        // `[]` has no element to read a type off, and the widened MIR type of
+        // nothing is `i64` — so `mut fns: Vec<func(i64) -> i64> = []` built a
+        // vector that described its elements as owning nothing, and every
+        // closure pushed into it leaked its block. The annotation is what
+        // knows. Only where the element is otherwise unidentified, so this can
+        // add a tag and never change one.
+        let elem_tag = match (elem_tag, literal_id) {
+            (crate::elem_strs::ELEM_NONE, Some(id)) => self.container_elem_tag(id, 0),
+            (tag, _) => tag,
+        };
+
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
@@ -90,9 +117,10 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Constant(MirConst::Int(elem_size as i64)),
                 // What the elements are, so the vector can give them back —
                 // and so anything pushed onto it later is given back too.
-                MirOperand::Constant(MirConst::Int(
-                    crate::elem_strs::tag_of(Some(&elem_ty)),
-                )),
+                // An element that *is* a container is a `Ptr` here like every
+                // other pointer, so the first element's own checked type is
+                // what says `[a, b]` is a `Vec<Vec<i32>>`.
+                MirOperand::Constant(MirConst::Int(elem_tag)),
             ],
         }));
         Ok((MirOperand::Local(vec_local), MirType::I64))
@@ -819,13 +847,14 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_) => 8,
+            | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_)
+            | MirType::Container(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size as i64,
             MirType::Enum(eid) => eid.byte_size as i64,
             MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
-            MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+            MirType::Tuple(_) | MirType::Option(_)
             | MirType::Result { .. } | MirType::Union(_)
             | MirType::SimdVector { .. } | MirType::TraitObject { .. } => ty.size() as i64,
             MirType::Void => 0,
@@ -874,7 +903,7 @@ impl<'a> MirLowerer<'a> {
             | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
             | MirType::I64 | MirType::U64 | MirType::F64
             | MirType::Ptr | MirType::FuncPtr(_) | MirType::Handle => 8,
-            // Struct/Enum/Tuple/Slice/Option/Result/Union/Array/... — layout size.
+            // Struct/Enum/Tuple/Option/Result/Union/Array/... — layout size.
             _ => ty.size() as i64,
         }
     }
@@ -935,6 +964,18 @@ impl<'a> MirLowerer<'a> {
         node_id: rask_ast::NodeId,
         index: usize,
     ) -> Option<MirType> {
+        match self.container_elem_rask_type(node_id, index)? {
+            rask_types::Type::Var(_) => None,
+            resolved => Some(self.ctx.type_to_mir(&resolved)),
+        }
+    }
+
+    /// The checker's own type for a container's `index`-th type argument.
+    fn container_elem_rask_type(
+        &self,
+        node_id: rask_ast::NodeId,
+        index: usize,
+    ) -> Option<rask_types::Type> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(node_id)?;
         let container = match ty {
@@ -948,9 +989,60 @@ impl<'a> MirLowerer<'a> {
         let GenericArg::Type(inner) = args.get(index)? else {
             return None;
         };
-        match inner.as_ref() {
-            rask_types::Type::Var(_) => None,
-            resolved => Some(self.ctx.type_to_mir(resolved)),
+        Some(inner.as_ref().clone())
+    }
+
+    /// The element tag for a container's `index`-th type argument.
+    ///
+    /// A nested container is a bare handle in MIR — `Ptr`, and so is every
+    /// other pointer — so the checker's type is what says it is one. Without
+    /// this a `Map<string, Vec<i32>>` freed its keys and left every value
+    /// vector to nobody.
+    pub(super) fn container_elem_tag(&self, node_id: rask_ast::NodeId, index: usize) -> i64 {
+        if let Some(name) = self.container_elem_head(node_id, index) {
+            if let Some(tag) = crate::elem_strs::container_tag(&name) {
+                return tag;
+            }
+        }
+        // A closure is a bare `Ptr` in MIR too, and it has no head name to
+        // match on, so the checker's type is the only thing that says the
+        // element owns a block (#1149).
+        if let Some(rask_types::Type::Fn { .. }) = self.container_elem_rask_type(node_id, index) {
+            return crate::elem_strs::ELEM_CLOSURE;
+        }
+        crate::elem_strs::tag_of(self.container_elem_mir_type(node_id, index).as_ref())
+    }
+
+    /// The head name of a container's `index`-th type argument, when it has one.
+    ///
+    /// A resolved generic carries its base as a `TypeId` and renders as
+    /// `<type#7><i32>`, so the name has to come from the registry rather than
+    /// from `Display`. An `Option`/`Result` wrapper answers `None`: the handle
+    /// is behind a tag, not at the start of the slot.
+    fn container_elem_head(&self, node_id: rask_ast::NodeId, index: usize) -> Option<String> {
+        let ty = self.container_elem_rask_type(node_id, index)?;
+        self.head_name(&ty)
+    }
+
+    /// The head name of a type, for the container tests. Associated rather than
+    /// a method where the caller has a borrowed type; `head_name` is the
+    /// borrowing form.
+    fn rask_type_head(ty: &rask_types::Type) -> Option<String> {
+        use rask_types::Type;
+        match ty {
+            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => {
+                Some(name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
+        use rask_types::Type;
+        match ty {
+            Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),
+            Type::Named(id) => self.ctx.type_names.get(id).cloned(),
+            other => Self::rask_type_head(other),
         }
     }
 

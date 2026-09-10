@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box read that ends the box hands the value over without allocating.
+//
+// `replace` and `into_inner` both read a payload the box is about to overwrite
+// or throw away, so neither can return a pointer into the box's own storage.
+// The runtime's answer was a fresh block: copy the old value there, hand back
+// its address, and let the caller copy out of it. Nothing freed the block, so
+// every `replace` leaked its payload's width — sixteen bytes a call for a
+// string, eight for a number.
+//
+// `into_inner` was worse in a quiet way: it was wired to `Cell.get`, the plain
+// slot read, because freeing the cell would have dangled the pointer coming
+// back. So the box that `into_inner` is supposed to consume stayed allocated,
+// header and payload both.
+//
+// Both write into the caller's own destination now — an aggregate straight into
+// its stack slot, a scalar into a word to be loaded back out of. No block, no
+// dangling pointer, and `into_inner` frees the cell it consumed.
+//
+// The values matter as much as the counts here: a payload copied out after the
+// free reads as whatever the allocator wrote next, so a wrong answer is a wrong
+// answer rather than a quiet leak.
+//
+// Spec: specs/memory/boxes.md — `Cell`/`Mutex` are strategies on `Shared`, and
+// `into_inner` is the last read.
+import sync.Shared
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+test "mem.boxes — replace hands back a number" {
+    let c = Shared<i64>.local(1)
+    assert c.replace(2) == 1
+    assert c.replace(3) == 2
+    assert c.get() == 3
+}
+
+// A string payload: sixteen bytes, so the half-copy that a scalar read would
+// make reads as empty rather than as the old value.
+test "mem.boxes — replace hands back a string" {
+    let c = Shared<string>.local("the first value, long enough to allocate")
+    let old = c.replace("the second value, also long enough")
+    assert old == "the first value, long enough to allocate"
+    assert c.get() == "the second value, also long enough"
+}
+
+test "mem.boxes — replace hands back a struct" {
+    let c = Shared<Point>.local(Point { x: 1, y: 2 })
+    let old = c.replace(Point { x: 3, y: 4 })
+    assert old.x == 1
+    assert old.y == 2
+    assert c.get().x == 3
+}
+
+// One per turn, so a payload freed early lands on storage the next turn has
+// taken and the comparison says so.
+test "mem.boxes — replace in a loop" {
+    let c = Shared<i64>.local(0)
+    mut total = 0
+    for i in 1..6 {
+        total = total + c.replace(i)
+    }
+    assert total == 10
+    assert c.get() == 5
+}
+
+test "mem.boxes — into_inner consumes the box" {
+    let c = Shared<i64>.local(7)
+    assert c.into_inner() == 7
+}
+
+test "mem.boxes — into_inner of a string" {
+    let c = Shared<string>.local("what the box held, long enough to allocate")
+    assert c.into_inner() == "what the box held, long enough to allocate"
+}
+
+test "mem.boxes — into_inner of a struct" {
+    let c = Shared<Point>.local(Point { x: 5, y: 6 })
+    let p = c.into_inner()
+    assert p.x == 5
+    assert p.y == 6
+}
+
+// One consumed and one dropped in the same frame, so the frame's own drop
+// doesn't free a cell `into_inner` already gave back.
+test "mem.boxes — one consumed, one dropped" {
+    let a = Shared<i64>.local(1)
+    let b = Shared<i64>.local(2)
+    assert a.into_inner() == 1
+    assert b.get() == 2
+}
+
+// A box per turn, consumed each time: a double free lands on one the next turn
+// has reused.
+test "mem.boxes — a box consumed per turn" {
+    mut total = 0
+    for i in 1..6 {
+        let c = Shared<i64>.local(i)
+        total = total + c.into_inner()
+    }
+    assert total == 15
+}
+
+// A string payload consumed per turn: the buffer's reference passes to the
+// caller, so the cell's own free must not release it too — a second release
+// lands on a buffer the next turn has taken and the comparison says so.
+test "mem.boxes — a string payload consumed per turn" {
+    mut n = 0
+    for i in 0..8 {
+        let c = Shared<string>.local("a string long enough to allocate its own buffer")
+        if c.into_inner() == "a string long enough to allocate its own buffer" {
+            n = n + 1
+        }
+    }
+    assert n == 8
+}
+
+test "mem.boxes — a string payload replaced per turn" {
+    mut n = 0
+    for i in 0..8 {
+        let c = Shared<string>.local("the first value, long enough to allocate")
+        let old = c.replace("the second value, also long enough")
+        if old == "the first value, long enough to allocate" {
+            n = n + 1
+        }
+        assert c.get() == "the second value, also long enough"
+    }
+    assert n == 8
+}
+
+// Every primitive width, because the value comes back through a word-sized
+// slot and the destination's type decides how it is read out of one. A float
+// is the case that can't just be widened: the conversion reads a mismatched
+// type as a *number*, not as bits, so an integer load of a double answered
+// 4609434218613702700 — and an `f32` slot holds a promoted double, so a
+// four-byte read got its zero low half and answered 0.
+test "mem.boxes — replace at every primitive width" {
+    let f = Shared<f64>.local(1.5)
+    assert f.replace(2.5) == 1.5
+    assert f.get() == 2.5
+
+    let g = Shared<f32>.local(1.5)
+    assert g.replace(2.5) == 1.5
+    assert g.get() == 2.5
+
+    let i = Shared<i32>.local(7)
+    assert i.replace(9) == 7
+
+    let u = Shared<u8>.local(200)
+    assert u.replace(11) == 200
+
+    let b = Shared<bool>.local(true)
+    assert b.replace(false)
+
+    let c = Shared<char>.local('x')
+    assert c.replace('y') == 'x'
+    assert c.get() == 'y'
+}
+
+test "mem.boxes — into_inner at every primitive width" {
+    assert Shared<f64>.local(9.25).into_inner() == 9.25
+    assert Shared<f32>.local(3.25).into_inner() == 3.25
+    assert Shared<i32>.local(5).into_inner() == 5
+    assert Shared<u8>.local(250).into_inner() == 250
+    assert Shared<bool>.local(true).into_inner()
+    assert Shared<char>.local('z').into_inner() == 'z'
+}
+
+// The mutex strategy takes the same two paths under a lock.
+test "mem.boxes — replace under the mutex strategy" {
+    let m = Shared<i64>.mutex(10)
+    assert m.replace(20) == 10
+    with m.read() as v {
+        assert v == 20
+    }
+}
+
+func main() {}

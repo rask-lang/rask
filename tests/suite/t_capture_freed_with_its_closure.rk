@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container captured into a closure the frame also drops (#1035, #1045).
+//
+// The environment drop glue is named after the closure *function*, so every
+// site building that closure has to agree about what its environment owns. And
+// after inlining they routinely don't:
+//
+//     func Vec.as_sequence(self) { return || … self … }   // self is borrowed
+//     // inlined into a caller:
+//     _25 = <a fresh vector>
+//     _27 = closure[heap](Vec_as_sequence__closure_0, [_25@0])
+//
+// The un-inlined function's site owns nothing — its `self` belongs to whoever
+// called it — and the inlined site owns the vector. Both answers are right for
+// their own site, there is one glue, so neither got one and every lazy adapter
+// leaked its source: `let evens = v.filter(p)` on a four-element vector, 152
+// allocations across the sequence files.
+//
+// The way out needs no per-site glue. When the frame also drops the closure —
+// `closure_drop` right there, which is the closure pass saying this frame owns
+// it — the frame frees the capture straight after, and the site owns nothing as
+// far as the glue is concerned. The two sites then agree on "nothing".
+//
+// Two guards, both about one value reaching two names. The glue counts
+// capturers by local, and inlining gives each copy of a chain its own name for
+// the same vector — `v.map(f)` and `v.map(g)` in one function looked like one
+// capturer each and both freed it, which segfaulted on the way out. And a value
+// that already has a free coming from the ordinary placement must not get a
+// second one here.
+//
+// `tests/leak_gate.sh` counts the allocations. What this file pins is that the
+// source stays readable for as long as the chain does — a chain re-runs, so the
+// vector has to survive every pass over it.
+//
+// Spec: specs/types/sequence.md — a sequence is re-runnable.
+
+func sum_evens(v: Vec<i64>) -> i64 {
+    mut total = 0
+    for x in v.filter(|n| n % 2 == 0) {
+        total = total + x
+    }
+    return total
+}
+
+test "type.sequence — a bound adapter's source outlives the chain" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let evens = v.filter(|x| x % 2 == 0)
+    assert evens.count() == 2
+    // Re-run it: the source vector has to still be there.
+    assert evens.count() == 2
+    mut total = 0
+    for x in evens {
+        total = total + x
+    }
+    assert total == 6
+}
+
+test "type.sequence — two chains off one vector" {
+    let v: Vec<i64> = [1, 2, 3]
+    let doubled = v.map(|x| x * 2)
+    let tripled = v.map(|x| x * 3)
+    assert doubled.count() == 3
+    assert tripled.count() == 3
+    let a: Vec<i64> = v.map(|x| x * 2).to_vec()
+    let b: Vec<i64> = v.map(|x| x * 3).to_vec()
+    assert a[2] == 6
+    assert b[2] == 9
+    // And the source is intact after all four.
+    assert v[2] == 3
+}
+
+test "type.sequence — a chain over a vector the frame made" {
+    let v: Vec<i64> = [1, 2, 3, 4, 5, 6]
+    assert sum_evens(v) == 12
+}
+
+// A chain whose elements are strings, so the source's own buffers have to
+// survive the frame freeing the vector at the end.
+test "type.sequence — string elements through a chain" {
+    let words: Vec<string> = [
+        "the first word is long enough",
+        "no",
+        "the third word is long enough",
+    ]
+    let long = words.filter(|w| w.len() > 15)
+    assert long.count() == 2
+    mut joined = ""
+    for w in long {
+        joined = "{joined}|{w}"
+    }
+    assert joined == "|the first word is long enough|the third word is long enough"
+}
+
+// Repeatedly, so a vector freed and handed back out would read wrong rather
+// than merely leak.
+test "type.sequence — chains in a loop" {
+    mut total = 0
+    for i in 1..6 {
+        let v: Vec<i64> = [i, i * 2, i * 3]
+        let big = v.filter(|x| x > 2)
+        total = total + big.count().clamp<i64>()
+    }
+    assert total == 12
+}
