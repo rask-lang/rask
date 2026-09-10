@@ -19,7 +19,8 @@
 //!   1            the element *is* a string
 //!   2            the element *is* a Vec
 //!   3            the element *is* a Map
-//!   4 + index    a struct with that layout
+//!   4            the element *is* a closure — a pointer to its block
+//!   5 + index    a struct with that layout
 
 use crate::MirType;
 
@@ -27,7 +28,12 @@ pub const ELEM_NONE: i64 = 0;
 pub const ELEM_STRING: i64 = 1;
 pub const ELEM_VEC: i64 = 2;
 pub const ELEM_MAP: i64 = 3;
-pub const ELEM_STRUCT_BASE: i64 = 4;
+/// The element is a closure: one pointer to a block that describes itself.
+/// `rask_closure_free` reads its size and its environment-drop glue out of the
+/// header words before the pointer, so releasing one needs nothing
+/// type-specific and retaining one is a count on the same header (#1149).
+pub const ELEM_CLOSURE: i64 = 4;
+pub const ELEM_STRUCT_BASE: i64 = 5;
 /// An enum element: `ELEM_ENUM_BASE - index` into the enum layouts.
 ///
 /// Below zero because the struct range grows upward without a bound. Where an
@@ -96,6 +102,10 @@ pub fn box_payload_kind(rendered: &str) -> i64 {
 pub fn tag_of(ty: Option<&MirType>) -> i64 {
     match ty {
         Some(MirType::String) => ELEM_STRING,
+        // A closure owns a block the container has to free, and it isn't
+        // describable as offsets inside the element: the element *is* the
+        // pointer. So it gets its own kind rather than a struct layout.
+        Some(MirType::FuncPtr(_)) => ELEM_CLOSURE,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
         Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
         _ => ELEM_NONE,

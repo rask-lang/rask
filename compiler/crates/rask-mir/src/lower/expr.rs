@@ -2692,7 +2692,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(node_ty) = self.ctx.node_types.get(&expr.id).cloned() {
                     if self.generic_head(&node_ty).is_some_and(|(n, _)| n == "Vec") {
                         let elem_hint = self.collection_elem_of_checker_type(&node_ty);
-                        return self.lower_vec_from_array_with(elems, elem_hint);
+                        return self.lower_vec_from_array_with(elems, elem_hint, Some(expr.id));
                     }
                 }
                 // The element type is the checker's, not the first element's.

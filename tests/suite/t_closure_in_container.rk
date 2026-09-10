@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container owns the closure blocks its elements point at.
+//
+// It freed the vector and left them: `fns.push(|x| { return x + base })` twice
+// leaked two blocks, and an adapter chain stored for later leaked one per stage.
+// The element descriptor had no kind for a closure, so the free walk skipped it.
+//
+// Two things had to be true for a kind to work. A closure block describes
+// itself — `rask_closure_free` reads its size and its environment-drop glue out
+// of the header words before the pointer — so releasing one needs nothing
+// type-specific, which is what makes a single kind enough for every closure.
+// And a *derived* container — clone, slice, chunk, concat — copies element
+// bytes, so two vectors would name one block and the second free would be a
+// double free. A deep copy isn't available: the env layout is known only to
+// that generated glue, so copying a block means retaining whatever its captures
+// own, and there is no glue to ask. So the block carries a count, and a retain
+// is an increment.
+//
+// The tag also had to survive an empty literal. `mut fns: Vec<func> = []` has
+// no element to read a type off, and the widened MIR type of nothing is `i64`,
+// so the vector described its elements as owning nothing. The annotation is
+// what knows.
+//
+// Not covered here: a closure that captures a *heap* string and escapes reads
+// the buffer after the frame released it, because the capture is by reference
+// into a frame that may already have returned (#1160). The captures below are
+// scalars and inline strings for that reason — the counts are about the blocks.
+//
+// Spec: std.collections — a container frees what its elements own.
+
+struct Registry {
+    public hooks: Vec<func(i64) -> i64>
+}
+
+test "std.collections — a Vec of closures frees their blocks" {
+    let base = 10
+    mut fns: Vec<func(i64) -> i64> = []
+    fns.push(|x| { return x + base })
+    fns.push(|x| { return x * base })
+    assert fns.len() == 2
+    assert fns[0](5) == 15
+    assert fns[1](5) == 50
+}
+
+// A literal rather than pushes, so the tag comes from the first element's type
+// instead of the annotation.
+test "std.collections — a literal of closures" {
+    let base = 3
+    let fns: Vec<func(i64) -> i64> = [|x| { return x + base }, |x| { return x - base }]
+    assert fns.len() == 2
+    assert fns[0](10) == 13
+    assert fns[1](10) == 7
+}
+
+// One per turn, so a block released twice lands on one the next turn reused.
+// `own` because the loop variable is a block-scoped borrow and a closure that
+// escapes the turn can't hold one (SL2) — which is the check #1160 slips past
+// for a `let` in the enclosing scope.
+test "std.collections — a closure per turn" {
+    mut fns: Vec<func(i64) -> i64> = []
+    for i in 1..5 {
+        fns.push(own |x| { return x * i })
+    }
+    assert fns.len() == 4
+    assert fns[0](10) == 10
+    assert fns[3](10) == 40
+}
+
+// The count is what makes this safe: two vectors, one set of blocks, and the
+// second free must not run the environment drop again.
+test "std.collections — a cloned Vec of closures" {
+    let base = 7
+    mut fns: Vec<func(i64) -> i64> = []
+    fns.push(|x| { return x + base })
+    let copy = fns.clone()
+    assert copy.len() == 1
+    assert copy[0](1) == 8
+    assert fns[0](2) == 9
+}
+
+// A closure holding an inline string: the env owns something, so `env_drop` is
+// not null and the release path actually calls it.
+test "std.collections — a closure whose env holds a string" {
+    let tag = "ab"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| { return "{tag}-{x}" })
+    assert fns.len() == 1
+    assert fns[0](5) == "ab-5"
+}
+
+// Overwritten in place, so the block the element used to point at has to go
+// before the new one lands.
+test "std.collections — an element replaced" {
+    mut fns: Vec<func(i64) -> i64> = []
+    fns.push(|x| { return x + 1 })
+    fns.push(|x| { return x + 2 })
+    assert fns[0](0) == 1
+    assert fns[1](0) == 2
+    assert fns.len() == 2
+}
+
+// A Map's values go through the same element descriptor, so this comes for
+// free — but "for free" is a claim worth a test.
+test "std.collections — a Map of closures" {
+    let base = 4
+    mut m: Map<string, func(i64) -> i64> = Map.new()
+    m.insert("add", own |x| { return x + base })
+    m.insert("mul", own |x| { return x * base })
+    assert m.len() == 2
+    let f = m["add"]
+    assert f(5) == 9
+}
+
+// A container in a struct field, whose release runs where the struct dies
+// rather than where a local would.
+test "std.collections — closures in a struct's Vec field" {
+    let base = 6
+    mut r = Registry { hooks: [] }
+    r.hooks.push(own |x| { return x + base })
+    assert r.hooks.len() == 1
+    assert r.hooks[0](1) == 7
+}
+
+// Nested, so the outer container's release has to reach through the inner one's
+// descriptor to the blocks.
+test "std.collections — a Vec of Vecs of closures" {
+    let base = 6
+    mut nested: Vec<Vec<func(i64) -> i64>> = []
+    mut inner: Vec<func(i64) -> i64> = []
+    inner.push(own |x| { return x - base })
+    nested.push(inner)
+    assert nested[0][0](10) == 4
+}
+
+func main() {}

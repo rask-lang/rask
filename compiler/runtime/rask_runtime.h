@@ -38,6 +38,7 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
 void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *));
 void  rask_closure_free(void *ptr);
+void  rask_closure_retain(void *ptr);
 
 // `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
 // the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says
@@ -145,6 +146,14 @@ typedef struct {
 //
 // Codegen emits nothing at all for a layout that doesn't fit those fields,
 // which leaks rather than guessing.
+
+// The element *is* a pointer to a closure block, so there is no offset list
+// inside it: one entry at offset zero. The block describes itself —
+// `rask_closure_free` reads its size and its environment-drop glue out of the
+// header words before the pointer — so releasing one needs nothing type-specific
+// and retaining one is a count on the same header (#1149).
+#define RASK_OWNED_CLOSURE 4
+
 #define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
 #define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)

@@ -274,29 +274,51 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
 
 // ─── Closure blocks ────────────────────────────────────────
 //
-// A closure block is `[block_size | env_drop | func_ptr | captures...]` and the
-// closure value points at `func_ptr`, so the environment is still
-// `closure + 8`. Both header words exist for the same reason: whoever frees the
-// block usually didn't build it. `let tick = counter()` hands the caller a
+// A closure block is `[block_size | env_drop | refs | func_ptr | captures...]`
+// and the closure value points at `func_ptr`, so the environment is still
+// `closure + 8`. Every header word is there for the same reason: whoever frees
+// the block usually didn't build it. `let tick = counter()` hands the caller a
 // block whose capture layout only `counter` knew, so the caller can neither
 // account for the bytes nor release what the captures own.
 //
-// `env_drop` is that second half — a generated `<closure>__env_drop(env)` that
-// frees each container the environment owns, or NULL when it owns none. Without
-// it a closure holding a `Vec` gave the block back and left the vector inside
-// it, which is every adapter chain capturing its source (#1045, #943).
+// `env_drop` is the second — a generated `<closure>__env_drop(env)` that frees
+// each container the environment owns, or NULL when it owns none. Without it a
+// closure holding a `Vec` gave the block back and left the vector inside it,
+// which is every adapter chain capturing its source (#1045, #943).
+//
+// `refs` is the third, and it's what lets a container hold a closure. A
+// `Vec<func>` owns its elements' blocks and has to free them, but a vector
+// *derived* from it — clone, slice, chunk, concat — copies element bytes, so
+// two vectors then name one block and whichever is freed second frees it again.
+// A deep copy isn't available: the block's env layout is known only to a
+// generated glue, so copying one means retaining whatever its captures own, and
+// there is no `env_retain` to ask. A count is: one owner logically, `env_drop`
+// runs once, and nobody needs to know what's inside. Eight bytes per closure,
+// against the alternative of refusing `.clone()` on a `Vec<func>`.
+//
+// A *stack*-allocated closure has no header — a non-escaping closure is just
+// `[func_ptr | captures]` in a frame — so neither of these may be called on
+// one. Nothing does: a closure that can't escape can't reach a container.
 
 void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *)) {
-    int64_t total = block_size + 16;
+    int64_t total = block_size + 24;
     int64_t *base = (int64_t *)rask_alloc(total);
     base[0] = total;
     base[1] = (int64_t)(intptr_t)env_drop;
-    return (void *)(base + 2);
+    base[2] = 1;
+    return (void *)(base + 3);
+}
+
+void rask_closure_retain(void *ptr) {
+    if (!ptr) return;
+    int64_t *base = ((int64_t *)ptr) - 3;
+    base[2] += 1;
 }
 
 void rask_closure_free(void *ptr) {
     if (!ptr) return;
-    int64_t *base = ((int64_t *)ptr) - 2;
+    int64_t *base = ((int64_t *)ptr) - 3;
+    if ((base[2] -= 1) > 0) return;
     void (*env_drop)(void *) = (void (*)(void *))(intptr_t)base[1];
     // The environment starts one word past the closure value, which is where
     // the captures the glue names live.

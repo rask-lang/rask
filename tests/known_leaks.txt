@@ -165,18 +165,35 @@
 # a reference to copy, so the glue and the vtable's drop slot are gone, and a
 # box dying frees its block and nothing inside it.
 #
-# And 133 once a `Vec<string>` literal stopped taking a second reference to a
-# runtime-built element. `rask_vec_from_static` is handed a temporary array the
-# frame never frees, and lowering has already put a reference in its slots — so
-# taking the bytes over takes the reference with them, and retaining on top of
-# that leaked one buffer per element. A literal element carries a sentinel
-# refcount every release walks away from, which is why an all-literal vector was
-# fine and this sat unnoticed.
+# One buffer per runtime-built element came back when a `Vec<string>` literal
+# stopped taking a second reference to it. `rask_vec_from_static` is handed a
+# temporary array the frame never frees, and lowering has already put a
+# reference in its slots — so taking the bytes over takes the reference with
+# them, and retaining on top of that leaked one buffer per element. A literal
+# element carries a sentinel refcount every release walks away from, which is
+# why an all-literal vector was fine and this sat unnoticed.
 #
-# 133 across 38 files as of this line. Two of them are `t_heap_box_dropped.rk`,
-# written for the `drop` fix and left on the list because a freed box says
-# nothing about the vector inside its payload — a different question from
-# #1144's, which is about `any Trait`.
+# Nine more when a container started freeing the closure blocks its elements
+# point at (#1149). The element descriptor had no kind for a closure, so the
+# free walk skipped it and a `Vec<func>` left one block per element. A block
+# describes itself — its size and its environment-drop glue are the header words
+# before the pointer — so one kind covers every closure with nothing
+# type-specific to generate. The block carries a reference count now, because a
+# *derived* container (clone, slice, chunk, concat) copies element bytes and two
+# vectors naming one block would free it twice; a deep copy isn't available,
+# since the environment's layout is known only to that generated glue and there
+# is no `env_retain` to ask. `t_closure_in_collection.rk` 9 → clean.
+#
+# Don't write the running total here. This line used to, and it drifted 22 out
+# from the sum of the lines below — a fix that emptied a file removed its entry
+# without touching the prose, so the tally read like a measurement and was a
+# story about a state two commits back. `leak_gate.sh` prints the count and the
+# file total on every run, and fails on a line whose number no longer matches
+# what the file leaks, which is where that belongs.
+#
+# Two of the entries are `t_heap_box_dropped.rk`, written for the `drop` fix and
+# left on the list because a freed box says nothing about the vector inside its
+# payload — a different question from #1144's, which is about `any Trait`.
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
 # is how each cause was found — `docs/leak-tracing.md` has the recipe.
 #
@@ -238,7 +255,6 @@ t_capture_freed_with_its_closure.rk  # 2 allocations — the string chain's per-
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — a chain's intermediate environments, #1045
 t_closure_diverging_return.rk  # 2 allocations
-t_closure_in_collection.rk  # 9 allocations
 t_collection_api_gaps.rk  # 8 allocations
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation

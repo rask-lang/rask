@@ -49,6 +49,13 @@ void rask_owned_release(char *elem, int32_t entry) {
             rask_map_free(*(RaskMap **)at);
             *(RaskMap **)at = NULL;
             break;
+        // The block describes itself, so there is nothing to look up: the
+        // release is a decrement and the last one runs `env_drop` and gives
+        // the bytes back. The slot is left alone — unlike a nested container's,
+        // whose handle is rewritten, because a count needs no new pointer.
+        case RASK_OWNED_CLOSURE:
+            rask_closure_free(*(void **)at);
+            break;
         default:
             break;
     }
@@ -73,6 +80,12 @@ void rask_owned_retain(char *elem, int32_t entry) {
             if (inner) *(RaskMap **)at = rask_map_clone(inner);
             break;
         }
+        // A count rather than a copy. The env layout is known only to the
+        // closure's generated `env_drop`, so a real copy would have to retain
+        // whatever the captures own and there is no glue to ask.
+        case RASK_OWNED_CLOSURE:
+            rask_closure_retain(*(void **)at);
+            break;
         default:
             break;
     }

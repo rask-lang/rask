@@ -18,7 +18,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_vec_from_array_with(elems, None)
+        self.lower_vec_from_array_with(elems, None, None)
     }
 
     /// `lower_vec_from_array`, told what the elements are.
@@ -30,6 +30,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
         elem_hint: Option<MirType>,
+        literal_id: Option<rask_ast::NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
         let mut elem_ty = MirType::I64;
         let mut lowered = Vec::new();
@@ -80,14 +81,31 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        let elem_head = elems
+        let elem_raw = elems
             .first()
-            .and_then(|e| self.ctx.lookup_raw_type(e.id).cloned())
-            .and_then(|ty| self.head_name(&ty));
+            .and_then(|e| self.ctx.lookup_raw_type(e.id).cloned());
+        let elem_head = elem_raw.as_ref().and_then(|ty| self.head_name(ty));
         let elem_tag = elem_head
             .as_deref()
             .and_then(crate::elem_strs::container_tag)
+            .or_else(|| {
+                // As in `container_elem_tag`: a closure lowers to `Ptr` and has
+                // no head name, so only the checker's type says the element
+                // owns a block (#1149).
+                matches!(elem_raw, Some(rask_types::Type::Fn { .. }))
+                    .then_some(crate::elem_strs::ELEM_CLOSURE)
+            })
             .unwrap_or_else(|| crate::elem_strs::tag_of(Some(&elem_ty)));
+        // `[]` has no element to read a type off, and the widened MIR type of
+        // nothing is `i64` — so `mut fns: Vec<func(i64) -> i64> = []` built a
+        // vector that described its elements as owning nothing, and every
+        // closure pushed into it leaked its block. The annotation is what
+        // knows. Only where the element is otherwise unidentified, so this can
+        // add a tag and never change one.
+        let elem_tag = match (elem_tag, literal_id) {
+            (crate::elem_strs::ELEM_NONE, Some(id)) => self.container_elem_tag(id, 0),
+            (tag, _) => tag,
+        };
 
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -985,6 +1003,12 @@ impl<'a> MirLowerer<'a> {
             if let Some(tag) = crate::elem_strs::container_tag(&name) {
                 return tag;
             }
+        }
+        // A closure is a bare `Ptr` in MIR too, and it has no head name to
+        // match on, so the checker's type is the only thing that says the
+        // element owns a block (#1149).
+        if let Some(rask_types::Type::Fn { .. }) = self.container_elem_rask_type(node_id, index) {
+            return crate::elem_strs::ELEM_CLOSURE;
         }
         crate::elem_strs::tag_of(self.container_elem_mir_type(node_id, index).as_ref())
     }
