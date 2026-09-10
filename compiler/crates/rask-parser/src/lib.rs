@@ -1494,6 +1494,68 @@ mod tests {
         }
     }
 
+    // A non-method member in a trait body used to spin the body loop forever —
+    // nothing consumed the token and the loop condition stayed true (#1164).
+    // Each of these has to report and then recover onto the method below it.
+    #[test]
+    fn trait_body_member_errors_instead_of_hanging() {
+        // Each case is one bad member followed by one real method. The method
+        // list matters as much as the error count: recovery that stops mid-way
+        // through the bad member parses its remainder as another signature and
+        // invents a method nobody wrote, which a conformer is then blamed for
+        // not providing. `@allow(dead_code)` did exactly that, yielding
+        // ["allow", "go"] with a single error, and an error count alone said
+        // the case passed.
+        for src in [
+            "trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}",
+            "trait Thing {\n    const N = 3\n    func go(self) -> i64\n}",
+            "trait Thing {\n    struct Nested { a: i64 }\n    func go(self) -> i64\n}",
+            "trait Thing {\n    public\n    func go(self) -> i64\n}",
+            "trait Thing {\n    @allow(dead_code)\n    func go(self) -> i64\n}",
+            "trait Thing {\n    @allow(dead_code)\n    go(self) -> i64\n}",
+        ] {
+            let result = parse(src);
+            assert!(!result.is_ok(), "expected an error for:\n{src}");
+            assert_eq!(result.errors.len(), 1, "expected one error for:\n{src}\ngot {:?}", result.errors);
+            match result.decls[0].kind {
+                DeclKind::Trait(ref t) => {
+                    let names: Vec<&str> = t.methods.iter().map(|m| m.name.as_str()).collect();
+                    assert_eq!(names.len(), 1, "invented a method for:\n{src}\ngot {names:?}");
+                }
+                _ => panic!("expected trait for:\n{src}"),
+            }
+        }
+    }
+
+    // `type` says the feature is missing rather than "methods only" — an
+    // associated type is planned, not a typo (#1165).
+    #[test]
+    fn associated_type_says_it_is_unimplemented() {
+        let result = parse("trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}");
+        assert!(result.errors[0].message.contains("associated types aren't implemented"),
+            "got: {}", result.errors[0].message);
+    }
+
+    // A type parameter on a trait was skipped silently, leaving the name
+    // unresolved in the signatures and every conformance failing for a reason
+    // that wasn't true (#1164). TraitDecl still has nowhere to put it, so the
+    // parse says so rather than dropping it.
+    #[test]
+    fn generic_trait_says_it_is_unimplemented() {
+        let result = parse("trait Mul<Rhs> {\n    func mul(self, rhs: f64) -> f64\n}");
+        assert!(!result.is_ok(), "expected an error");
+        assert!(result.errors[0].message.contains("generic traits aren't implemented"),
+            "got: {}", result.errors[0].message);
+        // Parsing continues past it — the trait and its method still land.
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => {
+                assert_eq!(t.name, "Mul");
+                assert_eq!(t.methods.len(), 1);
+            }
+            _ => panic!("expected trait"),
+        }
+    }
+
     // `duck trait` sets the structural flag.
     #[test]
     fn duck_trait_flag() {

@@ -3,10 +3,13 @@
 <!-- summary: Operators resolve on the ordered pair of operand types against declared operator traits, instead of as a method lookup on the left operand -->
 <!-- depends: types/operators.md, types/traits.md, types/generics.md -->
 
-> **Blocked on associated types.** `Out` is an associated type here. `type.generics` still
-> defers associated types out of the MVP, and the call is to promote them properly rather
-> than work around them for one feature. This proposal waits for that; nothing here should
-> be built first.
+> **Blocked twice over.** `Out` is an associated type here, and `type.generics` still
+> defers associated types out of the MVP — the call is to promote them properly rather
+> than work around them for one feature ([#1165](https://github.com/rask-lang/rask/issues/1165)).
+> `trait Mul<Rhs>` needs the second thing: generic traits parse today but the parameter is
+> thrown away, so every conformance to one fails claiming a missing method
+> ([#1164](https://github.com/rask-lang/rask/issues/1164)). This proposal waits for both;
+> nothing here should be built first.
 
 # Operator Resolution
 
