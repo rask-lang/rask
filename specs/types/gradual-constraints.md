@@ -25,6 +25,7 @@ Two things bound the damage in the meantime. Inference never crosses a package (
 | **GC6: Module-local scope** | Inference examines only function body — no callers, no cross-module analysis |
 | **GC11: Explicit is the steady state** | Inferred signatures are a sketching affordance. `rask lint` flags them in a package that carries publish metadata (`tool.lint/I4`) and `rask publish` reports a count (`struct.build/PB9`). Never a hard error — the code is fully checked either way, and a package may legitimately ship with inferred internals |
 | **GC12: Invalidation stops at the package** | A shifted inferred signature can only break callers in the same package — non-public items don't cross package boundaries (`struct.modules/CM3`) — and propagates further only while each hop's own signature keeps shifting. No external consumer can be affected, ever |
+| **GC13: A bare method call pins the parameter** | A direct method call that names no trait — `items.len()` — is a shape requirement GC3(b) can state and nothing can yet solve, so the parameter takes one concrete type: the first call site's. Two element types is an error, not two instantiations. This is a limit of what's built, not a claim about what the shape means; the structural bound is where this is going, and `duck trait` is the spelling it will use |
 
 | Principle | Rule |
 |-----------|------|
@@ -121,7 +122,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to `.mul()` |
 | `func get_port() { 8080 }` | `() -> i32` | Literal default, no trait usage |
 | `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
-| `func len(items) { items.len() }` | `<T>(items: Vec<T>) -> usize` | `.len()` doesn't constrain T |
+| `func len(items) { items.len() }` | `(items: Vec<i64>) -> usize`, at the first call site | `.len()` names no trait, so nothing solves the shape — GC13 |
 
 ## Auto-Generics: Single Letters Only
 
@@ -351,7 +352,7 @@ Fully statically checked at every stage — not dynamic typing. Step 3 isn't onl
 
 | Rule | Description |
 |------|-------------|
-| **IS1: Mixed inference** | Per GC3, nominal bounds propagate up from callees; only direct method use stays shape-based |
+| **IS1: Mixed inference** | Per GC3, nominal bounds propagate up from callees; only direct method use stays shape-based. The propagating half is what works today — an operator names its trait, so `x * 2` gives `T: Numeric`. A method that names none pins instead (GC13) |
 | **IS2: Promotion is exact** | "Make explicit"/"make public" fills in a named trait only when exactly one visible trait covers the residual method-requirements. Zero matches: report the methods and offer to generate a trait definition plus conformance declarations. Two or more: list candidates, the user picks — never auto-pick a semantic claim |
 | **IS3: Honest ghost text** | Display distinguishes propagated nominal bounds from raw shape requirements: `T: Comparable` vs `T: {frobnicate}`. Never show a trait name that was merely guessed from shape |
 

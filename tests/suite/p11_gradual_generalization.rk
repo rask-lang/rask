@@ -1,3 +1,23 @@
+// The spec used to give two answers here and they disagreed, which is why this
+// was a decision rather than a fix. It is decided: GC13. A direct method call
+// that names no trait pins the parameter, because a shape requirement is what
+// GC3(b) states and nothing yet solves one. That is a limit of what's built,
+// not a claim about what the shape means — the structural bound is where this
+// is going, and `duck trait` is the spelling it will use.
+//
+// So this file stays pending, and now it is pending on the *direction* rather
+// than on an argument. What it needs is the requirement collected in the
+// checker instead of in desugar: the pass that would write the bound runs
+// before typecheck and can't know `len` returns `usize`, and a trait method
+// needs its return type. A bare `<T>` doesn't help either — bodies are checked
+// once, not per instantiation, so `func count<T>(items: T) -> usize` is E0313.
+//
+// The other answer, a method→type table mapping `.len()` to `Vec<T>`, is the
+// one GC13 rules out: `Vec`, `Map`, `string` and `Set` all have a `.len()`, so
+// every row is a guess, and guessing wrong makes `count(a_map)` an error in a
+// program that reads fine. The operator half could be written down because an
+// operator names its trait; `.len()` names nothing.
+
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Reading a nominal type out of method use — #904's remaining half. Unbuilt.
 //
