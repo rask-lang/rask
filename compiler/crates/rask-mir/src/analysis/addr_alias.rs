@@ -8,6 +8,13 @@
 //! calls the cast the last use of `s` and releases the buffer one statement
 //! before the call that reads it (#1036).
 //!
+//! A closure that borrows its captures is the same thing wearing a different
+//! name: the environment holds the address of each captured local's storage, so
+//! everything the body reads through the closure belongs to those locals. Only
+//! the `ClosureCreate` itself named them, so a string captured by ref was
+//! released right there and the closure then read a freed buffer — an empty line
+//! from `fns.push(|x| "{prefix}:{x}")` (#1160).
+//!
 //! The map here says "this scalar points into that local", so liveness can keep
 //! the pointee alive for as long as the address is.
 
@@ -47,6 +54,20 @@ impl AddrAliases {
             changed = false;
             for block in &func.blocks {
                 for stmt in &block.statements {
+                    // A borrowing closure: the environment holds each captured
+                    // local's address, and the closure local is the handle onto
+                    // that environment. So the closure points into every local
+                    // it captured by ref.
+                    if let MirStmtKind::ClosureCreate { dst, captures, .. } = &stmt.kind {
+                        for c in captures.iter().filter(|c| c.by_ref) {
+                            let entry = pointees.entry(*dst).or_default();
+                            if !entry.contains(&c.local_id) {
+                                entry.push(c.local_id);
+                                changed = true;
+                            }
+                        }
+                        continue;
+                    }
                     let MirStmtKind::Assign { dst, rvalue } = &stmt.kind else { continue };
                     // The destination has to be a scalar — a cast that produces
                     // another aggregate is a conversion, not an address.

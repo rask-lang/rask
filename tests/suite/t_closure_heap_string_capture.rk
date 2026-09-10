@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that keeps a heap string, and the frame that let go of it too soon.
+//
+// Spec: specs/memory/closures.md
+//   MC1  a scope-limited closure borrows what it captures
+//   MC3  a scope-limited closure can't outlive what it captured
+//
+// Two bugs met here and both printed an empty line (#1160):
+//
+//   1. A closure the frame hands on — pushed into a `Vec`, returned, stored —
+//      was still capturing by reference, so its environment held the address of
+//      a local in a frame that the closure can outlive.
+//   2. A closure that captures a string *by value* holds its own reference now,
+//      but nothing took one: the frame's release at the string's last use, which
+//      is the `ClosureCreate` itself, freed the buffer under the environment.
+//
+// A short string survived either way — 15 bytes or fewer sit inline, with no
+// buffer to free — and so did every scalar. That is why the suite's closure
+// tests, which capture integers and short strings, stayed green through both.
+// Every string here is long on purpose.
+
+import sequence.Sequence
+
+func upto(n: i32) -> Sequence<i32> {
+    return |yield| {
+        mut i = 1
+        while i <= n {
+            if !yield(i) { return }
+            i = i + 1
+        }
+    }
+}
+
+func make(n: i64) -> func(i64) -> string {
+    let prefix = "prefix {n}, long enough to allocate a buffer"
+    return |x| {
+        return "{prefix}:{x}"
+    }
+}
+
+func build() -> Vec<func(i64) -> string> {
+    let prefix = "built prefix, long enough to allocate a buffer"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| {
+        return "{prefix}:{x}"
+    })
+    return fns
+}
+
+test "mem.closures/MC3 — a closure pushed into a Vec keeps its string" {
+    let n = 7
+    let prefix = "prefix {n}, long enough to allocate a buffer"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| {
+        return "{prefix}:{x}"
+    })
+    assert fns[0](5) == "prefix 7, long enough to allocate a buffer:5"
+}
+
+test "mem.closures/MC3 — the frame still has its own copy afterwards" {
+    let prefix = "still mine, long enough to allocate a buffer"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| {
+        return "{prefix}:{x}"
+    })
+    assert fns[0](1) == "still mine, long enough to allocate a buffer:1"
+    assert prefix == "still mine, long enough to allocate a buffer"
+}
+
+test "mem.closures/MC3 — two closures over one string" {
+    let prefix = "shared, long enough to allocate a buffer"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| {
+        return "a-{prefix}:{x}"
+    })
+    fns.push(|x| {
+        return "b-{prefix}:{x}"
+    })
+    assert fns[0](1) == "a-shared, long enough to allocate a buffer:1"
+    assert fns[1](2) == "b-shared, long enough to allocate a buffer:2"
+}
+
+test "mem.closures/MC3 — a returned closure keeps its string" {
+    let f = make(3)
+    assert f(1) == "prefix 3, long enough to allocate a buffer:1"
+    assert f(2) == "prefix 3, long enough to allocate a buffer:2"
+}
+
+test "mem.closures/MC3 — a Vec of closures returned out of its frame" {
+    let fns = build()
+    assert fns[0](5) == "built prefix, long enough to allocate a buffer:5"
+}
+
+test "mem.closures/MC3 — one closure per turn of a loop" {
+    mut fns: Vec<func(i64) -> string> = []
+    mut i = 0
+    while i < 3 {
+        let tag = "tag-{i}, long enough to allocate a buffer"
+        fns.push(own |x| {
+            return "{tag}:{x}"
+        })
+        i = i + 1
+    }
+    assert fns[0](9) == "tag-0, long enough to allocate a buffer:9"
+    assert fns[1](9) == "tag-1, long enough to allocate a buffer:9"
+    assert fns[2](9) == "tag-2, long enough to allocate a buffer:9"
+}
+
+// The other side of the same decision. A closure handed to something that only
+// *calls* it does not outlive the frame, so it keeps borrowing — and a borrow is
+// what carries a write back out. Deciding this off "is the environment on the
+// heap" instead answered 0 here, because `for_each` holds the block for the
+// duration of the call and that reads as escaping.
+test "mem.closures/MC1 — a callback still writes to the enclosing variable" {
+    mut total = 0
+    upto(4).for_each(|x| {
+        total = total + x
+    })
+    assert total == 10
+}
+
+test "mem.closures/MC1 — a borrowed string capture outlives the call" {
+    let prefix = "borrowed, long enough to allocate a buffer"
+    mut seen = ""
+    upto(2).for_each(|x| {
+        seen = "{seen}{prefix}:{x};"
+    })
+    assert seen == "borrowed, long enough to allocate a buffer:1;borrowed, long enough to allocate a buffer:2;"
+}
+
+test "an inline string capture was always fine" {
+    let short = "ab"
+    mut fns: Vec<func(i64) -> string> = []
+    fns.push(|x| {
+        return "{short}:{x}"
+    })
+    assert fns[0](5) == "ab:5"
+}
+
+test "a scalar capture was always fine" {
+    let n = 7
+    mut fns: Vec<func(i64) -> i64> = []
+    fns.push(|x| {
+        return x + n
+    })
+    assert fns[0](5) == 12
+}

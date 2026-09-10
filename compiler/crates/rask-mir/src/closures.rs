@@ -97,6 +97,114 @@ fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Ve
     }
 }
 
+/// The closure functions whose environment the frame stops being able to vouch
+/// for — so their captures cannot be addresses into that frame.
+///
+/// Borrowing is what a scope-limited closure does (mem.closures/MC1), and it is
+/// sound exactly while the frame the addresses point into is alive and the
+/// compiler can see the closure's whole life inside it. Two things end that:
+///
+///   - the closure leaves by name — returned, stored through a pointer, put in
+///     an array, boxed as a trait object, or captured by another closure that
+///     leaves;
+///   - the closure is handed to a call that *keeps* it. `fns.push(|x| …)` is
+///     this one: the vector holds the closure, `fns[0]` reads it back out under
+///     a name nothing connects to the create, and the frame's release for the
+///     captured string had already run (#1160).
+///
+/// A call that only *calls* the closure is not either of those, and that
+/// distinction is the whole point of asking the question this way rather than
+/// off the heap flag. `upto(4).for_each(|x| { total = total + x })` puts its
+/// environment on the heap because `for_each` holds the block for the duration
+/// of the call — but it hands nothing on, so `total` stays a borrow and the
+/// write lands in `main`'s variable. Copying there answered 0.
+///
+/// Keyed by function name, because the two flags that have to agree — `by_ref`
+/// on the create and the access on each `LoadCapture` — live in two separate
+/// `MirFunction`s that share nothing but the name. So a closure handed on in one
+/// frame captures by value in all of them.
+pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
+    let callee_escapes = build_callee_escape_map(fns, true);
+    let mut names = HashSet::new();
+
+    for func in fns {
+        let created = created_closures(func);
+        if created.is_empty() {
+            continue;
+        }
+        let aliases = closure_aliases(func, &created);
+        // Only a closure that actually borrows something has a borrow to
+        // withdraw, so the map is built from those creates alone.
+        let borrows: HashMap<LocalId, &str> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::ClosureCreate { dst, func_name, captures, .. }
+                    if captures.iter().any(|c| c.by_ref) =>
+                {
+                    Some((*dst, func_name.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        if borrows.is_empty() {
+            continue;
+        }
+        let name_of = |id: LocalId| -> Option<String> {
+            let origin = aliases.get(&id).copied()?;
+            borrows.get(&origin).map(|n| n.to_string())
+        };
+
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Call { func: callee, args, .. } => {
+                        for (idx, arg) in args.iter().enumerate() {
+                            let Some(id) = uses::operand_local(arg) else { continue };
+                            // A callee nobody wrote down might keep it, and
+                            // "might" has to mean "does": guessing borrow costs
+                            // the buffer, guessing keep costs a copy.
+                            let keeps = callee_escapes
+                                .get(&callee.name)
+                                .and_then(|e| e.get(idx))
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    !rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+                                });
+                            if keeps {
+                                names.extend(name_of(id));
+                            }
+                        }
+                    }
+                    MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                    | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                    | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
+                        names.extend(name_of(*id));
+                    }
+                    // An environment that goes with an escaping closure is as
+                    // gone as the closure is.
+                    MirStmtKind::ClosureCreate { captures, heap: true, .. } => {
+                        for cap in captures {
+                            names.extend(name_of(cap.local_id));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match &block.terminator.kind {
+                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
+                    names.extend(name_of(*id));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    names
+}
+
 /// Free the heap closures this frame is left holding.
 ///
 /// Two ways to be left holding one: build it here, or take one back from a
@@ -373,7 +481,12 @@ fn find_escaping_closures(
                         }
                     }
                 }
-                MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
+                // Three ways to put a closure somewhere the frame does not
+                // control: through a pointer, into a fixed-size array, or
+                // inside a trait box.
+                MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
                     if let Some(origin) = aliases.get(id).copied() {
                         escaping.insert(origin);
                     }

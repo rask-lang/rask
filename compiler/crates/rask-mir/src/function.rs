@@ -37,6 +37,15 @@ impl MirFunction {
             .map(|l| l.id)
             .collect()
     }
+
+    /// The declared type of one local, parameter or not.
+    pub fn local_ty(&self, id: LocalId) -> Option<&MirType> {
+        self.locals
+            .iter()
+            .chain(self.params.iter())
+            .find(|l| l.id == id)
+            .map(|l| &l.ty)
+    }
 }
 
 /// Basic block in CFG
