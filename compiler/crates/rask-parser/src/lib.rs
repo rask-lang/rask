@@ -1494,6 +1494,33 @@ mod tests {
         }
     }
 
+    // A non-method member in a trait body used to spin the body loop forever —
+    // nothing consumed the token and the loop condition stayed true (#1164).
+    // Each of these has to report and then recover onto the method below it.
+    #[test]
+    fn trait_body_member_errors_instead_of_hanging() {
+        for src in [
+            "trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}",
+            "trait Thing {\n    const N = 3\n    func go(self) -> i64\n}",
+            "trait Thing {\n    struct Nested { a: i64 }\n    func go(self) -> i64\n}",
+            "trait Thing {\n    public\n    func go(self) -> i64\n}",
+            "trait Thing {\n    @allow(dead_code)\n    func go(self) -> i64\n}",
+        ] {
+            let result = parse(src);
+            assert!(!result.is_ok(), "expected an error for:\n{src}");
+            assert_eq!(result.errors.len(), 1, "expected one error, got {:?}", result.errors);
+        }
+    }
+
+    // `type` says the feature is missing rather than "methods only" — an
+    // associated type is planned, not a typo (#1165).
+    #[test]
+    fn associated_type_says_it_is_unimplemented() {
+        let result = parse("trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}");
+        assert!(result.errors[0].message.contains("associated types aren't implemented"),
+            "got: {}", result.errors[0].message);
+    }
+
     // `duck trait` sets the structural flag.
     #[test]
     fn duck_trait_flag() {

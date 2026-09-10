@@ -24,6 +24,7 @@ go down.
 | [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `&`), `const` in a body. Parser errors only — a rule the checker enforces can never fire here, so those markers moved to files of their own |
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 | [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
+| [trait_body_members.rk](trait_body_members.rk) | Anything but a method signature in a trait body — `type`, `const`, a nested `struct`, a bare `public`, an attribute (#1164). All five used to hang the parser: the body loop had no branch for them, so nothing consumed the token and the condition never went false. `type` reports as unimplemented rather than forbidden, since associated types are the planned feature #1165 is about |
 
 ### Type System
 

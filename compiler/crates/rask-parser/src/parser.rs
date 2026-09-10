@@ -1972,6 +1972,7 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let saved_pos = self.pos;
             let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
@@ -1981,12 +1982,45 @@ impl Parser {
                 let mut fn_decl = self.parse_trait_method_shorthand()?;
                 fn_decl.doc = method_doc;
                 methods.push(fn_decl);
+            } else {
+                let err = self.trait_body_error();
+                if !self.record_error(err) { break; }
+                self.synchronize_to_next_method();
             }
             self.skip_newlines();
+            // Nothing above consumed a token — advance rather than spin. Reachable
+            // when synchronize_to_next_method returns on the offending token
+            // itself (`public`, `@`), which it treats as a method start. Skip
+            // newlines after, or the terminator becomes a second error.
+            if self.pos == saved_pos && !self.at_end() {
+                self.advance();
+                self.skip_newlines();
+            }
         }
 
         self.expect(&TokenKind::RBrace)?;
         Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, attrs, doc }))
+    }
+
+    /// A trait body holds method signatures and nothing else. `type` gets its own
+    /// wording because an associated type is a planned feature rather than a
+    /// mistake, so "only methods here" would read as a flat refusal.
+    fn trait_body_error(&self) -> ParseError {
+        let span = self.current().span;
+        if self.check(&TokenKind::Type) {
+            return ParseError {
+                span,
+                message: "a trait body holds methods, and associated types aren't implemented yet".to_string(),
+                hint: Some("name a concrete return type on the method for now".to_string()),
+                why: Some("a trait states what conformers must provide, and today that is method signatures only — letting a conformer name a type is a separate feature".to_string()),
+            };
+        }
+        ParseError {
+            span,
+            message: format!("only methods can go in a trait body, found {}", self.current_kind().display_name()),
+            hint: Some("move the declaration out of the trait".to_string()),
+            why: Some("a trait states what conformers must provide, and that is method signatures".to_string()),
+        }
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
