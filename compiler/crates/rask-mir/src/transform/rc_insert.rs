@@ -923,8 +923,12 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
 /// so that edge is where it ends. Three guards, and each of them is a leak
 /// rather than a double free when it says no:
 ///
-///   - the successor has one predecessor, so nothing else can arrive there with
-///     the value still live and run the release twice
+///   - every predecessor of the successor has the group live on the way out, so
+///     nothing can arrive there with the value already gone, or having never
+///     built it. One predecessor is the easy way to be sure of that and used to
+///     be the whole test, which left out every fused adapter loop with two ways
+///     out — `r.xs.zip(other)` exits both when the receiver runs out and when
+///     the other side does
 ///   - something that writes the group dominates the successor, so the slot the
 ///     release walks has been written by the time control gets there
 ///   - the name is one the release can walk, which a bare container handle is
@@ -976,7 +980,24 @@ fn aggregate_edge_releases(
                 if live_in[*si][gi] {
                     continue;
                 }
-                if preds.get(&succ).map(|p| p.len()) != Some(1) {
+                // Every path into the successor has to be one where the group
+                // is live on the way in, or a release at the top of it runs on
+                // a path that never built the group or still needs it. This
+                // used to demand a single predecessor, which is the easy case
+                // of the same rule — and it left out every fused adapter loop
+                // with two ways out. `r.xs.zip(other)` on a struct field is
+                // one: the exit is reached both when the receiver runs out and
+                // when the other side does, so neither edge qualified and the
+                // field's vector was freed by nobody.
+                let all_live_out = preds
+                    .get(&succ)
+                    .is_some_and(|ps| {
+                        !ps.is_empty()
+                            && ps.iter().all(|p| {
+                                index_of.get(p).is_some_and(|pi| live_out[*pi][gi])
+                            })
+                    });
+                if !all_live_out {
                     continue;
                 }
                 if !writes[gi].iter().any(|w| dom.dominates(*w, succ)) {

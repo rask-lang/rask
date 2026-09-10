@@ -184,6 +184,16 @@
 # since the environment's layout is known only to that generated glue and there
 # is no `env_retain` to ask. `t_closure_in_collection.rk` 9 → clean.
 #
+# Eight more when a fused loop reading a struct field started giving the
+# field's container back. `r.xs.zip(other)` reads the handle straight off the
+# struct, and a bare handle is never the name a release walks — so the release
+# belongs on the edge where the group dies, which is the loop's exit block.
+# `aggregate_edge_releases` is that mechanism and it asked for the exit to have
+# exactly one predecessor, which is the easy case of the rule it wanted. A fused
+# `zip` has two ways out, one per side running out, so neither edge qualified.
+# Every predecessor having it live on the way in is the same rule stated
+# properly. `t_collection_api_gaps.rk` 8 → clean.
+#
 # Don't write the running total here. This line used to, and it drifted 22 out
 # from the sum of the lines below — a fix that emptied a file removed its entry
 # without touching the prose, so the tally read like a measurement and was a
@@ -255,7 +265,6 @@ t_capture_freed_with_its_closure.rk  # 2 allocations — the string chain's per-
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — a chain's intermediate environments, #1045
 t_closure_diverging_return.rk  # 2 allocations
-t_collection_api_gaps.rk  # 8 allocations
 t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
