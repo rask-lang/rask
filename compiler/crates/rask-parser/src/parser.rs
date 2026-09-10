@@ -1947,7 +1947,21 @@ impl Parser {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
+        // `TraitDecl` has nowhere to put a type parameter, so this used to skip
+        // one silently. The name then resolved to nothing in the method
+        // signatures, and every conformance failed claiming the type was
+        // missing a method the block plainly had (#1164). Say so here instead,
+        // and keep parsing so the rest of the file still reports.
+        if self.check(&TokenKind::Lt) {
+            let span = self.current().span;
+            let err = ParseError {
+                span,
+                message: format!("generic traits aren't implemented — `{name}` can't take a type parameter"),
+                hint: Some("name the type concretely on the methods, or drop the parameter".to_string()),
+                why: Some("nothing records the parameter, so a conformance to the trait would fail claiming a missing method".to_string()),
+            };
+            self.record_error(err);
+            self.advance();
             while !self.check(&TokenKind::Gt) && !self.at_end() {
                 self.advance();
             }

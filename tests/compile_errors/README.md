@@ -25,6 +25,7 @@ go down.
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 | [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 | [trait_body_members.rk](trait_body_members.rk) | Anything but a method signature in a trait body — `type`, `const`, a nested `struct`, a bare `public`, an attribute (#1164). All five used to hang the parser: the body loop had no branch for them, so nothing consumed the token and the condition never went false. `type` reports as unimplemented rather than forbidden, since associated types are the planned feature #1165 is about |
+| [trait_generic_param.rk](trait_generic_param.rk) | A type parameter on a trait — `trait Scale<Rhs>` (#1164). `TraitDecl` has no field for one, so the parser dropped it and the name resolved to nothing in the signatures; the conformance then failed claiming a missing method the block plainly had. Parser-level, so the checker half is its own file |
 
 ### Type System
 
@@ -64,6 +65,7 @@ go down.
 | [no_auto_wrap_outside_return.rk](no_auto_wrap_outside_return.rk) | A bare `T` becomes a `T or E` at `return` only (ER11, E0828) — binding, argument (free *and* method), and field are rejected, and the optional shape is exempt |
 | [error_type_named_in_diagnostics.rk](error_type_named_in_diagnostics.rk) | Three codes that mention a `T or E` all name its error type rather than leaking `<type#N>` (#646) |
 | [unknown_type_name.rk](unknown_type_name.rk) | Typo'd type name in signature (PC2) — errors instead of becoming a generic |
+| [trait_signature_unknown_type.rk](trait_signature_unknown_type.rk) | An unknown type name in a trait method's signature (PC2, E0356, #1164). Every other signature position had this check — free function, method, struct field — the trait was the gap, so `register_trait` parsed the types and never read their names. A single uppercase letter stays a type parameter (PC1) |
 | [type_called_as_function.rk](type_called_as_function.rk) | A struct or enum name in call position (E0345) — `Name(value)` is the nominal-type constructor (T7), structs have no tuple form (S1) |
 | [single_letter_type_name.rk](single_letter_type_name.rk) | Single-letter concrete type names are reserved for type parameters (PC3) |
 | [not_displayable.rk](not_displayable.rk) | Rendering a type that can't render itself: a struct that never opted in, an optional with no missing case (D3, D4) — through `{}` and through `print`/`println` as a call (#772) |

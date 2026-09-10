@@ -1521,6 +1521,26 @@ mod tests {
             "got: {}", result.errors[0].message);
     }
 
+    // A type parameter on a trait was skipped silently, leaving the name
+    // unresolved in the signatures and every conformance failing for a reason
+    // that wasn't true (#1164). TraitDecl still has nowhere to put it, so the
+    // parse says so rather than dropping it.
+    #[test]
+    fn generic_trait_says_it_is_unimplemented() {
+        let result = parse("trait Mul<Rhs> {\n    func mul(self, rhs: f64) -> f64\n}");
+        assert!(!result.is_ok(), "expected an error");
+        assert!(result.errors[0].message.contains("generic traits aren't implemented"),
+            "got: {}", result.errors[0].message);
+        // Parsing continues past it — the trait and its method still land.
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => {
+                assert_eq!(t.name, "Mul");
+                assert_eq!(t.methods.len(), 1);
+            }
+            _ => panic!("expected trait"),
+        }
+    }
+
     // `duck trait` sets the structural flag.
     #[test]
     fn duck_trait_flag() {
