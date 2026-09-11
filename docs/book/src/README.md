@@ -52,9 +52,12 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 > **Note:** Rask is in early development. Expect gaps in the docs and bugs in the compiler.
 
 **New here?** [Install it](getting-started/installation.md), write
-[your first program](getting-started/first-program.md), then read the
-[Language Guide](guide/README.md). No install needed to look around: the
-[playground](/app/) runs Rask in the browser.
+[your first program](getting-started/first-program.md), then work through the chapters under
+*Learn the language*. No install needed to look around: the [playground](/app/) runs Rask in the
+browser.
+
+The chapters teach one concept at a time and say why each rule is the way it is, which is the part
+the specifications leave out.
 
 **Already writing Rask?** The [language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md)
 is the whole language on one page for looking a rule up, the

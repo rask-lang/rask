@@ -10,8 +10,7 @@
 
 # Learn the language
 
-- [Language Guide](guide/README.md)
-  - [Passing Values](guide/passing-values.md)
+- [Passing Values](guide/passing-values.md)
 - [Exercises](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask)
 
 # Look things up

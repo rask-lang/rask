@@ -46,4 +46,4 @@ The repository includes working examples:
 ## Next Steps
 
 - [Your First Program](first-program.md)
-- [Language Guide](../guide/README.md)
+- [Passing Values](../guide/passing-values.md), the first guide chapter
