@@ -7,9 +7,9 @@ on:
     branches: [ main ]
     paths:
       - 'docs/book/**'
-      - 'docs/blog/**'
       - 'docs/playground/**'
       - 'docs/landing/**'
+      - 'docs/shared/**'
       - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
@@ -60,23 +60,14 @@ jobs:
       with:
         mdbook-version: 'latest'
 
-    - name: Setup Ruby
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: '3.2'
-        bundler-cache: true
-        working-directory: docs/blog
-
     - name: Build mdBook
       run: |
+        # The palette is served from the site root and the book's theme
+        # @imports it from there, so it has to be in place before mdbook runs.
+        mkdir -p docs/build
+        cp docs/shared/tokens.css docs/build/tokens.css
         cd docs/book
         mdbook build -d ../build/book
-
-    - name: Build Jekyll blog
-      run: |
-        cd docs/blog
-        bundle install
-        bundle exec jekyll build --source . --destination ../build/blog
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -96,6 +87,10 @@ jobs:
         mkdir -p docs/build/app
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
         cp -r docs/playground/pkg docs/build/app/
+
+        # The blog became the book's Notes section; keep the old URL working.
+        mkdir -p docs/build/blog
+        cp docs/landing/blog-redirect.html docs/build/blog/index.html
 
         # Copy meta files
         cp docs/CNAME docs/build/CNAME

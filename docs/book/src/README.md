@@ -1,73 +1,64 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/rask-logo-white@3x.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/rask-logo-dark@3x.png">
-    <img alt="rask logo" src="assets/rask-logo-dark@3x.png" width="500">
-  </picture>
+  <img alt="rask logo" class="logo-on-paper" src="assets/rask-logo-dark@3x.png" width="420">
+  <img alt="rask logo" class="logo-on-night" src="assets/rask-logo-white@3x.png" width="420">
 </p>
 
-**Safety without the pain.**
+# What Rask is
 
-Rask is a systems programming language that sits between Rust and Go:
-- Rust's safety guarantees without lifetime annotations
-- Go's simplicity without garbage collection
+A systems language built around one bet: **if references can't be stored,
+lifetime annotations stop being necessary.**
 
-**Status:** Early development with working compiler (Cranelift backend)
+Borrow a value for a call or an expression and it works the way you'd expect.
+Put the borrow in a struct field, or return it, and there's no syntax for what
+you're asking — which is the point. Nothing outlives the thing it points at,
+so there's nothing to track, and signatures carry types and nothing else.
 
-## Quick Look
+Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on
+ceremony.
 
 <!-- test: compile -->
 ```rask
 import fs
 import io
 
-func search(path: string, pattern: string) -> i64 or io.IoError {
-    let content = try fs.read_text(path)
-    mut hits: i64 = 0
+func grep(path: string, pat: string) -> void or io.IoError {
+    mut file = try fs.open(path)
+    ensure file.close()
 
-    for line in content.lines() {
-        if line.contains(pattern) {
-            println(line)
-            hits += 1
-        }
+    let text = try file.read_text()
+    for line in text.lines() {
+        if line.contains(pat) { println(line) }
     }
-
-    return hits
 }
 ```
 
-No lifetime annotations. No borrow checker fights. No GC pauses.
-
-## Core Ideas
-
-- **Value semantics** - Everything is a value, no hidden sharing
-- **Single ownership** - Deterministic cleanup, no GC
-- **Scoped borrowing** - Temporary access that can't escape
-- **Stored links, not pointers** - Graphs and cycles without lifetime annotations
-- **Linear resources** - Files and sockets must be explicitly consumed
-- **No function coloring** - I/O just works, no async/await split
+Three rules meet in those eight lines. `fs.open` hands back a linear resource
+the compiler makes you consume exactly once. `ensure` defers that consumption
+to the end of the scope. `try` returns early on failure — and because the
+consumption is already scheduled, leaving early still closes the file. No
+`defer` discipline to remember, no destructor running out of sight.
 
 ## Where to start
 
-> **Note:** Rask is in early development. Expect gaps in the docs and bugs in the compiler.
+Rask is pre-0.1 and a solo project. Expect gaps in these chapters and bugs in
+the compiler; the [issue tracker](https://github.com/rask-lang/rask/issues) is
+the honest picture.
 
-**New here?** [Install it](getting-started/installation.md), write
-[your first program](getting-started/first-program.md), then work through the chapters under
-*Learn the language*. No install needed to look around: the [playground](/app/) runs Rask in the
-browser.
+**New here.** [Install it](getting-started/installation.md), write [your first
+program](getting-started/first-program.md), then read the chapters under *Learn
+the language*. They take one concept at a time and say why each rule is the way
+it is, which is the part the specs leave out. Nothing to install to look
+around: the [playground](/app/) runs Rask in the browser.
 
-The chapters teach one concept at a time and say why each rule is the way it is, which is the part
-the specifications leave out.
+**Already writing Rask.** The [language
+card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md) is the whole
+language on one page for looking a rule up. The [example
+programs](examples/README.md) are complete and CI-checked. The
+[specs](reference/specs-link.md) are the normative wording when the other two
+disagree.
 
-**Already writing Rask?** The [language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md)
-is the whole language on one page for looking a rule up, the
-[example programs](examples/README.md) are complete and CI-checked, and the
-[specifications](reference/specs-link.md) are the normative wording when the other two disagree.
-
-## Design Philosophy
-
-Want to understand the "why" behind Rask's design choices?
-- [Design Principles](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
-- [How design questions get decided](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md)
-- [Formal Specifications](reference/specs-link.md)
-- [Blog](../blog/) - Development updates and design discussions
+**Here for the design.** The [notes](notes/README.md) are the long-form
+argument; [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
+is the principles it falls out of, and
+[RULINGS.md](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md) is how
+open questions get settled.

@@ -1,0 +1,115 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* The one place site colours and type live. Landing page, book theme and
+   playground all pull from here — the build copies this to the site root as
+   /tokens.css, so the book's theme can reach it across directories.
+
+   Every colour is written once, as a `--paper-*` or `--night-*` value. The
+   blocks below only decide which of the two sets the live names point at, so
+   changing a colour is one edit and the two palettes can't drift apart. The
+   triggers are: the reader's system preference, and mdBook's theme classes
+   (light/rust are its light themes, coal/navy/ayu its dark ones). */
+
+:root {
+    /* Paper and ink. Warm off-white, warm near-black, the logo's green. */
+    --paper-bg: #fbfaf6;
+    --paper-bg-sunken: #f3f0e9;
+    --paper-surface: #ffffff;
+    --paper-ink: #1a1815;
+    --paper-ink-soft: #55504a;
+    --paper-ink-faint: #837c73;
+    --paper-rule: #e4dfd4;
+    --paper-accent: #0b5c38;
+    --paper-accent-hover: #084227;
+    --paper-accent-wash: #eaf1ec;
+
+    /* Kept a step darker than --code-bg, so a code block still reads as a
+       raised surface in dark mode instead of dissolving into the page. */
+    --night-bg: #0f100e;
+    --night-bg-sunken: #0b0c0a;
+    --night-surface: #1d1f1b;
+    --night-ink: #ece8e0;
+    --night-ink-soft: #aba59b;
+    --night-ink-faint: #837c72;
+    --night-rule: #2b2d28;
+    /* The logo's green is too dark to read on a dark ground — lifted, not
+       swapped for a different hue. */
+    --night-accent: #59be8b;
+    --night-accent-hover: #7bd1a4;
+    --night-accent-wash: #1b2a22;
+
+    /* Code renders dark in both modes — one theme, and it reads as a
+       deliberate surface rather than a tinted paragraph. */
+    --code-bg: #161815;
+    --code-chrome: #1d1f1b;
+    --code-rule: #2b2d28;
+    --code-fg: #e4e0d6;
+    --c-cmt: #6e7568;
+    --c-kw: #e3a263;
+    --c-ty: #8ed2aa;
+    --c-fn: #dcc98e;
+    --c-str: #a9c486;
+    --c-bad: #e8877c;
+
+    --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --page: 1120px;
+
+    /* Live names: paper by default. */
+    --bg: var(--paper-bg);
+    --bg-sunken: var(--paper-bg-sunken);
+    --surface: var(--paper-surface);
+    --ink: var(--paper-ink);
+    --ink-soft: var(--paper-ink-soft);
+    --ink-faint: var(--paper-ink-faint);
+    --rule: var(--paper-rule);
+    --accent: var(--paper-accent);
+    --accent-hover: var(--paper-accent-hover);
+    --accent-wash: var(--paper-accent-wash);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not(.light):not(.rust) {
+        --bg: var(--night-bg);
+        --bg-sunken: var(--night-bg-sunken);
+        --surface: var(--night-surface);
+        --ink: var(--night-ink);
+        --ink-soft: var(--night-ink-soft);
+        --ink-faint: var(--night-ink-faint);
+        --rule: var(--night-rule);
+        --accent: var(--night-accent);
+        --accent-hover: var(--night-accent-hover);
+        --accent-wash: var(--night-accent-wash);
+    }
+}
+
+/* mdBook's dark themes, chosen explicitly — these beat the system preference. */
+:root.coal, :root.navy, :root.ayu {
+    --bg: var(--night-bg);
+    --bg-sunken: var(--night-bg-sunken);
+    --surface: var(--night-surface);
+    --ink: var(--night-ink);
+    --ink-soft: var(--night-ink-soft);
+    --ink-faint: var(--night-ink-faint);
+    --rule: var(--night-rule);
+    --accent: var(--night-accent);
+    --accent-hover: var(--night-accent-hover);
+    --accent-wash: var(--night-accent-wash);
+}
+
+/* And its light ones, likewise. */
+:root.light, :root.rust {
+    --bg: var(--paper-bg);
+    --bg-sunken: var(--paper-bg-sunken);
+    --surface: var(--paper-surface);
+    --ink: var(--paper-ink);
+    --ink-soft: var(--paper-ink-soft);
+    --ink-faint: var(--paper-ink-faint);
+    --rule: var(--paper-rule);
+    --accent: var(--paper-accent);
+    --accent-hover: var(--paper-accent-hover);
+    --accent-wash: var(--paper-accent-wash);
+}

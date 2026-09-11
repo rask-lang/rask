@@ -1,11 +1,8 @@
----
-layout: post
-title: "Welcome to the Rask Blog"
-date: 2026-02-07 23:30:00 +0100
-categories: announcement
----
+# Why a new language?
 
-*Updated 2026-08-07: the code samples and the error-handling description track current syntax. The rest of the post is left as written.*
+*Written 2026-02-07.*
+
+*Updated 2026-08-07: the code samples and the error-handling description track current syntax. The rest is left as written.*
 
 Hi! I'm having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!
 
@@ -38,28 +35,50 @@ Here's a sneak peek at some core features:
 
 Here's what it looks like:
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-func process_config(path: string) -> Config or Error {
-    let file = try fs.open(path)
+import fs
+import io
+
+struct Config {
+    settings: Map<string, string>
+}
+
+enum ConfigError {
+    InvalidFormat
+    Io(io.IoError)
+}
+
+func process_config(path: string) -> Config or ConfigError {
+    mut file = try fs.open(path)
     ensure file.close()
 
-    let content = try file.read_to_string()
-    let lines = content.split('\n')
+    let content = try file.read_text()
 
-    mut settings = Map.new()
-    for line in lines {
-        if line.starts_with('#'): continue
+    mut settings: Map<string, string> = Map.new()
+    for line in content.lines() {
+        if line.starts_with("#") { continue }
 
-        let parts = line.split('=')
-        if parts.len() != 2: return Error.InvalidFormat
+        mut parts: Vec<string> = Vec.new()
+        for piece in line.split("=") { parts.push(piece.to_string()) }
+        if parts.len() != 2 { return ConfigError.InvalidFormat }
 
-        settings.insert(parts[0].trim(), parts[1].trim())
+        settings.insert(parts[0].trim().to_string(), parts[1].trim().to_string())
     }
 
-    return Config { settings }
+    return Config { settings: settings }
 }
 ```
+
+*The version I originally posted here was shorter and didn't compile, which is
+its own kind of answer. Two things account for the difference. `try` needs the
+error types to line up, so `ConfigError` grows a variant holding an `IoError` —
+fair, and the compiler suggests exactly that. The `split` loop is the real cost:
+`split` hands back views into the string it was given, and a view can't outlive
+the statement, so collecting the pieces means copying them out one at a time.
+That is the no-storable-references rule doing precisely what it says, and it is
+also four lines where I wanted one. A `split` that collects owned pieces in one
+step is missing, and I should add it.*
 
 No lifetimes. No async. No borrow checker fights. Just clean, simple code that can't leak resources.
 
@@ -77,8 +96,11 @@ Design phase. Most of the specs are written, the interpreter handles the core fe
 
 Next up: compiler. Probably LLVM backend, maybe cranelift. Haven't decided yet.
 
+*(It went with Cranelift.)*
+
 ## Try it yourself
 
-Want to see more? Try Rask in your browser with the [playground](/app/), read through the [language guide](/book/guide/), or dive into the [design specs](https://github.com/rask-lang/rask/tree/main/specs).
+[Run it in the browser](/app/), work through [the chapters](../getting-started/installation.md),
+or read the [design specs](https://github.com/rask-lang/rask/tree/main/specs).
 
-Have thoughts or questions? [Open an issue](https://github.com/rask-lang/rask/issues) or start a [discussion](https://github.com/rask-lang/rask/discussions) on GitHub.
+Thoughts and questions both go on [GitHub](https://github.com/rask-lang/rask/issues).

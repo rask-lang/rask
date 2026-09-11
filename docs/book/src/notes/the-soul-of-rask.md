@@ -1,9 +1,6 @@
----
-layout: post
-title: "The Soul of Rask"
-date: 2026-02-20 12:00:00 +0100
-categories: design
----
+# The Soul of Rask
+
+*Written 2026-02-20.*
 
 Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.
 
@@ -31,10 +28,27 @@ In C++, `auto result = greeting + " " + name` creates two temporary strings and 
 
 Rask doesn't do this. Large values move, not copy. If you want a copy, you write `.clone()`. Operators don't allocate behind your back. When something is expensive, you can see it in the code:
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-let items = user.inventory.clone()            // explicit: this copies
-process(own user)                               // explicit: ownership transferred
+struct Inventory {
+    items: Vec<string>
+}
+
+struct Account {
+    name: string
+    inventory: Inventory
+}
+
+func process(take account: Account) {
+    println(account.name)
+}
+
+func main() {
+    let account = Account { name: "ada", inventory: Inventory { items: Vec.new() } }
+    let items = account.inventory.clone()   // explicit: this copies
+    println("{items.items.len()}")
+    process(own account)                    // explicit: ownership transferred
+}
 ```
 
 Strings are the deliberate exception — `string` is immutable, refcounted, and Copy (16 bytes). It copies like an integer, no `.clone()` needed. I think that's fine because immutability eliminates aliased mutation risk, and the compiler elides most refcount operations anyway.
@@ -49,19 +63,42 @@ This is where a strict "everything must be visible" rule would break down. Some 
 
 ## Handle overhead
 
-[I wrote about this in the first post](/2026/02/07/welcome-to-rask-blog/)—references can't be stored, so graph structures use handles into pools. Each handle access costs ~1-2ns for a generation check. That's real overhead.
+[I wrote about this in the previous note](why-a-new-language.md)—references can't be stored, so graph structures use handles into pools. Each handle access costs ~1-2ns for a generation check. That's real overhead.
 
-<!-- test: parse -->
+*(Since writing this, handles-into-pools was replaced by `Rack<T>` + `Link<T>`.
+Deleting a node nulls every edge pointing at it before the delete returns, so a
+dangling link never exists and following a live one needs no check at all — it's
+a pointer hop. The 1–2ns this section is arguing about is gone, and so is the
+argument. The example below is the current spelling; the original took a
+`Handle<Entity>` and a `using Pool<Entity>` clause.)*
+
+<!-- test: compile -->
 ```rask
-func damage(h: Handle<Entity>) using Pool<Entity> {
-    h.health -= 10                             // generation check here
-    if h.health <= 0 {
-        h.state = EntityState.Dead
+import memory.Rack
+import memory.Link
+
+enum EntityState {
+    Alive
+    Dead
+}
+
+struct Entity {
+    health: i32
+    state: EntityState
+}
+
+func damage(mutate e: Link<Entity>) {
+    e.health -= 10
+    if e.health <= 0 {
+        e.state = EntityState.Dead
     }
 }
 ```
 
-This is safety winning over performance. I could skip the check with raw pointers, but use-after-free is worse than 2ns. For the 90% of code that isn't a hot inner loop, I think that's the right call. For the rest, there's `unsafe`.
+What I wrote at the time: this is safety winning over performance — I could skip
+the check with raw pointers, but use-after-free is worse than 2ns. That was the
+right instinct and the wrong dilemma. The better move was to make the invalid
+state impossible rather than pay to test for it, which is what the rack does.
 
 ## Readable over writable
 
@@ -81,13 +118,47 @@ fn save_user(db: &mut Database, name: &str) -> Result<UserId, Error> {
 }
 ```
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
 // Rask
-func save_user(mutate db: Database, name: string) -> UserId or Error {
+struct UserId {
+    value: i64
+}
+
+struct Account {
+    id: UserId
+    name: string
+}
+
+struct Database {
+    next: i64
+}
+
+enum DbError {
+    Full
+}
+
+extend Account {
+    func new(id: UserId, name: string) -> Account {
+        return Account { id: id, name: name }
+    }
+}
+
+extend Database {
+    func next_id(mutate self) -> UserId or DbError {
+        self.next += 1
+        return UserId { value: self.next }
+    }
+
+    func insert(mutate self, account: Account) -> void or DbError {
+        return
+    }
+}
+
+func save_account(mutate db: Database, name: string) -> UserId or DbError {
     let id = try db.next_id()
-    let user = User.new(id, name)
-    try db.insert(user)
+    let account = Account.new(id, name)
+    try db.insert(account)
     return id
 }
 ```
@@ -106,13 +177,28 @@ That's pragmatism. I'd rather take a proven solution than invent a worse one for
 
 Forget to close a file? Compile error. I/O handles must be consumed exactly once:
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-func process(path: string) -> Stats or Error {
-    let file = try fs.open(path)
+import fs
+import io
+
+struct Stats {
+    lines: u64
+}
+
+enum StatsError {
+    Io(io.IoError)
+}
+
+func parse_stats(data: string) -> Stats {
+    return Stats { lines: data.lines().count() }
+}
+
+func process(path: string) -> Stats or StatsError {
+    mut file = try fs.open(path)
     ensure file.close()
 
-    let data = try file.read_to_string()
+    let data = try file.read_text()
     return parse_stats(data)
     // file.close() runs here, guaranteed
 }
