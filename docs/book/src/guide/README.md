@@ -20,6 +20,6 @@ The rules a chapter has to follow are in
 
 ## Elsewhere
 
-- [Examples](../examples/README.md) — complete programs: grep clone, game loop, text editor
+- [Examples](../examples/README.md) — complete programs, each one run by CI on both backends
 - [Getting Started](../getting-started/README.md) — installation and first program
 - [Specifications](../reference/specs-link.md) — the normative rules
