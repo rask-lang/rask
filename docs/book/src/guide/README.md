@@ -6,8 +6,9 @@ in the order you'd meet them, and says why each one is the way it is.
 
 Every chapter's Rask is pulled straight out of a program in
 [examples/](https://github.com/rask-lang/rask/blob/main/examples/) that CI runs on both backends,
-and every compile error shown is real `rask check` output. A chapter can't drift from code that
-works.
+and every compile error shown is a pinned rendering of real `rask check` output. `tests/book_gate.sh`
+enforces both, so a chapter can't drift from the compiler — and improving a diagnostic shows up as a
+diff on the page that teaches it.
 
 ## Chapters
 

@@ -44,8 +44,12 @@ func main() {
     mut account = Account { owner: "Ada", balance: 100 }
 
     println(describe(account))         // borrow — no marker
+    // ANCHOR: mutatecall
     deposit(mutate account, 50)        // mutate — marker required
+    // ANCHOR_END: mutatecall
+    // ANCHOR: receivercall
     account.charge_fee(5)              // receiver — never marked
+    // ANCHOR_END: receivercall
     println(describe(account))
 
     let final = close_out(account)     // take — account is gone after this

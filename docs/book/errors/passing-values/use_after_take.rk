@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Must not compile: the name is gone once a `take` parameter has it.
+// Quoted by docs/book/src/guide/passing-values.md; rendering in .out.
+
+struct Account {
+    owner: string
+    balance: i64
+}
+
+func close_out(take account: Account) -> i64 {
+    return account.balance
+}
+
+func main() {
+    let account = Account { owner: "Ada", balance: 100 }
+    let n = close_out(account)
+    println("{n} {account.balance}")
+}

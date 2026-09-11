@@ -20,12 +20,7 @@ A borrow isn't yours to give away. Try to pass it on to something that takes own
 compiler stops you:
 
 ```text
-error[E0835]: cannot give away `account` — it's borrowed, not owned
- 10 | func describe(account: Account) -> i64 {
-    |               ------- `account` is declared as a borrowed parameter
- 11 |     return close_out(account)
-    |                      ^^^^^^^ `close_out` takes ownership, and `account` isn't yours to give
-    = fix: take it: `take account: …` in the signature — then the caller can see it goes
+{{#include ../../errors/passing-values/consume_borrowed.out}}
 ```
 
 The caller never marked this as given, so they're still using it. Consuming it here would leave
@@ -41,16 +36,13 @@ of a real resource.
 The call site marks it too, and that's not optional:
 
 ```rask
-deposit(mutate account, 50)
+{{#include ../../../../examples/parameter_modes.rk:mutatecall}}
 ```
 
 Leave the marker off and you get the one-token fix, plus the reason:
 
 ```text
-error[E0373]: `deposit` mutates `account` — mark it at the call site
- 12 |     deposit(account, 50)
-    |             ^^^^^^^ passed to the `mutate account` parameter
-    = fix: deposit(mutate account, …)
+{{#include ../../errors/passing-values/missing_marker.out}}
 ```
 
 Here's the thinking behind that. A misread *move* is backstopped by the compiler — use a value
@@ -64,10 +56,7 @@ the parameter says `mutate`, whatever the argument's type or size. An `i64` writ
 One thing catches everyone once. `let` is deep:
 
 ```text
-error[E0302]: cannot mutate `account` — declared `let`
- 12 |     deposit(mutate account, 50)
-    |                    ^^^^^^^ `account` is a let binding — immutable
-    = fix: replace `let account` with `mut account`
+{{#include ../../errors/passing-values/let_as_mutate.out}}
 ```
 
 `let` doesn't mean "this name won't be reassigned." It means nothing changes through this name —
@@ -83,12 +72,7 @@ No marker needed, though `own account` is available when you want the call site 
 call the name is gone:
 
 ```text
-error[E0800]: use of moved value: `account`
- 12 |     let n = close_out(account)
-    |                       ------- value moved here
- 13 |     println("{n} {account.balance}")
-    |                   ^^^^^^^ value used here after move
-    = note: `Account` is 24 bytes (copy threshold is 16) — assignment moves instead of copying
+{{#include ../../errors/passing-values/use_after_take.out}}
 ```
 
 That note is the whole reason `take` needs no marker: the compiler will tell you exactly where the
@@ -101,7 +85,7 @@ value went, the moment you reach for it again.
 ```
 
 ```rask
-account.charge_fee(5)
+{{#include ../../../../examples/parameter_modes.rk:receivercall}}
 ```
 
 `charge_fee` takes `mutate self` and the call site still says nothing. The receiver is the thing
@@ -116,7 +100,11 @@ in the language.
 
 Read the markers and you know the shape of that block without opening a single signature: two
 borrows, one mutation, one method on the receiver, one hand-off. That's what making them visible
-buys.
+buys. Running it prints:
+
+```text
+{{#include ../../../../tests/golden/parameter_modes.out}}
+```
 
 ## Small values are copied, not given
 
@@ -126,12 +114,6 @@ buys.
 
 ```rask
 {{#include ../../../../examples/parameter_modes.rk:copy}}
-```
-
-which prints:
-
-```text
-doubled to 10, and fee is still 5
 ```
 
 `take` means "I'm keeping this", but you can't take away what the caller never gave up. Values of

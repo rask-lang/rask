@@ -1,0 +1,18 @@
+# Book chapters that still hand-copy Rask into the page, with a count.
+#
+# tests/book_gate.sh requires every ```rask block in docs/book/src to be an
+# {{#include}} from a program some other gate runs. These files predate the
+# gate. The count is a ratchet: convert a block and lower the number, and the
+# gate fails if a number goes UP — or if it's higher than reality, so nobody
+# leaves a stale budget behind.
+#
+# Converting one means moving its code into a program under examples/ (with a
+# golden in tests/golden/, which enrolls it in the example gate) and pointing an
+# anchor at it. Delete the line when a file reaches zero.
+#
+# path                                          blocks
+docs/book/src/README.md                         1
+docs/book/src/examples/game-loop.md             4
+docs/book/src/examples/grep-clone.md            4
+docs/book/src/examples/text-editor.md           3
+docs/book/src/getting-started/first-program.md  4
