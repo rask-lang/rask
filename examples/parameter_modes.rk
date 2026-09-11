@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: the three parameter modes — borrow, mutate, take
+//
+// Included by docs/book/src/guide/passing-values.md via mdBook anchors.
+// Keep the ANCHOR comments; the chapter quotes the regions between them.
+
+struct Account {
+    owner: string
+    balance: i64
+}
+
+// ANCHOR: borrow
+// No marker: the callee reads, the caller keeps the value.
+func describe(account: Account) -> string {
+    return "{account.owner}: {account.balance}"
+}
+// ANCHOR_END: borrow
+
+// ANCHOR: mutate
+// `mutate`: the callee writes through, the caller still owns it afterwards.
+func deposit(mutate account: Account, amount: i64) {
+    account.balance += amount
+}
+// ANCHOR_END: mutate
+
+// ANCHOR: take
+// `take`: the callee keeps it. The name dies at the call site.
+func close_out(take account: Account) -> i64 {
+    return account.balance
+}
+// ANCHOR_END: take
+
+// ANCHOR: receiver
+extend Account {
+    // A receiver is never marked at the call site, mutating or not.
+    func charge_fee(mutate self, fee: i64) {
+        self.balance -= fee
+    }
+}
+// ANCHOR_END: receiver
+
+func main() {
+    // ANCHOR: callsite
+    mut account = Account { owner: "Ada", balance: 100 }
+
+    println(describe(account))         // borrow — no marker
+    deposit(mutate account, 50)        // mutate — marker required
+    account.charge_fee(5)              // receiver — never marked
+    println(describe(account))
+
+    let final = close_out(account)     // take — account is gone after this
+    println("closed with {final}")
+    // ANCHOR_END: callsite
+
+    // ANCHOR: copy
+    // Small values (16 bytes or less, all-Copy fields) copy instead of moving,
+    // so handing one to `take` leaves the caller's copy alone.
+    let fee = 5
+    let doubled = charge_twice(fee)
+    println("doubled to {doubled}, and fee is still {fee}")
+    // ANCHOR_END: copy
+}
+
+// ANCHOR: copyfn
+func charge_twice(take amount: i64) -> i64 {
+    return amount * 2
+}
+// ANCHOR_END: copyfn

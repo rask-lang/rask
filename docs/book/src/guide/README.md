@@ -1,9 +1,21 @@
 # Language Guide
 
-> **Note:** The language guide is being written. Rask is in active design — the specifications are the authoritative source for now.
+The guide is being written, chapter by chapter. The
+[specifications](../reference/specs-link.md) stay authoritative — the guide teaches the same rules
+in the order you'd meet them, and says why each one is the way it is.
 
-## Where to Learn
+Every chapter's Rask is pulled straight out of a program in
+[examples/](https://github.com/rask-lang/rask/blob/main/examples/) that CI runs on both backends,
+and every compile error shown is real `rask check` output. A chapter can't drift from code that
+works.
 
-- **[Examples](../examples/README.md)** — Complete working programs (grep clone, game loop, text editor)
-- **[Formal Specifications](../reference/specs-link.md)** — Full language specs, start with [CORE_DESIGN.md](../../../../specs/CORE_DESIGN.md)
-- **[Getting Started](../getting-started/README.md)** — Installation and first program
+## Chapters
+
+- [Passing Values](passing-values.md) — borrow, `mutate`, `take`, and why only one of them needs a
+  marker at the call site
+
+## Elsewhere
+
+- [Examples](../examples/README.md) — complete programs: grep clone, game loop, text editor
+- [Getting Started](../getting-started/README.md) — installation and first program
+- [Specifications](../reference/specs-link.md) — the normative rules

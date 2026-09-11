@@ -15,6 +15,7 @@
 # User Guide
 
 - [Language Guide](guide/README.md)
+  - [Passing Values](guide/passing-values.md)
 
 # Examples
 
