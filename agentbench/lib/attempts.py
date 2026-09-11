@@ -19,7 +19,7 @@ from . import rask, tasks
 from .models import Model, Reply
 
 ROOT = Path(__file__).resolve().parents[2]
-LANGUAGE_CARD = ROOT / "LANGUAGE_GUIDE.md"
+LANGUAGE_CARD = ROOT / "LANGUAGE_CARD.md"
 
 SYSTEM_PREAMBLE = """\
 You are writing Rask, a compiled systems language. Rask is not Rust, Go, or \

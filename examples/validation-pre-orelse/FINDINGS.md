@@ -182,7 +182,7 @@ Still valid against `main`:
   one (used it directly); encoding.md remains wrong.
 - **#337** `using` clause vs return-type ordering — pools.md and
   canonical-patterns still disagree; program uses `-> Ret using Pool<T>`.
-- **#338** LANGUAGE_GUIDE omits `with (...)` on nominal newtypes. Compounded now
+- **#338** LANGUAGE_CARD omits `with (...)` on nominal newtypes. Compounded now
   that nominal `extend` is broken (B1): the card points at a form that neither
   carries traits nor takes methods.
 - **#340** OC1 × nominal `with (...)` delegation — unspecified. Sidestepped by

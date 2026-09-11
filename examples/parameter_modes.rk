@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: the three parameter modes — borrow, mutate, take
+// Learn: the three parameter modes: borrow, mutate, take
 //
 // Included by docs/book/src/guide/passing-values.md via mdBook anchors.
 // Keep the ANCHOR comments; the chapter quotes the regions between them.
@@ -43,16 +43,16 @@ func main() {
     // ANCHOR: callsite
     mut account = Account { owner: "Ada", balance: 100 }
 
-    println(describe(account))         // borrow — no marker
+    println(describe(account))         // borrow: no marker
     // ANCHOR: mutatecall
-    deposit(mutate account, 50)        // mutate — marker required
+    deposit(mutate account, 50)        // mutate: marker required
     // ANCHOR_END: mutatecall
     // ANCHOR: receivercall
-    account.charge_fee(5)              // receiver — never marked
+    account.charge_fee(5)              // receiver: never marked
     // ANCHOR_END: receivercall
     println(describe(account))
 
-    let final = close_out(account)     // take — account is gone after this
+    let final = close_out(account)     // take: account is gone after this
     println("closed with {final}")
     // ANCHOR_END: callsite
 

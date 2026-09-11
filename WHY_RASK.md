@@ -421,4 +421,4 @@ The question being answered right now is whether the approach is viable — not 
 - [CORE_DESIGN.md](specs/CORE_DESIGN.md) — full design rationale
 - [specs/](specs/) — formal specifications
 - [examples/](examples/) — working programs
-- [Language Guide](LANGUAGE_GUIDE.md) — complete feature walkthrough
+- [LANGUAGE_CARD.md](LANGUAGE_CARD.md) — the whole language on one page, for looking a rule up

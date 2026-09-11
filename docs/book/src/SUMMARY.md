@@ -1,35 +1,26 @@
 # Summary
 
-[Introduction](README.md)
+[What Rask is](README.md)
 
-# Getting Started
+# Start here
 
-- [Getting Started](getting-started/README.md)
-  - [Installation](getting-started/installation.md)
-  - [Your First Program](getting-started/first-program.md)
+- [Install it](getting-started/installation.md)
+- [Your first program](getting-started/first-program.md)
+- [Try it in the browser](playground/README.md)
 
-# Tutorials
+# Learn the language
 
-- [Learn Rask](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask)
+- [Passing Values](guide/passing-values.md)
+- [Exercises](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask)
 
-# User Guide
+# Look things up
 
-- [Language Guide](guide/README.md)
-  - [Passing Values](guide/passing-values.md)
-
-# Examples
-
-- [Examples](examples/README.md)
-
-# Reference
-
-- [Formal Specifications](reference/specs-link.md)
-
-# Tools
-
-- [Playground](playground/README.md)
+- [Example programs](examples/README.md)
+- [Language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md)
+- [Specifications](reference/specs-link.md)
 
 # Contributing
 
 - [Contributing](contributing/README.md)
-  - [Design Process](contributing/design-process.md)
+  - [Design process](contributing/design-process.md)
+  - [How this book is built](contributing/how-this-book-is-built.md)
