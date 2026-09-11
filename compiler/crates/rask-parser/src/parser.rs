@@ -1947,7 +1947,21 @@ impl Parser {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
+        // `TraitDecl` has nowhere to put a type parameter, so this used to skip
+        // one silently. The name then resolved to nothing in the method
+        // signatures, and every conformance failed claiming the type was
+        // missing a method the block plainly had (#1164). Say so here instead,
+        // and keep parsing so the rest of the file still reports.
+        if self.check(&TokenKind::Lt) {
+            let span = self.current().span;
+            let err = ParseError {
+                span,
+                message: format!("generic traits aren't implemented — `{name}` can't take a type parameter"),
+                hint: Some("name the type concretely on the methods, or drop the parameter".to_string()),
+                why: Some("nothing records the parameter, so a conformance to the trait would fail claiming a missing method".to_string()),
+            };
+            self.record_error(err);
+            self.advance();
             while !self.check(&TokenKind::Gt) && !self.at_end() {
                 self.advance();
             }
@@ -1972,6 +1986,7 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let saved_pos = self.pos;
             let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
@@ -1981,12 +1996,83 @@ impl Parser {
                 let mut fn_decl = self.parse_trait_method_shorthand()?;
                 fn_decl.doc = method_doc;
                 methods.push(fn_decl);
+            } else {
+                let err = self.trait_body_error();
+                if !self.record_error(err) { break; }
+                self.synchronize_to_next_trait_member();
             }
             self.skip_newlines();
+            // Backstop against a hang: nothing above consumed a token. The
+            // synchronize should always move, but a spin is the one failure
+            // mode here worth being certain about.
+            if self.pos == saved_pos && !self.at_end() {
+                self.advance();
+                self.skip_newlines();
+            }
         }
 
         self.expect(&TokenKind::RBrace)?;
         Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, attrs, doc }))
+    }
+
+    /// Skip the rest of a malformed trait-body member: to the newline that ends
+    /// it, or to the closing brace.
+    ///
+    /// `synchronize_to_next_method` can't do this job. It stops on `@`, `public`
+    /// and friends without moving, because in an impl block those legitimately
+    /// start the next method — a trait body allows none of them. So recovery
+    /// from `@allow(dead_code)` advanced a single token, landed on `allow`, and
+    /// the shorthand branch parsed `allow(dead_code)` as a method signature:
+    /// untyped params are legal (GC1), so it succeeded and invented a trait
+    /// method nobody wrote. A conformer providing exactly the real methods was
+    /// then told it was missing `allow` — the same wrong-blame this whole change
+    /// set is about.
+    ///
+    /// A member is one line, or one braced block, so the line is the unit to
+    /// skip. Brace depth carries `struct Nested { a: i64 }` past its own
+    /// newlines.
+    fn synchronize_to_next_trait_member(&mut self) {
+        let mut brace_depth: i32 = 0;
+        while !self.at_end() {
+            match self.current_kind() {
+                TokenKind::LBrace => {
+                    brace_depth += 1;
+                    self.advance();
+                }
+                TokenKind::RBrace if brace_depth > 0 => {
+                    brace_depth -= 1;
+                    self.advance();
+                }
+                // The body's own closing brace — the caller's loop ends on it.
+                TokenKind::RBrace => return,
+                TokenKind::Newline if brace_depth == 0 => {
+                    self.advance();
+                    return;
+                }
+                _ => { self.advance(); }
+            }
+        }
+    }
+
+    /// A trait body holds method signatures and nothing else. `type` gets its own
+    /// wording because an associated type is a planned feature rather than a
+    /// mistake, so "only methods here" would read as a flat refusal.
+    fn trait_body_error(&self) -> ParseError {
+        let span = self.current().span;
+        if self.check(&TokenKind::Type) {
+            return ParseError {
+                span,
+                message: "a trait body holds methods, and associated types aren't implemented yet".to_string(),
+                hint: Some("name a concrete return type on the method for now".to_string()),
+                why: Some("a trait states what conformers must provide, and today that is method signatures only — letting a conformer name a type is a separate feature".to_string()),
+            };
+        }
+        ParseError {
+            span,
+            message: format!("only methods can go in a trait body, found {}", self.current_kind().display_name()),
+            hint: Some("move the declaration out of the trait".to_string()),
+            why: Some("a trait states what conformers must provide, and that is method signatures".to_string()),
+        }
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {

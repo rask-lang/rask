@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: anything but a method signature in a trait body
+//
+// These all used to hang the parser (#1164). The body loop matched `func` and a
+// bare identifier (the method shorthand) and had no third branch, so a token
+// neither of those covered was never consumed and the loop condition never went
+// false. `rask check` sat there until it was killed.
+//
+// The impl-block loop below it always had the progress guard this one was
+// missing, which is why `type Out = Meters` inside `extend` gave a clean
+// "Expected 'func', found 'type'" while the same line in a trait spun.
+//
+// Parser-level only. Each error has to recover onto the method under it, so
+// every trait here reports exactly once.
+
+// ERROR: associated types aren't implemented — a trait body holds methods
+trait Mul {
+    type Out
+    func mul(self, rhs: f64) -> f64
+}
+
+// ERROR: `const` in a trait body
+trait Counter {
+    const START = 3
+    func next(self) -> i64
+}
+
+// ERROR: a nested `struct` in a trait body
+trait Shaped {
+    struct Nested { a: i64 }
+    func area(self) -> f64
+}
+
+// ERROR: a bare modifier with no method under it — this is the case that needs
+// ERROR: the forced advance, since synchronize_to_next_method reads `public` as
+// ERROR: the start of a method and returns without moving
+trait Visible {
+    public
+    func show(self) -> string
+}
+
+// ERROR: an attribute on a trait method — trait methods parse with no attrs
+trait Quiet {
+    @allow(dead_code)
+    func hush(self) -> i64
+}
+
+// `type` gets its own wording because an associated type is a planned feature
+// (#1165), not a typo: the message says it isn't implemented rather than "only
+// methods can go here", which would read as a permanent no.
+//
+// What works today — the type is concrete on the signature:
+//
+//   trait Mul {
+//       func mul(self, rhs: f64) -> f64
+//   }
+//
+// The shape #1165 is about, once associated types land:
+//
+//   trait Mul<Rhs> {
+//       type Out
+//       func mul(self, rhs: Rhs) -> Self.Out
+//   }

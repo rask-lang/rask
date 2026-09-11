@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an unknown type name in a trait method's signature (PC2, E0356)
+//
+// `register_trait` parsed each method's signature types and never looked at
+// their names, so a wholly invented one registered clean (#1164). Every other
+// signature position already had this check — a free function, a method, a
+// struct field — the trait was the gap.
+//
+// Nothing caught it until the conformance, which then blamed the wrong thing:
+// the block was told it was missing a method it had, because the required
+// signature named a type that didn't exist.
+
+// ERROR: unknown type in a trait method's parameter
+// ERROR: and the same name in its return type — reported per position, the
+// ERROR: same as an ordinary `func f(x: NoSuchType) -> NoSuchType`
+trait Convert {
+    func convert(self, from: NoSuchType) -> NoSuchType
+}
+
+// A single uppercase letter stays a type parameter (PC1), so this is fine and
+// has to keep compiling:
+//
+//   trait Holder {
+//       func first(self) -> T
+//   }
+//
+// The name length is the test, not the case — same rule as #966 applied to
+// every other signature position.

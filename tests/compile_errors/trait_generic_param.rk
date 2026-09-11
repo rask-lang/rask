@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a type parameter on a trait declaration
+//
+// `TraitDecl` has no field for one, so `parse_trait_decl` skipped it silently
+// (#1164). The parameter name then resolved to nothing in the method
+// signatures, and the bill arrived at the conformance:
+//
+//   error[E0333]: `Meters` does not implement `Scale<f64>`
+//       | `Meters` is missing methods `Scale<f64>` requires
+//       = fix: add the missing methods to the block
+//
+// pointing at a block with the method right there. The required signature said
+// `k: Rhs`, `Rhs` named nothing, and the conformance's `k: f64` couldn't match
+// it. Writing the header as bare `extend Meters with Scale` gave the same
+// error, so it wasn't the `<f64>` — it was the trait side all along.
+//
+// Parser-level, so the checker never runs here. The unknown-type-in-a-trait-
+// signature half is in trait_signature_unknown_type.rk.
+
+// ERROR: a type parameter on a trait — generic traits aren't implemented
+trait Scale<Rhs> {
+    func scale(self, k: f64) -> Self
+}
+
+// What works today — name the type concretely:
+//
+//   trait Scale {
+//       func scale(self, k: f64) -> Self
+//   }
+//
+//   extend Meters with Scale {
+//       func scale(self, k: f64) -> Meters {
+//           return Meters { v: self.v * k }
+//       }
+//   }
+//
+// The generic form is what `trait Mul<Rhs>` needs for operator resolution, and
+// it's blocked on #1165 along with associated types.

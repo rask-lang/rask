@@ -270,6 +270,10 @@ impl TypeChecker {
         for (ty, span) in pending {
             self.validate_result_types_in(&ty, span);
         }
+        // PC2 for trait method signatures, which nothing checked (#1164). A
+        // trait may name a type declared below it, so this waits until every
+        // type is registered.
+        self.validate_trait_signature_names(decls);
         self.propagate_uniqueness();
         self.propagate_resource_linearity();
         self.auto_derive_traits();
@@ -737,6 +741,32 @@ impl TypeChecker {
                 .insert((enum_id, variant), field_names);
         }
         enum_id
+    }
+
+    /// `register_trait` parses a method's signature types but never looked at
+    /// their names, so an invented one registered clean and only surfaced at
+    /// the conformance — as "this type is missing methods the trait requires",
+    /// pointing at a block that had them (#1164).
+    fn validate_trait_signature_names(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let DeclKind::Trait(t) = &decl.kind else { continue };
+            for m in &t.methods {
+                let allowed = signature_type_param_names(m);
+                for p in &m.params {
+                    if p.name == "self" || p.ty.is_empty() {
+                        continue;
+                    }
+                    if let Ok(ty) = parse_type_string(&p.ty, &self.types) {
+                        self.validate_signature_names(&ty, &allowed, p.name_span);
+                    }
+                }
+                if let Some(rt) = &m.ret_ty {
+                    if let Ok(ty) = parse_type_string(rt, &self.types) {
+                        self.validate_signature_names(&ty, &allowed, m.span);
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
