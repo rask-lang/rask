@@ -7,6 +7,3 @@ error[E0800]: use of moved value: `account`
     |                   ^^^^^^^ value used here after move
     = note: `Account` is 24 bytes (copy threshold is 16) — assignment moves instead of copying
     = help: add `account.clone()` if you need an independent copy
-
-
-=== Check FAILED: 1 error ===

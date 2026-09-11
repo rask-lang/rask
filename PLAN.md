@@ -43,7 +43,7 @@ Four nothing caught:
   and stayed "red", so #1000 quietly stopped being exercised. Fixed, and the gate now holds
   every red file to a `(backend phase)` claim so it cannot recur (#1005).
 - **The benchmark would have measured our own documentation.** It hands a model
-  LANGUAGE_GUIDE.md as normative and scores whether the reply compiles; the guide never said
+  LANGUAGE_CARD.md as normative and scores whether the reply compiles; the guide never said
   stdlib names need importing. A low solve rate would have read as a language-usability result.
 
 And one mistake of my own worth keeping: resolving a contested file with `git checkout

@@ -94,7 +94,7 @@ A directory under `tasks/` with three files:
 | `verify.rk` | `test` blocks that exercise the contract — the model never sees these |
 | `reference.rk` | a hand-written solution |
 
-The model gets `LANGUAGE_GUIDE.md` as its system prompt, the task prompt, and
+The model gets `LANGUAGE_CARD.md` as its system prompt, the task prompt, and
 the contract. Its reply is glued in front of `verify.rk` and the whole thing goes
 through `rask test --interp` and `rask test`. Both green and identical, or the
 attempt failed and the compiler's own words go back as the next turn.
@@ -159,7 +159,7 @@ divergence while being written (#1000, #1002).
 
 ## The card is under test too
 
-The system prompt is `LANGUAGE_GUIDE.md`, unedited. Where the card and the
+The system prompt is `LANGUAGE_CARD.md`, unedited. Where the card and the
 compiler disagree, models believe the card and burn an attempt — which is the
 measurement, so the card doesn't get patched to make the numbers look better.
 Live example: the card says `Error` is auto-derived for enums and the compiler

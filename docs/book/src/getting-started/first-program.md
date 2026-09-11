@@ -76,4 +76,4 @@ func main() {
 
 ## Next: Explore the Guide
 
-[Continue to Language Guide →](../guide/README.md)
+Next: [Passing Values](../guide/passing-values.md), on what happens to a value when you hand it to a function.
