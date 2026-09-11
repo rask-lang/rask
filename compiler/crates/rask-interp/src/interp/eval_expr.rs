@@ -2783,6 +2783,22 @@ impl Interpreter {
             {
                 use crate::value::{MultitaskingRuntime, ACTIVE_RUNTIME};
 
+                // Every path to `spawn` runs through here, so this is the one
+                // place that has to know a target without threads can't do it.
+                // wasm32-unknown-unknown is that target: `thread::Builder::spawn`
+                // answers `Unsupported`, and the interpreter's `expect` on it
+                // traps — which in the browser playground kills the interpreter
+                // rather than the call (#1172). Refuse in words instead.
+                if !crate::HAS_THREADS {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Generic(
+                            "`using Multitasking` not available in browser playground \
+                             — it has no threads".to_string(),
+                        ),
+                        expr.span,
+                    ));
+                }
+
                 let num_workers = if args.is_empty() {
                     std::thread::available_parallelism()
                         .map(|n| n.get())

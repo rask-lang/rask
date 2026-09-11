@@ -1,67 +1,37 @@
-# Playground
+# Try it in the browser
 
-Try Rask directly in your browser with our interactive playground!
+The [playground](/app/) runs Rask without installing anything. It's the
+interpreter compiled to WebAssembly, so your code executes on your machine —
+nothing is sent anywhere.
 
-<div class="playground-container">
-  <iframe src="../app/" class="playground-iframe" title="Rask Playground"></iframe>
-</div>
+**[Open the playground →](/app/)**
 
-**[Open in full screen →](../app/)**
+Write code on the left, `Ctrl+Enter` to run, output on the right. The examples
+dropdown loads the programs from
+[examples/](https://github.com/rask-lang/rask/tree/main/examples), and **Copy
+link** gives you a URL with your code in it.
 
-## Features
+## What it can't do
 
-The playground provides:
-- ✨ **Online editor** with syntax highlighting
-- ⚡ **Instant execution** - no setup required
-- 🔗 **Shareable code** snippets via URL
-- 📚 **Example programs** to explore
-- 🎮 **Quick experimentation** without installation
+A browser has no files, no sockets, no clock and no threads, so anything
+needing one of those is refused with a message rather than half-working:
 
-## How to Use
+| | |
+|---|---|
+| `fs`, `io`, `net`, `http` | no filesystem or sockets |
+| `time` | no clock |
+| `using Multitasking`, `spawn` | no threads |
 
-1. **Write code** in the left editor pane
-2. **Click "Run"** or press `Ctrl+Enter` to execute
-3. **View output** in the right pane
-4. **Load examples** from the dropdown menu
-5. **Share your code** with the "Share" button
+Everything else runs: collections, structs, enums, generics, traits, pattern
+matching, closures, error handling, `comptime`. Recursion is capped a few
+hundred frames deep, because the browser puts a much lower ceiling on call
+depth than an OS thread does.
 
-## Limitations
+The dropdown groups the examples that need a local install separately, so you
+can tell before you click. For those, [install
+Rask](../getting-started/installation.md) and run the file directly.
 
-The browser-based playground has some limitations compared to local execution:
+## Source
 
-- ❌ **No file I/O** - `fs` module is disabled
-- ❌ **No networking** - `net` module is disabled
-- ❌ **No stdin** - interactive input not supported
-- ✅ **Most features work** - math, collections, json, pattern matching, etc.
-
-## Try These Examples
-
-Click the examples dropdown in the playground to try:
-- **Hello World** - Basic println and output
-- **Collections** - Working with Vec, structs, and pattern matching
-- **Pattern Matching** - Demonstrating match expressions
-- **Math Demo** - Mathematical operations and calculations
-
-## Local Development
-
-For full language features including file I/O and networking:
-1. [Install Rask locally](../getting-started/installation.md)
-2. Run the [examples](../examples/README.md)
-3. Build real applications
-
-## Technical Details
-
-The playground compiles the Rask interpreter to WebAssembly using `wasm-pack`. Code executes entirely in your browser with no server-side processing.
-
-**WASM bundle size:** ~200KB gzipped
-**Supported browsers:** Chrome, Firefox, Safari (latest versions)
-
-## Source Code
-
-The playground is open source:
-- [Playground UI](https://github.com/rask-lang/rask/tree/main/docs/playground)
-- [WASM bindings](https://github.com/rask-lang/rask/tree/main/compiler/crates/rask-wasm)
-
-## Feedback
-
-Found a bug or have a suggestion? [Open an issue](https://github.com/rask-lang/rask/issues) on GitHub!
+[Playground UI](https://github.com/rask-lang/rask/tree/main/docs/playground) ·
+[WASM bindings](https://github.com/rask-lang/rask/tree/main/compiler/crates/rask-wasm)

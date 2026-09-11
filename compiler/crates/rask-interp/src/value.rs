@@ -1185,12 +1185,7 @@ impl RngState {
     }
 
     pub fn from_system() -> Self {
-        use std::time::SystemTime;
-        let seed = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42);
-        Self::from_seed(seed)
+        Self::from_seed(crate::seed_entropy())
     }
 
     pub fn next_u64(&mut self) -> u64 {

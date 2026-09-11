@@ -72,10 +72,84 @@ where
 ///
 /// Sized so that both profiles reach a comparable Rask recursion depth (~465),
 /// because a debug frame costs roughly 17× an optimized one.
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(target_family = "wasm")))]
 pub(crate) const INTERP_STACK_BYTES: usize = 16 * 1024 * 1024;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(target_family = "wasm")))]
 pub(crate) const INTERP_STACK_BYTES: usize = 288 * 1024 * 1024;
+
+/// On wasm the stack is whatever the linker reserved, so this is a measurement
+/// rather than a request — wasm-ld's default is 1 MiB. Whoever passes
+/// `-zstack-size` knows better and says so through `set_stack_bytes`; this is
+/// the floor for anyone who doesn't. Reading it low is the safe direction: the
+/// guard refuses to recurse slightly before the real stack runs out, which is a
+/// diagnostic instead of a trap.
+#[cfg(target_family = "wasm")]
+pub(crate) const INTERP_STACK_BYTES: usize = 1024 * 1024;
+
+/// How much stack the interpreter's entry point has to work with.
+#[cfg(not(target_family = "wasm"))]
+fn interp_stack_bytes() -> usize {
+    INTERP_STACK_BYTES
+}
+
+#[cfg(target_family = "wasm")]
+thread_local! {
+    static WASM_STACK_BYTES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(INTERP_STACK_BYTES) };
+}
+
+#[cfg(target_family = "wasm")]
+fn interp_stack_bytes() -> usize {
+    WASM_STACK_BYTES.get()
+}
+
+/// Can this target run a thread?
+///
+/// wasm32-unknown-unknown cannot: `thread::Builder::spawn` answers
+/// `Unsupported`, and the `expect` on it traps. `using Multitasking` checks
+/// this, which covers every route to `spawn` — there is no other way in.
+pub(crate) const HAS_THREADS: bool = !cfg!(target_arch = "wasm32");
+
+/// Does this target have a clock?
+///
+/// wasm32-unknown-unknown does not: `Instant::now` and `SystemTime::now` panic
+/// there, and in the browser playground a panic is a trap that takes the whole
+/// interpreter with it rather than failing one call. So the clock reads a
+/// program can observe check this first and refuse the way the OS-backed
+/// modules already do — `fs module not available in browser playground` — while
+/// anything that only wanted entropy uses `seed_entropy` instead.
+pub(crate) const HAS_CLOCK: bool = !cfg!(target_arch = "wasm32");
+
+/// Entropy for seeding a generator, on any target.
+///
+/// The clock where there is one; a call counter where there isn't. A playground
+/// that answers with the same "random" number every single time is worse than
+/// one seeded by how many numbers have been asked for.
+pub(crate) fn seed_entropy() -> u64 {
+    if HAS_CLOCK {
+        if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            return d.as_nanos() as u64;
+        }
+    }
+
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Odd multiplier so successive seeds don't land in the same neighbourhood.
+    COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        .wrapping_add(0x1234_5678_9abc_def1)
+}
+
+/// Tell the interpreter how much stack the linker reserved.
+///
+/// Only wasm needs this: every other target spawns its own thread and picks the
+/// size itself. Call it before running anything, from whatever crate owns the
+/// `-zstack-size` link argument — `rask-wasm`'s build script sets both from one
+/// constant.
+#[cfg(target_family = "wasm")]
+pub fn set_stack_bytes(bytes: usize) {
+    WASM_STACK_BYTES.set(bytes);
+}
 
 /// Stack left in reserve when the interpreter refuses to recurse further.
 ///
@@ -84,10 +158,14 @@ pub(crate) const INTERP_STACK_BYTES: usize = 288 * 1024 * 1024;
 /// left, or reporting the overflow overflows. Scaled with the profile for the
 /// same reason the stack size is — a debug frame is ~17× an optimized one, so a
 /// megabyte of headroom there is barely two frames.
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(target_family = "wasm")))]
 const STACK_RESERVE_BYTES: usize = 1024 * 1024;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(target_family = "wasm")))]
 const STACK_RESERVE_BYTES: usize = 24 * 1024 * 1024;
+/// Scaled to the 1 MiB wasm stack: a quarter of it, so the refusal has room to
+/// unwind and format itself the way it does everywhere else.
+#[cfg(target_family = "wasm")]
+const STACK_RESERVE_BYTES: usize = 256 * 1024;
 
 thread_local! {
     /// Address of a local in the frame that started interpreting on this thread.
@@ -124,7 +202,7 @@ pub(crate) fn stack_used() -> usize {
 /// Is there too little stack left to safely recurse again?
 pub(crate) fn stack_nearly_exhausted() -> bool {
     let used = stack_used();
-    used != 0 && used + STACK_RESERVE_BYTES >= INTERP_STACK_BYTES
+    used != 0 && used + STACK_RESERVE_BYTES >= interp_stack_bytes()
 }
 
 thread_local! {
@@ -152,10 +230,17 @@ const MAX_INTERP_STACK_BYTES: usize = 1024 * 1024 * 1024;
 /// memory rather than on the number of threads — a debug frame is ~17× an
 /// optimized one, so a debug segment is correspondingly larger and there are
 /// correspondingly fewer of them.
+#[cfg(not(target_family = "wasm"))]
 const MAX_STACK_SEGMENTS: usize = {
     let n = MAX_INTERP_STACK_BYTES / INTERP_STACK_BYTES;
     if n < 2 { 2 } else { n }
 };
+
+/// One, on wasm: a segment is a thread, and there are none. Running out of
+/// stack there is `RecursionTooDeep` with nowhere to continue — which is the
+/// answer `call_function` already gives once the budget is spent.
+#[cfg(target_family = "wasm")]
+const MAX_STACK_SEGMENTS: usize = 1;
 
 /// Has the chain of stacks reached its cap?
 pub(crate) fn stack_segments_exhausted() -> bool {
@@ -183,6 +268,7 @@ pub(crate) fn stack_segments_exhausted() -> bool {
 /// thread parked in `join` per live segment. Frame size is still worth
 /// shrinking (#759) — it decides how often this happens — but it's no longer
 /// the difference between running and not.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn grow_interp_stack<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
@@ -211,6 +297,19 @@ where
 /// its 8 MiB — while every spawned task got 16 MiB. Same program, different
 /// recursion depth depending on which thread ran it (#759). A scoped thread gets
 /// the borrows through without requiring anything to be `'static`.
+/// A single-stack target has one answer: continue where we are. Unreachable in
+/// practice — `MAX_STACK_SEGMENTS` is 1 on wasm, so `call_function` answers
+/// `RecursionTooDeep` before it ever asks for another segment.
+#[cfg(target_family = "wasm")]
+pub(crate) fn grow_interp_stack<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    f()
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn on_interp_stack<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
@@ -229,6 +328,23 @@ where
             // than turning it into a different one.
             .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
+}
+
+/// On wasm there is one stack and its size was fixed by the linker, so the
+/// entry point's job is only to record where it starts. Spawning a thread here
+/// is what the browser playground used to do: `spawn_scoped` answers
+/// `Unsupported`, the `expect` traps, and because a trap skips every
+/// destructor, wasm-bindgen's borrow of `Playground` is never given back —
+/// so the first `println` bricked the instance and every click afterwards
+/// reported "recursive use of an object" instead (#1172).
+#[cfg(target_family = "wasm")]
+pub(crate) fn on_interp_stack<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    mark_stack_base();
+    f()
 }
 
 /// Reaper threads waiting on a detached task's result (ctrl.panic/O4).
