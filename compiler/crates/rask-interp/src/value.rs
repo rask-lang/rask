@@ -803,7 +803,10 @@ pub struct MultitaskingRuntime {
 }
 
 impl MultitaskingRuntime {
-    pub fn new(workers: usize) -> Self {
+    /// Fallible because it starts its workers here: a target with no threads
+    /// refuses at the first one rather than handing back a runtime that can
+    /// never run anything (#1172).
+    pub fn new(workers: usize) -> Result<Self, crate::RuntimeError> {
         let (tx, rx) = mpsc::channel::<PoolTask>();
         let rx = Arc::new(Mutex::new(rx));
 
@@ -818,14 +821,14 @@ impl MultitaskingRuntime {
                         Err(_) => break, // Channel closed
                     }
                 }
-            }));
+            })?);
         }
 
-        Self {
+        Ok(Self {
             workers,
             sender: Mutex::new(Some(tx)),
             pool_threads: Mutex::new(threads),
-        }
+        })
     }
 
     /// Shut down the pool: drop sender, join all workers, then wait for every

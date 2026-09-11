@@ -2638,7 +2638,7 @@ impl Interpreter {
                         }
                     }
                     Ok(result)
-                });
+                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
@@ -2705,7 +2705,7 @@ impl Interpreter {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
-                });
+                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
@@ -2732,18 +2732,21 @@ impl Interpreter {
 
                 for _ in 0..num_threads {
                     let rx = Arc::clone(&rx);
-                    workers.push(crate::spawn_interp_thread(move || {
-                        loop {
-                            let task = {
-                                let rx = rx.lock().unwrap();
-                                rx.recv()
-                            };
-                            match task {
-                                Ok(task) => (task.work)(),
-                                Err(_) => break,
+                    workers.push(
+                        crate::spawn_interp_thread(move || {
+                            loop {
+                                let task = {
+                                    let rx = rx.lock().unwrap();
+                                    rx.recv()
+                                };
+                                match task {
+                                    Ok(task) => (task.work)(),
+                                    Err(_) => break,
+                                }
                             }
-                        }
-                    }));
+                        })
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?,
+                    );
                 }
 
                 let pool = Arc::new(ThreadPoolInner {
@@ -2783,22 +2786,6 @@ impl Interpreter {
             {
                 use crate::value::{MultitaskingRuntime, ACTIVE_RUNTIME};
 
-                // Every path to `spawn` runs through here, so this is the one
-                // place that has to know a target without threads can't do it.
-                // wasm32-unknown-unknown is that target: `thread::Builder::spawn`
-                // answers `Unsupported`, and the interpreter's `expect` on it
-                // traps — which in the browser playground kills the interpreter
-                // rather than the call (#1172). Refuse in words instead.
-                if !crate::HAS_THREADS {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Generic(
-                            "`using Multitasking` not available in browser playground \
-                             — it has no threads".to_string(),
-                        ),
-                        expr.span,
-                    ));
-                }
-
                 let num_workers = if args.is_empty() {
                     std::thread::available_parallelism()
                         .map(|n| n.get())
@@ -2808,7 +2795,10 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
-                let runtime = Arc::new(MultitaskingRuntime::new(num_workers));
+                let runtime = Arc::new(
+                    MultitaskingRuntime::new(num_workers)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?,
+                );
 
                 // C1: exactly one active block per process — nested blocks panic at runtime
                 {
