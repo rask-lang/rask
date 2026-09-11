@@ -20,7 +20,7 @@ needing one of those is refused with a message rather than half-working:
 |---|---|
 | `fs`, `io`, `net`, `http` | no filesystem or sockets |
 | `time` | no clock |
-| `using Multitasking`, `spawn` | no threads |
+| `spawn`, `Thread.spawn`, `using Multitasking`, `using ThreadPool` | no threads |
 
 Everything else runs: collections, structs, enums, generics, traits, pattern
 matching, closures, error handling, `comptime`. Recursion is capped a few
