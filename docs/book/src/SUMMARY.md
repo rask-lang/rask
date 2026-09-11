@@ -15,18 +15,15 @@
 # User Guide
 
 - [Language Guide](guide/README.md)
+  - [Passing Values](guide/passing-values.md)
 
 # Examples
 
 - [Examples](examples/README.md)
-  - [Grep Clone](examples/grep-clone.md)
-  - [Game Loop](examples/game-loop.md)
-  - [Text Editor](examples/text-editor.md)
 
 # Reference
 
-- [Reference](reference/README.md)
-  - [Formal Specifications](reference/specs-link.md)
+- [Formal Specifications](reference/specs-link.md)
 
 # Tools
 

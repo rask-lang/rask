@@ -1,0 +1,12 @@
+error[E0800]: use of moved value: `account`
+  --> docs/book/errors/passing-values/use_after_take.rk:17:19
+    |
+ 16 |     let n = close_out(account)
+    |                       ------- value moved here
+ 17 |     println("{n} {account.balance}")
+    |                   ^^^^^^^ value used here after move
+    = note: `Account` is 24 bytes (copy threshold is 16) — assignment moves instead of copying
+    = help: add `account.clone()` if you need an independent copy
+
+
+=== Check FAILED: 1 error ===

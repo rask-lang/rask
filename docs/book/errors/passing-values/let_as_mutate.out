@@ -1,0 +1,10 @@
+error[E0302]: cannot mutate `account` — declared `let`
+  --> docs/book/errors/passing-values/let_as_mutate.rk:16:20
+    |
+ 16 |     deposit(mutate account, 50)
+    |                    ^^^^^^^ `account` is a let binding — immutable
+    = fix: replace `let account` with `mut account`
+    = why: `let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.
+
+
+=== Check FAILED: 1 error ===
