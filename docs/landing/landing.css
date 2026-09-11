@@ -113,7 +113,7 @@ nav a:hover { color: var(--accent); }
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--accent-fill);
 }
 
 .actions { display: flex; gap: 0.7rem; flex-wrap: wrap; margin: 1.8rem 0 1.2rem; }
@@ -129,8 +129,8 @@ nav a:hover { color: var(--accent); }
     transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.btn.solid { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.btn.solid:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--bg); }
+.btn.solid { background: var(--accent-fill); color: var(--accent-on-fill); border-color: var(--accent-fill); }
+.btn.solid:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on-fill); }
 .btn.outline { color: var(--ink); border-color: var(--rule); }
 .btn.outline:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -226,10 +226,9 @@ h2 {
     margin-bottom: 2rem;
 }
 
-.ledger > div { padding: 1.4rem 1.5rem; }
+.ledger > div { padding: 1.4rem 1.5rem; background: var(--bg-sunken); }
 .ledger > div + div { border-left: 1px solid var(--rule); }
-.ledger .give { background: var(--bg-sunken); }
-.ledger .get { background: var(--accent-wash); }
+.ledger .get { box-shadow: inset 3px 0 0 var(--accent-fill); }
 
 .ledger h3 {
     margin: 0 0 0.9rem;
@@ -239,6 +238,8 @@ h2 {
     text-transform: uppercase;
     color: var(--ink-faint);
 }
+
+.ledger .get h3 { color: var(--accent); }
 
 .ledger ul { margin: 0; padding: 0; list-style: none; }
 .ledger li { padding: 0.4rem 0; font-size: 0.97rem; border-bottom: 1px solid var(--rule); }
@@ -292,6 +293,7 @@ footer nav { gap: 1.2rem; flex-wrap: wrap; }
     .idea { gap: 1.3rem; }
     .ledger { grid-template-columns: 1fr; }
     .ledger > div + div { border-left: none; border-top: 1px solid var(--rule); }
+    .ledger .get { box-shadow: inset 0 3px 0 var(--accent-fill); }
     nav { gap: 1rem; font-size: 0.9rem; }
     .masthead { padding-block: 0.9rem; }
     .window pre { font-size: 0.8rem; }

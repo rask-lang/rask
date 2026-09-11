@@ -107,8 +107,8 @@ a:hover { color: var(--accent-hover); }
 
 /* --- code ------------------------------------------------------------- */
 
-/* Code is dark in both themes, same as the landing page, so a snippet reads
-   as the same object wherever it appears. */
+/* Code has its own surface per theme — light on paper, dark at night — so a
+   snippet never lands as a dark slab in the middle of a pale page. */
 pre, pre > code, .hljs {
     background: var(--code-bg) !important;
     color: var(--code-fg) !important;
@@ -150,7 +150,7 @@ pre > code { font-size: 0.86em; line-height: 1.7; }
 .content table tbody tr:nth-child(even) { background: var(--bg-sunken); }
 
 blockquote {
-    border-left: 3px solid var(--accent);
+    border-left: 3px solid var(--accent-fill);
     background: var(--bg-sunken);
     color: var(--ink-soft);
     padding: 0.8em 1.1em;

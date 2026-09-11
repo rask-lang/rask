@@ -67,13 +67,13 @@ a { color: var(--accent); }
 .btn:hover, select:hover { border-color: var(--accent); color: var(--accent); }
 
 .btn.solid {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--bg);
+    background: var(--accent-fill);
+    border-color: var(--accent-fill);
+    color: var(--accent-on-fill);
     font-weight: 500;
 }
 
-.btn.solid:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--bg); }
+.btn.solid:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on-fill); }
 
 .btn.tiny { padding: 0.2rem 0.55rem; font-size: 0.82rem; }
 
@@ -132,10 +132,10 @@ main {
 }
 
 .output-content.running { color: var(--c-cmt); }
-.output-content.error { color: #e8877c; }
+.output-content.error { color: var(--c-bad); }
 
 /* Diagnostic colours, from the compiler's own ANSI output. */
-.diag-error { color: #e8877c; }
+.diag-error { color: var(--c-bad); }
 .diag-warning { color: var(--c-kw); }
 .diag-info { color: var(--c-ty); }
 .diag-help { color: var(--c-ty); }
@@ -198,7 +198,7 @@ footer {
 
 .toast.show { transform: translate(-50%, 0); }
 .toast.success { border-color: var(--accent); }
-.toast.error { border-color: #c4554a; }
+.toast.error { border-color: var(--c-bad); }
 
 /* ---------- narrow ---------- */
 

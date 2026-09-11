@@ -61,7 +61,33 @@ const raskLanguage = StreamLanguage.define({
 const token = name => getComputedStyle(document.documentElement)
     .getPropertyValue(name).trim();
 
+// Tints that have to sit on the code surface — the active line, the selection —
+// are mixed from tokens at runtime. Hardcoding them meant an rgba tuned for the
+// dark surface staying put once the light one arrived, where a white overlay is
+// invisible and a mint selection belongs to nothing.
+function channels(hex) {
+    const h = hex.replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16));
+}
+
+const tint = (hex, alpha) => `rgba(${channels(hex).join(', ')}, ${alpha})`;
+
+// Which way the code surface runs decides the overlay direction, and it is what
+// CodeMirror's own `dark` flag has to agree with.
+function surfaceIsDark(hex) {
+    const [r, g, b] = channels(hex).map(v => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.35;
+}
+
 function raskEditorTheme() {
+    const dark = surfaceIsDark(token('--code-bg'));
+    const overlay = dark ? '255, 255, 255' : '26, 24, 21';
+    const accent = token('--accent');
+
     return EditorView.theme({
         "&": {
             height: "100%",
@@ -78,20 +104,20 @@ function raskEditorTheme() {
             border: "none",
             borderRight: `1px solid ${token('--code-rule')}`,
         },
-        ".cm-activeLine": { backgroundColor: "rgba(255, 255, 255, 0.03)" },
+        ".cm-activeLine": { backgroundColor: `rgba(${overlay}, 0.04)` },
         ".cm-activeLineGutter": { backgroundColor: "transparent", color: token('--code-fg') },
         "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-            backgroundColor: "rgba(89, 190, 139, 0.22)",
+            backgroundColor: tint(accent, 0.22),
         },
-        ".cm-selectionMatch": { backgroundColor: "rgba(89, 190, 139, 0.15)" },
+        ".cm-selectionMatch": { backgroundColor: tint(accent, 0.15) },
         ".cm-tooltip": {
             backgroundColor: token('--code-chrome'),
             border: `1px solid ${token('--code-rule')}`,
             color: token('--code-fg'),
         },
-        ".cm-lintRange-error": { backgroundImage: "none", borderBottom: "2px solid #e8877c" },
+        ".cm-lintRange-error": { backgroundImage: "none", borderBottom: `2px solid ${token('--c-bad')}` },
         ".cm-lintRange-warning": { backgroundImage: "none", borderBottom: `2px solid ${token('--c-kw')}` },
-    }, { dark: true });
+    }, { dark });
 }
 
 function raskHighlightStyle() {
