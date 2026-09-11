@@ -55,7 +55,7 @@ rask run examples/hello_world.rk
 
 Other commands: `rask check`, `rask lint`, `rask fmt`, `rask test`.
 
-Next: read [Raskboka](https://rask-lang.dev/book) to learn the language, or browse [examples/](examples/) if you'd rather read whole programs.
+Next: read [Raskwise](https://rask-lang.dev/book) to learn the language, or browse [examples/](examples/) if you'd rather read whole programs.
 
 ---
 
@@ -111,7 +111,7 @@ Four documents, four different jobs:
 
 | | For |
 |---|---|
-| [Raskboka](https://rask-lang.dev/book) | Learning the language. Install, first program, chapters. Start here |
+| [Raskwise](https://rask-lang.dev/book) | Learning the language. Install, first program, chapters. Start here |
 | [LANGUAGE_CARD.md](LANGUAGE_CARD.md) | Looking a rule up while you write. The whole language, compressed, one page |
 | [examples/](examples/) | Reading complete programs. Each one is compiled and run by CI |
 | [specs/](specs/) | The normative wording, and the reasoning behind it. Start at [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
