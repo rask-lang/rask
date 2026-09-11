@@ -15,6 +15,9 @@ diff on the page that teaches it.
 - [Passing Values](passing-values.md) — borrow, `mutate`, `take`, and why only one of them needs a
   marker at the call site
 
+The rules a chapter has to follow are in
+[how this book is built](https://github.com/rask-lang/rask/blob/main/docs/book/README.md).
+
 ## Elsewhere
 
 - [Examples](../examples/README.md) — complete programs: grep clone, game loop, text editor

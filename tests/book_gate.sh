@@ -11,11 +11,17 @@
 #
 # This gate removes the two ways a chapter can drift from the compiler:
 #
-#  1. Code. Chapters don't contain Rask — they `{{#include}}` it out of a
-#     program that other gates already run. This checks every include
-#     resolves: the file exists, and the named ANCHOR/ANCHOR_END pair is
-#     actually in it. An include that silently renders nothing is the failure
-#     mode this catches.
+#  1. Code. Every ```rask block is either an {{#include}} out of a program
+#     another gate already runs, or an inline block carrying a test-specs
+#     marker that at least type-checks (`compile`, `run | expected`). For
+#     includes this checks the file exists and the named ANCHOR/ANCHOR_END
+#     pair is really in it — mdBook renders a missing anchor as nothing and
+#     says so quietly.
+#
+#     `parse` does not count. Parsing proves the syntax is current, and syntax
+#     is not what rots: the front page called `fs.open` with no imports and
+#     passed `test: parse` the whole time. `rask test-specs docs/book/src`
+#     runs the markers; this gate is what stops a block having none.
 #
 #  2. Diagnostics. Chapters teach with real compiler errors, which means the
 #     error text is content and has to be pinned like any other output. Each
@@ -39,7 +45,6 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOK_SRC="$ROOT/docs/book/src"
 ERRORS_DIR="$ROOT/docs/book/errors"
-LEGACY_FILE="$ROOT/tests/book_legacy_snippets.txt"
 
 UPDATE=0
 if [ "${1:-}" = "--update" ]; then
@@ -91,40 +96,39 @@ else
 fi
 rm -f "$ROOT/.book_gate_includes"
 
-# ── 2. Chapters carry no literal Rask ─────────────────────────────────────────
+# ── 2. Every rask block is verified by something ──────────────────────────────
 #
-# A ```rask fence whose body isn't an include is a hand-copied snippet — the
-# thing this gate exists to prevent. Chapters written before the gate are
-# listed in book_legacy_snippets.txt with a count that may only go down.
-
-# Returns the recorded count for a legacy chapter, or empty if it isn't listed.
-legacy_budget() {
-    [ -f "$LEGACY_FILE" ] || return 0
-    awk -v want="$1" '$1 == want { print $2; exit }' "$LEGACY_FILE"
-}
+# An include is verified by whatever gate runs the program it points at. An
+# inline block is verified by its test-specs marker, but only at `compile` or
+# `run` — `parse` and `skip` leave it unchecked, which is how a snippet with
+# missing imports sat on the front page.
 
 while IFS= read -r md; do
     rel="${md#$ROOT/}"
-    # Count ```rask fences whose next line is not an include.
-    literal=$(awk '
-        /^```rask/ { infence = 1; next }
-        infence == 1 {
-            if ($0 !~ /\{\{#include/) count++
-            infence = 0
+
+    # For each ```rask fence: an include on the first body line is fine; so is
+    # a compile/run marker on the line above the fence. Anything else is loose.
+    loose=$(awk '
+        /^<!-- test:/ { marker = $0; next }
+        /^```rask/ {
+            verified = 0
+            if (marker ~ /test: *(compile|run|run-interp)/) verified = 1
+            infence = 1
+            marker = ""
+            next
         }
+        infence == 1 {
+            if ($0 ~ /\{\{#include/) verified = 1
+            if (verified == 0) { count++; printf "    line %d\n", NR > "/dev/stderr" }
+            infence = 0
+            next
+        }
+        { marker = "" }
         END { print count + 0 }
-    ' "$md")
+    ' "$md" 2>/dev/null)
 
-    budget="$(legacy_budget "$rel")"
-    if [ -z "$budget" ]; then
-        budget=0
-    fi
-
-    if [ "$literal" -gt "$budget" ]; then
-        echo "FAIL: $rel has $literal hand-copied rask block(s), budget $budget — use {{#include}}"
-        fails=$((fails + 1))
-    elif [ "$literal" -lt "$budget" ]; then
-        echo "FAIL: $rel is down to $literal hand-copied block(s) from $budget — lower it in ${LEGACY_FILE#$ROOT/}"
+    if [ "$loose" -gt 0 ]; then
+        echo "FAIL: $rel has $loose unverified rask block(s) — use {{#include}}, or mark the block \`<!-- test: compile -->\` / \`<!-- test: run | output -->\`"
         fails=$((fails + 1))
     else
         ok=$((ok + 1))
