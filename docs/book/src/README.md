@@ -16,15 +16,23 @@ Rask is a systems programming language that sits between Rust and Go:
 
 ## Quick Look
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-func search_file(path: string, pattern: string) -> void or IoError {
-    let file = try fs.open(path)
-    ensure file.close()
+import fs
+import io
 
-    for line in file.lines() {
-        if line.contains(pattern): println(line)
+func search(path: string, pattern: string) -> i64 or io.IoError {
+    let content = try fs.read_text(path)
+    mut hits: i64 = 0
+
+    for line in content.lines() {
+        if line.contains(pattern) {
+            println(line)
+            hits += 1
+        }
     }
+
+    return hits
 }
 ```
 
@@ -47,11 +55,12 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 - [Installation](getting-started/installation.md)
 - [First Program](getting-started/first-program.md)
 - [Language Guide](guide/README.md)
-- [Examples](examples/README.md)
+- [Examples](examples/README.md) - complete programs CI runs on every change
 
 ## Design Philosophy
 
 Want to understand the "why" behind Rask's design choices?
-- [Design Principles](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md)
+- [Design Principles](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
+- [How design questions get decided](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md)
 - [Formal Specifications](reference/specs-link.md)
 - [Blog](../blog/) - Development updates and design discussions

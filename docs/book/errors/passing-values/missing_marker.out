@@ -1,0 +1,10 @@
+error[E0373]: `deposit` mutates `account` — mark it at the call site
+  --> docs/book/errors/passing-values/missing_marker.rk:16:13
+    |
+ 16 |     deposit(account, 50)
+    |             ^^^^^^^ passed to the `mutate account` parameter
+    = fix: deposit(mutate account, …)
+    = why: the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]
+
+
+=== Check FAILED: 1 error ===

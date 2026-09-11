@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Must not compile: `let` is deep, so a let binding can't be passed as mutate.
+// Quoted by docs/book/src/guide/passing-values.md; rendering in .out.
+
+struct Account {
+    owner: string
+    balance: i64
+}
+
+func deposit(mutate account: Account, amount: i64) {
+    account.balance += amount
+}
+
+func main() {
+    let account = Account { owner: "Ada", balance: 100 }
+    deposit(mutate account, 50)
+    println("{account.balance}")
+}

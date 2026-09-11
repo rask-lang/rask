@@ -31,6 +31,8 @@ The big decisions are made (see **Decided** table below). Don't re-derive them a
 
 If something genuinely seems wrong, flag it once with a concrete reason — then drop it unless I bite. Keep critique pointed; no broad "have you considered" rounds on settled areas.
 
+For a question the specs genuinely don't answer, [specs/RULINGS.md](specs/RULINGS.md) has the six tests the existing rules fall out of. Rule from those instead of guessing.
+
 ### Nothing is stable — settled is not frozen
 
 Settled means "don't reopen it for fun". It does not mean "can't be changed".
