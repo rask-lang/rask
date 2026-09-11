@@ -1,25 +1,27 @@
 # Language Guide
 
-The guide is being written, chapter by chapter. The
-[specifications](../reference/specs-link.md) stay authoritative — the guide teaches the same rules
-in the order you'd meet them, and says why each one is the way it is.
+The guide teaches the language one concept at a time, in the order you meet them, and says why each
+rule is the way it is. It's being written chapter by chapter, so it has gaps.
 
-Every chapter's Rask is pulled straight out of a program in
-[examples/](https://github.com/rask-lang/rask/blob/main/examples/) that CI runs on both backends,
-and every compile error shown is a pinned rendering of real `rask check` output. `tests/book_gate.sh`
-enforces both, so a chapter can't drift from the compiler — and improving a diagnostic shows up as a
-diff on the page that teaches it.
+Three other places answer different questions:
+
+| You want | Go to |
+|---|---|
+| A rule, quickly, while writing code | [Language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md) |
+| A whole working program to copy from | [Example programs](../examples/README.md) |
+| The exact, normative wording | [Specifications](../reference/specs-link.md) |
 
 ## Chapters
 
-- [Passing Values](passing-values.md) — borrow, `mutate`, `take`, and why only one of them needs a
+- [Passing Values](passing-values.md): borrow, `mutate`, `take`, and why only one of them needs a
   marker at the call site
 
-The rules a chapter has to follow are in
-[how this book is built](https://github.com/rask-lang/rask/blob/main/docs/book/README.md).
+## What a chapter owes you
 
-## Elsewhere
+The specs are normative and say what a rule is. A chapter's job is the part the spec tables leave
+out: why it's that way, and what it would cost to be otherwise.
 
-- [Examples](../examples/README.md) — complete programs, each one run by CI on both backends
-- [Getting Started](../getting-started/README.md) — installation and first program
-- [Specifications](../reference/specs-link.md) — the normative rules
+Every chapter's code is pulled out of a program CI runs on both backends, and every compile error is
+a pinned recording of what `rask check` actually prints. So a chapter can't quietly drift from the
+compiler, and improving an error message shows up as a diff on the page that teaches it. The rules
+for writing one are in [how this book is built](../contributing/how-this-book-is-built.md).

@@ -129,23 +129,17 @@ jobs:
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/tutorials_gate.sh
 
-    # The book, against the compiler. A chapter's Rask is an {{#include}} out
-    # of a program the example gate already runs, and its compile errors are
-    # pinned renderings of `rask check`. Nothing checked docs/book before —
-    # test-specs covers specs/ and the docs workflow only builds and deploys —
-    # so a chapter could quote a diagnostic whose wording moved on and stay
-    # green forever. A wording change now shows up as a book diff in review.
+    # The book, against the compiler. "Docs snippets parse" below already runs
+    # the book's inline blocks, but parsing is a weak signal: the front-page
+    # snippet parsed fine while calling an API the real grep program doesn't
+    # use, with both imports missing. This gate adds what parsing can't see:
+    # every block must be an {{#include}} from a program another gate runs or
+    # carry a compile/run marker; every include must resolve; and the compile
+    # errors a chapter teaches with are pinned renderings of `rask check`, so
+    # improving a diagnostic shows up as a diff on the page that teaches it.
     - name: Book gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/book_gate.sh
-
-    # The book's inline blocks, through the same runner the specs use. The
-    # markers were there and passing locally; nothing ran them in CI, so a
-    # snippet could stop compiling and only a human reading the page would
-    # notice. book_gate.sh above is what stops a block having no marker at all.
-    - name: Book code blocks
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask test-specs docs/book/src
 
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
@@ -216,7 +210,7 @@ jobs:
 
     # Same gate for the published docs, and for the language card. specs/ was
     # covered and docs/ wasn't, which is how the book and landing page drifted
-    # a release behind; LANGUAGE_GUIDE.md sits at the repo root and was in
+    # a release behind; LANGUAGE_CARD.md sits at the repo root and was in
     # neither, which is worse — it's the reference that travels with a prompt
     # when a model writes Rask, and agentbench's system prompt (#1014). Its
     # blocks carry `<!-- test: parse -->` now; without an annotation
@@ -224,7 +218,7 @@ jobs:
     # passed on a card full of nonsense.
     - name: Docs snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_GUIDE.md
+      run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_CARD.md
 
     # The playground's wasm build. Nothing here compiled for wasm32, so a
     # cfg-gated stdlib module could lose its callers' guards and only break in

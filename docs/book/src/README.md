@@ -43,19 +43,23 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 - **Value semantics** - Everything is a value, no hidden sharing
 - **Single ownership** - Deterministic cleanup, no GC
 - **Scoped borrowing** - Temporary access that can't escape
-- **Handles over pointers** - Validated indices for graphs and cycles
+- **Stored links, not pointers** - Graphs and cycles without lifetime annotations
 - **Linear resources** - Files and sockets must be explicitly consumed
 - **No function coloring** - I/O just works, no async/await split
 
-## Get Started
+## Where to start
 
-> **Note:** Rask is in early development. The documentation is sparse and might be outdated, bugs are warranted.
+> **Note:** Rask is in early development. Expect gaps in the docs and bugs in the compiler.
 
-- [Try in Playground](/app/) - Run Rask code in your browser
-- [Installation](getting-started/installation.md)
-- [First Program](getting-started/first-program.md)
-- [Language Guide](guide/README.md)
-- [Examples](examples/README.md) - complete programs CI runs on every change
+**New here?** [Install it](getting-started/installation.md), write
+[your first program](getting-started/first-program.md), then read the
+[Language Guide](guide/README.md). No install needed to look around: the
+[playground](/app/) runs Rask in the browser.
+
+**Already writing Rask?** The [language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md)
+is the whole language on one page for looking a rule up, the
+[example programs](examples/README.md) are complete and CI-checked, and the
+[specifications](reference/specs-link.md) are the normative wording when the other two disagree.
 
 ## Design Philosophy
 

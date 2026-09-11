@@ -3,18 +3,14 @@
 Every parameter answers one question: **does the caller still have this afterwards?**
 There are three answers, and the code says which one at both ends.
 
-All the Rask on this page comes from [examples/parameter_modes.rk](https://github.com/rask-lang/rask/blob/main/examples/parameter_modes.rk),
-pulled in directly rather than copied. CI runs that file on both backends, so nothing here is a
-snippet that used to work. The error messages are real output from `rask check`.
-
-## Borrow — the default
+## Borrow: the default
 
 ```rask
 {{#include ../../../../examples/parameter_modes.rk:borrow}}
 ```
 
 No marker, no ceremony. The callee reads; the caller keeps the value and carries on using it. This
-is most parameters in most programs, which is why it's the mode you write nothing for.
+is most parameters in most programs, which is why it's the default.
 
 A borrow isn't yours to give away. Try to pass it on to something that takes ownership and the
 compiler stops you:
@@ -24,10 +20,10 @@ compiler stops you:
 ```
 
 The caller never marked this as given, so they're still using it. Consuming it here would leave
-them holding something that's gone — and for a file handle or a transaction, that's a second close
-of a real resource.
+them holding something that's gone. For a file handle or a transaction, that's a second close of a
+real resource.
 
-## Mutate — write through, caller keeps it
+## Mutate: write through, caller keeps it
 
 ```rask
 {{#include ../../../../examples/parameter_modes.rk:mutate}}
@@ -45,10 +41,10 @@ Leave the marker off and you get the one-token fix, plus the reason:
 {{#include ../../errors/passing-values/missing_marker.out}}
 ```
 
-Here's the thinking behind that. A misread *move* is backstopped by the compiler — use a value
-after it's moved and you get an error naming where it went. A misread *mutation* has no backstop:
-both readings are legal code, and the value looks identical afterwards, just different. So the case
-that can't be caught is the one that gets written down.
+Here's the thinking behind that. If you misread a *move*, the compiler catches it for you: use the
+value again and you get an error naming where it went. If you misread a *mutation*, nothing catches
+it. Both readings are legal code, and the value looks the same afterwards, just different. So the
+case nobody can catch for you is the one you write down.
 
 Because the rule is syntactic it has no exceptions to memorise: the marker is required exactly when
 the parameter says `mutate`, whatever the argument's type or size. An `i64` writes it too.
@@ -59,10 +55,10 @@ One thing catches everyone once. `let` is deep:
 {{#include ../../errors/passing-values/let_as_mutate.out}}
 ```
 
-`let` doesn't mean "this name won't be reassigned." It means nothing changes through this name —
-including a mutating method, and including an index or field assignment.
+`let` doesn't mean "this name won't be reassigned." It means nothing changes through this name,
+including through a mutating method, an index, or a field assignment.
 
-## Take — the callee keeps it
+## Take: the callee keeps it
 
 ```rask
 {{#include ../../../../examples/parameter_modes.rk:take}}
@@ -89,7 +85,7 @@ value went, the moment you reach for it again.
 ```
 
 `charge_fee` takes `mutate self` and the call site still says nothing. The receiver is the thing
-being operated on — that's what the dot means. Marking it would put noise on every mutating method
+being operated on, which is what the dot means. Marking it would put noise on every mutating method
 in the language.
 
 ## Putting it together
@@ -118,14 +114,14 @@ buys. Running it prints:
 
 `take` means "I'm keeping this", but you can't take away what the caller never gave up. Values of
 16 bytes or less whose fields are all Copy get copied on the way in, so `fee` is untouched. Past 16
-bytes it's a real move and the name dies — as the `Account` error above shows, with the sizes in
-the note.
+bytes it's a real move and the name dies, which is what the `Account` error above shows, sizes and
+all.
 
 The threshold is fixed at 16 bytes and isn't configurable. Moving it would change what existing
 programs mean, so it's a semantic boundary rather than a tuning knob.
 
 ## Rules behind this page
 
-- [Parameter modes](https://github.com/rask-lang/rask/blob/main/specs/memory/parameters.md) — the normative version
-- [Value semantics](https://github.com/rask-lang/rask/blob/main/specs/memory/value-semantics.md) — the copy threshold
-- [Linearity](https://github.com/rask-lang/rask/blob/main/specs/memory/linear.md) — why a borrow can't be consumed
+- [Parameter modes](https://github.com/rask-lang/rask/blob/main/specs/memory/parameters.md): the normative version
+- [Value semantics](https://github.com/rask-lang/rask/blob/main/specs/memory/value-semantics.md): the copy threshold
+- [Linearity](https://github.com/rask-lang/rask/blob/main/specs/memory/linear.md): why a borrow can't be consumed

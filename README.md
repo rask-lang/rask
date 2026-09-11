@@ -55,7 +55,7 @@ rask run examples/hello_world.rk
 
 Other commands: `rask check`, `rask lint`, `rask fmt`, `rask test`.
 
-Next steps: browse [examples/](examples/), try the [tutorials](tutorials/), or read the [Language Guide](LANGUAGE_GUIDE.md).
+Next: read [the book](https://rask-lang.dev/book) to learn the language, or browse [examples/](examples/) if you'd rather read whole programs.
 
 ---
 
@@ -107,11 +107,17 @@ Rust for ownership, Results, traits. Go for simplicity (if Rask needs three line
 
 ## Docs
 
-- [Language Guide](LANGUAGE_GUIDE.md) — the full explanation, jargon-free
-- [Tutorials](tutorials/) — hands-on challenges
-- [Examples](examples/) — working programs
-- [Specs](specs/) — formal language specifications, starting with [CORE_DESIGN.md](specs/CORE_DESIGN.md)
-- [Book](https://rask-lang.dev/book) — online guide (work in progress)
+Four documents, four different jobs:
+
+| | For |
+|---|---|
+| [The book](https://rask-lang.dev/book) | Learning the language. Install, first program, guide chapters. Start here |
+| [LANGUAGE_CARD.md](LANGUAGE_CARD.md) | Looking a rule up while you write. The whole language, compressed, one page |
+| [examples/](examples/) | Reading complete programs. Each one is compiled and run by CI |
+| [specs/](specs/) | The normative wording, and the reasoning behind it. Start at [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
+
+Also: [tutorials/](tutorials/) for hands-on exercises, and
+[specs/RULINGS.md](specs/RULINGS.md) for how design questions get decided.
 
 ---
 
