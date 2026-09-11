@@ -178,6 +178,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 | Spec | Description |
 |------|-------------|
+| [RULINGS.md](RULINGS.md) | The six tests that decide a question the specs don't answer yet |
 | [canonical-patterns.md](canonical-patterns.md) | One obvious way: canonical patterns for every common operation |
 | [rejected-features.md](rejected-features.md) | Why I didn't add: async/await, algebraic effects, lifetimes, supervision |
 | [tooling/describe-schema.md](tooling/describe-schema.md) | `rask describe` JSON schema for module API summaries |
