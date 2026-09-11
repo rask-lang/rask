@@ -10,10 +10,16 @@
 // Stats are tracked with atomics so concurrent allocations don't lose counts.
 // Peak tracking uses a compare-and-swap loop.
 
-// `Dl_info`/`dladdr` are behind _GNU_SOURCE on glibc, and it has to be defined
-// before the first system header — which `rask_runtime.h` pulls in.
+// `Dl_info`/`dladdr` aren't POSIX, and the Makefile asks for strict POSIX
+// (-D_POSIX_C_SOURCE), so each libc needs telling to hand them over anyway.
+// glibc wants _GNU_SOURCE, Darwin wants _DARWIN_C_SOURCE; each is inert on the
+// other. Both have to come before the first system header, which
+// `rask_runtime.h` pulls in.
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE
 #endif
 
 #include "rask_runtime.h"
