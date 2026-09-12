@@ -8,8 +8,6 @@
 //
 // Timeouts use a sorted linked list (good enough for reasonable counts).
 
-#define _GNU_SOURCE  // for accept4
-
 #include "io_engine.h"
 
 #include <stdlib.h>

@@ -305,3 +305,23 @@ jobs:
     - name: cargo test
       run: cargo test
       working-directory: compiler
+
+  # The C runtime, compiled on Darwin. Everything above runs on Linux, and the
+  # release ships a macOS binary — so the first time anyone compiled this code
+  # with Apple's headers was release day, twice in a row. Both breaks were the
+  # same kind: glibc hands out a non-POSIX name anyway, Darwin doesn't, and the
+  # Makefile asks for strict POSIX. A green Linux run says nothing about either.
+  #
+  # Deliberately just the runtime: no Rust toolchain, no cargo, no gates. That
+  # is where both failures were, it is ~30s of clang, and it needs no cache.
+  # macOS runners bill at 10x, so a full macOS matrix is a real cost; this is
+  # the thin slice that would have caught both. (#1170 asks for the wider leg.)
+  macos-runtime:
+    name: macos-runtime (C runtime compiles on Darwin)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build C runtime
+      run: make -C compiler/runtime
