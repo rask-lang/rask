@@ -312,6 +312,10 @@ jobs:
   # same kind: glibc hands out a non-POSIX name anyway, Darwin doesn't, and the
   # Makefile asks for strict POSIX. A green Linux run says nothing about either.
   #
+  # On Darwin this compiles the 26 sources macOS actually links — the Makefile
+  # drops the three Linux-only ones — so it covers the same set `rask build`
+  # feeds to the linker there.
+  #
   # Deliberately just the runtime: no Rust toolchain, no cargo, no gates. That
   # is where both failures were, it is ~30s of clang, and it needs no cache.
   # macOS runners bill at 10x, so a full macOS matrix is a real cost; this is

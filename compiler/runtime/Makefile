@@ -17,6 +17,21 @@ AR ?= ar
 # in rask-cli/src/commands/link.rs, which splits by platform; this one is the
 # developer convenience and has no reason to be selective.
 SRCS = $(wildcard *.c)
+
+# ...except the three that only exist on Linux: epoll, io_uring, and a green
+# scheduler that has no kqueue backend yet. The wildcard can't know that, so on
+# Darwin `make` reached io_epoll_engine.c and died on a missing <sys/epoll.h> —
+# it was building a set no macOS program has ever linked. `LINUX_SOURCES` in
+# rask-cli/src/commands/link.rs is the same three names for the compile that
+# ships; that list is deliberately written down ("knowledge, not something a
+# listing can tell you") and this is the second copy of it. What keeps the two
+# honest is the macos-runtime job in .github/workflows/test.yml: adding a
+# Linux-only source without adding it here turns that job red on the same PR.
+LINUX_ONLY = green.c io_uring_engine.c io_epoll_engine.c
+ifneq ($(shell uname -s),Linux)
+SRCS := $(filter-out $(LINUX_ONLY),$(SRCS))
+endif
+
 OBJS = $(SRCS:.c=.o)
 LIB  = librask_runtime.a
 
