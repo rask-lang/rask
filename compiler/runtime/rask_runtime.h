@@ -1117,6 +1117,19 @@ void    rask_panic_set_task_id(int64_t id);
 // Work-stealing scheduler with io_uring/epoll I/O engine.
 // Tasks are stackless state machines: poll_fn(state, ctx) → 0=READY, 1=PENDING.
 
+// Whether green.c is part of this build. It needs an I/O engine, and the only
+// two are epoll and io_uring — so off Linux there is no green scheduler and
+// nothing below this line is defined. `LINUX_SOURCES` in
+// rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
+// same thing for the build; this is how a portable source asks.
+#ifdef __linux__
+#define RASK_HAS_GREEN 1
+#else
+#define RASK_HAS_GREEN 0
+#endif
+
+#if RASK_HAS_GREEN
+
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
 
@@ -1153,6 +1166,8 @@ void      rask_yield(void);
 
 // Check cancel flag for the current green task.
 int       rask_green_task_is_cancelled(void);
+
+#endif // RASK_HAS_GREEN
 
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
