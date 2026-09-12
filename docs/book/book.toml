@@ -7,7 +7,7 @@ src = "src"
 
 [build]
 build-dir = "../build"
-create-missing = true
+create-missing = false
 
 [output.html]
 default-theme = "light"
@@ -16,7 +16,7 @@ git-repository-url = "https://github.com/rask-lang/rask"
 edit-url-template = "https://github.com/rask-lang/rask/edit/main/docs/book/{path}"
 site-url = "/book/"
 additional-css = ["theme/custom.css"]
-additional-js = ["theme/rask-highlight.js"]
+additional-js = ["theme/chrome.js"]
 
 [output.html.playground]
 editable = false

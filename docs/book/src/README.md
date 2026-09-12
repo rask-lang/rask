@@ -47,8 +47,10 @@ the honest picture.
 **New here.** [Install it](getting-started/installation.md), write [your first
 program](getting-started/first-program.md), then read the chapters under *Learn
 the language*. They take one concept at a time and say why each rule is the way
-it is, which is the part the specs leave out. Nothing to install to look
-around: the [playground](/app/) runs Rask in the browser.
+it is, which is the part the specs leave out. There are also
+[exercises](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask) in
+the repo. Nothing to install to look around: the [playground](/app/) runs Rask
+in the browser.
 
 **Already writing Rask.** The [language
 card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md) is the whole

@@ -57,6 +57,12 @@
 
 /* --- type ------------------------------------------------------------- */
 
+/* Careful with rem in this file: mdBook sets `:root { font-size: 62.5% }`, so
+   1rem is 10px here, not the 16px it is on the landing page. Body text is
+   1.6rem. Every size below is written for that, which is also what mdBook's own
+   stylesheets do — getting it wrong shrinks everything to ~62%, which is how
+   the headings ended up smaller than the paragraphs under them. */
+
 html {
     font-family: var(--font-sans);
     scrollbar-color: var(--rule) transparent;
@@ -71,9 +77,10 @@ h1, h2, h3, h4 {
     line-height: 1.2;
 }
 
-.content h1 { font-size: 2.1rem; font-weight: 500; }
-.content h2 { font-size: 1.55rem; margin-top: 2.4em; }
-.content h3 { font-size: 1.22rem; margin-top: 1.8em; }
+.content h1 { font-size: 3.4rem; font-weight: 500; }
+.content h2 { font-size: 2.4rem; margin-top: 2.4em; }
+.content h3 { font-size: 1.9rem; margin-top: 1.8em; }
+.content h4 { font-size: 1.65rem; margin-top: 1.6em; }
 
 .content p, .content ul, .content ol, .content li { line-height: 1.7; }
 .content p, .content ul, .content ol { max-width: var(--measure); }
@@ -84,15 +91,32 @@ a:hover { color: var(--accent-hover); }
 
 .menu-title { font-family: var(--font-display); font-weight: 600; }
 
+/* Added by chrome.js, since mdBook's bar has no slot for "the rest of the
+   site". Sits ahead of the sidebar and theme buttons, where a wordmark goes. */
+.rask-home {
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+    padding-inline: 0.4rem 1rem;
+    margin-inline-end: 0.6rem;
+    border-inline-end: 1px solid var(--rule);
+    /* Same trick the icon buttons use to sit centred in the bar. */
+    line-height: var(--menu-bar-height);
+}
+
+.rask-home:hover { color: var(--accent); }
+
 /* --- sidebar ---------------------------------------------------------- */
 
 .sidebar { border-right: 1px solid var(--rule); }
-.sidebar .sidebar-scrollbox { padding: 1.2rem 1rem; }
+.sidebar .sidebar-scrollbox { padding: 2rem 1.6rem; }
 .chapter li.chapter-item { line-height: 1.6; margin: 0.1em 0; }
 
 .chapter li.part-title {
     font-family: var(--font-sans);
-    font-size: 0.74rem;
+    font-size: 1.2rem;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -116,7 +140,7 @@ pre, pre > code, .hljs {
 }
 
 pre {
-    padding: 1rem 1.15rem;
+    padding: 1.6rem 1.8rem;
     border: 1px solid var(--code-rule);
     border-radius: 8px;
     margin: 1.6em 0;
@@ -165,7 +189,7 @@ blockquote > p:last-child { margin-bottom: 0; }
 img[alt="rask logo"] { max-width: 100%; height: auto; }
 
 @media only screen and (max-width: 768px) {
-    .content h1 { font-size: 1.7rem; }
+    .content h1 { font-size: 2.7rem; }
     img[alt="rask logo"] { width: 260px; }
 }
 

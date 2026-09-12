@@ -87,7 +87,7 @@
         <div>
             <h3>Everything is a value</h3>
             <p>No reference types, and no <code>Box</code>/<code>Rc</code>/<code>Arc</code> distinction to learn. Values up to 16 bytes copy, anything bigger moves, and you write <code>.clone()</code> when you want a second one.</p>
-            <p>That is more clones than Rust asks for. The difference is that you can see every one of them in the source.</p>
+            <p>That is more clones than Rust asks for. Every one of them is written down.</p>
         </div>
         <figure class="window">
             <figcaption><span>values.rk</span></figcaption>
@@ -147,7 +147,7 @@ world.<span class="fn">delete</span>(b)
 
 <section class="page">
     <h2>What it costs</h2>
-    <p class="lede prose">Stated once, plainly. If you want pointer-level control over layout and traversal, use Rust or C++ &mdash; that is not the trade being made here.</p>
+    <p class="lede prose">If you want pointer-level control over layout and traversal, use Rust or C++. Rask doesn&rsquo;t offer it.</p>
 
     <div class="ledger">
         <div class="give">
@@ -207,7 +207,7 @@ world.<span class="fn">delete</span>(b)
         </div>
     </div>
 
-    <p class="prose">Five programs are the yardstick: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively today</strong> &mdash; the HTTP one only since last week, when the bug corrupting the first eight bytes of every response got fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a>, CI runs them, and when one breaks it outranks everything else on the list.</p>
+    <p class="prose">There are five test programs: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively.</strong> The HTTP one started working last week, once a bug that corrupted the first eight bytes of every response was fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a> and CI runs them.</p>
 
     <p class="prose">Ideas and complaints both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
 </section>
