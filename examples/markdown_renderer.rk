@@ -14,6 +14,29 @@ import cli
 import std
 import string.StringBuilder
 
+// ─── Helpers ────────────────────────────────────────────────────────
+
+/// Is `offset` the start of a character, or the end of the string?
+///
+/// `string` is indexed in bytes, so an offset computed by arithmetic rather
+/// than by walking can land mid-character. There is no `is_char_boundary` in
+/// the stdlib yet, so this asks `char_indices()`, which only ever yields real
+/// boundaries.
+func ends_on_char_boundary(s: string, offset: usize) -> bool {
+    if offset == 0 || offset == s.len() {
+        return true
+    }
+    for (at, _) in s.char_indices() {
+        if at == offset {
+            return true
+        }
+        if at > offset {
+            return false
+        }
+    }
+    return false
+}
+
 // ─── Error Types ────────────────────────────────────────────────────
 
 enum MarkdownError {
@@ -226,10 +249,24 @@ extend Scanner {
     }
 
     func matches(self, s: string) -> bool {
-        if self.pos + s.len() > self.input.len() {
+        let end = self.pos + s.len()
+        if end > self.input.len() {
             return false
         }
-        return self.input[self.pos..self.pos + s.len()] == s
+        // `pos` only ever moves by `len_utf8()`, so it is always on a character
+        // boundary — but `pos + s.len()` is arithmetic on the *target's* byte
+        // length and can land inside one. Slicing there panics, which is how a
+        // post containing an em-dash took the renderer down: scanning for a
+        // two-byte marker from byte 66 asked for `[66..69]`, and the em-dash
+        // starts at 68.
+        //
+        // A split end can't be a match anyway: the bytes up to it are the front
+        // half of one character, and `s` is a whole string, so they can't be
+        // equal. Saying no is both safe and right.
+        if !ends_on_char_boundary(self.input, end) {
+            return false
+        }
+        return self.input[self.pos..end] == s
     }
 
     func consume(self, s: string) -> bool {
@@ -481,6 +518,15 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
 
         // Blank lines
         if is_blank_line(line) {
+            i = i + 1
+            continue
+        }
+
+        // HTML comments. This renders a subset of CommonMark and raw HTML is
+        // not in it, so a comment has nowhere to go — escaping it put
+        // `<!-- test: compile -->` on the page as visible text. Markdown in
+        // this repo carries build markers in comments, so they're dropped.
+        if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
             i = i + 1
             continue
         }

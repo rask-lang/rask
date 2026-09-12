@@ -4,4 +4,5 @@ error[E0302]: cannot mutate `account` — declared `let`
  16 |     deposit(mutate account, 50)
     |                    ^^^^^^^ `account` is a let binding — immutable
     = fix: replace `let account` with `mut account`
-    = why: `let` bindings forbid rebinding and mutation. Use `mut` when you need to modify the value or call mutating methods.
+    = why: `let` bindings forbid rebinding and mutation. Use `mut` when you need
+          to modify the value or call mutating methods.

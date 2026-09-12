@@ -27,7 +27,7 @@
     <nav>
         <a href="/book/">Docs</a>
         <a href="/app/">Playground</a>
-        <a href="https://github.com/rask-lang/rask/tree/main/writing">Writing</a>
+        <a href="/blog/">Blog</a>
         <a href="https://github.com/rask-lang/rask">GitHub</a>
     </nav>
 </header>
@@ -37,14 +37,14 @@
 <div class="page hero">
     <div>
         <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
-        <h1>What if references can&rsquo;t be stored?</h1>
-        <p>Make references temporary &mdash; never in a struct, never returned from a function &mdash; and <strong>lifetime annotations stop being necessary</strong>. There is nothing left to track.</p>
-        <p>Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I&rsquo;m trying to find out.</p>
+        <h1>No garbage collector. No lifetime annotations.</h1>
+        <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at, so there is nothing for a lifetime to describe.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. There&rsquo;s a box below if you want to disagree.</p>
         <div class="actions">
-            <a class="btn solid" href="/app/">Run it in your browser</a>
-            <a class="btn outline" href="/book/getting-started/installation.html">Install it</a>
+            <a class="btn solid" href="/app/">Run something in the browser</a>
+            <a class="btn outline" href="/book/">Read the book</a>
         </div>
-        <p class="install">or build from source with <code>cargo build --release</code> &mdash; needs a Rust toolchain</p>
+        <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
     </div>
 
     <figure class="window">
@@ -62,14 +62,32 @@
 </div>
 
 <section class="page">
-    <h2>Three ideas do most of the work</h2>
-    <p class="lede prose">Everything else in the language is downstream of these.</p>
+    <h2>Try it</h2>
+    <p class="lede prose">This runs the real interpreter, compiled to WebAssembly. Edit it and press Run.</p>
+    <div id="try-rask" class="try-box"></div>
+    <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
+</section>
+
+<section class="page">
+    <h2>Why another language</h2>
+
+    <div class="prose">
+        <p>There is a way of writing Rust that people call pragmatic. Keep lifetimes out of your structs. Use indices instead of references. Clone when it isn&rsquo;t hot. Reach for <code>Rc&lt;RefCell&lt;T&gt;&gt;</code> when you have to.</p>
+        <p>It works. It is also a set of rules the compiler doesn&rsquo;t know about, that every codebase rediscovers and half-follows. C++ has the same shape: RAII, smart pointers, the Core Guidelines. A whole discipline to get memory safety out of a language that won&rsquo;t hand it to you, and no way to check that anyone kept it.</p>
+        <p class="claim">When the advice is &ldquo;don&rsquo;t use the feature&rdquo;, the feature is the problem.</p>
+        <p>That is the bet Rask is making, and it could be wrong. If you want a language to ship something in this year, use Rust or Go.</p>
+    </div>
+</section>
+
+<section class="page">
+    <h2>The rule everything follows from</h2>
+    <p class="lede prose"><strong>A reference can&rsquo;t be stored.</strong></p>
 
     <div class="idea">
         <div>
-            <h3>References are temporary</h3>
-            <p>You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it &mdash; there is no syntax that would let you, which is the point.</p>
-            <p>So there is no lifetime to annotate, no variance to reason about, and nothing in a signature except the types.</p>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
+            <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
+            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack. The <a href="/book/">book</a> takes them one at a time.</p>
         </div>
         <figure class="window">
             <figcaption><span>borrow.rk</span></figcaption>
@@ -83,66 +101,7 @@
         </figure>
     </div>
 
-    <div class="idea">
-        <div>
-            <h3>Everything is a value</h3>
-            <p>No reference types, and no <code>Box</code>/<code>Rc</code>/<code>Arc</code> distinction to learn. Values up to 16 bytes copy, anything bigger moves, and you write <code>.clone()</code> when you want a second one.</p>
-            <p>That is more clones than Rust asks for. Every one of them is written down.</p>
-        </div>
-        <figure class="window">
-            <figcaption><span>values.rk</span></figcaption>
-<pre><code><span class="kw">let</span> a = <span class="ty">Point</span> { x: 1.0, y: 2.0 }
-<span class="kw">let</span> b = a              <span class="cmt">// 16 bytes: copied</span>
-
-<span class="kw">mut</span> names = <span class="ty">Vec</span>.<span class="fn">new</span>()
-names.<span class="fn">push</span>(<span class="str">"ada"</span>)
-<span class="kw">let</span> taken = names      <span class="cmt">// bigger: moved</span>
-<span class="kw">let</span> copy = taken.<span class="fn">clone</span>()  <span class="cmt">// say so to get two</span></code></pre>
-        </figure>
-    </div>
-
-    <div class="idea">
-        <div>
-            <h3>Graphs get links, not lifetimes</h3>
-            <p>A <code>Rack&lt;T&gt;</code> owns nodes at stable addresses. A <code>Link&lt;T&gt;</code> points at one, and is the single kind of reference you <em>can</em> keep in a field.</p>
-            <p>Deleting a node sets every edge pointing at it to <code>none</code> before the delete returns. A dangling link therefore never exists, so following a live one is just a pointer hop &mdash; no generation counter, no liveness check.</p>
-        </div>
-        <figure class="window">
-            <figcaption><span>graph.rk</span></figcaption>
-<pre><code><span class="kw">struct</span> <span class="ty">Node</span> {
-    id: <span class="ty">i32</span>
-    peer: <span class="ty">Link</span>&lt;<span class="ty">Node</span>&gt;?
-}
-
-<span class="kw">let</span> a = world.<span class="fn">insert</span>(<span class="ty">Node</span> { id: 1, peer: none })
-<span class="kw">let</span> b = world.<span class="fn">insert</span>(<span class="ty">Node</span> { id: 2, peer: none })
-a.peer = b
-
-world.<span class="fn">delete</span>(b)
-<span class="cmt">// a.peer is `none` now — nothing to check for</span></code></pre>
-        </figure>
-    </div>
-
-    <div class="idea">
-        <div>
-            <h3>Files and sockets get consumed</h3>
-            <p>Resources are linear: the compiler makes you consume them exactly once. <code>ensure file.close()</code> defers that consumption to the end of the scope, which is what lets <code>try</code> bail out early without leaking the handle.</p>
-            <p>Linearity, deferred consumption and error propagation are three separate rules, and the idiom at the top of this page falls out of them composing. It&rsquo;s the part of the design I&rsquo;m happiest with.</p>
-        </div>
-        <figure class="window">
-            <figcaption><span>copy.rk</span></figcaption>
-<pre><code><span class="kw">func</span> <span class="fn">copy</span>(from: <span class="ty">string</span>, to: <span class="ty">string</span>) -> <span class="ty">void</span> <span class="kw">or</span> <span class="ty">IoError</span> {
-    <span class="kw">let</span> src = <span class="kw">try</span> fs.<span class="fn">open</span>(from)
-    <span class="kw">ensure</span> src.<span class="fn">close</span>()
-
-    <span class="kw">mut</span> dst = <span class="kw">try</span> fs.<span class="fn">create</span>(to)
-    <span class="kw">ensure</span> dst.<span class="fn">close</span>()
-
-    <span class="cmt">// either `try` can leave. both files still close.</span>
-    <span class="kw">try</span> dst.<span class="fn">write</span>(<span class="kw">try</span> src.<span class="fn">read_text</span>())
-}</code></pre>
-        </figure>
-    </div>
+    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure. Leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
 </section>
 
 <section class="page">
@@ -170,7 +129,7 @@ world.<span class="fn">delete</span>(b)
         </div>
     </div>
 
-    <p class="prose">Strings are the deliberate exception. <code>string</code> is immutable and refcounted, so it is Copy at 16 bytes and passes around like an integer &mdash; no <code>.clone()</code>. The visible cost is reserved for the things that actually own heap memory, like <code>Vec</code> and <code>Map</code>.</p>
+    <p class="prose">Strings are the exception I made deliberately: <code>string</code> is immutable and refcounted, so it passes around like an integer and never needs <code>.clone()</code>. The visible cost is for the things that really do own heap memory.</p>
 </section>
 
 <section class="page">
@@ -209,16 +168,27 @@ world.<span class="fn">delete</span>(b)
 
     <p class="prose">There are five test programs: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively.</strong> The HTTP one started working last week, once a bug that corrupted the first eight bytes of every response was fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a> and CI runs them.</p>
 
-    <p class="prose">Ideas and complaints both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
+</section>
+
+<section class="page">
+    <h2>Should you learn it?</h2>
+
+    <div class="prose">
+        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
+        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out. Nothing to install, and half an hour tells you whether the trade suits how you think.</p>
+        <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
+    </div>
 </section>
 
 </main>
+
+<script type="module" src="try.js"></script>
 
 <footer class="page">
     <nav>
         <a href="/book/">Docs</a>
         <a href="/app/">Playground</a>
-        <a href="https://github.com/rask-lang/rask/tree/main/writing">Writing</a>
+        <a href="/blog/">Blog</a>
         <a href="https://github.com/rask-lang/rask">GitHub</a>
         <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">Language card</a>
     </nav>

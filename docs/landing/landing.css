@@ -31,7 +31,14 @@ p > code, li > code {
 
 pre code { background: none; padding: 0; font-size: inherit; color: inherit; }
 
-.page { max-width: var(--page); margin: 0 auto; padding: 0 clamp(1.25rem, 4vw, 2.5rem); }
+/* Named, because the code blocks cancel it at phone width to reach the edges. */
+:root { --gutter: clamp(1.25rem, 4vw, 2.5rem); }
+
+/* `padding-inline`, never the `padding` shorthand: `section` sets its own
+   `padding-block`, and a shorthand here is more specific than an element
+   selector, so it would quietly zero it. That's why the sections had no
+   vertical room of their own and leaned entirely on their headings' margins. */
+.page { max-width: var(--page); margin: 0 auto; padding-inline: var(--gutter); }
 
 /* Prose never gets wider than it can be read at. */
 .prose { max-width: var(--measure); }
@@ -135,7 +142,8 @@ nav a:hover { color: var(--accent); }
 .btn.outline:hover { border-color: var(--accent); color: var(--accent); }
 
 .install { margin: 0; font-size: 0.88rem; color: var(--ink-faint); }
-.install code { font-size: 0.92em; }
+/* Don't let a command wrap between its flag's two dashes. */
+.install code { font-size: 0.92em; white-space: nowrap; }
 
 .hero .window pre { font-size: 0.8rem; }
 
@@ -191,7 +199,100 @@ h2 {
 
 .lede { color: var(--ink-soft); margin: 0 0 2.5rem; font-size: 1.05rem; }
 
+/* The one sentence a section is actually arguing. Set apart, not shouted. */
+.claim {
+    font-size: 1.2rem;
+    line-height: 1.45;
+    margin: 1.6rem 0;
+    padding-left: 1.1rem;
+    border-left: 3px solid var(--accent);
+    color: var(--ink);
+}
+
 /* ---------- the ideas ---------- */
+
+/* ---------- try it ---------- */
+
+/* Deliberately not the playground. No editor library, no syntax colouring, no
+   examples menu — a box you can type in and a button. The heavy thing here is
+   the interpreter, and try.js doesn't fetch it until you press Run. */
+
+.try-box {
+    max-width: var(--measure);
+    border: 1px solid var(--code-rule);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--code-bg);
+}
+
+.try-editor { padding: 0.9rem 1rem 0.2rem; }
+
+.try-box textarea {
+    display: block;
+    width: 100%;
+    min-height: 9lh;
+    border: none;
+    padding: 0;
+    resize: vertical;
+    background: transparent;
+    color: var(--code-fg);
+    font-family: var(--font-mono);
+    font-size: 0.855rem;
+    line-height: 1.75;
+    tab-size: 4;
+}
+
+.try-box textarea:focus { outline: none; }
+
+.try-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.8rem 1rem;
+    border-top: 1px solid var(--code-rule);
+    background: var(--code-chrome);
+}
+
+.try-bar .btn { padding: 0.4rem 1.1rem; font-size: 0.9rem; }
+.try-bar .btn[disabled] { opacity: 0.55; cursor: default; }
+
+.try-open {
+    margin-left: auto;
+    color: var(--ink-soft);
+    font-size: 0.88rem;
+    text-decoration: none;
+}
+
+.try-open:hover { color: var(--accent); }
+
+.try-output {
+    margin: 0;
+    padding: 0.9rem 1rem;
+    border-top: 1px solid var(--code-rule);
+    background: var(--bg-sunken);
+    color: var(--ink-soft);
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    min-height: 3lh;
+}
+
+.try-output:empty { display: none; }
+.try-output.ok { color: var(--code-fg); }
+.try-output.bad { color: var(--c-bad); }
+
+/* The diagnostic colours, same names the playground's output uses. */
+.try-output .diag-error { color: var(--c-bad); }
+.try-output .diag-warning { color: var(--c-kw); }
+.try-output .diag-info, .try-output .diag-help { color: var(--c-ty); }
+.try-output .bold, .try-output .diag-bold { font-weight: 600; }
+
+/* A code window set to prose width, for a sample that stands on its own rather
+   than sitting beside an explanation. */
+.prose-width { max-width: var(--measure); }
 
 .idea {
     display: grid;
@@ -297,4 +398,28 @@ footer nav { gap: 1.2rem; flex-wrap: wrap; }
     nav { gap: 1rem; font-size: 0.9rem; }
     .masthead { padding-block: 0.9rem; }
     .window pre { font-size: 0.8rem; }
+}
+
+/* Same call the book makes at this width, for the same reason: a code line that
+   runs off the right edge is a line you have to swipe to finish, and three
+   nested paddings are the wrong use of four inches. The block takes the full
+   width of the screen and wraps what's left. */
+@media (max-width: 620px) {
+    .window {
+        margin-inline: calc(0px - var(--gutter));
+        border-inline: none;
+        border-radius: 0;
+    }
+
+    .window pre {
+        padding: 1rem 1.1rem 1.2rem;
+        overflow-x: visible;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+    }
+
+    .try-box { border-radius: 0; border-inline: none; margin-inline: calc(0px - var(--gutter)); }
+    .try-box textarea { white-space: pre-wrap; overflow-wrap: break-word; }
+    .try-bar { gap: 0.75rem; }
+    .try-open { font-size: 0.84rem; }
 }

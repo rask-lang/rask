@@ -1,0 +1,212 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* The blog. Same tokens as the landing page and the book — this only says how a
+   piece of long-form prose is set, which is a narrower measure and more air
+   than either of those wants. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 17px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+}
+
+.page {
+    width: 100%;
+    max-width: var(--page);
+    margin-inline: auto;
+    padding-inline: 1.5rem;
+}
+
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { color: var(--accent-hover); }
+
+/* ---------- masthead & footer ---------- */
+
+.masthead {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    padding-block: 1.1rem;
+    border-bottom: 1px solid var(--rule);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+}
+
+.brand img { width: 26px; height: 26px; border-radius: 6px; display: block; }
+
+.masthead nav { display: flex; gap: 1.25rem; margin-left: auto; flex-wrap: wrap; }
+.masthead nav a { color: var(--ink-soft); text-decoration: none; }
+.masthead nav a:hover { color: var(--accent); }
+
+footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 5rem;
+    padding-block: 1.4rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.9rem;
+    color: var(--ink-faint);
+}
+
+footer nav { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+footer a { color: var(--ink-soft); text-decoration: none; }
+footer a:hover { color: var(--accent); }
+
+/* ---------- index ---------- */
+
+.blog-index { padding-block: 3.5rem 2rem; }
+
+.blog-index h1 {
+    font-family: var(--font-display);
+    font-size: 2.6rem;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.6rem;
+}
+
+.lede { max-width: var(--measure); color: var(--ink-soft); margin: 0 0 2.5rem; }
+
+.posts { list-style: none; padding: 0; margin: 0; max-width: var(--measure); }
+
+.posts li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    padding-block: 1.1rem;
+    border-top: 1px solid var(--rule);
+}
+
+.posts a {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.posts time { color: var(--ink-faint); font-size: 0.88rem; white-space: nowrap; }
+
+/* ---------- a post ---------- */
+
+.post { padding-block: 2rem 1rem; max-width: 46rem; }
+
+.back { font-size: 0.9rem; margin: 0 0 2.5rem; }
+.back a { color: var(--ink-faint); text-decoration: none; }
+.back a:hover { color: var(--accent); }
+
+.dateline { color: var(--ink-faint); font-size: 0.88rem; margin: 0 0 0.4rem; }
+
+.post h1 {
+    font-family: var(--font-display);
+    font-size: 2.6rem;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin: 0 0 1.8rem;
+}
+
+.post h2 {
+    font-family: var(--font-display);
+    font-size: 1.7rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin: 3rem 0 0.8rem;
+}
+
+.post h3 {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin: 2.2rem 0 0.6rem;
+}
+
+.post p, .post ul, .post ol { margin: 0 0 1.3rem; }
+.post li { margin-bottom: 0.4rem; }
+
+.post blockquote {
+    margin: 1.8rem 0;
+    padding: 0.9rem 1.2rem;
+    border-left: 3px solid var(--accent-fill);
+    background: var(--bg-sunken);
+    color: var(--ink-soft);
+}
+
+.post blockquote p:last-child { margin-bottom: 0; }
+
+.post hr { border: none; border-top: 1px solid var(--rule); margin: 3rem 0; }
+
+.post table { border-collapse: collapse; width: 100%; margin: 1.8rem 0; font-size: 0.95rem; }
+.post th, .post td { border: 1px solid var(--rule); padding: 0.55em 0.8em; text-align: left; }
+.post thead th { background: var(--bg-sunken); }
+
+/* ---------- code ---------- */
+
+.post p > code, .post li > code, .post td > code {
+    background: var(--bg-sunken);
+    color: var(--ink);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+}
+
+.post pre {
+    margin: 1.8rem 0;
+    padding: 1.1rem 1.25rem;
+    overflow-x: auto;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: 1px solid var(--code-rule);
+    border-radius: 8px;
+}
+
+.post pre code {
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    line-height: 1.7;
+}
+
+/* ---------- phone ---------- */
+
+/* Same reasoning as the book: three nested paddings and a horizontal scrollbar
+   are the wrong trade on a four-inch screen. The block takes the full width and
+   wraps what doesn't fit, so nothing sits off the edge. */
+@media (max-width: 620px) {
+    body { font-size: 16px; }
+
+    .blog-index h1, .post h1 { font-size: 2rem; }
+    .post h2 { font-size: 1.4rem; }
+
+    .post pre {
+        margin-inline: -1.5rem;
+        padding: 1rem 1.1rem;
+        border-radius: 0;
+        border-inline: none;
+        overflow-x: visible;
+    }
+
+    .post pre code {
+        font-size: 0.8rem;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+    }
+}

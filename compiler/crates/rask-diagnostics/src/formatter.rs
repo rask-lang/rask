@@ -23,6 +23,92 @@ use rask_ast::LineMap;
 use crate::source_map::SourceMap;
 use crate::{Diagnostic, Help, LabelStyle, Severity};
 
+/// How wide a diagnostic is allowed to get.
+///
+/// The conventional terminal, and the number every other tool assumes. The
+/// explanatory lines used to ignore it entirely: `= why:` is a paragraph, and
+/// it went out as one line however long it ran — E0835's is 441 characters, so
+/// in an 80-column terminal it arrived as five and a half unbroken rows with
+/// the words landing wherever. It's the same text either way; this decides
+/// where it breaks instead of leaving that to the window.
+const TERMINAL_WIDTH: usize = 80;
+
+/// Split into the pieces a wrap may not break apart.
+///
+/// Words, except that anything in backticks is one piece however many spaces
+/// it contains. A diagnostic's backticks hold the code you are being told to
+/// write — `type Id = … with (Equal, Hashable)` — and a suggestion broken
+/// across a line break is one you can't read off and can't copy. Whole or on
+/// its own line.
+///
+/// An unclosed backtick takes the rest of the text with it, which is the same
+/// answer: don't guess where a code span ends.
+fn unbreakable_pieces(text: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut chars = text.chars().peekable();
+    let mut current = String::new();
+
+    while let Some(ch) = chars.next() {
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                pieces.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        current.push(ch);
+        if ch == '`' {
+            for inner in chars.by_ref() {
+                current.push(inner);
+                if inner == '`' {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        pieces.push(current);
+    }
+    pieces
+}
+
+/// Greedy word wrap, to a width in characters.
+///
+/// Counts characters rather than bytes: an em-dash is one column and three
+/// bytes, and the explanatory lines are full of them. A piece longer than the
+/// budget — a path, a long code span — goes on its own line rather than being
+/// cut.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(20);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for piece in unbreakable_pieces(text) {
+        let would_be = if current.is_empty() {
+            piece.chars().count()
+        } else {
+            current.chars().count() + 1 + piece.chars().count()
+        };
+
+        if !current.is_empty() && would_be > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(&piece);
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 /// Formats diagnostics for terminal output.
 pub struct DiagnosticFormatter<'a> {
     source: &'a str,
@@ -208,15 +294,11 @@ impl<'a> DiagnosticFormatter<'a> {
     fn format_footer(&self, out: &mut String, diagnostic: &Diagnostic) {
         let primary_gutter_width = 2;
 
-        // Notes
+        // Notes. Same shape as fix and why, so the same wrap: a note is prose
+        // too, and one ran to 96 characters before this went through the
+        // shared path.
         for note in &diagnostic.notes {
-            out.push_str(&format!(
-                "{} {} {}: {}\n",
-                " ".repeat(primary_gutter_width + 1),
-                "=".cyan(),
-                "note".cyan().bold(),
-                note
-            ));
+            Self::push_labelled(out, primary_gutter_width, &"note".cyan().bold().to_string(), 4, note);
         }
 
         // Fix/why supersede help when present
@@ -255,17 +337,23 @@ impl<'a> DiagnosticFormatter<'a> {
     ) {
         // gutter + " = " + label + ": "
         let continuation = " ".repeat(gutter_width + 1 + 2 + label_width + 2);
-        for (i, line) in text.split('\n').enumerate() {
-            if i == 0 {
-                out.push_str(&format!(
-                    "{} {} {}: {}\n",
-                    " ".repeat(gutter_width + 1),
-                    "=".cyan(),
-                    label,
-                    line
-                ));
-            } else {
-                out.push_str(&format!("{}{}\n", continuation, line.trim_start()));
+        let width = TERMINAL_WIDTH.saturating_sub(continuation.chars().count());
+
+        let mut first = true;
+        for line in text.split('\n') {
+            for piece in wrap_words(line.trim_start(), width) {
+                if first {
+                    out.push_str(&format!(
+                        "{} {} {}: {}\n",
+                        " ".repeat(gutter_width + 1),
+                        "=".cyan(),
+                        label,
+                        piece
+                    ));
+                    first = false;
+                } else {
+                    out.push_str(&format!("{}{}\n", continuation, piece));
+                }
             }
         }
     }
