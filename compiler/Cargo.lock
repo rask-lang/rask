@@ -1651,7 +1651,6 @@ name = "rask-wasm"
 version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
- "rask-ast",
  "rask-compiler",
  "rask-diagnostics",
  "rask-interp",

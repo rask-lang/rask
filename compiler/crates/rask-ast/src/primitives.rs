@@ -46,26 +46,37 @@ pub fn is_machine_integer(name: &str) -> bool {
 /// pointer is eight bytes, none of them connected to a target and none of them
 /// stating the rule. They all route through here now.
 ///
-/// The width is the compiler host's, and for a native build that is exactly
-/// right: the only binaries the compiler produces are for the machine it runs
-/// on. Cross-compiling to another OS or to bare metal is refused at link time,
-/// so no reachable target's pointer width can differ from the host's. When a
-/// target triple reaches the frontend — it currently stops at codegen — this
-/// takes it as a parameter and every caller follows unchanged.
+/// It is the *target's* width, and `set_pointer_bits` is how the target says
+/// so. It used to read the compiler host's instead, which is the same number
+/// for every binary the compiler emits — cross-compiling is refused at link
+/// time — but not for every frontend. The browser playground is a wasm32 build
+/// of the compiler that emits no code at all: it interprets, on 64-bit values.
+/// Reading the host there made `usize` 32 bits, so `stdlib/fs.rk`'s `n as
+/// usize` was a narrowing conversion and the playground rejected its own
+/// standard library.
 ///
-/// The browser playground is the exception, and it is not a cross-compile: the
-/// *compiler* is wasm32, but it never emits code — it interprets, and the
-/// interpreter's integers are 64-bit. Reading the host's width there made
-/// `usize` 32 bits, so `stdlib/fs.rk`'s `n as usize` became a narrowing
-/// conversion and the playground rejected its own standard library. It answers
-/// for the machine it is emulating instead.
+/// Until someone sets it, the host's width — which is what a `rask` binary
+/// compiling for the machine it runs on wants, and what a unit test that never
+/// builds a `CfgConfig` should see.
 pub fn pointer_bits() -> u32 {
-    if cfg!(target_arch = "wasm32") {
-        64
-    } else {
-        (std::mem::size_of::<usize>() * 8) as u32
+    match POINTER_BITS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => (std::mem::size_of::<usize>() * 8) as u32,
+        bits => bits,
     }
 }
+
+/// Declare the target's pointer width, before the frontend runs.
+///
+/// One compilation is one target, so this is set once per process — from the
+/// `CfgConfig` the frontend was handed, so the width and the `cfg` values can't
+/// describe two different machines.
+pub fn set_pointer_bits(bits: u32) {
+    debug_assert!(bits == 32 || bits == 64, "pointer width is 32 or 64, got {bits}");
+    POINTER_BITS.store(bits, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 0 means "nobody said", which reads as the host.
+static POINTER_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The fixed-width spelling `usize` stands for on this target.
 pub fn usize_spelling() -> &'static str {

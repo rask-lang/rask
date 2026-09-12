@@ -4383,7 +4383,16 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
     ) -> Option<MirType> {
         if is_niche {
-            return Some(val_ty.clone());
+            // A niche optional and its payload share a representation — `none`
+            // is the null pointer, so there is no wrapper to unwrap. They do
+            // not share a *type*: handing back `val_ty` bound `t` in
+            // `x is Link<T> as t` at `Link<T>?`, so every later read of `t`
+            // was lowered as an unwrap of an optional that isn't there. One
+            // dereference too many, and `t.name` read through whatever the
+            // first field held (#1179).
+            return Some(
+                Self::payload_of_mir(val_ty).unwrap_or_else(|| val_ty.clone()),
+            );
         }
         self.payload_type_of(expr, val_ty)
     }

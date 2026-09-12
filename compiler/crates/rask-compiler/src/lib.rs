@@ -60,6 +60,18 @@ pub struct CompilerConfig {
     pub cfg: CfgConfig,
 }
 
+impl CompilerConfig {
+    /// Tell the frontend what machine it is compiling for.
+    ///
+    /// `usize` is pointer-sized, and nothing that builds a `Type::usize()` has
+    /// a config in hand, so the width is a process-wide fact set from here —
+    /// once, at the top of every entry point, so it can never describe a
+    /// different machine from the `cfg` values in the same config.
+    fn declare_target(&self) {
+        rask_ast::primitives::set_pointer_bits(self.cfg.pointer_bits());
+    }
+}
+
 /// A discovered package context for multi-file compilation.
 pub struct PackageContext {
     pub registry: PackageRegistry,
@@ -337,6 +349,8 @@ fn check_loaded(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
+    config.declare_target();
+
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut source_files: Vec<(PathBuf, String)> = Vec::new();
     let mut decls: Vec<Decl> = Vec::new();
@@ -555,6 +569,8 @@ pub fn check_package(
     pkg_ctx: &mut PackageContext,
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
+    config.declare_target();
+
     let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut out = check_package_scoped(pkg_ctx, config, &mut exports);
     // Every diagnostic, including the ones raised before the check got far

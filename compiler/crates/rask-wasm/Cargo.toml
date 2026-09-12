@@ -21,4 +21,3 @@ serde-wasm-bindgen = "0.6"
 rask-compiler = { path = "../rask-compiler" }
 rask-interp = { path = "../rask-interp" }
 rask-diagnostics = { path = "../rask-diagnostics" }
-rask-ast = { path = "../rask-ast" }

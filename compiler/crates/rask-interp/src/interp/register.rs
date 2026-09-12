@@ -661,7 +661,29 @@ impl Interpreter {
     }
 
     /// Run a single benchmark with warmup and auto-calibrated iterations.
+    ///
+    /// Where there is no clock — the browser playground — there is nothing to
+    /// calibrate against and nothing to report, so the body runs once and the
+    /// numbers come back zero. Running it is still worth something: the
+    /// playground's job with a `benchmark` block is to show it executes, and
+    /// calibrating against a stopped clock would spin to the 10,000-iteration
+    /// ceiling to measure nothing.
     pub(super) fn run_single_benchmark(&mut self, name: &str, body: &[Stmt]) -> BenchmarkResult {
+        if !crate::has_clock() {
+            self.env.push_scope();
+            let _ = self.exec_stmts(body);
+            self.env.pop_scope();
+            return BenchmarkResult {
+                name: name.to_string(),
+                iterations: 1,
+                total: std::time::Duration::ZERO,
+                min: std::time::Duration::ZERO,
+                max: std::time::Duration::ZERO,
+                mean: std::time::Duration::ZERO,
+                median: std::time::Duration::ZERO,
+            };
+        }
+
         // Warmup: 3 iterations
         for _ in 0..3 {
             self.env.push_scope();

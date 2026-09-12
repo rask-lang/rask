@@ -87,12 +87,12 @@ impl Playground {
         }
     }
 
-    /// Run the program's `test` blocks and `@test` functions.
+    /// Run the program's `test` blocks, `@test` functions and `benchmark` blocks.
     ///
     /// What `rask test` does, minus the timings: the browser gives wasm no
     /// clock, so a duration here would be a row of zeroes pretending to be a
-    /// measurement. Benchmarks are refused for the same reason — there is
-    /// nothing to measure them with.
+    /// measurement. A benchmark block still runs — once, so you can see it
+    /// does — it just isn't timed.
     pub fn run_tests(&mut self, source: &str) -> Result<String, String> {
         self.output_buffer.lock().unwrap().clear();
 
@@ -101,13 +101,9 @@ impl Playground {
 
         let all = rask_compiler::program_decls(&checked.decls);
         let results = self.interpreter.run_tests(&all, None);
-        let benchmarks = checked
-            .decls
-            .iter()
-            .filter(|d| matches!(d.kind, rask_ast::decl::DeclKind::Benchmark(_)))
-            .count();
+        let benchmarks = self.interpreter.run_benchmarks(&all, None);
 
-        if results.is_empty() && benchmarks == 0 {
+        if results.is_empty() && benchmarks.is_empty() {
             return Err("No tests in this program. A test looks like `test \"name\" { … }`.".into());
         }
 
@@ -134,18 +130,20 @@ impl Playground {
             }
         }
 
-        report.push_str(&format!(
-            "\n{} of {} passed\n",
-            results.len() - failed,
-            results.len()
-        ));
-
-        if benchmarks > 0 {
+        if !results.is_empty() {
             report.push_str(&format!(
-                "\n{} benchmark(s) not run: timing them needs a clock, and the \
-                 browser doesn't give wasm one. Run them with `rask benchmark`.\n",
-                benchmarks
+                "\n{} of {} passed\n",
+                results.len() - failed,
+                results.len()
             ));
+        }
+
+        if !benchmarks.is_empty() {
+            report.push_str("\nBenchmarks ran once each, untimed — timing needs a clock and the\n");
+            report.push_str("browser gives wasm none. `rask benchmark` measures them properly.\n");
+            for b in &benchmarks {
+                report.push_str(&format!("ran   {}\n", b.name));
+            }
         }
 
         if failed > 0 {
@@ -192,8 +190,16 @@ impl Playground {
 /// The file name diagnostics are rendered against. There is no file.
 const PLAYGROUND: &str = "<playground>";
 
+/// The machine the playground pretends to be.
+///
+/// Not the host. The host is wasm32 with no OS, and saying so made `usize` 32
+/// bits — `stdlib/fs.rk`'s `n as usize` became a narrowing conversion and the
+/// playground rejected its own standard library — while `cfg.os` came back
+/// `"unknown"`, so any `comptime if` branch in the stdlib guarded on an OS was
+/// eliminated. The playground emits no code: it interprets, on 64-bit values,
+/// through the same stdlib a Linux build uses. This is what it is emulating.
 fn cfg() -> CfgConfig {
-    CfgConfig::from_host("debug", vec![])
+    CfgConfig::from_target("x86_64-linux-gnu", "debug", vec![])
 }
 
 fn config() -> CompilerConfig {
