@@ -17,12 +17,6 @@
 - [Example programs](examples/README.md)
 - [Specifications](reference/specs-link.md)
 
-# Notes
-
-- [Notes](notes/README.md)
-  - [Why a new language?](notes/why-a-new-language.md)
-  - [The soul of Rask](notes/the-soul-of-rask.md)
-
 # Contributing
 
 - [Contributing](contributing/README.md)

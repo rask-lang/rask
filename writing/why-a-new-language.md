@@ -100,7 +100,7 @@ Next up: compiler. Probably LLVM backend, maybe cranelift. Haven't decided yet.
 
 ## Try it yourself
 
-[Run it in the browser](/app/), work through [the chapters](../getting-started/installation.md),
+[Run it in the browser](/app/), work through [the book](https://rask-lang.dev/book/),
 or read the [design specs](https://github.com/rask-lang/rask/tree/main/specs).
 
 Thoughts and questions both go on [GitHub](https://github.com/rask-lang/rask/issues).

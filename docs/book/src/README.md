@@ -59,7 +59,8 @@ programs](examples/README.md) are complete and CI-checked. The
 [specs](reference/specs-link.md) are the normative wording when the other two
 disagree.
 
-**Here for the design.** The [notes](notes/README.md) are the long-form
+**Here for the design.** The
+[writing](https://github.com/rask-lang/rask/tree/main/writing) is the long-form
 argument; [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
 is the principles it falls out of, and
 [RULINGS.md](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md) is how
