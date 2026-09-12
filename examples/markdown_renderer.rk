@@ -522,6 +522,15 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
             continue
         }
 
+        // HTML comments. This renders a subset of CommonMark and raw HTML is
+        // not in it, so a comment has nowhere to go — escaping it put
+        // `<!-- test: compile -->` on the page as visible text. Markdown in
+        // this repo carries build markers in comments, so they're dropped.
+        if trimmed.starts_with("<!--") && trimmed.ends_with("-->") {
+            i = i + 1
+            continue
+        }
+
         // Horizontal rule (must check before unordered list)
         if is_hr_line(trimmed) {
             blocks.push(Block.HorizontalRule)

@@ -30,9 +30,9 @@ build_site() {
         cp -r playground/pkg build/app/
     fi
 
-    # The blog became the book's Notes section; keep the old URL working.
-    mkdir -p build/blog
-    cp landing/blog-redirect.html build/blog/index.html
+    # The blog. Rendered from writing/*.md by examples/markdown_renderer.rk,
+    # so it needs the compiler built: `cargo build --release -p rask-cli`.
+    node blog/build.js
 
     echo "Build complete at $(date +%H:%M:%S)"
 }
@@ -42,7 +42,7 @@ build_site
 
 echo ""
 echo "Server running at http://localhost:8080"
-echo "Watching for changes in book/, landing/ and shared/..."
+echo "Watching for changes in book/, landing/, blog/, shared/ and writing/..."
 echo "Press Ctrl+C to stop"
 echo ""
 
@@ -55,7 +55,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src book/theme landing/ shared/ ../examples/ 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src book/theme landing/ shared/ blog/ ../writing/ ../examples/ 2>/dev/null && {
         echo ""
         build_site
     }
