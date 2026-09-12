@@ -23,10 +23,15 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 // Live heap string buffers. `RASK_LEAK_CHECK=1` makes a program that still
 // holds any at exit fail loudly instead of quietly handing them to the OS —
 // which is what "Rask is leak free" has to mean if it is to mean anything.
+//
+// Declared `_Atomic`, so it's touched with the C11 functions, not the
+// `__atomic_*` builtins the refcounts below use. Those builtins want a plain
+// object; gcc lets the mix through and clang rejects it outright.
 static _Atomic int64_t rask_string_live_buffers = 0;
 
 int rask_leak_check_enabled = 0;
@@ -73,7 +78,7 @@ static void str_make_sso(RaskStr *out, const char *data, int64_t len) {
 /// One place to allocate a string header, so one place counts them.
 static uint8_t *str_alloc_header(int64_t cap) {
     uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
-    __atomic_add_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&rask_string_live_buffers, 1, memory_order_relaxed);
     return header;
 }
 
@@ -149,7 +154,7 @@ void rask_string_free(const RaskStr *s) {
     }
     if (__atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL) == 0) {
         uint32_t cap = heap_cap(s);
-        __atomic_sub_fetch(&rask_string_live_buffers, 1, __ATOMIC_RELAXED);
+        atomic_fetch_sub_explicit(&rask_string_live_buffers, 1, memory_order_relaxed);
         if (__builtin_expect(rask_string_debug_enabled, 0)) {
             memset(s->heap.header + 8, 0xDE, (size_t)cap + 1);
             *rc = RASK_RC_POISON;
@@ -201,7 +206,7 @@ void rask_leak_check(void) {
     if (live_allocs <= 0) return;
     int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
 
-    int64_t live_strings = __atomic_load_n(&rask_string_live_buffers, __ATOMIC_ACQUIRE);
+    int64_t live_strings = atomic_load_explicit(&rask_string_live_buffers, memory_order_acquire);
     fprintf(stderr,
             "rask: %lld allocation%s never released (%lld bytes, undercounted)\n",
             (long long)live_allocs,

@@ -220,6 +220,17 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_CARD.md
 
+    # The runtime through clang. gcc builds it here and clang builds it on the
+    # macOS job, so a gcc/clang difference could only surface there — and that
+    # job can't build green.c or the two I/O engines at all, since they need
+    # Linux headers. Those three had no clang coverage anywhere, which is how
+    # a `_Atomic` variable touched with gcc's `__atomic_*` builtins (fine to
+    # gcc, rejected by clang) sat in string.c. Compiles only, ~10s, no macOS
+    # runner.
+    - name: Runtime builds with clang
+      if: ${{ !cancelled() }}
+      run: tests/clang_gate.sh
+
     # The playground's wasm build. Nothing here compiled for wasm32, so a
     # cfg-gated stdlib module could lose its callers' guards and only break in
     # the deploy workflow — which is how docs deploys stayed red for 30
@@ -305,3 +316,27 @@ jobs:
     - name: cargo test
       run: cargo test
       working-directory: compiler
+
+  # The C runtime, compiled on Darwin. Everything above runs on Linux, and the
+  # release ships a macOS binary — so the first time anyone compiled this code
+  # with Apple's headers was release day, twice in a row. Both breaks were the
+  # same kind: glibc hands out a non-POSIX name anyway, Darwin doesn't, and the
+  # Makefile asks for strict POSIX. A green Linux run says nothing about either.
+  #
+  # On Darwin this compiles the 26 sources macOS actually links — the Makefile
+  # drops the three Linux-only ones — so it covers the same set `rask build`
+  # feeds to the linker there.
+  #
+  # Deliberately just the runtime: no Rust toolchain, no cargo, no gates. That
+  # is where both failures were, it is ~30s of clang, and it needs no cache.
+  # macOS runners bill at 10x, so a full macOS matrix is a real cost; this is
+  # the thin slice that would have caught both. (#1170 asks for the wider leg.)
+  macos-runtime:
+    name: macos-runtime (C runtime compiles on Darwin)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build C runtime
+      run: make -C compiler/runtime
