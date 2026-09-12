@@ -79,9 +79,9 @@ impl Playground {
             Err(diag) => match diag.error {
                 RuntimeError::Exit(0) => Ok(output),
                 RuntimeError::Exit(code) => {
-                    Err(format!("Program exited with code {}\n{}", code, output))
+                    Err(plain(&format!("Program exited with code {}\n{}", code, output)))
                 }
-                other => Err(format!("Runtime error:\n{}", other)),
+                other => Err(plain(&format!("Runtime error:\n{}", other))),
             },
         }
     }
@@ -279,6 +279,21 @@ fn push_escaped(out: &mut String, ch: char) {
         '\'' => out.push_str("&#39;"),
         _ => out.push(ch),
     }
+}
+
+/// Put plain text on the error channel.
+///
+/// Everything returned as `Err` is inserted with `innerHTML` on the other side,
+/// because a compiler diagnostic carries `<span>`s for its colours. So the
+/// channel is HTML, and text that came from the program can't go on it as it
+/// is: a run that printed `<img src=x onerror=…>` and exited non-zero put a
+/// live element on the page, with rask-lang.dev's origin under it. The
+/// program's code travels in a shared URL, so that is someone else's page.
+///
+/// This is the only way plain text gets onto that channel. Escaping at each
+/// site is what failed: `run_tests` remembered and `run` didn't.
+fn plain(text: &str) -> String {
+    escape_html(text)
 }
 
 /// Escape a whole string for `innerHTML`.
