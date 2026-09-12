@@ -34,14 +34,19 @@
     /* The old site's mistake, diagnosed: #0b5c38 reads fine on GitHub's
        near-black and badly on Nord's #2e3440, because #2e3440 is a *mid*
        blue-grey. A dark green needs a dark, barely-tinted ground — then it
-       survives as itself instead of needing to be replaced by a mint. */
-    --night-bg: #0f100e;
-    --night-bg-sunken: #0b0c0a;
-    --night-surface: #1d1f1b;
+       survives as itself instead of needing to be replaced by a mint.
+
+       Tinted warm, on the same neutral axis as the paper (~40°). These were
+       green-tinted (90-100°) while the paper was yellow-warm (48°), which is
+       two different neutrals wearing one name — the themes read as unrelated
+       before any coloured thing was placed on them. */
+    --night-bg: #121110;
+    --night-bg-sunken: #0d0c0b;
+    --night-surface: #1c1b19;
     --night-ink: #ece8e0;
     --night-ink-soft: #aba59b;
     --night-ink-faint: #8e887e;
-    --night-rule: #2b2d28;
+    --night-rule: #2c2a27;
 
     /* So the split earns its keep here. The fill stays the brand green, barely
        opened up until its edge clears 3:1 against the page — a green button is
@@ -62,23 +67,43 @@
     --paper-code-chrome: #eae6d8;
     --paper-code-rule: #ded8c7;
     --paper-code-fg: #221f1a;
-    --paper-c-cmt: #6e7566;
-    --paper-c-kw: #8a4a10;
-    --paper-c-ty: #14614a;
-    --paper-c-fn: #6b5310;
-    --paper-c-str: #42631c;
-    --paper-c-bad: #9a2b1e;
 
-    --night-code-bg: #161815;
-    --night-code-chrome: #1d1f1b;
-    --night-code-rule: #2b2d28;
+    --night-code-bg: #191817;
+    --night-code-chrome: #201f1d;
+    --night-code-rule: #2c2a27;
     --night-code-fg: #e4e0d6;
-    --night-c-cmt: #6e7568;
-    --night-c-kw: #e3a263;
-    --night-c-ty: #8ed2aa;
-    --night-c-fn: #dcc98e;
-    --night-c-str: #a9c486;
-    --night-c-bad: #e8877c;
+
+    /* Syntax: one hue and one saturation per role, written once. Only the
+       lightness changes between themes — the same rule that fixed the accent
+       green, for the same reason.
+
+       Picking the two sets separately is what went wrong first: `ty` came out
+       a 145° mint on dark and a 162° teal on light, and every light colour
+       landed ~20 saturation points hotter than its dark twin, so the two sets
+       were two schemes rather than one scheme in two keys. Comments were worse
+       — 43% lightness in both, so they never flipped at all. */
+    --syn-kw:  30 68%;    /* amber — keywords */
+    --syn-ty:  152 46%;   /* the brand's own hue — types */
+    --syn-fn:  45 55%;    /* gold — functions */
+    --syn-str: 87 38%;    /* olive — strings */
+    --syn-cmt: 40 9%;     /* the neutral axis, barely tinted — comments */
+    --syn-bad: 6 68%;     /* rust — errors */
+
+    /* Lightness pairs. Warmer hues read brighter at equal lightness, so gold
+       and amber sit a step apart from the green rather than all on one number. */
+    --night-c-kw: hsl(var(--syn-kw) 64%);
+    --night-c-ty: hsl(var(--syn-ty) 66%);
+    --night-c-fn: hsl(var(--syn-fn) 70%);
+    --night-c-str: hsl(var(--syn-str) 65%);
+    --night-c-cmt: hsl(var(--syn-cmt) 46%);
+    --night-c-bad: hsl(var(--syn-bad) 70%);
+
+    --paper-c-kw: hsl(var(--syn-kw) 30%);
+    --paper-c-ty: hsl(var(--syn-ty) 28%);
+    --paper-c-fn: hsl(var(--syn-fn) 30%);
+    --paper-c-str: hsl(var(--syn-str) 30%);
+    --paper-c-cmt: hsl(var(--syn-cmt) 44%);
+    --paper-c-bad: hsl(var(--syn-bad) 38%);
 
     /* ---- type ----------------------------------------------------------- */
 
