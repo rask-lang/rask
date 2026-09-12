@@ -27,7 +27,7 @@
     <nav>
         <a href="/book/">Docs</a>
         <a href="/app/">Playground</a>
-        <a href="/book/notes/">Notes</a>
+        <a href="https://github.com/rask-lang/rask/tree/main/writing">Writing</a>
         <a href="https://github.com/rask-lang/rask">GitHub</a>
     </nav>
 </header>
@@ -87,7 +87,7 @@
         <div>
             <h3>Everything is a value</h3>
             <p>No reference types, and no <code>Box</code>/<code>Rc</code>/<code>Arc</code> distinction to learn. Values up to 16 bytes copy, anything bigger moves, and you write <code>.clone()</code> when you want a second one.</p>
-            <p>That is more clones than Rust asks for. The difference is that you can see every one of them in the source.</p>
+            <p>That is more clones than Rust asks for. Every one of them is written down.</p>
         </div>
         <figure class="window">
             <figcaption><span>values.rk</span></figcaption>
@@ -147,7 +147,7 @@ world.<span class="fn">delete</span>(b)
 
 <section class="page">
     <h2>What it costs</h2>
-    <p class="lede prose">Stated once, plainly. If you want pointer-level control over layout and traversal, use Rust or C++ &mdash; that is not the trade being made here.</p>
+    <p class="lede prose">If you want pointer-level control over layout and traversal, use Rust or C++. Rask doesn&rsquo;t offer it.</p>
 
     <div class="ledger">
         <div class="give">
@@ -175,7 +175,7 @@ world.<span class="fn">delete</span>(b)
 
 <section class="page">
     <h2>Where it actually stands</h2>
-    <p class="asof">Measured 2026-09-11 by running it. This section gets re-measured, not copy-pasted.</p>
+    <p class="asof">Measured 2026-09-12 by running it. This section gets re-measured, not copy-pasted.</p>
 
     <div class="status-grid">
         <div>
@@ -183,6 +183,7 @@ world.<span class="fn">delete</span>(b)
             <ul>
                 <li>Native codegen via Cranelift, plus an interpreter that acts as the reference for what the answer should be</li>
                 <li>Ownership, moves, borrows, linear resources</li>
+                <li><code>Rack</code> and <code>Link</code> for graphs, on both backends</li>
                 <li>Structs, enums, generics, traits, <code>comptime</code></li>
                 <li><code>spawn</code>/<code>join</code>, channels, thread pools</li>
                 <li>Packages, workspaces, watch mode, LSP</li>
@@ -191,7 +192,6 @@ world.<span class="fn">delete</span>(b)
         <div>
             <h3>Not there yet</h3>
             <ul>
-                <li><strong>Rack and Link</strong> run on the interpreter only; native codegen doesn&rsquo;t know the types yet</li>
                 <li><strong>No fibers.</strong> <code>spawn</code> is an OS thread; the M:N scheduler is designed, not built</li>
                 <li>Panics abort instead of unwinding</li>
                 <li>x86-64 only, and SIMD is a stub</li>
@@ -207,7 +207,7 @@ world.<span class="fn">delete</span>(b)
         </div>
     </div>
 
-    <p class="prose">Five programs are the yardstick: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively today</strong> &mdash; the HTTP one only since last week, when the bug corrupting the first eight bytes of every response got fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a>, CI runs them, and when one breaks it outranks everything else on the list.</p>
+    <p class="prose">There are five test programs: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively.</strong> The HTTP one started working last week, once a bug that corrupted the first eight bytes of every response was fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a> and CI runs them.</p>
 
     <p class="prose">Ideas and complaints both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
 </section>
@@ -218,7 +218,7 @@ world.<span class="fn">delete</span>(b)
     <nav>
         <a href="/book/">Docs</a>
         <a href="/app/">Playground</a>
-        <a href="/book/notes/">Notes</a>
+        <a href="https://github.com/rask-lang/rask/tree/main/writing">Writing</a>
         <a href="https://github.com/rask-lang/rask">GitHub</a>
         <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">Language card</a>
     </nav>

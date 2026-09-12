@@ -11,19 +11,11 @@
 # Learn the language
 
 - [Passing Values](guide/passing-values.md)
-- [Exercises](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask)
 
 # Look things up
 
 - [Example programs](examples/README.md)
-- [Language card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md)
 - [Specifications](reference/specs-link.md)
-
-# Notes
-
-- [Notes](notes/README.md)
-  - [Why a new language?](notes/why-a-new-language.md)
-  - [The soul of Rask](notes/the-soul-of-rask.md)
 
 # Contributing
 

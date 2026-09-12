@@ -59,6 +59,19 @@ impl CfgConfig {
         }
     }
 
+    /// How wide a pointer is on this target, in bits.
+    ///
+    /// The arch names are the ones a target triple uses, so this reads the
+    /// same string `cfg.arch` shows a Rask program. Anything unrecognised is
+    /// 64: every arch the compiler can reach today is, and guessing 32 would
+    /// silently narrow `usize` rather than fail loudly.
+    pub fn pointer_bits(&self) -> u32 {
+        match self.arch.as_str() {
+            "x86" | "i686" | "arm" | "armv7" | "wasm32" | "riscv32" | "mips" => 32,
+            _ => 64,
+        }
+    }
+
     /// Convert to a flat map of field name → value for the resolver's
     /// dead branch elimination in `comptime if`.
     pub fn to_cfg_values(&self) -> HashMap<String, String> {

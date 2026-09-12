@@ -1,0 +1,84 @@
+<!-- Rask syntax highlighting.
+
+     This has to run from <head>, not from `additional-js`. mdBook puts
+     additional-js after book.js, and book.js has already run highlight.js over
+     every code block by then — so a language registered there arrives too late:
+     the Rask blocks render plain, the console fills with "Could not find the
+     language 'rask'", and a second pass has to repaint them a moment later.
+
+     highlight.js declares `var hljs = ...` at global scope. A `var` that finds
+     the name already present on `window` leaves the existing property alone, so
+     the accessor below survives the declaration and catches the assignment —
+     which is the moment we get to register, still ahead of book.js. -->
+<script>
+(function() {
+    'use strict';
+
+    function defineRask(hljs) {
+        return {
+            name: 'Rask',
+            aliases: ['rk'],
+            keywords: {
+                keyword:
+                    'as asm assert benchmark break catch check comptime const continue dep ' +
+                    'discard else ensure enum exclusive export extend extern feature for func ' +
+                    'if import in is lazy let loop match mut mutate native or own package ' +
+                    'private profile public read return scope select select_priority struct ' +
+                    'take test trait try type union unsafe using where while with',
+                literal: 'true false none null',
+                built_in:
+                    'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +
+                    'Vec Map Set Rack Link Shared Heap Owned Cell Mutex StringView ' +
+                    'println print format panic todo unreachable spawn'
+            },
+            contains: [
+                hljs.COMMENT('//', '$'),
+                hljs.COMMENT('/\\*', '\\*/', {contains: ['self']}),
+                {
+                    className: 'string',
+                    variants: [
+                        {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                        {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                    ]
+                },
+                {
+                    className: 'number',
+                    variants: [
+                        {begin: '\\b0b[01_]+'},
+                        {begin: '\\b0o[0-7_]+'},
+                        {begin: '\\b0x[0-9a-fA-F_]+'},
+                        {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?([eE][+-]?[0-9]+)?'}
+                    ],
+                    relevance: 0
+                },
+                {className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                {className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                {className: 'meta', begin: /@[a-z_][a-z0-9_]*/}
+            ]
+        };
+    }
+
+    var instance;
+    Object.defineProperty(window, 'hljs', {
+        configurable: true,
+        get: function() { return instance; },
+        set: function(value) {
+            instance = value;
+            if (value && value.registerLanguage) {
+                value.registerLanguage('rask', defineRask);
+            }
+        }
+    });
+
+    // If that hook ever stops firing — highlight.js switching to a module, say —
+    // colour the blocks late rather than not at all.
+    document.addEventListener('DOMContentLoaded', function() {
+        var hl = window.hljs;
+        if (!hl || !hl.getLanguage || hl.getLanguage('rask')) { return; }
+        hl.registerLanguage('rask', defineRask);
+        document.querySelectorAll('pre code.language-rask').forEach(function(block) {
+            (hl.highlightElement || hl.highlightBlock).call(hl, block);
+        });
+    });
+})();
+</script>

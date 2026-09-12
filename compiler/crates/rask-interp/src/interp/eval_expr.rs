@@ -3330,12 +3330,10 @@ impl Interpreter {
             // Build poll order: sequential for priority, shuffled for fair
             let mut poll_order: Vec<usize> = (0..entries.len()).collect();
             if !is_priority {
-                // Simple shuffle using system time as seed (P1: random fair)
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos() as u64;
-                let mut rng = seed;
+                // Simple shuffle (P1: random fair). Seeded through `seed_entropy`
+                // rather than the clock directly — reading the clock panics on
+                // wasm, and in the playground a panic is a trap.
+                let mut rng = crate::seed_entropy();
                 for i in (1..poll_order.len()).rev() {
                     rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
                     let j = (rng as usize) % (i + 1);

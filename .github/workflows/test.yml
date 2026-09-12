@@ -218,7 +218,7 @@ jobs:
     # passed on a card full of nonsense.
     - name: Docs snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_CARD.md
+      run: ./compiler/target/release/rask test-specs docs/ writing/ README.md LANGUAGE_CARD.md
 
     # The runtime through clang. gcc builds it here and clang builds it on the
     # macOS job, so a gcc/clang difference could only surface there — and that

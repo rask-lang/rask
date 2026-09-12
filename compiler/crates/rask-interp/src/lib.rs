@@ -145,6 +145,39 @@ pub(crate) const HAS_THREADS: bool = !cfg!(target_arch = "wasm32");
 /// anything that only wanted entropy uses `seed_entropy` instead.
 pub(crate) const HAS_CLOCK: bool = !cfg!(target_arch = "wasm32");
 
+/// Whether this build can read a clock at all.
+///
+/// The playground asks so it can say "benchmarks need a clock" instead of
+/// printing a row of zeroes.
+pub fn has_clock() -> bool {
+    HAS_CLOCK
+}
+
+/// A stopwatch for targets that may not have a clock.
+///
+/// `Instant::now` panics on wasm32-unknown-unknown, and the test and benchmark
+/// runners called it unguarded — so asking the browser playground to run a
+/// test block trapped, which takes the whole interpreter with it. The timings
+/// are decoration around a pass/fail, so where there is no clock they read
+/// zero and the tests still run.
+pub(crate) struct Stopwatch(Option<std::time::Instant>);
+
+impl Stopwatch {
+    pub(crate) fn start() -> Self {
+        Self(if HAS_CLOCK {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        })
+    }
+
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
+        self.0
+            .map(|start| start.elapsed())
+            .unwrap_or(std::time::Duration::ZERO)
+    }
+}
+
 /// Entropy for seeding a generator, on any target.
 ///
 /// The clock where there is one; a call counter where there isn't. A playground

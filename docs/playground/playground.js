@@ -189,6 +189,7 @@ async function init() {
 
         // Set up event listeners
         document.getElementById('run-btn').addEventListener('click', runCode);
+        document.getElementById('test-btn').addEventListener('click', runTests);
         document.getElementById('reset-btn').addEventListener('click', resetEditor);
         document.getElementById('share-btn').addEventListener('click', shareCode);
         document.getElementById('clear-output-btn').addEventListener('click', clearOutput);
@@ -207,10 +208,8 @@ async function init() {
 
 // Populate examples dropdown from metadata.
 //
-// `needsLocal` is set by build-examples.js for anything that reads files, the
-// clock, sockets or threads — none of which exist in a browser. Those go in
-// their own group rather than being mixed in with the ones that run, so the
-// reader isn't finding out by clicking.
+// build-examples.js has already dropped anything that reads files, the clock,
+// sockets or threads, so everything listed here runs.
 function populateExamples() {
     const dropdown = document.getElementById('examples');
     dropdown.innerHTML = '<option value="">Load an example\u2026</option>';
@@ -228,10 +227,8 @@ function populateExamples() {
         dropdown.appendChild(group);
     };
 
-    const runsHere = EXAMPLE_METADATA.filter(ex => !ex.needsLocal);
-    addGroup('Learn the language', runsHere.filter(ex => ex.key.match(/^\d+_/)));
-    addGroup('Whole programs', runsHere.filter(ex => !ex.key.match(/^\d+_/)));
-    addGroup('Need a local install', EXAMPLE_METADATA.filter(ex => ex.needsLocal));
+    addGroup('Learn the language', EXAMPLE_METADATA.filter(ex => ex.key.match(/^\d+_/)));
+    addGroup('Whole programs', EXAMPLE_METADATA.filter(ex => !ex.key.match(/^\d+_/)));
 }
 
 // Initialize CodeMirror editor
@@ -274,7 +271,17 @@ function initEditor() {
 }
 
 // Run code
-async function runCode() {
+function runCode() {
+    return invoke('Running\u2026', code => playground.run(code));
+}
+
+function runTests() {
+    return invoke('Running tests\u2026', code => playground.run_tests(code));
+}
+
+// `Playground::run` and `run_tests` both answer `Result<String, String>`, so
+// the two differ only in which one to call.
+async function invoke(pending, call) {
     if (!playground) {
         showError('Playground not initialized');
         return;
@@ -283,21 +290,19 @@ async function runCode() {
     const code = editor.state.doc.toString();
     const output = document.getElementById('output');
 
-    // Clear previous output
-    output.textContent = 'Running...';
+    output.textContent = pending;
     output.className = 'output-content running';
 
     try {
-        const result = playground.run(code);
+        const result = call(code);
         output.textContent = result || '(no output)';
         output.className = 'output-content success';
     } catch (error) {
         output.className = 'output-content error';
 
-        // `Playground::run` answers `Result<String, String>`, so a compiler or
-        // runtime diagnostic arrives as a JS string — already HTML-escaped by
-        // the Rust side, with spans for the ANSI colours. Anything else is an
-        // object, and means the interpreter itself fell over.
+        // A compiler or runtime diagnostic arrives as a JS string — already
+        // HTML-escaped by the Rust side, with spans for the ANSI colours.
+        // Anything else is an object, and means the interpreter fell over.
         if (typeof error === 'string') {
             output.innerHTML = error;
             return;
@@ -365,16 +370,7 @@ function loadExample(e) {
             }
         });
 
-        const meta = EXAMPLE_METADATA.find(ex => ex.key === example);
-        const output = document.getElementById('output');
-        if (meta && meta.needsLocal) {
-            output.textContent =
-                `This one ${meta.needsLocal}, and a browser can do none of that.\n\n` +
-                'It is here to read. To run it, install Rask and use the file in examples/.';
-            output.className = 'output-content';
-        } else {
-            clearOutput();
-        }
+        clearOutput();
         showToast(`Loaded ${example.replace(/_/g, ' ')}`);
     }
 

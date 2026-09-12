@@ -1651,20 +1651,13 @@ name = "rask-wasm"
 version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
- "rask-ast",
- "rask-desugar",
+ "rask-compiler",
  "rask-diagnostics",
  "rask-interp",
- "rask-lexer",
- "rask-ownership",
- "rask-parser",
- "rask-resolve",
- "rask-types",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

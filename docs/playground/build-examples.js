@@ -8,15 +8,13 @@ const path = require('path');
 const EXAMPLES_DIR = path.join(__dirname, '../../examples');
 const OUTPUT_FILE = path.join(__dirname, 'examples.js');
 
-// What the browser build can't do, and what to tell the reader.
+// What the browser build can't do.
 //
 // The playground is the interpreter compiled to wasm32-unknown-unknown, which
-// has no OS and no threads. Modules that need either are either refused with a
+// has no OS and no threads. Modules that need either are refused with a
 // diagnostic (fs, io, net, http) or don't work at all (time, spawn), so an
-// example that uses one cannot run here. Offering it in the dropdown anyway is
-// how a third of the list came to answer with an error (#1172) — so the
-// dropdown says which ones need a local install, and it works it out from the
-// source rather than from a list someone has to remember to update.
+// example that uses one can't run here and is left out of the dropdown. That's
+// worked out from the source, not from a list someone has to keep updated.
 const BROWSER_GAPS = [
     { pattern: /^\s*import\s+fs\b/m, reason: 'reads files' },
     { pattern: /^\s*import\s+io\b/m, reason: 'uses stdin/stdout directly' },
@@ -24,6 +22,7 @@ const BROWSER_GAPS = [
     { pattern: /^\s*import\s+http\b/m, reason: 'serves HTTP' },
     { pattern: /^\s*import\s+time\b|\btime\./m, reason: 'reads the clock' },
     { pattern: /\bspawn\s*\(|\bThreadPool\b|\bMultitasking\b/, reason: 'starts threads' },
+    { pattern: /^\s*extern\s+"C"|^\s*import\s+c\b/m, reason: 'calls C functions' },
 ];
 
 function browserGap(source) {
@@ -42,12 +41,19 @@ async function buildExamples() {
 
         const examples = {};
         const metadata = [];
-        let needsLocalCount = 0;
+        let skipped = 0;
 
         for (const file of rkFiles) {
             const filePath = path.join(EXAMPLES_DIR, file);
             const content = await fs.readFile(filePath, 'utf-8');
             const key = path.basename(file, '.rk');
+
+            const gap = browserGap(content);
+            if (gap) {
+                skipped++;
+                console.log(`  - ${file}  skipped (${gap})`);
+                continue;
+            }
 
             // Extract title from filename (e.g., "hello_world" -> "Hello World")
             const title = key
@@ -55,13 +61,10 @@ async function buildExamples() {
                 .map(word => word.charAt(0).toUpperCase() + word.slice(1))
                 .join(' ');
 
-            const needsLocal = browserGap(content);
-            if (needsLocal) needsLocalCount++;
-
             examples[key] = content;
-            metadata.push(needsLocal ? { key, title, file, needsLocal } : { key, title, file });
+            metadata.push({ key, title, file });
 
-            console.log(`  - ${file} -> ${key}${needsLocal ? `  (needs local: ${needsLocal})` : ''}`);
+            console.log(`  - ${file} -> ${key}`);
         }
 
         // Generate JavaScript file
@@ -80,7 +83,7 @@ export const DEFAULT_CODE = EXAMPLES.hello_world || \`func main() {
 
         await fs.writeFile(OUTPUT_FILE, output, 'utf-8');
         console.log(`\nGenerated ${OUTPUT_FILE}`);
-        console.log(`   ${Object.keys(examples).length} examples, ${needsLocalCount} need a local install`);
+        console.log(`   ${Object.keys(examples).length} examples, ${skipped} skipped as browser-impossible`);
 
     } catch (error) {
         console.error('Error building examples:', error);

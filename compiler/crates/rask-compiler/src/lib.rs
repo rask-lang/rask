@@ -60,6 +60,18 @@ pub struct CompilerConfig {
     pub cfg: CfgConfig,
 }
 
+impl CompilerConfig {
+    /// Tell the frontend what machine it is compiling for.
+    ///
+    /// `usize` is pointer-sized, and nothing that builds a `Type::usize()` has
+    /// a config in hand, so the width is a process-wide fact set from here —
+    /// once, at the top of every entry point, so it can never describe a
+    /// different machine from the `cfg` values in the same config.
+    fn declare_target(&self) {
+        rask_ast::primitives::set_pointer_bits(self.cfg.pointer_bits());
+    }
+}
+
 /// A discovered package context for multi-file compilation.
 pub struct PackageContext {
     pub registry: PackageRegistry,
@@ -232,6 +244,33 @@ fn discover_package(root: &Path) -> Option<PackageContext> {
 // check — frontend pipeline with error accumulation
 // ============================================================================
 
+/// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
+///
+/// Re-exported so callers that render diagnostics don't each need rask-mono.
+pub use rask_mono::is_stdlib_span;
+
+/// The declarations the interpreter runs: the program's, plus the stdlib modules
+/// that are written in Rask.
+///
+/// Native compiles `stdlib/*.rk` including its bodies (`compilable_decls`); the
+/// interpreter used to ignore that source entirely and run hand-written Rust
+/// from `rask-interp/src/stdlib/` instead. So a module written in Rask still had
+/// two implementations, one per backend, and they disagreed — `Path.parent()`
+/// answered `none` natively (#688) while the interpreter got it right, and the
+/// rest of the Path family segfaulted. Handing the same source to both backends
+/// is what makes "written in Rask" mean one implementation.
+///
+/// The stdlib goes first and the program second, because registration is
+/// last-writer-wins and the program has to be the last writer. A program may
+/// reuse a stdlib type's name (rask#258) — `struct JsonError` over stdlib's
+/// `enum JsonError` — and with the program first, the stdlib's `message` body
+/// overwrote the user's and ran `match self` against a struct.
+pub fn program_decls(decls: &[Decl]) -> Vec<Decl> {
+    let mut all = rask_stdlib::StubRegistry::compilable_decls();
+    all.extend(decls.to_vec());
+    all
+}
+
 /// Check a .rk file: lex → parse → desugar → resolve → typecheck → ownership → effects.
 ///
 /// Auto-detects package context. Accumulates errors from all stages that run,
@@ -274,25 +313,54 @@ fn check_single(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResu
 }
 
 /// Check a set of .rk files as one compilation unit (no package context).
+fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    let mut loaded: Vec<(PathBuf, String)> = Vec::new();
+    for path in paths {
+        match std::fs::read_to_string(path) {
+            Ok(s) => loaded.push((path.clone(), s)),
+            Err(e) => {
+                let d = Diagnostic::error(format!("reading {}: {}", path.display(), e));
+                return PipelineOutput::fail(vec![d]);
+            }
+        }
+    }
+    check_loaded(&loaded, config)
+}
+
+/// Check source that is already in memory, as one compilation unit.
+///
+/// The browser playground has no filesystem, so it hands the editor's buffer
+/// straight here. Everything after reading the file is the same work `rask
+/// check` does — including compiling `stdlib/*.rk` alongside the program, which
+/// the playground used to skip: without it `numbers.map(…).to_vec()` came back
+/// as "no method `to_vec` found for type `Sequence<i32>`", because every
+/// stdlib module written in Rask was simply absent (#1177).
+pub fn check_source(name: &str, source: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    check_loaded(&[(PathBuf::from(name), source.to_string())], config)
+}
+
+/// The compilation unit itself, once every file has been read.
 ///
 /// Each file gets its own `file_id` so diagnostics render against the right
 /// source, and node ids chain across them so combining the declarations can't
 /// produce two nodes with the same id — the same rules `rask-resolve`'s package
 /// loader follows, for the same reasons.
-fn check_sources(paths: &[PathBuf], config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+fn check_loaded(
+    files: &[(PathBuf, String)],
+    config: &CompilerConfig,
+) -> PipelineOutput<CheckResult> {
+    config.declare_target();
+
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut source_files: Vec<(PathBuf, String)> = Vec::new();
     let mut decls: Vec<Decl> = Vec::new();
     let mut next_id: u32 = 0;
 
-    for (idx, path) in paths.iter().enumerate() {
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                let d = Diagnostic::error(format!("reading {}: {}", path.display(), e));
-                return PipelineOutput::fail(vec![d]);
-            }
-        };
+    let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
+
+    for (idx, (path, source)) in files.iter().enumerate() {
+        let source = source.clone();
+        let path = path.clone();
         let file_id = idx as u16;
 
         // --- Lex ---
@@ -501,6 +569,8 @@ pub fn check_package(
     pkg_ctx: &mut PackageContext,
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
+    config.declare_target();
+
     let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut out = check_package_scoped(pkg_ctx, config, &mut exports);
     // Every diagnostic, including the ones raised before the check got far
