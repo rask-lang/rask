@@ -2,175 +2,228 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rask - A research language exploring no-storable-references</title>
-    <meta name="description" content="A research programming language exploring memory safety without storable references, lifetime annotations, or garbage collection.">
-    <link rel="icon" type="image/png" href="/book/assets/rask32.png">
-    <link rel="stylesheet" href="landing.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rask — a language where references can't be stored</title>
+<meta name="description" content="Rask is a systems language betting that if references can't be stored, lifetime annotations stop being necessary. No GC, no lifetime annotations, deterministic cleanup.">
+<meta property="og:title" content="Rask">
+<meta property="og:description" content="A systems language betting that if references can't be stored, lifetime annotations stop being necessary.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://rask-lang.dev/">
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="landing.css">
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container">
-            <div class="nav-links">
-                <a href="book/index.html">docs</a>
-                <a href="blog/">blog</a>
-                <a href="app/">playground</a>
-                <a href="https://github.com/rask-lang/rask">github ↗</a>
-            </div>
-            <div class="status">early development · working compiler</div>
-        </div>
+
+<header class="page masthead">
+    <a class="brand" href="/">
+        <img src="/book/assets/rask48.png" alt="">
+        rask
+    </a>
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/book/notes/">Notes</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
     </nav>
+</header>
 
-    <main class="container">
-        <section class="hero">
-            <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
-            <p class="tagline">What if references can't be stored?</p>
-            <p class="subtitle">
-                A research language exploring memory safety<br>
-                without lifetime annotations or garbage collection.
-            </p>
-            <div class="cta">
-                <a href="app/" class="btn primary">try in browser</a>
-                <a href="book/index.html" class="btn secondary">start learning</a>
-            </div>
-        </section>
+<main>
 
-        <section class="insight">
-            <h2>The idea</h2>
-            <p>Most of Rust's complexity comes from allowing references to be stored in structs and returned from functions. Tracking those references requires lifetime annotations that spread through your codebase.</p>
-
-            <p><strong>Rask's experiment:</strong> What if references are always temporary — they exist only within a block or expression? When you need longer-lived relationships, use handles (opaque identifiers) instead.</p>
-
-            <div class="tradeoff-box">
-                <div class="cost">
-                    <h3>The cost</h3>
-                    <p>Explicit indirection for graphs. Some .clone() calls for shared data.</p>
-                </div>
-                <div class="benefit">
-                    <h3>The benefit</h3>
-                    <p>No lifetime annotations. No borrow checker fights. Simple mental model.</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="mechanisms">
-            <h2>How it works</h2>
-
-            <div class="mechanism">
-                <h3>Block-scoped borrowing</h3>
-                <p>References can't be stored or returned. They're temporary views, valid only within their block. This eliminates lifetime tracking.</p>
-                <div class="window">
-                    <div class="title-bar">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="filename">borrowing.rk</span>
-                    </div>
-                    <pre><code><span class="cmt">// References are temporary</span>
-<span class="kw">func</span> <span class="fn">process</span>(data: Data) {
-    <span class="kw">let</span> name = data.user.name  <span class="cmt">// temporary borrow</span>
-    <span class="cmt">// name is gone at end of block</span>
-}</code></pre>
-                </div>
-            </div>
-
-            <div class="mechanism">
-                <h3>Handles for relationships</h3>
-                <p>For graphs and long-lived relationships, use Pool&lt;T&gt; + Handle&lt;T&gt;. Handles are checked at runtime—no lifetimes needed.</p>
-                <div class="window">
-                    <div class="title-bar">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="filename">handles.rk</span>
-                    </div>
-                    <pre><code><span class="cmt">// Graphs without lifetimes</span>
-<span class="kw">struct</span> <span class="ty">Entity</span> {
-    target: <span class="ty">Handle</span>&lt;<span class="ty">Entity</span>&gt;?
-}
-<span class="kw">mut</span> entities = <span class="ty">Pool</span>&lt;<span class="ty">Entity</span>&gt;.<span class="fn">new</span>()
-entities[enemy].target = player_handle</code></pre>
-                </div>
-            </div>
-
-            <div class="mechanism">
-                <h3>Resource types</h3>
-                <p>Files and system resources must be explicitly consumed. The compiler enforces cleanup on all exit paths.</p>
-                <div class="window">
-                    <div class="title-bar">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="filename">resources.rk</span>
-                    </div>
-                    <pre><code><span class="kw">func</span> <span class="fn">backup</span>(src: <span class="ty">string</span>, dst: <span class="ty">string</span>) -> () <span class="kw">or</span> <span class="ty">Error</span> {
-    <span class="kw">let</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(src)
-    <span class="kw">ensure</span> file.<span class="fn">close</span>()  <span class="cmt">// runs on all exits</span>
-    <span class="kw">try</span> <span class="fn">write</span>(file)
-}</code></pre>
-                </div>
-            </div>
-
-            <div class="mechanism">
-                <h3>No function coloring</h3>
-                <p>I/O operations pause green tasks automatically. No async/await splitting your ecosystem.</p>
-                <div class="window">
-                    <div class="title-bar">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="filename">concurrency.rk</span>
-                    </div>
-                    <pre><code><span class="kw">func</span> <span class="fn">fetch_user</span>(id: <span class="ty">u64</span>) -> <span class="ty">User</span> <span class="kw">or</span> <span class="ty">Error</span> {
-    <span class="kw">let</span> resp = <span class="kw">try</span> <span class="fn">http_get</span>(url)  <span class="cmt">// pauses task</span>
-    <span class="kw">return</span> <span class="fn">parse</span>(resp)
-}</code></pre>
-                </div>
-            </div>
-        </section>
-
-        <section class="tradeoffs">
-            <h2>The tradeoffs</h2>
-            <p>Here's what you give up and what you get:</p>
-
-            <table>
-                <tr>
-                    <th>You give up</th>
-                    <th>You get</th>
-                </tr>
-                <tr>
-                    <td>Storable references</td>
-                    <td>No lifetime annotations</td>
-                </tr>
-                <tr>
-                    <td>Implicit copies of large values</td>
-                    <td>Allocations you can see in the source</td>
-                </tr>
-                <tr>
-                    <td>Direct pointer traversal</td>
-                    <td>Handles with runtime checks</td>
-                </tr>
-            </table>
-
-            <p>Strings are the deliberate exception: <code>string</code> is immutable and refcounted, so it's Copy at 16 bytes and passes around like an integer — no <code>.clone()</code>. The visible cost is for the things that actually own heap memory, like Vec and Map.</p>
-
-            <p>For pointer-level optimization, use Rust or C++. I'm betting that most application code can live with these tradeoffs — but that's still being tested.</p>
-        </section>
-
-        <section class="philosophy">
-            <h2>What I'm going for</h2>
-            <p>I'm exploring whether no-storable-references can cover the 80% of systems code that's really application code — servers, tools, games — with less friction than Rust. The language draws from Rust's ownership, Zig's comptime, Erlang's supervision, and Vale's generational references. Whether it all holds together is still an open question.</p>
-        </section>
-
-        <section class="status-section">
-            <h2>Where we are</h2>
-
-            <p class="status">Rask is in early development (pre-0.1). There's a working compiler (Cranelift backend) — <code>rask run</code> compiles and executes, <code>rask check</code> type-checks. Expect breaking changes, bugs, and design pivots.</p>
-            <p class="contribute">This is a hobby project, but feedback and ideas are welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
-        </section>
-    </main>
-
-    <footer>
-        <div class="container">
-            <a href="book/index.html">docs</a> ·
-            <a href="app/">playground</a> ·
-            <a href="https://github.com/rask-lang/rask">github</a> ·
-            <a href="https://github.com/rask-lang/rask/blob/main/LICENSE-MIT">mit/apache-2.0</a>
+<div class="page hero">
+    <div>
+        <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
+        <h1>What if references can&rsquo;t be stored?</h1>
+        <p>Make references temporary &mdash; never in a struct, never returned from a function &mdash; and <strong>lifetime annotations stop being necessary</strong>. There is nothing left to track.</p>
+        <p>Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I&rsquo;m trying to find out.</p>
+        <div class="actions">
+            <a class="btn solid" href="/app/">Run it in your browser</a>
+            <a class="btn outline" href="/book/getting-started/installation.html">Install it</a>
         </div>
-    </footer>
+        <p class="install">or build from source with <code>cargo build --release</code> &mdash; needs a Rust toolchain</p>
+    </div>
+
+    <figure class="window">
+        <figcaption><span>search.rk</span><span>grep, more or less</span></figcaption>
+<pre><code><span class="kw">func</span> <span class="fn">grep</span>(path: <span class="ty">string</span>, pat: <span class="ty">string</span>) -> <span class="ty">void</span> <span class="kw">or</span> <span class="ty">IoError</span> {
+    <span class="kw">mut</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(path)
+    <span class="kw">ensure</span> file.<span class="fn">close</span>()
+
+    <span class="kw">let</span> text = <span class="kw">try</span> file.<span class="fn">read_text</span>()
+    <span class="kw">for</span> line <span class="kw">in</span> text.<span class="fn">lines</span>() {
+        <span class="kw">if</span> line.<span class="fn">contains</span>(pat) { <span class="fn">println</span>(line) }
+    }
+}</code></pre>
+    </figure>
+</div>
+
+<section class="page">
+    <h2>Three ideas do most of the work</h2>
+    <p class="lede prose">Everything else in the language is downstream of these.</p>
+
+    <div class="idea">
+        <div>
+            <h3>References are temporary</h3>
+            <p>You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it &mdash; there is no syntax that would let you, which is the point.</p>
+            <p>So there is no lifetime to annotate, no variance to reason about, and nothing in a signature except the types.</p>
+        </div>
+        <figure class="window">
+            <figcaption><span>borrow.rk</span></figcaption>
+<pre><code><span class="cmt">// `cart` is borrowed. The caller still owns it
+</span><span class="cmt">// afterwards, and no signature says so.
+</span><span class="kw">func</span> <span class="fn">total</span>(cart: <span class="ty">Vec</span>&lt;<span class="ty">Item</span>&gt;) -> <span class="ty">i64</span> {
+    <span class="kw">mut</span> sum: <span class="ty">i64</span> = 0
+    <span class="kw">for</span> item <span class="kw">in</span> cart { sum += item.price }
+    <span class="kw">return</span> sum
+}</code></pre>
+        </figure>
+    </div>
+
+    <div class="idea">
+        <div>
+            <h3>Everything is a value</h3>
+            <p>No reference types, and no <code>Box</code>/<code>Rc</code>/<code>Arc</code> distinction to learn. Values up to 16 bytes copy, anything bigger moves, and you write <code>.clone()</code> when you want a second one.</p>
+            <p>That is more clones than Rust asks for. The difference is that you can see every one of them in the source.</p>
+        </div>
+        <figure class="window">
+            <figcaption><span>values.rk</span></figcaption>
+<pre><code><span class="kw">let</span> a = <span class="ty">Point</span> { x: 1.0, y: 2.0 }
+<span class="kw">let</span> b = a              <span class="cmt">// 16 bytes: copied</span>
+
+<span class="kw">mut</span> names = <span class="ty">Vec</span>.<span class="fn">new</span>()
+names.<span class="fn">push</span>(<span class="str">"ada"</span>)
+<span class="kw">let</span> taken = names      <span class="cmt">// bigger: moved</span>
+<span class="kw">let</span> copy = taken.<span class="fn">clone</span>()  <span class="cmt">// say so to get two</span></code></pre>
+        </figure>
+    </div>
+
+    <div class="idea">
+        <div>
+            <h3>Graphs get links, not lifetimes</h3>
+            <p>A <code>Rack&lt;T&gt;</code> owns nodes at stable addresses. A <code>Link&lt;T&gt;</code> points at one, and is the single kind of reference you <em>can</em> keep in a field.</p>
+            <p>Deleting a node sets every edge pointing at it to <code>none</code> before the delete returns. A dangling link therefore never exists, so following a live one is just a pointer hop &mdash; no generation counter, no liveness check.</p>
+        </div>
+        <figure class="window">
+            <figcaption><span>graph.rk</span></figcaption>
+<pre><code><span class="kw">struct</span> <span class="ty">Node</span> {
+    id: <span class="ty">i32</span>
+    peer: <span class="ty">Link</span>&lt;<span class="ty">Node</span>&gt;?
+}
+
+<span class="kw">let</span> a = world.<span class="fn">insert</span>(<span class="ty">Node</span> { id: 1, peer: none })
+<span class="kw">let</span> b = world.<span class="fn">insert</span>(<span class="ty">Node</span> { id: 2, peer: none })
+a.peer = b
+
+world.<span class="fn">delete</span>(b)
+<span class="cmt">// a.peer is `none` now — nothing to check for</span></code></pre>
+        </figure>
+    </div>
+
+    <div class="idea">
+        <div>
+            <h3>Files and sockets get consumed</h3>
+            <p>Resources are linear: the compiler makes you consume them exactly once. <code>ensure file.close()</code> defers that consumption to the end of the scope, which is what lets <code>try</code> bail out early without leaking the handle.</p>
+            <p>Linearity, deferred consumption and error propagation are three separate rules, and the idiom at the top of this page falls out of them composing. It&rsquo;s the part of the design I&rsquo;m happiest with.</p>
+        </div>
+        <figure class="window">
+            <figcaption><span>copy.rk</span></figcaption>
+<pre><code><span class="kw">func</span> <span class="fn">copy</span>(from: <span class="ty">string</span>, to: <span class="ty">string</span>) -> <span class="ty">void</span> <span class="kw">or</span> <span class="ty">IoError</span> {
+    <span class="kw">let</span> src = <span class="kw">try</span> fs.<span class="fn">open</span>(from)
+    <span class="kw">ensure</span> src.<span class="fn">close</span>()
+
+    <span class="kw">mut</span> dst = <span class="kw">try</span> fs.<span class="fn">create</span>(to)
+    <span class="kw">ensure</span> dst.<span class="fn">close</span>()
+
+    <span class="cmt">// either `try` can leave. both files still close.</span>
+    <span class="kw">try</span> dst.<span class="fn">write</span>(<span class="kw">try</span> src.<span class="fn">read_text</span>())
+}</code></pre>
+        </figure>
+    </div>
+</section>
+
+<section class="page">
+    <h2>What it costs</h2>
+    <p class="lede prose">Stated once, plainly. If you want pointer-level control over layout and traversal, use Rust or C++ &mdash; that is not the trade being made here.</p>
+
+    <div class="ledger">
+        <div class="give">
+            <h3>You give up</h3>
+            <ul>
+                <li>References in struct fields</li>
+                <li>Returning a reference from a function</li>
+                <li>Implicit copies of anything large</li>
+                <li>Pointer-chasing a graph you built by hand</li>
+            </ul>
+        </div>
+        <div class="get">
+            <h3>You get</h3>
+            <ul>
+                <li>No lifetime annotations, anywhere</li>
+                <li>Signatures you read in one pass</li>
+                <li>Allocations visible at the call site</li>
+                <li>Deterministic cleanup, no GC pauses</li>
+            </ul>
+        </div>
+    </div>
+
+    <p class="prose">Strings are the deliberate exception. <code>string</code> is immutable and refcounted, so it is Copy at 16 bytes and passes around like an integer &mdash; no <code>.clone()</code>. The visible cost is reserved for the things that actually own heap memory, like <code>Vec</code> and <code>Map</code>.</p>
+</section>
+
+<section class="page">
+    <h2>Where it actually stands</h2>
+    <p class="asof">Measured 2026-09-11 by running it. This section gets re-measured, not copy-pasted.</p>
+
+    <div class="status-grid">
+        <div>
+            <h3>Runs today</h3>
+            <ul>
+                <li>Native codegen via Cranelift, plus an interpreter that acts as the reference for what the answer should be</li>
+                <li>Ownership, moves, borrows, linear resources</li>
+                <li>Structs, enums, generics, traits, <code>comptime</code></li>
+                <li><code>spawn</code>/<code>join</code>, channels, thread pools</li>
+                <li>Packages, workspaces, watch mode, LSP</li>
+            </ul>
+        </div>
+        <div>
+            <h3>Not there yet</h3>
+            <ul>
+                <li><strong>Rack and Link</strong> run on the interpreter only; native codegen doesn&rsquo;t know the types yet</li>
+                <li><strong>No fibers.</strong> <code>spawn</code> is an OS thread; the M:N scheduler is designed, not built</li>
+                <li>Panics abort instead of unwinding</li>
+                <li>x86-64 only, and SIMD is a stub</li>
+            </ul>
+        </div>
+        <div>
+            <h3>Caveats</h3>
+            <ul>
+                <li>Around 80 open issues, most of them codegen getting memory release wrong</li>
+                <li>It&rsquo;s a solo project, so fixes land in waves</li>
+                <li>Pre-0.1: breaking changes whenever a design turns out wrong</li>
+            </ul>
+        </div>
+    </div>
+
+    <p class="prose">Five programs are the yardstick: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively today</strong> &mdash; the HTTP one only since last week, when the bug corrupting the first eight bytes of every response got fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a>, CI runs them, and when one breaks it outranks everything else on the list.</p>
+
+    <p class="prose">Ideas and complaints both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
+</section>
+
+</main>
+
+<footer class="page">
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/book/notes/">Notes</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+        <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">Language card</a>
+    </nav>
+    <span>MIT or Apache-2.0, your choice.</span>
+</footer>
 
 </body>
 </html>

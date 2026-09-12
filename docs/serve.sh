@@ -7,12 +7,16 @@ cd "$(dirname "$0")"
 build_site() {
     echo "Building website..."
 
-    # Build mdBook to build/book
+    # The palette lives in shared/tokens.css and is served from the site root.
+    # The book's theme @imports it from there, so it has to exist before mdbook
+    # runs for the book to come out in the right colours.
+    mkdir -p build
+    cp shared/tokens.css build/tokens.css
+
     cd book
     mdbook build -d ../build/book
     cd ..
 
-    # Copy landing page to root
     cp landing/index.html build/index.html
     cp landing/landing.css build/landing.css
 
@@ -26,14 +30,9 @@ build_site() {
         cp -r playground/pkg build/app/
     fi
 
-    # Build blog with Jekyll
-    if command -v bundle &>/dev/null; then
-        cd blog
-        bundle exec jekyll build --destination ../build/blog --quiet 2>/dev/null
-        cd ..
-    else
-        echo "Warning: bundle not found, skipping blog build (install ruby + bundle install in docs/blog/)"
-    fi
+    # The blog became the book's Notes section; keep the old URL working.
+    mkdir -p build/blog
+    cp landing/blog-redirect.html build/blog/index.html
 
     echo "Build complete at $(date +%H:%M:%S)"
 }
@@ -43,7 +42,7 @@ build_site
 
 echo ""
 echo "Server running at http://localhost:8080"
-echo "Watching for changes in book/ and landing/..."
+echo "Watching for changes in book/, landing/ and shared/..."
 echo "Press Ctrl+C to stop"
 echo ""
 
@@ -56,7 +55,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src landing/ blog/_posts blog/_config.yml blog/assets ../examples/ 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src book/theme landing/ shared/ ../examples/ 2>/dev/null && {
         echo ""
         build_site
     }

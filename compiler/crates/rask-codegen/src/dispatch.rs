@@ -398,7 +398,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Closure-free ops only. `.wide()`/`.read()` reuse Vec clone (Wide is a
         // RaskVec* at runtime); `sum` folds int64 lanes. map/zip_with need the
         // closure-callback path, which currently segfaults natively (#441) —
-        // see NOTES_native_wide.md — so they run under the interpreter only.
+        // see docs/working/native-wide.md — so they run under the interpreter only.
         StdlibEntry::simple("Vec_wide", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Wide_read", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Wide_sum", "rask_wide_sum", &[types::I64], Some(types::I64), false),

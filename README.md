@@ -8,26 +8,30 @@
 
 A programming language I'm building around one question: **what if references can't be stored?**
 
-Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is handles where you'd want shared identity: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
+Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is more `.clone()` calls, and a rack to own anything you want shared identity for: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
 
 Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I'm trying to find out.
 
 **[Why a new language?](WHY_RASK.md)**
 
-**Status.** Compiler (Cranelift backend) and interpreter both run programs. Core language works end-to-end. A handful of codegen regressions open — see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
+**Status** (measured 2026-09-11). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. Around 80 open issues, mostly codegen getting memory release wrong: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 
 ## Quick look
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-func search_file(path: string, pattern: string) -> void or IoError {
-    let file = try fs.open(path)
+import fs
+import io
+
+func grep(path: string, pat: string) -> void or io.IoError {
+    mut file = try fs.open(path)
     ensure file.close()
 
-    for line in file.lines() {
-        if line.contains(pattern): println(line)
+    let text = try file.read_text()
+    for line in text.lines() {
+        if line.contains(pat) { println(line) }
     }
 }
 ```
@@ -63,7 +67,9 @@ Next: read [Learning Rask](https://rask-lang.dev/book), or browse [examples/](ex
 
 Three ideas do most of the work.
 
-**No storable references.** You can borrow for a call or an expression; you can't store the borrow in a struct, and you can't return it. The whole lifetime system stops being necessary — there's just nothing to track. For graphs and entity systems, you use `Handle<T>`: an integer key into a `Pool<T>`, validated by a generation counter. Each access is a branch or two; the compiler coalesces redundant checks and eliminates them entirely inside `using frozen Pool<T>` contexts.
+**No storable references.** You can borrow for a call or an expression; you can't store the borrow in a struct, and you can't return it. The whole lifetime system stops being necessary — there's just nothing to track.
+
+Graphs and entity systems get the one exception: a `Rack<T>` owns nodes at stable addresses, and a `Link<T>` into it *may* live in a struct field. Deleting a node sets every edge pointing at it to `none` before the delete returns, so a dangling link never exists — which is what earns the unchecked read. Following a live link is a pointer hop, no generation counter, no liveness test.
 
 **Everything is a value.** No reference types. No `Box<T>`/`Rc<T>`/`Arc<T>` distinction. Small values (≤16 bytes) copy, larger ones move, and you `.clone()` when you want to share. More clones than Rust, but the clones are visible in the code, which I think is the right direction.
 
@@ -75,10 +81,10 @@ Full rationale: [specs/CORE_DESIGN.md](specs/CORE_DESIGN.md).
 
 ## Tradeoffs
 
-More `.clone()` calls. Some patterns restructure around handles:
-- parent pointers → `Handle<Parent>`
+More `.clone()` calls. Some patterns restructure:
+- parent pointers → `Link<Parent>` into the rack that owns them
 - string slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
-- arbitrary graphs → `Pool<T>`
+- arbitrary graphs → `Rack<T>` + `Link<T>`
 
 That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think it's a good trade. Some days I'm less sure.
 
@@ -86,7 +92,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 
 ## What works today
 
-- Memory model: ownership, moves, borrows, handles, linearity
+- Memory model: ownership, moves, borrows, linearity
 - Type system: primitives, structs, enums, generics, traits
 - Control flow: if/match/loops
 - Concurrency: spawn/join, channels, thread pools
@@ -95,7 +101,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 - Build system: packages, workspaces, watch mode
 - Tooling: `rask build/check/lint/fmt/test`, LSP
 
-**Next:** validation-program regressions ([#203](https://github.com/rask-lang/rask/issues/203)); HTTP and JSON stdlib in Rask — see [ROADMAP.md](ROADMAP.md).
+**Next:** the sequence protocol (`Vec.iter()` returning a `Sequence`, [#1046](https://github.com/rask-lang/rask/issues/1046)), native lowering for Rack and Link, and the memory-release bugs in codegen. See [ROADMAP.md](ROADMAP.md) for the order and why.
 
 ---
 
@@ -116,7 +122,8 @@ Four documents, four different jobs:
 | [examples/](examples/) | Reading complete programs. Each one is compiled and run by CI |
 | [specs/](specs/) | The normative wording, and the reasoning behind it. Start at [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
 
-Also: [tutorials/](tutorials/) for hands-on exercises, and
+Also: [notes](https://rask-lang.dev/book/notes/) for the long-form design
+arguments, [tutorials/](tutorials/) for hands-on exercises, and
 [specs/RULINGS.md](specs/RULINGS.md) for how design questions get decided.
 
 ---

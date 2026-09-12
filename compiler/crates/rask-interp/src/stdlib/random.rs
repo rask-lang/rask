@@ -20,7 +20,7 @@ impl Interpreter {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
+                crate::seed_entropy().hash(&mut hasher);
                 std::thread::current().id().hash(&mut hasher);
                 let hash = hasher.finish();
                 let mut x = hash;
@@ -34,7 +34,7 @@ impl Interpreter {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
+                crate::seed_entropy().hash(&mut hasher);
                 std::thread::current().id().hash(&mut hasher);
                 let hash = hasher.finish();
                 let mut x = hash;
@@ -47,7 +47,7 @@ impl Interpreter {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
+                crate::seed_entropy().hash(&mut hasher);
                 std::thread::current().id().hash(&mut hasher);
                 let hash = hasher.finish();
                 Ok(Value::Bool(hash & 1 == 1))
@@ -66,7 +66,7 @@ impl Interpreter {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
+                crate::seed_entropy().hash(&mut hasher);
                 std::thread::current().id().hash(&mut hasher);
                 let hash = hasher.finish();
                 let mut x = hash;

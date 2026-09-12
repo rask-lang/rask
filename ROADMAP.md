@@ -10,7 +10,7 @@ Simple programs compile natively (hello world, structs, closures, Vec/Map, threa
 
 ## Validation programs
 
-Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `6c835416` after #953, #962 and #969 landed — every figure below still holds, and the HTTP server is still red.
+Re-measured 2026-09-11 by running all five. All five work on native — the HTTP server since #1036 was fixed on 2026-09-07.
 
 | Program | Status | Gate |
 |---------|--------|------|
@@ -18,18 +18,19 @@ Re-measured 2026-08-31 by running all five, and re-verified 2026-09-03 against `
 | grep clone | **Works** | examples gate, golden + argv |
 | Game loop with entities | **Works** | examples gate, golden (seeded RNG) |
 | Text editor with undo | **Works** | examples gate, golden + stdin |
-| HTTP JSON API server | **Broken on native** | `tests/http_api_harness.sh` fails; interp is fine |
+| HTTP JSON API server | **Works** | `tests/http_api_harness.sh`, both backends |
 
-The HTTP server is a new regression, found by this re-measure: every response's
-first 8 bytes come back as garbage instead of `HTTP/1.1 `. Traced to a minimal
-repro — `StringBuilder` plus one `unsafe` call to a native function taking a
-`string` argument — so it's not HTTP-specific: **anything native that hands a
-built string across an `unsafe` FFI boundary is corrupting its first 8 bytes
-right now.** Filed as [#1036](https://github.com/rask-lang/rask/issues/1036)
-with the repro. This is the same lesson as the `match n { 1 => 2.5, _ => 0.0 }`
-bug from last month: every other gate was green while the flagship example
-silently broke. Fix this first — it's the widest blast radius of anything on
-this list, and it undoes "the five validation programs work."
+The HTTP server was red from 2026-08-31 to 2026-09-07: every response's first
+eight bytes came back as garbage instead of `HTTP/1.1 `, because a `string`
+handed across an `unsafe` FFI boundary got a temporary built for it that was
+never fully written. Not HTTP-specific — it hit anything native writing a built
+string to a raw fd, which happens to be the whole send path. Fixed in
+[#1036](https://github.com/rask-lang/rask/issues/1036).
+
+The lesson it shares with the `match n { 1 => 2.5, _ => 0.0 }` bug is worth
+keeping: every other gate was green for a week while the flagship example was
+silently broken. A gate nobody runs on the thing users actually see is not a
+gate. `tests/http_api_harness.sh` now runs both backends.
 
 ## Stdlib architecture
 
@@ -46,20 +47,10 @@ C stays for things that must talk to the OS (syscalls, io_uring) or wrap existin
 
 ## What comes next, and why in this order
 
-### 1. Fix the native string→FFI corruption (#1036)
+### 1. The sequence protocol — the leading feature gap
 
-Leads the list because of blast radius, not because it's hard to characterize.
-Every native program that writes a built string to a raw fd through `unsafe`
-gets its first 8 bytes clobbered — that's the actual send path for the whole
-HTTP server (`write_raw` in `stdlib/http.rk`), so every native HTTP response is
-wrong today. Repro is 12 lines, no networking needed. Whoever picks this up:
-start at how `string as i64` gets codegen'd for an argument headed into an
-`unsafe` block.
-
-### 2. The sequence protocol — now the leading feature gap
-
-Panics used to be here (see "what came off this list" below); with that mostly
-done, this is the item that unblocks the most other things. `type.sequence` is
+Panics used to be here, then the #1036 string corruption was; with both
+resolved, this is the item that unblocks the most other things. `type.sequence` is
 unimplemented (`p08_sequence.rk`), and three separate gaps chain off it:
 
 - Ranges have no methods beyond `for` — no `.sum()`, `.map()`, `.to_vec()` — because
@@ -75,7 +66,7 @@ unimplemented (`p08_sequence.rk`), and three separate gaps chain off it:
 One protocol landing turns three "unbuilt" rows into "done" rows, which is why
 it leads over finishing the smaller registered-bug backlog.
 
-### 3. Finish the coverage backlog
+### 2. Finish the coverage backlog
 
 The registered-bug half is done. `tests/known_divergences.txt` is empty:
 all eleven — #1022, #1000, #1021, #899, #932, #928, #1002, #974, #919, #997,
@@ -106,7 +97,7 @@ a probe. Three are the sequence-protocol cluster above (#912, #920, #927) and
   needs it too.
 - **`p11_gradual_generalization.rk`** — #904, above.
 
-### 4. Incremental compilation
+### 3. Incremental compilation
 
 NORTH_STAR's first commitment is maximum static checking per millisecond of
 feedback. Unchanged since last measure: the function-granularity design
@@ -116,7 +107,7 @@ checking, but `rask build` itself doesn't cache or patch at function
 granularity. The IR design can't be retrofitted, so this has to be deliberate
 when it's picked up.
 
-### 5. Panics — nearly done, one small tracker left
+### 4. Panics — nearly done, one small tracker left
 
 This used to be the headline blocker ("the panic path runs no `ensure` blocks
 and aborts the process"). That's fixed:
@@ -139,7 +130,7 @@ the task id should prefix the panic line when a runtime is active, and a panic
 that reaches an FFI boundary should abort there instead of unwinding into
 foreign frames.
 
-### 6. Cross-compilation — partly built already, don't re-derive it
+### 5. Cross-compilation — partly built already, don't re-derive it
 
 Corrected this pass: the roadmap used to say "the compiler simply doesn't
 configure" ARM/WASM targets. Wrong — `--target` reaches Cranelift's ISA lookup
@@ -226,7 +217,7 @@ the tree↔typed bridge waits on Encode/Decode derivation.
 
 ## What came off this list since last measure (2026-08-24)
 
-- **Panics and unwinding** — was the #1 blocker, now #5 and nearly closed. `ensure`
+- **Panics and unwinding** — was the #1 blocker, now #4 and nearly closed. `ensure`
   runs on panic, native exits 101. Verified directly, not just by issue status.
 - **The agent benchmark** — was "doesn't exist," now built, in CI, and has one
   real measured run on record.
@@ -241,9 +232,17 @@ the tree↔typed bridge waits on Encode/Decode derivation.
   closed since July 22, fixed by #344. Dropped the reference.
 - **Coverage backlog shrank 20 → 17** (13 bugs + 7 unbuilt → 11 bugs + 6 unbuilt).
 
-## New this measure
+## New this measure (2026-09-11)
 
-- **HTTP server broken on native (#1036)** — see Validation programs above. Not
-  fixed as part of this pass per the "measure, don't fix" rule for this task,
-  but filed with a minimal repro since it's a live regression, not a documentation
-  correction.
+- **The HTTP server is green again.** #1036 was fixed on 2026-09-07, so all five
+  validation programs run on native for the first time since 2026-08-31. Verified
+  by running `tests/examples_gate.sh` (35 ok) and `tests/http_api_harness.sh`
+  (both backends), not by reading issue status.
+- **The browser playground was dead, and had been for a while** — every program
+  failed on the first `println`, because the interpreter runs programs on a
+  thread it spawns for the stack size and wasm has no threads, so the spawn's
+  `expect` trapped. A trap skips destructors, so wasm-bindgen's borrow of the
+  `Playground` was never returned and every later click answered "recursive use
+  of an object" instead. Fixed, along with the other three ways a program could
+  trap there (the clock, `using Multitasking`, running out of wasm stack) — all
+  four now answer with a diagnostic.

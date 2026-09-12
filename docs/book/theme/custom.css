@@ -1,413 +1,178 @@
 /* SPDX-License-Identifier: (MIT OR Apache-2.0) */
 
-/* Import Roboto Mono font */
-@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600;700&display=swap');
+/* Makes the book look like the rest of the site.
+ *
+ * Two jobs, in order: point mdBook's own variables at the site's tokens, then
+ * fix the handful of places mdBook hardcodes something. The tokens themselves
+ * live in /tokens.css — the build copies docs/shared/tokens.css to the site
+ * root, which is why this reaches for it by absolute path rather than keeping
+ * a second copy of the palette here. */
 
-/* Rask Brand Colors */
-:root {
-    --rask-primary: #0B5C38;        /* R=11 G=92 B=56 - main brand color */
-    --rask-dark: #004225;           /* R=0 G=66 B=37 - icon box background */
-    --rask-darker: #01361E;         /* R=1 G=54 B=30 - shadow */
-    --rask-light: #0F7A4A;          /* Lighter variant for hovers */
-    --rask-very-light: #E8F5F0;     /* Very light tint for backgrounds */
-    --mono-font: 'Open Sans', 'Source Code Pro', Consolas, monospace;
+@import url("/tokens.css");
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* --- mdBook's variables, in our colours ------------------------------- */
+
+/* `--bg` is the one name mdBook and the tokens already share, so it needs no
+   mapping — tokens.css sets it, and mdBook reads it. The rest are renames. */
+.light, .rust, .coal, .navy, .ayu {
+    --fg: var(--ink);
+
+    --sidebar-bg: var(--bg-sunken);
+    --sidebar-fg: var(--ink-soft);
+    --sidebar-non-existant: var(--ink-faint);
+    --sidebar-active: var(--accent);
+    --sidebar-spacer: var(--rule);
+
+    --scrollbar: var(--rule);
+    --icons: var(--ink-faint);
+    --icons-hover: var(--accent);
+
+    --links: var(--accent);
+    --links-hover: var(--accent-hover);
+
+    --inline-code-color: var(--ink);
+    --inline-code-bg: var(--bg-sunken);
+
+    --theme-popup-bg: var(--surface);
+    --theme-popup-border: var(--rule);
+    --theme-hover: var(--accent-wash);
+
+    --quote-bg: var(--bg-sunken);
+    --quote-border: var(--accent);
+
+    --table-border-color: var(--rule);
+    --table-header-bg: var(--bg-sunken);
+    --table-alternate-bg: var(--bg);
+
+    --searchbar-border-color: var(--rule);
+    --searchbar-bg: var(--surface);
+    --searchbar-fg: var(--ink);
+    --searchbar-shadow-color: rgba(0, 0, 0, 0.08);
+    --searchresults-header-fg: var(--ink-faint);
+    --searchresults-border-color: var(--rule);
+    --searchresults-li-bg: var(--bg-sunken);
+    --search-mark-bg: var(--accent-wash);
 }
 
-/* Light theme customization */
-.light {
-    --links: var(--rask-primary);
-    --sidebar-active: var(--rask-primary);
+/* --- type ------------------------------------------------------------- */
+
+html {
+    font-family: var(--font-sans);
+    scrollbar-color: var(--rule) transparent;
 }
 
-/* Dark theme (navy) customization - match landing page Nord colors */
-.navy {
-    --bg: #2E3440;
-    --fg: #ECEFF4;
-    --sidebar-bg: #2E3440;
-    --sidebar-fg: #D8DEE9;
-    --sidebar-non-existant: #81A1C1;
-    --sidebar-active: var(--rask-light);
-    --sidebar-spacer: #4C566A;
-    --scrollbar: #4C566A;
-    --icons: #D8DEE9;
-    --icons-hover: #ECEFF4;
-    --links: var(--rask-light);
-    --inline-code-color: #88C0D0;
-    --theme-popup-bg: #3B4252;
-    --theme-popup-border: #4C566A;
-    --theme-hover: #434C5E;
-    --quote-bg: #3B4252;
-    --quote-border: var(--rask-primary);
-    --table-border-color: #4C566A;
-    --table-header-bg: #3B4252;
-    --table-alternate-bg: #2E3440;
-    --searchbar-border-color: #4C566A;
-    --searchbar-bg: #3B4252;
-    --searchbar-fg: #ECEFF4;
-    --searchbar-shadow-color: rgba(0,0,0,0.3);
-    --searchresults-header-fg: #ECEFF4;
-    --searchresults-border-color: #4C566A;
-    --searchresults-li-bg: #3B4252;
-    --search-mark-bg: rgba(15, 122, 74, 0.3);
-    --inline-code-bg: #3B4252;
-}
+body { background: var(--bg); color: var(--ink); }
 
-/* Links */
-a {
-    color: var(--rask-primary);
-}
-
-a:hover {
-    color: var(--rask-light);
-    text-decoration: underline;
-}
-
-/* Sidebar styling */
-.sidebar {
-    background-color: var(--bg);
-}
-
-.sidebar .sidebar-scrollbox {
-    padding-right: 15px;
-}
-
-.sidebar-active,
-.sidebar a.active {
-    background-color: var(--rask-very-light) !important;
-    color: var(--rask-dark) !important;
+h1, h2, h3, h4 {
+    font-family: var(--font-display);
     font-weight: 600;
-    border-left: 3px solid var(--rask-primary);
+    letter-spacing: -0.015em;
+    line-height: 1.2;
 }
 
-.navy .sidebar-active,
-.navy .sidebar a.active {
-    background-color: rgba(11, 92, 56, 0.15) !important;
-    color: var(--rask-light) !important;
+.content h1 { font-size: 2.1rem; font-weight: 500; }
+.content h2 { font-size: 1.55rem; margin-top: 2.4em; }
+.content h3 { font-size: 1.22rem; margin-top: 1.8em; }
+
+.content p, .content ul, .content ol, .content li { line-height: 1.7; }
+.content p, .content ul, .content ol { max-width: var(--measure); }
+.content li { margin-bottom: 0.3em; }
+
+a { text-underline-offset: 3px; }
+a:hover { color: var(--accent-hover); }
+
+.menu-title { font-family: var(--font-display); font-weight: 600; }
+
+/* --- sidebar ---------------------------------------------------------- */
+
+.sidebar { border-right: 1px solid var(--rule); }
+.sidebar .sidebar-scrollbox { padding: 1.2rem 1rem; }
+.chapter li.chapter-item { line-height: 1.6; margin: 0.1em 0; }
+
+.chapter li.part-title {
+    font-family: var(--font-sans);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 1.6em;
 }
 
-/* Chapter titles in sidebar */
-.chapter li.chapter-item {
-    line-height: 1.8;
+.sidebar a.active {
+    color: var(--accent) !important;
+    font-weight: 600;
 }
 
-/* Code blocks */
-.hljs {
-    border-radius: 6px;
-    border: 1px solid var(--table-border-color);
-    font-family: var(--mono-font);
+/* --- code ------------------------------------------------------------- */
+
+/* Code has its own surface per theme — light on paper, dark at night — so a
+   snippet never lands as a dark slab in the middle of a pale page. */
+pre, pre > code, .hljs {
+    background: var(--code-bg) !important;
+    color: var(--code-fg) !important;
+    font-family: var(--font-mono);
 }
 
 pre {
-    padding: 1rem;
-    font-family: var(--mono-font);
-}
-
-pre > code {
-    font-size: 0.95em;
-    line-height: 1.5;
-    font-family: var(--mono-font);
-}
-
-/* Inline code */
-:not(pre) > code {
-    background-color: var(--inline-code-bg);
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 0.9em;
-    font-family: var(--mono-font);
-}
-/* Rask language syntax highlighting - using nord palette https://www.nordtheme.com*/
-.language-rask .hljs-keyword {
-    color: #81A1C1;
-    font-weight: 600;
-}
-
-.language-rask .hljs-built_in {
-    color: #88C0D0;
-    font-weight: 500;
-}
-
-.language-rask .hljs-string {
-    color: #A3BE8C;
-}
-
-.language-rask .hljs-comment {
-    color: #616E88;
-    font-style: italic;
-}
-
-.language-rask .hljs-function,
-.language-rask .hljs-title {
-    color: #88C0D0;
-}
-
-.language-rask .hljs-title\.function {
-    color: #88C0D0;
-}
-
-.language-rask .hljs-title\.class {
-    color: #8FBCBB;
-    font-weight: 500;
-}
-
-.language-rask .hljs-number {
-    color: #B48EAD;
-}
-
-.language-rask .hljs-type {
-    color: #8FBCBB;
-    font-weight: 500;
-}
-
-.language-rask .hljs-meta {
-    color: #5E81AC;
-    font-weight: 500;
-}
-
-.navy .language-rask .hljs-keyword {
-    color: #81A1C1;
-    font-weight: 600;
-}
-
-.navy .language-rask .hljs-built_in {
-    color: #88C0D0;
-    font-weight: 500;
-}
-
-.navy .language-rask .hljs-string {
-    color: #A3BE8C;
-}
-
-.navy .language-rask .hljs-comment {
-    color: #616E88;
-    font-style: italic;
-}
-
-.navy .language-rask .hljs-function,
-.navy .language-rask .hljs-title {
-    color: #88C0D0;
-}
-
-.navy .language-rask .hljs-title\.function {
-    color: #88C0D0;
-}
-
-.navy .language-rask .hljs-title\.class {
-    color: #8FBCBB;
-    font-weight: 500;
-}
-
-.navy .language-rask .hljs-number {
-    color: #B48EAD;
-}
-
-.navy .language-rask .hljs-type {
-    color: #8FBCBB;
-    font-weight: 500;
-}
-
-.navy .language-rask .hljs-meta {
-    color: #5E81AC;
-    font-weight: 500;
-}
-
-/* Headers */
-h1, h2, h3, h4, h5, h6 {
-    color: var(--fg);
-}
-
-h1 {
-    border-bottom: 2px solid var(--rask-primary);
-    padding-bottom: 0.3em;
-}
-
-/* Navigation buttons */
-.nav-chapters {
-    font-size: 0.95em;
-}
-
-.nav-chapters a {
-    color: var(--fg);
-}
-
-.nav-chapters a:hover {
-    color: var(--rask-primary);
-}
-
-/* Search */
-#searchresults a {
-    color: var(--rask-primary);
-}
-
-#searchresults mark {
-    background-color: var(--rask-very-light);
-    color: var(--rask-dark);
-    padding: 2px 4px;
-    border-radius: 3px;
-}
-
-.navy #searchresults mark {
-    background-color: rgba(11, 92, 56, 0.3);
-    color: var(--rask-light);
-}
-
-/* Tables */
-table thead {
-    background-color: var(--rask-very-light);
-}
-
-.navy table thead {
-    background-color: rgba(11, 92, 56, 0.15);
-}
-
-table thead th {
-    font-weight: 600;
-    color: var(--rask-dark);
-}
-
-.navy table thead th {
-    color: var(--rask-light);
-}
-
-/* Blockquotes */
-blockquote {
-    border-left: 4px solid var(--rask-primary);
-    background-color: var(--quote-bg);
-    padding: 0.5em 1em;
-    margin: 1em 0;
-}
-
-/* Status banners (for warnings/notes) */
-blockquote > p > strong:first-child {
-    color: var(--rask-primary);
-}
-
-/* Menu bar */
-.menu-title {
-    font-weight: 600;
-    font-family: var(--mono-font);
-}
-
-/* Site title */
-.sidebar .sidebar-scrollbox .chapter {
-    font-family: var(--mono-font);
-}
-
-/* Print button, theme selector */
-.icon-button {
-    color: var(--icons);
-}
-
-.icon-button:hover {
-    color: var(--rask-primary);
-}
-
-/* Mobile adjustments */
-@media only screen and (max-width: 768px) {
-    .sidebar {
-        width: 300px;
-    }
-
-    .page {
-        padding: 15px;
-    }
-}
-
-/* Logo in landing page - responsive sizing */
-img[alt="rask logo"] {
-    max-width: 100%;
-    height: auto;
-}
-
-@media only screen and (max-width: 768px) {
-    img[alt="rask logo"] {
-        width: 300px;
-    }
-}
-
-/* Content spacing improvements */
-.content {
-    max-width: none;
-}
-
-.content p,
-.content ul,
-.content ol {
-    max-width: 800px;
-    line-height: 1.7;
-}
-
-.content li {
-    line-height: 1.6;
-    margin-bottom: 0.3em;
-}
-
-/* Code example improvements */
-.content pre {
-    margin: 1.5em 0;
-}
-
-/* Footer edit link */
-.edit-url {
-    color: var(--rask-primary);
-}
-
-.edit-url:hover {
-    text-decoration: underline;
-}
-
-/* Playground iframe */
-.playground-container {
-    position: relative;
-    width: calc(100vw - 550px);
-    max-width: none;
-    min-height: 600px;
-    height: 70vh;
-    max-height: calc(100vh - 250px);
-    margin: 2em 0;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 1px solid var(--table-border-color);
+    padding: 1rem 1.15rem;
+    border: 1px solid var(--code-rule);
     border-radius: 8px;
-    overflow: hidden;
+    margin: 1.6em 0;
 }
 
-.playground-iframe {
-    width: 100%;
-    height: 100%;
-    border: none;
+pre > code { font-size: 0.86em; line-height: 1.7; }
+
+:not(pre) > code {
+    background: var(--bg-sunken);
+    color: var(--ink);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.88em;
+    font-family: var(--font-mono);
 }
 
-@media only screen and (min-width: 1440px) {
-    .playground-container {
-        width: calc(100vw - 480px);
-        max-width: 1800px;
-    }
+/* Syntax colours, once. highlight.js emits these classes for every language,
+   so Rask, Rust, Bash and TOML snippets all land on the same palette. */
+.hljs-keyword, .hljs-meta { color: var(--c-kw) !important; }
+.hljs-type, .hljs-title\.class, .hljs-class .hljs-title { color: var(--c-ty) !important; }
+.hljs-string, .hljs-number, .hljs-literal { color: var(--c-str) !important; }
+.hljs-comment, .hljs-quote { color: var(--c-cmt) !important; font-style: italic; }
+.hljs-title, .hljs-title\.function, .hljs-function, .hljs-built_in { color: var(--c-fn) !important; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params { color: var(--code-fg) !important; }
+
+/* --- tables, quotes, footer ------------------------------------------- */
+
+.content table { border-collapse: collapse; }
+.content table thead th { font-weight: 600; color: var(--ink); }
+.content table td, .content table th { border: 1px solid var(--rule); padding: 0.55em 0.8em; }
+.content table tbody tr:nth-child(even) { background: var(--bg-sunken); }
+
+blockquote {
+    border-left: 3px solid var(--accent-fill);
+    background: var(--bg-sunken);
+    color: var(--ink-soft);
+    padding: 0.8em 1.1em;
+    margin: 1.6em 0;
 }
 
-/* 1920x1080/1200 */
-@media only screen and (min-width: 1920px) {
-    .playground-container {
-        width: calc(100vw - 520px);
-        max-width: 1600px;
-    }
-}
+blockquote > p:first-child { margin-top: 0; }
+blockquote > p:last-child { margin-bottom: 0; }
 
-/* 4K and ultra-wide */
-@media only screen and (min-width: 2560px) {
-    .playground-container {
-        width: calc(100vw - 600px);
-        max-width: 3000px;
-    }
-}
+.edit-url, .nav-chapters { color: var(--ink-faint); }
+
+img[alt="rask logo"] { max-width: 100%; height: auto; }
 
 @media only screen and (max-width: 768px) {
-    .playground-container {
-        width: 100%;
-        left: 0;
-        transform: none;
-        min-height: 500px;
-        height: 65vh;
-        max-height: calc(100vh - 200px);
-    }
+    .content h1 { font-size: 1.7rem; }
+    img[alt="rask logo"] { width: 260px; }
 }
+
+/* The logo comes in two versions, and which one to show follows the book's
+   theme switcher rather than the reader's system preference — `prefers-color-scheme`
+   gets it backwards for anyone who picks light on a dark desktop, leaving a
+   white wordmark on white paper. */
+.logo-on-paper, .logo-on-night { display: none; }
+.light .logo-on-paper, .rust .logo-on-paper { display: inline; }
+.coal .logo-on-night, .navy .logo-on-night, .ayu .logo-on-night { display: inline; }

@@ -31,7 +31,7 @@ cargo test --release --workspace      52 binaries, 0 failures
 you're willing to merge that file by hand.
 
 **Every lane touches `tests/known_divergences.txt` and `tests/COVERAGE.md`** — one line added or
-deleted per fix. Conflicts there are trivial: take both sides. Tell lanes not to edit `PLAN.md`;
+deleted per fix. Conflicts there are trivial: take both sides. Tell lanes not to edit `../../PLAN.md`;
 fold that in when you merge.
 
 ---
@@ -273,7 +273,7 @@ Shape it yourself, but it needs at minimum: a task set (small programs with know
 a runner that compiles and runs each on both backends, a convergence metric (how many attempts to a
 correct program), and transcripts saved so failures can be read rather than counted.
 
-Read NORTH_STAR.md for what it's meant to measure and METRICS.md for the scoring conventions
+Read ../../NORTH_STAR.md for what it's meant to measure and METRICS.md for the scoring conventions
 already in use. The five validation programs in examples/ are the shape of a task but too big for
 one — the day/week/month files in tests/suite/ are closer to the right granularity.
 

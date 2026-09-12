@@ -39,3 +39,8 @@ agentbench/runs/
 
 # Test-fixture lockfiles — the gate builds from source (see tests/packages/README.md).
 tests/packages/*/app/rask.lock
+
+# mdBook's create-missing turns SUMMARY.md's external links (the language card,
+# the tutorials) into placeholder source files under a literal `https:` path.
+# Generated on every build, never content.
+docs/book/src/https:/

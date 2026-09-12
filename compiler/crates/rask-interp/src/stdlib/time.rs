@@ -7,6 +7,15 @@ use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, Value};
 use std::sync::{Arc, Mutex, mpsc};
 
+/// Refuse a clock read on a target that has no clock.
+///
+/// Worded like the OS-backed modules' refusals (`fs module not available in
+/// browser playground`) because it is the same situation from the reader's
+/// side: the thing can't work here, and saying so beats trapping (#1172).
+fn no_clock(what: &str) -> RuntimeError {
+    RuntimeError::Generic(format!("{what} not available in browser playground"))
+}
+
 impl Interpreter {
     // === RUNTIME: module-level functions (sleep) ===
 
@@ -21,6 +30,9 @@ impl Interpreter {
             // else about it is arithmetic in stdlib/time.rk, which both
             // backends run.
             "wall_clock_nanos" => {
+                if !crate::HAS_CLOCK {
+                    return Err(no_clock("time.SystemTime.now()"));
+                }
                 let now = std::time::SystemTime::now();
                 let nanos = match now.duration_since(std::time::UNIX_EPOCH) {
                     Ok(d) => d.as_nanos() as i64,
@@ -34,6 +46,10 @@ impl Interpreter {
                     .as_duration()
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 let duration = std::time::Duration::from_nanos(duration_nanos);
+                if !crate::HAS_CLOCK {
+                    // `thread::sleep` panics on wasm rather than returning.
+                    return Err(no_clock("time.sleep()"));
+                }
                 std::thread::sleep(duration);
                 Ok(Value::Enum {
                     name: "Result".to_string(),
@@ -222,6 +238,9 @@ impl Interpreter {
                         got: args.len(),
                     });
                 }
+                if !crate::HAS_CLOCK {
+                    return Err(no_clock("time.Instant.now()"));
+                }
                 Ok(Value::Instant(std::time::Instant::now()))
             }
             ("Duration", "seconds") => {
@@ -300,6 +319,10 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 let duration = std::time::Duration::from_nanos(duration_nanos);
 
+                if !crate::HAS_CLOCK {
+                    return Err(no_clock("time.Timer.after()"));
+                }
+
                 let (tx, rx) = mpsc::sync_channel(1);
                 std::thread::spawn(move || {
                     std::thread::sleep(duration);
@@ -316,6 +339,10 @@ impl Interpreter {
                     .as_duration()
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 let duration = std::time::Duration::from_nanos(duration_nanos);
+
+                if !crate::HAS_CLOCK {
+                    return Err(no_clock("time.Timer.interval()"));
+                }
 
                 let (tx, rx) = mpsc::sync_channel(1);
                 std::thread::spawn(move || {

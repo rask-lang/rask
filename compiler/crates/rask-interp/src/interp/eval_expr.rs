@@ -2638,7 +2638,7 @@ impl Interpreter {
                         }
                     }
                     Ok(result)
-                });
+                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
@@ -2705,7 +2705,7 @@ impl Interpreter {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
-                });
+                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
@@ -2732,18 +2732,21 @@ impl Interpreter {
 
                 for _ in 0..num_threads {
                     let rx = Arc::clone(&rx);
-                    workers.push(crate::spawn_interp_thread(move || {
-                        loop {
-                            let task = {
-                                let rx = rx.lock().unwrap();
-                                rx.recv()
-                            };
-                            match task {
-                                Ok(task) => (task.work)(),
-                                Err(_) => break,
+                    workers.push(
+                        crate::spawn_interp_thread(move || {
+                            loop {
+                                let task = {
+                                    let rx = rx.lock().unwrap();
+                                    rx.recv()
+                                };
+                                match task {
+                                    Ok(task) => (task.work)(),
+                                    Err(_) => break,
+                                }
                             }
-                        }
-                    }));
+                        })
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?,
+                    );
                 }
 
                 let pool = Arc::new(ThreadPoolInner {
@@ -2792,7 +2795,10 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
-                let runtime = Arc::new(MultitaskingRuntime::new(num_workers));
+                let runtime = Arc::new(
+                    MultitaskingRuntime::new(num_workers)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?,
+                );
 
                 // C1: exactly one active block per process — nested blocks panic at runtime
                 {

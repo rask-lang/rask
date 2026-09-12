@@ -58,7 +58,7 @@ impl Interpreter {
                                 }
                                 Err(diag) => Err(interp.task_failure_message(&diag)),
                             }
-                        });
+                        })?;
 
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
@@ -201,7 +201,7 @@ impl Interpreter {
                                 }
                                 Err(diag) => Err(interp.task_failure_message(&diag)),
                             }
-                        });
+                        })?;
 
                         let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),

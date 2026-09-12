@@ -13,6 +13,25 @@ use rask_interp::{Interpreter, RuntimeError};
 use rask_lexer::Lexer;
 use rask_parser::Parser;
 
+/// Tell the interpreter how much stack it may spend.
+///
+/// Its recursion guard measures against the stack it was given, and on wasm
+/// that size is a link argument rather than something it chose — so hand it the
+/// number `build.rs` reserved. Without this it assumes wasm-ld's 1 MiB default
+/// and refuses at about 30 frames.
+///
+/// This crate is in the workspace, so it also builds for the host, where there
+/// is no such thing to say.
+#[cfg(target_family = "wasm")]
+fn announce_stack_budget() {
+    if let Some(bytes) = option_env!("RASK_WASM_STACK_BYTES").and_then(|s| s.parse().ok()) {
+        rask_interp::set_stack_bytes(bytes);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn announce_stack_budget() {}
+
 /// Browser-based Rask playground.
 ///
 /// Provides a simple API for running Rask code and capturing output.
@@ -29,6 +48,8 @@ impl Playground {
     pub fn new() -> Self {
         // Better panic messages in browser console
         console_error_panic_hook::set_once();
+
+        announce_stack_budget();
 
         let (interpreter, output_buffer) = Interpreter::with_captured_output();
         Self {

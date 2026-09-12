@@ -8,6 +8,30 @@ const path = require('path');
 const EXAMPLES_DIR = path.join(__dirname, '../../examples');
 const OUTPUT_FILE = path.join(__dirname, 'examples.js');
 
+// What the browser build can't do, and what to tell the reader.
+//
+// The playground is the interpreter compiled to wasm32-unknown-unknown, which
+// has no OS and no threads. Modules that need either are either refused with a
+// diagnostic (fs, io, net, http) or don't work at all (time, spawn), so an
+// example that uses one cannot run here. Offering it in the dropdown anyway is
+// how a third of the list came to answer with an error (#1172) — so the
+// dropdown says which ones need a local install, and it works it out from the
+// source rather than from a list someone has to remember to update.
+const BROWSER_GAPS = [
+    { pattern: /^\s*import\s+fs\b/m, reason: 'reads files' },
+    { pattern: /^\s*import\s+io\b/m, reason: 'uses stdin/stdout directly' },
+    { pattern: /^\s*import\s+net\b/m, reason: 'opens sockets' },
+    { pattern: /^\s*import\s+http\b/m, reason: 'serves HTTP' },
+    { pattern: /^\s*import\s+time\b|\btime\./m, reason: 'reads the clock' },
+    { pattern: /\bspawn\s*\(|\bThreadPool\b|\bMultitasking\b/, reason: 'starts threads' },
+];
+
+function browserGap(source) {
+    const reasons = BROWSER_GAPS.filter(g => g.pattern.test(source)).map(g => g.reason);
+    if (reasons.length === 0) return null;
+    return reasons.join(', ');
+}
+
 async function buildExamples() {
     try {
         // Read all .rk files
@@ -18,6 +42,7 @@ async function buildExamples() {
 
         const examples = {};
         const metadata = [];
+        let needsLocalCount = 0;
 
         for (const file of rkFiles) {
             const filePath = path.join(EXAMPLES_DIR, file);
@@ -30,10 +55,13 @@ async function buildExamples() {
                 .map(word => word.charAt(0).toUpperCase() + word.slice(1))
                 .join(' ');
 
-            examples[key] = content;
-            metadata.push({ key, title, file });
+            const needsLocal = browserGap(content);
+            if (needsLocal) needsLocalCount++;
 
-            console.log(`  - ${file} -> ${key}`);
+            examples[key] = content;
+            metadata.push(needsLocal ? { key, title, file, needsLocal } : { key, title, file });
+
+            console.log(`  - ${file} -> ${key}${needsLocal ? `  (needs local: ${needsLocal})` : ''}`);
         }
 
         // Generate JavaScript file
@@ -51,11 +79,11 @@ export const DEFAULT_CODE = EXAMPLES.hello_world || \`func main() {
 `;
 
         await fs.writeFile(OUTPUT_FILE, output, 'utf-8');
-        console.log(`\n✅ Generated ${OUTPUT_FILE}`);
-        console.log(`   ${Object.keys(examples).length} examples exported`);
+        console.log(`\nGenerated ${OUTPUT_FILE}`);
+        console.log(`   ${Object.keys(examples).length} examples, ${needsLocalCount} need a local install`);
 
     } catch (error) {
-        console.error('❌ Error building examples:', error);
+        console.error('Error building examples:', error);
         process.exit(1);
     }
 }
