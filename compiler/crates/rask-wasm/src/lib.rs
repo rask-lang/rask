@@ -8,10 +8,9 @@ use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
-use rask_diagnostics::{formatter::DiagnosticFormatter, json, ToDiagnostic};
+use rask_compiler::{CfgConfig, CompilerConfig};
+use rask_diagnostics::{formatter::DiagnosticFormatter, json, Diagnostic};
 use rask_interp::{Interpreter, RuntimeError};
-use rask_lexer::Lexer;
-use rask_parser::Parser;
 
 /// Tell the interpreter how much stack it may spend.
 ///
@@ -60,126 +59,128 @@ impl Playground {
 
     /// Run Rask source code and return output or error.
     ///
-    /// Runs the full compiler pipeline (lex → parse → desugar → resolve →
-    /// typecheck → ownership) before interpreting, matching `rask run`.
+    /// Same pipeline as `rask run --interp`, by calling the same code: the
+    /// compiler frontend (which compiles `stdlib/*.rk` alongside the program),
+    /// then the interpreter over the two together. This used to be a
+    /// hand-written copy of the pipeline that had drifted — no stdlib, and none
+    /// of the typechecker's output handed to the interpreter — so a third of
+    /// the examples failed here while running fine on a local build (#1177).
     pub fn run(&mut self, source: &str) -> Result<String, String> {
-        // Clear previous output
         self.output_buffer.lock().unwrap().clear();
 
-        // Lex
-        let mut lexer = Lexer::new(source);
-        let lex_result = lexer.tokenize();
-        if !lex_result.is_ok() {
-            return Err(format_errors(source, &lex_result.errors));
+        let checked = frontend(source)?;
+        self.prepare(&checked, source);
+
+        let all = rask_compiler::program_decls(&checked.decls);
+        let outcome = self.interpreter.run(&all);
+
+        let output = self.output_buffer.lock().unwrap().clone();
+        match outcome {
+            Ok(_) => Ok(output),
+            Err(diag) => match diag.error {
+                RuntimeError::Exit(0) => Ok(output),
+                RuntimeError::Exit(code) => {
+                    Err(format!("Program exited with code {}\n{}", code, output))
+                }
+                other => Err(format!("Runtime error:\n{}", other)),
+            },
+        }
+    }
+
+    /// Run the program's `test` blocks and `@test` functions.
+    ///
+    /// What `rask test` does, minus the timings: the browser gives wasm no
+    /// clock, so a duration here would be a row of zeroes pretending to be a
+    /// measurement. Benchmarks are refused for the same reason — there is
+    /// nothing to measure them with.
+    pub fn run_tests(&mut self, source: &str) -> Result<String, String> {
+        self.output_buffer.lock().unwrap().clear();
+
+        let checked = frontend(source)?;
+        self.prepare(&checked, source);
+
+        let all = rask_compiler::program_decls(&checked.decls);
+        let results = self.interpreter.run_tests(&all, None);
+        let benchmarks = checked
+            .decls
+            .iter()
+            .filter(|d| matches!(d.kind, rask_ast::decl::DeclKind::Benchmark(_)))
+            .count();
+
+        if results.is_empty() && benchmarks == 0 {
+            return Err("No tests in this program. A test looks like `test \"name\" { … }`.".into());
         }
 
-        // Parse
-        let mut parser = Parser::new(lex_result.tokens);
-        let mut parse_result = parser.parse();
-        if !parse_result.is_ok() {
-            return Err(format_errors(source, &parse_result.errors));
-        }
-
-        // Desugar
-        rask_desugar::desugar(&mut parse_result.decls);
-
-        // Resolve
-        let resolved = rask_resolve::resolve(&parse_result.decls)
-            .map_err(|errors| format_errors(source, &errors))?;
-
-        // Typecheck
-        let typed = rask_types::typecheck(resolved, &parse_result.decls)
-            .map_err(|errors| format_errors(source, &errors))?;
-
-        // Ownership
-        let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-        if !ownership_result.is_ok() {
-            return Err(format_errors(source, &ownership_result.errors));
-        }
-
-        // Interpret
-        match self.interpreter.run(&parse_result.decls) {
-            Ok(_) => {
-                let output = self.output_buffer.lock().unwrap().clone();
-                Ok(output)
+        let mut report = String::new();
+        let mut failed = 0;
+        for r in &results {
+            if let Some(reason) = &r.skipped {
+                report.push_str(&format!("skip  {}  ({})\n", r.name, reason));
+                continue;
             }
-            Err(diag) if matches!(diag.error, RuntimeError::Exit(_)) => {
-                let output = self.output_buffer.lock().unwrap().clone();
-                if let RuntimeError::Exit(code) = diag.error {
-                    if code == 0 {
-                        Ok(output)
-                    } else {
-                        Err(format!(
-                            "Program exited with code {}\n{}",
-                            code, output
-                        ))
-                    }
-                } else {
-                    unreachable!()
+            if r.passed {
+                report.push_str(&format!("pass  {}\n", r.name));
+            } else {
+                failed += 1;
+                report.push_str(&format!("FAIL  {}\n", r.name));
+                for e in &r.errors {
+                    report.push_str(&format!("        {}\n", e));
                 }
             }
-            Err(diag) => Err(format!("Runtime error:\n{}", diag.error)),
+            if !r.output.is_empty() {
+                for line in r.output.lines() {
+                    report.push_str(&format!("        {}\n", line));
+                }
+            }
+        }
+
+        report.push_str(&format!(
+            "\n{} of {} passed\n",
+            results.len() - failed,
+            results.len()
+        ));
+
+        if benchmarks > 0 {
+            report.push_str(&format!(
+                "\n{} benchmark(s) not run: timing them needs a clock, and the \
+                 browser doesn't give wasm one. Run them with `rask benchmark`.\n",
+                benchmarks
+            ));
+        }
+
+        if failed > 0 {
+            Err(report)
+        } else {
+            Ok(report)
         }
     }
 
     /// Check code for errors without running it.
     ///
-    /// Runs the full pipeline (lex → parse → desugar → resolve → typecheck →
-    /// ownership) and returns JSON diagnostics.
+    /// Same frontend as `run`, rendered as JSON diagnostics for the editor.
     pub fn check(&self, source: &str) -> String {
-        let mut all_diagnostics = Vec::new();
-
-        // Lex
-        let mut lexer = Lexer::new(source);
-        let lex_result = lexer.tokenize();
-        for err in &lex_result.errors {
-            all_diagnostics.push(err.to_diagnostic());
-        }
-
-        if lex_result.is_ok() {
-            // Parse
-            let mut parser = Parser::new(lex_result.tokens);
-            let mut parse_result = parser.parse();
-            for err in &parse_result.errors {
-                all_diagnostics.push(err.to_diagnostic());
-            }
-
-            if parse_result.is_ok() {
-                // Desugar
-                rask_desugar::desugar(&mut parse_result.decls);
-
-                // Resolve
-                match rask_resolve::resolve(&parse_result.decls) {
-                    Ok(resolved) => {
-                        // Typecheck
-                        match rask_types::typecheck(resolved, &parse_result.decls) {
-                            Ok(typed) => {
-                                // Ownership
-                                let ownership = rask_ownership::check_ownership(
-                                    &typed, &parse_result.decls,
-                                );
-                                for err in &ownership.errors {
-                                    all_diagnostics.push(err.to_diagnostic());
-                                }
-                            }
-                            Err(errors) => {
-                                for err in &errors {
-                                    all_diagnostics.push(err.to_diagnostic());
-                                }
-                            }
-                        }
-                    }
-                    Err(errors) => {
-                        for err in &errors {
-                            all_diagnostics.push(err.to_diagnostic());
-                        }
-                    }
-                }
-            }
-        }
-
-        let report = json::to_json_report(&all_diagnostics, source, "<playground>", "check");
+        let output = rask_compiler::check_source(PLAYGROUND, source, &config());
+        let report = json::to_json_report(&output.diagnostics, source, PLAYGROUND, "check");
         serde_json::to_string(&report).unwrap()
+    }
+
+    /// Hand the interpreter what the typechecker worked out.
+    ///
+    /// `rask run --interp` does exactly this; leaving it out is why the
+    /// playground's error wrapping and try-chains behaved differently from a
+    /// local run.
+    fn prepare(&mut self, checked: &rask_compiler::CheckResult, source: &str) {
+        self.interpreter.inject_cfg(&cfg());
+        self.interpreter.set_node_types(checked.typed.node_types.clone());
+        self.interpreter.set_error_wraps(checked.typed.error_wraps.clone());
+        self.interpreter
+            .set_try_chain_placement(checked.typed.try_chain_placement.clone());
+        self.interpreter
+            .set_fallback_keeps_shape(checked.typed.fallback_keeps_shape.clone());
+        self.interpreter.set_source_info(PLAYGROUND, source);
+        if !checked.package_names.is_empty() {
+            self.interpreter.register_packages(&checked.package_names);
+        }
     }
 
     /// Get the version of the Rask compiler.
@@ -188,23 +189,62 @@ impl Playground {
     }
 }
 
-/// Format a list of errors into a single string for browser display.
-fn format_errors<E: ToDiagnostic>(source: &str, errors: &[E]) -> String {
-    errors
-        .iter()
-        .map(|err| {
-            let diag = err.to_diagnostic();
-            let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
-            strip_ansi_codes(&formatter.format(&diag))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+/// The file name diagnostics are rendered against. There is no file.
+const PLAYGROUND: &str = "<playground>";
+
+fn cfg() -> CfgConfig {
+    CfgConfig::from_host("debug", vec![])
 }
 
-/// Convert ANSI color codes to HTML with CSS classes.
+fn config() -> CompilerConfig {
+    CompilerConfig { cfg: cfg() }
+}
+
+/// Run the frontend, or give back the diagnostics as the browser should see
+/// them: rendered, plain text, no ANSI.
+fn frontend(source: &str) -> Result<rask_compiler::CheckResult, String> {
+    let output = rask_compiler::check_source(PLAYGROUND, source, &config());
+    if output.has_errors() {
+        return Err(render(source, &output.diagnostics));
+    }
+    output
+        .result
+        .ok_or_else(|| render(source, &output.diagnostics))
+}
+
+/// Render diagnostics against the editor's buffer.
 ///
-/// The DiagnosticFormatter uses ANSI escapes for terminal colors.
-/// This converts them to HTML spans for browser display.
+/// Only the ones that belong to it. `stdlib/*.rk` compiles alongside the
+/// program, and its spans index its own files — drawn against this source they
+/// point at whatever happens to be at that offset, which is how a stdlib error
+/// once underlined line 164 column 2309 of a 164-line program. A stdlib error
+/// is a compiler bug rather than the reader's, so it is reported as one.
+fn render(source: &str, diagnostics: &[Diagnostic]) -> String {
+    let formatter = DiagnosticFormatter::new(source).with_file_name(PLAYGROUND);
+    let mine: Vec<String> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.primary_span()
+                .is_none_or(|s| !rask_compiler::is_stdlib_span(s))
+        })
+        .map(|d| strip_ansi_codes(&formatter.format(d)))
+        .collect();
+
+    if !mine.is_empty() {
+        return mine.join("\n");
+    }
+
+    let mut report = String::from(
+        "The standard library failed to compile, which is a bug in Rask rather \
+         than in this program.\nPlease report it at \
+         https://github.com/rask-lang/rask/issues\n\n",
+    );
+    for d in diagnostics {
+        report.push_str(&format!("  {}\n", d.message));
+    }
+    report
+}
+
 fn strip_ansi_codes(s: &str) -> String {
     // Debug logging to see what we're converting
     let preview: String = s.chars().take(100).collect();

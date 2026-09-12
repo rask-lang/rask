@@ -46,14 +46,25 @@ pub fn is_machine_integer(name: &str) -> bool {
 /// pointer is eight bytes, none of them connected to a target and none of them
 /// stating the rule. They all route through here now.
 ///
-/// The width is the compiler host's, and today that is exactly right: the only
-/// binaries the compiler produces are for the machine it runs on. Cross-
-/// compiling to another OS, to wasm32, or to bare metal is refused at link
-/// time, so no reachable target's pointer width can differ from the host's.
-/// When a target triple reaches the frontend — it currently stops at codegen —
-/// this takes it as a parameter and every caller follows unchanged.
+/// The width is the compiler host's, and for a native build that is exactly
+/// right: the only binaries the compiler produces are for the machine it runs
+/// on. Cross-compiling to another OS or to bare metal is refused at link time,
+/// so no reachable target's pointer width can differ from the host's. When a
+/// target triple reaches the frontend — it currently stops at codegen — this
+/// takes it as a parameter and every caller follows unchanged.
+///
+/// The browser playground is the exception, and it is not a cross-compile: the
+/// *compiler* is wasm32, but it never emits code — it interprets, and the
+/// interpreter's integers are 64-bit. Reading the host's width there made
+/// `usize` 32 bits, so `stdlib/fs.rk`'s `n as usize` became a narrowing
+/// conversion and the playground rejected its own standard library. It answers
+/// for the machine it is emulating instead.
 pub fn pointer_bits() -> u32 {
-    (std::mem::size_of::<usize>() * 8) as u32
+    if cfg!(target_arch = "wasm32") {
+        64
+    } else {
+        (std::mem::size_of::<usize>() * 8) as u32
+    }
 }
 
 /// The fixed-width spelling `usize` stands for on this target.

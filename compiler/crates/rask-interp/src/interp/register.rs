@@ -492,7 +492,7 @@ impl Interpreter {
 
     /// Run a single test block with isolation and check-continuation.
     pub(super) fn run_single_test(&mut self, name: &str, body: &[Stmt]) -> TestResult {
-        let start = std::time::Instant::now();
+        let start = crate::Stopwatch::start();
         let mut errors: Vec<String> = Vec::new();
         let mut ensures: Vec<&Stmt> = Vec::new();
         let mut skipped: Option<String> = None;
@@ -604,7 +604,7 @@ impl Interpreter {
 
     /// Run an @test function.
     pub(super) fn run_test_function(&mut self, func: &FnDecl) -> TestResult {
-        let start = std::time::Instant::now();
+        let start = crate::Stopwatch::start();
         let mut errors: Vec<String> = Vec::new();
         let mut skipped: Option<String> = None;
         let mut expect_fail = false;
@@ -672,7 +672,7 @@ impl Interpreter {
         // Calibrate: find iteration count that takes >100ms total
         let mut iterations: u64 = 10;
         loop {
-            let start = std::time::Instant::now();
+            let start = crate::Stopwatch::start();
             for _ in 0..iterations {
                 self.env.push_scope();
                 let _ = self.exec_stmts(body);
@@ -689,7 +689,7 @@ impl Interpreter {
         let mut timings: Vec<std::time::Duration> = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
             self.env.push_scope();
-            let start = std::time::Instant::now();
+            let start = crate::Stopwatch::start();
             let _ = self.exec_stmts(body);
             let elapsed = start.elapsed();
             self.env.pop_scope();

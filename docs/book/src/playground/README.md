@@ -6,8 +6,9 @@ than on a server.
 
 **[Open the playground →](/app/)**
 
-Write code on the left, `Ctrl+Enter` to run, output on the right. The examples
-dropdown loads the programs from
+Write code on the left, `Ctrl+Enter` to run, output on the right. **Run tests**
+runs the file's `test` blocks instead of `main`. The examples dropdown loads the
+programs from
 [examples/](https://github.com/rask-lang/rask/tree/main/examples), and **Copy
 link** gives you a URL with your code in it.
 
@@ -19,8 +20,9 @@ needing one of those is refused with a message rather than half-working:
 | | |
 |---|---|
 | `fs`, `io`, `net`, `http` | no filesystem or sockets |
-| `time` | no clock |
+| `time` | no clock — which is also why `benchmark` blocks don't run here |
 | `spawn`, `Thread.spawn`, `using Multitasking`, `using ThreadPool` | no threads |
+| `extern "C"`, `import c` | no libc to call |
 
 Everything else runs: collections, structs, enums, generics, traits, pattern
 matching, closures, error handling, `comptime`. Recursion is capped a few

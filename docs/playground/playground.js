@@ -189,6 +189,7 @@ async function init() {
 
         // Set up event listeners
         document.getElementById('run-btn').addEventListener('click', runCode);
+        document.getElementById('test-btn').addEventListener('click', runTests);
         document.getElementById('reset-btn').addEventListener('click', resetEditor);
         document.getElementById('share-btn').addEventListener('click', shareCode);
         document.getElementById('clear-output-btn').addEventListener('click', clearOutput);
@@ -270,7 +271,17 @@ function initEditor() {
 }
 
 // Run code
-async function runCode() {
+function runCode() {
+    return invoke('Running\u2026', code => playground.run(code));
+}
+
+function runTests() {
+    return invoke('Running tests\u2026', code => playground.run_tests(code));
+}
+
+// `Playground::run` and `run_tests` both answer `Result<String, String>`, so
+// the two differ only in which one to call.
+async function invoke(pending, call) {
     if (!playground) {
         showError('Playground not initialized');
         return;
@@ -279,21 +290,19 @@ async function runCode() {
     const code = editor.state.doc.toString();
     const output = document.getElementById('output');
 
-    // Clear previous output
-    output.textContent = 'Running...';
+    output.textContent = pending;
     output.className = 'output-content running';
 
     try {
-        const result = playground.run(code);
+        const result = call(code);
         output.textContent = result || '(no output)';
         output.className = 'output-content success';
     } catch (error) {
         output.className = 'output-content error';
 
-        // `Playground::run` answers `Result<String, String>`, so a compiler or
-        // runtime diagnostic arrives as a JS string — already HTML-escaped by
-        // the Rust side, with spans for the ANSI colours. Anything else is an
-        // object, and means the interpreter itself fell over.
+        // A compiler or runtime diagnostic arrives as a JS string — already
+        // HTML-escaped by the Rust side, with spans for the ANSI colours.
+        // Anything else is an object, and means the interpreter fell over.
         if (typeof error === 'string') {
             output.innerHTML = error;
             return;

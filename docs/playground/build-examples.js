@@ -22,6 +22,7 @@ const BROWSER_GAPS = [
     { pattern: /^\s*import\s+http\b/m, reason: 'serves HTTP' },
     { pattern: /^\s*import\s+time\b|\btime\./m, reason: 'reads the clock' },
     { pattern: /\bspawn\s*\(|\bThreadPool\b|\bMultitasking\b/, reason: 'starts threads' },
+    { pattern: /^\s*extern\s+"C"|^\s*import\s+c\b/m, reason: 'calls C functions' },
 ];
 
 function browserGap(source) {
