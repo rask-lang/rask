@@ -1,0 +1,202 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* Makes the book look like the rest of the site.
+ *
+ * Two jobs, in order: point mdBook's own variables at the site's tokens, then
+ * fix the handful of places mdBook hardcodes something. The tokens themselves
+ * live in /tokens.css — the build copies docs/shared/tokens.css to the site
+ * root, which is why this reaches for it by absolute path rather than keeping
+ * a second copy of the palette here. */
+
+@import url("/tokens.css");
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* --- mdBook's variables, in our colours ------------------------------- */
+
+/* `--bg` is the one name mdBook and the tokens already share, so it needs no
+   mapping — tokens.css sets it, and mdBook reads it. The rest are renames. */
+.light, .rust, .coal, .navy, .ayu {
+    --fg: var(--ink);
+
+    --sidebar-bg: var(--bg-sunken);
+    --sidebar-fg: var(--ink-soft);
+    --sidebar-non-existant: var(--ink-faint);
+    --sidebar-active: var(--accent);
+    --sidebar-spacer: var(--rule);
+
+    --scrollbar: var(--rule);
+    --icons: var(--ink-faint);
+    --icons-hover: var(--accent);
+
+    --links: var(--accent);
+    --links-hover: var(--accent-hover);
+
+    --inline-code-color: var(--ink);
+    --inline-code-bg: var(--bg-sunken);
+
+    --theme-popup-bg: var(--surface);
+    --theme-popup-border: var(--rule);
+    --theme-hover: var(--accent-wash);
+
+    --quote-bg: var(--bg-sunken);
+    --quote-border: var(--accent);
+
+    --table-border-color: var(--rule);
+    --table-header-bg: var(--bg-sunken);
+    --table-alternate-bg: var(--bg);
+
+    --searchbar-border-color: var(--rule);
+    --searchbar-bg: var(--surface);
+    --searchbar-fg: var(--ink);
+    --searchbar-shadow-color: rgba(0, 0, 0, 0.08);
+    --searchresults-header-fg: var(--ink-faint);
+    --searchresults-border-color: var(--rule);
+    --searchresults-li-bg: var(--bg-sunken);
+    --search-mark-bg: var(--accent-wash);
+}
+
+/* --- type ------------------------------------------------------------- */
+
+/* Careful with rem in this file: mdBook sets `:root { font-size: 62.5% }`, so
+   1rem is 10px here, not the 16px it is on the landing page. Body text is
+   1.6rem. Every size below is written for that, which is also what mdBook's own
+   stylesheets do — getting it wrong shrinks everything to ~62%, which is how
+   the headings ended up smaller than the paragraphs under them. */
+
+html {
+    font-family: var(--font-sans);
+    scrollbar-color: var(--rule) transparent;
+}
+
+body { background: var(--bg); color: var(--ink); }
+
+h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+}
+
+.content h1 { font-size: 3.4rem; font-weight: 500; }
+.content h2 { font-size: 2.4rem; margin-top: 2.4em; }
+.content h3 { font-size: 1.9rem; margin-top: 1.8em; }
+.content h4 { font-size: 1.65rem; margin-top: 1.6em; }
+
+.content p, .content ul, .content ol, .content li { line-height: 1.7; }
+.content p, .content ul, .content ol { max-width: var(--measure); }
+.content li { margin-bottom: 0.3em; }
+
+a { text-underline-offset: 3px; }
+a:hover { color: var(--accent-hover); }
+
+.menu-title { font-family: var(--font-display); font-weight: 600; }
+
+/* Added by chrome.js, since mdBook's bar has no slot for "the rest of the
+   site". Sits ahead of the sidebar and theme buttons, where a wordmark goes. */
+.rask-home {
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+    padding-inline: 0.4rem 1rem;
+    margin-inline-end: 0.6rem;
+    border-inline-end: 1px solid var(--rule);
+    /* Same trick the icon buttons use to sit centred in the bar. */
+    line-height: var(--menu-bar-height);
+}
+
+.rask-home:hover { color: var(--accent); }
+
+/* --- sidebar ---------------------------------------------------------- */
+
+.sidebar { border-right: 1px solid var(--rule); }
+.sidebar .sidebar-scrollbox { padding: 2rem 1.6rem; }
+.chapter li.chapter-item { line-height: 1.6; margin: 0.1em 0; }
+
+.chapter li.part-title {
+    font-family: var(--font-sans);
+    font-size: 1.2rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 1.6em;
+}
+
+.sidebar a.active {
+    color: var(--accent) !important;
+    font-weight: 600;
+}
+
+/* --- code ------------------------------------------------------------- */
+
+/* Code has its own surface per theme — light on paper, dark at night — so a
+   snippet never lands as a dark slab in the middle of a pale page. */
+pre, pre > code, .hljs {
+    background: var(--code-bg) !important;
+    color: var(--code-fg) !important;
+    font-family: var(--font-mono);
+}
+
+pre {
+    padding: 1.6rem 1.8rem;
+    border: 1px solid var(--code-rule);
+    border-radius: 8px;
+    margin: 1.6em 0;
+}
+
+pre > code { font-size: 0.86em; line-height: 1.7; }
+
+:not(pre) > code {
+    background: var(--bg-sunken);
+    color: var(--ink);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.88em;
+    font-family: var(--font-mono);
+}
+
+/* Syntax colours, once. highlight.js emits these classes for every language,
+   so Rask, Rust, Bash and TOML snippets all land on the same palette. */
+.hljs-keyword, .hljs-meta { color: var(--c-kw) !important; }
+.hljs-type, .hljs-title\.class, .hljs-class .hljs-title { color: var(--c-ty) !important; }
+.hljs-string, .hljs-number, .hljs-literal { color: var(--c-str) !important; }
+.hljs-comment, .hljs-quote { color: var(--c-cmt) !important; font-style: italic; }
+.hljs-title, .hljs-title\.function, .hljs-function, .hljs-built_in { color: var(--c-fn) !important; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params { color: var(--code-fg) !important; }
+
+/* --- tables, quotes, footer ------------------------------------------- */
+
+.content table { border-collapse: collapse; }
+.content table thead th { font-weight: 600; color: var(--ink); }
+.content table td, .content table th { border: 1px solid var(--rule); padding: 0.55em 0.8em; }
+.content table tbody tr:nth-child(even) { background: var(--bg-sunken); }
+
+blockquote {
+    border-left: 3px solid var(--accent-fill);
+    background: var(--bg-sunken);
+    color: var(--ink-soft);
+    padding: 0.8em 1.1em;
+    margin: 1.6em 0;
+}
+
+blockquote > p:first-child { margin-top: 0; }
+blockquote > p:last-child { margin-bottom: 0; }
+
+.edit-url, .nav-chapters { color: var(--ink-faint); }
+
+img[alt="rask logo"] { max-width: 100%; height: auto; }
+
+@media only screen and (max-width: 768px) {
+    .content h1 { font-size: 2.7rem; }
+    img[alt="rask logo"] { width: 260px; }
+}
+
+/* The logo comes in two versions, and which one to show follows the book's
+   theme switcher rather than the reader's system preference — `prefers-color-scheme`
+   gets it backwards for anyone who picks light on a dark desktop, leaving a
+   white wordmark on white paper. */
+.logo-on-paper, .logo-on-night { display: none; }
+.light .logo-on-paper, .rust .logo-on-paper { display: inline; }
+.coal .logo-on-night, .navy .logo-on-night, .ayu .logo-on-night { display: inline; }

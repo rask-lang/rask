@@ -1,0 +1,98 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rask Playground</title>
+<meta name="description" content="Run Rask in your browser. The interpreter, compiled to WebAssembly.">
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="playground.css">
+</head>
+<body>
+
+<header class="masthead">
+    <a class="brand" href="/">
+        <img src="/book/assets/rask48.png" alt="">
+        rask
+    </a>
+    <span class="here">playground</span>
+
+    <div class="controls">
+        <select id="examples" aria-label="Load an example">
+            <option value="">Load an example…</option>
+        </select>
+        <button id="run-btn" class="btn solid" title="Ctrl+Enter">Run</button>
+        <button id="test-btn" class="btn" title="Run the file's test blocks">Run tests</button>
+        <button id="reset-btn" class="btn">Reset</button>
+        <button id="share-btn" class="btn">Copy link</button>
+    </div>
+
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+    </nav>
+</header>
+
+<main>
+    <section class="pane">
+        <div class="pane-head">
+            <h2>Code</h2>
+            <span class="hint">Ctrl+Enter to run</span>
+        </div>
+        <div id="editor"></div>
+    </section>
+
+    <section class="pane">
+        <div class="pane-head">
+            <h2>Output</h2>
+            <button id="clear-output-btn" class="btn tiny">Clear</button>
+        </div>
+        <pre id="output" class="output-content">Press Run, or Ctrl+Enter.</pre>
+    </section>
+</main>
+
+<footer>
+    <span>The interpreter, compiled to WebAssembly &mdash; so it runs on your machine, not a server.</span>
+    <span>Version <span id="version">…</span></span>
+</footer>
+
+<div id="loading-overlay" class="loading">
+    <div class="spinner"></div>
+    <p id="loading-note">Loading the interpreter…</p>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script type="module" src="playground.js"></script>
+
+<!--
+  The editor comes from a CDN over static imports, so if that fetch fails the
+  module never runs and nothing in playground.js gets a chance to report it —
+  the page just spins. This has to be inline to survive that.
+-->
+<script>
+setTimeout(function () {
+    if (window.__raskPlaygroundReady) return;
+    var overlay = document.getElementById('loading-overlay');
+    var note = document.getElementById('loading-note');
+    var spinner = overlay && overlay.querySelector('.spinner');
+    if (spinner) spinner.remove();
+    if (note) {
+        note.innerHTML = 'The playground didn\'t load. It pulls the editor from a CDN ' +
+            '(esm.sh), so a blocked or offline CDN stops it here.<br><br>' +
+            'The browser console has the details. Everything else works: ' +
+            '<a href="/book/">the docs</a> and ' +
+            '<a href="/book/getting-started/installation.html">installing locally</a>.';
+        note.style.maxWidth = '34rem';
+        note.style.textAlign = 'center';
+        note.style.lineHeight = '1.6';
+    }
+}, 15000);
+</script>
+</body>
+</html>

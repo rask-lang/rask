@@ -1,0 +1,213 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.7rem 1.25rem;
+    border-bottom: 1px solid var(--rule);
+    flex-wrap: wrap;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-display);
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+}
+
+.brand img { width: 24px; height: 24px; border-radius: 5px; display: block; }
+
+.here {
+    color: var(--ink-faint);
+    font-size: 0.92rem;
+    padding-left: 0.75rem;
+    border-left: 1px solid var(--rule);
+}
+
+.controls { display: flex; gap: 0.5rem; margin-left: auto; flex-wrap: wrap; }
+
+.masthead nav { display: flex; gap: 1rem; padding-left: 1rem; }
+.masthead nav a { color: var(--ink-soft); text-decoration: none; font-size: 0.92rem; }
+.masthead nav a:hover { color: var(--accent); }
+
+.btn, select {
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 0.42rem 0.9rem;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+}
+
+.btn:hover, select:hover { border-color: var(--accent); color: var(--accent); }
+
+.btn.solid {
+    background: var(--accent-fill);
+    border-color: var(--accent-fill);
+    color: var(--accent-on-fill);
+    font-weight: 500;
+}
+
+.btn.solid:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-on-fill); }
+
+.btn.tiny { padding: 0.2rem 0.55rem; font-size: 0.82rem; }
+
+/* ---------- panes ---------- */
+
+main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 0;
+}
+
+.pane {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+}
+
+.pane + .pane { border-left: 1px solid var(--rule); }
+
+.pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--bg-sunken);
+}
+
+.pane-head h2 {
+    margin: 0;
+    font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+}
+
+.hint { font-size: 0.8rem; color: var(--ink-faint); font-family: var(--font-mono); }
+
+#editor { min-height: 0; overflow: hidden; background: var(--code-bg); }
+#editor .cm-editor { height: 100%; }
+
+.output-content {
+    margin: 0;
+    padding: 1rem 1.1rem;
+    overflow: auto;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.output-content.running { color: var(--c-cmt); }
+.output-content.error { color: var(--c-bad); }
+
+/* Diagnostic colours, from the compiler's own ANSI output. */
+.diag-error { color: var(--c-bad); }
+.diag-warning { color: var(--c-kw); }
+.diag-info { color: var(--c-ty); }
+.diag-help { color: var(--c-ty); }
+.bold, .diag-bold { font-weight: 600; }
+
+/* ---------- footer ---------- */
+
+footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.7rem 1.25rem;
+    border-top: 1px solid var(--rule);
+    font-size: 0.82rem;
+    color: var(--ink-faint);
+}
+
+/* ---------- overlays ---------- */
+
+.loading {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    background: var(--bg);
+    color: var(--ink-soft);
+    z-index: 10;
+}
+
+.spinner {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--rule);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast {
+    position: fixed;
+    bottom: 1.25rem;
+    left: 50%;
+    transform: translate(-50%, 150%);
+    padding: 0.6rem 1.1rem;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 0.88rem;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+    transition: transform 0.2s ease;
+    z-index: 20;
+}
+
+.toast.show { transform: translate(-50%, 0); }
+.toast.success { border-color: var(--accent); }
+.toast.error { border-color: var(--c-bad); }
+
+/* ---------- narrow ---------- */
+
+@media (max-width: 800px) {
+    body { height: auto; min-height: 100vh; }
+    main { grid-template-columns: 1fr; }
+    .pane + .pane { border-left: none; border-top: 1px solid var(--rule); }
+    #editor { height: 55vh; }
+    .output-content { min-height: 30vh; }
+    .here { display: none; }
+    .controls { margin-left: 0; width: 100%; }
+}
