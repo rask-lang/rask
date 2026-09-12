@@ -91,23 +91,6 @@ a:hover { color: var(--accent-hover); }
 
 .menu-title { font-family: var(--font-display); font-weight: 600; }
 
-/* Added by chrome.js, since mdBook's bar has no slot for "the rest of the
-   site". Sits ahead of the sidebar and theme buttons, where a wordmark goes. */
-.rask-home {
-    font-family: var(--font-display);
-    font-size: 1.8rem;
-    font-weight: 600;
-    color: var(--ink);
-    text-decoration: none;
-    padding-inline: 0.4rem 1rem;
-    margin-inline-end: 0.6rem;
-    border-inline-end: 1px solid var(--rule);
-    /* Same trick the icon buttons use to sit centred in the bar. */
-    line-height: var(--menu-bar-height);
-}
-
-.rask-home:hover { color: var(--accent); }
-
 /* --- sidebar ---------------------------------------------------------- */
 
 .sidebar { border-right: 1px solid var(--rule); }
@@ -191,6 +174,61 @@ img[alt="rask logo"] { max-width: 100%; height: auto; }
 @media only screen and (max-width: 768px) {
     .content h1 { font-size: 2.7rem; }
     img[alt="rask logo"] { width: 260px; }
+}
+
+/* --- phone ------------------------------------------------------------ */
+
+/* chrome.js appends this to every page; only the phone rules below turn it on. */
+.rask-scrim { display: none; }
+
+/* mdBook opens the sidebar by translating the whole page out of the way. At
+   desk width that's fine — the page has 300px to spare. On a phone it doesn't:
+   308px of a 390px screen goes to the sidebar, the menu bar travels with the
+   page, and the toggle you'd press to get back ends up 17px from the edge.
+   That's the "no way to close it" — the button is there, as a sliver.
+
+   So below the width where the push stops fitting, the sidebar overlays the
+   page instead and the page stays put. The scrim chrome.js adds is what you
+   tap to dismiss it. */
+@media only screen and (max-width: 620px) {
+    #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper {
+        transform: none;
+    }
+
+    .sidebar {
+        /* Over the menu bar, which sits at 101. */
+        z-index: 102;
+        box-shadow: 0 0 40px rgba(0, 0, 0, 0.25);
+        /* Leave a thumb's worth of page visible, so it reads as a drawer over
+           the page rather than as a new screen. */
+        width: min(300px, calc(100vw - 3.5rem));
+    }
+
+    .rask-scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 101;
+        background: rgba(0, 0, 0, 0.32);
+        cursor: pointer;
+    }
+
+    #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper ~ .rask-scrim,
+    html.sidebar-visible .rask-scrim {
+        display: block;
+    }
+
+    /* Six icons and a title don't fit. Print and "edit this page" are desk
+       jobs — nobody prints a chapter or opens a GitHub editor on a phone — so
+       they go, and the title gets the room back. */
+    .right-buttons a[href$="print.html"],
+    .right-buttons a[rel="edit"] {
+        display: none;
+    }
+
+    .menu-title {
+        font-size: 1.8rem;
+        min-width: 0;
+    }
 }
 
 /* The logo comes in two versions, and which one to show follows the book's
