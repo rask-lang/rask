@@ -38,8 +38,8 @@
     <div>
         <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
         <h1>No garbage collector. No lifetime annotations.</h1>
-        <p>The second one isn&rsquo;t inferred or hidden. You can borrow a value for a call or an expression, but you can&rsquo;t put the borrow in a struct field and you can&rsquo;t return it. Take that away and lifetimes have nothing left to describe.</p>
-        <p>Whether a language shaped like that is pleasant to write is the open question. I think it is, which is a sample size of one. There&rsquo;s a working one below if you want to disagree.</p>
+        <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at, so there is nothing for a lifetime to describe.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. There&rsquo;s a box below if you want to disagree.</p>
         <div class="actions">
             <a class="btn solid" href="/app/">Run something in the browser</a>
             <a class="btn outline" href="/book/">Read the book</a>
