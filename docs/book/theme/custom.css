@@ -229,6 +229,44 @@ img[alt="rask logo"] { max-width: 100%; height: auto; }
         font-size: 1.8rem;
         min-width: 0;
     }
+
+    /* --- code, on a screen four inches wide --------------------------- */
+
+    /* Three things, because no one of them is enough.
+
+       The measurements, at 390px: a code line had 312px to live in, which is
+       about 34 characters of the mono face. The book's own snippets are mostly
+       shorter than that — 80% fit — but the tail isn't a few long lines, it's
+       the compiler diagnostics the chapters quote. Their `= why:` lines are
+       prose: 126 characters, 246, one of 435. Nothing you can do to width or
+       size reaches 435.
+
+       1. Take the nesting back. `pre` was padding 18px a side and `code`
+          another 10px on top of the content's own margin — 56px of a 390px
+          screen spent on inset. The block runs to the edges instead, which is
+          where a phone wants it anyway.
+       2. One step down in size. Code is set smaller than prose everywhere;
+          0.8em against the page's 16px is 12.8px, and buys six characters.
+       3. Wrap what still doesn't fit. Together 1 and 2 get a line to about 45
+          characters, which covers the code. What's left over is the prose in
+          the diagnostics, and prose is the thing wrapping is *for* — a
+          sentence that continues on the next line is a sentence, where a
+          sentence you have to swipe sideways to finish is nothing.
+
+       So: no horizontal scroll on a phone, and nothing hidden off the edge. */
+    pre {
+        margin-inline: calc(0px - var(--page-padding));
+        padding: 1.2rem 1.4rem;
+        border-radius: 0;
+        border-inline: none;
+    }
+
+    pre > code {
+        font-size: 0.8em;
+        padding: 0;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+    }
 }
 
 /* The logo comes in two versions, and which one to show follows the book's
