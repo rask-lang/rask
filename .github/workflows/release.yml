@@ -82,9 +82,10 @@ jobs:
           compiler/target/
         key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Build C runtime
-      run: make -C compiler/runtime
-
+    # No `make -C compiler/runtime` here. It builds librask_runtime.a, which
+    # nothing links: build.rs bakes the runtime *sources* into the binary, and
+    # the linker compiles them itself at `rask build` time. The step contributed
+    # nothing to the artifact and was the only thing failing the macOS leg.
     - name: Build compiler
       run: cargo build --release -p rask-cli
       working-directory: compiler
