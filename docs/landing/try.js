@@ -11,14 +11,36 @@
 // where you write real programs; here it would be a second download for a
 // fifteen-line snippet, and a textarea takes the same typing.
 
-const SNIPPET = `func main() {
-    mut names = Vec.new()
-    names.push("ada")
-    names.push("grace")
+// What the box starts with.
+//
+// Picked for what you can't get elsewhere rather than for being short: the
+// `mutate` marker is written twice, once in the signature and once at every
+// call, so a reader can see which calls change their argument without opening
+// them. That's the whole design in one screen — the safety is in the source,
+// not in something the compiler knows and you don't.
+//
+// Lines stay under about 48 characters so the box needs no sideways scroll on
+// a phone.
+const SNIPPET = `struct Cart {
+    items: Vec<string>
+    total: i64
+}
 
-    for name in names {
-        println("hello, {name}")
-    }
+// \`mutate\` is written twice: in the signature,
+// and again at the call. So you can see which
+// calls change their argument.
+func add(mutate cart: Cart, item: string, price: i64) {
+    cart.items.push(item)
+    cart.total += price
+}
+
+func main() {
+    mut cart = Cart { items: Vec.new(), total: 0 }
+
+    add(mutate cart, "coffee", 45)
+    add(mutate cart, "beans", 120)
+
+    println("{cart.items.len()} items, {cart.total} kr")
 }`;
 
 const PLAYGROUND = '/app/';

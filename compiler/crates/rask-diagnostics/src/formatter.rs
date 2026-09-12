@@ -294,15 +294,11 @@ impl<'a> DiagnosticFormatter<'a> {
     fn format_footer(&self, out: &mut String, diagnostic: &Diagnostic) {
         let primary_gutter_width = 2;
 
-        // Notes
+        // Notes. Same shape as fix and why, so the same wrap: a note is prose
+        // too, and one ran to 96 characters before this went through the
+        // shared path.
         for note in &diagnostic.notes {
-            out.push_str(&format!(
-                "{} {} {}: {}\n",
-                " ".repeat(primary_gutter_width + 1),
-                "=".cyan(),
-                "note".cyan().bold(),
-                note
-            ));
+            Self::push_labelled(out, primary_gutter_width, &"note".cyan().bold().to_string(), 4, note);
         }
 
         // Fix/why supersede help when present

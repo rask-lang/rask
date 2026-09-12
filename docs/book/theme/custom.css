@@ -232,28 +232,15 @@ img[alt="rask logo"] { max-width: 100%; height: auto; }
 
     /* --- code, on a screen four inches wide --------------------------- */
 
-    /* Three things, because no one of them is enough.
+    /* A code line had 312px to live in, which is about 34 characters of the
+       mono face: `pre` padded 18px a side and `code` another 10 on top of the
+       content's own margin, so 56px of a 390px screen went on inset. The block
+       runs to the edges instead, and drops one step in size — code is set
+       smaller than prose everywhere, and 0.8em against the page's 16px buys
+       six characters. That's 45 a line.
 
-       The measurements, at 390px: a code line had 312px to live in, which is
-       about 34 characters of the mono face. The book's own snippets are mostly
-       shorter than that — 80% fit — but the tail isn't a few long lines, it's
-       the compiler diagnostics the chapters quote. Their `= why:` lines are
-       prose: 126 characters, 246, one of 435. Nothing you can do to width or
-       size reaches 435.
-
-       1. Take the nesting back. `pre` was padding 18px a side and `code`
-          another 10px on top of the content's own margin — 56px of a 390px
-          screen spent on inset. The block runs to the edges instead, which is
-          where a phone wants it anyway.
-       2. One step down in size. Code is set smaller than prose everywhere;
-          0.8em against the page's 16px is 12.8px, and buys six characters.
-       3. Wrap what still doesn't fit. Together 1 and 2 get a line to about 45
-          characters, which covers the code. What's left over is the prose in
-          the diagnostics, and prose is the thing wrapping is *for* — a
-          sentence that continues on the next line is a sentence, where a
-          sentence you have to swipe sideways to finish is nothing.
-
-       So: no horizontal scroll on a phone, and nothing hidden off the edge. */
+       What happens past 45 depends on what the block is, because the two kinds
+       here want opposite things. */
     pre {
         margin-inline: calc(0px - var(--page-padding));
         padding: 1.2rem 1.4rem;
@@ -264,8 +251,41 @@ img[alt="rask logo"] { max-width: 100%; height: auto; }
     pre > code {
         font-size: 0.8em;
         padding: 0;
+    }
+
+    /* Rask snippets wrap. 80% of the book's lines fit in 45 characters as it
+       is, so wrapping is the exception rather than the layout, and a line that
+       does wrap is still a line you can read without moving the page. */
+    pre > code.language-rask {
         white-space: pre-wrap;
         overflow-wrap: break-word;
+    }
+
+    /* A compiler diagnostic scrolls, and keeps its shape.
+
+       Wrapping one destroys it: the `NN |` gutter, the source line and the
+       `^^^^^` underneath only mean anything while they stay in column, and
+       re-flowing them to 45 characters turns a diagnostic into a paragraph of
+       punctuation. That was the first attempt and it was worse than the
+       problem.
+
+       Scrolling is affordable here now because the compiler wraps its own
+       prose at 80 columns — the `= why:` line that ran to 441 characters is
+       the reason it does. The widest line left in the book's diagnostics is 97
+       and most are under 80, so this is a short swipe over something that
+       still looks like what the terminal prints, rather than a trek. The
+       scroll sits on the `pre` so the block's own edge is what moves, which
+       is the part that shows there is more to see. */
+    pre:has(> code.language-text) {
+        overflow-x: auto;
+    }
+
+    pre > code.language-text {
+        white-space: pre;
+        /* mdBook puts the scroll on the inner `code`, which is why there was
+           never anything to grab: the bar sat inside the block's padding
+           instead of at its edge. */
+        overflow-x: visible;
     }
 }
 
