@@ -37,14 +37,14 @@
 <div class="page hero">
     <div>
         <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
-        <h1>A systems language without the bookkeeping</h1>
-        <p>Rask compiles to native code, has no garbage collector, and has no lifetime annotations. You write the program; the compiler works out who owns what.</p>
-        <p>Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on how much you have to write down.</p>
+        <h1>A language built to test one idea</h1>
+        <p>Make references temporary &mdash; never in a struct field, never returned &mdash; and there is nothing left for lifetime annotations to say. Rask is a compiled, garbage-collector-free language built that way, to find out whether it's actually pleasant to write.</p>
+        <p>So far I think it is. That's a sample size of one, which is why the code is here.</p>
         <div class="actions">
-            <a class="btn solid" href="/app/">Open the playground</a>
-            <a class="btn outline" href="/book/getting-started/installation.html">Install it</a>
+            <a class="btn solid" href="/app/">Run something in the browser</a>
+            <a class="btn outline" href="/book/">Read the book</a>
         </div>
-        <p class="install">or build from source with <code>cargo build --release</code> &mdash; needs a Rust toolchain</p>
+        <p class="install">or <a href="/book/getting-started/installation.html">install it</a> &mdash; builds from source with <code>cargo build --release</code>, needs a Rust toolchain</p>
     </div>
 
     <figure class="window">
@@ -75,12 +75,13 @@
         <p>I got frustrated. Rust has genuinely good ideas and I use them, but a lot of my day goes on satisfying the borrow checker rather than on the problem I sat down with. The alternative is a language with a garbage collector, where you stop thinking about memory by giving up control of it.</p>
         <p>There is a gap between those two, and I wanted something in it: no collector, no pauses, and no lifetime annotations either.</p>
         <p>Whether that gap can actually be filled is the open question. Rask is me trying to answer it by building the thing.</p>
+        <p>It isn&rsquo;t competing with them. Go is simple and quick to learn and has the concurrency story; Rust has the performance, the guarantees and fifteen years of ecosystem. Both of those are finished arguments, and neither is what I&rsquo;m testing. If you want a language to build something in this year, pick one of them.</p>
     </div>
 </section>
 
 <section class="page">
-    <h2>What&rsquo;s different about it</h2>
-    <p class="lede prose">One rule, and most of the language follows from it: <strong>a reference can&rsquo;t be stored.</strong></p>
+    <h2>The rule everything follows from</h2>
+    <p class="lede prose"><strong>A reference can&rsquo;t be stored.</strong></p>
 
     <div class="idea">
         <div>
@@ -173,7 +174,7 @@
     <h2>Should you learn it?</h2>
 
     <div class="prose">
-        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong. Go or Rust will serve you better and it isn&rsquo;t close.</p>
+        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
         <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out &mdash; nothing to install, and half an hour tells you whether the trade suits how you think.</p>
         <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
     </div>
