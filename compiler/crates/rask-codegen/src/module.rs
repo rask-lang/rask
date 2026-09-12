@@ -87,6 +87,14 @@ impl CodeGenerator {
         // LLVM's own convention — a register pair on SysV — which is what a C
         // compiler already does with `__int128`, so the two agree (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // Darwin has no non-PIE option. Without this Cranelift reaches a string
+        // constant by writing its absolute address into the instruction stream,
+        // which is a relocation in __text — and ld64 refuses those outright
+        // ("Illegal text-relocations"), so nothing links. Linux gets away with
+        // it because link.rs passes -no-pie there.
+        if cfg!(target_os = "macos") {
+            let _ = flag_builder.set("is_pic", "true");
+        }
         let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
@@ -133,8 +141,15 @@ impl CodeGenerator {
         let _ = flag_builder.set("opt_level", "speed");
         // See `new` — 128-bit values in signatures need this (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
-        // Set is_pic for position-independent code on relevant targets
-        if matches!(target.operating_system, target_lexicon::OperatingSystem::Linux) {
+        // Position-independent code. Linux wants it; Darwin *requires* it —
+        // see `new` above: a non-PIC build puts an absolute address in __text
+        // and ld64 rejects the object.
+        if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Linux
+                | target_lexicon::OperatingSystem::Darwin
+                | target_lexicon::OperatingSystem::MacOSX { .. }
+        ) {
             let _ = flag_builder.set("is_pic", "true");
         }
         let flags = settings::Flags::new(flag_builder);
