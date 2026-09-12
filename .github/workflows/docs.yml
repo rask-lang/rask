@@ -93,6 +93,7 @@ jobs:
         # Copy landing page to root
         cp docs/landing/index.html docs/build/index.html
         cp docs/landing/landing.css docs/build/landing.css
+        cp docs/landing/try.js docs/build/try.js
 
         # Copy playground to /app/
         mkdir -p docs/build/app

@@ -19,6 +19,7 @@ build_site() {
 
     cp landing/index.html build/index.html
     cp landing/landing.css build/landing.css
+    cp landing/try.js build/try.js
 
     # Rebuild playground examples from examples/*.rk
     node playground/build-examples.js
