@@ -402,6 +402,22 @@ pub fn emit_dwarf(
         return Ok(());
     }
 
+    // WORKAROUND (#1184): no debug info on Mach-O.
+    //
+    // The sections below are named the ELF way — ".debug_info" with no segment.
+    // Mach-O wants them as "__debug_info" inside a "__DWARF" segment, so ld64
+    // reads them as ordinary data, tries to apply DWARF's 8-byte absolute
+    // relocations, and refuses the object:
+    //
+    //   ld: pointer not aligned in 'anon-185'+0x23
+    //
+    // That killed every macOS program, hello-world included. Emitting nothing
+    // costs macOS its line numbers; emitting this costs macOS everything.
+    // #1184 has the real fix and how to check it without a Mac.
+    if object.format() == object::BinaryFormat::MachO {
+        return Ok(());
+    }
+
     let symbol_map: Vec<SymbolId> = functions.iter().map(|f| f.symbol_id).collect();
 
     let encoding = Encoding {
