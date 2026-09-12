@@ -72,10 +72,10 @@
     <h2>Why another language</h2>
 
     <div class="prose">
-        <p>I got frustrated. Rust has genuinely good ideas and I use them, but a lot of my day goes on satisfying the borrow checker rather than on the problem I sat down with. The alternative is a language with a garbage collector, where you stop thinking about memory by giving up control of it.</p>
-        <p>There is a gap between those two, and I wanted something in it: no collector, no pauses, and no lifetime annotations either.</p>
-        <p>Whether that gap can actually be filled is the open question. Rask is me trying to answer it by building the thing.</p>
-        <p>It isn&rsquo;t competing with them. Go is simple and quick to learn and has the concurrency story; Rust has the performance, the guarantees and fifteen years of ecosystem. Both of those are finished arguments, and neither is what I&rsquo;m testing. If you want a language to build something in this year, pick one of them.</p>
+        <p>There is a way of writing Rust that people call pragmatic. Keep lifetimes out of your structs. Use indices instead of references. Clone when it isn&rsquo;t hot. Reach for <code>Rc&lt;RefCell&lt;T&gt;&gt;</code> when you have to.</p>
+        <p>It works. It is also a set of rules the compiler doesn&rsquo;t know about, that every codebase rediscovers and half-follows. C++ has the same shape: RAII, smart pointers, the Core Guidelines. A whole discipline to get memory safety out of a language that won&rsquo;t hand it to you, and no way to check that anyone kept it.</p>
+        <p class="claim">When the advice is &ldquo;don&rsquo;t use the feature&rdquo;, the feature is the problem.</p>
+        <p>That is the bet Rask is making, and it could be wrong. If you want a language to ship something in this year, use Rust or Go.</p>
     </div>
 </section>
 
@@ -85,7 +85,7 @@
 
     <div class="idea">
         <div>
-            <p>You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it.</p>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
             <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
             <p>The other rules &mdash; values move, files get closed exactly once, graphs live in a rack &mdash; are consequences. The <a href="/book/">book</a> takes them one at a time.</p>
         </div>

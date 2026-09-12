@@ -198,6 +198,16 @@ h2 {
 
 .lede { color: var(--ink-soft); margin: 0 0 2.5rem; font-size: 1.05rem; }
 
+/* The one sentence a section is actually arguing. Set apart, not shouted. */
+.claim {
+    font-size: 1.2rem;
+    line-height: 1.45;
+    margin: 1.6rem 0;
+    padding-left: 1.1rem;
+    border-left: 3px solid var(--accent);
+    color: var(--ink);
+}
+
 /* ---------- the ideas ---------- */
 
 /* ---------- try it ---------- */
