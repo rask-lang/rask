@@ -6,7 +6,6 @@
 
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
-use web_sys::console;
 
 use rask_compiler::{CfgConfig, CompilerConfig};
 use rask_diagnostics::{formatter::DiagnosticFormatter, json, Diagnostic};
@@ -104,28 +103,41 @@ impl Playground {
         let benchmarks = self.interpreter.run_benchmarks(&all, None);
 
         if results.is_empty() && benchmarks.is_empty() {
-            return Err("No tests in this program. A test looks like `test \"name\" { … }`.".into());
+            return Err(escape_html(
+                "No tests in this program. A test looks like `test \"name\" { … }`.",
+            ));
         }
 
+        // Every piece of this report that came from the program — test names,
+        // assertion messages, whatever the body printed — is escaped as it goes
+        // in. The failing report is handed to `innerHTML` on the other side, so
+        // a test named `Vec<i32> stuff` would otherwise put an element in the
+        // page, and one named `<script>…` would put a script in it. The
+        // playground's code travels in a shared URL, so that is someone else's
+        // page, not only your own.
         let mut report = String::new();
         let mut failed = 0;
         for r in &results {
             if let Some(reason) = &r.skipped {
-                report.push_str(&format!("skip  {}  ({})\n", r.name, reason));
+                report.push_str(&format!(
+                    "skip  {}  ({})\n",
+                    escape_html(&r.name),
+                    escape_html(reason)
+                ));
                 continue;
             }
             if r.passed {
-                report.push_str(&format!("pass  {}\n", r.name));
+                report.push_str(&format!("pass  {}\n", escape_html(&r.name)));
             } else {
                 failed += 1;
-                report.push_str(&format!("FAIL  {}\n", r.name));
+                report.push_str(&format!("FAIL  {}\n", escape_html(&r.name)));
                 for e in &r.errors {
-                    report.push_str(&format!("        {}\n", e));
+                    report.push_str(&format!("        {}\n", escape_html(e)));
                 }
             }
             if !r.output.is_empty() {
                 for line in r.output.lines() {
-                    report.push_str(&format!("        {}\n", line));
+                    report.push_str(&format!("        {}\n", escape_html(line)));
                 }
             }
         }
@@ -142,7 +154,7 @@ impl Playground {
             report.push_str("\nBenchmarks ran once each, untimed — timing needs a clock and the\n");
             report.push_str("browser gives wasm none. `rask benchmark` measures them properly.\n");
             for b in &benchmarks {
-                report.push_str(&format!("ran   {}\n", b.name));
+                report.push_str(&format!("ran   {}\n", escape_html(&b.name)));
             }
         }
 
@@ -251,21 +263,42 @@ fn render(source: &str, diagnostics: &[Diagnostic]) -> String {
     report
 }
 
-fn strip_ansi_codes(s: &str) -> String {
-    // Debug logging to see what we're converting
-    let preview: String = s.chars().take(100).collect();
-    console::log_1(&format!("ANSI Input (first 100 chars): {:?}", preview).into());
-    console::log_1(&format!("Contains ESC: {}", s.contains('\x1b')).into());
+/// Make one character safe to put in HTML.
+///
+/// Everything the playground hands back on the error channel is inserted with
+/// `innerHTML`, because a diagnostic carries `<span>`s for its colours. So
+/// every character that did *not* come from this file has to be escaped on the
+/// way out, or a `Vec<i32>` in a message becomes an element and a `<script>` in
+/// one becomes a script.
+fn push_escaped(out: &mut String, ch: char) {
+    match ch {
+        '<' => out.push_str("&lt;"),
+        '>' => out.push_str("&gt;"),
+        '&' => out.push_str("&amp;"),
+        '"' => out.push_str("&quot;"),
+        '\'' => out.push_str("&#39;"),
+        _ => out.push(ch),
+    }
+}
 
+/// Escape a whole string for `innerHTML`.
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        push_escaped(&mut out, ch);
+    }
+    out
+}
+
+/// Turn the compiler's ANSI colours into spans, escaping everything else.
+fn strip_ansi_codes(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 2);
     let mut chars = s.chars().peekable();
     let mut open_span = false;
-    let mut ansi_codes_found = 0;
 
     while let Some(ch) = chars.next() {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             chars.next(); // Skip '['
-            ansi_codes_found += 1;
 
             // Collect the escape sequence
             let mut code = String::new();
@@ -276,9 +309,6 @@ fn strip_ansi_codes(s: &str) -> String {
                 }
                 code.push(peek);
             }
-
-            // Log the ANSI code we found
-            console::log_1(&format!("Found ANSI code: '{}'", code).into());
 
             // Close previous span if open
             if open_span {
@@ -294,10 +324,7 @@ fn strip_ansi_codes(s: &str) -> String {
                 "33" | "1;33" | "33;1" | "0;33" => Some("warning"),     // Yellow (warnings)
                 "1" | "01" => Some("bold"),                              // Bold
                 "0" | "00" => None,                                      // Reset
-                _ => {
-                    console::log_1(&format!("Unknown ANSI code: '{}'", code).into());
-                    None
-                }
+                _ => None,
             };
 
             if let Some(class_name) = class {
@@ -305,15 +332,7 @@ fn strip_ansi_codes(s: &str) -> String {
                 open_span = true;
             }
         } else {
-            // Escape HTML special chars
-            match ch {
-                '<' => result.push_str("&lt;"),
-                '>' => result.push_str("&gt;"),
-                '&' => result.push_str("&amp;"),
-                '"' => result.push_str("&quot;"),
-                '\n' => result.push_str("\n"),
-                _ => result.push(ch),
-            }
+            push_escaped(&mut result, ch);
         }
     }
 
@@ -321,12 +340,6 @@ fn strip_ansi_codes(s: &str) -> String {
     if open_span {
         result.push_str("</span>");
     }
-
-    // Log summary
-    console::log_1(&format!("Found {} ANSI codes, output contains spans: {}",
-        ansi_codes_found, result.contains("<span")).into());
-    let output_preview: String = result.chars().take(200).collect();
-    console::log_1(&format!("Output (first 200 chars): {:?}", output_preview).into());
 
     result
 }
