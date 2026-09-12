@@ -98,12 +98,26 @@
     --night-c-cmt: hsl(var(--syn-cmt) 46%);
     --night-c-bad: hsl(var(--syn-bad) 70%);
 
-    --paper-c-kw: hsl(var(--syn-kw) 30%);
-    --paper-c-ty: hsl(var(--syn-ty) 28%);
-    --paper-c-fn: hsl(var(--syn-fn) 30%);
-    --paper-c-str: hsl(var(--syn-str) 30%);
-    --paper-c-cmt: hsl(var(--syn-cmt) 44%);
-    --paper-c-bad: hsl(var(--syn-bad) 38%);
+    /* Paper's lightnesses are pulled ~3 points darker than the number that
+       would be right on white, because the code block is not white. #f2efe4
+       costs every colour on it about 13% of the contrast it would have had
+       against #ffffff, so the same hex reads a shade weaker there. These are
+       solved rather than nudged: each is the lightness whose contrast against
+       #f2efe4 equals what that hue and saturation had against white.
+
+       The mirror-image correction for night — matching pure black — is not
+       applied, and that is a judgement, not an oversight. It computes to +5 to
+       +9.5 points, which would push dark code to 9.7-12.6:1 and make it glare.
+       Two reasons it overstates: WCAG's ratio carries a +0.05 flare constant
+       that dominates at the dark end, and nobody's eye holds "on pure black" as
+       the reference for a dark theme the way it holds white for a light one.
+       There, the ground is the reference. */
+    --paper-c-kw: hsl(var(--syn-kw) 27%);
+    --paper-c-ty: hsl(var(--syn-ty) 25%);
+    --paper-c-fn: hsl(var(--syn-fn) 27%);
+    --paper-c-str: hsl(var(--syn-str) 27%);
+    --paper-c-cmt: hsl(var(--syn-cmt) 40%);
+    --paper-c-bad: hsl(var(--syn-bad) 34%);
 
     /* ---- type ----------------------------------------------------------- */
 
