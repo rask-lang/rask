@@ -2,12 +2,59 @@
 
 name: Release
 
+# Run from the Actions tab, not by pushing a tag. A tag that triggers the build
+# is published before anyone knows whether it builds, and a failed build then
+# leaves a public tag pointing at a commit that can't produce a release — the
+# only way out is force-moving a tag, which breaks every clone that fetched it.
+# Building first and tagging last means a failed attempt leaves nothing behind.
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, no leading v (e.g. 0.2.0)'
+        required: true
 
 jobs:
+  # Twenty minutes of matrix build is a slow way to learn the version was
+  # mistyped. Each of these four has already gone wrong once.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Check version, notes and tag
+      id: check
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        case "$VERSION" in
+          v*) echo "::error::Drop the leading v: $VERSION"; exit 1 ;;
+        esac
+
+        DECLARED=$(grep -m1 '^version = ' compiler/Cargo.toml | cut -d'"' -f2)
+        if [ "$DECLARED" != "$VERSION" ]; then
+          echo "::error::compiler/Cargo.toml says $DECLARED but you asked for $VERSION — rask --version would report the wrong number"
+          exit 1
+        fi
+
+        if [ ! -f "release-notes/v$VERSION.md" ]; then
+          echo "::error::No release-notes/v$VERSION.md — write the notes before releasing"
+          exit 1
+        fi
+
+        if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+          echo "::error::Tag v$VERSION already exists; delete it first if you mean to replace it"
+          exit 1
+        fi
+
+        echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: preflight
     strategy:
       matrix:
         include:
@@ -47,6 +94,17 @@ jobs:
         cp compiler/target/release/rask ${{ matrix.artifact }}
         chmod +x ${{ matrix.artifact }}
 
+    # The runtime sources travel inside the binary, so a compile has to work
+    # somewhere that has no checkout to walk up into. That's what v0.1.1 got
+    # wrong, and nothing noticed until someone downloaded it.
+    - name: Check the packaged binary can compile
+      run: |
+        WORK=$(mktemp -d)
+        cp ${{ matrix.artifact }} "$WORK/rask"
+        cd "$WORK"
+        printf 'func main() {\n    println("ok")\n}\n' > hello.rk
+        ./rask run hello.rk
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -54,47 +112,24 @@ jobs:
         path: ${{ matrix.artifact }}
 
   release:
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
 
-    # Written notes if this tag has them, commit subjects otherwise. The
-    # fallback alone doesn't survive a long release: v0.1.1..v0.2.0 is 782
-    # subjects, and the two tags share no history, so the range is every commit
-    # main has rather than the ones that are new.
-    - name: Assemble release body
-      id: changelog
-      run: |
-        NOTES="release-notes/${GITHUB_REF_NAME}.md"
-        {
-          echo 'body<<CHANGELOG_EOF'
-          if [ -f "$NOTES" ]; then
-            cat "$NOTES"
-          else
-            echo "No written notes for ${GITHUB_REF_NAME} (add \`$NOTES\`)."
-            echo
-            PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
-            if [ -z "$PREV_TAG" ]; then
-              echo "Initial release"
-            else
-              git log --oneline "$PREV_TAG"..HEAD --no-merges | head -300
-            fi
-          fi
-          echo 'CHANGELOG_EOF'
-        } >> "$GITHUB_OUTPUT"
-
-    - name: Create GitHub Release
+    # Creates the tag at this commit as part of publishing, so the tag only
+    # ever exists for a release that built.
+    - name: Tag and publish
       uses: softprops/action-gh-release@v2
       with:
-        body: ${{ steps.changelog.outputs.body }}
+        tag_name: ${{ needs.preflight.outputs.tag }}
+        name: Rask ${{ needs.preflight.outputs.tag }}
+        body_path: release-notes/${{ needs.preflight.outputs.tag }}.md
         files: artifacts/**/*
