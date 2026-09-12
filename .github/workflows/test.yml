@@ -220,6 +220,17 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_CARD.md
 
+    # The runtime through clang. gcc builds it here and clang builds it on the
+    # macOS job, so a gcc/clang difference could only surface there — and that
+    # job can't build green.c or the two I/O engines at all, since they need
+    # Linux headers. Those three had no clang coverage anywhere, which is how
+    # a `_Atomic` variable touched with gcc's `__atomic_*` builtins (fine to
+    # gcc, rejected by clang) sat in string.c. Compiles only, ~10s, no macOS
+    # runner.
+    - name: Runtime builds with clang
+      if: ${{ !cancelled() }}
+      run: tests/clang_gate.sh
+
     # The playground's wasm build. Nothing here compiled for wasm32, so a
     # cfg-gated stdlib module could lose its callers' guards and only break in
     # the deploy workflow — which is how docs deploys stayed red for 30
