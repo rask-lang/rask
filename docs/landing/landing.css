@@ -142,7 +142,8 @@ nav a:hover { color: var(--accent); }
 .btn.outline:hover { border-color: var(--accent); color: var(--accent); }
 
 .install { margin: 0; font-size: 0.88rem; color: var(--ink-faint); }
-.install code { font-size: 0.92em; }
+/* Don't let a command wrap between its flag's two dashes. */
+.install code { font-size: 0.92em; white-space: nowrap; }
 
 .hero .window pre { font-size: 0.8rem; }
 

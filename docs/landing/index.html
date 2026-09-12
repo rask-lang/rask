@@ -37,14 +37,14 @@
 <div class="page hero">
     <div>
         <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
-        <h1>A language built to test one idea</h1>
-        <p>Make references temporary &mdash; never in a struct field, never returned &mdash; and there is nothing left for lifetime annotations to say. Rask is a compiled, garbage-collector-free language built that way, to find out whether it's actually pleasant to write.</p>
-        <p>So far I think it is. That's a sample size of one, which is why the code is here.</p>
+        <h1>No garbage collector. No lifetime annotations.</h1>
+        <p>The second one isn&rsquo;t inferred or hidden. You can borrow a value for a call or an expression, but you can&rsquo;t put the borrow in a struct field and you can&rsquo;t return it. Take that away and lifetimes have nothing left to describe.</p>
+        <p>Whether a language shaped like that is pleasant to write is the open question. I think it is, which is a sample size of one. There&rsquo;s a working one below if you want to disagree.</p>
         <div class="actions">
             <a class="btn solid" href="/app/">Run something in the browser</a>
             <a class="btn outline" href="/book/">Read the book</a>
         </div>
-        <p class="install">or <a href="/book/getting-started/installation.html">install it</a> &mdash; builds from source with <code>cargo build --release</code>, needs a Rust toolchain</p>
+        <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
     </div>
 
     <figure class="window">
@@ -87,7 +87,7 @@
         <div>
             <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
             <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
-            <p>The other rules &mdash; values move, files get closed exactly once, graphs live in a rack &mdash; are consequences. The <a href="/book/">book</a> takes them one at a time.</p>
+            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack. The <a href="/book/">book</a> takes them one at a time.</p>
         </div>
         <figure class="window">
             <figcaption><span>borrow.rk</span></figcaption>
@@ -101,7 +101,7 @@
         </figure>
     </div>
 
-    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure &mdash; and leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
+    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure. Leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
 </section>
 
 <section class="page">
@@ -175,7 +175,7 @@
 
     <div class="prose">
         <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
-        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out &mdash; nothing to install, and half an hour tells you whether the trade suits how you think.</p>
+        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out. Nothing to install, and half an hour tells you whether the trade suits how you think.</p>
         <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
     </div>
 </section>
