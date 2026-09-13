@@ -125,39 +125,23 @@ function grow(area) {
     area.style.height = `${area.scrollHeight}px`;
 }
 
-export function mountTry(root) {
-    if (!root) { return; }
-
-    root.innerHTML = `
-        <div class="try-editor">
-            <pre class="try-paint" aria-hidden="true"><code></code></pre>
-            <textarea spellcheck="false" autocapitalize="off" autocomplete="off"
-                      autocorrect="off" aria-label="Rask code"></textarea>
-        </div>
-        <div class="try-bar">
-            <button type="button" class="btn solid try-run">Run</button>
-            <a class="try-open" href="${PLAYGROUND}">Open in the playground &rarr;</a>
-        </div>
-        <pre class="try-output" aria-live="polite"></pre>`;
-
-    const area = root.querySelector('textarea');
-    const paint = root.querySelector('.try-paint > code');
-    const run = root.querySelector('.try-run');
-    const open = root.querySelector('.try-open');
-    const out = root.querySelector('.try-output');
-
+/// Wire an editor and a Run control to the interpreter.
+///
+/// Both skins on the page are this: the hero, where Run is a filled button
+/// under the code, and the examples further down, where it is a word in the
+/// window's caption and no output shows until someone asks for it. What
+/// differs is the chrome, so that is all the callers pass.
+function runner({ area, paint, run, out, onEdit }) {
     function repaint() {
         paint.innerHTML = highlight(area.value);
     }
 
-    area.value = SNIPPET;
     repaint();
     grow(area);
     area.addEventListener('input', () => {
         repaint();
         grow(area);
-        // Carry whatever is in the box through to the full playground.
-        open.href = `${PLAYGROUND}?code=${btoa(encodeURIComponent(area.value))}`;
+        if (onEdit) { onEdit(area.value); }
     });
     // The textarea scrolls on its own when a line runs long; the paint layer
     // has to follow or the two drift apart.
@@ -166,9 +150,11 @@ export function mountTry(root) {
         paint.parentElement.scrollLeft = area.scrollLeft;
     });
 
+    const base = out.className.split(' ')[0];
     function say(text, kind) {
+        out.hidden = false;
         out.textContent = text;
-        out.className = `try-output${kind ? ` ${kind}` : ''}`;
+        out.className = `${base}${kind ? ` ${kind}` : ''}`;
     }
 
     async function press() {
@@ -188,8 +174,9 @@ export function mountTry(root) {
                 // The spans inside do the colouring, so the block keeps the
                 // normal code foreground. `bad` would paint the source line
                 // and the text after `fix:` red along with everything else.
+                out.hidden = false;
                 out.innerHTML = error;
-                out.className = 'try-output diag';
+                out.className = `${base} diag`;
             } else {
                 say(`Couldn't start the interpreter: ${error.message || error}\n\n` +
                     'The full playground may have better luck.', 'bad');
@@ -208,4 +195,68 @@ export function mountTry(root) {
     });
 }
 
+const EDITOR = `
+    <pre class="try-paint" aria-hidden="true"><code></code></pre>
+    <textarea spellcheck="false" autocapitalize="off" autocomplete="off"
+              autocorrect="off" aria-label="Rask code"></textarea>`;
+
+export function mountTry(root) {
+    if (!root) { return; }
+
+    root.innerHTML = `
+        <div class="try-editor">${EDITOR}</div>
+        <div class="try-bar">
+            <button type="button" class="btn solid try-run">Run</button>
+            <a class="try-open" href="${PLAYGROUND}">Open in the playground &rarr;</a>
+        </div>
+        <pre class="try-output" aria-live="polite"></pre>`;
+
+    const area = root.querySelector('textarea');
+    const open = root.querySelector('.try-open');
+    area.value = SNIPPET;
+
+    runner({
+        area,
+        paint: root.querySelector('.try-paint > code'),
+        run: root.querySelector('.try-run'),
+        out: root.querySelector('.try-output'),
+        // Carry whatever is in the box through to the full playground.
+        onEdit: text => { open.href = `${PLAYGROUND}?code=${btoa(encodeURIComponent(text))}`; },
+    });
+}
+
+/// Upgrade a code window in the page into a runnable one.
+///
+/// The markup starts as a plain `<pre><code>` holding the program, so the
+/// example reads the same with JavaScript off — just without colour and
+/// without a Run. The quiet half of the brief is here: Run is a word in the
+/// caption rather than a button under the code, and the output element stays
+/// hidden until it has something to say, so a reader scrolling past sees an
+/// ordinary code sample.
+export function mountExample(figure) {
+    const source = figure.querySelector('pre > code').textContent.replace(/\n$/, '');
+    const caption = figure.querySelector('figcaption');
+
+    figure.querySelector('pre').outerHTML = `
+        <div class="try-editor">${EDITOR}</div>
+        <pre class="try-output" aria-live="polite" hidden></pre>`;
+
+    const run = document.createElement('button');
+    run.type = 'button';
+    run.className = 'window-run';
+    run.textContent = 'Run';
+    caption.appendChild(run);
+
+    const area = figure.querySelector('textarea');
+    area.value = source;
+
+    runner({
+        area,
+        paint: figure.querySelector('.try-paint > code'),
+        run,
+        out: figure.querySelector('.try-output'),
+    });
+}
+
 mountTry(document.getElementById('try-rask'));
+document.querySelectorAll('figure.window.runnable').forEach(mountExample);

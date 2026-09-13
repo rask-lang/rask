@@ -177,6 +177,34 @@ nav a:hover { color: var(--accent); }
     tab-size: 4;
 }
 
+/* A runnable example, upgraded from a plain <pre> by try.js. The editor and
+   the output reuse the Try box's parts; only the chrome is quieter. Run is a
+   word in the caption, and the output stays hidden until it has something. */
+.window.runnable .try-editor { padding: 1.1rem 1.2rem 0.4rem; }
+
+.window.runnable .try-paint { inset: 1.1rem 1.2rem 0.4rem; }
+
+.window.runnable .try-output {
+    margin: 0;
+    padding: 0.8rem 1.2rem;
+    border-top: 1px solid var(--code-rule);
+    border-radius: 0;
+    min-height: 0;
+}
+
+.window-run {
+    border: 1px solid var(--code-rule);
+    border-radius: 5px;
+    padding: 0.1rem 0.6rem;
+    background: none;
+    color: var(--ink-soft);
+    font: inherit;
+    cursor: pointer;
+}
+
+.window-run:hover { color: var(--accent); border-color: var(--accent); }
+.window-run:disabled { opacity: 0.5; cursor: default; }
+
 .cmt { color: var(--c-cmt); font-style: italic; }
 .kw  { color: var(--c-kw); }
 .ty  { color: var(--c-ty); }
@@ -213,9 +241,9 @@ h2 {
 
 /* ---------- try it ---------- */
 
-/* Deliberately not the playground. No editor library, no syntax colouring, no
-   examples menu — a box you can type in and a button. The heavy thing here is
-   the interpreter, and try.js doesn't fetch it until you press Run. */
+/* Deliberately not the playground: no editor library and no examples menu,
+   just a box you type in and a button. The heavy thing here is the
+   interpreter, and try.js doesn't fetch it until you press Run. */
 
 .try-box {
     max-width: var(--measure);
@@ -230,8 +258,8 @@ h2 {
 /* The textarea sits transparently on top of the painted copy, so every metric
    that decides where a glyph lands has to match on both. Change one, change
    the other, or the caret parts company with the letters. */
-.try-box textarea,
-.try-box .try-paint {
+.try-editor textarea,
+.try-editor .try-paint {
     font-family: var(--font-mono);
     font-size: 0.855rem;
     line-height: 1.75;
@@ -243,7 +271,7 @@ h2 {
     margin: 0;
 }
 
-.try-box textarea {
+.try-editor textarea {
     display: block;
     position: relative;
     width: 100%;
@@ -257,7 +285,7 @@ h2 {
     overflow: auto;
 }
 
-.try-box .try-paint {
+.try-editor .try-paint {
     position: absolute;
     inset: 0.9rem 1rem 0.2rem;
     overflow: hidden;
@@ -269,7 +297,7 @@ h2 {
 /* Block, not inline: an inline <code> puts its glyphs on a line box a few
    pixels below the <pre>'s own top, and the whole painted copy rides that low
    against the text it is meant to sit under. */
-.try-box .try-paint > code {
+.try-editor .try-paint > code {
     display: block;
     font: inherit;
     white-space: inherit;
@@ -278,8 +306,8 @@ h2 {
     padding: 0;
 }
 
-.try-box textarea::selection { background: var(--accent-fill); color: transparent; }
-.try-box textarea:focus { outline: none; }
+.try-editor textarea::selection { background: var(--accent-fill); color: transparent; }
+.try-editor textarea:focus { outline: none; }
 
 .try-bar {
     display: flex;
@@ -410,7 +438,6 @@ h2 {
 .status-grid li strong { color: var(--ink); font-weight: 600; }
 .status-grid code { font-size: 0.88em; }
 
-.asof { font-size: 0.85rem; color: var(--ink-faint); margin: 0 0 2rem; }
 
 /* ---------- footer ---------- */
 
@@ -461,8 +488,8 @@ footer nav { gap: 1.2rem; flex-wrap: wrap; }
     .try-box { border-radius: 0; border-inline: none; margin-inline: calc(0px - var(--gutter)); }
     /* Both layers wrap, or a long line wraps under the caret and not under the
        colour, and the two come apart for the rest of the file. */
-    .try-box textarea,
-    .try-box .try-paint { white-space: pre-wrap; overflow-wrap: break-word; }
+    .try-editor textarea,
+    .try-editor .try-paint { white-space: pre-wrap; overflow-wrap: break-word; }
     .try-bar { gap: 0.75rem; }
     .try-open { font-size: 0.84rem; }
 }
