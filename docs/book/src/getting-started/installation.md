@@ -1,6 +1,6 @@
 # Installation
 
-> **Note:** Rask is in early development (pre-0.1). Expect breaking changes.
+> **Note:** Rask is in early development. Expect breaking changes.
 
 ## Prerequisites
 
