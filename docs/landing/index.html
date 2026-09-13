@@ -40,34 +40,18 @@
         <span class="pill">runs real programs, nothing is stable yet</span>
         <h1>No garbage collector. No lifetime annotations.</h1>
         <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at. Keeping track of that is the entire job of the <code>'a</code> that spreads through a Rust signature, so Rask has no equivalent and no need for one.</p>
-        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. Try it below.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one.</p>
         <div class="actions">
-            <a class="btn solid" href="/app/">Run something in the browser</a>
-            <a class="btn outline" href="/book/">Read the book</a>
+            <a class="btn solid" href="/book/">Read the book</a>
         </div>
         <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
     </div>
 
-    <figure class="window">
-        <figcaption><span>search.rk</span><span>grep, more or less</span></figcaption>
-<pre><code><span class="kw">func</span> <span class="fn">grep</span>(path: <span class="ty">string</span>, pat: <span class="ty">string</span>) -> <span class="ty">void</span> <span class="kw">or</span> <span class="ty">IoError</span> {
-    <span class="kw">mut</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(path)
-    <span class="kw">ensure</span> file.<span class="fn">close</span>()
-
-    <span class="kw">let</span> text = <span class="kw">try</span> file.<span class="fn">read_text</span>()
-    <span class="kw">for</span> line <span class="kw">in</span> text.<span class="fn">lines</span>() {
-        <span class="kw">if</span> line.<span class="fn">contains</span>(pat) { <span class="fn">println</span>(line) }
-    }
-}</code></pre>
-    </figure>
+    <div>
+        <div id="try-rask" class="try-box"></div>
+        <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
+    </div>
 </div>
-
-<section class="page">
-    <h2>Try it</h2>
-    <p class="lede prose">This runs the real interpreter, compiled to WebAssembly. Edit it and press Run.</p>
-    <div id="try-rask" class="try-box"></div>
-    <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
-</section>
 
 <section class="page">
     <h2>Why another language</h2>
@@ -86,8 +70,8 @@
 
     <div class="idea">
         <div>
-            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
-            <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it.</p>
+            <p>It is a real restriction: a struct that wants to point at something has to own it, or hold a <code>Link</code> into a <code>Rack</code>. What it buys is that nothing spreads. One <code>&amp;'a str</code> in a Rust struct field puts <code>'a</code> on that struct, then on every struct that holds it, on the traits it implements, and on every function that hands one back. Rask has no <code>'a</code> to propagate, so none of that happens.</p>
             <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack. The <a href="/book/">book</a> takes them one at a time.</p>
         </div>
         <figure class="window">
@@ -102,7 +86,6 @@
         </figure>
     </div>
 
-    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure. Leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
 </section>
 
 <section class="page">
