@@ -36,7 +36,7 @@
 
 <div class="page hero">
     <div>
-        <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
+        <span class="pill">runs real programs, nothing is stable yet</span>
         <h1>No garbage collector. No lifetime annotations.</h1>
         <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at. Keeping track of that is the entire job of the <code>'a</code> that spreads through a Rust signature, so Rask has no equivalent and no need for one.</p>
         <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. Try it below.</p>
@@ -161,7 +161,7 @@
             <ul>
                 <li>Around 80 open issues, most of them codegen getting memory release wrong</li>
                 <li>It&rsquo;s a solo project, so fixes land in waves</li>
-                <li>Pre-0.1: breaking changes whenever a design turns out wrong</li>
+                <li>No compatibility promise: breaking changes land whenever a design turns out wrong</li>
             </ul>
         </div>
     </div>
@@ -174,7 +174,7 @@
     <h2>Should you learn it?</h2>
 
     <div class="prose">
-        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
+        <p>Not if you need to ship something next month. It&rsquo;s a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
         <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out. Nothing to install, and half an hour tells you whether the trade suits how you think.</p>
         <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
     </div>

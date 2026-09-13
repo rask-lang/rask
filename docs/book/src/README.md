@@ -40,7 +40,7 @@ consumption is already scheduled, leaving early still closes the file. No
 
 ## Where to start
 
-Rask is pre-0.1 and a solo project. Expect gaps in these chapters and bugs in
+Rask is early and a solo project. Expect gaps in these chapters and bugs in
 the compiler; the [issue tracker](https://github.com/rask-lang/rask/issues) is
 the honest picture.
 
