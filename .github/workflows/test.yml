@@ -365,11 +365,21 @@ jobs:
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+
     # Separate key from the gate jobs so the two don't race to write the same
     # cache. The gate jobs share one key between them, which is fine — whoever
     # finishes first writes it and the rest find it already there.
-    - name: Compiler cache (sccache)
-      uses: mozilla-actions/sccache-action@v0.0.11
+    #
+    # `-release-` is in the key because the profile decides what lands in
+    # compiler/target/, and actions/cache never overwrites a key that already
+    # exists. This job used to build debug, so the old key holds debug
+    # artifacts: asking for it back after the switch handed cargo a target dir
+    # with nothing in it cargo could use, and then refused to save the release
+    # build it did instead. Every run started cold — 5m11 of it, for as long as
+    # Cargo.lock stayed put. Anything that changes what goes in that directory
+    # has to change this key with it.
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -379,9 +389,9 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           compiler/target/
-        key: ${{ runner.os }}-cargo-rust-tests-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-rust-tests-release-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-rust-tests-
+          ${{ runner.os }}-cargo-rust-tests-release-
 
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
     # compile+run golden fixtures).
