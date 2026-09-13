@@ -10,6 +10,12 @@ import { linter } from 'https://esm.sh/@codemirror/lint@6';
 import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
 
 // Rask language definition for CodeMirror
+// The interpreter, under the build stamp. `?v=dev` is a placeholder the build
+// replaces with the commit; both spellings have to stay identical wherever they
+// appear, since the URL is the module-map key.
+const WASM_GLUE = './pkg/rask_wasm.js?v=dev';
+const WASM_BINARY = './pkg/rask_wasm_bg.wasm?v=dev';
+
 // One alternation per word class, anchored, longest-first so `i64` can't be
 // eaten by a shorter prefix. `window.RASK_VOCAB` is set by a plain script in
 // the page head, which runs before this module.
@@ -182,9 +188,15 @@ async function init() {
     try {
         showLoading(true);
 
-        // Load WASM module
-        const wasm = await import('./pkg/rask_wasm.js');
-        await wasm.default();
+        // Load WASM module. Both URLs carry the build stamp, and the binary
+        // needs its own: the glue resolves it as `new URL('rask_wasm_bg.wasm',
+        // import.meta.url)`, and resolving a relative path against a URL drops
+        // the query, so stamping the glue alone leaves the 6 MB module on a
+        // fixed name. The stamp here has to match `reviveInterpreter`'s
+        // exactly, or the two imports are two module-map entries and the
+        // interpreter gets loaded twice.
+        const wasm = await import(WASM_GLUE);
+        await wasm.default({ module_or_path: WASM_BINARY });
         playground = new wasm.Playground();
 
         // Get version
@@ -342,7 +354,7 @@ async function invoke(pending, call) {
 // be for the reader to guess they should reload the page.
 async function reviveInterpreter() {
     try {
-        const wasm = await import('./pkg/rask_wasm.js');
+        const wasm = await import(WASM_GLUE);
         playground = new wasm.Playground();
     } catch (error) {
         playground = null;

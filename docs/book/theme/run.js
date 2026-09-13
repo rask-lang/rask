@@ -26,9 +26,12 @@
 
     function interpreter() {
         if (!loading) {
-            loading = import('/app/pkg/rask_wasm.js')
+            // Both URLs carry the build stamp; the binary needs its own,
+            // because the glue resolves it relative to `import.meta.url` and
+            // that drops the query.
+            loading = import('/app/pkg/rask_wasm.js?v=dev')
                 .then(async module => {
-                    await module.default();
+                    await module.default({ module_or_path: '/app/pkg/rask_wasm_bg.wasm?v=dev' });
                     wasm = new module.Playground();
                     return wasm;
                 })
