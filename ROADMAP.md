@@ -125,6 +125,44 @@ missing functions; the percentages will move on their own once they're real.
 [#980](https://github.com/rask-lang/rask/issues/980) · the module gaps in
 [TODO.md](TODO.md)
 
+## Cadence
+
+A version ships the day its gate hits its target. Not on a date, and not when
+the list feels done.
+
+If the gate number stops moving across a run of merged work, the theme was too
+wide. Cut what's green, ship it, carry the rest into the next version. A theme
+that can't close is a planning mistake, not a work mistake.
+
+**Release more often than feels necessary.** Nobody depends on this yet, so a
+release costs nothing — and it buys the only end-to-end test there is. v0.2.0's
+smoke step caught five bugs that twelve green gates had missed, and every one of
+them had been sitting in `main` for months.
+
+**Build off `main` on a schedule, between versions.** The release path itself
+rots when it runs twice in six months: the tag trigger stranded a public tag at a
+commit that couldn't build, the `make` step in it had been dead for ages, and no
+macOS binary had ever linked a Rask program. Running the whole path regularly is
+what stops that, and it's the same argument as every other gate here.
+
+## v1.0
+
+Years away, and it isn't a date — it's a promise that what's in `specs/` won't
+change under you.
+
+[CLAUDE.md](CLAUDE.md) currently says the opposite: nothing is stable, backward
+compatibility is never a reason for anything. That's the right setting for now,
+and v1.0 is exactly when that sentence has to change. Which is why it can't be
+scheduled — only earned. What has to be true first:
+
+- Every design question closed rather than deferred. Twenty are open.
+- The stdlib at 100% of its own spec, measured.
+- No untracked bugs, and nothing registered red without an issue and a decision.
+- Someone other than me has written something real in it and can say what broke.
+
+Ten to fifteen 0.x releases is the honest shape of that, and that number is a
+guess. Don't plan past the next two — v0.9's contents are fiction today.
+
 ## Not in any version
 
 **Design questions** — twenty open issues. They're upstream of features, they
