@@ -24,9 +24,9 @@
     /* The logo's green, used two ways. As text it needs contrast against the
        page; as a fill it needs contrast against the label sitting on it. On
        paper one colour does both jobs. */
-    --paper-accent: #0b5c38;
-    --paper-accent-fill: #0b5c38;
-    --paper-accent-hover: #084227;
+    --paper-accent: #0a5332;
+    --paper-accent-fill: #0a5332;
+    --paper-accent-hover: #073922;
     --paper-accent-on-fill: #fbfaf6;
 
     /* ---- night: dark and near-neutral, so the brand green has a ground --- */

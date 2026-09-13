@@ -10,6 +10,7 @@ on:
       - 'docs/playground/**'
       - 'docs/landing/**'
       - 'docs/shared/**'
+      - 'writing/**'
       - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
@@ -55,6 +56,13 @@ jobs:
         wasm-pack build --target web --out-dir ../../../docs/playground/pkg
         rm -f ../../../docs/playground/pkg/.gitignore
 
+    # The blog is rendered by examples/markdown_renderer.rk — a Rask program —
+    # so the deploy needs a compiler that can run it. Same crates the wasm build
+    # above already compiled, so the cargo cache carries most of it.
+    - name: Build the Rask compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
     - name: Setup mdBook
       uses: peaceiris/actions-mdbook@v2
       with:
@@ -77,20 +85,21 @@ jobs:
     - name: Build playground examples
       run: node docs/playground/build-examples.js
 
+    - name: Build the blog
+      run: node docs/blog/build.js
+
     - name: Add landing page and other content
       run: |
         # Copy landing page to root
         cp docs/landing/index.html docs/build/index.html
         cp docs/landing/landing.css docs/build/landing.css
+        cp docs/landing/try.js docs/build/try.js
 
         # Copy playground to /app/
         mkdir -p docs/build/app
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
         cp -r docs/playground/pkg docs/build/app/
 
-        # The blog became the book's Notes section; keep the old URL working.
-        mkdir -p docs/build/blog
-        cp docs/landing/blog-redirect.html docs/build/blog/index.html
 
         # Copy meta files
         cp docs/CNAME docs/build/CNAME

@@ -122,7 +122,7 @@ Four documents, four different jobs:
 | [examples/](examples/) | Reading complete programs. Each one is compiled and run by CI |
 | [specs/](specs/) | The normative wording, and the reasoning behind it. Start at [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
 
-Also: [writing/](writing/) for the long-form design
+Also: the [blog](https://rask-lang.dev/blog/) (written in [writing/](writing/)) for the long-form design
 arguments, [tutorials/](tutorials/) for hands-on exercises, and
 [specs/RULINGS.md](specs/RULINGS.md) for how design questions get decided.
 
