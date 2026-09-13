@@ -40,6 +40,15 @@ export -f slot
 checked=0
 broken=0
 
+# A worker that dies before writing its verdict — killed, out of memory, a rask
+# that hung — leaves no result file. The differential harness and the leak gate
+# both treat that as a failure, and this gate used not to: an empty verdict fell
+# through to "not broken" and the file was counted as having passed. A
+# regression in a file whose worker died would have vanished from the report
+# instead of failing the gate.
+died=0
+dead=()
+
 # --- Self-contained files ---
 # Verdict file: `skip` (didn't check before formatting either), `checked`, or
 # `broken` followed by the first error line.
@@ -72,14 +81,19 @@ done
 fan_out roundtrip_one "${selfcontained[@]}"
 
 for f in "${selfcontained[@]}"; do
-    verdict="$(sed -n 1p "$TMP/r/$(slot "$f")" 2>/dev/null)"
-    [ "$verdict" = skip ] && continue
-    checked=$((checked + 1))
-    if [ "$verdict" = broken ]; then
-        broken=$((broken + 1))
-        echo "BROKEN $f"
-        echo "       $(sed -n 2p "$TMP/r/$(slot "$f")")"
-    fi
+    res="$TMP/r/$(slot "$f")"
+    case "$(sed -n 1p "$res" 2>/dev/null)" in
+        skip) ;;
+        checked) checked=$((checked + 1)) ;;
+        broken)
+            checked=$((checked + 1))
+            broken=$((broken + 1))
+            echo "BROKEN $f"
+            echo "       $(sed -n 2p "$res")" ;;
+        *)
+            died=$((died + 1))
+            dead+=("$f (round-trip)") ;;
+    esac
 done
 
 # --- Packages: format a copy in place, then check the package ---
@@ -115,15 +129,24 @@ done
 
 for pkg in "${packages[@]}"; do
     res="$TMP/p/$(basename "$pkg")"
-    [ -f "$res" ] || continue
-    read -r verdict n < "$res"
-    [ "$verdict" = skip ] && continue
-    checked=$((checked + n))
-    if [ "$verdict" = broken ]; then
-        broken=$((broken + 1))
-        echo "BROKEN $pkg (as a package, after formatting all $n files)"
-        echo "       $(sed -n 2p "$res")"
+    if [ ! -f "$res" ]; then
+        died=$((died + 1))
+        dead+=("$pkg (package)")
+        continue
     fi
+    read -r verdict n < "$res"
+    case "$verdict" in
+        skip) ;;
+        ok) checked=$((checked + n)) ;;
+        broken)
+            checked=$((checked + n))
+            broken=$((broken + 1))
+            echo "BROKEN $pkg (as a package, after formatting all $n files)"
+            echo "       $(sed -n 2p "$res")" ;;
+        *)
+            died=$((died + 1))
+            dead+=("$pkg (package)") ;;
+    esac
 done
 
 # --- Every .rk file: the output has to parse, and formatting it again has to be
@@ -185,8 +208,11 @@ for f in "${allfiles[@]}"; do
             unstable=$((unstable + 1))
             echo "NOT IDEMPOTENT $f"
             sed -n '2,$p' "$res" | sed 's/^/       /' ;;
-        *)
+        stable)
             parsed=$((parsed + 1)) ;;
+        *)
+            died=$((died + 1))
+            dead+=("$f (stability)") ;;
     esac
 done
 
@@ -214,4 +240,10 @@ if [ "$unformattable" -gt 0 ]; then
     done
 fi
 echo "fmt --check:    stdlib/ and examples/, $dirty files not formatted"
-[ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ] && [ "$dirty" -eq 0 ]
+if [ "$died" -gt 0 ]; then
+    echo "NO VERDICT:     $died worker(s) died before writing a result —"
+    for f in "${dead[@]:-}"; do
+        [ -n "$f" ] && echo "                  $f"
+    done
+fi
+[ "$broken" -eq 0 ] && [ "$unstable" -eq 0 ] && [ "$dirty" -eq 0 ] && [ "$died" -eq 0 ]
