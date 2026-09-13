@@ -284,11 +284,14 @@ h2 {
 .try-output:empty { display: none; }
 .try-output.ok { color: var(--code-fg); }
 .try-output.bad { color: var(--c-bad); }
+.try-output.diag { color: var(--code-fg); }
 
 /* The diagnostic colours, same names the playground's output uses. */
 .try-output .diag-error { color: var(--c-bad); }
 .try-output .diag-warning { color: var(--c-kw); }
 .try-output .diag-info, .try-output .diag-help { color: var(--c-ty); }
+.try-output .diag-fix { color: var(--c-str); }
+.try-output .diag-dim { color: var(--c-cmt); }
 .try-output .bold, .try-output .diag-bold { font-weight: 600; }
 
 /* A code window set to prose width, for a sample that stands on its own rather

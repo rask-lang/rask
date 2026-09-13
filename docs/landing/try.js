@@ -117,8 +117,11 @@ export function mountTry(root) {
             // Rust side with spans for its colours. Anything else means the
             // module itself fell over, or never arrived.
             if (typeof error === 'string') {
+                // The spans inside do the colouring, so the block keeps the
+                // normal code foreground. `bad` would paint the source line
+                // and the text after `fix:` red along with everything else.
                 out.innerHTML = error;
-                out.className = 'try-output bad';
+                out.className = 'try-output diag';
             } else {
                 say(`Couldn't start the interpreter: ${error.message || error}\n\n` +
                     'The full playground may have better luck.', 'bad');

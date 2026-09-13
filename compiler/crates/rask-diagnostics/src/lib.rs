@@ -16,6 +16,17 @@ pub mod suggestions;
 use rask_ast::Span;
 use serde::Serialize;
 
+/// Decide whether the formatter writes colour, instead of letting it guess.
+///
+/// `colored` guesses by looking at stdout. That is right for a terminal and
+/// wrong everywhere the escapes are wanted but stdout isn't a tty — the
+/// playground being the case in hand. It renders a diagnostic to HTML by
+/// turning the escapes into spans, and on wasm there is no terminal to find,
+/// so the formatter wrote none and every error arrived as flat text.
+pub fn set_color(on: bool) {
+    colored::control::set_override(on);
+}
+
 // ============================================================================
 // Core Types
 // ============================================================================

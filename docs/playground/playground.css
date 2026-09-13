@@ -133,12 +133,15 @@ main {
 
 .output-content.running { color: var(--c-cmt); }
 .output-content.error { color: var(--c-bad); }
+.output-content.diagnostic { color: var(--code-fg); }
 
 /* Diagnostic colours, from the compiler's own ANSI output. */
 .diag-error { color: var(--c-bad); }
 .diag-warning { color: var(--c-kw); }
 .diag-info { color: var(--c-ty); }
 .diag-help { color: var(--c-ty); }
+.diag-fix { color: var(--c-str); }
+.diag-dim { color: var(--c-cmt); }
 .bold, .diag-bold { font-weight: 600; }
 
 /* ---------- footer ---------- */
