@@ -139,11 +139,22 @@ release costs nothing — and it buys the only end-to-end test there is. v0.2.0'
 smoke step caught five bugs that twelve green gates had missed, and every one of
 them had been sitting in `main` for months.
 
-**Build off `main` on a schedule, between versions.** The release path itself
-rots when it runs twice in six months: the tag trigger stranded a public tag at a
-commit that couldn't build, the `make` step in it had been dead for ages, and no
-macOS binary had ever linked a Rask program. Running the whole path regularly is
-what stops that, and it's the same argument as every other gate here.
+**Run the release build nightly, and throw the artifacts away.** Not a published
+nightly — there's nobody to download it. This is a gate: the `build` job's two
+legs on a schedule, each binary compiling a hello-world from an empty directory,
+nothing uploaded.
+
+It earns its place on a narrow but real gap. Of the five breaks that held v0.2.0
+up, three are now caught on every PR — two by the macOS runtime job, one by the
+clang gate. The other two only showed up when a packaged binary *linked a
+program* on macOS, and nothing does that outside the release workflow. So they
+waited for release day, having sat in `main` for months.
+
+macOS runners bill at 10×, so this is a real cost — roughly an hour of billed
+macOS time a night. Yesterday cost five pull requests and a day.
+
+A published rolling `nightly` prerelease is the obvious next step once someone
+wants to try `main` without building it. Not yet.
 
 ## v1.0
 
@@ -155,13 +166,30 @@ compatibility is never a reason for anything. That's the right setting for now,
 and v1.0 is exactly when that sentence has to change. Which is why it can't be
 scheduled — only earned. What has to be true first:
 
-- Every design question closed rather than deferred. Twenty are open.
+- **`specs/` has stopped moving.** No normative change across several
+  consecutive releases, measured with `git log specs/` rather than by feel. This
+  is the real gate and the others are downstream of it: a language is 1.0 when
+  it has stopped changing, not when it is popular.
+- Every design question closed rather than deferred. Twenty are open, and each
+  one is a spec that hasn't stopped moving yet.
 - The stdlib at 100% of its own spec, measured.
 - No untracked bugs, and nothing registered red without an issue and a decision.
-- Someone other than me has written something real in it and can say what broke.
 
-Ten to fifteen 0.x releases is the honest shape of that, and that number is a
-guess. Don't plan past the next two — v0.9's contents are fiction today.
+Adoption is not on that list. Zig has Bun, TigerBeetle and Ghostty built on it
+and is still 0.x, which settles the question: people shipping real work on a
+language says nothing about whether the language is finished. What adoption does
+buy is *discovery* — you find out a spec is wrong because someone hit it. Until
+there is someone, the validation programs, the agent benchmark and the corpus are
+standing in for that, and they are a weaker instrument. Spec stability measured
+against a language nobody exercises is stability by neglect.
+
+**The minor number is a counter, not a measure.** Don't try to land v1.0 at a
+tidy number, and don't slow down to keep it low. Ship monthly through the years
+v1.0 needs and you arrive in the dozens; ship weekly and it's the hundreds.
+That's arithmetic, not ambition — 0.50 says nothing bad about a language, and
+0.9 would say nothing good.
+
+Don't plan past the next two versions. v0.9's contents are fiction today.
 
 ## Not in any version
 
