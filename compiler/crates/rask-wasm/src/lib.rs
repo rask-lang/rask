@@ -238,6 +238,11 @@ fn frontend(source: &str) -> Result<rask_compiler::CheckResult, String> {
 /// once underlined line 164 column 2309 of a 164-line program. A stdlib error
 /// is a compiler bug rather than the reader's, so it is reported as one.
 fn render(source: &str, diagnostics: &[Diagnostic]) -> String {
+    // The formatter's colours are this function's raw material: `ansi_to_html`
+    // turns each escape into a span. `colored` decides by looking at stdout,
+    // finds no terminal here, and writes none unless told to.
+    rask_diagnostics::set_color(true);
+
     let formatter = DiagnosticFormatter::new(source).with_file_name(PLAYGROUND);
     let mine: Vec<String> = diagnostics
         .iter()
@@ -245,7 +250,7 @@ fn render(source: &str, diagnostics: &[Diagnostic]) -> String {
             d.primary_span()
                 .is_none_or(|s| !rask_compiler::is_stdlib_span(s))
         })
-        .map(|d| strip_ansi_codes(&formatter.format(d)))
+        .map(|d| ansi_to_html(&formatter.format(d)))
         .collect();
 
     if !mine.is_empty() {
@@ -306,7 +311,14 @@ fn escape_html(s: &str) -> String {
 }
 
 /// Turn the compiler's ANSI colours into spans, escaping everything else.
-fn strip_ansi_codes(s: &str) -> String {
+///
+/// The codes below are the ones `DiagnosticFormatter` actually writes, read off
+/// its output rather than guessed: `1;31` errors, `1` the message, `34`/`1;34`
+/// the gutter and line numbers, `36`/`1;36` the `=` markers and `why`, `1;32`
+/// the `fix` label, `2` the `===` rules. An unmapped code is dropped silently
+/// and its text comes out in the block's own colour, so a formatter that starts
+/// using a new one needs a line here too.
+fn ansi_to_html(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 2);
     let mut chars = s.chars().peekable();
     let mut open_span = false;
@@ -337,6 +349,8 @@ fn strip_ansi_codes(s: &str) -> String {
                 "34" | "1;34" | "34;1" | "0;34" => Some("info"),        // Blue (info/secondary)
                 "36" | "1;36" | "36;1" | "0;36" => Some("help"),        // Cyan (help/notes)
                 "33" | "1;33" | "33;1" | "0;33" => Some("warning"),     // Yellow (warnings)
+                "32" | "1;32" | "32;1" | "0;32" => Some("fix"),         // Green (the fix label)
+                "2" | "02" => Some("dim"),                               // Dim (the === rules)
                 "1" | "01" => Some("bold"),                              // Bold
                 "0" | "00" => None,                                      // Reset
                 _ => None,
