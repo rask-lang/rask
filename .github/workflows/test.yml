@@ -23,15 +23,26 @@ on:
 # match it. If one grows past ~2m, move something out of it rather than letting
 # the whole run stretch.
 #
-# Where the time went before this shape (run 34747869130, 12m29 -> 8m00 after
-# the gates learned to use all four cores):
+# How this got from 12m29 to where it is:
+#
+#   12m29  one gates job running its gates one at a time, on one core each
+#    8m00  the slow gates learned to use all four cores (tests/lib/fanout.sh)
+#    5m13  four gate jobs at once, and cargo test back on --release
+#
+# The 8m00 run (34747869130) broke down as:
 #
 #   gates       8m00 = 1m21 building rask + 5m46 of gates, one after another
 #   rust-tests  4m20 =   31s compiling   + 3m17 running, 3m12 of it in ONE
 #                                          test binary, compile_run.rs
 #
-# Both of those are addressed here: the gates run four at a time, and cargo test
-# is back on --release (see the note on that job).
+# sccache is here because of what was left after that. Cargo decides a crate is
+# dirty by comparing source mtimes, and actions/cache restores compiler/target/
+# with its old mtimes while the checkout stamps every .rs file with "now" — so
+# every run rebuilt all 23 workspace crates whether or not any Rust had changed.
+# Commit 31d234c changed a single comment in this file and still paid 1m01 for
+# it. sccache keys on content instead, so an unchanged crate is a cache hit no
+# matter what its mtime says. The cargo cache stays for the dependency builds
+# and the linked artifacts, which sccache doesn't cover.
 #
 # Every gate keeps its `!cancelled()` guard, so one failing gate never masks the
 # others in the same job and each run still reports the full matrix.
@@ -51,10 +62,14 @@ jobs:
     timeout-minutes: 20
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -89,10 +104,14 @@ jobs:
     timeout-minutes: 20
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -136,10 +155,14 @@ jobs:
     timeout-minutes: 20
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -203,12 +226,16 @@ jobs:
     timeout-minutes: 20
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -330,6 +357,8 @@ jobs:
     timeout-minutes: 30
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
 
@@ -339,6 +368,8 @@ jobs:
     # Separate key from the gate jobs so the two don't race to write the same
     # cache. The gate jobs share one key between them, which is fine — whoever
     # finishes first writes it and the rest find it already there.
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
