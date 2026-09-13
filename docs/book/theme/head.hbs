@@ -10,26 +10,21 @@
      the name already present on `window` leaves the existing property alone, so
      the accessor below survives the declaration and catches the assignment —
      which is the moment we get to register, still ahead of book.js. -->
+<script src="/rask-vocabulary.js"></script>
 <script>
 (function() {
     'use strict';
+
+    var VOCAB = window.RASK_VOCAB;
 
     function defineRask(hljs) {
         return {
             name: 'Rask',
             aliases: ['rk'],
             keywords: {
-                keyword:
-                    'as asm assert benchmark break catch check comptime const continue dep ' +
-                    'discard else ensure enum exclusive export extend extern feature for func ' +
-                    'if import in is lazy let loop match mut mutate native or own package ' +
-                    'private profile public read return scope select select_priority struct ' +
-                    'take test trait try type union unsafe using where while with',
-                literal: 'true false none null',
-                built_in:
-                    'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +
-                    'Vec Map Set Rack Link Shared Heap Owned Cell Mutex StringView ' +
-                    'println print format panic todo unreachable spawn'
+                keyword: VOCAB.keywords.join(' '),
+                literal: VOCAB.literals.join(' '),
+                built_in: VOCAB.types.concat(VOCAB.builtins).join(' ')
             },
             contains: [
                 hljs.COMMENT('//', '$'),

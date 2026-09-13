@@ -74,6 +74,7 @@ jobs:
         # @imports it from there, so it has to be in place before mdbook runs.
         mkdir -p docs/build
         cp docs/shared/tokens.css docs/build/tokens.css
+        cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
         cd docs/book
         mdbook build -d ../build/book
 

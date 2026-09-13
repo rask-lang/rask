@@ -12,6 +12,8 @@ build_site() {
     # runs for the book to come out in the right colours.
     mkdir -p build
     cp shared/tokens.css build/tokens.css
+    # Rask's words, read by the book, the playground and the Try box alike.
+    cp shared/rask-vocabulary.js build/rask-vocabulary.js
 
     cd book
     mdbook build -d ../build/book
