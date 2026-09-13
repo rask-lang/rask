@@ -71,15 +71,18 @@ ten above should be most of its answer.
 
 ## v0.4 — A value works in every position
 
-**Done when a new positional-matrix gate is green, and `p08_sequence.rk` leaves
-`tests/pending_features.txt`.**
+**Done when a new positional-matrix gate is green.**
 
 These read as unrelated bugs and aren't. A closure works as a local and not out
 of a `Map`; a function works as an argument and not as a struct field. Nothing
 enumerates value-kind × position, so the holes are found one report at a time.
 The deliverable is the matrix — every value kind (closure, container, box,
-string, struct, function) in every position (local, struct field, `Vec` element,
-`Map` value, return, capture, argument) — and then the bugs it lights up.
+string, struct, function, and a `Sequence` over `Vec.iter()`) in every position
+(local, struct field, `Vec` element, `Map` value, return, capture, argument) —
+and then the bugs it lights up. Sequence is in there because
+[#1046](https://github.com/rask-lang/rask/issues/1046) is the same shape: the
+adapters are written and work, and `Vec.iter()` not returning a `Sequence` is the
+position they can't occupy.
 
 [#843](https://github.com/rask-lang/rask/issues/843) ·
 [#869](https://github.com/rask-lang/rask/issues/869) ·
@@ -95,8 +98,12 @@ making it compile currently gives a wrong answer.
 
 ## v0.5 — Concurrency you can trust
 
-**Done when [#299](https://github.com/rask-lang/rask/issues/299) closes and a
-concurrency stress gate runs in CI without deadlocking.**
+**Done when a concurrency-and-panic stress gate runs in CI without deadlocking.**
+
+One gate, covering both, because they're the same programs: a task that panics
+while another is blocked joining it is where
+[#299](https://github.com/rask-lang/rask/issues/299)'s panic semantics and
+[#1130](https://github.com/rask-lang/rask/issues/1130)'s deadlock meet.
 
 [#1130](https://github.com/rask-lang/rask/issues/1130) is the one that matters:
 a task that joins another deadlocks when every worker is blocked in join. A
@@ -113,8 +120,11 @@ language whose pitch includes "no function coloring" cannot have that.
 
 ## v0.6 — The stdlib matches its own spec
 
-**Done when a gate compares each module's spec'd surface against what exists and
-runs, and every module reads 100% — or the spec drops the function.**
+**Done when the stdlib coverage gate reads 100% for every module.**
+
+That gate doesn't exist yet, and building it is the first deliverable. It
+compares each module's spec'd surface against what exists and runs; a function
+reaches 100% by being implemented or by the spec dropping it.
 
 Today [TODO.md](TODO.md) claims coverage per module between 40% and 90%. Those
 numbers are typed by hand and checked by nobody, which is the same shape as the
