@@ -13,27 +13,29 @@ on:
 #   gates      — everything that needs the rask binary
 #   rust-tests — cargo test, which needs no rask binary of its own (~5m40)
 #
-# gates is the critical path. On run 34706946913 it took 12m29, and three steps
-# were 7m27 of that: the internal-spelling gate (3m13), the leak gate (2m42) and
-# the formatter round-trip (1m32). All three are the same shape as the
-# differential harness — hundreds of independent `rask` runs over the same
-# corpus — and only the differential harness was spreading them across the
-# runner's four cores. Now they all do, through tests/lib/fanout.sh. Measured
-# locally on four cores, byte-identical output and exit code either way:
+# gates is the critical path. It used to take 12m29, and three steps were 7m27
+# of that: the internal-spelling gate, the leak gate and the formatter
+# round-trip. All three are the same shape as the differential harness —
+# hundreds of independent `rask` runs over the same corpus — and only the
+# differential harness was spreading them across the runner's four cores. Now
+# they all do, through tests/lib/fanout.sh. Both runs warm, same corpus, and the
+# gates' output is byte-identical either way (run 34706946913 -> 34747159069):
 #
-#   internal spelling   3m51 -> 1m00
-#   memory leak         3m23 -> 0m55
-#   formatter           2m05 -> 0m39
-#   differential        1m12 -> 1m12   (already parallel; refactor only)
+#   internal spelling   3m13 -> 1m16
+#   memory leak         2m42 -> 1m07
+#   formatter           1m32 -> 0m41
+#   differential        1m28 -> 1m35   (already parallel; refactor only, noise)
+#   ── whole job       12m29 -> 8m00
 #
-# That should put gates near 7m30, which leaves rust-tests (~5m40) as the floor.
-# cargo test is compile-bound, not run-bound: 2m52 to build the test binaries vs
-# 40s to run them, both already saturating cores, so a faster test runner
-# (nextest) would only touch the 40s — not worth the dependency. A cold cache
+# What's left in gates is Rust compilation (~1m25), three gates at about a
+# minute each and fifteen steps under 30s. rust-tests (~5m25) is the floor now:
+# cargo test is compile-bound, not run-bound — 2m52 to build the test binaries
+# vs 40s to run them, both already saturating cores — so a faster test runner
+# (nextest) would only touch the 40s, not worth the dependency. A cold cache
 # adds ~1m20 to the compiler build and ~1m25 to cargo test.
 #
-# Getting under that floor means splitting gates in two and building the rask
-# binary once into an artifact both halves download. Worth maybe 1m45, and not
+# Getting gates under that floor means splitting it in two and building the rask
+# binary once into an artifact both halves download. Worth maybe 2m, and not
 # done yet.
 #
 # Within a job every gate keeps its `!cancelled()` guard, so one failing gate
@@ -109,7 +111,7 @@ jobs:
     # symptom, the answers are all correct and there's just no memory coming
     # back. This runs the suite with the runtime counting what it allocated and
     # never gave back; a clean program ends at exactly zero. Also parallel
-    # (LEAK_JOBS): 3m23 -> 55s locally.
+    # (LEAK_JOBS): 2m42 -> 1m07.
     - name: Memory leak gate
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
@@ -120,8 +122,8 @@ jobs:
     # with no line there is treated as owning everything it touches, which
     # leaks rather than double-frees; this is what stops it staying that way.
     # Runs the suite through `rask test` as well as `compile`, because the two
-    # lowering paths reach different names. Parallel too (SPELL_JOBS): 3m51 ->
-    # 1m00 locally.
+    # lowering paths reach different names. Parallel too (SPELL_JOBS): 3m13 ->
+    # 1m16.
     - name: Internal spelling gate
       if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
@@ -205,7 +207,7 @@ jobs:
     # the two, which is how `rask fmt` came to drop `as` bindings, `using`
     # clauses, enum and trait attributes and every parenthesis that mattered —
     # 21 of 30 examples stopped compiling after being formatted (#805). Parallel
-    # as well (FMT_JOBS): 2m05 -> 39s locally.
+    # as well (FMT_JOBS): 1m32 -> 41s.
     - name: Formatter round-trip
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/fmt_roundtrip_gate.sh
