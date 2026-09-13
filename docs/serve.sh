@@ -33,6 +33,13 @@ build_site() {
         cp -r playground/pkg build/app/
     fi
 
+    # Same cache-busting the deploy does, with the clock instead of a commit:
+    # locally you want every rebuild to be a new URL, since you're rebuilding
+    # precisely because something changed.
+    STAMP="$(date +%s)"
+    sed -i "s/?v=dev/?v=$STAMP/g" build/index.html
+    [ -f build/app/index.html ] && sed -i "s/?v=dev/?v=$STAMP/g" build/app/index.html
+
     # The blog. Rendered from writing/*.md by examples/markdown_renderer.rk,
     # so it needs the compiler built: `cargo build --release -p rask-cli`.
     node blog/build.js
