@@ -298,16 +298,19 @@ async function invoke(pending, call) {
         output.textContent = result || '(no output)';
         output.className = 'output-content success';
     } catch (error) {
-        output.className = 'output-content error';
-
         // A compiler or runtime diagnostic arrives as a JS string — already
         // HTML-escaped by the Rust side, with spans for the ANSI colours.
+        // Those spans do the colouring, so the block keeps the normal code
+        // foreground; painting it all red would swallow the source line and
+        // the text after `fix:`, which carry no span of their own.
         // Anything else is an object, and means the interpreter fell over.
         if (typeof error === 'string') {
+            output.className = 'output-content diagnostic';
             output.innerHTML = error;
             return;
         }
 
+        output.className = 'output-content error';
         output.textContent =
             'The interpreter crashed on this program. That is a compiler bug, not your code:\n\n' +
             `  ${error}\n\n` +
