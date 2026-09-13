@@ -40,7 +40,7 @@ consumption is already scheduled, leaving early still closes the file. No
 
 ## Where to start
 
-Rask is pre-0.1 and a solo project. Expect gaps in these chapters and bugs in
+Rask is early and a solo project. Expect gaps in these chapters and bugs in
 the compiler; the [issue tracker](https://github.com/rask-lang/rask/issues) is
 the honest picture.
 
@@ -59,9 +59,7 @@ programs](examples/README.md) are complete and CI-checked. The
 [specs](reference/specs-link.md) are the normative wording when the other two
 disagree.
 
-**Here for the design.** The
-[writing](https://github.com/rask-lang/rask/tree/main/writing) is the long-form
-argument; [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
+**Here for the design.** The [blog](/blog/) is the long-form argument; [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
 is the principles it falls out of, and
 [RULINGS.md](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md) is how
 open questions get settled.
