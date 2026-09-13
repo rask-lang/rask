@@ -37,14 +37,14 @@
 <div class="page hero">
     <div>
         <span class="pill">pre-0.1 · compiler and interpreter both run programs</span>
-        <h1>A systems language without the bookkeeping</h1>
-        <p>Rask compiles to native code, has no garbage collector, and has no lifetime annotations. You write the program; the compiler works out who owns what.</p>
-        <p>Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on how much you have to write down.</p>
+        <h1>No garbage collector. No lifetime annotations.</h1>
+        <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at. Keeping track of that is the entire job of the <code>'a</code> that spreads through a Rust signature, so Rask has no equivalent and no need for one.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. Try it below.</p>
         <div class="actions">
-            <a class="btn solid" href="/app/">Open the playground</a>
-            <a class="btn outline" href="/book/getting-started/installation.html">Install it</a>
+            <a class="btn solid" href="/app/">Run something in the browser</a>
+            <a class="btn outline" href="/book/">Read the book</a>
         </div>
-        <p class="install">or build from source with <code>cargo build --release</code> &mdash; needs a Rust toolchain</p>
+        <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
     </div>
 
     <figure class="window">
@@ -72,21 +72,22 @@
     <h2>Why another language</h2>
 
     <div class="prose">
-        <p>I got frustrated. Rust has genuinely good ideas and I use them, but a lot of my day goes on satisfying the borrow checker rather than on the problem I sat down with. The alternative is a language with a garbage collector, where you stop thinking about memory by giving up control of it.</p>
-        <p>There is a gap between those two, and I wanted something in it: no collector, no pauses, and no lifetime annotations either.</p>
-        <p>Whether that gap can actually be filled is the open question. Rask is me trying to answer it by building the thing.</p>
+        <p>There is a way of writing Rust that people call pragmatic. Keep lifetimes out of your structs. Use indices instead of references. Clone when it isn&rsquo;t hot. Reach for <code>Rc&lt;RefCell&lt;T&gt;&gt;</code> when you have to.</p>
+        <p>It works. It is also a set of rules the compiler doesn&rsquo;t know about, that every codebase rediscovers and half-follows. C++ has the same shape: RAII, smart pointers, the Core Guidelines. A whole discipline to get memory safety out of a language that won&rsquo;t hand it to you, and no way to check that anyone kept it.</p>
+        <p class="claim">When the advice is &ldquo;don&rsquo;t use the feature&rdquo;, the feature is the problem.</p>
+        <p>That is the bet Rask is making, and it could be wrong. If you want a language to ship something in this year, use Rust or Go.</p>
     </div>
 </section>
 
 <section class="page">
-    <h2>What&rsquo;s different about it</h2>
-    <p class="lede prose">One rule, and most of the language follows from it: <strong>a reference can&rsquo;t be stored.</strong></p>
+    <h2>The rule everything follows from</h2>
+    <p class="lede prose"><strong>A reference can&rsquo;t be stored.</strong></p>
 
     <div class="idea">
         <div>
-            <p>You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it.</p>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
             <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
-            <p>The other rules &mdash; values move, files get closed exactly once, graphs live in a rack &mdash; are consequences. The <a href="/book/">book</a> takes them one at a time.</p>
+            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack. The <a href="/book/">book</a> takes them one at a time.</p>
         </div>
         <figure class="window">
             <figcaption><span>borrow.rk</span></figcaption>
@@ -100,7 +101,7 @@
         </figure>
     </div>
 
-    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure &mdash; and leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
+    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure. Leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
 </section>
 
 <section class="page">
@@ -173,8 +174,8 @@
     <h2>Should you learn it?</h2>
 
     <div class="prose">
-        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong. Go or Rust will serve you better and it isn&rsquo;t close.</p>
-        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out &mdash; nothing to install, and half an hour tells you whether the trade suits how you think.</p>
+        <p>Not if you need to ship something next month. It&rsquo;s pre-0.1 and a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
+        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out. Nothing to install, and half an hour tells you whether the trade suits how you think.</p>
         <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
     </div>
 </section>
