@@ -131,6 +131,69 @@ pre {
 
 pre > code { font-size: 0.86em; line-height: 1.7; }
 
+/* ---------- runnable blocks ---------- */
+
+/* A block the book gate has proved is a whole program gets a Run, sitting with
+   mdBook's own corner controls. Quiet until hovered: the chapter is the point,
+   not the button. */
+/* mdBook keeps a block's controls at `visibility: hidden` until the block is
+   hovered. That's fine for a convenience like copy-to-clipboard and wrong for
+   this: a reader has to know Run is there, and on a phone there is no hover to
+   reveal it with. So on a runnable block the Run shows at rest and the rest of
+   mdBook's controls keep their old behaviour. */
+pre[data-rask-run] > .buttons { visibility: visible; opacity: 1; }
+pre[data-rask-run] > .buttons > :not(.rask-run) { visibility: hidden; opacity: 0; }
+pre[data-rask-run]:hover > .buttons > * { visibility: visible; opacity: 1; }
+
+/* Specific enough to beat `pre > .buttons button`, which sets a 23px icon
+   font that would render the word "Run" at the size of a heading. */
+pre > .buttons button.rask-run {
+    margin: 0 0.5rem 0 0;
+    padding: 0 0.6rem;
+    border: 1px solid var(--code-rule);
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 1.2rem;
+    line-height: 2;
+    cursor: pointer;
+}
+
+pre > .buttons button.rask-run:hover { color: var(--accent); border-color: var(--accent); }
+pre > .buttons button.rask-run:disabled { opacity: 0.5; cursor: default; }
+
+/* A finger needs more than 36x26. Only where there's no mouse, so the desktop
+   corner stays as small as it looks. */
+@media (pointer: coarse) {
+    pre > .buttons button.rask-run { padding: 0.3rem 0.9rem; }
+}
+
+/* Output belongs to the block above it, so it joins on rather than floating
+   away as a second slab. Hidden entirely until there is something to say. */
+.rask-output {
+    margin: -1.6em 0 1.6em;
+    border-top: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    padding: 1rem 1.8rem;
+    font-size: 1.4rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+.rask-output.bad { color: var(--c-bad) !important; }
+
+/* The compiler's own colours, the same names the playground's output carries.
+   A diagnostic paints itself, so the block keeps the normal code foreground. */
+.rask-output .diag-error { color: var(--c-bad); }
+.rask-output .diag-warning { color: var(--c-kw); }
+.rask-output .diag-info, .rask-output .diag-help { color: var(--c-ty); }
+.rask-output .diag-fix { color: var(--c-str); }
+.rask-output .diag-dim { color: var(--c-cmt); }
+.rask-output .diag-bold { font-weight: 600; }
+
 :not(pre) > code {
     background: var(--bg-sunken);
     color: var(--ink);

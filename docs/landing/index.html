@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/tokens.css">
+<script src="/rask-vocabulary.js"></script>
 <link rel="stylesheet" href="landing.css">
 </head>
 <body>
@@ -39,34 +40,18 @@
         <span class="pill">runs real programs, nothing is stable yet</span>
         <h1>No garbage collector. No lifetime annotations.</h1>
         <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at. Keeping track of that is the entire job of the <code>'a</code> that spreads through a Rust signature, so Rask has no equivalent and no need for one.</p>
-        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one. Try it below.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one.</p>
         <div class="actions">
-            <a class="btn solid" href="/app/">Run something in the browser</a>
-            <a class="btn outline" href="/book/">Read the book</a>
+            <a class="btn solid" href="/book/">Read the book</a>
         </div>
         <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
     </div>
 
-    <figure class="window">
-        <figcaption><span>search.rk</span><span>grep, more or less</span></figcaption>
-<pre><code><span class="kw">func</span> <span class="fn">grep</span>(path: <span class="ty">string</span>, pat: <span class="ty">string</span>) -> <span class="ty">void</span> <span class="kw">or</span> <span class="ty">IoError</span> {
-    <span class="kw">mut</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(path)
-    <span class="kw">ensure</span> file.<span class="fn">close</span>()
-
-    <span class="kw">let</span> text = <span class="kw">try</span> file.<span class="fn">read_text</span>()
-    <span class="kw">for</span> line <span class="kw">in</span> text.<span class="fn">lines</span>() {
-        <span class="kw">if</span> line.<span class="fn">contains</span>(pat) { <span class="fn">println</span>(line) }
-    }
-}</code></pre>
-    </figure>
+    <div>
+        <div id="try-rask" class="try-box"></div>
+        <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
+    </div>
 </div>
-
-<section class="page">
-    <h2>Try it</h2>
-    <p class="lede prose">This runs the real interpreter, compiled to WebAssembly. Edit it and press Run.</p>
-    <div id="try-rask" class="try-box"></div>
-    <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
-</section>
 
 <section class="page">
     <h2>Why another language</h2>
@@ -85,39 +70,42 @@
 
     <div class="idea">
         <div>
-            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it. Not a lint, not a guideline: the rule.</p>
-            <p>That sounds like a restriction, and it is. What you get for it: nothing outlives the thing it points at, so there is nothing for the compiler to track and nothing for you to annotate. Signatures carry types and stop there.</p>
-            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack. The <a href="/book/">book</a> takes them one at a time.</p>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it.</p>
+            <p>It is a real restriction: a struct that wants to point at something has to own it, or hold a <code>Link</code> into a <code>Rack</code>. What it buys is that nothing spreads. One <code>&amp;'a str</code> in a Rust struct field puts <code>'a</code> on that struct, then on every struct that holds it, on the traits it implements, and on every function that hands one back. Rask has no <code>'a</code> to propagate, so none of that happens.</p>
+            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack.</p>
         </div>
-        <figure class="window">
+        <figure class="window runnable">
             <figcaption><span>borrow.rk</span></figcaption>
-<pre><code><span class="cmt">// `cart` is borrowed. The caller still owns it
-</span><span class="cmt">// afterwards, and no signature says so.
-</span><span class="kw">func</span> <span class="fn">total</span>(cart: <span class="ty">Vec</span>&lt;<span class="ty">Item</span>&gt;) -> <span class="ty">i64</span> {
-    <span class="kw">mut</span> sum: <span class="ty">i64</span> = 0
-    <span class="kw">for</span> item <span class="kw">in</span> cart { sum += item.price }
-    <span class="kw">return</span> sum
+<pre><code>struct Item {
+    name: string
+    price: i64
+}
+
+// `cart` is borrowed for the call. The caller still
+// owns it afterwards, and no signature says so.
+func total(cart: Vec&lt;Item&gt;) -&gt; i64 {
+    mut sum: i64 = 0
+    for item in cart { sum += item.price }
+    return sum
+}
+
+func main() {
+    mut cart = Vec.new()
+    cart.push(Item { name: "coffee", price: 45 })
+    cart.push(Item { name: "beans", price: 120 })
+
+    println("{cart.len()} items, {total(cart)} kr")
 }</code></pre>
         </figure>
     </div>
 
-    <p class="prose">The program at the top of this page is the same idea doing real work. <code>fs.open</code> hands back a file the compiler makes you close exactly once, <code>ensure</code> schedules that for the end of the scope, and <code>try</code> returns early on failure. Leaving early still closes the file, because the close was already booked. Three separate rules; the idiom falls out of them meeting.</p>
 </section>
 
 <section class="page">
-    <h2>What it costs</h2>
-    <p class="lede prose">If you want pointer-level control over layout and traversal, use Rust or C++. Rask doesn&rsquo;t offer it.</p>
+    <h2>What you get</h2>
+    <p class="lede prose">A signature you read once and know what the call does to its arguments: whether it takes them, changes them, or only looks.</p>
 
     <div class="ledger">
-        <div class="give">
-            <h3>You give up</h3>
-            <ul>
-                <li>References in struct fields</li>
-                <li>Returning a reference from a function</li>
-                <li>Implicit copies of anything large</li>
-                <li>Pointer-chasing a graph you built by hand</li>
-            </ul>
-        </div>
         <div class="get">
             <h3>You get</h3>
             <ul>
@@ -127,14 +115,22 @@
                 <li>Deterministic cleanup, no GC pauses</li>
             </ul>
         </div>
+        <div class="give">
+            <h3>You give up</h3>
+            <ul>
+                <li>References in struct fields</li>
+                <li>Returning a reference from a function</li>
+                <li>Implicit copies of anything large</li>
+                <li>Pointer-chasing a graph you built by hand</li>
+            </ul>
+        </div>
     </div>
 
-    <p class="prose">Strings are the exception I made deliberately: <code>string</code> is immutable and refcounted, so it passes around like an integer and never needs <code>.clone()</code>. The visible cost is for the things that really do own heap memory.</p>
+    <p class="prose">Raw pointers are behind <code>unsafe</code>, same as in Rust, and they are there for talking to C. What neither language gives you is a hand-built pointer graph in safe code: in Rask that shape lives in a <code>Rack</code> and you pay an indirection to reach through a <code>Link</code>. C and C++ hand you the pointers with no ceremony at all, and if that is the trade you want, they are the honest answer.</p>
 </section>
 
 <section class="page">
     <h2>Where it actually stands</h2>
-    <p class="asof">Measured 2026-09-12 by running it. This section gets re-measured, not copy-pasted.</p>
 
     <div class="status-grid">
         <div>
@@ -159,14 +155,12 @@
         <div>
             <h3>Caveats</h3>
             <ul>
-                <li>Around 80 open issues, most of them codegen getting memory release wrong</li>
+                <li><strong>Not memory-safe yet.</strong> The design is; this implementation isn&rsquo;t. Codegen still gets memory release wrong in known cases, so a correct program can still corrupt or leak</li>
                 <li>It&rsquo;s a solo project, so fixes land in waves</li>
                 <li>No compatibility promise: breaking changes land whenever a design turns out wrong</li>
             </ul>
         </div>
     </div>
-
-    <p class="prose">There are five test programs: a sensor processor, a grep clone, a game loop with entities, a text editor with undo, and an HTTP JSON API server. <strong>All five run natively.</strong> The HTTP one started working last week, once a bug that corrupted the first eight bytes of every response was fixed. They live in <a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a> and CI runs them.</p>
 
 </section>
 
@@ -174,8 +168,8 @@
     <h2>Should you learn it?</h2>
 
     <div class="prose">
-        <p>Not if you need to ship something next month. It&rsquo;s a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
-        <p>Worth an hour if you&rsquo;ve hit the wall it&rsquo;s built for: you wanted the safety without the annotations, or you tried to write a graph in Rust and gave up, or you keep reaching for a garbage collector you don&rsquo;t really want. The <a href="/app/">playground</a> is the cheapest way to find out. Nothing to install, and half an hour tells you whether the trade suits how you think.</p>
+        <p>Not yet.</p>
+        <p>It&rsquo;s a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
         <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
     </div>
 </section>

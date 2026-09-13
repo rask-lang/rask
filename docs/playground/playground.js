@@ -10,6 +10,19 @@ import { linter } from 'https://esm.sh/@codemirror/lint@6';
 import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
 
 // Rask language definition for CodeMirror
+// One alternation per word class, anchored, longest-first so `i64` can't be
+// eaten by a shorter prefix. `window.RASK_VOCAB` is set by a plain script in
+// the page head, which runs before this module.
+const anchored = words => new RegExp(
+    '^(' + [...words].sort((a, b) => b.length - a.length).join('|') + ')\\b'
+);
+
+const WORDS = {
+    keywords: anchored(window.RASK_VOCAB.keywords.concat(window.RASK_VOCAB.literals)),
+    types: anchored(window.RASK_VOCAB.types),
+    builtins: anchored(window.RASK_VOCAB.builtins),
+};
+
 const raskLanguage = StreamLanguage.define({
     name: "rask",
     startState: () => ({ inComment: false }),
@@ -30,18 +43,18 @@ const raskLanguage = StreamLanguage.define({
             return "number";
         }
 
-        // Keywords
-        if (stream.match(/^(func|let|mut|const|if|else|match|loop|while|for|in|is|as|return|struct|enum|trait|extend|union|public|private|try|catch|ensure|with|using|comptime|take|read|mutate|own|where|unsafe|break|continue|spawn|import|export|type|test|assert)\b/)) {
+        // Keywords, types and builtins come from the shared vocabulary rather
+        // than a list here. This one had gone stale: it still painted `Pool`
+        // and `Handle` as types long after `Rack` and `Link` replaced them.
+        if (stream.match(WORDS.keywords)) {
             return "keyword";
         }
 
-        // Types
-        if (stream.match(/^(i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64|bool|string|char|void|none|Vec|Map|Set|Pool|Handle|Rack|Link|Shared|Heap|Atomic|StringView)\b/)) {
+        if (stream.match(WORDS.types)) {
             return "type";
         }
 
-        // Builtins
-        if (stream.match(/^(println|print|format|assert|panic)\b/)) {
+        if (stream.match(WORDS.builtins)) {
             return "builtin";
         }
 
