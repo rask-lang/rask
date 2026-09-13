@@ -18,31 +18,37 @@ on:
 # one build to the others as an artifact would be tidier and about 45s slower,
 # because then every gate waits for that build to finish before it starts.
 #
-# How the gates are split: the differential harness is the long pole at ~1m30
+# How the gates are split: the differential harness is the long pole at ~1m35
 # and can't be cut, so it gets a job to itself and the other three are packed to
 # match it. If one grows past ~2m, move something out of it rather than letting
-# the whole run stretch.
+# the whole run stretch. rust-tests is the slowest job now, so that is where the
+# next minute is.
 #
 # How this got from 12m29 to where it is:
 #
 #   12m29  one gates job running its gates one at a time, on one core each
 #    8m00  the slow gates learned to use all four cores (tests/lib/fanout.sh)
 #    5m13  four gate jobs at once, and cargo test back on --release
+#    3m03  sccache, so an unchanged crate stops being rebuilt every run
 #
-# The 8m00 run (34747869130) broke down as:
+# Three different causes, and none of them was "the tests are slow":
 #
 #   gates       8m00 = 1m21 building rask + 5m46 of gates, one after another
 #   rust-tests  4m20 =   31s compiling   + 3m17 running, 3m12 of it in ONE
 #                                          test binary, compile_run.rs
 #
-# sccache is here because of what was left after that. Cargo decides a crate is
-# dirty by comparing source mtimes, and actions/cache restores compiler/target/
-# with its old mtimes while the checkout stamps every .rs file with "now" — so
-# every run rebuilt all 23 workspace crates whether or not any Rust had changed.
-# Commit 31d234c changed a single comment in this file and still paid 1m01 for
-# it. sccache keys on content instead, so an unchanged crate is a cache hit no
-# matter what its mtime says. The cargo cache stays for the dependency builds
-# and the linked artifacts, which sccache doesn't cover.
+# sccache is here for the third one. Cargo decides a crate is dirty by comparing
+# source mtimes, and actions/cache restores compiler/target/ with its old mtimes
+# while the checkout stamps every .rs file with "now" — so every run rebuilt all
+# 23 workspace crates whether or not any Rust had changed. Commit 31d234c
+# changed a single comment in this file and still paid 1m01 for it. sccache keys
+# on content instead, so an unchanged crate is a hit no matter what its mtime
+# says: the build went from 1m25 to 22-33s across the four gate jobs. The cargo
+# cache stays for the dependency builds and the linked artifacts, which sccache
+# doesn't cover.
+#
+# A cold sccache costs about 30s extra and looks like a regression. Judge a
+# change here on the run after it, not the run that carries it.
 #
 # Every gate keeps its `!cancelled()` guard, so one failing gate never masks the
 # others in the same job and each run still reports the full matrix.
