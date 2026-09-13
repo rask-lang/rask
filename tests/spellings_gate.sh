@@ -24,25 +24,41 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RASK="$ROOT/compiler/target/release/rask"
+source "$ROOT/tests/lib/fanout.sh"
 
 if [ ! -x "$RASK" ]; then
   echo "error: rask binary not found; build with 'cargo build --release -p rask-cli'" >&2
   exit 1
 fi
 
-found="$(mktemp)"
-trap 'rm -f "$found"' EXIT
+# Every file is an independent compile, so they fan out across cores. Each
+# worker writes its own findings file rather than appending to a shared one —
+# concurrent appends of a long line can tear. The names are sorted afterwards,
+# so the order the workers finish in doesn't reach the report.
+JOBS="${SPELL_JOBS:-${JOBS:-$(nproc 2>/dev/null || echo 4)}}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+export RASK WORK
+export -f slot
 
 # `test` for anything with test blocks, `compile` for the rest: between them
 # they cover both lowering paths.
-for file in "$ROOT"/tests/suite/*.rk; do
-  timeout 60 "$RASK" test "$file" 2>&1 >/dev/null | grep '^\[unmapped-spelling\]' >>"$found"
-done
-for file in "$ROOT"/examples/*.rk "$ROOT"/specs/analysis/prototype/*.rk; do
-  timeout 60 "$RASK" compile "$file" 2>&1 >/dev/null | grep '^\[unmapped-spelling\]' >>"$found"
-done
+spell_test() {
+  timeout 60 "$RASK" test "$1" 2>&1 >/dev/null |
+    grep '^\[unmapped-spelling\]' > "$WORK/$(slot "$1").found"
+  return 0
+}
+spell_compile() {
+  timeout 60 "$RASK" compile "$1" 2>&1 >/dev/null |
+    grep '^\[unmapped-spelling\]' > "$WORK/$(slot "$1").found"
+  return 0
+}
 
-names="$(sed -E 's/^\[unmapped-spelling\] ([A-Za-z_0-9]+).*/\1/' "$found" | sort -u)"
+fan_out spell_test "$ROOT"/tests/suite/*.rk
+fan_out spell_compile "$ROOT"/examples/*.rk "$ROOT"/specs/analysis/prototype/*.rk
+
+names="$(cat "$WORK"/*.found 2>/dev/null |
+  sed -E 's/^\[unmapped-spelling\] ([A-Za-z_0-9]+).*/\1/' | sort -u)"
 
 echo "──────────────────────────────────────────────────"
 if [ -z "$names" ]; then

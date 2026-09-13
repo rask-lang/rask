@@ -45,6 +45,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUITE_DIR="${1:-$ROOT/tests/suite}"
 KNOWN_DIV_FILE="$ROOT/tests/known_divergences.txt"
 PENDING_FILE="$ROOT/tests/pending_features.txt"
+source "$ROOT/tests/lib/fanout.sh"
 
 # Locate the rask binary (release preferred, debug fallback).
 if [ -x "$ROOT/compiler/target/release/rask" ]; then
@@ -129,13 +130,10 @@ upass_files=()
 misfiled_files=()
 
 # Each file is independent — two subprocesses and a comparison — so the runs
-# fan out across cores and only the classification below stays sequential. The
-# native path compiles to a temp binary named with the compiler's own PID, so
-# concurrent invocations can't collide on it.
-#
-# Workers write one record per file; the loop then reads them back in glob
-# order, so output and exit codes are identical to running this serially.
-JOBS="${DIFF_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# fan out across cores (tests/lib/fanout.sh) and only the classification below
+# stays sequential. The native path compiles to a temp binary named with the
+# compiler's own PID, so concurrent invocations can't collide on it.
+JOBS="${DIFF_JOBS:-${JOBS:-$(nproc 2>/dev/null || echo 4)}}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -169,11 +167,11 @@ run_one() {
         } > "$WORK/$base.detail"
     fi
 }
-export -f run_one normalize phase_of
+export -f normalize phase_of
 export RASK WORK
 
-find "$SUITE_DIR" -maxdepth 1 -name '*.rk' -print0 \
-    | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+mapfile -t suite_files < <(find "$SUITE_DIR" -maxdepth 1 -name '*.rk')
+fan_out run_one "${suite_files[@]}"
 
 for f in "$SUITE_DIR"/*.rk; do
     [ -e "$f" ] || continue
