@@ -24,6 +24,10 @@ on:
 # the whole run stretch. rust-tests is the slowest job now, so that is where the
 # next minute is.
 #
+# Split them further whenever it helps — but leave the `gates` job alone. It is
+# the name branch protection requires, and the only one here that has to stay
+# put; see the comment on it.
+#
 # How this got from 12m29 to where it is:
 #
 #   12m29  one gates job running its gates one at a time, on one core each
@@ -356,6 +360,45 @@ jobs:
       if: ${{ !cancelled() }}
       run: cargo check -p rask-wasm --target wasm32-unknown-unknown
       working-directory: compiler
+
+  # Branch protection on main requires a check with this exact name. It used to
+  # be the one big gates job; splitting that into four renamed it out of
+  # existence, so the required check had nothing reporting it and every PR sat
+  # "waiting for status to be reported" with six green jobs above it.
+  #
+  # So this is the name branch protection points at from now on, and it is the
+  # one thing here that has to stay stable: the gates behind it can be split,
+  # merged or renamed freely without anyone touching repository settings. It
+  # runs nothing itself — it passes when all four gate jobs passed.
+  #
+  # `needs:` alone would not do it. A needed job that fails normally skips this
+  # one, and a skipped required check never reports — the same stuck-pending
+  # state it exists to prevent. `always()` makes it run whatever happened, and
+  # the step reads the four results itself.
+  gates:
+    name: gates (needs the rask binary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [gates-suite, gates-memory, gates-names, gates-surface]
+    steps:
+    - name: Every gate passed
+      env:
+        RESULTS: >-
+          gates-suite=${{ needs.gates-suite.result }}
+          gates-memory=${{ needs.gates-memory.result }}
+          gates-names=${{ needs.gates-names.result }}
+          gates-surface=${{ needs.gates-surface.result }}
+      run: |
+        echo "$RESULTS"
+        failed=0
+        for pair in $RESULTS; do
+          case "${pair#*=}" in
+            success) ;;
+            *) echo "::error::${pair%%=*} did not pass (${pair#*=})"; failed=1 ;;
+          esac
+        done
+        exit "$failed"
 
   rust-tests:
     name: rust-tests (cargo test)
