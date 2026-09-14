@@ -74,6 +74,7 @@ jobs:
         # @imports it from there, so it has to be in place before mdbook runs.
         mkdir -p docs/build
         cp docs/shared/tokens.css docs/build/tokens.css
+        cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
         cd docs/book
         mdbook build -d ../build/book
 
@@ -99,6 +100,23 @@ jobs:
         mkdir -p docs/build/app
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
         cp -r docs/playground/pkg docs/build/app/
+
+        # Assets loaded under fixed names leave a browser with an old copy no
+        # reason to fetch the new one, and the page half-updates: new HTML
+        # against old JavaScript. Stamping the commit into the query makes
+        # every changed deploy a new URL.
+        #
+        # One pass over everything built, because the references are spread
+        # across all three kinds of file: `?v=dev` in the two page headers, in
+        # the book's `@import url("/tokens.css")` and its inlined head.hbs, in
+        # the blog pages, and in the dynamic `import()` of the interpreter.
+        # mdBook content-hashes its own generated CSS and JS, but not the
+        # shared files those reach for at the site root.
+        #
+        # This runs last on purpose: the book, the blog, the landing page and
+        # the playground are all in docs/build by now.
+        find docs/build -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' \) -print0 \
+          | xargs -0 sed -i "s/?v=dev/?v=${GITHUB_SHA::12}/g"
 
 
         # Copy meta files

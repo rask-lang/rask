@@ -12,6 +12,8 @@ build_site() {
     # runs for the book to come out in the right colours.
     mkdir -p build
     cp shared/tokens.css build/tokens.css
+    # Rask's words, read by the book, the playground and the Try box alike.
+    cp shared/rask-vocabulary.js build/rask-vocabulary.js
 
     cd book
     mdbook build -d ../build/book
@@ -34,6 +36,13 @@ build_site() {
     # The blog. Rendered from writing/*.md by examples/markdown_renderer.rk,
     # so it needs the compiler built: `cargo build --release -p rask-cli`.
     node blog/build.js
+
+    # Same cache-busting the deploy does, with the clock instead of a commit:
+    # locally every rebuild should be a new URL, since you're rebuilding
+    # precisely because something changed. Last, so everything is in build/.
+    STAMP="$(date +%s)"
+    find build -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' \) -print0 \
+      | xargs -0 sed -i "s/?v=dev/?v=$STAMP/g"
 
     echo "Build complete at $(date +%H:%M:%S)"
 }

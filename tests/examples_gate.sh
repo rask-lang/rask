@@ -43,6 +43,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GOLDEN_DIR="$ROOT/tests/golden"
+source "$ROOT/tests/lib/fanout.sh"
 EXAMPLES_DIR="$ROOT/examples"
 
 if [ -x "$ROOT/compiler/target/release/rask" ]; then
@@ -69,10 +70,11 @@ is_pending() {
     grep -qE "^$1\.rk([[:space:]]|#|$)" "$PENDING_FILE"
 }
 
-# Each example is independent, so the runs fan out across cores; only the
-# reporting below stays sequential, reading results back in glob order so the
-# output and exit code match a serial run exactly.
-JOBS="${GATE_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# Each example is independent, so the runs fan out across cores
+# (tests/lib/fanout.sh); only the reporting below stays sequential, reading
+# results back in glob order so the output and exit code match a serial run
+# exactly.
+JOBS="${GATE_JOBS:-${JOBS:-$(nproc 2>/dev/null || echo 4)}}"
 
 # Per-invocation ceiling. Deliberately far above what any example needs — the
 # slowest gated one takes ~5s including compilation, run on its own. The gate
@@ -169,11 +171,11 @@ run_one() {
         diff <(printf '%s' "$want") <(printf '%s' "$nout") | head -8 | sed 's/^/    /' > "$WORK/$name.diff"
     fi
 }
-export -f run_one run_backend normalize
+export -f run_backend normalize
 export RASK WORK EXAMPLES_DIR GOLDEN_DIR ROOT RUN_TIMEOUT
 
-find "$GOLDEN_DIR" -maxdepth 1 -name '*.out' -print0 \
-    | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+mapfile -t golden_files < <(find "$GOLDEN_DIR" -maxdepth 1 -name '*.out')
+fan_out run_one "${golden_files[@]}"
 
 for golden in "$GOLDEN_DIR"/*.out; do
     [ -e "$golden" ] || continue

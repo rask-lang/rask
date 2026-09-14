@@ -28,6 +28,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RASK="$ROOT/compiler/target/release/rask"
 SUITE="$ROOT/tests/suite"
 KNOWN="$ROOT/tests/known_leaks.txt"
+source "$ROOT/tests/lib/fanout.sh"
 
 if [ ! -x "$RASK" ]; then
   echo "error: rask binary not found; build with 'cargo build --release -p rask-cli'" >&2
@@ -70,11 +71,40 @@ unran=()
 # reaching it is a gate that can go quiet without anyone noticing.
 LEAK_EXIT=97
 
-for file in "$SUITE"/*.rk; do
+# Each file is one `rask test` and nothing else, so the runs fan out across
+# cores and only the ledger check below stays sequential. JOBS defaults to one
+# per core; LEAK_JOBS overrides it.
+JOBS="${LEAK_JOBS:-${JOBS:-$(nproc 2>/dev/null || echo 4)}}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Two lines per file: the exit code, then the report line if there was one.
+measure_one() {
+  local file="$1" name out rc detail
   name="$(basename "$file")"
   out="$(RASK_LEAK_CHECK=1 timeout 120 "$RASK" test "$file" 2>&1)"; rc=$?
+  detail="$(printf '%s\n' "$out" | grep 'never released' | head -1)"
+  printf '%s\n%s\n' "$rc" "$detail" > "$WORK/$name.result"
+}
+export RASK WORK
+
+fan_out measure_one "$SUITE"/*.rk
+
+for file in "$SUITE"/*.rk; do
+  name="$(basename "$file")"
+  if [ ! -f "$WORK/$name.result" ]; then
+    broken=$((broken + 1))
+    unran+=("$name (worker produced no result)")
+    continue
+  fi
+  rc="$(sed -n 1p "$WORK/$name.result")"
+  detail="$(sed -n 2p "$WORK/$name.result")"
+  if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+    broken=$((broken + 1))
+    unran+=("$name (worker left no exit code)")
+    continue
+  fi
   if [ "$rc" -eq "$LEAK_EXIT" ]; then
-    detail="$(echo "$out" | grep 'never released' | head -1)"
     [ -n "$detail" ] || detail="exit $rc"
     if known_leak "$name"; then
       expected=$((expected + 1))

@@ -75,7 +75,7 @@ function page({ title, description, body, canonical }) {
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/tokens.css">
+<link rel="stylesheet" href="/tokens.css?v=dev">
 <link rel="stylesheet" href="/blog/blog.css">
 </head>
 <body>
