@@ -1129,6 +1129,37 @@ fn captures_freed_with_the_closure(
     out
 }
 
+/// Is any name for this value read after `(block, stmt)` — later in that block,
+/// or anywhere a path from it can go?
+///
+/// `closure_drop` doesn't count: it ends the environment holding the capture,
+/// which is the thing the free is waiting for.
+fn read_after(
+    func: &MirFunction,
+    reach: &HashMap<BlockId, HashSet<BlockId>>,
+    group: &HashSet<LocalId>,
+    block: usize,
+    stmt: usize,
+) -> bool {
+    let reads = |st: &MirStmt| {
+        !matches!(st.kind, MirStmtKind::ClosureDrop { .. })
+            && group.iter().any(|id| crate::analysis::uses::stmt_reads(st, *id))
+    };
+    if func.blocks[block].statements[stmt + 1..].iter().any(reads) {
+        return true;
+    }
+    let onward = &reach[&func.blocks[block].id];
+    func.blocks
+        .iter()
+        .filter(|b| onward.contains(&b.id))
+        .any(|b| {
+            b.statements.iter().any(reads)
+                || group
+                    .iter()
+                    .any(|id| crate::analysis::uses::terminator_reads(&b.terminator, *id))
+        })
+}
+
 /// One free per value, however many closures hold it.
 ///
 /// Two chains over one vector give each copy its own name, so each looks like
@@ -1138,13 +1169,24 @@ fn captures_freed_with_the_closure(
 /// leaked `[1, 2, 3]` (#1148).
 ///
 /// The free belongs after the *last* of the closure drops. Until then some
-/// environment still holds the handle; after it, none does. So a group whose
-/// drops all sit in one block keeps the entry that comes last there.
+/// environment still holds the handle; after it, none does. So within a block
+/// only the last drop is a candidate, and a group whose drops all sit in one
+/// block keeps that one.
 ///
-/// Drops spread across blocks keep none, which is the old answer. Whether one
-/// runs after the other is a dominance question and the two can be arms of a
-/// branch, where neither does — and picking wrong there is the double free
-/// this exists to avoid.
+/// Across blocks the question is whether a run can reach two of the candidates.
+/// It can't when they are the arms of a branch, and then a free in each arm is
+/// exactly one free per run — `either(keys, own_it)` builds a different closure
+/// in each arm over the same vector, and refusing both left `keys` to nobody.
+/// A candidate that reaches another one isn't last on its path and drops out
+/// first, which is what makes two calls in a row keep only the second pair.
+/// Reachability settles the loop case too: a back-edge makes a block reachable
+/// from itself, so two sites inside one loop body reach each other and the
+/// group keeps none.
+///
+/// And nothing may read the value after a site that frees it. The candidates
+/// account for the captures, not for every other name the value has, so a group
+/// still read past the last drop keeps none rather than handing out a dangling
+/// vector.
 fn one_free_per_group(
     func: &MirFunction,
     with_closure: Vec<(LocalId, u32, LocalId, &'static str)>,
@@ -1160,6 +1202,7 @@ fn one_free_per_group(
         }
     }
 
+    let reach = strict_reach(func);
     let mut per_group: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut ungrouped: Vec<usize> = Vec::new();
     for (i, (_, _, local, _)) in with_closure.iter().enumerate() {
@@ -1170,7 +1213,7 @@ fn one_free_per_group(
     }
 
     let mut keep: HashSet<usize> = ungrouped.into_iter().collect();
-    for (_, entries) in per_group {
+    for (_gi, entries) in per_group {
         if entries.len() == 1 {
             keep.insert(entries[0]);
             continue;
@@ -1180,11 +1223,39 @@ fn one_free_per_group(
             .map(|&i| dropped_at.get(&with_closure[i].0).map(|&(b, s)| (b, s, i)))
             .collect();
         let Some(mut sites) = sites else { continue };
-        if sites.iter().any(|(b, _, _)| *b != sites[0].0) {
+        // One candidate per block: the last drop there, since until then some
+        // environment in that block still holds the handle.
+        sites.sort();
+        sites.reverse();
+        sites.dedup_by_key(|(b, _, _)| *b);
+        sites.reverse();
+        if sites.len() == 1 {
+            keep.insert(sites[0].2);
             continue;
         }
-        sites.sort();
-        keep.insert(sites.last().expect("non-empty").2);
+        // Drop the candidates that reach another one: they aren't last on their
+        // path. What's left has to be pairwise unreachable, or some run passes
+        // through two of them and frees twice.
+        let reaches = |a: usize, b: usize| reach[&func.blocks[a].id].contains(&func.blocks[b].id);
+        let last: Vec<(usize, usize, usize)> = sites
+            .iter()
+            .copied()
+            .filter(|(bi, _, _)| sites.iter().all(|(bj, _, _)| bi == bj || !reaches(*bi, *bj)))
+            .collect();
+        if last.is_empty()
+            || last.iter().any(|(bi, _, _)| {
+                last.iter().any(|(bj, _, _)| bi != bj && reaches(*bi, *bj))
+            })
+        {
+            continue;
+        }
+        let group = &groups[_gi];
+        if last.iter().any(|&(b, si, _)| read_after(func, &reach, group, b, si)) {
+            continue;
+        }
+        for (_, _, i) in &last {
+            keep.insert(*i);
+        }
     }
 
     with_closure

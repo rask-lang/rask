@@ -424,17 +424,25 @@ p12_rack_link_churn.rk  # 2 allocations — a container field written over, #119
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
+p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped (#1202).
+                        # Storing a box in a payload consumes it, so linearity is happy;
+                        # nothing frees it afterwards. A descriptor kind for "a heap
+                        # block at this offset" is the easy half — the hard half is that
+                        # `drop(x.field)` consumes the same box by hand in this file.
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
-t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
+t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data), and it is
+                        # #1198: `swap_out` consumes the bag through `eat(b)` and then
+                        # writes a fresh one over the same slot, so the vector the
+                        # caller handed in is overwritten rather than freed. The file's
+                        # other two tests are clean — a `take` parameter on its own is
+                        # fine, it's the replace that loses the old value.
 t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rewritten every
                         # turn of a *filtered* loop. The filter adds a second merge, and a phi
                         # operand reads as live out of every predecessor rather than its own
                         # edge — so the old value looks live where it is dead and gets no
                         # release. #1200; the same loop without the filter is clean. (Not the
                         # chain's environment, which the old note claimed.)
-t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string, both
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
@@ -454,16 +462,11 @@ t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately 
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment
                         # holds, and the leaking test is the one that joins a *panicked*
                         # task. Same cause as the two above: #299, v0.5.
-t_string_builder_mutate.rk  # 1 allocation — the builder's own header
-                        # same trait-box leak as the two lines below. Nothing to
-                        # do with the aggregate return the file is named for:
-                        # every other test in it is clean.
-                            # chain captures (#1035's closure half), and
-                            # the `SHARED` paths on purpose: one closure
-                            # handing back a const's vector rejects the
-                            # whole callee set, which is the point of the
-                            # third test
-                             # small enough to inline, so there is no call left
-                             # to read a handoff off (#1117's other half)
-                             # field (#1035, #1047); the clones themselves are freed
-                   # the Vec/Pool of structs holding strings (#1035)
+t_string_builder_mutate.rk  # 1 allocation — the builder's own header, #1203. A
+                        # `mutate StringBuilder` parameter is passed by address, so the
+                        # builder moves into a stack slot and `&slot` goes to the callee —
+                        # the store hands it to the slot and the `&` puts the slot out of
+                        # reach, so no name is left to free. A Vec through the same shape is
+                        # clean: it goes by value with a writeback, not by address. The
+                        # orphaned lines that used to sit here belonged to entries deleted
+                        # when their files went clean.
