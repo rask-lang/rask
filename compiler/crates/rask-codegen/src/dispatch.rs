@@ -218,6 +218,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
+        // The same free under a name that says *why*: what a field held, on the
+        // way to the field holding something else. The ownership passes read
+        // the two differently — see `Internal::ReplacesSlot`.
+        StdlibEntry::simple("Vec_free_replaced", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Vec_push", c_name: "rask_vec_push",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -809,6 +813,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Map operations ─────────────────────────────────────
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
+        // Same free, named for why — see `Vec_free_replaced`.
+        StdlibEntry::simple("Map_free_replaced", "rask_map_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new", c_name: "rask_map_new",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],

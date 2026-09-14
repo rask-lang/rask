@@ -1150,6 +1150,22 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// What frees the container a place holds, when the place owns it outright.
+    ///
+    /// Reads the head the way `container_link_registration` does — the checker
+    /// spells a resolved generic by its declaration's own name, so the string
+    /// form of the type is not reliably `Vec<…>`.
+    pub(crate) fn container_field_free(&self, ty: &Type) -> Option<&'static str> {
+        if ty.as_option().is_some() || matches!(ty, Type::Result { .. }) {
+            return None;
+        }
+        match self.generic_head(ty)?.as_str() {
+            "Vec" => Some("Vec_free_replaced"),
+            "Map" => Some("Map_free_replaced"),
+            _ => None,
+        }
+    }
+
     /// The counterpart: what to call on the container a place *held*, when that
     /// place is about to hold a different one.
     ///

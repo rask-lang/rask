@@ -313,6 +313,34 @@
 # the builder away, so a release on the field would point at a block that is
 # already gone (`t_week_opaque_struct_fields.rk` clean).
 #
+# And 45 with three more, all about a container a *place* stops holding.
+#
+# `{v:debug}` had no line in `INTERNAL_SPELLINGS`, so reading a container
+# handle off a struct field to render it looked like handing the whole struct
+# away and the struct was never released (`t_debug_renders_containers.rk`).
+#
+# `h.list = h.list.filter(…)` writes a new container over one the aggregate
+# owned, and nothing gave the old one back: the aggregate's own release frees
+# whatever is in the slot at the end, which is the replacement. Lowering emits
+# the free at the assignment, which is where the types are and where a write is
+# always a replacement — a struct literal *builds* the slot and arrives on a
+# different path. It is spelled `Vec_free_replaced` rather than `Vec_free` so
+# the ownership passes can tell it apart: a plain free of a field's handle reads
+# as the whole struct being handed away. And it is withdrawn again where a name
+# took the old value first (`let old = h.list` before the write), which needs
+# liveness and so happens in the first pass that has it (#1198,
+# `p12_rack_link_churn.rk` and `t_rack_stale_records.rk` both clean).
+#
+# That last one surfaced a misplacement that had been silent: a store into one
+# field was read as killing the *whole* aggregate, so `parse_args` in
+# `examples/grep_clone.rk` released the struct's contents one statement after
+# building it and long before it was finished with. It freed the `files` vector
+# while the struct still held it, which nothing noticed because nothing read
+# the field before the next write — until a second free landed at that write.
+# Writing every byte is a kill; writing two fields of six is not. Asked of a
+# plain struct or tuple only: a tagged shape writes its tag and one variant's
+# payload, which is a complete write and never covers the union.
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -321,7 +349,6 @@
 # list before the merge.
 
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
-p12_rack_link_churn.rk  # 2 allocations — one Vec (handle and data)
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only
@@ -334,11 +361,9 @@ t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle 
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
 t_closure_heap_string_capture.rk  # 1 allocation — a string overwritten through a by-ref capture, never released (#1162)
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
-t_debug_renders_containers.rk  # 2 allocations — one Vec (handle and data)
 t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
 t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
 t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel — a task killed by a panic doesn't unwind its captures
-t_rack_stale_records.rk  # 2 allocations — one Vec (handle and data)
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
 t_string_builder_mutate.rk  # 1 allocation — the builder's own header

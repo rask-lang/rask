@@ -51,10 +51,124 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
     for func in fns.iter_mut() {
+        withdraw_unsafe_slot_frees(func);
         insert_for_function(func, &snapshot, &handing_over, &kept, &targets);
     }
     let glue = env_drop_glue(fns, &handing_over, &targets);
     fns.extend(glue);
+}
+
+/// Take back the "free what this field held" call where the field's old value
+/// went somewhere else first.
+///
+/// Lowering emits one at every container field assignment, because that is
+/// where the types are and a field write always replaces something (#1198). It
+/// cannot see, from there, whether a *name* took the old value on the way:
+///
+/// ```text
+/// h.list = h.list.filter(…)      // the chain reads it and is done with it
+/// let old = h.list               // `old` holds it
+/// h.list = Vec.new()             // freeing here is a use-after-free for `old`
+/// ```
+///
+/// Both read the handle out of the slot. What separates them is whether a name
+/// still holding it is read after the free — so the answer needs liveness, and
+/// this is the first place in the pipeline that has it.
+fn withdraw_unsafe_slot_frees(func: &mut MirFunction) {
+    let mut doomed: Vec<(usize, usize)> = Vec::new();
+    {
+        let dom = crate::analysis::dominators::DominatorTree::build(func);
+        let live = crate::analysis::liveness::analyze(func, &dom);
+        // Every name a field read put a slot's handle into, and where that read
+        // is: (base, offset) -> [(name, block, statement)].
+        let mut read_out: HashMap<(LocalId, u32), Vec<(LocalId, usize, usize)>> = HashMap::new();
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for (si, stmt) in block.statements.iter().enumerate() {
+                if let MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base: MirOperand::Local(base), byte_offset, .. },
+                } = &stmt.kind
+                {
+                    read_out
+                        .entry((*base, byte_offset.unwrap_or(0)))
+                        .or_default()
+                        .push((*dst, bi, si));
+                }
+            }
+        }
+        for (bi, block) in func.blocks.iter().enumerate() {
+            for (si, stmt) in block.statements.iter().enumerate() {
+                let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+                if !rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
+                    continue;
+                }
+                let Some(MirOperand::Local(old)) = args.first() else { continue };
+                // Which slot this came out of.
+                let Some(slot) = read_out
+                    .iter()
+                    .find(|(_, names)| names.iter().any(|(n, ..)| n == old))
+                    .map(|(slot, _)| *slot)
+                else {
+                    continue;
+                };
+                // Only a read that happened *before* this: one after it reads
+                // the replacement, which is the aggregate's own to free and
+                // says nothing about the value going away here.
+                let earlier = read_out
+                    .get(&slot)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(o, ob, os)| {
+                        o != old
+                            && if *ob == bi { *os < si } else { dom.dominates(func.blocks[*ob].id, block.id) }
+                    });
+                // Under any name it was copied into, not just the one the read
+                // landed in: `let old = h.list` is two statements, and the one
+                // that outlives the write is the second.
+                let held_under: HashSet<LocalId> =
+                    earlier.clone().flat_map(|(o, ..)| copied_onward(func, *o)).collect();
+                let still_held = held_under.iter().any(|o| {
+                    live.live_at_exit(block.id, *o)
+                        || block.statements[si + 1..]
+                            .iter()
+                            .any(|st| crate::analysis::uses::stmt_reads(st, *o))
+                        || crate::analysis::uses::terminator_reads(&block.terminator, *o)
+                });
+                if still_held {
+                    doomed.push((bi, si));
+                }
+            }
+        }
+    }
+    for (bi, si) in doomed.into_iter().rev() {
+        func.blocks[bi].statements.remove(si);
+    }
+}
+
+/// `start` and every name a copy or a phi carries its value on to.
+fn copied_onward(func: &MirFunction, start: LocalId) -> HashSet<LocalId> {
+    let mut out: HashSet<LocalId> = HashSet::from([start]);
+    loop {
+        let mut grew = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            let carried = match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                    out.contains(src).then_some(*dst)
+                }
+                MirStmtKind::Phi { dst, args } => args
+                    .iter()
+                    .any(|(_, op)| matches!(op, MirOperand::Local(s) if out.contains(s)))
+                    .then_some(*dst),
+                _ => None,
+            };
+            if let Some(dst) = carried {
+                grew |= out.insert(dst);
+            }
+        }
+        if !grew {
+            return out;
+        }
+    }
 }
 
 /// The suffix a closure's environment-drop function carries.
