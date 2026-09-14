@@ -267,11 +267,27 @@ drop the write, aggregates keep it at any size. Raised on #899, where
 
 ## Running it
 
+All of them, because a short list is how one gets missed — `agentbench_gate.sh`
+was off this list and held the one program in the corpus written in a shape a
+new compile error made illegal, so CI found it after the push instead of the
+laptop finding it before.
+
 ```
 tests/differential.sh          # every suite file, both backends, compared
+tests/leak_gate.sh             # allocations never released, against the ledger
 tests/examples_gate.sh
 tests/projects_gate.sh
+tests/prototypes_gate.sh
+tests/packages_gate.sh
+tests/tutorials_gate.sh
+tests/book_gate.sh
+tests/spellings_gate.sh        # every internal MIR name is accounted for
 tests/fmt_roundtrip_gate.sh    # catches `rask fmt` breaking a file — it did, twice
+tests/agentbench_gate.sh       # nineteen more ordinary programs, no model called
+tests/clang_gate.sh            # the C runtime, under a second compiler
 rask test-specs specs/
 cd compiler && cargo test --release --workspace
 ```
+
+`http_api_harness.sh` isn't one of these — it wants a port and a running server,
+and CI doesn't run it.
