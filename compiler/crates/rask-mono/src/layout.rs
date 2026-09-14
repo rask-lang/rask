@@ -426,6 +426,25 @@ pub fn parse_field_type(s: &str) -> Type {
         }
     }
 
+    // A tuple: `(A, B)`. Same gap the function type below had — the whole form
+    // fell through to the unknown name at the bottom, so `Holder<(i64, string)>`
+    // keyed its instance layout under the source text while mono keyed it under
+    // `tup…`, the two never met, and the caller's 24-byte tuple was read as 8
+    // (#1208).
+    //
+    // One element in parens is that type, not a one-tuple; `()` is the unit and
+    // falls through to the table below.
+    if let Some(inner) = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        if !inner.trim().is_empty() {
+            let elems: Vec<Type> =
+                split_type_args(inner).into_iter().map(parse_field_type).collect();
+            return match elems.len() {
+                1 => elems.into_iter().next().expect("checked"),
+                _ => Type::Tuple(elems),
+            };
+        }
+    }
+
     // A function type: `func(A, B) -> R`. Without this the whole form fell
     // through to the unknown name at the bottom — which warns, and sizes the
     // field as a pointer. The size is right; the missing part is the identity,

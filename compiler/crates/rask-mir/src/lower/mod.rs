@@ -774,32 +774,25 @@ impl<'a> MirContext<'a> {
 
     /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
     ///
-    /// The key is built the same way `rask_mono::generic_instance_name` builds it,
-    /// which for a written argument is the argument's own spelling — a name for a
-    /// user type, the primitive's name otherwise. A nested `One<One<Big>>` folds
-    /// the same way because its inner `<…>` becomes `$…` too.
+    /// The written arguments are parsed back into types and handed to the same
+    /// `rask_mono::generic_instance_name` that named the layout, so there is one
+    /// spelling rather than two that have to agree.
+    ///
+    /// They didn't. This used to build the key by hand from the source text,
+    /// which matched for a name and a nested `<…>` and parted company on a
+    /// tuple: mono names `Holder<(i64, string)>`'s layout `Holder$tupi64$string`
+    /// and this looked for `Holder$(i64, string)`, found nothing, and fell back
+    /// to the shared 8-byte layout. `first(h)` then read eight bytes of a
+    /// 24-byte tuple and the string came back empty — the answer was wrong, not
+    /// just slow, and only on native.
     fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
         let args = generic_args_of_str(full)?;
         if args.is_empty() {
             return None;
         }
-        let mut parts = Vec::with_capacity(args.len());
-        for arg in args {
-            // A nested instantiation, spelled the same way.
-            let key = match arg.split_once('<') {
-                Some(_) => {
-                    let inner = generic_args_of_str(arg)?;
-                    let head = arg.split('<').next()?.trim();
-                    format!("{}${}", head, inner.join("$"))
-                }
-                None => arg.trim().to_string(),
-            };
-            if key.is_empty() {
-                return None;
-            }
-            parts.push(key);
-        }
-        let name = format!("{}${}", base.trim(), parts.join("$"));
+        let parsed: Vec<rask_types::Type> =
+            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
+        let name = rask_mono::generic_instance_name(base.trim(), &parsed, self.type_names)?;
         if let Some((idx, sl)) = self.find_struct(&name) {
             return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
         }

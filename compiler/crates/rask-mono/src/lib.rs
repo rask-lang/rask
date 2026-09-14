@@ -357,6 +357,21 @@ fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) ->
     }
 }
 
+/// Does storing this type argument in a field make the aggregate responsible
+/// for heap the shared layout wouldn't know about?
+///
+/// A container is a handle and a closure is a pointer to its block, so both fit
+/// the shared word and both are invisible in it: the shared layout says `i64`,
+/// the release walk believes it, and nobody gives the storage back. The
+/// instance layout names the real type, which is what `container_free_for`
+/// reads to pick `rask_vec_free` or `rask_closure_free`.
+fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        _ => arg_head_name(ty, type_names).is_some_and(|h| arg_owns_storage(&h)),
+    }
+}
+
 /// One type argument, spelled so it can key a layout. `None` for anything whose
 /// identity isn't settled — an inference variable, an unresolved parameter name,
 /// a shape with one of those inside.
@@ -398,6 +413,17 @@ fn type_arg_key(
                 parts.push(type_arg_key(elem, type_names)?);
             }
             format!("tup{}", parts.join("$"))
+        }
+        // A closure argument. The arity goes in the key because the parameters
+        // and the return run together otherwise, and `func(i64, i64) -> void`
+        // would key the same as `func(i64) -> func(i64) -> void`.
+        Type::Fn { params, ret } => {
+            let mut parts = Vec::with_capacity(params.len() + 1);
+            for p in params {
+                parts.push(type_arg_key(p, type_names)?);
+            }
+            parts.push(type_arg_key(ret, type_names)?);
+            format!("fn{}${}", params.len(), parts.join("$"))
         }
         // Spelled exactly as the source writes it, because MIR reaches the same
         // layout from a type *string* — `Wrap<i64?>` there splits into the
@@ -809,9 +835,7 @@ fn monomorphize_inner(
             // type out from under method dispatch: `Map$string$Vec$i32_index`,
             // a function nobody emitted.
             let owns = !is_stdlib_span(decl.span)
-                && args
-                    .iter()
-                    .any(|a| arg_head_name(a, &type_names).is_some_and(|h| arg_owns_storage(&h)));
+                && args.iter().any(|a| arg_owns_heap(a, &type_names));
             if !overflows && !owns {
                 continue;
             }
