@@ -435,13 +435,15 @@ p21_sequence_adapters.rk  # 2 allocations — one closure block per element out 
                         # the source closure it swallowed is freed by nobody. Two
                         # mechanisms could own it and neither reaches this shape; the
                         # issue has the measurements for both attempts.
-t42_flatten_shaped_header.rk  # 1 allocation — a closure in a struct field, #1204. The
-                        # layout can't parse a `func(...)` field type, so it lands as an
-                        # unknown and the release walk emits nothing for it. The other
-                        # 2 were a `Vec` type argument of a generic struct: the shared
-                        # generic layout put `i64` in the parameter slot and the walk
-                        # read a scalar. Fixed by giving such an instantiation its own
-                        # layout — the same machinery an oversized argument gets.
+t42_flatten_shaped_header.rk  # 1 allocation — a closure held through a *generic*
+                        # struct field, #1204. A plain `func(...)` field is freed now; the
+                        # generic spelling shares the one layout every generic type gets,
+                        # with an `i64` in the parameter slot, so the walk reads a scalar.
+                        # The instance layout that fixed it for containers can't be made
+                        # here: a function type has no key `type_arg_key` can name, and
+                        # MIR reaches the same layout from a type string, so the spelling
+                        # has to be settled in two places at once. The other 2 allocations
+                        # were the container version of the same hole and are gone.
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data), and it is
                         # #1198: `swap_out` consumes the bag through `eat(b)` and then
                         # writes a fresh one over the same slot, so the vector the
@@ -454,17 +456,19 @@ t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rew
                         # edge — so the old value looks live where it is dead and gets no
                         # release. #1200; the same loop without the filter is clean. (Not the
                         # chain's environment, which the old note claimed.)
-t_closure_diverging_return.rk  # 2 allocations — a closure block and a string, both
+t_closure_diverging_return.rk  # 2 allocations, deferred — a closure block and a string,
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
                         # not this theme. The file's other three tests are clean.
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
-t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel —
-                        # a task killed by a panic doesn't unwind its captures (#299, v0.5).
-                        # The largest of the three panic entries; between them they are 13 of
-                        # what is left, and none of it is v0.3's theme.
+t_month_panic_observed.rk  # 9 allocations, deferred — six strings, six closure blocks
+                        # and a channel. A task killed by a panic doesn't unwind its
+                        # captures (#299). The largest of the three panic entries; between
+                        # them they are 13 allocations, and none of it is v0.3's theme.
 t_rack_stale_records.rk  # 2 allocations — a container field written over, #1198
-t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
-t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment
-                        # holds, and the leaking test is the one that joins a *panicked*
-                        # task. Same cause as the two above: #299, v0.5.
+t_shared_box_freed.rk  # 2 allocations, deferred — the `s.clone()` handle, deliberately
+                        # not freed: the test is what a box held on purpose looks like, so
+                        # this one is never going to be zero.
+t_spawn_join_result.rk  # 2 allocations, deferred — a closure block and the string its
+                        # environment holds. The leaking test is the one that joins a
+                        # *panicked* task, so it is #299 like the two above.

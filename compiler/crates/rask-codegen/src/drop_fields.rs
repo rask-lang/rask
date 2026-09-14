@@ -93,6 +93,14 @@ pub fn owned_fields(
 /// TypeId and no name, and there is no table here to look one up in. Rendering
 /// it and taking the head is what works.
 pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
+    // A closure a field holds is the aggregate's: storing one moves it in, and
+    // the frame stops dropping it the moment it does. The block describes
+    // itself — `rask_closure_free` reads its size and its environment glue out
+    // of the header words — so this needs nothing type-specific, and a bare
+    // function used as a value is wrapped in a block like any other closure.
+    if matches!(ty, RaskType::Fn { .. }) {
+        return Some("rask_closure_free");
+    }
     let rendered = format!("{}", ty);
     // Only the container itself. `Vec<i64>?` renders with the same head and is
     // a different thing: the slot holds a tag and a payload, the handle is

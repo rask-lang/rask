@@ -426,6 +426,40 @@ pub fn parse_field_type(s: &str) -> Type {
         }
     }
 
+    // A function type: `func(A, B) -> R`. Without this the whole form fell
+    // through to the unknown name at the bottom — which warns, and sizes the
+    // field as a pointer. The size is right; the missing part is the identity,
+    // and without it the release walk had nothing to say about a closure a
+    // field holds (#1204).
+    if let Some(rest) = s.strip_prefix("func(") {
+        // The paren that closes the one just stripped, since a parameter can be
+        // a function type of its own.
+        let mut depth = 1usize;
+        let close = rest.char_indices().find_map(|(i, c)| match c {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' => {
+                depth -= 1;
+                (depth == 0).then_some(i)
+            }
+            _ => None,
+        });
+        if let Some(close) = close {
+            let params = match rest[..close].trim() {
+                "" => Vec::new(),
+                list => split_type_args(list).into_iter().map(parse_field_type).collect(),
+            };
+            let after = rest[close + 1..].trim();
+            let ret = match after.strip_prefix("->") {
+                Some(r) => parse_field_type(r.trim()),
+                None => Type::Unit,
+            };
+            return Type::Fn { params, ret: Box::new(ret) };
+        }
+    }
+
     // Generic types: Name<Args>
     if let Some(angle) = s.find('<') {
         if s.ends_with('>') {
@@ -495,6 +529,9 @@ fn split_type_args(s: &str) -> Vec<&str> {
         match c {
             '<' => depth += 1,
             '>' => depth -= 1,
+            // A parameter that is itself a function type has commas of its own.
+            '(' => depth += 1,
+            ')' => depth -= 1,
             ',' if depth == 0 => {
                 result.push(s[start..i].trim());
                 start = i + 1;
