@@ -381,6 +381,23 @@
 # and lost the second. Both are fixed points now
 # (`t_any_error_boxing.rk` and `t_bare_error_type.rk` clean).
 #
+# And 34 once an `own` capture of a refcounted handle took a reference (#1139).
+# A `Sender<T>` is one word, so `spawn(own || …)` copied the handle and nothing
+# bumped the channel's sender count: N tasks shared one sender. The pass had
+# been conservative about it rather than wrong — a glue may not own a capture
+# defined outside the loop that builds it, because every turn hands out the same
+# value — so it leaked the handles instead of closing the channel under a task
+# still sending into it.
+#
+# The clone goes at the create site, which is also what makes every rule here
+# land without a special case: it is defined where the closure is built, so it
+# is that capture's only capturer, it is made each turn, and `Sender_clone` is
+# already a constructor the pass knows. Only where the frame still has the
+# handle afterwards — `own` on the last use is a *move*, and
+# `spawn(own || { … tx.close() })` depends on it: clone that one and the frame
+# keeps a sender open, the receiver never learns the channel is done, and the
+# file hangs instead of leaking (`t_channel_spawned_producer.rk` clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -398,7 +415,6 @@ t_capture_freed_with_its_closure.rk  # 2 allocations — a string accumulator re
                         # edge — so the old value looks live where it is dead and gets no
                         # release. #1200; the same loop without the filter is clean. (Not the
                         # chain's environment, which the old note claimed.)
-t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string, both
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`

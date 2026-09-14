@@ -39,7 +39,144 @@ fn free_for(ctor: &str) -> Option<&'static str> {
     crate::elem_strs::free_fn(ctor)
 }
 
+/// What puts a reference back on a handle its free gives up.
+///
+/// Only the three that have both halves in the runtime. A `Receiver` is
+/// single-owner and a `Cell` has no dispatchable clone, so neither belongs
+/// here — and leaving one out leaks where getting it wrong closes a channel
+/// under a task still sending into it.
+fn retain_for(free: &str) -> Option<&'static str> {
+    match free {
+        "Sender_drop" => Some("Sender_clone"),
+        "Shared_drop" => Some("Shared_clone"),
+        "Mutex_drop" => Some("Mutex_clone"),
+        _ => None,
+    }
+}
+
+/// `own`-capture a refcounted handle by taking a reference to it (#1139).
+///
+/// A `Sender<T>` is one word, so `spawn(own || …)` copied the handle into the
+/// environment and nothing bumped the channel's sender count: N tasks shared
+/// one sender, and whichever glue dropped it first closed the channel under
+/// the rest. The conservative answer — don't let a glue own a capture defined
+/// outside the loop that builds it — is what `t_channel_spawned_producer.rk`
+/// records, and it leaks the handles instead.
+///
+/// Cloning at the create site is what the program means there: N senders, one
+/// per task. It also makes every rule below land right with no special case —
+/// the clone is defined where the closure is built, so it is that capture's
+/// only capturer, it is made each turn, and `Sender_clone` is a constructor
+/// the pass already knows, which makes the clone fresh under its own name. The
+/// frame keeps owning the handle it started with, because the environment no
+/// longer names it.
+///
+/// Only where the frame still has the handle afterwards. `own` on the last use
+/// is a *move*, and that is what one program in three relies on:
+///
+/// ```text
+/// spawn(own || { for i in 1..n { tx.send(i) }  tx.close() })
+/// ```
+///
+/// Closing an end is dropping it, and the point of moving the only sender in
+/// is that closing it there closes the channel. Clone that one and the frame
+/// keeps a sender open, the receiver never learns the channel is done, and the
+/// program hangs — which is what the first cut of this did to
+/// `t_channel_spawned_producer.rk`.
+fn retain_handle_captures(func: &mut MirFunction) {
+    let mut made: HashMap<LocalId, &'static str> = HashMap::new();
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let live = crate::analysis::liveness::analyze(func, &dom);
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
+            let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
+            let base = head.split('$').next().unwrap_or(head);
+            if let Some(free) = free_for(base) {
+                made.insert(*dst, free);
+            }
+        }
+    }
+    if made.is_empty() {
+        return;
+    }
+    let mut next_id = func
+        .locals
+        .iter()
+        .chain(func.params.iter())
+        .map(|l| l.id.0)
+        .max()
+        .map_or(0, |m| m + 1);
+
+    for bi in 0..func.blocks.len() {
+        // (statement index, the clone to run before it, captures to rewrite)
+        let mut work: Vec<(usize, Vec<(usize, LocalId, LocalId, &'static str)>)> = Vec::new();
+        for (si, stmt) in func.blocks[bi].statements.iter().enumerate() {
+            let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else {
+                continue;
+            };
+            let mut here = Vec::new();
+            for (ci, c) in captures.iter().enumerate() {
+                if c.by_ref {
+                    continue;
+                }
+                let Some(retain) = made.get(&c.local_id).and_then(|f| retain_for(f)) else {
+                    continue;
+                };
+                // Still the frame's after this? Then the environment needs a
+                // reference of its own. Otherwise the capture is the last use
+                // and `own` is the move it reads as.
+                let block = &func.blocks[bi];
+                let kept_after = live.live_at_exit(block.id, c.local_id)
+                    || block.statements[si + 1..]
+                        .iter()
+                        .any(|st| crate::analysis::uses::stmt_reads(st, c.local_id))
+                    || crate::analysis::uses::terminator_reads(&block.terminator, c.local_id);
+                if !kept_after {
+                    continue;
+                }
+                let fresh_id = LocalId(next_id);
+                next_id += 1;
+                here.push((ci, c.local_id, fresh_id, retain));
+            }
+            if !here.is_empty() {
+                work.push((si, here));
+            }
+        }
+        for (si, here) in work.into_iter().rev() {
+            let mut clones = Vec::new();
+            for (ci, from, to, retain) in here {
+                let ty = func.local_ty(from).cloned().unwrap_or(MirType::Ptr);
+                func.locals.push(crate::MirLocal {
+                    id: to,
+                    name: None,
+                    ty,
+                    is_param: false,
+                    container: None,
+                });
+                clones.push(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(to),
+                    func: FunctionRef::internal(retain.to_string()),
+                    args: vec![MirOperand::Local(from)],
+                }));
+                if let MirStmtKind::ClosureCreate { captures, .. } =
+                    &mut func.blocks[bi].statements[si].kind
+                {
+                    captures[ci].local_id = to;
+                }
+            }
+            for stmt in clones.into_iter().rev() {
+                func.blocks[bi].statements.insert(si, stmt);
+            }
+        }
+    }
+}
+
 pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
+    // Before anything reads the MIR: an `own` capture of a refcounted handle
+    // becomes a capture of a fresh reference to it (#1139).
+    for func in fns.iter_mut() {
+        retain_handle_captures(func);
+    }
     // Which bodies a call through a closure can reach, so the by-name answer
     // below covers those calls too (#943). Built first: it reads only the MIR,
     // and the "hands a container back" fixed point needs it.
