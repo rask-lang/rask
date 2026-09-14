@@ -468,11 +468,3 @@ t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately 
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment
                         # holds, and the leaking test is the one that joins a *panicked*
                         # task. Same cause as the two above: #299, v0.5.
-t_string_builder_mutate.rk  # 1 allocation — the builder's own header, #1203. A
-                        # `mutate StringBuilder` parameter is passed by address, so the
-                        # builder moves into a stack slot and `&slot` goes to the callee —
-                        # the store hands it to the slot and the `&` puts the slot out of
-                        # reach, so no name is left to free. A Vec through the same shape is
-                        # clean: it goes by value with a writeback, not by address. The
-                        # orphaned lines that used to sit here belonged to entries deleted
-                        # when their files went clean.

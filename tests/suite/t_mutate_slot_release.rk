@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a `mutate` parameter's slot holds, when the value goes by address.
+//
+// A `mutate StringBuilder` moves the builder into a stack slot and the callee
+// gets `&slot`. Both halves put it out of the drop pass's reach: the store
+// hands the builder to the slot, and the `&` hands the slot to the callee. No
+// name was left holding it and nothing freed it.
+//
+// Freeing the slot at every exit is right because of mem.parameters/PM2 — a
+// `mutate` callee has to leave something valid there, so whether it replaced
+// the value or not the slot names a live one when it returns. The exception is
+// the frame consuming it itself, which `build()` does, and the release has to
+// stand down there.
+import string.StringBuilder
+
+func fill(mutate b: StringBuilder) {
+    b.push("hello")
+}
+
+// Consume and replace: `build` takes the builder, so something has to be put
+// back before this returns.
+func flush_into(mutate out: Vec<string>, mutate b: StringBuilder) {
+    if !b.is_empty() {
+        out.push(b.build())
+        b = StringBuilder.new()
+    }
+}
+
+func main() {}
+
+test "a builder filled through a mutate parameter" {
+    mut b = StringBuilder.new()
+    fill(mutate b)
+    assert b.len() == 5
+}
+
+test "a builder the frame never builds" {
+    mut b = StringBuilder.new()
+    fill(mutate b)
+    fill(mutate b)
+    assert b.len() == 10
+}
+
+test "flush and reset, and the replacement is what's left" {
+    mut out = Vec.new()
+    mut b = StringBuilder.new()
+
+    b.push("one")
+    flush_into(mutate out, mutate b)
+    b.push("two")
+    flush_into(mutate out, mutate b)
+    // Empty now — nothing to append, and nothing replaced.
+    flush_into(mutate out, mutate b)
+
+    assert out.len() == 2
+    assert out[0] == "one"
+    assert out[1] == "two"
+}
+
+test "the frame builds it itself" {
+    mut b = StringBuilder.new()
+    fill(mutate b)
+    assert b.build() == "hello"
+}

@@ -1724,7 +1724,7 @@ fn cells_this_frame_frees(
     trait_kept: &HashMap<String, Vec<bool>>,
     trait_handing: &HashMap<String, HandBack>,
 ) -> Vec<(LocalId, &'static str, BlockId)> {
-    let by_ref_cells: HashSet<LocalId> = func
+    let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
@@ -1736,6 +1736,7 @@ fn cells_this_frame_frees(
         .filter(|c| c.by_ref)
         .map(|c| c.local_id)
         .collect();
+    by_ref_cells.extend(slots_whose_address_is_taken(func));
     if by_ref_cells.is_empty() {
         return Vec::new();
     }
@@ -1789,6 +1790,12 @@ fn cells_this_frame_frees(
         })
         .collect();
 
+    // The store names whatever lowering last copied the constructor's result
+    // into, not the result itself — `_9 = StringBuilder_new(); _10 = _9;
+    // *(_1+0) = _10`. Asking about `_10` alone answered "not this frame's".
+    let mut fresh_by_copy = fresh.clone();
+    follow_copies(func, &mut fresh_by_copy);
+
     let mut out = Vec::new();
     for cell in &by_ref_cells {
         if handed_on.contains(cell) {
@@ -1796,7 +1803,7 @@ fn cells_this_frame_frees(
         }
         let Some(values) = stores.get(cell) else { continue };
         let [(MirOperand::Local(src), store_block)] = values.as_slice() else { continue };
-        let Some(free) = fresh.get(src).copied() else { continue };
+        let Some(free) = fresh_by_copy.get(src).copied() else { continue };
         if !cell_is_read_only_in_closures(func, all, *cell) {
             continue;
         }
@@ -1824,6 +1831,32 @@ fn cells_this_frame_frees(
         out.push((*cell, free, *store_block));
     }
     out
+}
+
+/// The other way a variable becomes a cell: something took its address.
+///
+/// Lowering makes a `Ref` for a `mutate` argument and for a closure capture;
+/// the capture half is already in the set above, so in practice this is the
+/// `mutate` ones. Same shape and the same reasoning either way. The store into
+/// the slot hands the value to the slot, and the `&` on the slot puts the slot
+/// itself out of reach, so no name is left holding it — a `StringBuilder`
+/// passed to a `mutate` parameter was freed by nobody (#1203). A `Vec` doesn't
+/// hit this: a `mutate` vector goes by value with a writeback, not by address.
+///
+/// What makes the slot safe to free at every exit is mem.parameters/PM2: a
+/// `mutate` callee has to leave something valid there, so whether it replaced
+/// the value or not, the slot names a live one when it returns. The frame
+/// consuming it itself is the case that isn't safe — `b.build()` takes the
+/// builder — and the `find_escaping` check on what comes out of the cell is
+/// what stands the release down there.
+fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
+    let mut addr_of: HashMap<LocalId, LocalId> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } = &stmt.kind {
+            addr_of.insert(*dst, *src);
+        }
+    }
+    addr_of.into_values().collect()
 }
 
 /// Free what a capture cell holds, on the way out of the frame.
