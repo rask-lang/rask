@@ -204,6 +204,9 @@ void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
 // itself and hands them to the program, which is what frees them.
 extern const int32_t rask_elem_strs_one[1];
 extern const int32_t rask_elem_strs_pair[2];
+// Elements that are themselves container handles, for the runtime calls that
+// build a `Vec<Vec<T>>`.
+extern const int32_t rask_elem_vec_one[1];
 
 RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,

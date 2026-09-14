@@ -264,6 +264,13 @@
 # longer read as moved-away by that copy, because the path that leaves the loop
 # never ran it (#1154, `t29_branch_merge.rk` 7 → clean).
 #
+# And 73 once `v.chunks(n)` said what its result holds. It builds a
+# `Vec<Vec<T>>` and handed the outer vector a null element map, so the free
+# gave back the array of handles and every chunk in it leaked. The element map
+# already has a kind for "this element is a container" — the outer vector just
+# never carried one (`t38_lazy_collection_adapters.rk` 6 → clean; the whole
+# leak was that one test, not the adapter captures the old note claimed).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -274,7 +281,6 @@
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p12_rack_link_churn.rk  # 2 allocations — one Vec (handle and data)
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
-t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only
 t_any_error_boxing.rk  # 1 allocation — one boxed error's block, returned rather than held in a container (#1149)

@@ -32,6 +32,10 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op);
 
 const int32_t rask_elem_strs_one[1] = {0};
 const int32_t rask_elem_strs_pair[2] = {0, 16};
+// The element *is* a container handle: one entry, offset zero, kind VEC. What
+// a runtime call that builds a `Vec<Vec<T>>` has to hand its result, or the
+// free walks the outer array and leaves every inner vector behind.
+const int32_t rask_elem_vec_one[1] = {(int32_t)(RASK_OWNED_VEC << RASK_OWNED_KIND_SHIFT)};
 
 // One entry of an element map. Shared by every container's free and retain
 // walks — the encoding is described next to `RaskElemStrs` in the header.
@@ -700,7 +704,10 @@ void rask_vec_retain_all(RaskVec *v) {
 // chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.
 // Each chunk is a freshly allocated Vec with copied elements.
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
-    RaskVec *result = rask_vec_new(8, NULL, 0); // Vec of pointers (8 bytes each)
+    // A Vec of Vec handles. Saying so is what makes freeing the result free
+    // the chunks: with a NULL element map the free gave back the array of
+    // pointers and every chunk in it leaked.
+    RaskVec *result = rask_vec_new(8, rask_elem_vec_one, 1);
     if (!src || chunk_size <= 0) return result;
     for (int64_t i = 0; i < src->len; i += chunk_size) {
         int64_t remaining = src->len - i;
