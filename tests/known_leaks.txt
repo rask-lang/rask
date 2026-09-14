@@ -392,7 +392,12 @@ p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
-t_capture_freed_with_its_closure.rk  # 2 allocations — two strings the chain's environment holds (the trace says `str_alloc_header`, not the sequences the old note claimed)
+t_capture_freed_with_its_closure.rk  # 2 allocations — a string accumulator rewritten every
+                        # turn of a *filtered* loop. The filter adds a second merge, and a phi
+                        # operand reads as live out of every predecessor rather than its own
+                        # edge — so the old value looks live where it is dead and gets no
+                        # release. #1200; the same loop without the filter is clean. (Not the
+                        # chain's environment, which the old note claimed.)
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
 t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string, both
