@@ -83,11 +83,84 @@ pub fn insert_rc_ops(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) 
 
         // A returned parameter is handed out, not owned — take a reference for it.
         retain_returned_params(func, &string_locals);
+
+        // And a write through a captured variable's address gives back what
+        // that variable held.
+        release_replaced_captures(func, &string_locals);
     }
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
     insert_aggregate_release(func, kept);
+}
+
+/// Release what a captured string variable held, where a closure writes a new
+/// one over it.
+///
+/// ```text
+/// mut seen = ""
+/// upto(2).for_each(|x| { seen = "{seen}{prefix}:{x};" })
+/// ```
+///
+/// The closure captures `seen` by reference, so the body holds the address of
+/// the frame's variable and the write is a store through it
+/// (mem.closures/MC1). The new string is retained for the slot and the one it
+/// replaced was released by nobody — one buffer per turn but the last (#1162).
+///
+/// No aliasing guard, unlike the container case: a string is refcounted, so
+/// every name holds a count of its own and giving back the slot's is right
+/// whoever else is reading. And a capture points at a variable the frame
+/// established before building the closure, so a store through one is always a
+/// replacement — there is no "is this the first write" to get wrong.
+fn release_replaced_captures(func: &mut MirFunction, string_locals: &[LocalId]) {
+    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+    // Addresses of a captured variable, as the body sees them.
+    let capture_refs: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => Some(*dst),
+            _ => None,
+        })
+        .collect();
+
+    for block_idx in 0..func.blocks.len() {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
+            let MirStmtKind::Store { addr, value, offset: 0, .. } = &stmt.kind else {
+                continue;
+            };
+            if !capture_refs.contains(addr) || !strings.contains(addr) {
+                continue;
+            }
+            // Writing the slot back to itself replaces nothing.
+            if uses::operand_local(value) == Some(*addr) {
+                continue;
+            }
+            // A `Call`, not an `RcDec`. A dec on this name reads as "give back
+            // the reference this name took", and a capture read takes none —
+            // so `rc_elide` strips it, correctly, along with the one this
+            // wants. What is being released is the reference the *slot* holds,
+            // which is a different thing wearing the same local.
+            insertions.push((
+                si,
+                MirStmt::new(
+                    MirStmtKind::Call {
+                        dst: None,
+                        func: crate::FunctionRef::internal(
+                            "string_free_replaced".to_string(),
+                        ),
+                        args: vec![MirOperand::Local(*addr)],
+                    },
+                    stmt.span,
+                ),
+            ));
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            func.blocks[block_idx].statements.insert(idx, stmt);
+        }
+    }
 }
 
 /// Insert `RcInc` after each assignment that copies a string local.
@@ -1237,47 +1310,6 @@ fn enclosing_aggregates(func: &MirFunction) -> HashMap<LocalId, LocalId> {
     out
 }
 
-/// Do this block's stores into `group` cover every byte of the value?
-///
-/// A struct literal does: field by field from offset zero. An update of one or
-/// two fields does not, and the difference is what separates "the old value is
-/// nobody's business here" from "most of it is still the one from before".
-///
-/// Called only for a shape whose width is a fixed set of bytes; the caller
-/// answers "whole" outright for everything else.
-fn block_writes_whole_value(block: &crate::MirBlock, group: &HashSet<LocalId>, size: u32) -> bool {
-    if size == 0 {
-        return true;
-    }
-    let mut written: Vec<(u32, u32)> = block
-        .statements
-        .iter()
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Store { addr, offset, store_size, .. } if group.contains(addr) => {
-                Some((*offset, store_size.unwrap_or(8) as u32))
-            }
-            _ => None,
-        })
-        .collect();
-    if written.is_empty() {
-        return false;
-    }
-    // A gap smaller than a word is alignment padding, not a field left over.
-    // `struct Order { id: i32, items: Vec<Item> }` is twelve bytes of fields in
-    // sixteen, and a tagged shape puts a one-byte tag at zero and its payload
-    // at eight. A gap of a word or more is a field this block didn't write, and
-    // whatever it holds came from before the block — which is the whole point.
-    written.sort_by_key(|(at, _)| *at);
-    let mut covered = 0u32;
-    for (at, len) in written {
-        if at.saturating_sub(covered) >= 8 {
-            return false;
-        }
-        covered = covered.max(at.saturating_add(len));
-    }
-    size.saturating_sub(covered) < 8
-}
-
 /// Does a release for this group already exist in the function?
 fn already_released(func: &MirFunction, group: &HashSet<LocalId>) -> bool {
     func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| {
@@ -1316,57 +1348,18 @@ fn aggregate_liveness(
 
     // How big the value each group names is, so "did this block write all of
     // it" has an answer.
-    // Only a plain struct or tuple: there, "the whole value" is a fixed set of
-    // bytes and a block either writes all of them or doesn't. A tagged shape —
-    // an enum, a `T?`, a `T or E` — writes the tag and *one variant's* payload,
-    // which is a complete write of the value and never covers the union. So
-    // those keep the older rule, where any store into them is a write.
-    let group_size: Vec<u32> = groups
-        .iter()
-        .map(|g| {
-            func.locals
-                .iter()
-                .chain(func.params.iter())
-                .filter(|l| {
-                    g.contains(&l.id)
-                        && matches!(l.ty, MirType::Struct(_) | MirType::Tuple(_))
-                })
-                .map(|l| l.ty.size() as u32)
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-
     for (bi, block) in func.blocks.iter().enumerate() {
         for (gi, group) in groups.iter().enumerate() {
-            // Does this block write the whole value, or only part of it?
-            //
-            // Building a literal writes every field, and the value that was
-            // there before is nobody's business — which is what lets a group
-            // ever be dead. Writing *two fields of six* is not that: the rest
-            // of the value came from before the block and is still live, and
-            // reading the whole thing a kill is what put `parse_args`'s release
-            // at the top of the function, one statement after the struct was
-            // built and long before it was finished with. It freed the `files`
-            // vector while the struct still held it, which was silent only
-            // because nothing read the field before the next write (#1198 found
-            // it by adding a second free at that write).
-            // A size of zero means "not a shape coverage can answer for", and
-            // `block_writes_whole_value` reads it as the old rule: every store
-            // is a write.
-            let whole = group_size[gi] == 0
-                || block_writes_whole_value(block, group, group_size[gi]);
             let mut written = false;
             for stmt in &block.statements {
                 // A store names the aggregate as its destination address. That
                 // is the write, not a use of what was there before — counting
                 // it as a read made every group look upward-exposed, so nothing
                 // was ever dead and nothing was ever released.
-                let stores_into = whole
-                    && matches!(
-                        &stmt.kind,
-                        MirStmtKind::Store { addr, .. } if group.contains(addr)
-                    );
+                let stores_into = matches!(
+                    &stmt.kind,
+                    MirStmtKind::Store { addr, .. } if group.contains(addr)
+                );
                 let reads = if stores_into {
                     match &stmt.kind {
                         MirStmtKind::Store { value, .. } => uses::operand_local(value)

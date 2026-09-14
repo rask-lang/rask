@@ -530,33 +530,6 @@ impl<'a> MirLowerer<'a> {
                         }));
                     }
                 }
-                // A container written over a *field* replaces one the aggregate
-                // owned, and nothing else is going to give that one back: a
-                // handle stored into an aggregate is the aggregate's, and the
-                // aggregate's own release frees whatever is in the slot at the
-                // end — which is the replacement. `h.list = h.list.filter(…)`
-                // left the vector it replaced to nobody (#1198).
-                //
-                // Only a field. A whole variable overwritten is the drop pass's
-                // to place, and it does (#1154). And only an assignment: a
-                // struct literal *builds* the slot, so there is nothing in it
-                // to free, and the two arrive on different paths — you cannot
-                // write `bag.items = …` before `bag` exists.
-                if matches!(&target.kind, ExprKind::Field { .. }) {
-                    if let Some(func) = self
-                        .ctx
-                        .lookup_raw_type(target.id)
-                        .cloned()
-                        .and_then(|t| self.ctx.container_field_free(&t))
-                    {
-                        let (old_op, _) = self.lower_expr(target)?;
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal(func.to_string()),
-                            args: vec![old_op],
-                        }));
-                    }
-                }
                 // A container of links that arrived whole — a `filter` result,
                 // say — carries edges nothing recorded. Register them here; the
                 // records dedupe per (container, target), so this is free where

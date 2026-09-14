@@ -361,8 +361,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("char_debug", Internal::FreshFromReceiver),
     // Giving back what a field held, right before the field holds something
     // else. See `Internal::ReplacesSlot`.
-    ("Vec_free_replaced", Internal::ReplacesSlot),
-    ("Map_free_replaced", Internal::ReplacesSlot),
+    ("string_free_replaced", Internal::ReplacesSlot),
     // `{v:debug}` reads the container and builds a string out of it; the
     // container is still the caller's afterwards. Unaccounted for, the read of
     // the handle off a struct field looked like handing the whole struct away,
@@ -374,6 +373,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // here would make `map` an accountable family and fail every user function
     // called `map_something`.
     ("vec_debug", Internal::FreshFromReceiver),
+
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
     ("string_new", Internal::NoReceiver),

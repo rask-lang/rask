@@ -313,33 +313,21 @@
 # the builder away, so a release on the field would point at a block that is
 # already gone (`t_week_opaque_struct_fields.rk` clean).
 #
-# And 45 with three more, all about a container a *place* stops holding.
+# And 45 with one more: `{v:debug}` had no line in `INTERNAL_SPELLINGS`, so
+# reading a container handle off a struct field to render it looked like handing
+# the whole struct away and the struct was never released
+# (`t_debug_renders_containers.rk`).
 #
-# `{v:debug}` had no line in `INTERNAL_SPELLINGS`, so reading a container
-# handle off a struct field to render it looked like handing the whole struct
-# away and the struct was never released (`t_debug_renders_containers.rk`).
-#
-# `h.list = h.list.filter(…)` writes a new container over one the aggregate
-# owned, and nothing gave the old one back: the aggregate's own release frees
-# whatever is in the slot at the end, which is the replacement. Lowering emits
-# the free at the assignment, which is where the types are and where a write is
-# always a replacement — a struct literal *builds* the slot and arrives on a
-# different path. It is spelled `Vec_free_replaced` rather than `Vec_free` so
-# the ownership passes can tell it apart: a plain free of a field's handle reads
-# as the whole struct being handed away. And it is withdrawn again where a name
-# took the old value first (`let old = h.list` before the write), which needs
-# liveness and so happens in the first pass that has it (#1198,
-# `p12_rack_link_churn.rk` and `t_rack_stale_records.rk` both clean).
-#
-# That last one surfaced a misplacement that had been silent: a store into one
-# field was read as killing the *whole* aggregate, so `parse_args` in
-# `examples/grep_clone.rk` released the struct's contents one statement after
-# building it and long before it was finished with. It freed the `files` vector
-# while the struct still held it, which nothing noticed because nothing read
-# the field before the next write — until a second free landed at that write.
-# Writing every byte is a kill; writing two fields of six is not. Asked of a
-# plain struct or tuple only: a tagged shape writes its tag and one variant's
-# payload, which is a complete write and never covers the union.
+# The other two that landed here were backed out. `h.list = h.list.filter(…)`
+# leaves the vector it replaced to nobody, and freeing it at the assignment
+# needs the struct's own release to be in the right place first — which it
+# isn't: a store into one field was read as killing the *whole* aggregate, so
+# `parse_args` in `examples/grep_clone.rk` released the struct's contents one
+# statement after building it. That was silent until a second free landed at the
+# write, and the coverage rule written to fix it (a block kills only when its
+# stores cover every byte) put an intermittent SIGSEGV into `t_json_decode.rk`
+# — 11 runs in 40, which is why every gate and every CI run passed it. Both are
+# out again and #1198 is reopened with the measurement.
 #
 # And 41 with two more. `char_indices` was the third of the `chars` /
 # `graphemes` family and the one left off the constructor list: it pushes a
@@ -398,8 +386,30 @@
 # keeps a sender open, the receiver never learns the channel is done, and the
 # file hangs instead of leaking (`t_channel_spawned_producer.rk` clean).
 #
+# And 32 once a closure writing through a captured variable gave back what that
+# variable held. `seen = "{seen}…"` inside a `for_each` body captures `seen` by
+# reference, so the write is a store through the frame's address
+# (mem.closures/MC1): the new string was retained for the slot and the one it
+# replaced was released by nobody (#1162).
+#
+# No aliasing guard, unlike the container case — a string is refcounted, so
+# every name holds a count of its own and giving back the slot's is right
+# whoever else is reading. And a capture points at a variable the frame
+# established before building the closure, so a store through one is always a
+# replacement.
+#
+# It is spelled `string_free_replaced` rather than an `rc_dec`, for the reason
+# `Vec_free_replaced` is spelled apart from `Vec_free`: a dec on that name reads
+# as "give back the reference this name took", a capture read takes none, and
+# `rc_elide` strips it — correctly, and along with the one this wants. What is
+# being released is the reference the *slot* holds, which is a different thing
+# wearing the same local (`t_closure_heap_string_capture.rk` clean, and
+# `t_capture_freed_with_its_closure.rk` 2 → 1: the other half of that one is
+# #1200).
+#
 # Format: one basename per line, then `# N allocations`.
 
+p12_rack_link_churn.rk  # 2 allocations — a container field written over, #1198
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
 # are files that branch added, the rest leak there for shapes the fixes
 # above didn't reach. None are new leaks — they were on that branch's own
@@ -409,7 +419,7 @@ p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
-t_capture_freed_with_its_closure.rk  # 2 allocations — a string accumulator rewritten every
+t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rewritten every
                         # turn of a *filtered* loop. The filter adds a second merge, and a phi
                         # operand reads as live out of every predecessor rather than its own
                         # edge — so the old value looks live where it is dead and gets no
@@ -420,7 +430,6 @@ t_closure_diverging_return.rk  # 2 allocations — a closure block and a string,
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
                         # not this theme. The file's other three tests are clean.
-t_closure_heap_string_capture.rk  # 1 allocation — a string overwritten through a by-ref capture, never released (#1162)
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
 t_io_buffer.rk  # 3 allocations — the byte vector `io.copy` moves. Every argument
                         # of a trait call reads as handed over, so `writer.write_bytes(bytes)`
@@ -431,6 +440,7 @@ t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks a
                         # a task killed by a panic doesn't unwind its captures (#299, v0.5).
                         # The largest of the three panic entries; between them they are 13 of
                         # what is left, and none of it is v0.3's theme.
+t_rack_stale_records.rk  # 2 allocations — a container field written over, #1198
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment
                         # holds, and the leaking test is the one that joins a *panicked*
