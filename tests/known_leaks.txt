@@ -361,6 +361,15 @@
 # runtime's own entry walker, which reads the vtable's hook; that hook is what
 # separates it from `TraitDrop`, where the frame keeps the contents (#1144).
 #
+# And 39 once `drop(p)` on a `Heap<T>` gave back what the payload holds. The
+# block was freed and the string and the `Vec` inside a `Heap<Record>` were not
+# — and they live *in* the block, so after `rask_free` there is nothing left to
+# walk. An aggregate local is an address, so a local typed as the payload and
+# holding the block's pointer *is* the payload, and the ordinary contents
+# release walks it. The rc pass skips a group something already placed a
+# release for, read once before it starts adding its own
+# (`t_heap_box_dropped.rk` clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -381,7 +390,6 @@ t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
 t_closure_heap_string_capture.rk  # 1 allocation — a string overwritten through a by-ref capture, never released (#1162)
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
 t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
-t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
 t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel — a task killed by a panic doesn't unwind its captures
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds

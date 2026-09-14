@@ -867,12 +867,26 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     let edge_releases =
         aggregate_edge_releases(func, &groups, &handles, &views, &live_in, &live_out, &gone);
 
+    // Groups something else already placed a release for, read once — the loop
+    // below adds releases of its own, and re-reading the function would let one
+    // block's release suppress another block's.
+    let released_already: Vec<bool> =
+        groups.iter().map(|g| already_released(func, g)).collect();
+
     for block_idx in 0..func.blocks.len() {
         let stmts_len = func.blocks[block_idx].statements.len();
         let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
 
         for (gi, group) in groups.iter().enumerate() {
             if live_out[block_idx][gi] || gone[gi].contains(&func.blocks[block_idx].id) {
+                continue;
+            }
+            // Somebody already said where this one dies. `drop(p)` on a
+            // `Heap<T>` releases the payload's contents before giving the block
+            // back — the block is where they live, and after `rask_free` there
+            // is nothing left to walk — so lowering emits the release itself.
+            // A second one here is a second release of the same strings.
+            if released_already[gi] {
                 continue;
             }
             let mut last = None;
@@ -1262,6 +1276,13 @@ fn block_writes_whole_value(block: &crate::MirBlock, group: &HashSet<LocalId>, s
         covered = covered.max(at.saturating_add(len));
     }
     size.saturating_sub(covered) < 8
+}
+
+/// Does a release for this group already exist in the function?
+fn already_released(func: &MirFunction, group: &HashSet<LocalId>) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| {
+        matches!(&stmt.kind, MirStmtKind::RcDecContents { local } if group.contains(local))
+    })
 }
 
 /// Which groups are still live at each block's exit.
