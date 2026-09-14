@@ -47,7 +47,7 @@ All green.
 
 ## v0.3 — Memory is settled
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 13.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 6.**
 
 Every one of these is the compiler getting *who frees this* wrong. A leak is the
 polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
@@ -63,20 +63,28 @@ a box held on purpose and will never be zero. Their lines in
 still holds them to their count — it just doesn't judge a memory milestone on
 what a memory milestone can't fix.
 
-What the 13 are, and which issue owns each:
+What the 6 are, and which issue owns each:
 
 | Allocations | Issue | What |
 |---|---|---|
-| 6 | [#1198](https://github.com/rask-lang/rask/issues/1198) | A new container written over a struct field leaks the one the field held |
 | 2 | [#1202](https://github.com/rask-lang/rask/issues/1202) | A `Heap` box stored in an enum payload |
 | 2 | [#1205](https://github.com/rask-lang/rask/issues/1205) | A closure swallowed by another closure that gets returned |
 | 1 | [#1204](https://github.com/rask-lang/rask/issues/1204) | A closure held through a *generic* struct field |
-| 1 | [#1200](https://github.com/rask-lang/rask/issues/1200) | A phi operand reads as live out of every predecessor, not its own edge |
 | 1 | [#1206](https://github.com/rask-lang/rask/issues/1206) | A return that is fresh on one path and borrowed on the other |
 
-Two of those are rulings rather than fixes: #1202 asks whether `drop(x.field)`
-should stop being a consume, and #1206 whether returning a lent container should
-compile at all. The rest are engineering, and #1198 is the biggest single piece.
+None of the four is a bounded fix any more — the ones that were are done.
+
+Two are rulings. #1202 asks whether `drop(x.field)` should stop being a
+consume, so the aggregate's release can own the box; #1206 whether returning a
+container the callee only borrowed should compile at all. Each is a checker
+change and a test-file edit once decided, and each issue argues a direction.
+
+Two are redesigns, and each wants its own verification cycle. #1205 needs a
+closure's environment to be identified per *site* rather than per function, or
+a returned closure to be able to hand its obligation on — three attempts and
+their numbers are on the issue. #1204 needs `type_arg_key` and
+`instance_layout_from_str` to agree on a spelling for a function type, and a
+half-agreement makes a layout nobody finds.
 
 Still open from the earlier list, and no longer showing in the gate — they are
 about shapes the suite doesn't cover yet rather than shapes that are fixed:
@@ -90,7 +98,7 @@ about shapes the suite doesn't cover yet rather than shapes that are fixed:
 
 [#882](https://github.com/rask-lang/rask/issues/882) is the umbrella: linearity
 is enforced at points, and the holes are wherever a point was missed. Closing the
-six in the table should be most of its answer.
+four in the table should be most of its answer.
 
 ## v0.4 — A value works in every position
 
