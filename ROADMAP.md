@@ -47,7 +47,7 @@ All green.
 
 ## v0.3 — Memory is settled
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 6.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 4.**
 
 Every one of these is the compiler getting *who frees this* wrong. A leak is the
 polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
@@ -63,28 +63,25 @@ a box held on purpose and will never be zero. Their lines in
 still holds them to their count — it just doesn't judge a memory milestone on
 what a memory milestone can't fix.
 
-What the 6 are, and which issue owns each:
+What the 4 are, and which issue owns each:
 
 | Allocations | Issue | What |
 |---|---|---|
 | 2 | [#1202](https://github.com/rask-lang/rask/issues/1202) | A `Heap` box stored in an enum payload |
 | 2 | [#1205](https://github.com/rask-lang/rask/issues/1205) | A closure swallowed by another closure that gets returned |
-| 1 | [#1204](https://github.com/rask-lang/rask/issues/1204) | A closure held through a *generic* struct field |
-| 1 | [#1206](https://github.com/rask-lang/rask/issues/1206) | A return that is fresh on one path and borrowed on the other |
 
-None of the four is a bounded fix any more — the ones that were are done.
+Neither is a bounded fix — the ones that were are done.
 
-Two are rulings. #1202 asks whether `drop(x.field)` should stop being a
-consume, so the aggregate's release can own the box; #1206 whether returning a
-container the callee only borrowed should compile at all. Each is a checker
-change and a test-file edit once decided, and each issue argues a direction.
+#1202 is a `Heap<List>` in a recursive enum: giving the block back means
+walking what is inside it first, and what is inside it is another `List`. The
+field walk stops at a pointer, so the honest fix is a release function
+generated per type that calls itself, which also retires the depth-8 cap the
+walk has today. The second half is a ruling — `drop(x.field)` has to stop
+compiling, or the aggregate's release and the hand-drop both free the box.
 
-Two are redesigns, and each wants its own verification cycle. #1205 needs a
-closure's environment to be identified per *site* rather than per function, or
-a returned closure to be able to hand its obligation on — three attempts and
-their numbers are on the issue. #1204 needs `type_arg_key` and
-`instance_layout_from_str` to agree on a spelling for a function type, and a
-half-agreement makes a layout nobody finds.
+#1205 needs a closure's environment identified per *site* rather than per
+function, or a returned closure able to hand its obligation on. Three attempts
+and their numbers are on the issue.
 
 Still open from the earlier list, and no longer showing in the gate — they are
 about shapes the suite doesn't cover yet rather than shapes that are fixed:

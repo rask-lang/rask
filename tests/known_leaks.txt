@@ -442,7 +442,6 @@ t_closure_diverging_return.rk  # 2 allocations, deferred — a closure block and
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
                         # not this theme. The file's other three tests are clean.
-t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
 t_month_panic_observed.rk  # 9 allocations, deferred — six strings, six closure blocks
                         # and a channel. A task killed by a panic doesn't unwind its
                         # captures (#299). The largest of the three panic entries; between

@@ -2788,6 +2788,39 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            LentValueEscapes { call, holder, lender, payload_ty, clone_form, lent_at } => {
+                let fix = match clone_form {
+                    Some(m) => format!(
+                        "hand back a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
+                        lender, m, payload_ty
+                    ),
+                    None => format!(
+                        "hand back a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
+                        payload_ty
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "`{}` hands back what `{}` still holds — returning it gives the caller a second name for it",
+                    call, holder
+                ))
+                .with_code("E0879")
+                .with_primary(
+                    self.span,
+                    format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
+                )
+                .with_secondary(*lent_at, format!("`{}` keeps the value; the lookup reads it in place", holder))
+                .with_fix(fix)
+                .with_why(
+                    "a lookup reads the element where the container keeps it, so what \
+                     comes back is the container's, not a copy. A `??` makes that \
+                     invisible: the default side is fresh and the lookup side isn't, \
+                     and one return slot can't be both. Freeing it corrupts the \
+                     container and not freeing it leaks, so the copy is the program's \
+                     to write [mem.borrowing/S3, mem.parameters/PM1]"
+                        .to_string(),
+                )
+            }
+
             NonCopyElementCopiedOut { binding, elem_ty, collection } => {
                 let from = collection
                     .as_deref()
