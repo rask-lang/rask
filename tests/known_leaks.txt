@@ -431,9 +431,13 @@ p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped 
 p21_sequence_adapters.rk  # 2 allocations — one closure block per element out of
                         # `flat_map(|x| count_to_five().take(x))`, #1205. The callback
                         # returns the adapter it built, so the frame never drops it and
-                        # the source closure it swallowed is freed by nobody. Two
-                        # mechanisms could own it and neither reaches this shape; the
-                        # issue has the measurements for both attempts.
+                        # the source closure it swallowed is freed by nobody. Making the
+                        # environment the owner fixes it and costs six clean files: a
+                        # glue can only free a swallowed closure soundly if every closure
+                        # it can reach has a glue too, and most adapters have none —
+                        # their create sites disagree, and the frame-side rule that
+                        # covers them is the one being withdrawn. Three attempts and
+                        # their numbers are on the issue.
 t42_flatten_shaped_header.rk  # 1 allocation — a closure held through a *generic*
                         # struct field, #1204. A plain `func(...)` field is freed now; the
                         # generic spelling shares the one layout every generic type gets,
