@@ -252,6 +252,18 @@
 # the containers and boxes a const holds, and the heap block a `string` or
 # struct const's slot points at.
 #
+# And 79 once a variable rewritten every turn of a loop freed what it held.
+# `mut v = Vec.new()` before a loop that does `v = Vec.new()` inside it is one
+# name holding a different vector each turn, and the drop pass is built around
+# *values* — one allocation under several names, freed once. Union-find joined
+# the phi to both its incoming values, so four vectors landed in one group and
+# got one free. The phi is left out of every group now, which makes its
+# definition the loop header and hands it to the back-edge rule that already
+# exists for this. Where a name inside the loop copies the variable out, that
+# copy owns the turn's value and gets the free instead — and the variable is no
+# longer read as moved-away by that copy, because the path that leaves the loop
+# never ran it (#1154, `t29_branch_merge.rk` 7 → clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -262,7 +274,6 @@
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p12_rack_link_churn.rk  # 2 allocations — one Vec (handle and data)
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
-t29_branch_merge.rk  # 7 allocations — a container reassigned inside a loop, #1154
 t38_lazy_collection_adapters.rk  # 6 allocations — a collection's adapters capture the collection, #1035
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
 t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only

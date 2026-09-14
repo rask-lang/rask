@@ -698,7 +698,8 @@ fn insert_for_function(
         return;
     }
     let (escaping, consumed) = find_escaping(func, &fresh, kept);
-    let moved_away = find_moved_away(func, &fresh);
+    let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
+    let moved_away = find_moved_away(func, &fresh, &carried);
     let already_freed = find_already_freed(func, &fresh);
     let fresh: HashMap<LocalId, &'static str> = fresh
         .into_iter()
@@ -1684,6 +1685,10 @@ fn value_groups(
     containers: &HashMap<LocalId, &'static str>,
 ) -> Vec<HashSet<LocalId>> {
     let mut parent: HashMap<LocalId, LocalId> = HashMap::new();
+    // Loop-carried phis that hold a different allocation each turn — see
+    // `carried_variables`. Left out of every group, so each stands alone and
+    // the back-edge rule can free the turn's value (#1154).
+    let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
 
     fn find(parent: &mut HashMap<LocalId, LocalId>, x: LocalId) -> LocalId {
         let p = *parent.get(&x).unwrap_or(&x);
@@ -1706,11 +1711,15 @@ fn value_groups(
         for stmt in &block.statements {
             match &stmt.kind {
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                    if containers.contains_key(dst) && containers.contains_key(src) =>
+                    if containers.contains_key(dst)
+                        && containers.contains_key(src)
+                        && !carried.is_carried(*src) =>
                 {
                     union(&mut parent, *dst, *src);
                 }
-                MirStmtKind::Phi { dst, args } if containers.contains_key(dst) => {
+                MirStmtKind::Phi { dst, args }
+                    if containers.contains_key(dst) && !carried.is_carried(*dst) =>
+                {
                     for (_, op) in args {
                         if let MirOperand::Local(src) = op {
                             if containers.contains_key(src) {
@@ -1743,6 +1752,87 @@ fn value_groups(
         groups.entry(root).or_default().insert(*id);
     }
     groups.into_values().collect()
+}
+
+/// Loop-carried phis whose value is genuinely replaced each turn, so the name
+/// is a *variable* rather than one allocation under several names.
+///
+/// `mut v = Vec.new()` before a loop that does `v = Vec.new()` inside it lowers
+/// to `_15 = phi [_12 from bb0, _19 from bb3]`, and `_12` and `_19` are two
+/// different vectors. Joining all three into one value group gave the group one
+/// free, so every turn but the last leaked (#1154). Left out of the group, the
+/// phi stands alone, its definition is the loop header, and the back-edge rule
+/// frees what the turn held — which is what that rule is for.
+///
+/// Returns every such phi, and separately the ones something inside the loop
+/// reads. That second set is what decides where the turn's value is freed:
+///
+/// ```text
+/// for i in 0..3 { v = Vec.new() }             // nothing names it — the back edge frees it
+/// for i in 0..3 { let t = v; v = Vec.new() }  // `t` holds it — `t`'s own free does
+/// ```
+///
+/// Freeing the phi on the back edge in the second shape is a use-after-free for
+/// `t`, and `t` is a name inside the loop body, so the same back-edge rule gives
+/// it a free of its own. The phi still gets the one after the loop, for whatever
+/// the last turn left in it.
+fn carried_variables(
+    func: &MirFunction,
+    dom: &crate::analysis::dominators::DominatorTree,
+) -> CarriedVars {
+    let loops = crate::analysis::loops::detect_loops(func, dom);
+    let mut out = CarriedVars::default();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::Phi { dst, args } = &stmt.kind else { continue };
+            for lp in loops.iter().filter(|l| l.header == block.id) {
+                // Carried only if a back edge actually feeds it — a phi at a
+                // loop header can still be merging two values from outside.
+                let carried = args
+                    .iter()
+                    .any(|(from, _)| lp.back_edges.iter().any(|(tail, _)| tail == from));
+                if !carried {
+                    continue;
+                }
+                let read_inside = func
+                    .blocks
+                    .iter()
+                    .filter(|b| lp.blocks.contains(&b.id))
+                    .any(|b| {
+                        b.statements.iter().any(|st| {
+                            !matches!(st.kind, MirStmtKind::Phi { .. })
+                                && crate::analysis::uses::stmt_reads(st, *dst)
+                        }) || crate::analysis::uses::terminator_reads(&b.terminator, *dst)
+                    });
+                out.body.entry(*dst).or_default().extend(lp.blocks.iter().copied());
+                if read_inside {
+                    out.held_by_a_reader.insert(*dst);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Loop-carried container variables: which loop each one turns in, and whether
+/// a name inside that loop takes the turn's value.
+#[derive(Default)]
+struct CarriedVars {
+    /// Phi → the blocks of the loop it is carried around.
+    body: HashMap<LocalId, HashSet<BlockId>>,
+    /// The ones something inside the loop copies out of.
+    held_by_a_reader: HashSet<LocalId>,
+}
+
+impl CarriedVars {
+    fn is_carried(&self, local: LocalId) -> bool {
+        self.body.contains_key(&local)
+    }
+
+    /// Is `block` inside the loop `local` is carried around?
+    fn inside_its_loop(&self, local: LocalId, block: BlockId) -> bool {
+        self.body.get(&local).is_some_and(|bs| bs.contains(&block))
+    }
 }
 
 /// Returned, stored, captured, or handed to something that keeps it.
@@ -1842,6 +1932,7 @@ fn find_escaping(
 fn find_moved_away(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
+    carried: &CarriedVars,
 ) -> HashSet<LocalId> {
     // A copy only ends the source's life if the source is finished with. In a
     // loop it isn't: `for x in v` inside a `while` copies `v` into the body
@@ -1866,6 +1957,16 @@ fn find_moved_away(
                         .any(|st| crate::analysis::uses::stmt_reads(st, *src))
                         || crate::analysis::uses::terminator_reads(&block.terminator, *src);
                     if live.live_at_exit(block.id, *src) || read_below {
+                        continue;
+                    }
+                    // A loop-carried variable copied out of *inside* its own
+                    // loop is not finished with: the copy took this turn's
+                    // value, and the path that leaves the loop never ran it, so
+                    // whatever the last turn put there still needs a free
+                    // afterwards. Liveness says the name is dead here because
+                    // the header's phi redefines it, which is true of the name
+                    // and not of the variable (#1154).
+                    if carried.inside_its_loop(*src, block.id) {
                         continue;
                     }
                     moved.insert(*src);
@@ -1953,6 +2054,11 @@ fn plan_drops(
     consumed: &HashMap<LocalId, HashSet<BlockId>>,
 ) -> Vec<(usize, Vec<LocalId>)> {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
+    // A loop-carried variable something inside the loop copies out of: that
+    // copy owns the turn's value and gets the back-edge free, so the variable
+    // itself must not get one too (#1154). It still gets the one after the
+    // loop, for what the last turn left in it.
+    let carried = carried_variables(func, &dom);
     // Where each consumed container might already be gone. Blocks with no
     // entry own nothing consumable and answer "no" for every local.
     let gone: HashMap<LocalId, HashSet<BlockId>> = consumed
@@ -2001,16 +2107,16 @@ fn plan_drops(
             }
             MirTerminatorKind::Goto { target } => backedge_drops(
                 &mut to_insert, block_idx, block.id, *target, &func.blocks, &dom,
-                &defined_in_block, &def_of_any, groups, &gone,
+                &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
             ),
             MirTerminatorKind::Branch { then_block, else_block, .. } => {
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *then_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups, &gone,
+                    &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
                 );
                 backedge_drops(
                     &mut to_insert, block_idx, block.id, *else_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups, &gone,
+                    &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
                 );
             }
             _ => {}
@@ -2082,6 +2188,7 @@ fn backedge_drops(
     def_of_any: &HashMap<LocalId, usize>,
     groups: &[HashSet<LocalId>],
     gone: &HashMap<LocalId, HashSet<BlockId>>,
+    held_by_a_reader: &HashSet<LocalId>,
 ) {
     if !dom.dominates(target, source) {
         return;
@@ -2128,6 +2235,10 @@ fn backedge_drops(
         // which is `markdown_renderer`'s fenced-code branch, and it segfaulted
         // in `free` on the second block.
         .filter(|(id, _)| !gone.get(id).is_some_and(|blocks| blocks.contains(&source)))
+        // A loop-carried variable whose turn-value a name inside the loop took:
+        // that name's own free covers it, and a second one here is a double
+        // free (#1154).
+        .filter(|(id, _)| !held_by_a_reader.contains(id))
         .map(|(&id, _)| id)
         .collect();
     if !drops.is_empty() {
