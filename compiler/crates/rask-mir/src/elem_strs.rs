@@ -217,6 +217,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // below, which look identical from here and are not.
     ("string_chars", 0, 0, "Vec_free"),
     ("string_graphemes", 0, 0, "Vec_free"),
+    // The third of that family and the one left out: `char_indices` pushes a
+    // (byte offset, scalar) pair per character into a fresh vector. Two
+    // integers — nothing points into the source, and nothing in it owns
+    // anything — so the vector is the caller's, elements and all.
+    ("string_char_indices", 0, 0, "Vec_free"),
     // The three the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single

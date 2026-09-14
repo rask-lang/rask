@@ -873,6 +873,22 @@ impl CodeGenerator {
             self.func_ids.insert("rask_box_release".to_string(), id);
         }
 
+        // rask_owned_release(slot: i64, entry: i32) -> void — one entry of the
+        // element map, applied to a slot. The release walk uses it for a trait
+        // object in a field, where the box was moved in and the value's
+        // contents go with it: that logic already lives in the runtime and
+        // needs the vtable's release hook, which codegen would have to fetch by
+        // hand otherwise.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            let id = self.module
+                .declare_function("rask_owned_release", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_owned_release".to_string(), id);
+        }
+
         // rask_bench_run(fn_ptr: i64, name_ptr: i64) -> void
         {
             let mut sig = self.module.make_signature();

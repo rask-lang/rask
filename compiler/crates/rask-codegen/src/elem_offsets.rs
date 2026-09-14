@@ -48,6 +48,10 @@ const KIND_CLOSURE: i32 = 4;
 /// container's to free, and its size is the vtable's first word (#1149).
 const KIND_TRAITBOX: i32 = 5;
 
+/// One trait-box entry at offset zero: what to hand `rask_owned_release` when
+/// the slot *is* the fat pointer, which is the shape of a trait-object field.
+pub const TRAITBOX_AT_ZERO: i32 = KIND_TRAITBOX << KIND_SHIFT;
+
 fn entry(offset: i32, kind: i32) -> i32 {
     offset | (kind << KIND_SHIFT)
 }

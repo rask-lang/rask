@@ -315,10 +315,18 @@ fn container_handles_from(
                             // Wrappers only. Every scalar field read admitted
                             // here pushes the release to that local's last use,
                             // which cost four suite files a small leak each.
+                            //
+                            // A trait object joins them: it is a 16-byte fat
+                            // pointer read out of the struct's own storage, not
+                            // a scalar copied out of it, and `r.inner` passed
+                            // on to something else is read long after the read
+                            // that produced it.
                             .or((aggregates.contains(&base)
                                 && matches!(
                                     ty_of.get(dst),
-                                    Some(MirType::Option(_)) | Some(MirType::Result { .. })
+                                    Some(MirType::Option(_))
+                                        | Some(MirType::Result { .. })
+                                        | Some(MirType::TraitObject { .. })
                                 ))
                             .then_some(&base))
                             .copied();

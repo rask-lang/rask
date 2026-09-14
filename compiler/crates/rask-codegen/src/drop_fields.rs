@@ -147,6 +147,19 @@ pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
     }
 }
 
+/// Is this a trait object, however the type happens to be spelled?
+///
+/// A field written `any Trait` reaches the layout as a *name* rather than a
+/// parsed `TraitObject` (#474), so asking for the parsed form alone answers no
+/// for every field — which is exactly where the question matters.
+pub fn is_trait_object(ty: &RaskType) -> bool {
+    match ty {
+        RaskType::TraitObject { .. } => true,
+        RaskType::UnresolvedNamed(name) => name.starts_with("any "),
+        _ => false,
+    }
+}
+
 /// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs, read
 /// off the strategy in its type arguments.
 pub fn box_release_for(rendered: &str) -> &'static str {

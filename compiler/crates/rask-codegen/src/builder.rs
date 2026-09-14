@@ -7229,6 +7229,11 @@ impl<'a> FunctionBuilder<'a> {
             MirType::String => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
+            // A box moved into a field is the aggregate's: the block, and the
+            // value's own contents through the vtable. Left out, a struct whose
+            // only owning field was an `any Trait` was skipped by the whole
+            // walk and the box leaked (#1149's field case).
+            MirType::TraitObject { .. } => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7287,8 +7292,16 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::container_free_for(ty).is_some() {
             return true;
         }
+        // A box a field holds is the aggregate's: it was moved in, so the block
+        // and the value's own contents go when the aggregate does. Asked before
+        // the name lookup below, which would read `any Handler` as a struct
+        // nobody declared and answer no.
+        if crate::drop_fields::is_trait_object(ty) {
+            return true;
+        }
         match ty {
             RaskType::String => true,
+
             RaskType::Result { ok, err } => {
                 Self::holds_string_ty(ok, ctx, depth + 1)
                     || Self::holds_string_ty(err, ctx, depth + 1)
@@ -7327,6 +7340,12 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Container(kind) => Self::emit_container_release(
                 builder, base, offset, Self::container_free_for_kind(*kind), ctx,
             ),
+            // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
+            // entry walker reads both words and the vtable's release hook, so
+            // hand it the slot rather than repeating that here — and the hook
+            // is what makes this different from `TraitDrop`, which frees the
+            // block and leaves the contents to the frame (#1144).
+            MirType::TraitObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
@@ -7414,6 +7433,13 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(free_fn) = crate::drop_fields::container_free_for(ty) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
+        // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
+        // the runtime's own entry walker reads both words and the vtable's
+        // release hook. Before the match for the reason `holds_string_ty` asks
+        // it early — a field's `any Trait` is a name, not a parsed form.
+        if crate::drop_fields::is_trait_object(ty) {
+            return Self::emit_boxed_field_release(builder, base, offset, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {
@@ -7489,6 +7515,30 @@ impl<'a> FunctionBuilder<'a> {
     ///
     /// The slot holds the handle, so this loads it and passes the pointer —
     /// where a string's slot *is* the header and its release takes the address.
+    /// Release the box a slot holds: the block, and the value's own contents
+    /// through the vtable's hook.
+    ///
+    /// That hook is what separates this from `TraitDrop`, which frees the block
+    /// and leaves the contents to the frame — a box built for a *call* borrows
+    /// its value, and one moved into a field or an element owns it (#1144).
+    fn emit_boxed_field_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let slot = builder.ins().iadd_imm(base, offset as i64);
+        let entry = builder
+            .ins()
+            .iconst(types::I32, crate::elem_offsets::TRAITBOX_AT_ZERO as i64);
+        let release = ctx
+            .func_refs
+            .get("rask_owned_release")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_release".to_string()))?;
+        builder.ins().call(*release, &[slot, entry]);
+        Ok(())
+    }
+
     fn emit_container_release(
         builder: &mut ClifFunctionBuilder,
         base: Value,

@@ -341,6 +341,26 @@
 # plain struct or tuple only: a tagged shape writes its tag and one variant's
 # payload, which is a complete write and never covers the union.
 #
+# And 41 with two more. `char_indices` was the third of the `chars` /
+# `graphemes` family and the one left off the constructor list: it pushes a
+# (byte offset, scalar) pair per character into a fresh vector, so the vector is
+# the caller's and nothing in it points into the source
+# (`t_string_unicode.rk` clean).
+#
+# And a box in a struct field. `Router { inner: Fail { … } }` moves the box in,
+# so the block and the value's own contents are the struct's — but the release
+# walk had no case for a trait object and skipped a struct whose only owning
+# field was one. Two things were in the way: a field written `any Trait` reaches
+# the layout as a *name* rather than a parsed TraitObject (#474), so asking for
+# the parsed form answered no exactly where it mattered; and the release landed
+# before the box's last use, because a field read only delayed it for a `T?` or
+# a `T or E`. A trait object is the same shape as those — sixteen bytes read out
+# of the struct's own storage, not a scalar copied out of it — and `r.inner`
+# passed on to something else is read long after the read that produced it
+# (`t62_trait_object_positions.rk` clean). The release goes through the
+# runtime's own entry walker, which reads the vtable's hook; that hook is what
+# separates it from `TraitDrop`, where the frame keeps the contents (#1144).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -351,7 +371,6 @@
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
-t62_trait_object_positions.rk  # 1 allocation — one trait box's block, not a container element — #1149 covers the container case only
 t_any_error_boxing.rk  # 1 allocation — one boxed error's block, returned rather than held in a container (#1149)
 t_bare_error_type.rk  # 1 allocation — one boxed error's block, same shape (#1149)
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
@@ -367,7 +386,6 @@ t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks a
 t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
 t_string_builder_mutate.rk  # 1 allocation — the builder's own header
-t_string_unicode.rk  # 3 allocations — two Vec handles and one data buffer
                         # same trait-box leak as the two lines below. Nothing to
                         # do with the aggregate return the file is named for:
                         # every other test in it is clean.
