@@ -280,6 +280,16 @@
 # result nobody takes releases (`t_vec_field_filter_map.rk` and
 # `t_with_collection_field_writes.rk` both clean).
 #
+# And 57 once a struct read through a nested struct field still gave back its
+# own containers. A struct and a struct *inside* it are one storage read at an
+# offset, so the two share a release group — and the release landed on whichever
+# name the last use touched, which for `p.home.street` is the inner `Address`.
+# That walks a strict subset: the outer's `Vec` fields were released by nobody,
+# and reading a *different* field of the same value was enough to make them come
+# back. The release names the outermost member of the group now, which covers
+# every field including the inner one (`t_json_decode.rk` 6 → clean; the leak
+# was the one test that reads `p.home.street` and no Vec field).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -305,7 +315,6 @@ t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — 
 t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_debug_renders_containers.rk  # 2 allocations — one Vec (handle and data)
 t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
-t_json_decode.rk  # 6 allocations — three Vecs from `rask_vec_with_capacity`, handle and data each — same site as t38_lazy_collection_adapters
 t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
 t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel — a task killed by a panic doesn't unwind its captures
 t_rack_stale_records.rk  # 2 allocations — one Vec (handle and data)

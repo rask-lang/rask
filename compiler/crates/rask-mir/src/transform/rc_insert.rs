@@ -830,6 +830,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
 
     let (live_in, live_out) = aggregate_liveness(func, &groups, &reaches);
 
+    // Which aggregate each one was read out of. A group can hold both a struct
+    // and a struct *inside* it — `p.home` on a `Rec { home: Address, counts:
+    // Vec<i64> }` is one storage read at an offset, which is why the two are
+    // grouped at all. The release then has to name the outer one: it walks
+    // every field, the inner's included, where naming the inner walks a strict
+    // subset and leaves the outer's containers to nobody.
+    let enclosing = enclosing_aggregates(func);
+
     // A group that only stays live because of a branch that doesn't end it
     // needs its release on the branch that does. The normal placement below
     // anchors a release to the group's last *use* in a block where it dies —
@@ -902,6 +910,16 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                 }
             }
             let (Some(si), Some(local)) = (last, local) else { continue };
+            // Up to the outermost member of this group. Reading `p.home` means
+            // `p` was written first — you can't read a field of something that
+            // was never established — so the base is always a valid name here.
+            let mut local = local;
+            while let Some(&base) = enclosing.get(&local) {
+                if !group.contains(&base) || not_a_name(&base) {
+                    break;
+                }
+                local = base;
+            }
             let local = &local;
             let span = func.blocks[block_idx].statements[si].span;
             // Step over the retains already sitting here. The last use of a
@@ -1158,6 +1176,33 @@ fn aggregate_value_groups(
         groups.entry(root).or_default().insert(*local);
     }
     groups.into_values().collect()
+}
+
+/// Aggregate field reads: the local a nested aggregate was read out of.
+///
+/// Only aggregate-to-aggregate, which is the same test the grouping uses — a
+/// string read out of a struct takes its own reference and is released on its
+/// own.
+fn enclosing_aggregates(func: &MirFunction) -> HashMap<LocalId, LocalId> {
+    let ty_of: HashMap<LocalId, &MirType> = func
+        .locals
+        .iter()
+        .chain(func.params.iter())
+        .map(|l| (l.id, &l.ty))
+        .collect();
+    let mut out = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } = &stmt.kind else {
+            continue;
+        };
+        let (Some(base), Some(dst_ty)) = (uses::operand_local(base), ty_of.get(dst)) else {
+            continue;
+        };
+        if dst_ty.passed_by_address() && ty_of.get(&base).is_some_and(|t| t.passed_by_address()) {
+            out.insert(*dst, base);
+        }
+    }
+    out
 }
 
 /// Which groups are still live at each block's exit.
