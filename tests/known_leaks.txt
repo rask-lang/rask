@@ -429,7 +429,12 @@ p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped 
                         # nothing frees it afterwards. A descriptor kind for "a heap
                         # block at this offset" is the easy half — the hard half is that
                         # `drop(x.field)` consumes the same box by hand in this file.
-p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
+p21_sequence_adapters.rk  # 2 allocations — one closure block per element out of
+                        # `flat_map(|x| count_to_five().take(x))`, #1205. The callback
+                        # returns the adapter it built, so the frame never drops it and
+                        # the source closure it swallowed is freed by nobody. Two
+                        # mechanisms could own it and neither reaches this shape; the
+                        # issue has the measurements for both attempts.
 t42_flatten_shaped_header.rk  # 1 allocation — a closure in a struct field, #1204. The
                         # layout can't parse a `func(...)` field type, so it lands as an
                         # unknown and the release walk emits nothing for it. The other
