@@ -275,6 +275,15 @@ enum Internal {
     /// Not a method at all — a static constructor, a raw pointer. No receiver
     /// to borrow, nothing kept, nothing pointed into.
     NoReceiver,
+    /// A free of what an aggregate's slot held, emitted on the way to writing
+    /// something else into that slot (`h.list = h.list.filter(…)`).
+    ///
+    /// Argument zero is the handle read out of the slot, not the aggregate —
+    /// so the aggregate is neither borrowed nor consumed here and stays the
+    /// frame's. Spelled apart from a plain free for exactly that: a
+    /// `Vec_free` of a field's handle reads as the whole struct being handed
+    /// away, and the struct then never got a release of its own.
+    ReplacesSlot,
 }
 
 /// Every name MIR mints that looks like a stdlib method but isn't one.
@@ -350,6 +359,21 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // rendering is `{}` and `{:debug}`, which every type gets without asking.
     ("char_to_string", Internal::FreshFromReceiver),
     ("char_debug", Internal::FreshFromReceiver),
+    // Giving back what a field held, right before the field holds something
+    // else. See `Internal::ReplacesSlot`.
+    ("string_free_replaced", Internal::ReplacesSlot),
+    // `{v:debug}` reads the container and builds a string out of it; the
+    // container is still the caller's afterwards. Unaccounted for, the read of
+    // the handle off a struct field looked like handing the whole struct away,
+    // so `"{h:debug}"` on a `struct { items: Vec<i64> }` stopped the struct
+    // being released at all and leaked the vector. `{:debug}` is a rendering
+    // every type gets without asking, which is why `stdlib` declares it for
+    // neither. There is no `map_debug` to pair with it — a map renders through
+    // its entry sort, not through a call of its own — and inventing the name
+    // here would make `map` an accountable family and fail every user function
+    // called `map_something`.
+    ("vec_debug", Internal::FreshFromReceiver),
+
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
     ("string_new", Internal::NoReceiver),
@@ -469,7 +493,8 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::SameAs(decl)) => return lookup(decl),
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
-        | Some(Internal::NoReceiver) => return None,
+        | Some(Internal::NoReceiver)
+        | Some(Internal::ReplacesSlot) => return None,
         None => {}
     }
     // A generic method reaches MIR with its type argument welded on —
@@ -765,6 +790,17 @@ pub fn consumes_receiver(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     matches!(internal_spelling(base), Some(Internal::ConsumesReceiver))
+}
+
+/// Is this the free of a container a slot is about to stop holding?
+///
+/// The aggregate is untouched by it — argument zero is the handle that was in
+/// the slot — so a pass asking "was this value handed away here" should answer
+/// no for the aggregate the handle was read out of.
+pub fn frees_a_replaced_slot(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::ReplacesSlot))
 }
 
 /// Does this call borrow its receiver rather than consume it? True for

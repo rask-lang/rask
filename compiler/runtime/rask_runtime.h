@@ -204,6 +204,9 @@ void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
 // itself and hands them to the program, which is what frees them.
 extern const int32_t rask_elem_strs_one[1];
 extern const int32_t rask_elem_strs_pair[2];
+// Elements that are themselves container handles, for the runtime calls that
+// build a `Vec<Vec<T>>`.
+extern const int32_t rask_elem_vec_one[1];
 
 RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
@@ -633,8 +636,10 @@ RaskHandle  rask_pool_alloc(RaskPool *p);
 // Packed i64 handle interface for codegen (index:32 | gen:32, pool_id from pool ptr)
 int64_t     rask_pool_alloc_packed(RaskPool *p);
 int64_t     rask_pool_insert_packed(RaskPool *p, const void *elem);
-int64_t     rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size);
-int64_t     rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size);
+int64_t     rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
+                                          int64_t owned_count, const int32_t *owned);
+int64_t     rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
+                                              int64_t owned_count, const int32_t *owned);
 void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
 void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
                                   const char *file, int32_t line, int32_t col);

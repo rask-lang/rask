@@ -2010,6 +2010,26 @@ impl<'a> MirLowerer<'a> {
                         None => None,
                     };
                     if let Some(op) = box_ptr {
+                        // What the payload holds goes first. Freeing the block
+                        // says nothing about the string and the `Vec` inside a
+                        // `Heap<Record>` — the block is where they live, and
+                        // after `rask_free` there is nothing left to walk.
+                        //
+                        // An aggregate local *is* an address, so a local typed
+                        // as the payload and holding the block's pointer is the
+                        // payload, and the ordinary contents release walks it.
+                        if let Some(payload_ty) =
+                            arg_mir_types.first().filter(|t| t.passed_by_address()).cloned()
+                        {
+                            let payload = self.builder.alloc_temp(payload_ty);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: payload,
+                                rvalue: MirRValue::Use(op.clone()),
+                            }));
+                            self.builder.push_stmt(MirStmt::dummy(
+                                MirStmtKind::RcDecContents { local: payload },
+                            ));
+                        }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
                             func: FunctionRef::internal("rask_free".to_string()),
