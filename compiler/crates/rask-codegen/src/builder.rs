@@ -8567,7 +8567,11 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Pool insert: wrap value as pointer, append elem_size
+            // Pool insert: the element's bytes by address, its size, and what
+            // one element owns — the same entries a rack node carries, off the
+            // same layout. `Pool.new()` has no argument to read `T` off, so
+            // this is where the runtime learns it; without it a pooled struct's
+            // strings and `Vec` fields were freed by nobody.
             "Pool_insert" | "Pool_try_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
@@ -8575,6 +8579,22 @@ impl<'a> FunctionBuilder<'a> {
                     args[1] = Self::value_to_ptr(builder, val);
                 }
                 args.push(builder.ins().iconst(types::I64, elem_size));
+                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    // The runtime copies it on the first insert, so a stack
+                    // slot is enough to hand it over.
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    ));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        builder.ins().stack_store(e, ss, (i * 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
                 CallAdapt::None
             }
 

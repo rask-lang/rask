@@ -271,6 +271,15 @@
 # never carried one (`t38_lazy_collection_adapters.rk` 6 → clean; the whole
 # leak was that one test, not the adapter captures the old note claimed).
 #
+# And 63 once a pool freed what its elements own. A `Pool<Task>` whose `Task`
+# holds a `tags: Vec<string>` gave back the slot array and the header and
+# nothing else — a pool carried no element map at all, where a Vec, a Map and a
+# rack node have had one for a while. It arrives with the first insert, the way
+# a rack node's does: `Pool.new()` has no argument to read `T` off. A removed
+# element handed back to the caller is the caller's, so only a `remove` whose
+# result nobody takes releases (`t_vec_field_filter_map.rk` and
+# `t_with_collection_field_writes.rk` both clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -304,9 +313,7 @@ t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately 
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
 t_string_builder_mutate.rk  # 1 allocation — the builder's own header
 t_string_unicode.rk  # 3 allocations — two Vec handles and one data buffer
-t_vec_field_filter_map.rk  # 4 allocations — two Vecs from a literal, plus one grown buffer
 t_week_opaque_struct_fields.rk  # 1 allocation — the RNG state behind `rng_from_seed`
-t_with_collection_field_writes.rk  # 6 allocations — four Vec handles and two grown buffers
                         # same trait-box leak as the two lines below. Nothing to
                         # do with the aggregate return the file is named for:
                         # every other test in it is clean.

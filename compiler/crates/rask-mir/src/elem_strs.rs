@@ -149,9 +149,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // are here only to tell the drop pass the result is the caller's to free.
     ("Vec_skip", 0, 0, "Vec_free"),
     ("Vec_take", 0, 0, "Vec_free"),
-    // `chunks` hands back a fresh `Vec<Vec<T>>`. Freeing it releases the outer
-    // Vec only — the inner ones are elements, and `Vec_free` frees a byte
-    // store, not what its elements point at. That nested half is #943.
+    // `chunks` hands back a fresh `Vec<Vec<T>>`, and the runtime builds it
+    // with an element map saying the elements are Vec handles — so freeing it
+    // frees the chunks too. The zero here is this table's own tag, which
+    // describes what *lowering* knows; the nested answer is settled at the
+    // construction site in `rask_vec_chunks`.
     ("Vec_chunks", 0, 0, "Vec_free"),
     ("Map_new", 2, 2, "Map_free"),
     ("Map_new_string_keys", 2, 2, "Map_free"),

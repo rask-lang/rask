@@ -34,6 +34,17 @@ struct RaskPool {
     // pool that never exceeds this many live elements. Added after the codegen-
     // hardcoded offsets (0..48), so the layout asserts below still hold.
     int32_t   max_cap;       // offset 52
+    // What one element *owns* — the `offset | (kind << 28)` entries
+    // `rask_owned_release` reads, the same encoding a container's elements and
+    // a rack's node payloads use. A pool had none, so every string and every
+    // `Vec` inside a pooled struct leaked: `rask_pool_free` gave back the slot
+    // array and the header and nothing else.
+    //
+    // Arrives with the first insert, not with `Pool.new()` — which has no
+    // argument to read `T` off, exactly as `Rack.new()` doesn't. After the
+    // hardcoded offsets above, so codegen's picture of the header is unchanged.
+    int32_t  *owned;
+    int32_t   owned_count;
 };
 
 // Compile-time layout verification — codegen hardcodes these offsets
@@ -110,6 +121,10 @@ RaskPool *rask_pool_new(int64_t elem_size) {
     p->slots = NULL;
     p->free_head = -1;
     p->max_cap = -1;  // unbounded by default
+    // The element shape arrives with the first insert; until then the pool
+    // owns nothing.
+    p->owned = NULL;
+    p->owned_count = 0;
     return p;
 }
 
@@ -128,10 +143,38 @@ static inline int pool_is_full(const RaskPool *p) {
     return p->max_cap >= 0 && p->len >= (int64_t)p->max_cap;
 }
 
+// Release what one live element owns. A slot on the free list holds bytes the
+// pool already gave up.
+static void pool_release_elem(const RaskPool *p, char *slot) {
+    if (!p->owned || p->owned_count <= 0) return;
+    rask_owned_release_all((char *)slot_data(slot), p->owned, p->owned_count);
+}
+
 void rask_pool_free(RaskPool *p) {
     if (!p) return;
+    if (p->slots && p->owned && p->owned_count > 0) {
+        for (int64_t i = 0; i < p->cap; i++) {
+            char *slot = slot_at(p, i);
+            if (slot_next(slot) != SLOT_OCCUPIED) continue;
+            pool_release_elem(p, slot);
+        }
+    }
+    rask_free(p->owned);
     if (p->slots) rask_realloc(p->slots, rask_safe_mul(p->cap, p->slot_stride), 0);
     rask_realloc(p, (int64_t)sizeof(RaskPool), 0);
+}
+
+// The element shape, copied once on the first insert. Same contract as the
+// rack's `rack_describe`: later inserts of the same `T` say the same thing, and
+// a pool with nothing in it never learns — which is right, it owns nothing.
+static void pool_describe(RaskPool *p, int64_t owned_count, const int32_t *owned) {
+    if (p->owned || owned_count <= 0 || !owned) return;
+    int64_t bytes = owned_count * (int64_t)sizeof(int32_t);
+    p->owned = (int32_t *)rask_alloc(bytes);
+    if (p->owned) {
+        memcpy(p->owned, owned, (size_t)bytes);
+        p->owned_count = (int32_t)owned_count;
+    }
 }
 
 int64_t rask_pool_len(const RaskPool *p) {
@@ -233,7 +276,13 @@ int64_t rask_pool_remove(RaskPool *p, RaskHandle h, void *out) {
     char *slot = slot_at(p, h.index);
 
     if (out) {
+        // Handed to the caller, strings and containers and all — so the slot
+        // must not release them too.
         memcpy(out, slot_data(slot), (size_t)p->elem_size);
+    } else {
+        // Dropped on the floor: `p.remove(h)` used as a statement. Whatever the
+        // element owned has nowhere else to go.
+        pool_release_elem(p, slot);
     }
 
     // Bump generation (saturate at UINT32_MAX to permanently invalidate)
@@ -280,7 +329,9 @@ int64_t rask_pool_insert_packed(RaskPool *p, const void *elem) {
     return handle_pack(h);
 }
 
-int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size) {
+int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
+                                      int64_t owned_count, const int32_t *owned) {
+    pool_describe(p, owned_count, owned);
 #ifdef RASK_DEBUG
     // Verify caller's elem_size matches pool's
     if (p->len > 0 || p->cap > 0) {
@@ -300,10 +351,12 @@ int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t ele
 // PL8: try_insert returns the niche-Option<Handle> `None` sentinel (-1) when a
 // bounded pool is full, instead of panicking. Otherwise it inserts and returns
 // the packed handle (which niche-encodes `Some`).
-int64_t rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size) {
+int64_t rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
+                                          int64_t owned_count, const int32_t *owned) {
     if (pool_is_full(p)) {
         return -1;
     }
+    pool_describe(p, owned_count, owned);
     if (p->len == 0 && p->cap == 0 && elem_size > p->elem_size) {
         p->elem_size = elem_size;
         p->slot_stride = compute_stride(elem_size);
