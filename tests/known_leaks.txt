@@ -454,11 +454,6 @@ t_closure_diverging_return.rk  # 2 allocations — a closure block and a string,
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
                         # not this theme. The file's other three tests are clean.
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
-t_io_buffer.rk  # 3 allocations — the byte vector `io.copy` moves. Every argument
-                        # of a trait call reads as handed over, so `writer.write_bytes(bytes)`
-                        # leaves it to nobody even though the parameter is a borrow. Needs the
-                        # trait's implementor set, which MIR doesn't carry — #1199. Not #1144:
-                        # both its boxes are dropped and both values released.
 t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel —
                         # a task killed by a panic doesn't unwind its captures (#299, v0.5).
                         # The largest of the three panic entries; between them they are 13 of
