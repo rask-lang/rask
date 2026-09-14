@@ -305,6 +305,14 @@
 # read an answer off, and the answer is simply the callee's
 # (`t_cstring_ffi.rk` 4 → clean, `t_container_in_a_wrapper.rk` clean).
 #
+# And 51 once an opaque handle in a struct field was freed with the struct. The
+# table that says what frees a field by its type knew about containers and
+# boxes; `Random`, `Atomic` and `cstring` are one-word handles onto a runtime
+# block and were in none of them, so a `Random` in a field leaked its state on
+# every construction. `StringBuilder` is deliberately left out — `build()` takes
+# the builder away, so a release on the field would point at a block that is
+# already gone (`t_week_opaque_struct_fields.rk` clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -335,7 +343,6 @@ t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately 
 t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment holds
 t_string_builder_mutate.rk  # 1 allocation — the builder's own header
 t_string_unicode.rk  # 3 allocations — two Vec handles and one data buffer
-t_week_opaque_struct_fields.rk  # 1 allocation — the RNG state behind `rng_from_seed`
                         # same trait-box leak as the two lines below. Nothing to
                         # do with the aggregate return the file is named for:
                         # every other test in it is clean.

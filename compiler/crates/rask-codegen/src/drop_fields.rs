@@ -130,6 +130,19 @@ pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
         // `io.Buffer` keeps its read position in a `Shared<i64, Local>` and
         // leaked two allocations per buffer.
         "Shared" | "Cell" | "Mutex" => Some(box_release_for(&rendered)),
+        // One-word handles onto a heap block the runtime made. Not containers —
+        // they hold no elements — but the same ownership: the field owns the
+        // block, and nothing else was going to give it back. `Random.from_seed`
+        // in a struct field leaked its state on every construction, and an
+        // `Atomic` counter in one leaked eight bytes.
+        //
+        // `StringBuilder` is deliberately not here. `build()` takes the builder
+        // away, so a builder reached through a field and built would leave this
+        // release pointing at a block that is already gone — which is a worse
+        // answer than the leak.
+        "Random" => Some("rask_rng_free"),
+        "Atomic" => Some("rask_atomic_int_free"),
+        "cstring" => Some("rask_cstring_free"),
         _ => None,
     }
 }
