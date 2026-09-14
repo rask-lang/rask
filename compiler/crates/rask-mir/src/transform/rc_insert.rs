@@ -1664,6 +1664,13 @@ fn copies_reach(func: &MirFunction, from: LocalId, target: LocalId) -> bool {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // The same question with a phi's operands read on their own incoming edge.
+    // Used for one decision below — whether a string is still live when a block
+    // ends — because the shared answer says a phi operand is live out of every
+    // predecessor, and a filtered loop's accumulator is then never dead
+    // anywhere (#1200). Every other consumer of liveness keeps the shared one:
+    // the doc on `analyze_phis_on_edges` says what happened when they didn't.
+    let live_edges = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
     // use released the buffer one statement before the call read it (#1036).
@@ -1783,8 +1790,11 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 continue;
             }
 
-            // If the local is live at block exit, it's used downstream — no dec here
-            if live.live_at_exit(block_id, *local) {
+            // If the local is live at block exit, it's used downstream — no dec
+            // here. Asked of the edge-aware answer: a successor phi that takes
+            // this local from a *different* predecessor doesn't keep it alive
+            // on the way out of this one.
+            if live_edges.live_at_exit(block_id, *local) {
                 continue;
             }
 

@@ -447,12 +447,13 @@ t42_flatten_shaped_header.rk  # 1 allocation — a closure held through a *gener
                         # MIR reaches the same layout from a type string, so the spelling
                         # has to be settled in two places at once. The other 2 allocations
                         # were the container version of the same hole and are gone.
-t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rewritten every
-                        # turn of a *filtered* loop. The filter adds a second merge, and a phi
-                        # operand reads as live out of every predecessor rather than its own
-                        # edge — so the old value looks live where it is dead and gets no
-                        # release. #1200; the same loop without the filter is clean. (Not the
-                        # chain's environment, which the old note claimed.)
+t_capture_freed_with_its_closure.rk  # 1 allocation — the *final* string accumulator,
+                        # left in a by-ref capture cell when the frame ends, #1207. Each
+                        # turn's replacement is given back (#1162), and the turn-by-turn
+                        # leak the old note described here was #1200, now fixed — what is
+                        # left is the last value, which nothing owns. Writing the chain
+                        # inline instead of binding it to a name keeps `joined` out of a
+                        # cell and the file clean.
 t_closure_diverging_return.rk  # 2 allocations, deferred — a closure block and a string,
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
