@@ -610,6 +610,27 @@ impl<'a> MirLowerer<'a> {
                                 (None, _) => Some(dst_ty.size()),
                             };
                             let _ = val_ty;
+                            // What the caller's slot is about to lose. Same
+                            // reasoning as a field assignment one level out:
+                            // mem.parameters/PM2 says a `mutate` slot always
+                            // arrives holding a value, so writing a new one over
+                            // it is always a replacement, and the containers the
+                            // old one held had nowhere to go (#1198).
+                            //
+                            // Only the aggregate `mutate` case. A scalar goes
+                            // through the same branch with a cell for a
+                            // destination, and a cell's contents are
+                            // `container_drop`'s to place.
+                            if is_mutate_param && matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
+                            {
+                                self.builder.push_stmt(MirStmt::dummy(
+                                    MirStmtKind::ReleaseSlot {
+                                        addr: local_id,
+                                        offset: 0,
+                                        ty: dst_ty.clone(),
+                                    },
+                                ));
+                            }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: local_id,
                                 offset: 0,

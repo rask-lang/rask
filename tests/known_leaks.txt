@@ -443,12 +443,6 @@ t42_flatten_shaped_header.rk  # 1 allocation — a closure held through a *gener
                         # MIR reaches the same layout from a type string, so the spelling
                         # has to be settled in two places at once. The other 2 allocations
                         # were the container version of the same hole and are gone.
-t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data), and it is
-                        # #1198: `swap_out` consumes the bag through `eat(b)` and then
-                        # writes a fresh one over the same slot, so the vector the
-                        # caller handed in is overwritten rather than freed. The file's
-                        # other two tests are clean — a `take` parameter on its own is
-                        # fine, it's the replace that loses the old value.
 t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rewritten every
                         # turn of a *filtered* loop. The filter adds a second merge, and a phi
                         # operand reads as live out of every predecessor rather than its own
