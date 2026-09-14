@@ -263,6 +263,29 @@ impl<'a> MirLowerer<'a> {
         Some((offset, size?))
     }
 
+    /// What a field slot holds that has to be given back before it is written
+    /// over, or `None` when it holds nothing the release walks.
+    ///
+    /// Containers and strings. A container is the case the MIR type alone can't
+    /// answer — it calls every one of them a bare `Ptr` — so the kind comes from
+    /// the checker's type of the place, through the head name rather than
+    /// `Display`, because a resolved generic renders as `<type#7><i64>`. A
+    /// string the field's own MIR type already says.
+    ///
+    /// Struct and enum fields are deliberately out: their release walks further
+    /// and the kill rule that pairs with this one has only been measured on
+    /// these two.
+    fn replaced_slot_type(&self, target: &Expr, fty: &MirType) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
+            if let Some(head) = self.head_name(&ty) {
+                if let Some(kind) = crate::ContainerKind::from_rendered(&head) {
+                    return Some(MirType::Container(kind));
+                }
+            }
+        }
+        matches!(fty, MirType::String).then(|| fty.clone())
+    }
+
     /// Byte offset + MIR type of `field` within an aggregate MIR type.
     fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
         self.field_offset_ty_size(oty, field).map(|(off, ty, _)| (off, ty))
@@ -631,6 +654,17 @@ impl<'a> MirLowerer<'a> {
                                 );
                                 self.emit_link_store(base, offset, val_op);
                                 return Ok(());
+                            }
+                            // The value the slot is about to lose. A field
+                            // assignment is always a replacement — a struct
+                            // literal builds the slot on a different path — so
+                            // there is no "is this the first write" to get
+                            // wrong here, which is why this is lowering's job
+                            // rather than a pass's (#1198).
+                            if let Some(old) = self.replaced_slot_type(target, &fty) {
+                                self.builder.push_stmt(MirStmt::dummy(
+                                    MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
+                                ));
                             }
                             // The field's own width, not None. Codegen only
                             // copies the bytes when the size says the value is

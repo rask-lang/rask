@@ -818,6 +818,11 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
+            addr: local_map.get(addr).copied().unwrap_or(*addr),
+            offset: *offset,
+            ty: ty.clone(),
+        },
         MirStmtKind::EnsureHookRegister { thunk, captures } => MirStmtKind::EnsureHookRegister {
             thunk: thunk.clone(),
             captures: captures

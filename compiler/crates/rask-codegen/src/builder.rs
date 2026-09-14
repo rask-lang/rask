@@ -1288,6 +1288,17 @@ impl<'a> FunctionBuilder<'a> {
                 let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
                 Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
             }
+
+            // One slot of an aggregate, about to be written over. The same walk
+            // `RcDecContents` does, told where to start and what it will find
+            // there instead of reading it off a local's type.
+            MirStmtKind::ReleaseSlot { addr, offset, ty } => {
+                if !Self::holds_string_mir(ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*addr), ctx)?;
+                Self::release_strings_mir(builder, base, *offset as i32, ty, ctx, 0)?;
+            }
         }
         Ok(())
     }

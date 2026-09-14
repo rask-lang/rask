@@ -418,7 +418,6 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
-p12_rack_link_churn.rk  # 2 allocations — a container field written over, #1198
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
 # are files that branch added, the rest leak there for shapes the fixes
 # above didn't reach. None are new leaks — they were on that branch's own
@@ -465,7 +464,6 @@ t_month_panic_observed.rk  # 9 allocations, deferred — six strings, six closur
                         # and a channel. A task killed by a panic doesn't unwind its
                         # captures (#299). The largest of the three panic entries; between
                         # them they are 13 allocations, and none of it is v0.3's theme.
-t_rack_stale_records.rk  # 2 allocations — a container field written over, #1198
 t_shared_box_freed.rk  # 2 allocations, deferred — the `s.clone()` handle, deliberately
                         # not freed: the test is what a box held on purpose looks like, so
                         # this one is never going to be zero.
