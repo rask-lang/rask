@@ -564,6 +564,22 @@ fn is_opaque_container_name(name: &str) -> bool {
     )
 }
 
+/// A type argument that owns storage of its own.
+///
+/// The shared layout a generic type gets puts `i64` in every parameter slot,
+/// which is the right *size* for a handle and the wrong type: the release walk
+/// reads the layout, sees a scalar, and frees nothing — so `Pair<i64,
+/// Vec<i64>>`'s vector field belonged to nobody. An instance layout is what
+/// puts the real type back, and this is what asks for one.
+///
+/// Deliberately wider than the set anything actually frees. An extra instance
+/// layout costs a little compile time; a missing one costs the value. A
+/// `string` argument is not here and doesn't need to be — a string is
+/// refcounted, so the frame's own name gives it back.
+pub fn arg_owns_storage(name: &str) -> bool {
+    is_opaque_container_name(name) || matches!(name, "Random" | "cstring" | "StringBuilder")
+}
+
 /// Check whether a struct has `@layout(C)` attribute.
 fn has_c_layout(attrs: &[String]) -> bool {
     attrs.iter().any(|a| a == "layout(C)")

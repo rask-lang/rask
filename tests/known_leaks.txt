@@ -430,7 +430,13 @@ p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped 
                         # block at this offset" is the easy half — the hard half is that
                         # `drop(x.field)` consumes the same box by hand in this file.
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
-t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
+t42_flatten_shaped_header.rk  # 1 allocation — a closure in a struct field, #1204. The
+                        # layout can't parse a `func(...)` field type, so it lands as an
+                        # unknown and the release walk emits nothing for it. The other
+                        # 2 were a `Vec` type argument of a generic struct: the shared
+                        # generic layout put `i64` in the parameter slot and the walk
+                        # read a scalar. Fixed by giving such an instantiation its own
+                        # layout — the same machinery an oversized argument gets.
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data), and it is
                         # #1198: `swap_out` consumes the bag through `eat(b)` and then
                         # writes a fresh one over the same slot, so the vector the
