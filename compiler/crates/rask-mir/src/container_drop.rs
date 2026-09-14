@@ -1723,7 +1723,7 @@ fn cells_this_frame_frees(
     kept: &HashMap<String, Vec<bool>>,
     trait_kept: &HashMap<String, Vec<bool>>,
     trait_handing: &HashMap<String, HandBack>,
-) -> Vec<(LocalId, &'static str, BlockId)> {
+) -> Vec<(LocalId, Holds, BlockId)> {
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -1796,12 +1796,64 @@ fn cells_this_frame_frees(
     let mut fresh_by_copy = fresh.clone();
     follow_copies(func, &mut fresh_by_copy);
 
+    // A cell whose contents a call takes away. For a string cell this replaces
+    // the blunter "the address went to a call at all" test below: a string's
+    // header *is* the slot, so `println(joined)` passes the cell's address for
+    // an ordinary borrow, and reading that as a hand-off left every one of them
+    // out.
+    let mut kept_by_a_call: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Call { func: fref, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if let MirOperand::Local(id) = arg {
+                        if call_keeps_argument(fref, i, kept) {
+                            kept_by_a_call.insert(*id);
+                        }
+                    }
+                }
+            }
+            // No name to ask about, so the conservative answer.
+            MirStmtKind::TraitCall { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
+                for arg in args {
+                    if let MirOperand::Local(id) = arg {
+                        kept_by_a_call.insert(*id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut out = Vec::new();
     for cell in &by_ref_cells {
+        let Some(values) = stores.get(cell) else { continue };
+        // A string in the same shape of cell. `mut joined = ""` captured by a
+        // loop body becomes one of these, and the value left in it when the
+        // frame ends belonged to nobody — each turn's *replacement* is given
+        // back (`string_free_replaced`), the last one wasn't (#1207).
+        //
+        // None of the container guards below apply. A string is refcounted, so
+        // the slot holds one reference of its own: a closure replacing it gives
+        // the old one back, a load out of it takes a reference of its own, and
+        // being wrong about a second owner costs a leak rather than a double
+        // free. What is left to ask is whether something took it away.
+        if let [(value, store_block)] = values.as_slice() {
+            let is_string = match value {
+                MirOperand::Constant(crate::MirConst::String(_)) => true,
+                MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::String),
+                _ => false,
+            };
+            if is_string {
+                if !kept_by_a_call.contains(cell) {
+                    out.push((*cell, Holds::Str, *store_block));
+                }
+                continue;
+            }
+        }
         if handed_on.contains(cell) {
             continue;
         }
-        let Some(values) = stores.get(cell) else { continue };
         let [(MirOperand::Local(src), store_block)] = values.as_slice() else { continue };
         let Some(free) = fresh_by_copy.get(src).copied() else { continue };
         if !cell_is_read_only_in_closures(func, all, *cell) {
@@ -1828,7 +1880,7 @@ fn cells_this_frame_frees(
         if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
-        out.push((*cell, free, *store_block));
+        out.push((*cell, Holds::Handle(free), *store_block));
     }
     out
 }
@@ -1869,7 +1921,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `if` holds nothing on the other, and the load would free whatever the stack
 /// had there — reliably zero on a fresh frame, and 0xAAAA… under
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
-fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, &'static str, BlockId)]) {
+fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let return_blocks: Vec<usize> = func
         .blocks
@@ -1887,10 +1939,26 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, &'static str, Bl
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
     for block_idx in return_blocks {
         let exit = func.blocks[block_idx].id;
-        for (cell, free, store_block) in cells {
+        for (cell, holds, store_block) in cells {
             if !dom.dominates(*store_block, exit) {
                 continue;
             }
+            // A string's 16-byte header *is* the slot, so the release takes the
+            // cell's address as it stands — the same shape a struct field's
+            // string gets, and the statement that already says it.
+            let free = match holds {
+                Holds::Str => {
+                    func.blocks[block_idx].statements.push(MirStmt::dummy(
+                        MirStmtKind::ReleaseSlot {
+                            addr: *cell,
+                            offset: 0,
+                            ty: MirType::String,
+                        },
+                    ));
+                    continue;
+                }
+                Holds::Handle(free) => *free,
+            };
             let tmp = LocalId(next);
             next += 1;
             func.locals.push(crate::MirLocal {
