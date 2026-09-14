@@ -6060,6 +6060,19 @@ impl<'a> MirLowerer<'a> {
                 // `UnresolvedGeneric` only, so a resolved type or a Map missed.
                 .or_else(|| self.collection_elem_of_expr(object))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
+            // `remove` hands the element over, `get` only lends it. So a
+            // removed `Vec` or `Map` is the frame's to free and the local has
+            // to say which container it holds — MIR spells every container a
+            // bare `Ptr`, and `Pool<Vec<string>>.remove(h)` left the whole
+            // vector to nobody. A *borrowed* element must keep saying `Ptr`,
+            // or the frame frees what the pool still has.
+            let elem_ty = if qualified_name == "Pool_remove" {
+                self.container_elem_payload_type(object.id, 0)
+                    .filter(|t| matches!(t, MirType::Container(_)))
+                    .unwrap_or(elem_ty)
+            } else {
+                elem_ty
+            };
             Some(super::option_of(elem_ty))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
@@ -6287,6 +6300,19 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
+        // What one pooled element owns, settled here because here is where the
+        // checker's type is. MIR calls every container a bare `Ptr`, so codegen
+        // looking at the argument's local can tell a `Pool<Point>` from a
+        // `Pool<i64>` but not a `Pool<Vec<i64>>` from a pool of raw addresses.
+        // A `Pool<string>` or `Pool<Vec<_>>` element *is* the owned thing, and
+        // with nothing describing that the runtime freed the slot and left the
+        // string or the vector behind. Codegen pops this back off and expands it
+        // into the offset entries `rask_owned_release` reads.
+        let mut final_args = final_args;
+        if matches!(final_name.as_str(), "Pool_insert" | "Pool_try_insert") {
+            let tag = self.container_elem_tag(object.id, 0);
+            final_args.push(MirOperand::Constant(MirConst::Int(tag)));
+        }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(final_name.clone()),

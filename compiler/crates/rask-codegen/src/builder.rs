@@ -8151,6 +8151,7 @@ impl<'a> FunctionBuilder<'a> {
     /// The same walk a container's struct elements get — a node in a rack and a
     /// struct in a vector own their fields the same way — so it comes off the
     /// same function rather than a second copy of the rules.
+    ///
     fn node_owned_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -8161,6 +8162,32 @@ impl<'a> FunctionBuilder<'a> {
         let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
         let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
         crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
+            .unwrap_or_default()
+    }
+
+    /// The same entries for a pooled element, off the tag lowering appended.
+    ///
+    /// A pooled element doesn't have to be a struct: `Pool<string>` and
+    /// `Pool<Vec<i64>>` hold elements that *are* the owned thing. Reading the
+    /// argument's local can't see that — MIR types every container as a bare
+    /// `Ptr` — so lowering settles the tag from the checker's type and passes
+    /// it as the last argument. The tag is not a runtime argument, so it comes
+    /// back off the value list before the call is built.
+    fn pooled_owned_descriptor(
+        mir_args: &[MirOperand],
+        args: &mut Vec<Value>,
+        ctx: &CodegenCtx,
+    ) -> Vec<i32> {
+        // Pool, element, tag. Anything else is a call this didn't build, and
+        // popping a value off one of those would drop the element instead.
+        if mir_args.len() != 3 || args.len() != 3 {
+            return Vec::new();
+        }
+        args.pop();
+        let Some(MirOperand::Constant(MirConst::Int(tag))) = mir_args.last() else {
+            return Vec::new();
+        };
+        crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
             .unwrap_or_default()
     }
 
@@ -8628,8 +8655,8 @@ impl<'a> FunctionBuilder<'a> {
                     let val = args[1];
                     args[1] = Self::value_to_ptr(builder, val);
                 }
+                let owned = Self::pooled_owned_descriptor(mir_args, args, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
-                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
                 args.push(builder.ins().iconst(types::I64, owned.len() as i64));
                 if owned.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));

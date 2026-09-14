@@ -276,9 +276,18 @@
 # nothing else — a pool carried no element map at all, where a Vec, a Map and a
 # rack node have had one for a while. It arrives with the first insert, the way
 # a rack node's does: `Pool.new()` has no argument to read `T` off. A removed
-# element handed back to the caller is the caller's, so only a `remove` whose
-# result nobody takes releases (`t_vec_field_filter_map.rk` and
-# `t_with_collection_field_writes.rk` both clean).
+# element is handed back to the caller and released by the frame, never by the
+# pool — `Pool.remove` answers `T?`, so there is always somewhere to put it
+# (`t_vec_field_filter_map.rk` and `t_with_collection_field_writes.rk` both
+# clean). The earlier note here claimed the pool released a `remove` whose
+# result nobody took; nothing generated ever takes that path.
+#
+# The element map was a struct-shaped question only, so `Pool<string>` and
+# `Pool<Vec<_>>` described themselves as owning nothing: the element *is* the
+# owned thing and no struct layout says so. The tag comes from lowering now,
+# where the checker's type is, the same way a Vec's does — and `Pool.remove`
+# says which container it hands back, so a removed `Vec` or `Map` is freed by
+# the frame instead of nobody.
 #
 # And 57 once a struct read through a nested struct field still gave back its
 # own containers. A struct and a struct *inside* it are one storage read at an
