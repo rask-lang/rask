@@ -342,9 +342,28 @@ fn insert_for_function(
 ) {
     let mut trait_locals = collect_fresh_trait_locals(func);
     trait_locals.extend(boxes_handed_over(func, hands_back));
-    trait_locals.extend(boxes_parked_in_a_wrapper(func, &trait_locals));
     if trait_locals.is_empty() {
         return;
+    }
+    // Out of one wrapper and into the next, as many times as the frame does it.
+    // Inlining puts every hop of `quadrupled → doubled → classify` in one body,
+    // so the box is read out of what `classify` returned, parked in `doubled`'s
+    // wrapper, read out of that, parked in `quadrupled`'s, and read out again.
+    // Each step is the one `boxes_parked_in_a_wrapper` describes; running it
+    // once followed the first hop and lost the second.
+    //
+    // And a box that arrived from a callee gets copied like any other: inlining
+    // `describe(e)` writes it into the callee's parameter local, and that last
+    // name is the one that owns it. Without this the original read as moved-away
+    // and the copy was never a candidate, so nobody dropped it.
+    loop {
+        let before = trait_locals.len();
+        carry_through_moves(func, &mut trait_locals);
+        let parked = boxes_parked_in_a_wrapper(func, &trait_locals);
+        trait_locals.extend(parked);
+        if trait_locals.len() == before {
+            break;
+        }
     }
 
     let escaping = find_escaping(func, &trait_locals, callee_escapes);
@@ -385,24 +404,29 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
         return fresh;
     }
 
-    // Propagate through moves and phi-merges to a fixed point: `_4 = _3`
-    // (real lowering copies a `TraitBox` result into the source-named local
-    // before first use) or a multi-hop chain both carry the same fresh
-    // allocation to a new name.
+    carry_through_moves(func, &mut fresh);
+    fresh
+}
+
+/// Carry every name in `held` forward through plain moves and phi-merges, to a
+/// fixed point: `_4 = _3` (real lowering copies a `TraitBox` result into the
+/// source-named local before first use) or a multi-hop chain both carry the
+/// same allocation to a new name, and the last name is the one that owns it.
+fn carry_through_moves(func: &MirFunction, held: &mut HashSet<LocalId>) {
     loop {
         let mut added = false;
         for block in &func.blocks {
             for stmt in &block.statements {
                 match &stmt.kind {
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                        if fresh.contains(src) && !fresh.contains(dst) =>
+                        if held.contains(src) && !held.contains(dst) =>
                     {
-                        fresh.insert(*dst);
+                        held.insert(*dst);
                         added = true;
                     }
-                    MirStmtKind::Phi { dst, args } if !fresh.contains(dst) => {
-                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(id) if fresh.contains(id))) {
-                            fresh.insert(*dst);
+                    MirStmtKind::Phi { dst, args } if !held.contains(dst) => {
+                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(id) if held.contains(id))) {
+                            held.insert(*dst);
                             added = true;
                         }
                     }
@@ -411,11 +435,9 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
             }
         }
         if !added {
-            break;
+            return;
         }
     }
-
-    fresh
 }
 
 /// A trait object escapes if it's returned, stored, or passed as a call or

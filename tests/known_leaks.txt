@@ -370,6 +370,17 @@
 # release for, read once before it starts adding its own
 # (`t_heap_box_dropped.rk` clean).
 #
+# And 37 once the trait-drop pass followed a box as far as the frame carries it.
+# Two gaps, both about a box that arrived from *somewhere else* rather than
+# being made here. `describe(e)` inlined writes the box into the callee's
+# parameter local, and only locally-made boxes were being carried through moves
+# — so the original read as moved-away and the copy was never a candidate.
+# And `quadrupled → doubled → classify` inlines into one body, so the box comes
+# out of one wrapper, is parked in the next, comes out again, and is parked
+# again: the step that follows one such hop ran once, which followed the first
+# and lost the second. Both are fixed points now
+# (`t_any_error_boxing.rk` and `t_bare_error_type.rk` clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -380,8 +391,6 @@
 p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
 p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
 t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
-t_any_error_boxing.rk  # 1 allocation — one boxed error's block, returned rather than held in a container (#1149)
-t_bare_error_type.rk  # 1 allocation — one boxed error's block, same shape (#1149)
 t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
 t_capture_freed_with_its_closure.rk  # 2 allocations — two strings the chain's environment holds (the trace says `str_alloc_header`, not the sequences the old note claimed)
 t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into every task without taking a reference, #1139
