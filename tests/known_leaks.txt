@@ -290,6 +290,21 @@
 # every field including the inner one (`t_json_decode.rk` 6 → clean; the leak
 # was the one test that reads `p.home.street` and no Vec field).
 #
+# And 52 once an opaque handle in a wrapper was a container the pass could see.
+# `s.to_cstring()` answers `cstring or NullByteError`, and a `cstring` is a heap
+# buffer behind a handle MIR types `i64` — so the test for "is this slot a
+# container", which asked for a pointer, missed the one `to_cstring` stores into
+# the wrapper it returns, and every successful conversion leaked its copy. The
+# store side asks whether the name is one this frame already owns a container
+# under; the read side takes slot zero of a wrapper already known to carry one,
+# where "one machine word" separates the payload from the error value beside it.
+#
+# The other half was a forwarder. `func terminated_copy_of(s) -> cstring or
+# NullByteError { return s.to_cstring() }` makes nothing and stores nothing — it
+# hands its caller the wrapper it was just given — so there was no name in it to
+# read an answer off, and the answer is simply the callee's
+# (`t_cstring_ffi.rk` 4 → clean, `t_container_in_a_wrapper.rk` clean).
+#
 # Format: one basename per line, then `# N allocations`.
 
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
@@ -310,9 +325,7 @@ t_channel_spawned_producer.rk  # 3 allocations — `own` copies a sender into ev
 t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
 t_closure_diverging_return.rk  # 2 allocations — a closure block and a string
 t_closure_heap_string_capture.rk  # 1 allocation — a string overwritten through a by-ref capture, never released (#1162)
-t_container_in_a_wrapper.rk  # 1 allocation — the `cstring` case, whose callee is
 t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
-t_cstring_ffi.rk  # 4 allocations — the terminated copy comes back inside a
 t_debug_renders_containers.rk  # 2 allocations — one Vec (handle and data)
 t_io_buffer.rk  # 3 allocations — a Vec `io.copy` builds through a boxed writer, not #1144 (both its boxes are dropped and both values released)
 t_heap_box_dropped.rk  # 2 allocations — one Vec (handle and data) inside a `Heap` payload `drop` freed: freeing the box says nothing about what the payload holds
@@ -333,7 +346,5 @@ t_week_opaque_struct_fields.rk  # 1 allocation — the RNG state behind `rng_fro
                             # third test
                              # small enough to inline, so there is no call left
                              # to read a handoff off (#1117's other half)
-                  # `cstring or NullByteError`, and a container returned in a
-                  # `T or E` is freed by nobody (#1117)
                              # field (#1035, #1047); the clones themselves are freed
                    # the Vec/Pool of structs holding strings (#1035)

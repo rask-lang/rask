@@ -572,7 +572,12 @@ fn functions_that_hand_a_container_back(
                 continue;
             }
             let fresh = collect_fresh_containers_with(func, fns, &handing, targets);
-            if fresh.is_empty() {
+            // A forwarder makes nothing of its own — `return s.to_cstring()`
+            // hands its caller the wrapper it was just given, untouched. So
+            // there is no fresh name here and no store into a wrapper to read
+            // one off; the answer is the callee's answer.
+            let forwarded = forwarded_wrappers(func, &handing);
+            if fresh.is_empty() && forwarded.is_empty() {
                 continue;
             }
             // Every returning path has to hand back one this frame made. One
@@ -595,6 +600,11 @@ fn functions_that_hand_a_container_back(
                 };
                 if let Some(f) = fresh.get(id) {
                     free_fn = Some(f);
+                    continue;
+                }
+                if let Some(f) = forwarded.get(id) {
+                    free_fn = Some(f);
+                    wrapped = true;
                     continue;
                 }
                 // The container may be *inside* what is returned. `-> Vec<i64>?`
@@ -623,6 +633,30 @@ fn functions_that_hand_a_container_back(
             return handing;
         }
     }
+}
+
+/// Wrappers this frame was handed and passes straight on: the destination of a
+/// call to a function that hands a container back *inside* what it returns.
+///
+/// `func terminated_copy_of(s: string) -> cstring or NullByteError { return
+/// s.to_cstring() }` is the whole shape — one call, one return, nothing in
+/// between. The container is the callee's to make and the caller's to free, and
+/// this frame is neither.
+fn forwarded_wrappers(
+    func: &MirFunction,
+    handing: &HashMap<String, HandBack>,
+) -> HashMap<LocalId, &'static str> {
+    let mut out = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
+            if let Some(back) = handing.get(&fref.name) {
+                if back.wrapped {
+                    out.insert(*dst, back.free);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// How a function hands a container to its caller.
@@ -662,7 +696,12 @@ fn container_stored_into(
         let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
             continue;
         };
-        if *addr != wrapper || !is_container_shaped(func, *v) {
+        // Pointer-shaped, so it *might* be somebody's container — or a name
+        // this frame is already known to own one under, whatever MIR typed it.
+        // A `cstring` is an opaque handle lowered to `i64`, so the shape test
+        // alone never saw the one `to_cstring` stores into the wrapper it
+        // returns, and every successful conversion leaked its copy (#1117).
+        if *addr != wrapper || (!is_container_shaped(func, *v) && !fresh.contains_key(v)) {
             continue;
         }
         match fresh.get(v) {
@@ -678,6 +717,29 @@ fn container_stored_into(
 
 /// A container handle is an opaque pointer, and so is nothing else this pass
 /// tracks. Asked of the declared local type rather than guessed from the name.
+/// Is this read the container out of a wrapper known to be carrying one?
+///
+/// The payload sits in slot zero. Everything else in there says nothing: the
+/// tag has its own read, and a `T or E` whose error arm has fields reads those
+/// out of the later slots — `_28 = _16.1` on the refusal path of `to_cstring`
+/// is a byte offset, and freeing it as a `cstring` frees an address that was
+/// never one.
+///
+/// Slot zero is read on the error path too, and that read is the error value,
+/// which is an aggregate — so "one machine word" separates the two. Pointer or
+/// not: an opaque handle like `cstring` is an `i64` and is still a container
+/// whose free the caller owns.
+fn holds_the_payload(func: &MirFunction, local: LocalId, field_index: u32) -> bool {
+    if field_index != 0 {
+        return false;
+    }
+    func.locals
+        .iter()
+        .chain(func.params.iter())
+        .find(|l| l.id == local)
+        .is_some_and(|l| !l.ty.passed_by_address() && l.ty.size() == 8)
+}
+
 fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
     func.locals
         .iter()
@@ -1107,13 +1169,16 @@ fn collect_fresh_containers_with(
     let mut unwrapped: HashSet<LocalId> = HashSet::new();
     if !unwrap_for.is_empty() {
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            let MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } = &stmt.kind
+            let MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field { base, field_index, .. },
+            } = &stmt.kind
             else {
                 continue;
             };
             let MirOperand::Local(src) = base else { continue };
             if let Some(free) = unwrap_for.get(src) {
-                if is_container_shaped(func, *dst) {
+                if holds_the_payload(func, *dst, *field_index) {
                     fresh.insert(*dst, free);
                     unwrapped.insert(*dst);
                 }
