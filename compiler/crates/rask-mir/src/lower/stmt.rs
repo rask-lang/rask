@@ -531,6 +531,11 @@ impl<'a> MirLowerer<'a> {
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
                 let (val_op, val_ty) = self.lower_expr(value)?;
+                // `v = try c.finish()` consumes `c` exactly as `let v = …`
+                // does, so the ensure it cancels is the same one. Wiring this
+                // into the bindings and `return` and not into plain assignment
+                // left the same double consume one spelling away (#1216).
+                self.check_resource_consume(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
                 // accepts the widening; without the wrap the bare value lands in the

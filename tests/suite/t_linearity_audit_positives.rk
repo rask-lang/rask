@@ -94,6 +94,17 @@ func wrapped_consume(n: i32) -> i32 or Oops {
     return v
 }
 
+// The same, reached by plain assignment rather than a binding. Wiring the
+// cancellation into `let`, `mut` and `return` and not into `x = …` left the
+// double consume one spelling away.
+func wrapped_consume_assigned(n: i32) -> i32 or Oops {
+    let c = Conn { id: n }
+    ensure c.discard()
+    mut v = 0
+    v = try c.finish()
+    return v
+}
+
 // Nothing consumes it, so the ensure is what does.
 func ensure_runs(n: i32) -> i32 {
     let c = Conn { id: n }
@@ -185,6 +196,12 @@ test "mem.linear/L4 — an ensure nothing cancels runs" {
     let before = cleanups()
     assert ensure_runs(3) == 3
     assert cleanups() == before + 1
+}
+
+test "mem.linear/L6 — cancelled by a consume on the right of an assignment" {
+    let before = cleanups()
+    assert (wrapped_consume_assigned(5) catch e => -1) == 5
+    assert cleanups() == before
 }
 
 test "mem.linear/L6 — an ensure the consume cancelled does not run" {

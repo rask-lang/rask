@@ -87,6 +87,10 @@ func bad_continue() {
 }
 
 // --- try leaves the function, with the resource still open ---
+//
+// The `c` above is called `c` too, on purpose: the acquisition span E0881
+// points at is looked up by name, and it was not cleared between bodies — so
+// this error cited `bad_break`'s `let` as where *this* `c` came from.
 func bad_try(n: i32) -> i32 or MyError {
     let c = Conn { id: 1 }
     // ERROR: `c` would leak if this fails [E0881]

@@ -537,6 +537,10 @@ impl<'a> OwnershipChecker<'a> {
         self.borrow_bindings.clear();
         self.borrows.clear();
         self.resource_bindings.clear();
+        // Keyed by name, so a `c` in one function would otherwise hand the next
+        // function's `c` its line: E0881 in one body cited another body's `let`
+        // as where the resource was acquired.
+        self.resource_acquired_at.clear();
         self.owned_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
