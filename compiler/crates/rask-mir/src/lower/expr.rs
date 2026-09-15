@@ -388,6 +388,28 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.ctx.shared_elem_types.borrow().get(key).cloned())
     }
 
+    /// Is this receiver a Copy scalar — a number, a bool, a char?
+    ///
+    /// Asked of the checker rather than of MIR, because MIR types a channel's
+    /// `Sender<T>` and several other runtime handles as `I64`, and `.clone()`
+    /// on one of those is a reference count rather than nothing.
+    ///
+    /// `false` for a receiver whose type isn't recorded: that answer keeps the
+    /// call, which is what happened before this question was asked at all.
+    fn receiver_is_copy_scalar(&self, object: &Expr) -> bool {
+        use rask_types::Type;
+        matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(
+                Type::Bool
+                    | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                    | Type::F32 | Type::F64
+                    | Type::Char
+            )
+        )
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
@@ -6147,6 +6169,24 @@ impl<'a> MirLowerer<'a> {
         // heap fields (string, Vec, Map). Avoids needing a generated
         // runtime clone function for every user struct.
         if method == "clone" {
+            // A Copy scalar's clone is the value, and there is nothing to
+            // call: no `i64_clone` exists and none should. The call only
+            // reaches MIR at all because a generic body written for `T` keeps
+            // it after substitution — `Map<string, i64>.get_clone(k)` is
+            // `v.clone()` with `V` now `i64`, and that failed codegen outright
+            // rather than compiling to nothing (#1210).
+            //
+            // The *checker's* type, not the MIR one, and that distinction is
+            // the whole of it. MIR types several runtime handles as `I64` — a
+            // channel's `Sender<T>` among them, which is `let tx: i64` in the
+            // dump. Asked over `MirType` this reads a sender as a number, so
+            // `tx.clone()` became a no-op: three names for one sender, each
+            // dropped, and `t57_spawn.rk` died on a signal 11.
+            //
+            // Unknown means not a scalar, which leaves today's behaviour.
+            if self.receiver_is_copy_scalar(object) {
+                return Ok((all_args[0].clone(), obj_ty));
+            }
             if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
