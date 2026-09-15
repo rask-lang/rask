@@ -391,7 +391,11 @@ impl<'a> MirLowerer<'a> {
                 // A `mut` can be reassigned, so whatever this name meant to
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
-                self.lower_binding(name, ty.as_deref(), init)
+                let r = self.lower_binding(name, ty.as_deref(), init);
+                // The initializer can be the consuming call — `mut v = try
+                // c.finish()` — and then the ensure it cancels is this one.
+                self.check_resource_consume(init);
+                r
             }
 
             StmtKind::Let { name, ty, init, .. } => {
@@ -456,13 +460,20 @@ impl<'a> MirLowerer<'a> {
                     self.meta_mut(name).type_prefix = Some(prefix);
                     return Ok(());
                 }
-                self.lower_binding(name, ty.as_deref(), init)
+                let r = self.lower_binding(name, ty.as_deref(), init);
+                // The initializer can be the consuming call — `let v = try
+                // c.finish()` — and then the ensure it cancels is this one.
+                self.check_resource_consume(init);
+                r
             }
 
             StmtKind::Return(opt_expr) => {
                 let mut returned_ty = None;
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
+                    // `return c.finish()` consumes `c` on the way out, so the
+                    // ensure is cancelled before the cleanup chain runs.
+                    self.check_resource_consume(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
                     // `func -> User? { return User { ... } }` needs one layer,

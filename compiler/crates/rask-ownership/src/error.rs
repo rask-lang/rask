@@ -319,6 +319,16 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// mem.linear/L1 on the error path: a `try` after a resource is acquired
+    /// and before it is committed. If the call fails, the error leaves the
+    /// function and the resource is never consumed.
+    #[error("`{name}` would leak if this fails")]
+    ResourceLeaksOnTry {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
+    },
+
     /// Resource captured by closure/spawn not consumed on all code paths.
     #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
     ResourceNotConsumedInClosure {

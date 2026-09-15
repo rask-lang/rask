@@ -24,6 +24,8 @@ func parallel_max(readings: Vec<f64>) -> f64 or Error {
             return vec_max(second_half)
         })
 
+        // `h2` has to be consumed even on the path where joining `h1` fails.
+        ensure h2.detach()
         let m1 = try h1.join()
         let m2 = try h2.join()
 

@@ -1741,6 +1741,9 @@ pub struct MirLowerer<'a> {
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
+    /// Lowering an `ensure` body into its own thunk function, where a consuming
+    /// call cancels nothing and the resource slot isn't in this frame.
+    in_ensure_thunk: bool,
     /// Methods that write through `self` — declared `mutate self`/`take self`,
     /// or private ones that assign into self (GC9 infers the mode there).
     pub(crate) mutate_self_methods: std::collections::HashSet<String>,
@@ -2914,6 +2917,25 @@ impl<'a> MirLowerer<'a> {
     /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
     fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
         use rask_ast::expr::ExprKind;
+        // An ensure body *is* the deferred consumption, so a consuming call in
+        // it cancels nothing — and the resource's slot belongs to the function
+        // that registered it, not to the thunk. Emitting one here made codegen
+        // look up a local the thunk's frame doesn't have.
+        if self.in_ensure_thunk {
+            return;
+        }
+        // `let v = try c.finish()` consumes `c` just as `c.finish()` does, so
+        // peel what is wrapped around the call before asking. Without this the
+        // ensure ran on a value the call had already taken — a double consume
+        // that native performed and the interpreter didn't (#1216).
+        let mut expr = expr;
+        loop {
+            expr = match &expr.kind {
+                ExprKind::Try { expr: inner } | ExprKind::Unwrap { expr: inner, .. } => inner,
+                ExprKind::Catch { value, .. } => value,
+                _ => break,
+            };
+        }
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             if let ExprKind::Ident(receiver_name) = &object.kind {
                 // Check if this receiver has a resource_id (registered by an ensure)
@@ -3496,6 +3518,7 @@ impl<'a> MirLowerer<'a> {
         // inside the body would otherwise mark an outer `mut` of the same name
         // immutable, and a later ensure would snapshot it.
         let saved_meta = self.local_meta.clone();
+        let saved_in_thunk = std::mem::replace(&mut self.in_ensure_thunk, true);
         let body_result = (|| -> Result<(), LoweringError> {
             for s in body {
                 self.lower_stmt(s)?;
@@ -3505,6 +3528,7 @@ impl<'a> MirLowerer<'a> {
             }
             Ok(())
         })();
+        self.in_ensure_thunk = saved_in_thunk;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
@@ -3848,6 +3872,21 @@ impl<'a> MirLowerer<'a> {
         // consumption cancellation. When such a method is called on an
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
+        // The stdlib's own `take self` methods, which are declarations in
+        // `stdlib/*.rk` rather than decls in this program. `TaskHandle.join`
+        // consumes its handle exactly the way a user method does, and not
+        // knowing that let a registered `ensure h.detach()` run after it and
+        // detach a handle that was already gone (#1216).
+        {
+            let reg = rask_stdlib::stubs::StubRegistry::load();
+            for ty in reg.type_names() {
+                for m in reg.methods(ty) {
+                    if m.take_self {
+                        take_self_methods.insert(format!("{}_{}", ty, m.name));
+                    }
+                }
+            }
+        }
         // Methods that write through `self`. A receiver reached through a field
         // has to be passed as that field's address for these, or the write lands
         // in a copy — see `place_address` in lower/expr.rs (#702). Declared
@@ -3859,8 +3898,17 @@ impl<'a> MirLowerer<'a> {
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
                         if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                            let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
-                            take_self_methods.insert(qualified);
+                            take_self_methods
+                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
+                            // `extend TaskHandle<T>` gives a target of
+                            // `TaskHandle<T>`, and what a call site dispatches
+                            // through is `TaskHandle`. Without the base name
+                            // `join` wasn't known to consume its receiver, so a
+                            // registered `ensure h.detach()` ran after it and
+                            // detached a handle that was already gone (#1216).
+                            if let Some(base) = impl_decl.target_ty.split('<').next() {
+                                take_self_methods.insert(format!("{}_{}", base, m.name));
+                            }
                         }
                         if method_mutates_self(m, ctx) {
                             mutate_self_methods
@@ -3913,6 +3961,7 @@ impl<'a> MirLowerer<'a> {
             mutate_writebacks: Vec::new(),
             elem_writebacks: Vec::new(),
             take_self_methods,
+            in_ensure_thunk: false,
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),

@@ -76,6 +76,13 @@ pub struct OwnershipChecker<'a> {
     binding_types: HashMap<String, Type>,
     /// Bindings that are @resource types (must be consumed).
     resource_bindings: HashSet<String>,
+    /// Where each resource binding was acquired, so a diagnostic about a later
+    /// statement can point back at it.
+    resource_acquired_at: HashMap<String, Span>,
+    /// Resources already owed on entry to each enclosing loop body, so a
+    /// `break` or `continue` can tell the ones it is walking out on from the
+    /// ones the code after the loop still consumes.
+    loop_entry_resources: Vec<HashSet<String>>,
     /// For a binding that isn't a resource itself but *holds* one, the field
     /// paths that still owe consumption.
     ///
@@ -240,6 +247,8 @@ impl<'a> OwnershipChecker<'a> {
             current_block: 0,
             current_stmt: 0,
             resource_bindings: HashSet::new(),
+            resource_acquired_at: HashMap::new(),
+            loop_entry_resources: Vec::new(),
             resource_field_debts: HashMap::new(),
             owned_bindings: HashSet::new(),
             lent_locals: HashMap::new(),
@@ -717,7 +726,23 @@ impl<'a> OwnershipChecker<'a> {
 
         for (index, stmt) in stmts.iter().enumerate() {
             self.check_mutable_capture_access(stmt);
+            let owed_before = self.resource_bindings.len();
             self.check_stmt(stmt);
+            // Where each obligation started, for a diagnostic about a later
+            // statement to point back at. One place rather than at each of the
+            // ten registration sites, and it reads the same: whatever statement
+            // put the name on the list is where the resource came from.
+            if self.resource_bindings.len() != owed_before {
+                let fresh: Vec<String> = self
+                    .resource_bindings
+                    .iter()
+                    .filter(|n| !self.resource_acquired_at.contains_key(*n))
+                    .cloned()
+                    .collect();
+                for name in fresh {
+                    self.resource_acquired_at.insert(name, stmt.span);
+                }
+            }
             // After the walk, not before: the closure's own body is where the
             // write lives, and checking it against its own record would report
             // every mutable capture as a conflict with itself.
@@ -809,6 +834,7 @@ impl<'a> OwnershipChecker<'a> {
     fn check_loop_body(&mut self, body: &[Stmt], exclude: &[String]) {
         let pre_loop = self.bindings.clone();
         let saved_errors = self.errors.len();
+        self.loop_entry_resources.push(self.resource_bindings.clone());
 
         // Pass 1: discover which pre-loop bindings the body consumes.
         self.check_block(body);
@@ -843,6 +869,7 @@ impl<'a> OwnershipChecker<'a> {
             self.bindings
                 .insert(name.clone(), BindingState::MaybeMoved { at: *at });
         }
+        self.loop_entry_resources.pop();
     }
 
     /// E4: `let x = collection[key]` copies when the element is Copy and is a
@@ -1357,8 +1384,11 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(v) = value {
                     self.check_expr(v);
                 }
+                self.check_loop_exit_obligations(stmt.span);
             }
-            StmtKind::Continue(_) => {}
+            StmtKind::Continue(_) => {
+                self.check_loop_exit_obligations(stmt.span);
+            }
             StmtKind::Ensure { body, else_handler } => {
                 // Mark resources referenced in ensure body as consumption-committed
                 for s in body {
@@ -1840,12 +1870,9 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(spread) = spread {
                     self.check_expr(spread);
                 }
-                // Storing a box in a field hands ownership to the aggregate. After
-                // the reads, not before — marking it moved first turns the very
-                // read that moves it into a use-after-move. Only `own` bindings
-                // here: a `@resource` in a struct field is a separate question this
-                // pass doesn't answer yet, and answering it by accident would
-                // change what existing programs compile (#819).
+                // Storing a box or a resource in a field hands ownership to the
+                // aggregate. After the reads, not before — marking it moved first
+                // turns the very read that moves it into a use-after-move.
                 self.consume_owned_into_aggregate(expr);
             }
             ExprKind::Array(elements) => {
@@ -2162,6 +2189,9 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.check_expr(inner);
+                if matches!(expr.kind, ExprKind::Try { .. }) {
+                    self.check_try_leaks_a_resource(expr.span);
+                }
             }
             ExprKind::Catch { value, ref clause } => {
                 self.check_expr(value);
@@ -4883,6 +4913,73 @@ impl<'a> OwnershipChecker<'a> {
         self.check_mutate_params_refilled(span);
     }
 
+    /// `try` is a way out of the function, so a resource still open when one
+    /// runs leaks whenever that call fails.
+    ///
+    /// ```text
+    /// let file = try File.open(path)
+    /// let header = try file.read_header()   // `file` leaks on failure
+    /// ```
+    ///
+    /// The happy path closes it, which is why this is invisible in testing. The
+    /// answer is the one `ensure` exists for: commit the cleanup at the point of
+    /// acquisition and every exit runs it, `try` included. Consuming explicitly
+    /// later cancels it (L6), so the happy path reads unchanged.
+    ///
+    /// Only bindings still owed and not yet committed. An ensured one is
+    /// covered by definition, and one already consumed owes nothing.
+    fn check_try_leaks_a_resource(&mut self, span: Span) {
+        let mut open: Vec<(String, Span)> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !self.ensure_registered.contains(*n))
+            .filter(|n| !matches!(self.bindings.get(*n), Some(BindingState::Moved { .. })))
+            .map(|n| (n.clone(), self.resource_acquired_at.get(n).copied().unwrap_or(span)))
+            .collect();
+        open.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, acquired_at) in open {
+            if !self.exit_reported.insert(format!("try:{}", name)) {
+                continue;
+            }
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ResourceLeaksOnTry { name, acquired_at },
+                span,
+            });
+        }
+    }
+
+    /// `break` and `continue` leave the loop body, so a resource the body
+    /// acquired this turn dies there.
+    ///
+    /// ```text
+    /// while i < 3 {
+    ///     let c = Conn { id: i }
+    ///     if i == 1 { break }      // `c` is never closed
+    ///     c.close()
+    /// }
+    /// ```
+    ///
+    /// The closing brace is the only exit the check knew about, and on the
+    /// path that breaks, control never reaches it. `return` had been taught
+    /// this; the two jumps that leave a loop had not (#882).
+    ///
+    /// Only what the loop introduced. A resource acquired before the loop and
+    /// closed after it is still owed at the `break` and is nobody's problem
+    /// there — judging the whole set would report every one of those.
+    fn check_loop_exit_obligations(&mut self, span: Span) {
+        let Some(entered_with) = self.loop_entry_resources.last().cloned() else {
+            return;
+        };
+        let mut names: Vec<String> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !entered_with.contains(*n))
+            .cloned()
+            .collect();
+        names.sort();
+        self.check_resource_names(names, span);
+    }
+
     /// Give a binding away: mark it moved, or refuse if it was only borrowed.
     ///
     /// A parameter without `take` is the caller's value on loan (PM1). Handing it
@@ -5073,8 +5170,25 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Whether an expression's inferred type is transitively linear.
     fn expr_is_resource_type(&self, expr: &Expr) -> bool {
-        self.program.node_types.get(&expr.id)
-            .map_or(false, |ty| self.type_is_resource(ty))
+        if let Some(ty) = self.program.node_types.get(&expr.id) {
+            if self.type_is_resource(ty) {
+                return true;
+            }
+        }
+        // `let c = File.open(p) catch e => { … }` binds the ok side, and the
+        // node the checker typed is the call, not the fallback — so the type of
+        // the `catch` itself was nothing and the obligation was never created.
+        // A resource that arrives through a fallback is still a resource (#882).
+        match &expr.kind {
+            ExprKind::Catch { value, .. } => {
+                let Some(ty) = self.program.node_types.get(&value.id) else { return false };
+                match ty {
+                    Type::Result { ok, .. } => self.type_is_resource(ok),
+                    _ => self.type_is_resource(ty),
+                }
+            }
+            _ => false,
+        }
     }
 
     /// Scan ensure body for resource references and mark them.
@@ -5284,7 +5398,12 @@ impl<'a> OwnershipChecker<'a> {
     fn consume_owned_into_aggregate(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Ident(name) => {
-                if self.owned_bindings.contains(name) {
+                // A `@resource` counts too. L5 says assigning to another binding
+                // consumes, and a field is another binding — the aggregate takes
+                // on the debt, reported as `h.c`. Leaving the source binding owing
+                // as well made the program unwritable: consuming `h` satisfies
+                // `h.c` and there is nothing left for `c` to be consumed by (#882).
+                if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
                     self.consume_binding(name, expr.span, None);
                 }
             }
