@@ -318,6 +318,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_lock", Internal::SameAs("Shared_read")),
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
+    // `with s.staged() as v` hands back the working copy the runtime holds
+    // under the lock until the scope commits it, not a value the frame took
+    // over — so the frame releases nothing. Without this line it was read as
+    // owning what it touched, which leaks (#1157).
+    ("Mutex_staged_data", Internal::SameAs("Shared_read")),
     ("Cell_get", Internal::SameAs("Shared_get")),
     ("Shared_data", Internal::SameAs("Shared_read")),
     ("Mutex_get", Internal::SameAs("Shared_get")),
