@@ -288,6 +288,12 @@ panic: Pool<File> has 3 unconsumed resource elements at scope exit.
 Resources must be explicitly consumed (use take_all() before scope ends).
 ```
 
+One element reads `has 1 unconsumed resource element`. Both backends say this
+now; native used to say nothing at all and leak the elements, and the
+interpreter reported the value through its ordinary ledger — `File '?' not
+consumed before scope exit`, where the `'?'` is there because a pooled value has
+no binding to name (#1219).
+
 ## Edge Cases
 
 | Case | Rule | Handling |

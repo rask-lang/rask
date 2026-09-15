@@ -945,6 +945,12 @@ impl Interpreter {
         match method {
             "insert" | "alloc" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
+                // R5: the pool owes the element now, and a pooled value has no
+                // binding to name — so it is reported as the pool's rather than
+                // as `Conn '?'`.
+                if let Some(id) = item.resource_id() {
+                    self.resource_tracker.mark_pooled(id);
+                }
                 let mut pool = p.lock().unwrap();
                 // mem.pools/PL8: a bounded pool at capacity panics on `insert`.
                 if pool.is_full() {

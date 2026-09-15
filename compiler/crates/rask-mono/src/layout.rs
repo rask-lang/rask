@@ -27,6 +27,14 @@ pub struct StructLayout {
     /// which is the same rule the checker's `type_names` /
     /// `stdlib_type_names` split already applies to types (#515).
     pub is_stdlib: bool,
+    /// Declared `@resource`, so its values must be consumed exactly once
+    /// (mem.linear/L1).
+    ///
+    /// The compiler enforces that for named bindings. A pool's contents are
+    /// dynamic and can't be tracked statically, so `mem.resources/R5` makes a
+    /// non-empty `Pool<Resource>` at drop a runtime panic instead — and the
+    /// runtime can only do that if it is told what it is holding.
+    pub is_resource: bool,
 }
 
 /// Field layout within struct
@@ -761,6 +769,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
         align: max_align,
         fields: field_layouts,
         is_stdlib: is_stdlib_span(struct_def.span),
+        is_resource: struct_decl.attrs.iter().any(|a| a == "resource"),
     }
 }
 
@@ -808,6 +817,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         align: max_align,
         fields: field_layouts,
         is_stdlib: is_stdlib_span(union_def.span),
+        is_resource: false,
     }
 }
 

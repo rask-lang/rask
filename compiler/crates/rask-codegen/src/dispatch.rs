@@ -917,7 +917,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64,
+                // R5: is the element a `@resource`, and its name and length.
+                types::I64, types::I64, types::I64,
+            ],
             ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
@@ -927,7 +931,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // niche `Option<Handle>`, so the tag has to be written out.
         StdlibEntry {
             mir_name: "Pool_try_insert", c_name: "rask_pool_try_insert_packed_sized",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64,
+                types::I64, types::I64, types::I64,
+            ],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegNone,
         },

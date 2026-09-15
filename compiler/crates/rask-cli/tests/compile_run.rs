@@ -814,6 +814,67 @@ fn bounded_pool_insert_full_panics() {
     assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
 }
 
+/// mem.resources/R5 (#1219): a `Pool<Resource>` dropped non-empty panics, on
+/// both backends and with the same message.
+///
+/// A pool's contents are dynamic, so the compiler can't say whether one is
+/// empty at scope exit — which is why R5 is a runtime rule and why `rask check`
+/// passes on the fixture. Native did nothing at all: the connection leaked and
+/// the program exited 0. The interpreter panicked with its generic ledger
+/// message, `Conn '?' not consumed before scope exit`, where the `'?'` is there
+/// because a pooled value has no binding to name.
+///
+/// This can't be a suite file — a test that panics fails — so it lives here,
+/// which is also the only harness that can check the message and the exit code
+/// together.
+#[test]
+fn pool_of_resources_dropped_non_empty_panics() {
+    // The panic goes to stderr, so `run_native`/`run_interp` (stdout only)
+    // would show the message as missing rather than as wrong.
+    let rask = rask_binary();
+    let run = |mode: &[&str]| -> (String, i32) {
+        let out = Command::new(&rask)
+            .args(mode)
+            .arg(fixture("pool_resource_dropped.rk"))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code().unwrap_or(-1),
+        )
+    };
+    let (nout, ncode) = run(&["run", "--native"]);
+    let (iout, icode) = run(&["run", "--interp"]);
+    assert_eq!(ncode, 101, "native should panic on a non-empty resource pool: {nout}");
+    assert_eq!(icode, 101, "interp should panic on a non-empty resource pool: {iout}");
+    for (mode, out) in [("native", &nout), ("interp", &iout)] {
+        assert!(
+            out.contains("Pool<Conn> has 1 unconsumed resource element at scope exit."),
+            "{mode} should name the pool and the count: {out}"
+        );
+        assert!(
+            out.contains("use take_all() before scope ends"),
+            "{mode} should say what to do about it: {out}"
+        );
+    }
+    // Where the panic lands differs: the interpreter reports at `leaky`'s scope
+    // exit, native when the pool's release is placed — after inlining, the end
+    // of `main`. Both fail; only one of them gets there before `main`'s last
+    // statement, which is why this asserts on the exit code and the message
+    // rather than on what did or didn't print.
+}
+
+/// The other half of R5: a pool emptied before it goes out of scope is fine.
+#[test]
+fn pool_of_resources_emptied_is_clean() {
+    assert_native_eq_interp("pool_resource_emptied.rk", "4\n");
+}
+
 // mem.pools/PL8 (#435): `try_insert` returns Some until the bounded pool is full,
 // then none. Interpreter is the reference (native try_insert is tracked in #438).
 #[test]
