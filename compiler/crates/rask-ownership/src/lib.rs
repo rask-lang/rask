@@ -1479,6 +1479,7 @@ impl<'a> OwnershipChecker<'a> {
                     // a value that had just been freed, and freeing it twice drew
                     // no error at all (#819). mem.owned/OW3 says it consumes.
                     if name == "drop" {
+                        self.check_drop_of_a_field(args);
                         Some(vec![true])
                     } else {
                         self.fn_take_params.get(name).cloned()
@@ -3304,6 +3305,41 @@ impl<'a> OwnershipChecker<'a> {
                 self.lent_locals.remove(name);
             }
         }
+    }
+
+    /// `drop(h.inner)` on a field of an aggregate — the aggregate owns it.
+    ///
+    /// Storing a box in a field moves it in, and the aggregate's release gives
+    /// it back when the aggregate dies. A hand-drop of the same field is a
+    /// second owner, and the two of them ran in that order: the hand-drop freed
+    /// the block and the struct's release freed it again, which glibc reports
+    /// as "double free detected in tcache 2".
+    ///
+    /// Making `drop` quietly do nothing on a field was the other way out, and
+    /// it is worse — the author wrote a consume and got none, with nowhere to
+    /// learn it, and whether `drop(x)` frees anything would depend on whether
+    /// `x` is a binding or a projection. So the shape doesn't compile (#1202).
+    ///
+    /// Only a field of something this frame can see. A local you own is yours
+    /// to take apart — `drop(p)` on a `Heap` binding is exactly what
+    /// mem.heap/HP3 asks for.
+    fn check_drop_of_a_field(&mut self, args: &[rask_ast::expr::CallArg]) {
+        let Some(arg) = args.first() else { return };
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(&arg.expr) else {
+            return;
+        };
+        if fields.is_empty() {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&arg.expr.id).cloned() else { return };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::DropOfAnOwnedField {
+                path: format!("{}.{}", root, fields.join(".")),
+                root,
+                field_ty: self.resource_type_display(&ty),
+            },
+            span: arg.expr.span,
+        });
     }
 
     /// A value the container still holds, on its way out of the function.

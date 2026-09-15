@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `Heap` a field holds, and how a type that reaches itself gets released.
+//
+// Storing a box in a field moves it in (HP4), so the aggregate's release gives
+// the block back. Nothing did that: `container_free_for` had no `Heap` arm, and
+// adding one isn't enough on its own — what is inside the block has to come
+// back first, and what is inside a `Heap<List>` is another `List`.
+//
+// The release walk in `builder.rs` emits its work inline and stops at pointers,
+// with a depth cap so a pathological nesting can't hang a compile. An inline
+// walk can't say "and now do this again", and a cap would free the first eight
+// nodes of a list and leak the rest — which looks right until the list is long.
+//
+// So a `Heap` field goes through the runtime's own walker instead, with a
+// descriptor that names the block and what is in it. A self-reference is one
+// `SELF` entry: start the list over against the block. The recursion then ends
+// on the data — a `Nil` matches no tag guard — rather than on a number (#1202).
+
+import memory.Heap
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Record {
+    public name: string
+    public marks: Vec<i64>
+}
+
+struct Holder {
+    public inner: Heap<Big>
+}
+
+struct Deep {
+    public held: Heap<Record>
+}
+
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+func sum(l: List) -> i64 {
+    match l {
+        List.Cons(head, rest) => {
+            return head + sum(rest)
+        }
+        List.Nil => {
+            return 0
+        }
+    }
+}
+
+// Built from the tail up, so the length isn't a wall of parentheses.
+//
+// It starts at a payload variant rather than `mut out = List.Nil`, which is
+// rejected as a field view — a unit variant is a constructor and there is
+// nothing to be a second name for, but the checker reads the path like `p.x`
+// (#1212).
+func chain(n: i64) -> List {
+    if n <= 0 {
+        return List.Nil
+    }
+    mut out = List.Cons(1, Heap(List.Nil))
+    mut i = 2
+    while i <= n {
+        out = List.Cons(i, Heap(out))
+        i = i + 1
+    }
+    return out
+}
+
+func main() {}
+
+test "a scalar payload in a field" {
+    let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    assert h.inner.b == 2
+}
+
+test "a payload with a string and a vector of its own" {
+    let d = Deep {
+        held: Heap(Record {
+            name: "a record name long enough to allocate",
+            marks: [1, 2, 3],
+        }),
+    }
+    assert d.held.name == "a record name long enough to allocate"
+    assert d.held.marks.len() == 3
+}
+
+test "mem.heap/HP6 — a recursive enum holds its tail behind a Heap" {
+    let l = List.Cons(1, Heap(List.Cons(2, Heap(List.Nil))))
+    match l {
+        List.Cons(head, rest) => {
+            assert head == 1
+            match rest {
+                List.Cons(second, _) => assert second == 2
+                List.Nil => assert false
+            }
+        }
+        List.Nil => assert false
+    }
+}
+
+test "a chain longer than the walk's old depth cap" {
+    // Thirty nodes. The inline walk gave up after eight, so a cap would have
+    // left the tail behind — which is why the recursion is the runtime's.
+    let l = chain(30)
+    assert sum(l) == 465
+}
+
+test "a list built and dropped many times" {
+    mut total = 0
+    for i in 1..20 {
+        let l = chain(i)
+        total = total + sum(l)
+    }
+    assert total == 1330
+}
+
+test "an empty tail" {
+    let l = List.Nil
+    assert sum(l) == 0
+}

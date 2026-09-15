@@ -423,11 +423,6 @@
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped (#1202).
-                        # Storing a box in a payload consumes it, so linearity is happy;
-                        # nothing frees it afterwards. A descriptor kind for "a heap
-                        # block at this offset" is the easy half — the hard half is that
-                        # `drop(x.field)` consumes the same box by hand in this file.
 p21_sequence_adapters.rk  # 2 allocations — one closure block per element out of
                         # `flat_map(|x| count_to_five().take(x))`, #1205. The callback
                         # returns the adapter it built, so the frame never drops it and

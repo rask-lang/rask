@@ -47,10 +47,29 @@ const KIND_CLOSURE: i32 = 4;
 /// The element is a `[data, vtable]` fat pointer; the block `data` names is the
 /// container's to free, and its size is the vtable's first word (#1149).
 const KIND_TRAITBOX: i32 = 5;
+/// A `Heap<T>` at this offset: a pointer to a block the aggregate owns, with
+/// the entries after it describing what is inside.
+const KIND_HEAP: i32 = 6;
+/// The value at this offset is described by the list being walked, from its
+/// start — how a type that reaches itself is described at all (#1202).
+const KIND_SELF: i32 = 7;
 
 /// One trait-box entry at offset zero: what to hand `rask_owned_release` when
 /// the slot *is* the fat pointer, which is the shape of a trait-object field.
 pub const TRAITBOX_AT_ZERO: i32 = KIND_TRAITBOX << KIND_SHIFT;
+
+/// A `Heap<T>` slot: the pointer at `offset`, and `count` entries after this one
+/// describing the block.
+///
+/// `None` when either won't fit — an offset over 65535 or more than 4095 entries
+/// in the block's description. The caller then describes nothing, which leaks
+/// rather than freeing the wrong bytes.
+fn heap_entry(offset: i32, count: usize) -> Option<i32> {
+    if !(0..=0xFFFF).contains(&offset) || count > 0xFFF {
+        return None;
+    }
+    Some(entry(offset | ((count as i32) << 16), KIND_HEAP))
+}
 
 fn entry(offset: i32, kind: i32) -> i32 {
     offset | (kind << KIND_SHIFT)
@@ -99,14 +118,14 @@ pub fn string_offsets_for_tag(
             let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
             let layout = layouts.get(idx)?;
             let mut out = Vec::new();
-            flatten(&layout.fields, 0, layouts, enums, 0, &mut out)?;
+            flatten(&layout.fields, 0, layouts, enums, 0, None, &mut out)?;
             (!out.is_empty()).then_some(out)
         }
         n if n <= ELEM_ENUM_BASE => {
             let idx = usize::try_from(ELEM_ENUM_BASE - n).ok()?;
             let layout = enums.get(idx)?;
             let mut out = Vec::new();
-            enum_arms(layout, 0, layouts, enums, 0, &mut out)?;
+            enum_arms(layout, 0, layouts, enums, 0, None, &mut out)?;
             (!out.is_empty()).then_some(out)
         }
         _ => None,
@@ -124,6 +143,7 @@ fn enum_arms(
     layouts: &[StructLayout],
     enums: &[EnumLayout],
     depth: u32,
+    self_name: Option<&str>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -138,7 +158,7 @@ fn enum_arms(
             .iter()
             .map(|f| FieldLayout { offset: variant.payload_offset + f.offset, ..f.clone() })
             .collect();
-        flatten(&fields, base, layouts, enums, depth + 1, &mut arm)?;
+        flatten(&fields, base, layouts, enums, depth + 1, self_name, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
@@ -154,6 +174,7 @@ fn flatten(
     layouts: &[StructLayout],
     enums: &[EnumLayout],
     depth: u32,
+    self_name: Option<&str>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -161,6 +182,23 @@ fn flatten(
     }
     for f in fields {
         let at = base + f.offset as i32;
+        if let Some(payload) = heap_payload_name(&f.ty) {
+            // Only where a self-reference has a name to match. The
+            // container-element path passes `None`, because a `retain` would
+            // have to copy the block and a block carries no size to copy — so
+            // an element's `Heap` stays nobody's, as a boxed value's contents
+            // are.
+            let Some(sn) = self_name else { continue };
+            let mut body = Vec::new();
+            if payload == sn {
+                body.push(entry(0, KIND_SELF));
+            } else {
+                describe_named(&payload, 0, layouts, enums, depth + 1, Some(&payload), &mut body)?;
+            }
+            out.push(heap_entry(at, body.len())?);
+            out.extend(body);
+            continue;
+        }
         if let Some(kind) = container_kind(&f.ty) {
             // The nested container carries its own element list, set when it was
             // built, so freeing it walks its elements without this one knowing
@@ -175,15 +213,85 @@ fn flatten(
                 // contributes its own guards, at this field's offset.
                 if let Some(l) = layouts.iter().find(|l| &l.name == name) {
                     let nested = l.fields.clone();
-                    flatten(&nested, at, layouts, enums, depth + 1, out)?;
+                    flatten(&nested, at, layouts, enums, depth + 1, self_name, out)?;
                 } else if let Some(l) = enums.iter().find(|l| &l.name == name) {
-                    enum_arms(l, at, layouts, enums, depth + 1, out)?;
+                    enum_arms(l, at, layouts, enums, depth + 1, self_name, out)?;
                 }
             }
             _ => {}
         }
     }
     Some(())
+}
+
+/// What the `T` inside a `Heap<T>` field owns — the list to hand
+/// `rask_heap_field_release` alongside the slot.
+///
+/// T's own description, with no entry for the slot, and that is deliberate: a
+/// `SELF` inside it means "a T lives here", so the list it restarts from has to
+/// *be* this one. A list that began with the slot's own `HEAP` entry made the
+/// first `SELF` read T's first bytes as a pointer — a `List`'s tag is 1, and
+/// 0x1 is not an address.
+///
+/// Empty for a scalar payload, which is right: there is nothing inside the
+/// block, and freeing the block is the caller's job either way.
+///
+/// The recursive payload is what this is for. `Cons(i64, Heap<List>)` holds a
+/// `List` inside the block, and flattening that inline would never finish — so
+/// the nested `Heap`'s body is one `SELF` and the runtime starts this list over
+/// against the block. The recursion ends on a `Nil`, which matches no guard,
+/// rather than on a depth cap that would free the first eight nodes of a list
+/// and leak the rest (#1202).
+pub fn heap_field_descriptor(
+    ty: &RaskType,
+    layouts: &[StructLayout],
+    enums: &[EnumLayout],
+) -> Option<Vec<i32>> {
+    let payload = heap_payload_name(ty)?;
+    let mut out = Vec::new();
+    describe_named(&payload, 0, layouts, enums, 0, Some(&payload), &mut out)?;
+    Some(out)
+}
+
+/// What a value of the named type owns, relative to `base`. A name that isn't a
+/// layout owns nothing describable — a scalar, or a type this pass can't see.
+fn describe_named(
+    name: &str,
+    base: i32,
+    layouts: &[StructLayout],
+    enums: &[EnumLayout],
+    depth: u32,
+    self_name: Option<&str>,
+    out: &mut Vec<i32>,
+) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    if let Some(l) = layouts.iter().find(|l| l.name == name) {
+        let fields = l.fields.clone();
+        return flatten(&fields, base, layouts, enums, depth, self_name, out);
+    }
+    if let Some(l) = enums.iter().find(|l| l.name == name) {
+        return enum_arms(l, base, layouts, enums, depth, self_name, out);
+    }
+    Some(())
+}
+
+/// Is this field a `Heap<T>`? The release walk asks before it looks at
+/// anything else, the way it asks about a trait object.
+pub fn is_heap_field(ty: &RaskType) -> bool {
+    heap_payload_name(ty).is_some()
+}
+
+/// `Heap<Big>` → `Big`. A wrapper around the handle is a different thing, the
+/// same way it is for a container.
+fn heap_payload_name(ty: &RaskType) -> Option<String> {
+    let rendered = format!("{}", ty);
+    if rendered.ends_with('?') || rendered.contains(" or ") {
+        return None;
+    }
+    let inner = rendered.trim().strip_prefix("Heap<")?.strip_suffix('>')?;
+    Some(inner.trim().to_string())
 }
 
 /// Is this field a container the element owns, and which one.

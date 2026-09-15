@@ -7310,6 +7310,11 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::is_trait_object(ty) {
             return true;
         }
+        // The block is the aggregate's whatever is inside it, so a `Heap<i32>`
+        // field counts as much as a `Heap<Record>` does.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return true;
+        }
         match ty {
             RaskType::String => true,
 
@@ -7451,6 +7456,11 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::is_trait_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }
+        // Before the match for the same reason: a `Heap<T>` field reaches here
+        // as a name, and what is inside the block is the runtime's to walk.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {
@@ -7532,6 +7542,51 @@ impl<'a> FunctionBuilder<'a> {
     /// That hook is what separates this from `TraitDrop`, which frees the block
     /// and leaves the contents to the frame — a box built for a *call* borrows
     /// its value, and one moved into a field or an element owns it (#1144).
+    /// A `Heap<T>` field: hand the slot and the type's descriptor to the
+    /// runtime walker, which releases what the block holds and then frees it.
+    ///
+    /// Through the runtime rather than inline, because the block holds a `T`
+    /// and `T` may be the type that holds the block — `Cons(i64, Heap<List>)`.
+    /// An inline walk can't express "and now do this again", which is why this
+    /// one stops at pointers and carries a depth cap; the descriptor says
+    /// `SELF` and the runtime starts its list over (#1202).
+    ///
+    /// Nothing emitted when the descriptor won't build or wasn't registered as
+    /// data. That leaks, which is this file's answer everywhere it can't
+    /// describe something exactly.
+    fn emit_heap_field_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &RaskType,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let Some(desc) = crate::elem_offsets::heap_field_descriptor(
+            ty, ctx.struct_layouts, ctx.enum_layouts,
+        ) else {
+            return Ok(());
+        };
+        let release = ctx
+            .func_refs
+            .get("rask_heap_field_release")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_heap_field_release".to_string()))?;
+        let slot = builder.ins().iadd_imm(base, offset as i64);
+        // A scalar payload describes nothing inside the block. The block is
+        // still the aggregate's, so the call still happens — with no list.
+        let (entries, count) = match ctx.element_offset_globals.get(&desc) {
+            Some(gv) => (
+                builder.ins().global_value(types::I64, *gv),
+                builder.ins().iconst(types::I64, desc.len() as i64),
+            ),
+            None => (
+                builder.ins().iconst(types::I64, 0),
+                builder.ins().iconst(types::I64, 0),
+            ),
+        };
+        builder.ins().call(*release, &[slot, entries, count]);
+        Ok(())
+    }
+
     fn emit_boxed_field_release(
         builder: &mut ClifFunctionBuilder,
         base: Value,

@@ -2000,36 +2000,18 @@ impl<'a> MirLowerer<'a> {
                     let arg_expr = args.first().map(|a| &a.expr);
                     let boxed = arg_expr.is_some_and(|e| self.expr_yields_owned_box(e))
                         && arg_mir_types.first().is_some_and(|t| t.passed_by_address());
-                    // Reading a boxed field gives a *copy of the payload*: the
-                    // result local is typed `T`, so codegen sizes it for `T` and
-                    // copies the struct out through the pointer. The pointer
-                    // itself is never named, and freeing the copy's stack slot
-                    // aborted in glibc. Load the field's word instead.
-                    let boxed_field = match arg_expr.map(|e| &e.kind) {
-                        Some(ExprKind::Field { .. }) if boxed => {
-                            self.place_address(arg_expr.unwrap()).map(|addr| {
-                                let ptr = self.builder.alloc_temp(MirType::Ptr);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                    dst: ptr,
-                                    rvalue: MirRValue::Deref(addr),
-                                }));
-                                MirOperand::Local(ptr)
-                            })
-                        }
-                        _ => None,
-                    };
-                    // A field whose address lowering can't work out — a call
-                    // result, say — gets no free. The read's operand names a
-                    // *copy* of the payload, so falling back to it would hand
-                    // `rask_free` a stack address, and leaking is the safe half.
-                    let field_arg = matches!(arg_expr.map(|e| &e.kind), Some(ExprKind::Field { .. }));
-                    let box_ptr = match boxed_field {
-                        Some(op) => Some(op),
-                        None if boxed && field_arg => None,
-                        None if boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)) => {
-                            arg_operands.into_iter().next()
-                        }
-                        None => None,
+                    // A field never reaches here: the aggregate's release owns
+                    // what its field holds, so `drop(h.inner)` is E0880 and the
+                    // check stops before MIR. What used to stand here loaded
+                    // the field's word, because the read hands back a *copy* of
+                    // the payload and freeing that stack slot aborted in glibc
+                    // — machinery for a shape that no longer compiles (#1202).
+                    let box_ptr = if boxed
+                        || matches!(arg_mir_types.first(), Some(MirType::Ptr))
+                    {
+                        arg_operands.into_iter().next()
+                    } else {
+                        None
                     };
                     if let Some(op) = box_ptr {
                         // What the payload holds goes first. Freeing the block

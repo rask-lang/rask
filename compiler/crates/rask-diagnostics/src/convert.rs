@@ -2788,6 +2788,34 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            DropOfAnOwnedField { path, root, field_ty } => {
+                Diagnostic::error(format!(
+                    "`{}` belongs to `{}` — dropping it here frees it twice",
+                    path, root
+                ))
+                .with_code("E0880")
+                .with_primary(
+                    self.span,
+                    format!("`{}` moved in when it was stored, so `{}` gives it back", field_ty, root),
+                )
+                .with_fix(format!(
+                    "drop the whole thing — `drop({})` — or let it go out of scope, \
+                     which releases the field either way",
+                    root
+                ))
+                .with_why(
+                    "storing a box in a field moves it in, and the aggregate's \
+                     release hands it back when the aggregate dies. A hand-drop of \
+                     the same field is a second owner and both of them run — the \
+                     drop frees the block and the release frees it again. A `drop` \
+                     that quietly did nothing here would be worse: whether it frees \
+                     anything would depend on whether its argument is a binding or a \
+                     projection, which the line doesn't say \
+                     [mem.heap/HP3, mem.linear/L5]"
+                        .to_string(),
+                )
+            }
+
             LentValueEscapes { call, holder, lender, payload_ty, clone_form, lent_at } => {
                 let fix = match clone_form {
                     Some(m) => format!(

@@ -50,24 +50,24 @@ test "mem.heap/HP3 — a local bound to `Heap(…)` holds the box, not a copy of
     drop(p)
 }
 
+// Storing the box in the field moves it in, so the struct gives it back when
+// the struct dies — there is nothing to drop by hand, and `drop(direct.inner)`
+// is E0880 now: the field and the struct's release would both free it.
 test "mem.heap/HP3 — a declared Heap field allocates once, whichever way it's filled" {
     // Straight from the `own`.
     let direct = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
     assert direct.inner.b == 2
-    drop(direct.inner)
 
     // Through a local — the box moves, it isn't boxed again.
     let p = Heap(Big { a: 4, b: 5, c: 6 })
     let moved = Holder { inner: p }
     assert moved.inner.b == 5
-    drop(moved.inner)
 
     // A plain value: HP5 lets a `T` stand where `Heap<T>` is asked for, and the
     // slot is what allocates.
     let plain = Big { a: 7, b: 8, c: 9 }
     let boxed = Holder { inner: plain }
     assert boxed.inner.b == 8
-    drop(boxed.inner)
 }
 
 test "mem.heap/HP6 — a recursive enum holds its tail behind a Heap" {
