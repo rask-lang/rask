@@ -116,10 +116,11 @@ pub(crate) enum IterAdapter<'a> {
     Enumerate,
 }
 
-/// #270: classify a function's params for scalar `mutate` write-back. Returns one
-/// entry per param: `Some(scalar_ty)` for a `mutate` param of a Copy scalar type
-/// (passed by pointer), `None` otherwise. Aggregates already pass by pointer, so
-/// they stay `None` here.
+/// #270: classify a function's params for `mutate` write-back. Returns one entry
+/// per param: `Some(ty)` for a `mutate` param that needs a pointer of its own,
+/// `None` otherwise. A real aggregate's local already is an address, so it stays
+/// `None`; a scalar and a container handle both need one, for the same reason —
+/// the local holds a value rather than a place (#270, #1197).
 fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<Option<MirType>> {
     params
         .iter()
@@ -128,10 +129,10 @@ fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> V
                 return None;
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
-            if crate::lower::stmt::mutate_param_by_pointer(&ty) {
-                None
-            } else {
+            if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
                 Some(ty)
+            } else {
+                None
             }
         })
         .collect()
@@ -148,6 +149,7 @@ fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
             crate::lower::stmt::mutate_param_by_pointer(&ty)
+                && !crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty)
         })
         .collect()
 }
@@ -3963,7 +3965,7 @@ impl<'a> MirLowerer<'a> {
             // write back through it. Register the param local as a pointer; reads
             // load and writes store through it, keyed by the recorded scalar type.
             let scalar_mutate = param.is_mutate
-                && !crate::lower::stmt::mutate_param_by_pointer(&param_ty);
+                && crate::lower::stmt::mutate_param_needs_own_pointer(&param.name, &param_ty);
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));

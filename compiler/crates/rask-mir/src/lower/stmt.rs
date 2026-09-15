@@ -617,18 +617,29 @@ impl<'a> MirLowerer<'a> {
                             // it is always a replacement, and the containers the
                             // old one held had nowhere to go (#1198).
                             //
-                            // Only the aggregate `mutate` case. A scalar goes
-                            // through the same branch with a cell for a
-                            // destination, and a cell's contents are
-                            // `container_drop`'s to place.
-                            if is_mutate_param && matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
-                            {
+                            // Two shapes reach this. An aggregate's slot holds
+                            // the value, so the walk over `dst_ty` finds what it
+                            // holds. A container's slot holds the handle, and
+                            // `dst_ty` there is a bare `Ptr` with no kind on it
+                            // — the written type is where the kind comes from,
+                            // the same way a field assignment gets it.
+                            //
+                            // A plain scalar goes through this branch too, with
+                            // a cell for a destination, and a cell's contents
+                            // are `container_drop`'s to place.
+                            let replaced = if !is_mutate_param {
+                                None
+                            } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_)) {
+                                Some(dst_ty.clone())
+                            } else if scalar_mutate.as_ref().is_some_and(is_runtime_handle) {
+                                self.replaced_slot_type(target, &dst_ty)
+                                    .filter(|t| matches!(t, MirType::Container(_)))
+                            } else {
+                                None
+                            };
+                            if let Some(ty) = replaced {
                                 self.builder.push_stmt(MirStmt::dummy(
-                                    MirStmtKind::ReleaseSlot {
-                                        addr: local_id,
-                                        offset: 0,
-                                        ty: dst_ty.clone(),
-                                    },
+                                    MirStmtKind::ReleaseSlot { addr: local_id, offset: 0, ty },
                                 ));
                             }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -3585,4 +3596,31 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::Handle
             | MirType::FuncPtr(_)
     )
+}
+
+/// A one-word runtime handle: the local holds the handle, not the address of a
+/// slot holding it.
+///
+/// That distinction is the whole of #1197. An aggregate's local *is* an
+/// address, so a `mutate` callee storing through it writes the caller's bytes.
+/// A container's local is the handle, so the same store landed on the vector's
+/// own header — `data` overwritten, `len` left from the old vector, which is
+/// why `xs.len()` still answered 1 after the whole thing was replaced.
+pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
+    matches!(ty, MirType::Ptr | MirType::Container(_))
+}
+
+/// Does this `mutate` parameter need a pointer of its own?
+///
+/// Every scalar does, which is what #270 built. A container does too, and for
+/// the same reason — its local is a value, not a place — with one exception.
+///
+/// `self` is the exception, and it is the reason the naive version of this
+/// doesn't work. Every container method is lowered from the receiver operand
+/// directly: it is what the intrinsics read. Hand `Vec.push(mutate self, …)` a
+/// pointer to a handle and the whole family reads the pointer as the vector.
+/// A `mutate` parameter that isn't `self` is an ordinary variable the caller
+/// lends, and nothing reads it as a receiver.
+pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
+    !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
 }

@@ -2441,6 +2441,58 @@ impl CarriedVars {
 /// whether the callee actually keeps it, because borrow is the default
 /// (`mem.parameters/PM1`) and treating a read as a handover left the container
 /// to nobody (#1047).
+/// Is this address only ever handed to a call that doesn't keep it?
+///
+/// Taking a container's address marks it escaping, because an address handed
+/// out could be kept. For a `mutate` parameter it demonstrably isn't:
+/// mem.parameters/PM1 says a parameter is borrowed and PM2 says the value is
+/// still the caller's when the call returns, so the address dies with the call.
+/// `params_a_callee_keeps` is what answers that per parameter, and it is
+/// already what the rest of this pass asks about a container passed by value.
+///
+/// Without this, passing a container by address would leak it in every frame
+/// that does — which is what stopped `mutate v: Vec<i32>` from being fixed at
+/// all: replacing a whole `mutate` container writes into the vector's header
+/// instead of the caller's slot, and the only way to fix that is to pass the
+/// address (#1197).
+///
+/// A whitelist, so an address used a way nobody thought about still counts as
+/// escaping: that answer leaks, and the other one frees something a callee
+/// kept.
+fn lent_for_the_call(
+    func: &MirFunction,
+    addr: LocalId,
+    kept: &HashMap<String, Vec<bool>>,
+) -> bool {
+    let mut handed_to_a_call = false;
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let reads_it = crate::analysis::uses::stmt_reads(stmt, addr);
+        if !reads_it {
+            continue;
+        }
+        match &stmt.kind {
+            MirStmtKind::Call { func: fref, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if crate::analysis::uses::operand_local(arg) != Some(addr) {
+                        continue;
+                    }
+                    if call_keeps_argument(fref, i, kept) {
+                        return false;
+                    }
+                    handed_to_a_call = true;
+                }
+            }
+            _ => return false,
+        }
+    }
+    for block in &func.blocks {
+        if crate::analysis::uses::terminator_reads(&block.terminator, addr) {
+            return false;
+        }
+    }
+    handed_to_a_call
+}
+
 fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
@@ -2527,8 +2579,8 @@ fn find_escaping(
                         }
                     }
                 }
-                MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } => {
-                    if containers.contains_key(src) {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
+                    if containers.contains_key(src) && !lent_for_the_call(func, *dst, kept) {
                         escaping.insert(*src);
                     }
                 }
