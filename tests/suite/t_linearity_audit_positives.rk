@@ -194,3 +194,56 @@ test "mem.linear/L6 — an ensure the consume cancelled does not run" {
     assert (wrapped_consume(11) catch e => -1) == 11
     assert cleanups() == before
 }
+
+// conc.async/CH1: the channel ends are not resources, whatever they carry.
+//
+// `Channel<Conn>.buffered(1)` made `tx` and `rx` linear because the payload is
+// — so both demanded a `close()` that neither end has, and a channel carrying a
+// resource was unwritable. `mem.linear/L5` names `ch.send(file)` as one of the
+// four ways to consume, so this is a shape the rules bless.
+struct Ticket {
+    public seat: i32
+}
+
+@resource
+struct Pass {
+    public seat: i32
+}
+
+extend Pass {
+    public func tear(take self) -> i32 {
+        return self.seat
+    }
+}
+
+test "conc.async/CH1 — a channel carrying a resource" {
+    using Multitasking {
+        mut (tx, rx) = Channel<Pass>.buffered(2)
+        tx.send(Pass { seat: 4 })
+        tx.send(Pass { seat: 9 })
+        let first = rx.receive() catch e => {
+            assert false
+            return
+        }
+        // Consumed before the next receive on purpose: the `return` in that
+        // handler is a way out of the scope, and `first` would be owed on it.
+        assert first.tear() == 4
+        let second = rx.receive() catch e => {
+            assert false
+            return
+        }
+        assert second.tear() == 9
+    }
+}
+
+test "conc.async/CH1 — and one carrying something ordinary" {
+    using Multitasking {
+        mut (tx, rx) = Channel<Ticket>.buffered(1)
+        tx.send(Ticket { seat: 7 })
+        let t = rx.receive() catch e => {
+            assert false
+            return
+        }
+        assert t.seat == 7
+    }
+}
