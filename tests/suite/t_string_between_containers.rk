@@ -119,3 +119,35 @@ test "mem.ownership — the same chains in a loop" {
     }
     assert total == 10
 }
+
+// The issue's own repro, which goes through the adapter chain rather than a
+// `for` loop — the collecting vector is emitted by the iterator lowering, not
+// written in source, and it was the one with no element map at all.
+test "mem.ownership — split collected with to_vec" {
+    let parts = "one-long-enough-to-need-heap,two-long-enough-to-need-heap".split(",").to_vec()
+    assert parts.len() == 2
+    assert parts[0] == "one-long-enough-to-need-heap"
+    assert parts[1] == "two-long-enough-to-need-heap"
+}
+
+// The destination outliving the source. Everything above keeps both alive, so a
+// retain that never happened only leaks; here the source dies inside
+// `moved_out` and reading the destination afterwards is a read of freed bytes.
+func moved_out() -> Vec<string> {
+    let src: Vec<string> = [
+        "a long enough string to live on the heap",
+        "another long enough string right here",
+    ]
+    mut out: Vec<string> = Vec.new()
+    for s in src {
+        out.push(s)
+    }
+    return out
+}
+
+test "mem.ownership — the destination outlives the source" {
+    let kept = moved_out()
+    assert kept.len() == 2
+    assert kept[0] == "a long enough string to live on the heap"
+    assert kept[1] == "another long enough string right here"
+}

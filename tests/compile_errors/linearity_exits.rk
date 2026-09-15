@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: the ways out of a scope that used to skip the consumption check
+//
+// Spec: mem.linear (L1, L4), conc.async (H1)
+//
+// L1 is "consumed exactly once before the binding goes out of scope", and the
+// implementation is a check at particular points. Every hole found so far has
+// been a point nobody put on the list — a body kind, a binding form, a way out.
+// This file is the ways out, from the audit in #882:
+//
+//   - `break` and `continue` leave the loop body. The closing brace was the
+//     only exit the check knew about, and on the path that jumps, control never
+//     reaches it.
+//   - `try` leaves the *function*. When the call it guards fails, the error goes
+//     straight to the caller and nothing in between runs, so a resource still
+//     open at that point leaks on the error path only — which is why the happy
+//     path's tests never see it. `ensure` is the answer and the reason it
+//     exists: it commits the cleanup at acquisition, so every exit runs it, and
+//     consuming explicitly later cancels it (L6).
+//   - a resource that arrives through a `catch` fallback is still a resource.
+//     The node the checker typed is the call, not the fallback, so the binding
+//     carried no obligation at all.
+//
+// One marker per rejection, on the line the compiler points at.
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> void {
+        println("closed {self.id}")
+    }
+}
+
+struct MyError {
+    public why: string
+}
+
+extend MyError {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+func try_open(n: i32) -> Conn or MyError {
+    if n < 0 {
+        return MyError { why: "bad" }
+    }
+    return Conn { id: n }
+}
+
+func may_fail(n: i32) -> i32 or MyError {
+    if n < 0 {
+        return MyError { why: "bad" }
+    }
+    return n
+}
+
+// --- break walks out with the turn's resource still open ---
+func bad_break() {
+    mut i = 0
+    while i < 3 {
+        let c = Conn { id: i }
+        if i == 1 {
+            // ERROR: `c` is still owed where control leaves the loop [E0805]
+            break
+        }
+        c.close()
+        i = i + 1
+    }
+}
+
+// --- and so does continue ---
+func bad_continue() {
+    mut i = 0
+    while i < 3 {
+        let c = Conn { id: i }
+        i = i + 1
+        if i == 1 {
+            // ERROR: `c` is still owed where control leaves the body [E0805]
+            continue
+        }
+        c.close()
+    }
+}
+
+// --- try leaves the function, with the resource still open ---
+//
+// The `c` above is called `c` too, on purpose: the acquisition span E0881
+// points at is looked up by name, and it was not cleared between bodies — so
+// this error cited `bad_break`'s `let` as where *this* `c` came from.
+func bad_try(n: i32) -> i32 or MyError {
+    let c = Conn { id: 1 }
+    // ERROR: `c` would leak if this fails [E0881]
+    let v = try may_fail(n)
+    c.close()
+    return v
+}
+
+// --- a resource that came through a fallback owes like any other ---
+func bad_catch() {
+    let c = try_open(1) catch e => {
+        println("{e.why}")
+        return
+    }
+    // ERROR: `c` is never consumed [E0805]
+    println("{c.id}")
+}
+
+// --- what is still fine ---
+//
+// `ensure` covers every exit, `try` included, and the explicit close cancels it.
+func good_ensure(n: i32) -> i32 or MyError {
+    let c = Conn { id: 1 }
+    ensure c.close()
+    let v = try may_fail(n)
+    return v
+}
+
+// A resource acquired before the loop is closed after it — a `break` in between
+// is not its problem, and reporting it there is what a whole-scope check would
+// have done.
+func good_break_outer() {
+    let c = Conn { id: 1 }
+    mut i = 0
+    while i < 3 {
+        if i == 1 {
+            break
+        }
+        i = i + 1
+    }
+    c.close()
+}
+
+// Consumed on the turn it was acquired, every turn.
+func good_loop() {
+    mut i = 0
+    while i < 3 {
+        let c = Conn { id: i }
+        c.close()
+        i = i + 1
+    }
+}
+
+func main() {}

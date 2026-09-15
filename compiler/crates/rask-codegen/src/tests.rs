@@ -2042,6 +2042,7 @@ mod tests {
                         },
                     ],
                     is_stdlib: false,
+                    is_resource: false,
                 },
             ],
             enum_layouts: vec![],

@@ -49,24 +49,34 @@ All green.
 
 **Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
 
-The gate's condition is met — 512 suite files clean. That is the measure, not
-the claim that nothing leaks: two shapes the gate can't see are named below, and
-what "settled" should mean beyond a green gate is the open question now.
+The gate's condition is met — 514 suite files clean. That is the measure, not
+the claim that nothing leaks, and what "settled" should mean beyond a green gate
+is the open question now.
 
-Every one of these is the compiler getting *who frees this* wrong. A leak is the
-polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
-is the same bug releasing early instead, which is a use-after-free. Ownership is
-the whole thesis of the language, so this goes first.
+Every leak on this list was the compiler getting *who frees this* wrong. A leak
+is the polite version of that mistake — the same confusion releasing early
+instead is a use-after-free, which is what
+[#1161](https://github.com/rask-lang/rask/issues/1161) was. Ownership is the
+whole thesis of the language, so this goes first.
 
 The gate reports a second number beside that one, and it isn't part of this
-milestone. A task killed by a panic doesn't unwind its captures
-([#299](https://github.com/rask-lang/rask/issues/299)), which is 13 allocations
-across three files and waits on the unwinder in v0.5; `t_shared_box_freed.rk` is
-2 more, waiting on `clone_elision` knowing which box `s.clone()` handed back —
-freeing it today is a double free rather than a smaller leak. Their lines in
-`tests/known_leaks.txt` say `deferred`, and the gate still measures them and
-still holds them to their count — it just doesn't judge a memory milestone on
-what a memory milestone can't fix.
+milestone. It is 2 allocations now, down from 15, and one file:
+`t_shared_box_freed.rk`, waiting on `clone_elision` knowing which box
+`s.clone()` handed back. Freeing it today is a double free rather than a smaller
+leak, which is what makes it a wait rather than a task. Its line in
+`tests/known_leaks.txt` says `deferred`, and the gate still measures it and
+still holds it to its count. It just doesn't judge a memory milestone on what a
+memory milestone can't fix.
+
+The other 13 were one bug, and the reason to say so is that the ledger blamed
+the wrong thing for a month. It read "a task killed by a panic doesn't unwind
+its captures, waits on the unwinder in v0.5" — but the unwinder landed in
+August. What was actually wrong was two lines of C: a task's closure allocation
+was freed on the line after the body's own call, which a panicking body longjmps
+straight past, and `TaskHandle.join` read as returning a view into its receiver
+because its return type names a type parameter, so the frame released nothing it
+got back. Three files went clean ([#1223](https://github.com/rask-lang/rask/issues/1223)).
+A deferred line is worth re-measuring, not re-reading.
 
 The last one was [#1205](https://github.com/rask-lang/rask/issues/1205), and it
 took six attempts because the question was never "how does a swallowed closure
@@ -76,27 +86,35 @@ adapter it builds; a `flat_map` callback returns the one it builds; the glue is
 named after the body. Splitting those sites is what made one answer possible.
 The five measurements are on the issue.
 
-**The gate is not the whole story**, and two shapes it can't see are worth
-knowing about before anyone reads 0 as "done". It runs suite files as `test`
-blocks, so a leak that only appears in `main` is invisible to it — which is
-where [#1213](https://github.com/rask-lang/rask/issues/1213) lives, a value that
-hands its old version into its new one and is then released by nobody. And
-[#1035](https://github.com/rask-lang/rask/issues/1035)'s repros are clean now
-without the suite file that would keep them that way.
+**The gate is not the whole story**, and its blind spot is worth knowing about
+before anyone reads 0 as "done": it runs suite files as `test` blocks, so a leak
+that only shows in `main` is invisible to it.
+[#1213](https://github.com/rask-lang/rask/issues/1213) lived there — a value
+that hands its old version into its new one, freed by nobody — and was found by
+running the repro rather than by the gate. It is fixed and now has a suite file,
+but the next one of its kind will hide in the same place.
 
-Still open from the earlier list, and no longer showing in the gate — they are
-about shapes the suite doesn't cover yet rather than shapes that are fixed:
-[#1035](https://github.com/rask-lang/rask/issues/1035) ·
-[#1117](https://github.com/rask-lang/rask/issues/1117) ·
-[#1131](https://github.com/rask-lang/rask/issues/1131) ·
-[#1153](https://github.com/rask-lang/rask/issues/1153) ·
-[#1157](https://github.com/rask-lang/rask/issues/1157) ·
-[#1158](https://github.com/rask-lang/rask/issues/1158) ·
-[#1161](https://github.com/rask-lang/rask/issues/1161)
+The list of leaks that were open without showing in the gate is empty now. Each
+one's repro was re-run on both backends and each has a suite file keeping it
+that way: [#1035](https://github.com/rask-lang/rask/issues/1035) (a string
+between two containers, and a container inside one),
+[#1117](https://github.com/rask-lang/rask/issues/1117) (a container returned
+inside `T?` from a callee small enough to inline),
+[#1131](https://github.com/rask-lang/rask/issues/1131) (`for x in h.items`,
+which dies on a block that never mentions it),
+[#1153](https://github.com/rask-lang/rask/issues/1153) (a fused `zip` over two
+struct fields), [#1157](https://github.com/rask-lang/rask/issues/1157)
+(`with s.staged()` on a local box) and
+[#1158](https://github.com/rask-lang/rask/issues/1158) (`io.copy` through a
+boxed writer).
 
-[#882](https://github.com/rask-lang/rask/issues/882) is the umbrella: linearity
-is enforced at points, and the holes are wherever a point was missed. Closing the
-four in the table should be most of its answer.
+What is left of the milestone is [#882](https://github.com/rask-lang/rask/issues/882):
+linearity is enforced at particular syntactic points, and the holes are wherever
+a point was missed. Every row of its own table is fixed. What it is still open
+for is the audit — where an obligation can be created, where control can leave a
+scope, and every way a value can be consumed, checked cell by cell instead of one
+repro at a time. Six holes turned up in a single session and not one was looked
+for, which is the reason to stop waiting for the seventh.
 
 ## v0.4 — A value works in every position
 

@@ -50,6 +50,10 @@ func example_concurrency() -> void or Error {
         let h2 = spawn(|| {
             21
         })
+        // If `h1.join()` fails, the error leaves this function and `h2` is
+        // never joined — a handle has to be consumed on every way out (H1).
+        // `ensure` commits that now; the `join` below cancels it (L6).
+        ensure h2.detach()
         let a = try h1.join()
         let b = try h2.join()
         println("sum: {a + b}")  // 42

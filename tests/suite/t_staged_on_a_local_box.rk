@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `with s.staged()` on a box the frame owns, with a scalar inside it.
+//
+// The staged tests that existed all went through a `const` box holding a
+// struct. A *local* box holding a scalar lowers the same block to a different
+// internal name — `Mutex_staged_data` — and nothing said what that name stands
+// for, so the compiler fell back to its deliberate worst case: treat it as
+// owning everything it touches, which leaks the box (#1157).
+//
+//     [unmapped-spelling] Mutex_staged_data (family Mutex): no stdlib file
+//     declares it and INTERNAL_SPELLINGS doesn't say what it stands for …
+//     rask: 2 allocations never released (104 bytes)
+//
+// What it stands for is a read: `staged()` gives you the runtime's working copy
+// under the lock, committed as one move when the block exits, and the frame
+// never took it over. Same as every other scoped accessor on a `Shared`.
+//
+// The warning is printed rather than guessed away because the other answer —
+// "no declaration, so the caller owns what came back" — frees a value the box
+// still holds. `spellings_gate.sh` sweeps the corpus for it, and it stayed
+// quiet because nothing in the corpus reached this shape.
+
+import sync.Shared
+import sync.Mutex
+
+struct Tally {
+    count: i64
+    label: string
+}
+
+func main() {}
+
+test "a scalar payload in a box the frame owns" {
+    let s = Shared<i64>.mutex(5)
+    with s.staged() as v {
+        v = v + 2
+    }
+    with s.read() as v {
+        assert v == 7
+    }
+}
+
+test "the same box staged twice" {
+    let s = Shared<i64>.mutex(0)
+    with s.staged() as v {
+        v = v + 1
+    }
+    with s.staged() as v {
+        v = v + 10
+    }
+    with s.read() as v {
+        assert v == 11
+    }
+}
+
+test "a payload that allocates, so a wrong owner would show as a double free" {
+    let s = Shared<Tally, Mutex>.mutex(Tally {
+        count: 1,
+        label: "a label long enough to live on the heap",
+    })
+    with s.staged() as t {
+        t.count = t.count + 4
+    }
+    with s.read() as t {
+        assert t.count == 5
+        assert t.label == "a label long enough to live on the heap"
+    }
+}
+
+test "staged in a loop on a local box" {
+    let s = Shared<i64>.mutex(0)
+    mut i = 0
+    while i < 6 {
+        with s.staged() as v {
+            v = v + i
+        }
+        i = i + 1
+    }
+    with s.read() as v {
+        assert v == 15
+    }
+}

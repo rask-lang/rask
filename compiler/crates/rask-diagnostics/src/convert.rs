@@ -3333,6 +3333,30 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
+            ResourceLeaksOnTry { name, acquired_at } => {
+                Diagnostic::error(format!(
+                    "`{}` would leak if this fails",
+                    name
+                ))
+                .with_code("E0881")
+                .with_primary(
+                    self.span,
+                    format!("the error leaves the function here, with `{}` still open", name),
+                )
+                .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                .with_help(format!(
+                    "commit the cleanup where `{0}` is acquired, so every way out runs it:                      `ensure {0}.<consume>()` (e.g. `.close()`, `.detach()`)",
+                    name
+                ))
+                .with_fix(format!(
+                    "add `ensure {}.<consuming method>()` right after acquiring it",
+                    name
+                ))
+                .with_why(
+                    "a resource has to be consumed on every way out of the scope, and `try` is one of them",
+                )
+            }
+
             ResourceDiscardedAsStatement { type_name } => {
                 Diagnostic::error(format!(
                     "value of resource type `{}` is dropped without being consumed",

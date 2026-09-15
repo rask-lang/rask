@@ -60,6 +60,55 @@ test "vec zip — pairs elements, U resolved from the other Vec" {
     assert pairs[2].1 == "three"
 }
 
+// #1153: the same zip, over two of a struct's *fields*. A fused loop leaves
+// the struct's group live right through it and dead on the edge into the exit
+// block, which mentions nothing — so the ordinary "release after the last use"
+// had nowhere to hang one, and both field vectors were freed by nobody.
+struct ZipRow {
+    public xs: Vec<i64>
+    public names: Vec<string>
+}
+
+test "vec zip — over two fields of a struct" {
+    let r = ZipRow {
+        xs: [1, 2, 3],
+        names: ["a name long enough to live on the heap", "another long enough one"],
+    }
+    let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
+    assert pairs.len() == 2
+    assert pairs[0].0 == 1
+    assert pairs[1].1 == "another long enough one"
+    // The struct still holds both, and the zip took neither away.
+    assert r.xs.len() == 3
+    assert r.names.len() == 2
+}
+
+// #1214: the same vector on both sides. The interpreter took the vector's lock
+// twice and hung — the lock isn't reentrant, so the second one waits on a guard
+// the same thread is holding. No output, no panic, while native printed the
+// right answer.
+test "vec zip — a vector zipped with itself" {
+    let r = ZipRow { xs: [4, 5], names: ["a name long enough to live on the heap"] }
+    let pairs: Vec<(i64, i64)> = r.xs.zip(r.xs)
+    assert pairs.len() == 2
+    assert pairs[1].0 == 5
+    assert pairs[1].1 == 5
+
+    let a: Vec<i64> = [1, 2, 3]
+    let self_pairs: Vec<(i64, i64)> = a.zip(a)
+    assert self_pairs.len() == 3
+    assert self_pairs[2].0 == 3
+}
+
+test "vec — compared with itself" {
+    let a: Vec<i64> = [1, 2, 3]
+    assert a == a
+    assert !(a != a)
+
+    let words: Vec<string> = ["a string long enough to live on the heap"]
+    assert words == words
+}
+
 test "vec zip — stops at the shorter side" {
     let a: Vec<i64> = [1, 2, 3, 4, 5]
     let b: Vec<i64> = [10, 20]

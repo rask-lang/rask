@@ -181,10 +181,18 @@ are a compile error (E0843), and a test can't assert on one. They live in
 `tests/compile_errors/fixed_array_growth.rk`; the reads and writes an array does
 have are in `t_day_arrays.rk` and `t_day_array_writes.rk`.
 
-**Linearity's rejections.** `t_month_linearity.rk` pins the positive side — every
-shape where consuming exactly once is legal — because a test can't assert on a
-compile error. The rejections (forgot to close, closed twice, consumed on one arm
-only) belong in `tests/compile_errors/`.
+**Linearity's rejections.** `t_month_linearity.rk` and
+`t_linearity_audit_positives.rk` pin the positive side — every shape where
+consuming exactly once is legal — because a test can't assert on a compile
+error. The rejections (forgot to close, closed twice, consumed on one arm only)
+belong in `tests/compile_errors/`; the ways *out* of a scope that used to skip
+the check are in `linearity_exits.rk`.
+
+The audit behind those two files (#882) is a grid rather than a list: where an
+obligation can be created × where control can leave a scope × every way a value
+can be consumed. Each of the holes it found was a point nobody had put on the
+list, not a wrong rule, so the way to find the next one is to add a row and run
+it, not to wait for a report.
 
 **A float in a word-wide slot.** `t_week_float_slots.rk` sweeps the nine positions
 a float can occupy in one — match-expression result, concrete and generic enum

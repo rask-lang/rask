@@ -45,6 +45,13 @@ struct RaskPool {
     // hardcoded offsets above, so codegen's picture of the header is unchanged.
     int32_t  *owned;
     int32_t   owned_count;
+
+    // mem.resources/R5: a `Pool<Resource>` that is dropped non-empty panics.
+    // The compiler can't track what a pool holds — that is why the rule is a
+    // runtime one — so the pool is told on its first insert, alongside the
+    // element descriptor, and remembers the element's name for the message.
+    char     *elem_type;
+    int32_t   holds_resource;
 };
 
 // Compile-time layout verification — codegen hardcodes these offsets
@@ -152,6 +159,21 @@ static void pool_release_elem(const RaskPool *p, char *slot) {
 
 void rask_pool_free(RaskPool *p) {
     if (!p) return;
+    // R5. Before anything is given back: the elements are still there to be
+    // taken out, and a leak reported after the free would name memory that has
+    // gone. Keep this wording in step with the interpreter's (see
+    // rask-interp/src/interp/scope.rs) — the differential harness compares the
+    // two backends' output verbatim.
+    if (p->holds_resource && p->len > 0) {
+        char msg[256];
+        snprintf(msg, sizeof msg,
+                 "Pool<%s> has %lld unconsumed resource element%s at scope exit.\n"
+                 "Resources must be explicitly consumed (use take_all() before scope ends).",
+                 p->elem_type ? p->elem_type : "?",
+                 (long long)p->len,
+                 p->len == 1 ? "" : "s");
+        rask_panic(msg);
+    }
     if (p->slots && p->owned && p->owned_count > 0) {
         for (int64_t i = 0; i < p->cap; i++) {
             char *slot = slot_at(p, i);
@@ -160,6 +182,7 @@ void rask_pool_free(RaskPool *p) {
         }
     }
     rask_free(p->owned);
+    rask_free(p->elem_type);
     if (p->slots) rask_realloc(p->slots, rask_safe_mul(p->cap, p->slot_stride), 0);
     rask_realloc(p, (int64_t)sizeof(RaskPool), 0);
 }
@@ -167,6 +190,21 @@ void rask_pool_free(RaskPool *p) {
 // The element shape, copied once on the first insert. Same contract as the
 // rack's `rack_describe`: later inserts of the same `T` say the same thing, and
 // a pool with nothing in it never learns — which is right, it owns nothing.
+// R5's half of the same "told once, on the first insert" contract: whether the
+// element type is a `@resource`, and what it is called, so a non-empty drop can
+// say which pool.
+static void pool_describe_resource(RaskPool *p, int64_t is_resource,
+                                   const char *type_name, int64_t name_len) {
+    if (p->holds_resource || !is_resource) return;
+    p->holds_resource = 1;
+    if (!type_name || name_len <= 0) return;
+    char *copy = (char *)rask_alloc(name_len + 1);
+    if (!copy) return;
+    memcpy(copy, type_name, (size_t)name_len);
+    copy[name_len] = '\0';
+    p->elem_type = copy;
+}
+
 static void pool_describe(RaskPool *p, int64_t owned_count, const int32_t *owned) {
     if (p->owned || owned_count <= 0 || !owned) return;
     int64_t bytes = owned_count * (int64_t)sizeof(int32_t);
@@ -332,8 +370,11 @@ int64_t rask_pool_insert_packed(RaskPool *p, const void *elem) {
 }
 
 int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                      int64_t owned_count, const int32_t *owned) {
+                                      int64_t owned_count, const int32_t *owned,
+                                      int64_t is_resource, const char *type_name,
+                                      int64_t name_len) {
     pool_describe(p, owned_count, owned);
+    pool_describe_resource(p, is_resource, type_name, name_len);
 #ifdef RASK_DEBUG
     // Verify caller's elem_size matches pool's
     if (p->len > 0 || p->cap > 0) {
@@ -354,11 +395,14 @@ int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t ele
 // bounded pool is full, instead of panicking. Otherwise it inserts and returns
 // the packed handle (which niche-encodes `Some`).
 int64_t rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                          int64_t owned_count, const int32_t *owned) {
+                                          int64_t owned_count, const int32_t *owned,
+                                          int64_t is_resource, const char *type_name,
+                                          int64_t name_len) {
     if (pool_is_full(p)) {
         return -1;
     }
     pool_describe(p, owned_count, owned);
+    pool_describe_resource(p, is_resource, type_name, name_len);
     if (p->len == 0 && p->cap == 0 && elem_size > p->elem_size) {
         p->elem_size = elem_size;
         p->slot_stride = compute_stride(elem_size);

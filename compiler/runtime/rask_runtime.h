@@ -674,9 +674,13 @@ RaskHandle  rask_pool_alloc(RaskPool *p);
 int64_t     rask_pool_alloc_packed(RaskPool *p);
 int64_t     rask_pool_insert_packed(RaskPool *p, const void *elem);
 int64_t     rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                          int64_t owned_count, const int32_t *owned);
+                                          int64_t owned_count, const int32_t *owned,
+                                          int64_t is_resource, const char *type_name,
+                                          int64_t name_len);
 int64_t     rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                              int64_t owned_count, const int32_t *owned);
+                                              int64_t owned_count, const int32_t *owned,
+                                              int64_t is_resource, const char *type_name,
+                                              int64_t name_len);
 void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
 void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
                                   const char *file, int32_t line, int32_t col);

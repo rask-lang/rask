@@ -8243,18 +8243,25 @@ impl<'a> FunctionBuilder<'a> {
         mir_args: &[MirOperand],
         args: &mut Vec<Value>,
         ctx: &CodegenCtx,
-    ) -> Vec<i32> {
+    ) -> (Vec<i32>, Option<String>) {
         // Pool, element, tag. Anything else is a call this didn't build, and
         // popping a value off one of those would drop the element instead.
         if mir_args.len() != 3 || args.len() != 3 {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         args.pop();
         let Some(MirOperand::Constant(MirConst::Int(tag))) = mir_args.last() else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
-        crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
-            .unwrap_or_default()
+        let owned =
+            crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
+                .unwrap_or_default();
+        // R5: a `@resource` element makes a non-empty drop a panic, and the
+        // message names the element type. Both ride the same "told once, on the
+        // first insert" route as the descriptor.
+        let resource = crate::elem_offsets::resource_elem_name(*tag, ctx.struct_layouts)
+            .map(str::to_string);
+        (owned, resource)
     }
 
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
@@ -8721,7 +8728,7 @@ impl<'a> FunctionBuilder<'a> {
                     let val = args[1];
                     args[1] = Self::value_to_ptr(builder, val);
                 }
-                let owned = Self::pooled_owned_descriptor(mir_args, args, ctx);
+                let (owned, resource) = Self::pooled_owned_descriptor(mir_args, args, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
                 args.push(builder.ins().iconst(types::I64, owned.len() as i64));
                 if owned.is_empty() {
@@ -8737,6 +8744,29 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().stack_store(e, ss, (i * 4) as i32);
                     }
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                // R5's three: is the element a resource, and what is it called.
+                // The name goes over on a stack slot for the same reason the
+                // descriptor does — the runtime copies it on the first insert.
+                match &resource {
+                    Some(name) => {
+                        args.push(builder.ins().iconst(types::I64, 1));
+                        let bytes = name.as_bytes();
+                        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot, bytes.len() as u32, 0,
+                        ));
+                        for (i, b) in bytes.iter().enumerate() {
+                            let v = builder.ins().iconst(types::I8, *b as i64);
+                            builder.ins().stack_store(v, ss, i as i32);
+                        }
+                        args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                        args.push(builder.ins().iconst(types::I64, bytes.len() as i64));
+                    }
+                    None => {
+                        args.push(builder.ins().iconst(types::I64, 0));
+                        args.push(builder.ins().iconst(types::I64, 0));
+                        args.push(builder.ins().iconst(types::I64, 0));
+                    }
                 }
                 CallAdapt::None
             }

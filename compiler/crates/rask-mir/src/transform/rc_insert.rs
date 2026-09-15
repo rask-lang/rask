@@ -712,7 +712,7 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     let mut handed_over_in: HashMap<usize, HashSet<BlockId>> = HashMap::new();
 
     for block in &func.blocks {
-        for stmt in &block.statements {
+        for (si, stmt) in block.statements.iter().enumerate() {
             match &stmt.kind {
                 // Handed to something else, which may keep it.
                 MirStmtKind::Call { func: fref, args, .. } => {
@@ -793,6 +793,11 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         // leaked the map, because the encoder is handed the
                         // field's handle through exactly such a buffer.
                         if handles.contains_key(&id) && !aggregates.contains(addr) {
+                            continue;
+                        }
+                        // Or the value went into its own successor, which is
+                        // not leaving the frame at all. See `moved_within_the_group`.
+                        if moved_within_the_group(func, block, si, *addr, id, &group_of) {
                             continue;
                         }
                         if let Some(gi) = group_of.get(&id) {
@@ -1154,6 +1159,23 @@ fn aggregate_edge_releases(
                 if gone[gi].contains(&succ) {
                     continue;
                 }
+                // And the successor must not still need the value. Liveness
+                // answers that per *group*, so a block that builds the next
+                // version while reading the current one — two names, one
+                // group — has the write hide the read and reads as dead on
+                // entry:
+                //
+                //     bb12:
+                //       *(_34+0)  = 1      // the new node: a write
+                //       *(_44+0)  = _41    // the old list: a read of another name
+                //
+                // That put an `rc_dec_contents` at the top of a loop body, on a
+                // name nothing had written yet the first time round (#1213).
+                // Asking the block itself is cheap and exact where the group
+                // answer is not.
+                if reads_before_writing(func, succ, group) {
+                    continue;
+                }
                 out.push((succ, name));
             }
         }
@@ -1161,6 +1183,144 @@ fn aggregate_edge_releases(
     out.sort_by_key(|(b, l)| (b.0, l.0));
     out.dedup_by_key(|(b, l)| (b.0, l.0));
     out
+}
+
+/// Does `block` read one of the group's names before writing that same name?
+///
+/// The precise half of "is the group live on entry here". `aggregate_liveness`
+/// answers it for the group as a whole, which is enough for placing a release
+/// inside a block and not enough for putting one at the top of one.
+fn reads_before_writing(func: &MirFunction, block: BlockId, group: &HashSet<LocalId>) -> bool {
+    let Some(b) = func.blocks.iter().find(|b| b.id == block) else { return false };
+    let mut written: HashSet<LocalId> = HashSet::new();
+    for stmt in &b.statements {
+        let stored_into = match &stmt.kind {
+            MirStmtKind::Store { addr, .. } if group.contains(addr) => Some(*addr),
+            _ => None,
+        };
+        // A store's destination address is the write, not a read of what was
+        // there before; its *value* is an ordinary read.
+        let reads = match (&stmt.kind, stored_into) {
+            (MirStmtKind::Store { value, .. }, Some(_)) => uses::operand_local(value)
+                .is_some_and(|v| group.contains(&v) && !written.contains(&v)),
+            _ => group
+                .iter()
+                .any(|l| !written.contains(l) && uses::stmt_reads(stmt, *l)),
+        };
+        if reads {
+            return true;
+        }
+        if let Some(addr) = stored_into {
+            written.insert(addr);
+        }
+        if let Some(d) = uses::stmt_def(stmt) {
+            if group.contains(&d) {
+                written.insert(d);
+            }
+        }
+    }
+    group
+        .iter()
+        .any(|l| !written.contains(l) && uses::terminator_reads(&b.terminator, *l))
+}
+
+/// A store that moves a value from one of a group's names to another, rather
+/// than out of the frame.
+///
+/// `out = List.Cons(i, Heap(out))` builds a new node whose tail is the old
+/// list, and in MIR that is a copy of the old value into a fresh block:
+///
+/// ```text
+///   bb5:
+///     _27 = phi [_25 from bb4, _31 from bb6]
+///   bb6:
+///     *(_20+0)  = 1
+///     *(_20+8)  = _28
+///     _30 = rask_alloc(24)
+///     *(_30+0)  = _27  [24B]   // the old list, copied into the new block
+///     *(_20+16) = _30          // the block goes into the new node
+///     _31 = _20                // and the new node is what comes round again
+/// ```
+///
+/// Read that middle store on its own and it is a hand-over: whoever owns the
+/// block owns the copy now, so releasing `_27` from there on would free it
+/// twice. Read the three together and the block never left the frame — it is
+/// inside `_20`, `_20` is the same group as `_27`, and the group's release
+/// walks into it and frees the whole chain. Calling it a hand-over left every
+/// node of a list built this way freed by nobody (#1213).
+///
+/// Both halves have to hold:
+///
+///   - the block lands in a name of the same group, which is what makes that
+///     group's release cover the copy;
+///   - and that name takes `_27`'s place — straight through, or round the loop
+///     as the phi operand arriving from this block. Without it the old value
+///     would still have a live name of its own and the release would be a
+///     double free rather than a leak, which is the wrong half of the trade.
+fn moved_within_the_group(
+    func: &MirFunction,
+    block: &crate::MirBlock,
+    at: usize,
+    into: LocalId,
+    value: LocalId,
+    group_of: &HashMap<LocalId, usize>,
+) -> bool {
+    let Some(gi) = group_of.get(&value) else { return false };
+    let rest = &block.statements[at + 1..];
+
+    // Where the block ends up, followed as far as the rest of this block goes.
+    // An enum variant with a struct payload takes three hops — block into the
+    // struct's field, struct into the variant's payload, variant into the name
+    // that comes round again — and stopping at the first would miss it.
+    let mut carries: HashSet<LocalId> = HashSet::from([into]);
+    for st in rest {
+        match &st.kind {
+            MirStmtKind::Store { addr, value: stored, .. } => {
+                if uses::operand_local(stored).is_some_and(|v| carries.contains(&v)) {
+                    carries.insert(*addr);
+                }
+            }
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                if carries.contains(src) {
+                    carries.insert(*dst);
+                }
+            }
+            _ => {}
+        }
+    }
+    // It has to end up inside one of the group's own names, or its release is
+    // somebody else's business and this really was a hand-over.
+    if !carries.iter().any(|l| group_of.get(l) == Some(gi)) {
+        return false;
+    }
+    let successor_names = carries;
+
+    // Taken over on the spot.
+    let reassigned = rest.iter().any(|st| match &st.kind {
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+            *dst == value && successor_names.contains(src)
+        }
+        _ => false,
+    });
+    if reassigned {
+        return true;
+    }
+
+    // Or round the loop: the phi that names `value` takes its operand on this
+    // block's edge from one of them.
+    func.blocks.iter().any(|b| {
+        b.statements.iter().any(|st| match &st.kind {
+            MirStmtKind::Phi { dst, args } => {
+                *dst == value
+                    && args.iter().any(|(from, op)| {
+                        *from == block.id
+                            && uses::operand_local(op)
+                                .is_some_and(|l| successor_names.contains(&l))
+                    })
+            }
+            _ => false,
+        })
+    })
 }
 
 /// Every block a group's value might already be gone in: the blocks where it

@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value that hands its old version into its new one.
+//
+// `out = List.Cons(i, Heap(out))` copies the old list into a fresh block and
+// puts the block inside the new node. In MIR the copy is a store:
+//
+//     bb6:
+//       *(_20+0)  = 1
+//       *(_20+8)  = _28
+//       _30 = rask_alloc(24)
+//       *(_30+0)  = _27  [24B]   // the old list, into the new block
+//       *(_20+16) = _30          // the block, into the new node
+//       _31 = _20                // which is what comes round again
+//
+// Read that middle store on its own and it is a hand-over — whoever owns the
+// block owns the copy — so the release machinery stopped releasing `_27`'s
+// whole copy-group from there on, including after the loop where the final
+// value dies. Thirty nodes, freed by nobody, with the right answer printed
+// (#1213).
+//
+// Read the three stores together and nothing left the frame: the block is
+// inside `_20`, `_20` is the same group as `_27`, and the group's release walks
+// into it. What makes that safe is the second half — `_20` takes `_27`'s place,
+// so the old value has no live name of its own left to release twice.
+
+import memory.Heap
+
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+func sum(l: List) -> i64 {
+    match l {
+        List.Cons(head, rest) => {
+            return head + sum(rest)
+        }
+        List.Nil => {
+            return 0
+        }
+    }
+}
+
+func length(l: List) -> i64 {
+    match l {
+        List.Cons(_, rest) => {
+            return 1 + length(rest)
+        }
+        List.Nil => {
+            return 0
+        }
+    }
+}
+
+// The shape from the issue: built in a loop, each turn handing the old value in.
+func chain(n: i64) -> List {
+    if n <= 0 {
+        return List.Nil
+    }
+    mut out = List.Cons(1, Heap(List.Nil))
+    mut i = 2
+    while i <= n {
+        out = List.Cons(i, Heap(out))
+        i = i + 1
+    }
+    return out
+}
+
+struct Node {
+    public name: string
+    public next: Heap<Chain>
+}
+
+enum Chain {
+    End
+    More(Node)
+}
+
+// The same handover where what moves carries a string, so a double free would
+// be reported rather than silently reusing bytes that still read right.
+func names(n: i64) -> Chain {
+    mut out = Chain.More(Node {
+        name: "a name long enough to live on the heap",
+        next: Heap(Chain.End),
+    })
+    mut i = 1
+    while i < n {
+        out = Chain.More(Node {
+            name: "another name long enough to live on the heap",
+            next: Heap(out),
+        })
+        i = i + 1
+    }
+    return out
+}
+
+func count(c: Chain) -> i64 {
+    match c {
+        Chain.More(node) => {
+            assert node.name.len() > 10
+            return 1 + count(node.next)
+        }
+        Chain.End => {
+            return 0
+        }
+    }
+}
+
+func main() {}
+
+test "a chain built in a loop, in the frame that consumes it" {
+    let l = chain(30)
+    assert sum(l) == 465
+}
+
+test "and one built straight through" {
+    mut out = List.Cons(1, Heap(List.Nil))
+    out = List.Cons(2, Heap(out))
+    out = List.Cons(3, Heap(out))
+    assert sum(out) == 6
+    assert length(out) == 3
+}
+
+test "a handover that carries a string" {
+    let c = names(12)
+    assert count(c) == 12
+}
+
+test "built and thrown away, many times over" {
+    mut total = 0
+    for i in 1..25 {
+        let l = chain(i)
+        total = total + sum(l)
+    }
+    assert total == 2600
+}
+
+test "the empty case still ends the chain" {
+    assert sum(chain(0)) == 0
+    assert length(chain(0)) == 0
+}
+
+test "a chain whose last value is returned rather than dropped" {
+    // The caller owns it here, so this frame must not release it — the same
+    // store, with the release belonging to somebody else.
+    let l = chain(5)
+    let again = chain(5)
+    assert sum(l) == 15
+    assert sum(again) == 15
+}
