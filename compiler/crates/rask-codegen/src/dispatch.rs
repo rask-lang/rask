@@ -347,7 +347,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
         // how to read one element, since the header only carries its width.
         StdlibEntry {
-            mir_name: "vec_debug", c_name: "rask_vec_debug",
+            mir_name: "Vec_debug", c_name: "rask_vec_debug",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },

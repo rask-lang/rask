@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A user function whose name starts like a stdlib family.
+//
+// MIR mints names for operations the stdlib declares under another spelling,
+// and `INTERNAL_SPELLINGS` says what each one stands for. A name nobody
+// accounts for is treated as owning everything it touches — which leaks, and is
+// reported loudly so it gets a line.
+//
+// What decides whether a name is in that world is its head: the part before the
+// first `_`. A head is a family when it names a stdlib type, or when the list
+// itself uses it — `Cell_acquire` and `Mutex_lock` are families by declaration,
+// since `Shared<T, Cell>` is the type and `Cell` is how the call site spells it.
+//
+// So a head there has to be spelled the way the thing it belongs to is spelled,
+// and one entry wasn't: `vec_debug` made `vec` a family. A plain user function
+// named `vec_max` then got the report on every compile, telling its author to
+// edit a table inside the compiler, and was treated as owning what it touched:
+//
+//     [unmapped-spelling] vec_max (family vec): no stdlib file declares it …
+//
+// It is `Vec_debug` now, like the type (#1217).
+//
+// Still true for a head that really is a type name: a user function called
+// `string_shoutify` gets the same report and leaks its return value, because
+// `string` is a family whatever else is called that. Telling those apart needs
+// the metadata to know which names the program itself declares, which it has no
+// way to ask — that half is still open on the issue.
+//
+// The gate that would otherwise not see this is `tests/spellings_gate.sh`: it
+// sweeps the corpus for that report, and nothing in the corpus was named this
+// way.
+
+func vec_max(v: Vec<i64>) -> i64 {
+    mut m = v[0]
+    for x in v {
+        if x > m {
+            m = x
+        }
+    }
+    return m
+}
+
+// Returns something that allocates, which is where the wrong answer shows as a
+// leak rather than as only a warning.
+func vec_labels(n: i64) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    mut i = 0
+    while i < n {
+        out.push("a label long enough to live on the heap")
+        i = i + 1
+    }
+    return out
+}
+
+func vec_joined(n: i64) -> string {
+    return "a joined string long enough to live on the heap, {n}"
+}
+
+func main() {}
+
+test "a user function named like a stdlib family" {
+    let v: Vec<i64> = [3, 9, 4]
+    assert vec_max(v) == 9
+}
+
+test "and one that hands back a container" {
+    let labels = vec_labels(3)
+    assert labels.len() == 3
+    assert labels[0].len() == 39
+}
+
+test "and one that hands back a string" {
+    let s = vec_joined(7)
+    assert s.len() > 10
+}

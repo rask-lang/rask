@@ -377,7 +377,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // its entry sort, not through a call of its own — and inventing the name
     // here would make `map` an accountable family and fail every user function
     // called `map_something`.
-    ("vec_debug", Internal::FreshFromReceiver),
+    ("Vec_debug", Internal::FreshFromReceiver),
 
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
@@ -477,6 +477,16 @@ fn accountable_family_of(name: &str) -> Option<&str> {
     if cache().type_names.contains(head) {
         return Some(head);
     }
+    // Or a head the list itself uses — a strategy rather than a type, as in
+    // `Cell_acquire` and `Mutex_lock`, where `Shared<T, Cell>` is the type and
+    // `Cell` is how the call site spells the family.
+    //
+    // A head here is a family by declaration, so spell it the way the thing it
+    // belongs to is spelled: `vec_debug` made `vec` a family, and every user
+    // function named `vec_*` then read as an unaccounted-for internal spelling
+    // — a warning on each compile telling the author to edit a table inside the
+    // compiler, and their function treated as owning everything it touches,
+    // which leaks (#1217). It is `Vec_debug` now, like the type.
     INTERNAL_SPELLINGS
         .iter()
         .any(|(n, _)| n.split_once('_').is_some_and(|(h, _)| h == head))

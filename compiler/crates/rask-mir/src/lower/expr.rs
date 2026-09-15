@@ -8443,7 +8443,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Ptr => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
                 Some(kind) => Ok(call(
                     self,
-                    "vec_debug",
+                    "Vec_debug",
                     vec![op.clone(), MirOperand::Constant(MirConst::Int(kind))],
                 )),
                 None => {
@@ -9130,7 +9130,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// How the runtime should read a slot of this type: the `RASK_DEBUG_ELEM_*`
-    /// codes, shared by `vec_debug` and by the map renderer's key sort. `None`
+    /// codes, shared by `Vec_debug` and by the map renderer's key sort. `None`
     /// for anything the runtime can't read a slot at a time.
     fn debug_elem_kind(ty: &MirType) -> Option<i64> {
         Some(match ty {
