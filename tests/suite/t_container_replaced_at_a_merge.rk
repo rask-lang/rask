@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container a branch writes over, and who gives back the one it held.
+//
+// `mut v: Vec<string> = []` allocates a header. An `if` that reassigns `v`
+// makes a phi, and the two operands are two different vectors:
+//
+//     bb1:  w_1 = Vec_new(…)      // the branch that assigns
+//           v_2 = w_1
+//     bb2:  (nothing)             // the branch that doesn't
+//     bb3:  v_3 = phi [v_1 from bb2, v_2 from bb1]
+//           Vec_free(v_3)
+//
+// The grouping that follows copies unions all four names, and the rest of the
+// drop pass reads a group as one allocation under several names — so it freed
+// once, and on the taken path the empty vector was nobody's (#1209).
+//
+// The operand that isn't the one arriving on an edge is the one being replaced,
+// and that edge's own block is where it dies. The shared liveness says
+// otherwise — it reads every operand in the phi's own block, so the replaced
+// one looks live on the very path that replaced it — which is the same
+// distinction `t_phi_operand_on_its_edge.rk` needed for placement.
+
+func pick(n: i64) -> i64 {
+    return n
+}
+
+func main() {}
+
+test "a branch that replaces the container" {
+    mut v: Vec<string> = []
+    if pick(1) == 1 {
+        mut w: Vec<string> = []
+        w.push("a string long enough to live on the heap")
+        v = w
+    }
+    assert v.len() == 1
+    assert v[0].starts_with("a string")
+}
+
+test "the branch that doesn't" {
+    mut v: Vec<string> = []
+    if pick(0) == 1 {
+        mut w: Vec<string> = []
+        w.push("a string long enough to live on the heap")
+        v = w
+    }
+    assert v.len() == 0
+}
+
+test "both arms replace it" {
+    mut v: Vec<i64> = []
+    if pick(1) == 1 {
+        mut a: Vec<i64> = []
+        a.push(7i64)
+        v = a
+    } else {
+        mut b: Vec<i64> = []
+        b.push(9i64)
+        v = b
+    }
+    assert v.len() == 1
+    assert v[0] == 7
+}
+
+test "replaced twice down one path" {
+    mut v: Vec<string> = []
+    if pick(1) == 1 {
+        mut a: Vec<string> = []
+        a.push("the first replacement is long enough")
+        v = a
+    }
+    if pick(1) == 1 {
+        mut b: Vec<string> = []
+        b.push("the second replacement is long enough")
+        v = b
+    }
+    assert v.len() == 1
+    assert v[0].starts_with("the second")
+}
+
+test "a map, not a vector" {
+    mut m: Map<string, i64> = Map.new()
+    if pick(1) == 1 {
+        mut fresh: Map<string, i64> = Map.new()
+        fresh.insert("a key long enough to need the heap", 3i64)
+        m = fresh
+    }
+    assert m.len() == 1
+}
+
+test "the value that survives is still readable afterwards" {
+    mut v: Vec<string> = []
+    v.push("the original is long enough to allocate")
+    if pick(0) == 1 {
+        mut w: Vec<string> = []
+        w.push("the replacement is long enough too")
+        v = w
+    }
+    assert v[0].starts_with("the original")
+    assert v.len() == 1
+}

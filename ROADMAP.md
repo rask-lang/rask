@@ -47,27 +47,56 @@ All green.
 
 ## v0.3 — Memory is settled
 
-**Done when `tests/leak_gate.sh` reports 0 known-leaking. Today: 31.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
+
+The gate's condition is met — 512 suite files clean. That is the measure, not
+the claim that nothing leaks: two shapes the gate can't see are named below, and
+what "settled" should mean beyond a green gate is the open question now.
 
 Every one of these is the compiler getting *who frees this* wrong. A leak is the
 polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
 is the same bug releasing early instead, which is a use-after-free. Ownership is
 the whole thesis of the language, so this goes first.
 
+The gate reports a second number beside that one, and it isn't part of this
+milestone. A task killed by a panic doesn't unwind its captures
+([#299](https://github.com/rask-lang/rask/issues/299)), which is 13 allocations
+across three files and waits on the unwinder in v0.5; `t_shared_box_freed.rk` is
+2 more, waiting on `clone_elision` knowing which box `s.clone()` handed back —
+freeing it today is a double free rather than a smaller leak. Their lines in
+`tests/known_leaks.txt` say `deferred`, and the gate still measures them and
+still holds them to their count — it just doesn't judge a memory milestone on
+what a memory milestone can't fix.
+
+The last one was [#1205](https://github.com/rask-lang/rask/issues/1205), and it
+took six attempts because the question was never "how does a swallowed closure
+get freed" — ten lines answer that — but "which of the two owners frees it,
+when one body is built from sites in different positions". `main` drops the
+adapter it builds; a `flat_map` callback returns the one it builds; the glue is
+named after the body. Splitting those sites is what made one answer possible.
+The five measurements are on the issue.
+
+**The gate is not the whole story**, and two shapes it can't see are worth
+knowing about before anyone reads 0 as "done". It runs suite files as `test`
+blocks, so a leak that only appears in `main` is invisible to it — which is
+where [#1213](https://github.com/rask-lang/rask/issues/1213) lives, a value that
+hands its old version into its new one and is then released by nobody. And
+[#1035](https://github.com/rask-lang/rask/issues/1035)'s repros are clean now
+without the suite file that would keep them that way.
+
+Still open from the earlier list, and no longer showing in the gate — they are
+about shapes the suite doesn't cover yet rather than shapes that are fixed:
 [#1035](https://github.com/rask-lang/rask/issues/1035) ·
 [#1117](https://github.com/rask-lang/rask/issues/1117) ·
 [#1131](https://github.com/rask-lang/rask/issues/1131) ·
-[#1139](https://github.com/rask-lang/rask/issues/1139) ·
 [#1153](https://github.com/rask-lang/rask/issues/1153) ·
-[#1154](https://github.com/rask-lang/rask/issues/1154) ·
 [#1157](https://github.com/rask-lang/rask/issues/1157) ·
 [#1158](https://github.com/rask-lang/rask/issues/1158) ·
-[#1161](https://github.com/rask-lang/rask/issues/1161) ·
-[#1162](https://github.com/rask-lang/rask/issues/1162)
+[#1161](https://github.com/rask-lang/rask/issues/1161)
 
 [#882](https://github.com/rask-lang/rask/issues/882) is the umbrella: linearity
 is enforced at points, and the holes are wherever a point was missed. Closing the
-ten above should be most of its answer.
+four in the table should be most of its answer.
 
 ## v0.4 — A value works in every position
 

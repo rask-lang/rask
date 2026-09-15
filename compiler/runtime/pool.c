@@ -277,11 +277,13 @@ int64_t rask_pool_remove(RaskPool *p, RaskHandle h, void *out) {
 
     if (out) {
         // Handed to the caller, strings and containers and all — so the slot
-        // must not release them too.
+        // must not release them too. This is the only shape generated code
+        // takes: `Pool.remove` answers `T?`, so codegen always has somewhere to
+        // put the element, and releasing what it holds is then the frame's job.
         memcpy(out, slot_data(slot), (size_t)p->elem_size);
     } else {
-        // Dropped on the floor: `p.remove(h)` used as a statement. Whatever the
-        // element owned has nowhere else to go.
+        // A C caller with nowhere to put it — `rask_pool_remove_packed`, which
+        // the benchmarks use. Whatever the element owned has nowhere else to go.
         pool_release_elem(p, slot);
     }
 
@@ -385,6 +387,10 @@ void rask_pool_set_packed(RaskPool *p, int64_t packed, const void *value) {
     memcpy(dst, value, (size_t)p->elem_size);
 }
 
+// Remove and discard. No generated code calls this — `Pool.remove` answers
+// `T?` and always takes the element back through `rask_pool_remove_out` — but
+// the C benchmarks do, and it is the only caller that reaches the releasing
+// half of `rask_pool_remove`.
 int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
     return rask_pool_remove(p, handle_unpack(p, packed), NULL);
 }

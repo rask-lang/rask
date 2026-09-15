@@ -17,6 +17,13 @@
 # reported so the line can be deleted, the same way the differential harness
 # treats a known divergence.
 #
+# A line whose count reads "N allocations, deferred" is one this milestone is
+# not going to close — a task killed by a panic doesn't unwind its captures, and
+# that waits on the unwinder; `t_shared_box_freed.rk` is a box held on purpose
+# and will never be zero. They are still measured and still held to their count;
+# they just don't count toward the number a memory milestone is judged on, which
+# is the one the summary calls "this milestone".
+#
 # The count is every `rask_alloc` the runtime made — a `Vec` handle, a data
 # array, a closure box, a trait object, a string buffer. A clean program ends at
 # exactly zero, which is what makes this a gate rather than a threshold: the
@@ -53,11 +60,19 @@ declared_count() {
     sed -nE 's/.*#[[:space:]]*([0-9]+)[[:space:]]+allocation.*/\1/p'
 }
 
+# Is this line's leak one a memory milestone is not judged on?
+deferred_leak() {
+  [ -f "$KNOWN" ] || return 1
+  grep -E "^$1([[:space:]]|#|$)" "$KNOWN" | head -1 |
+    grep -qE "allocations?, deferred"
+}
+
 green=0
 leaked=0
 expected=0
 broken=0
 total=0
+deferred=0
 stale=()
 fixed=()
 failures=()
@@ -110,7 +125,11 @@ for file in "$SUITE"/*.rk; do
       expected=$((expected + 1))
       measured="$(echo "$detail" | sed -nE 's/^rask: ([0-9]+) allocation.*/\1/p')"
       declared="$(declared_count "$name")"
-      total=$((total + ${measured:-0}))
+      if deferred_leak "$name"; then
+        deferred=$((deferred + ${measured:-0}))
+      else
+        total=$((total + ${measured:-0}))
+      fi
       if [ -n "$measured" ] && [ -n "$declared" ] && [ "$measured" != "$declared" ]; then
         stale+=("$name — the line says $declared, it leaks $measured")
       fi
@@ -147,7 +166,7 @@ for f in "${unran[@]:-}"; do
   [ -n "$f" ] && echo "NOT MEASURED (failed before the leak check): $f"
 done
 echo "──────────────────────────────────────────────────"
-echo "leak gate: $green clean, $expected known-leaking ($total allocations), $leaked new, $broken not measured"
+echo "leak gate: $green clean, $expected known-leaking ($total allocations this milestone, $deferred deferred), $leaked new, $broken not measured"
 
 if [ "$leaked" -gt 0 ] || [ "${#fixed[@]}" -gt 0 ] || [ "${#stale[@]}" -gt 0 ]; then
   exit 1

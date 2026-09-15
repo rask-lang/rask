@@ -1349,6 +1349,19 @@ fn aggregate_liveness(
     // How big the value each group names is, so "did this block write all of
     // it" has an answer.
     for (bi, block) in func.blocks.iter().enumerate() {
+        // Slots this block gives back before writing over them. A store that
+        // follows one is a *replacement*, not the end of the value: what was
+        // there has just been freed by name, and what lands next is the group's
+        // as much as the old one was. Counting it as a kill is what put the
+        // release one statement after the literal in `parse_args` (#1198).
+        let released_here: HashSet<(LocalId, u32)> = block
+            .statements
+            .iter()
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::ReleaseSlot { addr, offset, .. } => Some((*addr, *offset)),
+                _ => None,
+            })
+            .collect();
         for (gi, group) in groups.iter().enumerate() {
             let mut written = false;
             for stmt in &block.statements {
@@ -1373,8 +1386,14 @@ fn aggregate_liveness(
                 if reads && !written {
                     gen[bi][gi] = true;
                 }
-                let writes =
-                    stores_into || uses::stmt_def(stmt).is_some_and(|d| group.contains(&d));
+                let replaced = match &stmt.kind {
+                    MirStmtKind::Store { addr, offset, .. } => {
+                        released_here.contains(&(*addr, *offset))
+                    }
+                    _ => false,
+                };
+                let writes = (stores_into && !replaced && !store_is_narrow(stmt))
+                    || uses::stmt_def(stmt).is_some_and(|d| group.contains(&d));
                 if writes {
                     written = true;
                     kill[bi][gi] = true;
@@ -1414,6 +1433,22 @@ fn aggregate_liveness(
         }
     }
     (live_in, live_out)
+}
+
+/// A store too narrow to be replacing anything the release walks.
+///
+/// The narrowest thing that walk ever frees is a container handle at eight
+/// bytes; a string's header is sixteen. So a one-byte store is a flag being
+/// written and the strings and containers beside it are exactly where they
+/// were — `opts.ignore_case = true` is not the end of the six-field struct
+/// around it, and counting it as one put the release inside the loop that
+/// writes the flags (#1198).
+///
+/// Asked of the store's own recorded width rather than the operand's type,
+/// because that width is what codegen copies and a `None` there means "as wide
+/// as the value", which is not a claim this can act on.
+fn store_is_narrow(stmt: &MirStmt) -> bool {
+    matches!(&stmt.kind, MirStmtKind::Store { store_size: Some(n), .. } if *n < 8)
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would
@@ -1629,6 +1664,13 @@ fn copies_reach(func: &MirFunction, from: LocalId, target: LocalId) -> bool {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // The same question with a phi's operands read on their own incoming edge.
+    // Used for one decision below — whether a string is still live when a block
+    // ends — because the shared answer says a phi operand is live out of every
+    // predecessor, and a filtered loop's accumulator is then never dead
+    // anywhere (#1200). Every other consumer of liveness keeps the shared one:
+    // the doc on `analyze_phis_on_edges` says what happened when they didn't.
+    let live_edges = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
     // use released the buffer one statement before the call read it (#1036).
@@ -1748,8 +1790,11 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 continue;
             }
 
-            // If the local is live at block exit, it's used downstream — no dec here
-            if live.live_at_exit(block_id, *local) {
+            // If the local is live at block exit, it's used downstream — no dec
+            // here. Asked of the edge-aware answer: a successor phi that takes
+            // this local from a *different* predecessor doesn't keep it alive
+            // on the way out of this one.
+            if live_edges.live_at_exit(block_id, *local) {
                 continue;
             }
 

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Where a phi operand is read, and what it costs to get wrong.
+//
+// Accumulating a string in a plain loop is clean. Put a `filter` in front and
+// every turn but the last leaked its buffer, because the filter adds a second
+// merge:
+//
+//     bb3:
+//       _32 = phi [_24 from bb5, _38 from bb6]
+//
+// `_24` is the accumulator, and it arrives only from bb5 — the path that
+// skipped the element. On the bb6 edge the value is `_38`, so `_24` is dead at
+// the end of bb6 and that is where its release belongs. The shared liveness
+// reads a phi's operands in the phi's *own* block, so `_24` came out live
+// across every incoming edge and the release was refused everywhere.
+//
+// `rc_insert` asks an edge-aware answer for that one question now. The shared
+// one stays as it is — five other passes read it, and `transform/ssa.rs` needs
+// the operands live through the block during phi elimination.
+
+func main() {}
+
+test "a string accumulator behind a filter" {
+    let words: Vec<string> = ["the first word is long enough", "no", "the third word is long enough"]
+    mut joined = ""
+    for w in words.filter(|w| w.len() > 15) {
+        joined = "{joined}|{w}"
+    }
+    assert joined == "|the first word is long enough|the third word is long enough"
+}
+
+test "the same loop without the filter" {
+    let words: Vec<string> = ["one is long enough here", "two is long enough here"]
+    mut joined = ""
+    for w in words {
+        joined = "{joined}|{w}"
+    }
+    assert joined == "|one is long enough here|two is long enough here"
+}
+
+test "two merges and a branch in the body" {
+    let ns: Vec<i64> = [1, 2, 3, 4, 5]
+    mut seen = ""
+    for n in ns.filter(|n| n % 2 == 1) {
+        if n > 2 {
+            seen = "{seen}big-{n};"
+        } else {
+            seen = "{seen}small-{n};"
+        }
+    }
+    assert seen == "small-1;big-3;big-5;"
+}
+
+test "a filtered loop that keeps nothing" {
+    let words: Vec<string> = ["short", "tiny"]
+    mut joined = ""
+    for w in words.filter(|w| w.len() > 15) {
+        joined = "{joined}|{w}"
+    }
+    assert joined == ""
+}

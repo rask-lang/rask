@@ -116,10 +116,11 @@ pub(crate) enum IterAdapter<'a> {
     Enumerate,
 }
 
-/// #270: classify a function's params for scalar `mutate` write-back. Returns one
-/// entry per param: `Some(scalar_ty)` for a `mutate` param of a Copy scalar type
-/// (passed by pointer), `None` otherwise. Aggregates already pass by pointer, so
-/// they stay `None` here.
+/// #270: classify a function's params for `mutate` write-back. Returns one entry
+/// per param: `Some(ty)` for a `mutate` param that needs a pointer of its own,
+/// `None` otherwise. A real aggregate's local already is an address, so it stays
+/// `None`; a scalar and a container handle both need one, for the same reason —
+/// the local holds a value rather than a place (#270, #1197).
 fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<Option<MirType>> {
     params
         .iter()
@@ -128,10 +129,10 @@ fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> V
                 return None;
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
-            if crate::lower::stmt::mutate_param_by_pointer(&ty) {
-                None
-            } else {
+            if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
                 Some(ty)
+            } else {
+                None
             }
         })
         .collect()
@@ -148,6 +149,7 @@ fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
             crate::lower::stmt::mutate_param_by_pointer(&ty)
+                && !crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty)
         })
         .collect()
 }
@@ -774,32 +776,25 @@ impl<'a> MirContext<'a> {
 
     /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
     ///
-    /// The key is built the same way `rask_mono::generic_instance_name` builds it,
-    /// which for a written argument is the argument's own spelling — a name for a
-    /// user type, the primitive's name otherwise. A nested `One<One<Big>>` folds
-    /// the same way because its inner `<…>` becomes `$…` too.
+    /// The written arguments are parsed back into types and handed to the same
+    /// `rask_mono::generic_instance_name` that named the layout, so there is one
+    /// spelling rather than two that have to agree.
+    ///
+    /// They didn't. This used to build the key by hand from the source text,
+    /// which matched for a name and a nested `<…>` and parted company on a
+    /// tuple: mono names `Holder<(i64, string)>`'s layout `Holder$tupi64$string`
+    /// and this looked for `Holder$(i64, string)`, found nothing, and fell back
+    /// to the shared 8-byte layout. `first(h)` then read eight bytes of a
+    /// 24-byte tuple and the string came back empty — the answer was wrong, not
+    /// just slow, and only on native.
     fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
         let args = generic_args_of_str(full)?;
         if args.is_empty() {
             return None;
         }
-        let mut parts = Vec::with_capacity(args.len());
-        for arg in args {
-            // A nested instantiation, spelled the same way.
-            let key = match arg.split_once('<') {
-                Some(_) => {
-                    let inner = generic_args_of_str(arg)?;
-                    let head = arg.split('<').next()?.trim();
-                    format!("{}${}", head, inner.join("$"))
-                }
-                None => arg.trim().to_string(),
-            };
-            if key.is_empty() {
-                return None;
-            }
-            parts.push(key);
-        }
-        let name = format!("{}${}", base.trim(), parts.join("$"));
+        let parsed: Vec<rask_types::Type> =
+            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
+        let name = rask_mono::generic_instance_name(base.trim(), &parsed, self.type_names)?;
         if let Some((idx, sl)) = self.find_struct(&name) {
             return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
         }
@@ -3970,7 +3965,7 @@ impl<'a> MirLowerer<'a> {
             // write back through it. Register the param local as a pointer; reads
             // load and writes store through it, keyed by the recorded scalar type.
             let scalar_mutate = param.is_mutate
-                && !crate::lower::stmt::mutate_param_by_pointer(&param_ty);
+                && crate::lower::stmt::mutate_param_needs_own_pointer(&param.name, &param_ty);
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));

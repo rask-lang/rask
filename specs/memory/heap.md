@@ -48,6 +48,24 @@ drop(ptr)                         // Consume (deallocate)
 
 Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
 
+**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the box is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+
+I went back and forth on making that `drop` a silent no-op instead. It's worse: the author writes a consume and gets none, and whether `drop(x)` frees anything then depends on whether `x` is a binding or a projection, which the line doesn't say.
+
+<!-- test: skip -->
+```rask
+struct Holder {
+    inner: Heap<Big>
+}
+
+let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+assert h.inner.b == 2
+// drop(h.inner)              // error: `h` gives it back already
+// nothing here — `h` going out of scope frees the block
+```
+
+This is what makes a recursive type work. `Cons(i64, Heap<List>)` holds its tail in a field, so each node owns the one after it, and releasing the head releases the whole chain.
+
 <!-- test: parse -->
 ```rask
 func process(take ptr: Heap<Data>) {

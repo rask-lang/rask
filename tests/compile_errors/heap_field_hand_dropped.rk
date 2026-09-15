@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: dropping a field the aggregate already owns
+//
+// Spec: mem.heap (HP3, HP4), mem.linear (L5)
+//
+// Storing a box in a field moves it in, so the aggregate's release gives the
+// block back when the aggregate dies. A hand-drop of the same field is a second
+// owner and both of them run — the drop frees the block and the release frees
+// it again, which the allocator reports as a double free rather than as
+// anything to do with the line that caused it.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import memory.Heap
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+struct Holder {
+    public inner: Heap<Big>
+}
+
+struct Nested {
+    public held: Holder
+}
+
+// --- a boxed field, dropped by hand ---
+func bad_drop_field() {
+    let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    // ERROR: `h.inner` belongs to `h` — dropping it here frees it twice [E0880]
+    drop(h.inner)
+}
+
+// --- the same, one level down ---
+func bad_drop_nested() {
+    let n = Nested { held: Holder { inner: Heap(Big { a: 4, b: 5, c: 6 }) } }
+    // ERROR: `n.held.inner` belongs to `n` — dropping it here frees it twice [E0880]
+    drop(n.held.inner)
+}
+
+// --- what is still fine: the binding itself ---
+//
+// A local you own is yours to take apart, which is what HP3 asks for.
+func good_drop_binding() {
+    let p = Heap(Big { a: 7, b: 8, c: 9 })
+    drop(p)
+}
+
+// --- and the whole aggregate, which releases the field with it ---
+func good_drop_whole() {
+    let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    drop(h)
+}
+
+func main() {}

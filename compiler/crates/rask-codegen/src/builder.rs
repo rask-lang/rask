@@ -1288,6 +1288,17 @@ impl<'a> FunctionBuilder<'a> {
                 let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
                 Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
             }
+
+            // One slot of an aggregate, about to be written over. The same walk
+            // `RcDecContents` does, told where to start and what it will find
+            // there instead of reading it off a local's type.
+            MirStmtKind::ReleaseSlot { addr, offset, ty } => {
+                if !Self::holds_string_mir(ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*addr), ctx)?;
+                Self::release_strings_mir(builder, base, *offset as i32, ty, ctx, 0)?;
+            }
         }
         Ok(())
     }
@@ -7299,6 +7310,11 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::is_trait_object(ty) {
             return true;
         }
+        // The block is the aggregate's whatever is inside it, so a `Heap<i32>`
+        // field counts as much as a `Heap<Record>` does.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return true;
+        }
         match ty {
             RaskType::String => true,
 
@@ -7440,6 +7456,11 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::is_trait_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }
+        // Before the match for the same reason: a `Heap<T>` field reaches here
+        // as a name, and what is inside the block is the runtime's to walk.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {
@@ -7521,6 +7542,51 @@ impl<'a> FunctionBuilder<'a> {
     /// That hook is what separates this from `TraitDrop`, which frees the block
     /// and leaves the contents to the frame — a box built for a *call* borrows
     /// its value, and one moved into a field or an element owns it (#1144).
+    /// A `Heap<T>` field: hand the slot and the type's descriptor to the
+    /// runtime walker, which releases what the block holds and then frees it.
+    ///
+    /// Through the runtime rather than inline, because the block holds a `T`
+    /// and `T` may be the type that holds the block — `Cons(i64, Heap<List>)`.
+    /// An inline walk can't express "and now do this again", which is why this
+    /// one stops at pointers and carries a depth cap; the descriptor says
+    /// `SELF` and the runtime starts its list over (#1202).
+    ///
+    /// Nothing emitted when the descriptor won't build or wasn't registered as
+    /// data. That leaks, which is this file's answer everywhere it can't
+    /// describe something exactly.
+    fn emit_heap_field_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &RaskType,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let Some(desc) = crate::elem_offsets::heap_field_descriptor(
+            ty, ctx.struct_layouts, ctx.enum_layouts,
+        ) else {
+            return Ok(());
+        };
+        let release = ctx
+            .func_refs
+            .get("rask_heap_field_release")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_heap_field_release".to_string()))?;
+        let slot = builder.ins().iadd_imm(base, offset as i64);
+        // A scalar payload describes nothing inside the block. The block is
+        // still the aggregate's, so the call still happens — with no list.
+        let (entries, count) = match ctx.element_offset_globals.get(&desc) {
+            Some(gv) => (
+                builder.ins().global_value(types::I64, *gv),
+                builder.ins().iconst(types::I64, desc.len() as i64),
+            ),
+            None => (
+                builder.ins().iconst(types::I64, 0),
+                builder.ins().iconst(types::I64, 0),
+            ),
+        };
+        builder.ins().call(*release, &[slot, entries, count]);
+        Ok(())
+    }
+
     fn emit_boxed_field_release(
         builder: &mut ClifFunctionBuilder,
         base: Value,
@@ -8151,6 +8217,7 @@ impl<'a> FunctionBuilder<'a> {
     /// The same walk a container's struct elements get — a node in a rack and a
     /// struct in a vector own their fields the same way — so it comes off the
     /// same function rather than a second copy of the rules.
+    ///
     fn node_owned_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -8161,6 +8228,32 @@ impl<'a> FunctionBuilder<'a> {
         let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
         let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
         crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
+            .unwrap_or_default()
+    }
+
+    /// The same entries for a pooled element, off the tag lowering appended.
+    ///
+    /// A pooled element doesn't have to be a struct: `Pool<string>` and
+    /// `Pool<Vec<i64>>` hold elements that *are* the owned thing. Reading the
+    /// argument's local can't see that — MIR types every container as a bare
+    /// `Ptr` — so lowering settles the tag from the checker's type and passes
+    /// it as the last argument. The tag is not a runtime argument, so it comes
+    /// back off the value list before the call is built.
+    fn pooled_owned_descriptor(
+        mir_args: &[MirOperand],
+        args: &mut Vec<Value>,
+        ctx: &CodegenCtx,
+    ) -> Vec<i32> {
+        // Pool, element, tag. Anything else is a call this didn't build, and
+        // popping a value off one of those would drop the element instead.
+        if mir_args.len() != 3 || args.len() != 3 {
+            return Vec::new();
+        }
+        args.pop();
+        let Some(MirOperand::Constant(MirConst::Int(tag))) = mir_args.last() else {
+            return Vec::new();
+        };
+        crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
             .unwrap_or_default()
     }
 
@@ -8628,8 +8721,8 @@ impl<'a> FunctionBuilder<'a> {
                     let val = args[1];
                     args[1] = Self::value_to_ptr(builder, val);
                 }
+                let owned = Self::pooled_owned_descriptor(mir_args, args, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
-                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
                 args.push(builder.ins().iconst(types::I64, owned.len() as i64));
                 if owned.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));

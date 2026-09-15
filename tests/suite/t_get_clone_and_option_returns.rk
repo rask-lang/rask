@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `get_clone`, and the two halves of it that were each broken on one backend.
+//
+// `get_clone` is the spelling E0879 names when a program returns a container
+// its map still holds, so it wants to work. It didn't, on either backend, in
+// two different ways:
+//
+// Native couldn't compile it for a scalar payload. `get_clone`'s body is
+// `v.clone()`, and substituting `V = i64` left a `.clone()` on a number that
+// codegen looked up as `i64_clone` and didn't find. A Copy scalar's clone is
+// the value — the call only reaches MIR because a generic body written for `T`
+// keeps it after substitution (#1210).
+//
+// The interpreter handed back a bare value instead of an `Option`, so `!` said
+// "requires Option or Result, got i64". The widening at a return was there; the
+// gate in front of it only recognised `T?`, and `stdlib/collections.rk`
+// declares `get_clone` as `-> Option<T>` (#1211).
+//
+// Neither showed up in the corpus, because nothing called `get_clone` at all.
+
+func wrap_long(n: i64) -> Option<i64> {
+    if n < 0 {
+        return none
+    }
+    return n
+}
+
+func wrap_short(n: i64) -> i64? {
+    if n < 0 {
+        return none
+    }
+    return n
+}
+
+func main() {}
+
+test "a scalar element cloned out of a Vec" {
+    mut v: Vec<i64> = []
+    v.push(4i64)
+    v.push(5i64)
+    assert v.get_clone(0)! == 4
+    assert v.get_clone(1)! == 5
+    assert v.get_clone(2) is none
+}
+
+test "a scalar value cloned out of a Map" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a key long enough to need the heap", 9i64)
+    assert m.get_clone("a key long enough to need the heap")! == 9
+    assert m.get_clone("a missing key, also long enough") is none
+}
+
+test "a string element, which allocates" {
+    mut v: Vec<string> = []
+    v.push("a string long enough to live on the heap")
+    let copy = v.get_clone(0)!
+    assert copy.len() == 40
+    assert v[0].len() == 40
+}
+
+test "a container value, which is what E0879 points at" {
+    mut index: Map<string, Vec<i64>> = Map.new()
+    mut postings: Vec<i64> = []
+    postings.push(1i64)
+    postings.push(3i64)
+    index.insert("a key long enough to need the heap", postings)
+
+    let copied = index.get_clone("a key long enough to need the heap") ?? Vec.new()
+    assert copied.len() == 2
+    assert copied[1] == 3
+    // The map still has its own, and the copy didn't take it away.
+    assert index.len() == 1
+    assert (index.get_clone("a key long enough to need the heap") ?? Vec.new()).len() == 2
+}
+
+test "`.clone()` on a scalar is the value" {
+    let n = 7
+    assert n.clone() == 7
+    let f = 1.5
+    assert f.clone() == 1.5
+    let b = true
+    assert b.clone()
+}
+
+test "both spellings of an optional return widen" {
+    assert wrap_long(5)! == 5
+    assert wrap_long(-1) is none
+    assert wrap_short(5)! == 5
+    assert wrap_short(-1) is none
+}

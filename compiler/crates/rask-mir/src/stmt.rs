@@ -2,7 +2,7 @@
 
 //! MIR statements and terminators.
 
-use crate::{BlockId, FunctionRef, LocalId, MirOperand, MirRValue};
+use crate::{BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirType};
 
 pub use rask_ast::Span;
 
@@ -146,6 +146,23 @@ pub enum MirStmtKind {
     /// A no-op for an aggregate holding no strings, which is most of them.
     RcDecContents {
         local: LocalId,
+    },
+    /// Release what a slot holds, just before something else is written over it.
+    ///
+    /// `h.list = fresh` replaces a container the struct owned, and the struct's
+    /// own release can't give the old one back: it runs where the struct dies
+    /// and frees whatever is in the slot *then*, which is the new value. So the
+    /// replacement is where the old value ends, and this is what says so.
+    ///
+    /// Neither of the other two fits. `RcDec` takes a value; `RcDecContents`
+    /// takes a whole local and walks all of it. This one names a slot, and the
+    /// type is the field's own — carried here because a MIR local's type says
+    /// nothing about what sits at a byte offset inside it, and a container
+    /// field needs its kind or the walk steps over it.
+    ReleaseSlot {
+        addr: LocalId,
+        offset: u32,
+        ty: MirType,
     },
 }
 

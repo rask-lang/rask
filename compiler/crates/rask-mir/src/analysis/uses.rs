@@ -95,6 +95,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local } => f(*local),
+        MirStmtKind::ReleaseSlot { addr, .. } => f(*addr),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
@@ -195,6 +196,9 @@ pub fn visit_stmt_use_locals_mut(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local } => f(local, UseKind::Value),
+        // The same shape as a `Store`'s destination: the local holds an address
+        // and the release reads through it.
+        MirStmtKind::ReleaseSlot { addr, .. } => f(addr, UseKind::Value),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }

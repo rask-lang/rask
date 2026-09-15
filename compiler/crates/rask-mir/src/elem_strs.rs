@@ -293,6 +293,12 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // Same shape on the C side: the bytes up to the terminator, copied into a
     // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
     ("cstring_bytes", 0, 0, "Vec_free"),
+    // Bytes off standard input, into a Vec the runtime made for this call and
+    // nothing else holds. Without it `Stdin.read_bytes` handed back a vector
+    // nobody owned — and, because a trait call's answer is only as good as the
+    // worst implementation behind it, it also stopped `reader.read_bytes()`
+    // from being anyone's (#1199).
+    ("io_read_std_bytes", 0, 0, "Vec_free"),
     //
     // The string splitters — `string_split`, `string_lines` and friends — are
     // absent for a nearer reason: each does hand back a fresh Vec, and

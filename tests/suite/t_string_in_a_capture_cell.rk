@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A string a closure borrows, and who gives back the last one.
+//
+// A variable a closure captures by reference stops being a local and becomes a
+// stack cell (`transform::addr_taken`). Each turn's replacement is given back —
+// the write through the cell releases the reference the slot held — but the
+// value sitting there when the frame ends belonged to nobody.
+//
+// `cells_this_frame_frees` did this for a *container* in a cell and had no
+// string case. It does now, and a string needs none of the container's guards:
+// the slot holds one reference of its own, so a closure replacing it gives the
+// old one back and a read out of it takes a reference of its own. What it does
+// have to ask is whether a call took it away — and not the container's blunter
+// "the address went to a call at all", because a string's header *is* the slot,
+// so `println(joined)` passes the cell's address for an ordinary borrow.
+
+func main() {}
+
+test "an accumulator a loop body writes through" {
+    let words: Vec<string> = ["one is long enough here", "two is long enough here"]
+    let each = words.filter(|w| w.len() > 5)
+    mut joined = ""
+    for w in each {
+        joined = "{joined}|{w}"
+    }
+    assert joined == "|one is long enough here|two is long enough here"
+}
+
+test "the cell is read by a borrowing call afterwards" {
+    let words: Vec<string> = ["alpha is long enough", "beta is long enough"]
+    let each = words.filter(|w| w.len() > 5)
+    mut joined = ""
+    for w in each {
+        joined = "{joined}{w};"
+    }
+    assert joined.len() == 41
+    assert joined.starts_with("alpha")
+}
+
+test "a loop that writes nothing leaves the first value" {
+    let words: Vec<string> = ["short", "tiny"]
+    let each = words.filter(|w| w.len() > 30)
+    mut joined = "untouched but long enough to allocate"
+    for w in each {
+        joined = "{joined}|{w}"
+    }
+    assert joined == "untouched but long enough to allocate"
+}
+
+test "two cells in one frame" {
+    let words: Vec<string> = ["first is long enough", "second is long enough"]
+    let each = words.filter(|w| w.len() > 5)
+    mut heads = ""
+    mut tails = ""
+    for w in each {
+        heads = "{heads}{w};"
+        tails = "{w}|{tails}"
+    }
+    assert heads.starts_with("first")
+    assert tails.starts_with("second")
+}

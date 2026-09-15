@@ -134,11 +134,18 @@ void rask_owned_retain(char *elem, int32_t entry) {
 // bottoms out because each arm is strictly shorter than the list holding it.
 typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
 
-static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+// `root`/`root_count` are the list this walk started from, carried down so a
+// `RASK_OWNED_SELF` entry can start it over. That is how a recursive type is
+// described: the block inside a `Cons` holds another `List`, and the entries
+// for it are the ones already in hand.
+static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
+                            const int32_t *root, int64_t root_count,
+                            RaskOwnedOp op) {
     if (!elem || !entries) return;
     for (int64_t i = 0; i < count; i++) {
         int32_t e = entries[i];
-        if (((uint32_t)e >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_TAG_IF) {
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
             int64_t body = RASK_OWNED_TAG_COUNT(e);
             // A list that claims more entries than it has is malformed; stop
             // rather than read past it.
@@ -152,9 +159,35 @@ static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOw
                 default: tag = *(const int64_t *)at;           break;
             }
             if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
-                owned_walk(elem, entries + i + 1, body, op);
+                owned_walk_from(elem, entries + i + 1, body, root, root_count, op);
             }
             i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_HEAP) {
+            int64_t body = RASK_OWNED_HEAP_COUNT(e);
+            if (i + body >= count) return;
+            char **slot = (char **)(elem + RASK_OWNED_HEAP_OFFSET(e));
+            char *block = *slot;
+            if (block) {
+                // What the block holds goes first: after the free there is
+                // nothing left to walk. Only on release — a retain would have
+                // to copy the block, and a block carries no size to copy.
+                if (op == OWNED_RELEASE) {
+                    owned_walk_from(block, entries + i + 1, body, root, root_count, op);
+                    rask_free(block);
+                    *slot = NULL;
+                }
+            }
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_SELF) {
+            // Start the list over against the value at this offset. The guards
+            // in it are what end the recursion: a variant that owns nothing
+            // matches none of them.
+            owned_walk_from(elem + (e & RASK_OWNED_OFFSET_MASK),
+                            root, root_count, root, root_count, op);
             continue;
         }
         switch (op) {
@@ -164,8 +197,32 @@ static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOw
     }
 }
 
+static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+    owned_walk_from(elem, entries, count, entries, count, op);
+}
+
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count) {
     owned_walk(elem, entries, count, OWNED_RELEASE);
+}
+
+// A `Heap<T>` field: `slot` holds the pointer, `entries` describe a `T`.
+//
+// The description is T's, with no entry for the slot itself, and that is the
+// whole point — a `RASK_OWNED_SELF` inside it means "a T lives here", so the
+// list it restarts from has to *be* T's, at every depth. Handing the walk a
+// list that began with the slot's own entry made the first `SELF` read T's
+// first bytes as a pointer: a `List`'s tag is 1, and 0x1 is not an address.
+void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count) {
+    if (!slot) return;
+    char **p = (char **)slot;
+    char *block = *p;
+    if (!block) return;
+    // Contents first: after the free there is nothing left to walk.
+    if (entries && count > 0) {
+        owned_walk_from(block, entries, count, entries, count, OWNED_RELEASE);
+    }
+    rask_free(block);
+    *p = NULL;
 }
 
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {

@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A unit variant is a constructor, not a field read.
+//
+// `Shape.Empty` has the shape of `p.x`, and the rule that catches a mutable
+// view into a field read it that way:
+//
+//     mut out = List.Nil
+//     error[E0873]: `out` and `List.Nil` would be the same `List`, both writable
+//                   a field read is a view, not a copy
+//         = fix: … or ask for a separate value with `mut out = List.Nil.clone()`
+//
+// There is no source for `out` to be a second name for, and the fix it offered
+// means nothing. A non-Copy enum couldn't start at its empty variant, which is
+// the natural way to build one up (#1212).
+//
+// What tells them apart is whether the root holds a value at all. Every binding
+// and every parameter is registered; a type name is not.
+
+import memory.Heap
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+enum Shape {
+    Empty
+    Filled(Big)
+}
+
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+struct Holder {
+    public items: Vec<string>
+}
+
+func sum(l: List) -> i64 {
+    match l {
+        List.Cons(head, rest) => {
+            return head + sum(rest)
+        }
+        List.Nil => {
+            return 0
+        }
+    }
+}
+
+func main() {}
+
+test "a non-Copy enum starts at its empty variant" {
+    mut s = Shape.Empty
+    s = Shape.Filled(Big { a: 1, b: 2, c: 3 })
+    match s {
+        Shape.Empty => assert false
+        Shape.Filled(b) => assert b.a == 1
+    }
+}
+
+test "and stays there when nothing replaces it" {
+    mut s = Shape.Empty
+    match s {
+        Shape.Empty => assert true
+        Shape.Filled(_) => assert false
+    }
+}
+
+test "building a list up from the empty variant" {
+    // Straight-line rather than a loop on purpose: a value whose last version
+    // comes out of a loop is released by nobody (#1213), and that is a
+    // different bug from this file's.
+    mut out = List.Nil
+    out = List.Cons(1, Heap(out))
+    out = List.Cons(2, Heap(out))
+    out = List.Cons(3, Heap(out))
+    assert sum(out) == 6
+}
+
+test "a real field view is still a view" {
+    // The rule this didn't mean to catch. `h.items` is a projection of a value
+    // `h` still holds, so `mut` on it is E0873 — `tests/compile_errors/` has
+    // the rejection; here it is the shape that must keep working instead.
+    let h = Holder { items: ["a string long enough to live on the heap"] }
+    let borrowed = h.items
+    assert borrowed.len() == 1
+    assert h.items.len() == 1
+}

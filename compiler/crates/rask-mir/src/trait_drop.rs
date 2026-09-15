@@ -177,6 +177,24 @@ fn hands_one_back(func: &MirFunction, fresh: &HashSet<LocalId>) -> bool {
 /// the box to the caller instead (`hands_one_back`), and freeing it here as
 /// well is a double free. And one box-typed read per wrapper only, the same
 /// discipline `boxes_handed_over` keeps — two reads name one box.
+///
+/// A *wrapper*, though, not any aggregate. A `T?` or a `T or E` holds its
+/// payload and nothing releases it, which is why the frame has to. A struct or
+/// an enum is the other way round: its own release walks its fields, and a
+/// trait-object field goes through the vtable's `owned_release` — block and
+/// contents both, which is more than a `TraitDrop` does. Letting this rule
+/// match a struct gave the block two owners, and the one that ran first was
+/// the weaker one:
+///
+/// ```text
+/// *(_0+0) = _10           // the box, into Shelf's field
+/// _12 = _11.0             // and out again, to call through
+/// trait_drop(_12)         // the frame frees the block...
+/// rc_dec_contents(_11)    // ...and the struct's release reads it afterwards
+/// ```
+///
+/// The `Vec` inside the boxed value was freed by nobody and the walk ran over
+/// memory that was already gone (#1161).
 fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> HashSet<LocalId> {
     let ty_of = local_types(func);
     let mut out: HashSet<LocalId> = HashSet::new();
@@ -184,11 +202,24 @@ fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> Ha
         let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
             continue;
         };
+        if releases_its_own_fields(&ty_of, addr) {
+            continue;
+        }
         if fresh.contains(v) && is_box(&ty_of, v) {
             out.extend(box_read_out_of(func, *addr, &ty_of));
         }
     }
     out
+}
+
+/// Does this aggregate give back what its fields hold when it dies?
+///
+/// A struct and an enum do — `rc_insert` puts an `RcDecContents` on one that
+/// stays in the frame, and the walk reaches a trait-object field through the
+/// vtable. A `T?` and a `T or E` don't: the release walk goes through them to
+/// the payload, and the payload's box is the frame's to free.
+fn releases_its_own_fields(ty_of: &HashMap<LocalId, MirType>, id: &LocalId) -> bool {
+    matches!(ty_of.get(id), Some(MirType::Struct(_)) | Some(MirType::Enum(_)))
 }
 
 /// The one name that ends up owning the box in `wrapper`'s payload.

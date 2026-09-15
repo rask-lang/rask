@@ -90,6 +90,10 @@ pub struct OwnershipChecker<'a> {
     /// shared between `@resource` and `Owned<T>` — but the fix is `drop(name)`,
     /// so the diagnostic differs (#819).
     owned_bindings: HashSet<String>,
+    /// Locals bound to a value a container lent out: name → what lent it.
+    /// `let v = m.get(k) ?? Vec.new()` is fine where it stands — the borrow
+    /// lives in the block — and wrong the moment it is returned (#1206).
+    lent_locals: HashMap<String, LentValue>,
     /// Parameters the caller only lent out: name → (declaration span, `mutate`).
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
@@ -194,6 +198,23 @@ pub struct OwnershipChecker<'a> {
     errors: Vec<OwnershipError>,
 }
 
+/// A value a container lent out, carried from wherever the walk found it to
+/// the `return` that hands it on.
+#[derive(Debug, Clone)]
+struct LentValue {
+    /// `index.get(…)`, for the message.
+    call: String,
+    /// The container it came out of.
+    holder: String,
+    /// `Vec` or `Map` — which one, for naming the copying spelling.
+    lender: String,
+    payload_ty: String,
+    /// The method that hands back a copy, when the container has one.
+    clone_form: Option<String>,
+    /// The lookup itself, which may be several lines from the `return`.
+    span: Span,
+}
+
 /// One live mutable capture: a closure binding and the variables its body writes.
 #[derive(Debug, Clone)]
 struct MutableCapture {
@@ -221,6 +242,7 @@ impl<'a> OwnershipChecker<'a> {
             resource_bindings: HashSet::new(),
             resource_field_debts: HashMap::new(),
             owned_bindings: HashSet::new(),
+            lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
@@ -880,7 +902,7 @@ impl<'a> OwnershipChecker<'a> {
         let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) else {
             return;
         };
-        if fields.is_empty() {
+        if fields.is_empty() || !self.names_a_value(&root) {
             return;
         }
         let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
@@ -942,6 +964,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
+                self.record_lent_binding(name, init);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
@@ -994,6 +1017,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
+                self.record_lent_binding(name, init);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
                     self.record_link_provenance(name, &t, init);
@@ -1097,6 +1121,9 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Assign { target, value, .. } => {
                 self.check_expr(value);
+                if let ExprKind::Ident(name) = &target.kind {
+                    self.record_lent_binding(name, value);
+                }
                 // A whole-variable assignment reinitializes the target — it is
                 // not a use of the old value, so don't flag a moved/maybe-moved
                 // target here (the type checker already forbids assigning a
@@ -1223,6 +1250,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
                     self.check_borrowed_field_escape(expr);
+                    self.check_lent_return(expr);
                     self.check_link_escape(expr, LinkEscape::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -1451,6 +1479,7 @@ impl<'a> OwnershipChecker<'a> {
                     // a value that had just been freed, and freeing it twice drew
                     // no error at all (#819). mem.owned/OW3 says it consumes.
                     if name == "drop" {
+                        self.check_drop_of_a_field(args);
                         Some(vec![true])
                     } else {
                         self.fn_take_params.get(name).cloned()
@@ -3107,6 +3136,20 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// Does this name hold a value, rather than name a type?
+    ///
+    /// `Shape.Empty` has the shape of `p.x` and is not a field read at all — it
+    /// is a constructor, and there is no source for the binding to be a second
+    /// name for. Reading it as a projection rejected `mut out = List.Nil` with
+    /// "a field read is a view" and offered `List.Nil.clone()` as the fix, which
+    /// means nothing (#1212).
+    ///
+    /// Every binding and every parameter is registered, so a root that isn't
+    /// there is a type, a module, or something else that owns nothing.
+    fn names_a_value(&self, root: &str) -> bool {
+        self.bindings.contains_key(root)
+    }
+
     /// F1: Extract root binding name and field projection from a field expression.
     /// `state.health` → (Some("state"), Some(["health"]))
     /// `state` → (Some("state"), None)
@@ -3126,6 +3169,218 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => (None, None),
         }
+    }
+
+    /// Container methods that hand the element back where it lives, and the
+    /// spelling that hands back a copy instead.
+    ///
+    /// `m.get(k)` reads the map's value in place — the map still holds it,
+    /// which is what makes a plain read cheap. `pop`, `remove` and `take_all`
+    /// are deliberately not here: those take the element out, so what comes
+    /// back is the caller's.
+    const LENDING_METHODS: &'static [(&'static str, &'static str, Option<&'static str>)] = &[
+        ("Vec", "get", Some("get_clone")),
+        ("Vec", "first", None),
+        ("Vec", "last", None),
+        ("Map", "get", Some("get_clone")),
+    ];
+
+    /// Is this expression a value a container lent out?
+    ///
+    /// Written as a walk rather than a flag on the type, because the borrow
+    /// travels through the shapes a program actually writes around a lookup:
+    /// `m.get(k) ?? Vec.new()`, `m.get(k)!`, a local bound to either, an `if`
+    /// whose arms both look one up. The value's type says nothing — a
+    /// `Vec<i64>` out of `get` and one out of `Vec.new()` are the same type and
+    /// different ownership, which is the whole bug.
+    fn lent_value(&self, expr: &Expr) -> Option<LentValue> {
+        match &expr.kind {
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let recv = self.program.node_types.get(&object.id)?;
+                let head = self.type_name_of(recv)?;
+                let (_, _, clone_form) = Self::LENDING_METHODS
+                    .iter()
+                    .find(|(t, m, _)| *t == head && m == method)?;
+                let ty = self.program.node_types.get(&expr.id)?;
+                if !self.lendable_payload(ty) {
+                    return None;
+                }
+                let source = Self::render_place(object).unwrap_or_else(|| head.to_lowercase());
+                let written = if args.is_empty() { "()" } else { "(…)" };
+                Some(LentValue {
+                    call: format!("{}.{}{}", source, method, written),
+                    holder: source,
+                    lender: head,
+                    payload_ty: self.lent_payload_display(ty),
+                    clone_form: clone_form.map(|c| c.to_string()),
+                    span: expr.span,
+                })
+            }
+            // `rows[0]` is the same read `rows.get(0)` is, minus the `T?`.
+            // Binding one is already E0871; this is the return.
+            ExprKind::Index { object, .. } => {
+                let recv = self.program.node_types.get(&object.id)?;
+                let head = self.type_name_of(recv)?;
+                if !matches!(head.as_str(), "Vec" | "Map") {
+                    return None;
+                }
+                let ty = self.program.node_types.get(&expr.id)?;
+                if !self.lendable_payload(ty) {
+                    return None;
+                }
+                let holder = Self::render_place(object).unwrap_or_else(|| head.to_lowercase());
+                Some(LentValue {
+                    call: format!("{}[…]", holder),
+                    holder,
+                    lender: head,
+                    payload_ty: self.lent_payload_display(ty),
+                    clone_form: Some("get_clone".to_string()),
+                    span: expr.span,
+                })
+            }
+            // The default side is fresh; the lookup side is not, and one path
+            // out of two is enough to make the return ambiguous.
+            ExprKind::NullCoalesce { value, .. } => self.lent_value(value),
+            ExprKind::Try { expr } => self.lent_value(expr),
+            ExprKind::Unwrap { expr, .. } => self.lent_value(expr),
+            ExprKind::Ident(name) => self.lent_locals.get(name).cloned(),
+            ExprKind::If { then_branch, else_branch, .. } => self
+                .lent_value(then_branch)
+                .or_else(|| else_branch.as_ref().and_then(|b| self.lent_value(b))),
+            ExprKind::Block(stmts) => {
+                Self::stmts_tail(stmts).and_then(|e| self.lent_value(e))
+            }
+            ExprKind::Match { arms, .. } => {
+                arms.iter().find_map(|arm| self.lent_value(&arm.body))
+            }
+            _ => None,
+        }
+    }
+
+    /// The tail expression of a block's statements, when it has one.
+    fn stmts_tail(stmts: &[Stmt]) -> Option<&Expr> {
+        match stmts.last().map(|s| &s.kind) {
+            Some(StmtKind::Expr(e)) => Some(e),
+            Some(StmtKind::Return(Some(e))) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Is what came back a container the holder still owns?
+    ///
+    /// A `T?` around it is the usual shape — `get` answers with one — so the
+    /// question is about the payload.
+    ///
+    /// Containers only, deliberately. A `Vec` is one handle onto one buffer and
+    /// there is no second owner to be had, so a lookup's result can only be the
+    /// holder's. A string or a trait box out of the same lookup is a different
+    /// question with a different answer — those carry a count, and the fix for
+    /// them is to take a reference on the read (#1035), not to reject the
+    /// program.
+    fn lendable_payload(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Result { ok, err } if **err == Type::None => self.lendable_payload(ok),
+            other => self
+                .type_name_of(other)
+                .is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set")),
+        }
+    }
+
+    /// `Vec<i64>`, not `Vec`. The name table drops the arguments and `Display`
+    /// on a resolved generic prints `<type#7><i64>`, so neither alone is a
+    /// type a reader recognises.
+    fn lent_payload_display(&self, ty: &Type) -> String {
+        match ty {
+            Type::Result { ok, err } if **err == Type::None => self.lent_payload_display(ok),
+            Type::Generic { base, args } if !args.is_empty() => {
+                let head = self.program.types.type_name(*base);
+                let inner: Vec<String> = args
+                    .iter()
+                    .map(|a| match a {
+                        rask_types::GenericArg::Type(t) => self.lent_payload_display(t),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                format!("{}<{}>", head, inner.join(", "))
+            }
+            other => self.resource_type_display(other),
+        }
+    }
+
+    /// Remember whether a binding holds a borrowed value, or forget that it
+    /// did. A `mut` rebound to something fresh is no longer lent, and a stale
+    /// entry would reject a program that is fine.
+    fn record_lent_binding(&mut self, name: &str, init: &Expr) {
+        match self.lent_value(init) {
+            Some(lent) => {
+                self.lent_locals.insert(name.to_string(), lent);
+            }
+            None => {
+                self.lent_locals.remove(name);
+            }
+        }
+    }
+
+    /// `drop(h.inner)` on a field of an aggregate — the aggregate owns it.
+    ///
+    /// Storing a box in a field moves it in, and the aggregate's release gives
+    /// it back when the aggregate dies. A hand-drop of the same field is a
+    /// second owner, and the two of them ran in that order: the hand-drop freed
+    /// the block and the struct's release freed it again, which glibc reports
+    /// as "double free detected in tcache 2".
+    ///
+    /// Making `drop` quietly do nothing on a field was the other way out, and
+    /// it is worse — the author wrote a consume and got none, with nowhere to
+    /// learn it, and whether `drop(x)` frees anything would depend on whether
+    /// `x` is a binding or a projection. So the shape doesn't compile (#1202).
+    ///
+    /// Only a field of something this frame can see. A local you own is yours
+    /// to take apart — `drop(p)` on a `Heap` binding is exactly what
+    /// mem.heap/HP3 asks for.
+    fn check_drop_of_a_field(&mut self, args: &[rask_ast::expr::CallArg]) {
+        let Some(arg) = args.first() else { return };
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(&arg.expr) else {
+            return;
+        };
+        if fields.is_empty() || !self.names_a_value(&root) {
+            return;
+        }
+        let Some(ty) = self.program.node_types.get(&arg.expr.id).cloned() else { return };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::DropOfAnOwnedField {
+                path: format!("{}.{}", root, fields.join(".")),
+                root,
+                field_ty: self.resource_type_display(&ty),
+            },
+            span: arg.expr.span,
+        });
+    }
+
+    /// A value the container still holds, on its way out of the function.
+    ///
+    /// The signature says the caller owns what comes back, and on the lookup
+    /// path it doesn't: two names for one buffer, and whoever frees it second
+    /// frees it twice. The compiler's answer today is to free neither, which is
+    /// safe and leaks — so the shape is rejected instead and the copy is
+    /// written down (#1206).
+    ///
+    /// This is mem.borrowing/S3, which already says a view can't be stored in a
+    /// struct, returned, or sent to another task. Only the return is checked
+    /// here; storing a lookup in a field is the same mistake and still gets
+    /// through.
+    fn check_lent_return(&mut self, expr: &Expr) {
+        let Some(lent) = self.lent_value(expr) else { return };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::LentValueEscapes {
+                call: lent.call,
+                holder: lent.holder,
+                lender: lent.lender,
+                payload_ty: lent.payload_ty,
+                clone_form: lent.clone_form,
+                lent_at: lent.span,
+            },
+            span: expr.span,
+        });
     }
 
     /// S3: a view into a borrowed parameter's field, handed back to the caller.

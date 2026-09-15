@@ -260,8 +260,17 @@ impl Interpreter {
         let returns_result = func.ret_ty.as_ref()
             .map(|t| t.starts_with("Result<"))
             .unwrap_or(false);
+        // Both spellings. `wrap_optional_layers` has always understood
+        // `Option<T>` as well as `T?` — this gate didn't, so a function
+        // declared the long way handed back a bare `T` and the caller's `!`
+        // said "requires Option or Result, got i64". `get_clone` in
+        // `stdlib/collections.rk` is written that way, so every `get_clone` on
+        // the interpreter was broken (#1211).
         let returns_option = func.ret_ty.as_ref()
-            .map(|t| t.ends_with('?'))
+            .map(|t| {
+                let t = t.trim();
+                t.ends_with('?') || (t.starts_with("Option<") && t.ends_with('>'))
+            })
             .unwrap_or(false);
         if returns_result {
             // Already a Result: pass through.

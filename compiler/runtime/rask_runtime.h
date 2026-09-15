@@ -176,6 +176,38 @@ typedef struct {
 // `rask_mir::vtable_layout` — byte offset 16, so the third word.
 #define RASK_VTABLE_OWNED_RELEASE_WORD 2
 
+// A `Heap<T>` at this offset: the slot holds a pointer to a block, the block
+// holds a `T`, and the aggregate owns both. The entries after this one describe
+// what is inside the block, the way a tag guard's do — so the walk releases the
+// contents first and then gives the block back.
+//
+//   bits  0..15   the pointer's byte offset inside the value
+//   bits 16..27   how many entries after this one describe the block
+//
+// Only a *field* or a frame local gets these. A `Heap` inside a container
+// element would need `retain` to deep-copy the block on a clone, and a block
+// carries no size for that — so the constructors never see this kind, and a
+// `Heap` in a container element is still nobody's, the way a boxed value's
+// contents are.
+#define RASK_OWNED_HEAP 6
+#define RASK_OWNED_HEAP_OFFSET(e) ((e) & 0xFFFF)
+#define RASK_OWNED_HEAP_COUNT(e)  (((e) >> 16) & 0xFFF)
+
+// The value at this offset is described by the list currently being walked,
+// from its start.
+//
+// This is how a recursive type is described at all. `Cons(i64, Heap<List>)`
+// holds a `List` inside its block, and flattening that inline would never
+// finish — so the block's body is one `SELF`, and the walk starts over with the
+// same entries against the block. A `Nil` matches no guard and the recursion
+// ends there, on the data rather than on a depth cap.
+//
+// Direct self-reference only. `A` holding a `Heap<B>` holding a `Heap<A>` has
+// no entry that can name A from inside B's list, so codegen describes nothing
+// for that shape and it leaks — the same answer this file gives everywhere else
+// it can't describe something exactly.
+#define RASK_OWNED_SELF 7
+
 #define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
 #define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
@@ -196,6 +228,11 @@ void rask_owned_retain(char *elem, int32_t entry);
 // entry decides whether the entries after it apply, so the walk has to be able
 // to skip and cannot be a loop over the single-entry calls above.
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+
+// A `Heap<T>` field: releases what the block holds and then frees the block.
+// `entries` describe a `T`, so a `RASK_OWNED_SELF` inside them restarts against
+// the same list — which is what lets a type that holds itself be described.
+void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count);
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
 
 // Two maps the runtime needs constantly: a container of bare strings (one

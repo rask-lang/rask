@@ -263,6 +263,29 @@ impl<'a> MirLowerer<'a> {
         Some((offset, size?))
     }
 
+    /// What a field slot holds that has to be given back before it is written
+    /// over, or `None` when it holds nothing the release walks.
+    ///
+    /// Containers and strings. A container is the case the MIR type alone can't
+    /// answer — it calls every one of them a bare `Ptr` — so the kind comes from
+    /// the checker's type of the place, through the head name rather than
+    /// `Display`, because a resolved generic renders as `<type#7><i64>`. A
+    /// string the field's own MIR type already says.
+    ///
+    /// Struct and enum fields are deliberately out: their release walks further
+    /// and the kill rule that pairs with this one has only been measured on
+    /// these two.
+    fn replaced_slot_type(&self, target: &Expr, fty: &MirType) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
+            if let Some(head) = self.head_name(&ty) {
+                if let Some(kind) = crate::ContainerKind::from_rendered(&head) {
+                    return Some(MirType::Container(kind));
+                }
+            }
+        }
+        matches!(fty, MirType::String).then(|| fty.clone())
+    }
+
     /// Byte offset + MIR type of `field` within an aggregate MIR type.
     fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
         self.field_offset_ty_size(oty, field).map(|(off, ty, _)| (off, ty))
@@ -587,6 +610,38 @@ impl<'a> MirLowerer<'a> {
                                 (None, _) => Some(dst_ty.size()),
                             };
                             let _ = val_ty;
+                            // What the caller's slot is about to lose. Same
+                            // reasoning as a field assignment one level out:
+                            // mem.parameters/PM2 says a `mutate` slot always
+                            // arrives holding a value, so writing a new one over
+                            // it is always a replacement, and the containers the
+                            // old one held had nowhere to go (#1198).
+                            //
+                            // Two shapes reach this. An aggregate's slot holds
+                            // the value, so the walk over `dst_ty` finds what it
+                            // holds. A container's slot holds the handle, and
+                            // `dst_ty` there is a bare `Ptr` with no kind on it
+                            // — the written type is where the kind comes from,
+                            // the same way a field assignment gets it.
+                            //
+                            // A plain scalar goes through this branch too, with
+                            // a cell for a destination, and a cell's contents
+                            // are `container_drop`'s to place.
+                            let replaced = if !is_mutate_param {
+                                None
+                            } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_)) {
+                                Some(dst_ty.clone())
+                            } else if scalar_mutate.as_ref().is_some_and(is_runtime_handle) {
+                                self.replaced_slot_type(target, &dst_ty)
+                                    .filter(|t| matches!(t, MirType::Container(_)))
+                            } else {
+                                None
+                            };
+                            if let Some(ty) = replaced {
+                                self.builder.push_stmt(MirStmt::dummy(
+                                    MirStmtKind::ReleaseSlot { addr: local_id, offset: 0, ty },
+                                ));
+                            }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: local_id,
                                 offset: 0,
@@ -631,6 +686,17 @@ impl<'a> MirLowerer<'a> {
                                 );
                                 self.emit_link_store(base, offset, val_op);
                                 return Ok(());
+                            }
+                            // The value the slot is about to lose. A field
+                            // assignment is always a replacement — a struct
+                            // literal builds the slot on a different path — so
+                            // there is no "is this the first write" to get
+                            // wrong here, which is why this is lowering's job
+                            // rather than a pass's (#1198).
+                            if let Some(old) = self.replaced_slot_type(target, &fty) {
+                                self.builder.push_stmt(MirStmt::dummy(
+                                    MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
+                                ));
                             }
                             // The field's own width, not None. Codegen only
                             // copies the bytes when the size says the value is
@@ -3530,4 +3596,31 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::Handle
             | MirType::FuncPtr(_)
     )
+}
+
+/// A one-word runtime handle: the local holds the handle, not the address of a
+/// slot holding it.
+///
+/// That distinction is the whole of #1197. An aggregate's local *is* an
+/// address, so a `mutate` callee storing through it writes the caller's bytes.
+/// A container's local is the handle, so the same store landed on the vector's
+/// own header — `data` overwritten, `len` left from the old vector, which is
+/// why `xs.len()` still answered 1 after the whole thing was replaced.
+pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
+    matches!(ty, MirType::Ptr | MirType::Container(_))
+}
+
+/// Does this `mutate` parameter need a pointer of its own?
+///
+/// Every scalar does, which is what #270 built. A container does too, and for
+/// the same reason — its local is a value, not a place — with one exception.
+///
+/// `self` is the exception, and it is the reason the naive version of this
+/// doesn't work. Every container method is lowered from the receiver operand
+/// directly: it is what the intrinsics read. Hand `Vec.push(mutate self, …)` a
+/// pointer to a handle and the whole family reads the pointer as the vector.
+/// A `mutate` parameter that isn't `self` is an ordinary variable the caller
+/// lends, and nothing reads it as a receiver.
+pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
+    !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
 }

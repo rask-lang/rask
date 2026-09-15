@@ -286,6 +286,9 @@ impl fmt::Display for MirStmt {
             MirStmtKind::RcDecContents { local } => {
                 write!(f, "rc_dec_contents(_{})", local.0)
             }
+            MirStmtKind::ReleaseSlot { addr, offset, ty } => {
+                write!(f, "release_slot(_{}+{}: {})", addr.0, offset, ty)
+            }
         }
     }
 }

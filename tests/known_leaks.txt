@@ -276,9 +276,18 @@
 # nothing else — a pool carried no element map at all, where a Vec, a Map and a
 # rack node have had one for a while. It arrives with the first insert, the way
 # a rack node's does: `Pool.new()` has no argument to read `T` off. A removed
-# element handed back to the caller is the caller's, so only a `remove` whose
-# result nobody takes releases (`t_vec_field_filter_map.rk` and
-# `t_with_collection_field_writes.rk` both clean).
+# element is handed back to the caller and released by the frame, never by the
+# pool — `Pool.remove` answers `T?`, so there is always somewhere to put it
+# (`t_vec_field_filter_map.rk` and `t_with_collection_field_writes.rk` both
+# clean). The earlier note here claimed the pool released a `remove` whose
+# result nobody took; nothing generated ever takes that path.
+#
+# The element map was a struct-shaped question only, so `Pool<string>` and
+# `Pool<Vec<_>>` described themselves as owning nothing: the element *is* the
+# owned thing and no struct layout says so. The tag comes from lowering now,
+# where the checker's type is, the same way a Vec's does — and `Pool.remove`
+# says which container it hands back, so a removed `Vec` or `Map` is freed by
+# the frame instead of nobody.
 #
 # And 57 once a struct read through a nested struct field still gave back its
 # own containers. A struct and a struct *inside* it are one storage read at an
@@ -409,52 +418,26 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
-p12_rack_link_churn.rk  # 2 allocations — a container field written over, #1198
 # The seventeen added 2026-09-05 came in with the bug-crunch branch: some
 # are files that branch added, the rest leak there for shapes the fixes
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-p07_heap.rk  # 2 allocations — a `Heap` inside an enum payload, never dropped
-p21_sequence_adapters.rk  # 2 allocations — the adapters' closure environments and the containers they hold (#1045's tail)
-t42_flatten_shaped_header.rk  # 3 allocations — flatten's per-element inner sequences, #1045
-t_borrow_param_consume.rk  # 2 allocations — one Vec (handle and data)
-t_capture_freed_with_its_closure.rk  # 1 allocation — a string accumulator rewritten every
-                        # turn of a *filtered* loop. The filter adds a second merge, and a phi
-                        # operand reads as live out of every predecessor rather than its own
-                        # edge — so the old value looks live where it is dead and gets no
-                        # release. #1200; the same loop without the filter is clean. (Not the
-                        # chain's environment, which the old note claimed.)
-t_closure_call_container.rk  # 2 allocations — one Vec from a literal, handle and data (the trace says `rask_vec_from_static`, not the environments the old note claimed — those are freed now)
-t_closure_diverging_return.rk  # 2 allocations — a closure block and a string, both
+t_closure_diverging_return.rk  # 2 allocations, deferred — a closure block and a string,
                         # held by a task killed by a panic: `spawn(|| panic("boom"))`
                         # never unwinds its captures. Panic semantics, #299 — v0.5,
                         # not this theme. The file's other three tests are clean.
-t_container_ownership.rk  # 1 allocation — one Vec handle, no data buffer — never pushed to
-t_io_buffer.rk  # 3 allocations — the byte vector `io.copy` moves. Every argument
-                        # of a trait call reads as handed over, so `writer.write_bytes(bytes)`
-                        # leaves it to nobody even though the parameter is a borrow. Needs the
-                        # trait's implementor set, which MIR doesn't carry — #1199. Not #1144:
-                        # both its boxes are dropped and both values released.
-t_month_panic_observed.rk  # 9 allocations — six strings, six closure blocks and a channel —
-                        # a task killed by a panic doesn't unwind its captures (#299, v0.5).
-                        # The largest of the three panic entries; between them they are 13 of
-                        # what is left, and none of it is v0.3's theme.
-t_rack_stale_records.rk  # 2 allocations — a container field written over, #1198
-t_shared_box_freed.rk  # 2 allocations — the `s.clone()` handle, deliberately not freed
-t_spawn_join_result.rk  # 2 allocations — a closure block and the string its environment
-                        # holds, and the leaking test is the one that joins a *panicked*
-                        # task. Same cause as the two above: #299, v0.5.
-t_string_builder_mutate.rk  # 1 allocation — the builder's own header
-                        # same trait-box leak as the two lines below. Nothing to
-                        # do with the aggregate return the file is named for:
-                        # every other test in it is clean.
-                            # chain captures (#1035's closure half), and
-                            # the `SHARED` paths on purpose: one closure
-                            # handing back a const's vector rejects the
-                            # whole callee set, which is the point of the
-                            # third test
-                             # small enough to inline, so there is no call left
-                             # to read a handoff off (#1117's other half)
-                             # field (#1035, #1047); the clones themselves are freed
-                   # the Vec/Pool of structs holding strings (#1035)
+t_month_panic_observed.rk  # 9 allocations, deferred — six strings, six closure blocks
+                        # and a channel. A task killed by a panic doesn't unwind its
+                        # captures (#299). The largest of the three panic entries; between
+                        # them they are 13 allocations, and none of it is v0.3's theme.
+t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands back.
+                        # Not "held on purpose", which is what this line used to say:
+                        # `clone_elision` may leave the caller's own box in the slot, so
+                        # freeing the clone is a double free rather than a smaller leak.
+                        # That is why `Shared_clone` isn't a registered constructor, and
+                        # the file's own header says so. Zero is reachable — it waits on
+                        # the elision knowing which box came back.
+t_spawn_join_result.rk  # 2 allocations, deferred — a closure block and the string its
+                        # environment holds. The leaking test is the one that joins a
+                        # *panicked* task, so it is #299 like the two above.
