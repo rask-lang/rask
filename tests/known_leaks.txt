@@ -423,14 +423,6 @@
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-t_closure_diverging_return.rk  # 2 allocations, deferred — a closure block and a string,
-                        # held by a task killed by a panic: `spawn(|| panic("boom"))`
-                        # never unwinds its captures. Panic semantics, #299 — v0.5,
-                        # not this theme. The file's other three tests are clean.
-t_month_panic_observed.rk  # 9 allocations, deferred — six strings, six closure blocks
-                        # and a channel. A task killed by a panic doesn't unwind its
-                        # captures (#299). The largest of the three panic entries; between
-                        # them they are 13 allocations, and none of it is v0.3's theme.
 t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands back.
                         # Not "held on purpose", which is what this line used to say:
                         # `clone_elision` may leave the caller's own box in the slot, so
@@ -438,6 +430,3 @@ t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hand
                         # That is why `Shared_clone` isn't a registered constructor, and
                         # the file's own header says so. Zero is reachable — it waits on
                         # the elision knowing which box came back.
-t_spawn_join_result.rk  # 2 allocations, deferred — a closure block and the string its
-                        # environment holds. The leaking test is the one that joins a
-                        # *panicked* task, so it is #299 like the two above.

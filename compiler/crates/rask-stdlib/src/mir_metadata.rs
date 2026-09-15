@@ -714,6 +714,16 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         return false;
     }
     match declared(qualified_name) {
+        // A `take self` method has no receiver left for the result to point
+        // into — it consumed it, and what comes back is the caller's. That is
+        // a rule, where `TRANSFERS_OUT` above is a list, because the list is
+        // for `mutate self` methods that hand out storage they keep.
+        //
+        // `TaskHandle.join(take self) -> T or JoinError` is what this was
+        // getting wrong: it names a type parameter, so it read as a view, so
+        // the frame released nothing — and a panicking task's message string
+        // was freed by nobody (#1223).
+        Some(m) if m.take_self => false,
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
         // releases nothing it got back — a leak, where the other guess is a

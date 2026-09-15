@@ -60,14 +60,23 @@ instead is a use-after-free, which is what
 whole thesis of the language, so this goes first.
 
 The gate reports a second number beside that one, and it isn't part of this
-milestone. A task killed by a panic doesn't unwind its captures
-([#299](https://github.com/rask-lang/rask/issues/299)), which is 13 allocations
-across three files and waits on the unwinder in v0.5; `t_shared_box_freed.rk` is
-2 more, waiting on `clone_elision` knowing which box `s.clone()` handed back —
-freeing it today is a double free rather than a smaller leak. Their lines in
-`tests/known_leaks.txt` say `deferred`, and the gate still measures them and
-still holds them to their count — it just doesn't judge a memory milestone on
-what a memory milestone can't fix.
+milestone. It is 2 allocations now, down from 15, and one file:
+`t_shared_box_freed.rk`, waiting on `clone_elision` knowing which box
+`s.clone()` handed back. Freeing it today is a double free rather than a smaller
+leak, which is what makes it a wait rather than a task. Its line in
+`tests/known_leaks.txt` says `deferred`, and the gate still measures it and
+still holds it to its count. It just doesn't judge a memory milestone on what a
+memory milestone can't fix.
+
+The other 13 were one bug, and the reason to say so is that the ledger blamed
+the wrong thing for a month. It read "a task killed by a panic doesn't unwind
+its captures, waits on the unwinder in v0.5" — but the unwinder landed in
+August. What was actually wrong was two lines of C: a task's closure allocation
+was freed on the line after the body's own call, which a panicking body longjmps
+straight past, and `TaskHandle.join` read as returning a view into its receiver
+because its return type names a type parameter, so the frame released nothing it
+got back. Three files went clean ([#1223](https://github.com/rask-lang/rask/issues/1223)).
+A deferred line is worth re-measuring, not re-reading.
 
 The last one was [#1205](https://github.com/rask-lang/rask/issues/1205), and it
 took six attempts because the question was never "how does a swallowed closure
