@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure another closure swallowed, and which of two owners frees it.
+//
+// An adapter's environment holds the sequence it wraps, and that sequence is a
+// closure of its own. There are two mechanisms that could free it and each
+// covers what the other can't:
+//
+//   - the frame, when it drops the outer closure, frees what that closure
+//     swallowed (`captured_environments`);
+//   - the environment's own drop glue, run by `rask_closure_free`, which is the
+//     only one left when the frame *returns* the outer closure.
+//
+// A `flat_map` callback is the second case — it builds `count3().take(1)` and
+// hands it back — and the glue had no case for a closure-typed capture, so the
+// source was freed by nobody.
+//
+// Adding the case is ten lines. What took four attempts is that the glue is
+// named after the closure *body*, and one body is built from sites that are in
+// different positions: `main` drops the adapter it builds, the callback returns
+// the one it builds. One body, two answers, and whichever it picks is wrong for
+// the other half — measured at 76 allocations across 8 files, then 30 across 3
+// with two segfaults.
+//
+// `closure_specialize` already gives a body its own copy per group of sites
+// that disagree. Teaching its fingerprint about *position* — does this frame
+// hand the closure back, or drop it — splits exactly the sites that disagree
+// here, so each body's glue answers for its own and the two mechanisms are
+// disjoint by construction rather than by one standing down (#1205).
+
+import sequence.Sequence
+
+func count3() -> Sequence<i32> {
+    return |yield| {
+        if !yield(1) { return }
+        if !yield(2) { return }
+    }
+}
+
+func count_to(n: i32) -> Sequence<i32> {
+    return |yield| {
+        mut i = 1
+        while i <= n {
+            if !yield(i) { return }
+            i = i + 1
+        }
+    }
+}
+
+func main() {}
+
+test "a callback that returns the adapter it built" {
+    let out: Vec<i32> = count3().flat_map(|x| count3().take(1)).to_vec()
+    assert out.len() == 2
+}
+
+test "and the frame that drops one, in the same program" {
+    // The site that made the body's two answers disagree. `main` builds
+    // `take` and drops it; the callback builds `take` and returns it.
+    let kept: Vec<i32> = count3().take(2).to_vec()
+    assert kept.len() == 2
+
+    let nested: Vec<i32> = count3().flat_map(|x| count_to(x).take(1)).to_vec()
+    assert nested.len() == 2
+}
+
+test "an adapter over an adapter" {
+    let out: Vec<i32> = count_to(4).filter(|x| x % 2 == 0).map(|x| x * 10).to_vec()
+    assert out.len() == 2
+    assert out[0] == 20
+    assert out[1] == 40
+}
+
+test "the callback's source built per element" {
+    mut total = 0
+    for v in count_to(3).flat_map(|x| count_to(x)) {
+        total = total + v
+    }
+    assert total == 10
+}
+
+test "a chain run twice" {
+    let first: Vec<i32> = count3().flat_map(|x| count3().take(1)).to_vec()
+    let second: Vec<i32> = count3().flat_map(|x| count3().take(1)).to_vec()
+    assert first.len() == 2
+    assert second.len() == 2
+}

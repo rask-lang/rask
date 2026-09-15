@@ -47,7 +47,11 @@ All green.
 
 ## v0.3 — Memory is settled
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 2.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
+
+The gate's condition is met — 512 suite files clean. That is the measure, not
+the claim that nothing leaks: two shapes the gate can't see are named below, and
+what "settled" should mean beyond a green gate is the open question now.
 
 Every one of these is the compiler getting *who frees this* wrong. A leak is the
 polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
@@ -64,22 +68,19 @@ freeing it today is a double free rather than a smaller leak. Their lines in
 still holds them to their count — it just doesn't judge a memory milestone on
 what a memory milestone can't fix.
 
-What the 2 are:
+The last one was [#1205](https://github.com/rask-lang/rask/issues/1205), and it
+took six attempts because the question was never "how does a swallowed closure
+get freed" — ten lines answer that — but "which of the two owners frees it,
+when one body is built from sites in different positions". `main` drops the
+adapter it builds; a `flat_map` callback returns the one it builds; the glue is
+named after the body. Splitting those sites is what made one answer possible.
+The five measurements are on the issue.
 
-| Allocations | Issue | What |
-|---|---|---|
-| 2 | [#1205](https://github.com/rask-lang/rask/issues/1205) | A closure swallowed by another closure that gets returned |
-
-It isn't a bounded fix — the ones that were are done. #1205 needs a closure's
-environment identified per *site* rather than per function, or a returned
-closure able to hand its obligation on. Three attempts and their numbers are on
-the issue.
-
-The gate is not the whole story, and two shapes it can't see are worth knowing
-about. It runs suite files as `test` blocks, so a leak that only appears in
-`main` is invisible to it — which is where
-[#1213](https://github.com/rask-lang/rask/issues/1213) lives, a value whose last
-version comes out of a loop and is named by no single definition. And
+**The gate is not the whole story**, and two shapes it can't see are worth
+knowing about before anyone reads 0 as "done". It runs suite files as `test`
+blocks, so a leak that only appears in `main` is invisible to it — which is
+where [#1213](https://github.com/rask-lang/rask/issues/1213) lives, a value that
+hands its old version into its new one and is then released by nobody. And
 [#1035](https://github.com/rask-lang/rask/issues/1035)'s repros are clean now
 without the suite file that would keep them that way.
 

@@ -299,6 +299,35 @@ fn env_drop_glue(
             .collect();
         let reach = strict_reach(func);
         let def_block = defining_blocks(func);
+        // Heap closures this frame builds, so a capture that is one can be told
+        // from a container handle — both are a bare `Ptr` in MIR. Closed under
+        // copies, because the capture is never the create's own destination:
+        // the adapter's environment takes `_20`, and `_20 = _11` renames the
+        // `_19` that `closure[heap]` wrote.
+        let mut made_here: HashMap<LocalId, &'static str> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::ClosureCreate { dst, heap: true, .. } => {
+                    Some((*dst, "rask_closure_free"))
+                }
+                _ => None,
+            })
+            .collect();
+        follow_copies(func, &mut made_here);
+        // Closures this frame drops. `insert_closure_drops` emits one only for
+        // a closure the frame owns, so its presence says the frame will free
+        // what this closure swallowed and the glue must not.
+        let frame_drops: HashSet<LocalId> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::ClosureDrop { closure } => Some(*closure),
+                _ => None,
+            })
+            .collect();
         for block in &func.blocks {
             for stmt in &block.statements {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true } = &stmt.kind
@@ -349,6 +378,32 @@ fn env_drop_glue(
                         })
                     })
                     .collect();
+                // A closure this one swallowed, when the frame won't free it.
+                //
+                // `count3().take(1)` inside a `flat_map` callback builds the
+                // source and hands it to the adapter's environment, and the
+                // callback *returns* the adapter — so the frame is gone before
+                // anyone could free the source, and the glue is the only owner
+                // left. Where the frame does drop the outer closure it frees
+                // the swallowed one itself (`captured_environments`), so the
+                // two are disjoint rather than one standing down.
+                //
+                // `closure_specialize` splits the sites that disagree about
+                // which of those two a frame is, so one body's glue answers for
+                // all of its own sites (#1205).
+                owned.extend(
+                    captures
+                        .iter()
+                        .filter(|_| !frame_drops.contains(dst))
+                        .filter(|c| !c.by_ref)
+                        .filter(|c| !gone(c))
+                        .filter(|c| made_each_turn(c))
+                        .filter(|c| made_here.contains_key(&c.local_id))
+                        .map(|c| EnvSlot {
+                            offset: c.offset,
+                            holds: Holds::Handle("rask_closure_free"),
+                        }),
+                );
                 // A string capture needs none of the reasoning above. The
                 // environment holds a *reference* — `rc_insert` retains it at
                 // the create — so however many closures capture the same string

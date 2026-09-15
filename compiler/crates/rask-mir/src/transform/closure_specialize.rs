@@ -46,7 +46,7 @@ const FOR: &str = "__for";
 
 /// What a create site can see about the closures it captures. Two sites with
 /// the same answer can share a body.
-type Fingerprint = BTreeMap<u32, Option<Vec<String>>>;
+type Fingerprint = (BTreeMap<u32, Option<Vec<String>>>, bool);
 
 /// Where a closure gets built.
 struct Site {
@@ -66,10 +66,19 @@ pub fn specialize_adapters(fns: &mut Vec<MirFunction>) {
                 let MirStmtKind::ClosureCreate { func_name, captures, .. } = &stmt.kind else {
                     continue;
                 };
-                let print = captures
+                let seen: BTreeMap<u32, Option<Vec<String>>> = captures
                     .iter()
                     .map(|c| (c.offset, sorted_targets(&targets, &func.name, c.local_id)))
                     .collect();
+                // And whether this frame hands the closure back rather than
+                // dropping it, because that is where the two owners of a
+                // swallowed environment split. A frame that drops the outer
+                // closure frees what it swallowed on the way out; a frame that
+                // *returns* it is gone before anyone could, so the environment's
+                // own glue has to. One body can't answer both, and the glue is
+                // named after the body — so the sites are split on it and each
+                // body answers for its own (#1205).
+                let print = (seen, hands_it_back(func, stmt));
                 sites
                     .entry(func_name.clone())
                     .or_default()
@@ -123,6 +132,40 @@ impl Site {
     fn clone_of(other: &Site) -> Self {
         Self { func: other.func, block: other.block, stmt: other.stmt }
     }
+}
+
+/// Does this frame return the closure this statement builds, rather than
+/// dropping it?
+///
+/// Copies count: `_23` is returned as `_24` after a rename as often as not.
+fn hands_it_back(func: &MirFunction, stmt: &crate::MirStmt) -> bool {
+    let MirStmtKind::ClosureCreate { dst, .. } = &stmt.kind else { return false };
+    let mut names: HashSet<LocalId> = HashSet::new();
+    names.insert(*dst);
+    loop {
+        let before = names.len();
+        for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign {
+                dst: d,
+                rvalue: crate::MirRValue::Use(crate::MirOperand::Local(src)),
+            } = &st.kind
+            {
+                if names.contains(src) {
+                    names.insert(*d);
+                }
+            }
+        }
+        if names.len() == before {
+            break;
+        }
+    }
+    func.blocks.iter().any(|b| match &b.terminator.kind {
+        crate::MirTerminatorKind::Return { value: Some(crate::MirOperand::Local(v)) }
+        | crate::MirTerminatorKind::CleanupReturn {
+            value: Some(crate::MirOperand::Local(v)), ..
+        } => names.contains(v),
+        _ => false,
+    })
 }
 
 fn sorted_targets(
