@@ -287,10 +287,10 @@ impl Interpreter {
             }
             "eq" => {
                 if let Some(Value::Vec(other)) = args.first() {
-                    let a = v.lock().unwrap();
-                    let b = other.lock().unwrap();
-                    let eq = a.len() == b.len()
-                        && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y));
+                    let eq = with_two_vecs(v, other, |a, b| {
+                        a.len() == b.len()
+                            && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y))
+                    });
                     Ok(Value::Bool(eq))
                 } else {
                     Ok(Value::Bool(false))
@@ -298,10 +298,10 @@ impl Interpreter {
             }
             "ne" => {
                 if let Some(Value::Vec(other)) = args.first() {
-                    let a = v.lock().unwrap();
-                    let b = other.lock().unwrap();
-                    let eq = a.len() == b.len()
-                        && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y));
+                    let eq = with_two_vecs(v, other, |a, b| {
+                        a.len() == b.len()
+                            && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y))
+                    });
                     Ok(Value::Bool(!eq))
                 } else {
                     Ok(Value::Bool(true))
@@ -464,15 +464,12 @@ impl Interpreter {
             }
             "zip" => {
                 if let Some(Value::Vec(other)) = args.first() {
-                    let vec1 = v.lock().unwrap();
-                    let vec2 = other.lock().unwrap();
-                    let zipped: Vec<Value> = vec1
-                        .iter()
-                        .zip(vec2.iter())
-                        .map(|(a, b)| {
-                            Value::tuple(vec![a.clone(), b.clone()])
-                        })
-                        .collect();
+                    let zipped = with_two_vecs(v, other, |vec1, vec2| {
+                        vec1.iter()
+                            .zip(vec2.iter())
+                            .map(|(a, b)| Value::tuple(vec![a.clone(), b.clone()]))
+                            .collect::<Vec<Value>>()
+                    });
                     Ok(Value::vec(zipped))
                 } else {
                     Err(RuntimeError::TypeError("zip requires a Vec argument".to_string()))
@@ -2063,4 +2060,23 @@ impl Interpreter {
         }
         Ok(out)
     }
+}
+
+/// Read two vectors at once, including when they are the same one.
+///
+/// `a.zip(a)` and `a == a` hand the same handle twice. The lock isn't
+/// reentrant, so taking it again waits on a guard this thread is already
+/// holding — a deadlock, not an error: the interpreter hung with no output
+/// while native printed the right answer (#1214).
+fn with_two_vecs<R>(
+    a: &Arc<Mutex<VecData>>,
+    b: &Arc<Mutex<VecData>>,
+    f: impl FnOnce(&VecData, &VecData) -> R,
+) -> R {
+    let ga = a.lock().unwrap();
+    if Arc::ptr_eq(a, b) {
+        return f(&ga, &ga);
+    }
+    let gb = b.lock().unwrap();
+    f(&ga, &gb)
 }
