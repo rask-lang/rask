@@ -1580,7 +1580,18 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                         self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
-                        self.consume_arg(&arg.expr, callee_name.as_deref());
+                        // Inside an `ensure` body the call runs at scope exit,
+                        // so the value is still the frame's until then — that
+                        // deferral is what `ensure` is. The method form already
+                        // said so (`is_take_self_method` below is guarded the
+                        // same way); a plain call was not, so `ensure drop(p)`
+                        // marked the box moved on the spot and every later read
+                        // of `p` was a use-after-move. That is the form
+                        // `mem.heap` documents for exactly this, and the only
+                        // reason to write it is to go on using the box (#882).
+                        if !self.in_ensure {
+                            self.consume_arg(&arg.expr, callee_name.as_deref());
+                        }
                     }
                 }
                 for rack_arg in &deleting_args {

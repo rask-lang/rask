@@ -814,6 +814,55 @@ fn bounded_pool_insert_full_panics() {
     assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
 }
 
+/// mem.linear/L4 (#882): `ensure` runs during unwind for a `Heap` box, not
+/// only for a `@resource`.
+///
+/// Two bugs met here. `ensure drop(p)` marked the box moved at the `ensure`
+/// rather than at scope exit, so any later read was a use-after-move and the
+/// form `mem.heap` documents was unwritable. And the cleanup the unwinder runs
+/// is a synthesized thunk whose copy of `p` was typed as the payload rather
+/// than as the pointer cell the frame holds, so it freed the cell's address
+/// instead of the block — `free(): invalid pointer`, SIGABRT on top of the
+/// panic. The inline cleanup on the ordinary exit path had the load the thunk
+/// was missing, which is why it only showed when something panicked.
+///
+/// Both ensures have to run, inner frame first, and the program has to die of
+/// its own panic rather than of an allocator abort.
+#[test]
+fn ensure_runs_on_unwind_for_a_box_and_a_resource() {
+    let rask = rask_binary();
+    let run = |mode: &[&str]| -> (String, i32) {
+        let out = Command::new(&rask)
+            .args(mode)
+            .arg(fixture("ensure_drop_on_unwind.rk"))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code().unwrap_or(-1),
+        )
+    };
+    let modes: [(&str, &[&str]); 2] =
+        [("native", &["run", "--native"]), ("interp", &["run", "--interp"])];
+    for (mode, args) in modes {
+        let (out, code) = run(args);
+        assert_eq!(code, 101, "{mode}: a panic exits 101, not an allocator abort: {out}");
+        assert!(out.contains("holding 1"), "{mode}: the box is readable after the ensure: {out}");
+        assert!(out.contains("closed 9"), "{mode}: the outer frame's ensure runs too: {out}");
+        assert!(out.contains("boom"), "{mode}: the panic is the program's own: {out}");
+        assert!(
+            !out.contains("invalid pointer") && !out.contains("free()"),
+            "{mode}: the box's cleanup frees the block, not the cell: {out}"
+        );
+        assert!(!out.contains("MUST-NOT-PRINT"), "{mode}: nothing past the panic runs: {out}");
+    }
+}
+
 /// mem.resources/R5 (#1219): a `Pool<Resource>` dropped non-empty panics, on
 /// both backends and with the same message.
 ///

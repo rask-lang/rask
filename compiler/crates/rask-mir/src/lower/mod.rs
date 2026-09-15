@@ -3460,7 +3460,7 @@ impl<'a> MirLowerer<'a> {
             let cap_ty = self
                 .builder
                 .local_type(cap.outer)
-                .filter(|t| cap.by_ref && t.passed_by_address())
+                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr)))
                 .unwrap_or_else(|| cap.ty.clone());
             let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
