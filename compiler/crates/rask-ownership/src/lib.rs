@@ -902,7 +902,7 @@ impl<'a> OwnershipChecker<'a> {
         let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) else {
             return;
         };
-        if fields.is_empty() {
+        if fields.is_empty() || !self.names_a_value(&root) {
             return;
         }
         let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
@@ -3136,6 +3136,20 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// Does this name hold a value, rather than name a type?
+    ///
+    /// `Shape.Empty` has the shape of `p.x` and is not a field read at all — it
+    /// is a constructor, and there is no source for the binding to be a second
+    /// name for. Reading it as a projection rejected `mut out = List.Nil` with
+    /// "a field read is a view" and offered `List.Nil.clone()` as the fix, which
+    /// means nothing (#1212).
+    ///
+    /// Every binding and every parameter is registered, so a root that isn't
+    /// there is a type, a module, or something else that owns nothing.
+    fn names_a_value(&self, root: &str) -> bool {
+        self.bindings.contains_key(root)
+    }
+
     /// F1: Extract root binding name and field projection from a field expression.
     /// `state.health` → (Some("state"), Some(["health"]))
     /// `state` → (Some("state"), None)
@@ -3328,7 +3342,7 @@ impl<'a> OwnershipChecker<'a> {
         let (Some(root), Some(fields)) = Self::extract_root_and_fields(&arg.expr) else {
             return;
         };
-        if fields.is_empty() {
+        if fields.is_empty() || !self.names_a_value(&root) {
             return;
         }
         let Some(ty) = self.program.node_types.get(&arg.expr.id).cloned() else { return };
