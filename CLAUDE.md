@@ -98,6 +98,22 @@ and file what you learned — that's a finished piece of work, not a blocker.
   print each field, each hop — and let it tell you which one is wrong. Two of this
   round's bugs were found in one pass that way after several failed guesses.
 - **Pre-existing errors that surface during unrelated work get filed, not ignored.** If a test fails, the compiler panics, or a spec breaks for reasons unrelated to your current change, search `rask-lang/rask` issues first; if it's not tracked, open one with a minimal repro before moving on. Don't paper over it, don't only mention it in chat, don't bundle it into the current commit silently.
+- **A sentence about Rask is a claim. Check it like you'd check code.** An
+  unchecked one ships sounding exactly as sure as a checked one. Three got onto
+  the website in an afternoon: "pre-0.1" with v0.2.0 already released, "Rask
+  doesn't offer pointer-level control" when `unsafe` gives raw pointers and Rust
+  gates the same things behind the same word, and a headline that described Go.
+  Each was one command away. Version and status against `git tag` and the
+  releases; what the language does or doesn't have against `specs/`; and a claim
+  that Rask *differs* has to name what the other language actually does — if the
+  sentence is equally true of Go, it isn't about Rask.
+- **Verify the path, not only the artifact.** The front page's code came out
+  unstyled while the deployed file was byte-perfect: the file was right and the
+  URL was stale, so checking the bytes answered a question nobody had asked. Ask
+  how the thing reaches a reader, and check that.
+- **When a change removes the reason for a workaround, remove the workaround in
+  the same edit.** A nudge that centred a dot against a wrapped label became a
+  nudge that pushed it off centre the moment the label stopped wrapping.
 
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
@@ -168,7 +184,25 @@ Dont be TOO consistent.
 - ✅ "This means more `.clone()` calls. I think that's better than lifetime annotations"
 - ❌ "While this may result in additional clones, it provides benefits..."
 
-**Remove filler:** "It should be noted", "In order to", "With regard to"
+**Remove filler:** "It should be noted", "In order to", "With regard to". Em-dashes
+too — a full stop or a colon, nearly always.
+
+**Say the thing, don't circle it.** Every sentence owes the reader a fact they
+didn't have. Delete it and see what's lost; if nothing, it was noise. All of
+these came off one pass over the website:
+
+- ❌ Restating the code in prose underneath it
+- ❌ Explaining a default by calling it the default
+- ❌ Three restatements of one abstraction in a row
+- ❌ Throat-clearing before the content: "Not a lint, not a guideline:"
+- ❌ A wink where an instruction belongs: "there's a box below if you want to disagree"
+- ❌ Narrating what the page already shows: "this runs the real interpreter", above a Run button
+
+**Start where the reader already is, one concept at a time.** The parameter
+chapter opened on ownership and left "small values just copy" for the end, so a
+reader carried ownership anxiety through four sections before finding out it
+mostly didn't apply. Lead with the half they already understand. Same reason a
+page says what you get before what it costs.
 
 **Natural language OK:** Contractions, slight grammar quirks, Scandinavian English flow
 
