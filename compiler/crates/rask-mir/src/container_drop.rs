@@ -1141,14 +1141,129 @@ fn insert_for_function(
     });
     with_closure = one_free_per_group(func, with_closure, &groups);
 
+    let at_merges = replaced_at_a_merge(func, &fresh, &groups, &droppable);
+
     if !droppable.is_empty() {
         insert_drops(func, &droppable, &groups, &consumed);
+    }
+    if !at_merges.is_empty() {
+        insert_merge_drops(func, &at_merges);
     }
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
     if !with_closure.is_empty() {
         insert_capture_drops(func, &with_closure);
+    }
+}
+
+/// A container replaced at a merge, and the block where it stops being the
+/// value: `(local, block to free it at the end of, free function)`.
+///
+/// `v = w` inside a branch is a phi, and the two operands are two different
+/// vectors:
+///
+/// ```text
+/// bb1:  w_1 = Vec_new(…)          // the branch that assigns
+///       v_2 = w_1
+/// bb2:  (nothing)                 // the branch that doesn't
+/// bb3:  v_3 = phi [v_1 from bb2, v_2 from bb1]
+///       Vec_free(v_3)
+/// ```
+///
+/// `value_groups` unions the lot through the phi, and the rest of this pass
+/// reads a group as one allocation under several names — so it frees once, and
+/// on the bb1 path `v_1` is nobody's. `mut v: Vec<string> = []` before an `if`
+/// that replaces it leaked that empty vector's header, every time the branch
+/// was taken (#1209).
+///
+/// The operand that isn't the one arriving on an edge is the one being
+/// replaced, and that edge's own block is where it dies. Edge-aware liveness is
+/// what says so: the shared answer reads every operand in the phi's own block,
+/// so `v_1` comes out live on the very path that just replaced it — the same
+/// distinction #1200 needed for placement.
+///
+/// Three guards, each about freeing twice rather than once:
+///
+/// - The group has to be one this frame frees at all. Adding a free to a group
+///   that escapes hands the caller a dead handle.
+/// - The replaced name can't be one that already has a free of its own.
+/// - The edge's block can't reach itself. In a loop the header's phi takes the
+///   latch's value every turn, so the preheader's value is "replaced" on a
+///   block that runs again — and the second turn would free it twice. A loop
+///   reassignment is #1154 and has its own answer.
+fn replaced_at_a_merge(
+    func: &MirFunction,
+    fresh: &HashMap<LocalId, &'static str>,
+    groups: &[HashSet<LocalId>],
+    droppable: &HashMap<LocalId, &'static str>,
+) -> Vec<(LocalId, BlockId, &'static str)> {
+    if droppable.is_empty() {
+        return Vec::new();
+    }
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let reach = strict_reach(func);
+    let live = crate::analysis::liveness::analyze_phis_on_edges(func);
+    let def_block: HashMap<LocalId, BlockId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().map(move |st| (b.id, st)))
+        .filter_map(|(bid, st)| crate::analysis::uses::stmt_def(st).map(|d| (d, bid)))
+        .collect();
+
+    let mut out: Vec<(LocalId, BlockId, &'static str)> = Vec::new();
+    let mut seen: HashSet<(LocalId, BlockId)> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::Phi { args, .. } = &stmt.kind else { continue };
+            for (edge, arriving) in args {
+                if reach.get(edge).is_some_and(|r| r.contains(edge)) {
+                    continue;
+                }
+                let arriving = crate::analysis::uses::operand_local(arriving);
+                for (_, other) in args {
+                    let Some(replaced) = crate::analysis::uses::operand_local(other) else {
+                        continue;
+                    };
+                    if Some(replaced) == arriving || droppable.contains_key(&replaced) {
+                        continue;
+                    }
+                    let Some(free_fn) = fresh.get(&replaced) else { continue };
+                    let ours = groups
+                        .iter()
+                        .find(|g| g.contains(&replaced))
+                        .is_some_and(|g| g.iter().any(|id| droppable.contains_key(id)));
+                    if !ours {
+                        continue;
+                    }
+                    // It has to already hold something on this path, and be
+                    // finished with by the end of it.
+                    if !def_block.get(&replaced).is_some_and(|&d| dom.dominates(d, *edge)) {
+                        continue;
+                    }
+                    if live.live_at_exit(*edge, replaced) {
+                        continue;
+                    }
+                    if seen.insert((replaced, *edge)) {
+                        out.push((replaced, *edge, *free_fn));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Free each replaced container at the end of the block that replaced it,
+/// before the terminator takes the edge to the merge.
+fn insert_merge_drops(func: &mut MirFunction, drops: &[(LocalId, BlockId, &'static str)]) {
+    for (local, block, free_fn) in drops {
+        let Some(idx) = func.blocks.iter().position(|b| b.id == *block) else { continue };
+        func.blocks[idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(free_fn.to_string()),
+            args: vec![MirOperand::Local(*local)],
+        }));
     }
 }
 
