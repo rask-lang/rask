@@ -47,7 +47,7 @@ All green.
 
 ## v0.3 — Memory is settled
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 4.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 2.**
 
 Every one of these is the compiler getting *who frees this* wrong. A leak is the
 polite version of that mistake; [#1161](https://github.com/rask-lang/rask/issues/1161)
@@ -58,30 +58,30 @@ The gate reports a second number beside that one, and it isn't part of this
 milestone. A task killed by a panic doesn't unwind its captures
 ([#299](https://github.com/rask-lang/rask/issues/299)), which is 13 allocations
 across three files and waits on the unwinder in v0.5; `t_shared_box_freed.rk` is
-a box held on purpose and will never be zero. Their lines in
+2 more, waiting on `clone_elision` knowing which box `s.clone()` handed back —
+freeing it today is a double free rather than a smaller leak. Their lines in
 `tests/known_leaks.txt` say `deferred`, and the gate still measures them and
 still holds them to their count — it just doesn't judge a memory milestone on
 what a memory milestone can't fix.
 
-What the 4 are, and which issue owns each:
+What the 2 are:
 
 | Allocations | Issue | What |
 |---|---|---|
-| 2 | [#1202](https://github.com/rask-lang/rask/issues/1202) | A `Heap` box stored in an enum payload |
 | 2 | [#1205](https://github.com/rask-lang/rask/issues/1205) | A closure swallowed by another closure that gets returned |
 
-Neither is a bounded fix — the ones that were are done.
+It isn't a bounded fix — the ones that were are done. #1205 needs a closure's
+environment identified per *site* rather than per function, or a returned
+closure able to hand its obligation on. Three attempts and their numbers are on
+the issue.
 
-#1202 is a `Heap<List>` in a recursive enum: giving the block back means
-walking what is inside it first, and what is inside it is another `List`. The
-field walk stops at a pointer, so the honest fix is a release function
-generated per type that calls itself, which also retires the depth-8 cap the
-walk has today. The second half is a ruling — `drop(x.field)` has to stop
-compiling, or the aggregate's release and the hand-drop both free the box.
-
-#1205 needs a closure's environment identified per *site* rather than per
-function, or a returned closure able to hand its obligation on. Three attempts
-and their numbers are on the issue.
+The gate is not the whole story, and two shapes it can't see are worth knowing
+about. It runs suite files as `test` blocks, so a leak that only appears in
+`main` is invisible to it — which is where
+[#1213](https://github.com/rask-lang/rask/issues/1213) lives, a value whose last
+version comes out of a loop and is named by no single definition. And
+[#1035](https://github.com/rask-lang/rask/issues/1035)'s repros are clean now
+without the suite file that would keep them that way.
 
 Still open from the earlier list, and no longer showing in the gate — they are
 about shapes the suite doesn't cover yet rather than shapes that are fixed:
