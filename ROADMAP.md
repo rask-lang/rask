@@ -101,11 +101,11 @@ boxed writer).
 
 What is left of the milestone is [#882](https://github.com/rask-lang/rask/issues/882):
 linearity is enforced at particular syntactic points, and the holes are wherever
-a point was missed. Its own table has one row still open
-([#827](https://github.com/rask-lang/rask/issues/827), an optional `@resource`
-that carries no obligation at all), but the point of it is the audit rather than
-that row — nothing says the list of missing sites is complete, because every one
-so far was found by accident.
+a point was missed. Every row of its own table is fixed. What it is still open
+for is the audit — where an obligation can be created, where control can leave a
+scope, and every way a value can be consumed, checked cell by cell instead of one
+repro at a time. Six holes turned up in a single session and not one was looked
+for, which is the reason to stop waiting for the seventh.
 
 ## v0.4 — A value works in every position
 
