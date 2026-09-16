@@ -353,15 +353,19 @@ impl Interpreter {
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
         let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
-        // L6: handing a linear value back is consuming it, so the `ensure` that
-        // was scheduled for this scope is cancelled — the value is the caller's
-        // now and the caller owes the consumption. Without this the ensure ran
-        // on the way out and closed what the caller was about to be given:
-        // `let a = open(); ensure a.close(); return a` handed back a closed
-        // handle on the interpreter and a live one natively.
+        // L6: carrying a linear value out of this scope is consuming it, so the
+        // `ensure` scheduled here is cancelled — whoever catches the value owes
+        // the consumption now. Without this the ensure ran on the way out and
+        // closed what was about to be handed over, so `let a = open(); ensure
+        // a.close(); return a` gave back a closed handle. Native was doing the
+        // same thing and saying nothing, because it has no tracker to notice a
+        // second consume; `check_resource_moved` in the lowering is that half.
+        //
+        // `break a` counts for the same reason: it leaves the loop body carrying
+        // the resource, and the loop's own ensure is on this block.
         let handed_back = match &exit_error {
             Some(d) => match &d.error {
-                RuntimeError::Return(v) => self.resource_ids_in(v),
+                RuntimeError::Return(v) | RuntimeError::Break(v, _) => self.resource_ids_in(v),
                 _ => HashSet::new(),
             },
             None => self.resource_ids_in(&last_value),
