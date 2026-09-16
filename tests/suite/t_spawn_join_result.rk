@@ -30,12 +30,13 @@ func joined_annotated() -> i64 or JoinError {
 func joined_pair() -> i64 or JoinError {
     using Multitasking {
         let a = spawn(|| { return 10 })
+        ensure a.detach()
         let b = spawn(|| { return 32 })
-        // If `a.join()` fails the error leaves the function, and `b` is
-        // never joined — a task handle is a resource, so committing the
-        // cleanup here is what covers that path (E0881). The `join`
-        // below consumes `b` and cancels this on the happy path.
         ensure b.detach()
+        // A handle has to be consumed on every way out, including the ones
+        // nobody writes down — a failing `try`, a panic. mem.linear/L7 puts
+        // the commitment at the acquisition; the `join`s below consume both
+        // and cancel it on the happy path (L6).
         let x = try a.join()
         let y = try b.join()
         return x + y

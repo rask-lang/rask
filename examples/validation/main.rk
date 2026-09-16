@@ -44,6 +44,11 @@ func seed_store() {
             if sent? { continue }
         }
     })
+    // A panic in the drain loop below would leave the producer with nothing
+    // scheduled to finish it (mem.linear/L7). `detach` rather than `join`:
+    // unwinding must not block on a task that may itself be blocked sending.
+    // The `join` at the bottom consumes it and cancels this on the happy path.
+    ensure producer.detach()
 
     mut count = 0
     while count < total {

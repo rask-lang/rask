@@ -34,15 +34,18 @@ func flight_tracker() -> i32 {
                 s.push("BAW123")
             }
         })
+        ensure h1.detach()
         let h2 = spawn(own || {
             with s2.write() as s {
                 s.push("DLH456")
                 s.push("AFR789")
             }
         })
+        ensure h2.detach()
         let h3 = spawn(own || {
             s3.write().push("UAL100")
         })
+        ensure h3.detach()
 
         h1.join()!
         // panic if task panicked
@@ -100,11 +103,13 @@ func shared_config_update() -> i32 {
             config.set(37000)
             tx.send(true)
         })
+        ensure atc.detach()
 
         let pilot = spawn(own || {
             rx.receive()!
             return config.get()
         })
+        ensure pilot.detach()
 
         atc.join()!
         let result = pilot.join()!

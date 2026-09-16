@@ -26,7 +26,6 @@ pub const LINT_RULES: &[&str] = &[
     "naming/or_suffix",
     "idiom/unwrap-production",
     "idiom/missing-ensure",
-    "idiom/ensure-ordering",
     "idiom/large-unsafe-block",
     "idiom/duck-trait",
     "idiom/equality-absent-check",

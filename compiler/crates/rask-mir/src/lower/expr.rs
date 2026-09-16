@@ -10053,6 +10053,11 @@ impl<'a> MirLowerer<'a> {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
                     let (val, ty) = self.lower_expr(e)?;
+                    // The tail is lowered here rather than through `lower_stmt`,
+                    // so the consumption check has to be repeated — without it
+                    // a block ending in `c.close()` never cancelled the `ensure`
+                    // that scheduled the same cleanup, and both ran.
+                    self.check_resource_consume(e);
                     last_val = val;
                     last_ty = ty;
                     continue;

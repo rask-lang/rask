@@ -57,6 +57,7 @@ func example_shared() -> void or Error {
                 }
             }
         })
+        ensure h1.detach()
         let h2 = spawn(own || {
             for i in 0..1000 {
                 with c2.write() as c {
@@ -64,9 +65,8 @@ func example_shared() -> void or Error {
                 }
             }
         })
-
-        // `h2` has to be consumed even if joining `h1` fails — see 15.
         ensure h2.detach()
+
         try h1.join()
         try h2.join()
 

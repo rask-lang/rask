@@ -22,6 +22,7 @@ struct Point {
 
 test "mem.heap/HP3 — deref borrows a field, the box survives until drop" {
     let ptr = Heap(Point { x: 1, y: 2 })
+    ensure drop(ptr)
     let x = (*ptr).x                // borrow for read
     drop(ptr)                         // now consumed
     assert x == 1
@@ -46,6 +47,7 @@ enum List {
 
 test "mem.heap/HP3 — a local bound to `Heap(…)` holds the box, not a copy of it" {
     let p = Heap(Big { a: 4, b: 5, c: 6 })
+    ensure drop(p)
     assert p.b == 5
     drop(p)
 }

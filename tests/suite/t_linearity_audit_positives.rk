@@ -133,6 +133,7 @@ test "mem.linear/L5 — a take parameter" {
 
 test "mem.linear/L3 — a borrow is not a consume" {
     let c = Conn { id: 3 }
+    ensure c.close()
     assert borrow_it(c) == 3
     assert c.ping() == 3
     assert c.close() == 3
@@ -182,6 +183,7 @@ test "mem.linear/L1 — consumed on the turn it was acquired" {
 
 test "mem.linear/L1 — a resource that outlives a break" {
     let c = Conn { id: 9 }
+    ensure c.close()
     mut i = 0
     while i < 5 {
         if i == 2 {

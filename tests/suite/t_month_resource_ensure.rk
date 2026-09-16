@@ -46,6 +46,7 @@ func open_and_close(id: i32) -> i32 {
 
 func branch_then_close(id: i32, take_early: bool) -> i32 {
     let h = Handle.open(id)
+    ensure h.close()
     if take_early {
         return h.close()
     }
@@ -87,6 +88,7 @@ test "mem.resource — a resource consumed on the straight path" {
 
 test "mem.resource — a resource read before it is consumed" {
     let h = Handle.open(5)
+    ensure h.close()
     assert h.value() == 5
     assert h.close() == 5
 }
@@ -103,7 +105,9 @@ test "mem.resource — a resource passed to a consuming function" {
 
 test "mem.resource — several resources each consumed once" {
     let a = Handle.open(1)
+    ensure a.close()
     let b = Handle.open(2)
+    ensure b.close()
     assert a.close() + b.close() == 3
 }
 

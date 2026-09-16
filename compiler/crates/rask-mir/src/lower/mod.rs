@@ -2924,17 +2924,99 @@ impl<'a> MirLowerer<'a> {
         if self.in_ensure_thunk {
             return;
         }
-        // `let v = try c.finish()` consumes `c` just as `c.finish()` does, so
-        // peel what is wrapped around the call before asking. Without this the
-        // ensure ran on a value the call had already taken — a double consume
-        // that native performed and the interpreter didn't (#1216).
-        let mut expr = expr;
-        loop {
-            expr = match &expr.kind {
-                ExprKind::Try { expr: inner } | ExprKind::Unwrap { expr: inner, .. } => inner,
-                ExprKind::Catch { value, .. } => value,
-                _ => break,
-            };
+        self.walk_for_resource_consume(expr);
+    }
+
+    /// The consuming call can be anywhere in the expression, not only at its
+    /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
+    /// handles from inside a sum. Peeling only the outermost wrappers found
+    /// neither, and both ensures ran on handles that were already joined.
+    ///
+    /// Emitting for a call the program might not reach would be wrong, and
+    /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
+    /// on some paths and not others, so whatever is here runs.
+    ///
+    /// Closure and `spawn` bodies are their own functions with their own
+    /// obligations — a consume in there is not this frame's.
+    fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        // Their own functions, with their own obligations — a consume in there
+        // is not this frame's. A nested block runs through `lower_block`, which
+        // asks on its own.
+        if matches!(
+            expr.kind,
+            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Block(_)
+        ) {
+            return;
+        }
+        self.emit_resource_consume(expr);
+        match &expr.kind {
+            ExprKind::Try { expr: inner }
+            | ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. } => self.walk_for_resource_consume(inner),
+            ExprKind::Unary { operand, .. } => self.walk_for_resource_consume(operand),
+            ExprKind::Catch { value, clause } => {
+                self.walk_for_resource_consume(value);
+                self.walk_for_resource_consume(&clause.body);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.walk_for_resource_consume(left);
+                self.walk_for_resource_consume(right);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                self.walk_for_resource_consume(value);
+                self.walk_for_resource_consume(default);
+            }
+            // `a + b` is `a.add(b)` by the time it gets here (rask-desugar), so
+            // the operands of every arithmetic expression arrive as a receiver
+            // and an argument.
+            ExprKind::MethodCall { object, args, .. } => {
+                self.walk_for_resource_consume(object);
+                for arg in args {
+                    self.walk_for_resource_consume(&arg.expr);
+                }
+            }
+            ExprKind::Call { args, .. } => {
+                for arg in args {
+                    self.walk_for_resource_consume(&arg.expr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// One expression, no recursion: is *this* the consuming call?
+    fn emit_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        // Storing a linear value in an aggregate moves it in — the aggregate's
+        // release frees it from then on. The `ensure` that was scheduled at
+        // acquisition has to be cancelled by that move exactly as a `close()`
+        // cancels it, or the block is freed twice. The ownership pass already
+        // reads the move this way (`consume_owned_into_aggregate`); this is the
+        // same walk on the lowering side.
+        if matches!(
+            expr.kind,
+            ExprKind::StructLit { .. } | ExprKind::Tuple(_) | ExprKind::Array(_)
+        ) {
+            self.consume_resources_moved_into_aggregate(expr);
+            return;
+        }
+        // `drop(p)` is a call, not a method call, so the arm below never saw it
+        // and the `ensure drop(p)` it was meant to cancel ran anyway — a second
+        // free of the same block, which glibc reports as a double free rather
+        // than as anything to do with the two lines that caused it. Native only:
+        // the interpreter tracks consumption by value.
+        if let ExprKind::Call { func, args, .. } = &expr.kind {
+            if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
+                if let Some(ExprKind::Ident(name)) = args.first().map(|a| &a.expr.kind) {
+                    if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                            resource_id: res_id,
+                        }));
+                    }
+                }
+            }
+            return;
         }
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             if let ExprKind::Ident(receiver_name) = &object.kind {
@@ -2957,17 +3039,61 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Emit `ResourceConsume` for every linear binding this aggregate takes in.
+    fn consume_resources_moved_into_aggregate(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                        resource_id: res_id,
+                    }));
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.consume_resources_moved_into_aggregate(e);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.consume_resources_moved_into_aggregate(&f.value);
+                }
+                if let Some(sp) = spread {
+                    self.consume_resources_moved_into_aggregate(sp);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Extract the receiver variable name from an ensure body.
-    /// For `ensure X.method()`, returns Some("X").
+    /// For `ensure X.method()` and `ensure drop(X)`, returns Some("X").
+    ///
+    /// `drop` is the whole cleanup vocabulary of `Heap<T>` — there is no
+    /// `take self` method to name — so leaving the call form out meant a boxed
+    /// value's ensure had no receiver, and nothing could cancel it.
     fn extract_ensure_receiver(body: &[rask_ast::stmt::Stmt]) -> Option<String> {
         use rask_ast::expr::ExprKind;
         use rask_ast::stmt::StmtKind;
         if let Some(first) = body.first() {
             if let StmtKind::Expr(expr) = &first.kind {
-                if let ExprKind::MethodCall { object, .. } = &expr.kind {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        return Some(name.clone());
+                match &expr.kind {
+                    ExprKind::MethodCall { object, .. } => {
+                        if let ExprKind::Ident(name) = &object.kind {
+                            return Some(name.clone());
+                        }
                     }
+                    ExprKind::Call { func, args, .. } => {
+                        if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
+                            if let Some(ExprKind::Ident(name)) =
+                                args.first().map(|a| &a.expr.kind)
+                            {
+                                return Some(name.clone());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

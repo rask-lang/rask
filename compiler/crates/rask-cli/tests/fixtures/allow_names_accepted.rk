@@ -58,11 +58,6 @@ func f10() {
     println("10")
 }
 
-@allow(idiom/ensure-ordering)
-func f11() {
-    println("11")
-}
-
 @allow(idiom/large-unsafe-block)
 func f12() {
     println("12")
@@ -115,7 +110,6 @@ func main() {
     f8()
     f9()
     f10()
-    f11()
     f12()
     f13()
     f14()

@@ -430,3 +430,9 @@ t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hand
                         # That is why `Shared_clone` isn't a registered constructor, and
                         # the file's own header says so. Zero is reachable — it waits on
                         # the elision knowing which box came back.
+
+t_subprocess_spawn.rk  # 1 allocation — an `ensure` in a `test` body leaves one
+                        # behind when the resource is consumed later and the
+                        # ensure is cancelled. The same code in a `func` is
+                        # clean, so it is the test-body lowering, not the
+                        # ensure/cancel machinery. #1224.

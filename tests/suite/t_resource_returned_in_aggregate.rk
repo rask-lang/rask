@@ -57,6 +57,7 @@ func in_enum() -> Slot {
 // The branch that produces the value is the one that returns it.
 func from_a_branch(pick: bool) -> Conn {
     let a = Conn { fd: 5 }
+    ensure a.close()
     if pick {
         return a
     }
@@ -69,6 +70,7 @@ test "mem.linear — returning a resource hands it to the caller" {
 
 test "mem.linear — a resource returned inside a tuple" {
     let (n, c) = in_tuple()
+    ensure c.close()
     assert n == 7
     assert c.close() == 2
 }

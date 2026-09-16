@@ -459,11 +459,6 @@ fn check_loaded(
         diags.push(comptime_purity_to_diagnostic(&e));
     }
 
-    // --- Cleanup order (mem.resource-types/EO1) ---
-    for w in rask_effects::ensure_order::check(&parse_result.decls) {
-        diags.push(ensure_order_to_diagnostic(&w));
-    }
-
     let package_names = collect_builtin_imports(&parse_result.decls);
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
@@ -806,11 +801,6 @@ fn check_package_scoped(
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
-    }
-
-    // --- Cleanup order (mem.resource-types/EO1) ---
-    for w in rask_effects::ensure_order::check(&pkg_ctx.all_decls) {
-        diags.push(ensure_order_to_diagnostic(&w));
     }
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
@@ -1272,28 +1262,6 @@ fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
         diag = diag.with_why(why);
     }
     diag
-}
-
-/// EO1: `ensure` runs LIFO, so a dependency registered *after* its dependent is
-/// torn down first — the dependent's cleanup then calls into something that's
-/// already gone. The FIX shows the two lines reordered rather than describing
-/// the rule, because "swap these" is the whole of it.
-fn ensure_order_to_diagnostic(w: &rask_effects::ensure_order::EnsureOrderWarning) -> Diagnostic {
-    Diagnostic::warning(format!(
-        "`{}` is cleaned up before `{}`, which needs it",
-        w.dependency, w.dependent
-    ))
-    .with_code("W0908")
-    .with_primary(
-        w.span,
-        format!("registered last, so this runs first and `{}` is gone", w.dependency),
-    )
-    .with_secondary(
-        w.dependent_span,
-        format!("`{}` still needs `{}` when this runs", w.dependent, w.dependency),
-    )
-    .with_fix(w.fixed_order.clone())
-    .with_why("`ensure` bodies run LIFO — the last one registered runs first. A resource derived from another has to be cleaned up first, which means its `ensure` comes second. Registered the other way round, the cleanup calls into a dependency that's already torn down; across an FFI boundary that's undefined behaviour the language otherwise makes impossible [mem.resource-types/EO1]")
 }
 
 /// CT60: the promise `comptime func` makes, checked at the definition.

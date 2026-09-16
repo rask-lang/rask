@@ -363,6 +363,11 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+            // The cleanup chain belongs to the enclosing function, and its
+            // blocks live in that function's MIR. A `return` inside this body
+            // would drain it here, branching to block ids this function does
+            // not have — Cranelift reports it as `invalid block reference`.
+            let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
@@ -379,6 +384,7 @@ impl<'a> MirLowerer<'a> {
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.loop_stack = saved_loop_stack;
+            self.ensure_stack = saved_ensure_stack;
             // The closure's parameters are out of scope again — don't leave a
             // name like `f` registered as callable for the enclosing function.
             for name in &callable_params {
@@ -616,6 +622,11 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
             let saved_loops = std::mem::take(&mut self.loop_stack);
+            // The cleanup chain belongs to the enclosing function, and its
+            // blocks live in that function's MIR. A `return` inside this body
+            // would drain it here, branching to block ids this function does
+            // not have — Cranelift reports it as `invalid block reference`.
+            let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
             let saved_inline = self.inline_return_target.take();
 
             // `break` and `continue` in the body are this loop's, and this loop
@@ -664,6 +675,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             self.loop_stack = saved_loops;
+            self.ensure_stack = saved_ensure_stack;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
@@ -846,6 +858,11 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, spawn_builder);
             let saved_locals = std::mem::replace(&mut self.locals, spawn_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+            // The cleanup chain belongs to the enclosing function, and its
+            // blocks live in that function's MIR. A `return` inside this body
+            // would drain it here, branching to block ids this function does
+            // not have — Cranelift reports it as `invalid block reference`.
+            let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
 
             let mut body_result = Ok(());
             for stmt in body {
@@ -858,6 +875,7 @@ impl<'a> MirLowerer<'a> {
             spawn_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.loop_stack = saved_loop_stack;
+            self.ensure_stack = saved_ensure_stack;
 
             body_result?;
 

@@ -3357,6 +3357,27 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            ResourceCommitDeferred { name, acquired_at } => {
+                Diagnostic::error(format!("`{}` has no cleanup committed yet", name))
+                    .with_code("E0882")
+                    .with_primary(
+                        self.span,
+                        format!("this runs while `{}` has nothing scheduled to close it", name),
+                    )
+                    .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                    .with_help(format!(
+                        "commit the cleanup on the next line, then use `{0}` freely:                          `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
+                        name
+                    ))
+                    .with_fix(format!(
+                        "move `ensure {0}.<consuming method>()` up to directly after `{0}` is acquired",
+                        name
+                    ))
+                    .with_why(
+                        "a panic here would leak it — nothing is scheduled to clean it up, and there are no destructors to fall back on",
+                    )
+            }
+
             ResourceDiscardedAsStatement { type_name } => {
                 Diagnostic::error(format!(
                     "value of resource type `{}` is dropped without being consumed",
