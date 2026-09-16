@@ -29,6 +29,9 @@ the session and returns its id.
   back from `close`.
 - `visit_branch` opens one, and returns `close()` when `early` is true, or
   `close() + 100` otherwise. Both arms have to consume it — that's the point.
+  Nothing may stand between the `open` and a commitment to the cleanup, so the
+  `ensure` goes on the line after it; the explicit `close` on each arm cancels
+  that ensure.
 - `audited` pushes 1 onto `log` and schedules a push of 9 for scope exit, so the
   9 lands however the function leaves. When `early` is true it returns 1
   immediately; otherwise it pushes 5 and returns 2. No session involved here,
