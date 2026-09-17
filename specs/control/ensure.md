@@ -57,21 +57,35 @@ func read_two_files(){
 // Order: b.close(), then a.close()
 ```
 
-**Lint error (`idiom/ensure-ordering`):** Ensure registration order must match variable binding order. If ensures are registered out of acquisition order, LIFO gives reversed cleanup. The interleaved pattern (acquire → ensure → acquire → ensure) is always safe. This is an error, not a warning — misordered ensures are never correct.
+Registration order can't come out wrong, because `mem.linear/L7` doesn't leave
+room for it: `let b = open("b")` is a statement in `a`'s commit window, so `a`'s
+`ensure` has to be written before it. Acquire → ensure → acquire → ensure is the
+only shape that compiles, and LIFO reverses it into the right teardown.
 
-<!-- test: skip -->
+<!-- test: compile-fail: ownership -->
 ```rask
-// BAD — lint warns: a.close() will run before b.close()
-let a = open("a")
-let b = open("b")
-ensure b.close()          // registered 1st → runs LAST
-ensure a.close()          // registered 2nd → runs FIRST ✗
+@resource
+struct Handle {
+    id: i32
+}
 
-// GOOD — interleaved, LIFO is correct
-let a = open("a")
-ensure a.close()          // registered 1st → runs LAST
-let b = open("b")
-ensure b.close()          // registered 2nd → runs FIRST ✓
+extend Handle {
+    func open(id: i32) -> Handle {
+        return Handle { id: id }
+    }
+
+    func close(take self) -> void {
+        return
+    }
+}
+
+func both_at_once() -> void {
+    let a = Handle.open(1)
+    let b = Handle.open(2)    // ERROR: `a` has nothing scheduled to close it
+    ensure b.close()
+    ensure a.close()
+    return
+}
 ```
 
 ## Linear Resource Integration

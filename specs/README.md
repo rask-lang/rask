@@ -113,7 +113,7 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
-| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L6) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` |
+| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L7) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` |
 | [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across `Shared<T, S>`, Rack+Link, Heap |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |

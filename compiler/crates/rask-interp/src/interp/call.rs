@@ -5,6 +5,7 @@ use rask_ast::decl::FnDecl;
 use rask_ast::expr::ExprKind;
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
+use std::collections::HashSet;
 
 use crate::value::Value;
 
@@ -352,7 +353,24 @@ impl Interpreter {
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
         let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
-        let ensure_fatal = self.run_ensures(&ensures, body_panicked);
+        // L6: carrying a linear value out of this scope is consuming it, so the
+        // `ensure` scheduled here is cancelled — whoever catches the value owes
+        // the consumption now. Without this the ensure ran on the way out and
+        // closed what was about to be handed over, so `let a = open(); ensure
+        // a.close(); return a` gave back a closed handle. Native was doing the
+        // same thing and saying nothing, because it has no tracker to notice a
+        // second consume; `check_resource_moved` in the lowering is that half.
+        //
+        // `break a` counts for the same reason: it leaves the loop body carrying
+        // the resource, and the loop's own ensure is on this block.
+        let handed_back = match &exit_error {
+            Some(d) => match &d.error {
+                RuntimeError::Return(v) | RuntimeError::Break(v, _) => self.resource_ids_in(v),
+                _ => HashSet::new(),
+            },
+            None => self.resource_ids_in(&last_value),
+        };
+        let ensure_fatal = self.run_ensures_except(&ensures, body_panicked, &handed_back);
 
         match (exit_error, ensure_fatal) {
             // os.exit() inside an ensure terminates immediately, no matter what (P5).
@@ -376,11 +394,28 @@ impl Interpreter {
     /// panic when already unwinding from a prior panic, are reported to stderr as
     /// secondary panics. Skips ensures whose receiver was already consumed.
     pub(super) fn run_ensures(&mut self, ensures: &[&Stmt], unwinding: bool) -> Option<RuntimeDiagnostic> {
+        self.run_ensures_except(ensures, unwinding, &HashSet::new())
+    }
+
+    /// `run_ensures`, skipping the ones whose receiver is being handed to the
+    /// caller.
+    pub(super) fn run_ensures_except(
+        &mut self,
+        ensures: &[&Stmt],
+        unwinding: bool,
+        handed_back: &HashSet<u64>,
+    ) -> Option<RuntimeDiagnostic> {
         let mut first_panic: Option<RuntimeDiagnostic> = None;
         for ensure_stmt in ensures.iter().rev() {
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
                 // Explicit consumption cancels ensure.
                 if self.ensure_receiver_consumed(body) {
+                    continue;
+                }
+                if self
+                    .ensure_receiver_id(body)
+                    .is_some_and(|id| handed_back.contains(&id))
+                {
                     continue;
                 }
 
@@ -432,31 +467,84 @@ impl Interpreter {
         }
     }
 
-    /// Check if the ensure body's receiver variable refers to a consumed resource.
-    /// Handles `ensure var.method()` patterns.
+    /// Has the thing this ensure would consume already been consumed?
     fn ensure_receiver_consumed(&self, body: &[Stmt]) -> bool {
-        if let Some(first) = body.first() {
-            if let StmtKind::Expr(expr) = &first.kind {
-                let receiver_name = match &expr.kind {
-                    ExprKind::MethodCall { object, .. } => {
-                        if let ExprKind::Ident(name) = &object.kind {
-                            Some(name.as_str())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(name) = receiver_name {
-                    if let Some(value) = self.env.get(name) {
-                        if let Some(id) = self.get_resource_id(&value) {
-                            return self.resource_tracker.is_consumed(id);
-                        }
-                    }
+        self.ensure_receiver_id(body)
+            .is_some_and(|id| self.resource_tracker.is_consumed(id))
+    }
+
+    /// The resource this ensure body would consume.
+    ///
+    /// Three spellings reach here: `ensure c.close()`, `ensure w.conn.close()`
+    /// where the receiver is a field of a holder, and `ensure drop(p)` — which
+    /// is the whole cleanup vocabulary of `Heap<T>`, and a call rather than a
+    /// method, so reading only the method form found no receiver and ran the
+    /// cleanup a second time.
+    fn ensure_receiver_id(&self, body: &[Stmt]) -> Option<u64> {
+        let StmtKind::Expr(expr) = &body.first()?.kind else {
+            return None;
+        };
+        let receiver = match &expr.kind {
+            ExprKind::MethodCall { object, .. } => object.as_ref(),
+            ExprKind::Call { func, args } => {
+                match &func.kind {
+                    ExprKind::Ident(n) if n == "drop" => &args.first()?.expr,
+                    _ => return None,
                 }
             }
+            _ => return None,
+        };
+        let value = self.resolve_place(receiver)?;
+        self.get_resource_id(&value)
+    }
+
+    /// Read an `a` or an `a.b.c` without evaluating anything that could run.
+    fn resolve_place(&self, expr: &rask_ast::expr::Expr) -> Option<Value> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.env.get(name),
+            ExprKind::Field { object, field } => {
+                let base = self.resolve_place(object)?;
+                match base {
+                    Value::Struct(ref s) => s.lock().unwrap().fields.get(field).cloned(),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
-        false
+    }
+
+    /// Every linear value inside a value, however deeply nested.
+    fn resource_ids_in(&self, value: &Value) -> HashSet<u64> {
+        let mut out = HashSet::new();
+        if !self.resource_tracker.is_empty() {
+            self.collect_resource_ids(value, &mut out);
+        }
+        out
+    }
+
+    fn collect_resource_ids(&self, value: &Value, out: &mut HashSet<u64>) {
+        if let Some(id) = self.get_resource_id(value) {
+            out.insert(id);
+        }
+        match value {
+            Value::Struct(ref s) => {
+                let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
+                for f in &fields {
+                    self.collect_resource_ids(f, out);
+                }
+            }
+            Value::Enum { fields, .. } => {
+                for f in fields {
+                    self.collect_resource_ids(f, out);
+                }
+            }
+            Value::Tuple(items) => {
+                for item in items.iter() {
+                    self.collect_resource_ids(item, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {

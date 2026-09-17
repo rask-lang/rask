@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `ensure` bodies run LIFO, so the *last* one registered runs first. A resource
+// derived from another has to be cleaned up first, which means its `ensure`
+// comes second — the source order reads backwards from the run order.
+//
+// That used to be easy to get wrong, and there was a warning (W10) for the
+// inverted order: the world destroyed while the body was still live, and
+// `b.close(w)` calling into a torn-down dependency. mem.linear/L7 makes the
+// inverted order unwritable — `let b = make_body(w)` doesn't commit `w`, so
+// `w`'s `ensure` has to come before it. Registration order is acquisition
+// order, and LIFO then tears down in the only sequence that works.
+//
+// The companion rejection is tests/compile_errors/linearity_commit_window.rk.
+
+@resource
+struct World { id: i64 }
+
+@resource
+struct Body { id: i64 }
+
+@resource
+struct Log { id: i64 }
+
+func make_world() -> World {
+    return World { id: 1 }
+}
+
+func make_body(w: World) -> Body {
+    return Body { id: w.id + 1 }
+}
+
+func make_log() -> Log {
+    return Log { id: 9 }
+}
+
+extend World {
+    func destroy(take self) {
+        println("world gone")
+    }
+}
+
+extend Body {
+    func close(take self, w: World) {
+        println("body gone, world {w.id}")
+    }
+}
+
+extend Log {
+    func flush(take self) {
+        println("log flushed")
+    }
+}
+
+// The world's `ensure` comes first, so it runs last.
+func derived() {
+    let w = make_world()
+    ensure w.destroy()
+    let b = make_body(w)
+    ensure b.close(w)
+    println("derived body")
+}
+
+// Independent resources — the same shape, and the order between them is free.
+func independent() {
+    let w = make_world()
+    ensure w.destroy()
+    let l = make_log()
+    ensure l.flush()
+    println("independent body")
+}
+
+// Three resources, two of them related.
+func mixed() {
+    let w = make_world()
+    ensure w.destroy()
+    let b = make_body(w)
+    ensure b.close(w)
+    let l = make_log()
+    ensure l.flush()
+    println("mixed body")
+}
+
+func main() {
+    derived()
+    independent()
+    mixed()
+}

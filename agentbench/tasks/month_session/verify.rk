@@ -12,6 +12,7 @@ test "verify: both branches consume it" {
 
 test "verify: the id is readable before it is consumed" {
     let s = Session.open(11)
+    ensure s.close()
     assert s.id() == 11
     assert s.close() == 11
 }

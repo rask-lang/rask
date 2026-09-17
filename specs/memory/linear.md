@@ -29,6 +29,7 @@ Same tradeoff as "everything is a value": cost transparency over hidden mechanis
 | **L4: `ensure` satisfies L1** | Registering with `ensure` commits to consumption at scope exit |
 | **L5: Move consumes** | Passing to a `take` parameter, assigning to another binding, or sending on a channel consumes the value |
 | **L6: Explicit consumption cancels `ensure`** | If the value is consumed before scope exit, the registered `ensure` is void (`ctrl.ensure/C1`) |
+| **L7: Commit before anything else** | Nothing may stand between acquiring a linear value and committing its cleanup. The statement after an acquisition commits it — `ensure`, a consuming call, a move, or a `return` |
 
 Consumption happens via:
 - A method declared with `take self` (e.g. `file.close()`, `tx.commit()`)
@@ -46,7 +47,7 @@ Three ways a value acquires the linear property:
 | `Heap<T>` type constructor | Any T, heap-allocated | [heap.md](heap.md) |
 | `Pool<Linear>` | Pool holding any linear element type | [pools.md](pools.md) |
 
-Rules L1–L6 apply identically in all three cases. The individual specs cite them instead of restating.
+Rules L1–L7 apply identically in all three cases. The individual specs cite them instead of restating.
 
 ## Linearity + `ensure` + `try`
 
@@ -67,6 +68,68 @@ func process(path: string) -> Data or Error {
 Without `ensure`, the first `try` after acquisition is a compile error — the file might leak on error propagation. With `ensure`, the commitment is in place, and errors can propagate knowing cleanup still runs.
 
 This is the trio the language design leans on: linearity gives the guarantee, `ensure` gives the deferral, `try` gives the propagation. Each alone is limited; together they cover most I/O code in three lines.
+
+## L7: the window has to be empty
+
+`try` is not the only way out of a scope. A panic leaves through any line — an
+index, an overflow, a call that asserts — and Rask has no destructor to catch
+what falls out. So a linear value with no cleanup scheduled is one panic away
+from being gone for good:
+
+<!-- test: compile-fail: ownership -->
+```rask
+@resource
+struct DbConn {
+    handle: i32
+}
+
+extend DbConn {
+    func open(path: string) -> DbConn or Error {
+        return DbConn { handle: 1 }
+    }
+
+    func read_text(self) -> string or Error {
+        return "data"
+    }
+
+    func close(take self) -> void or Error {
+        return
+    }
+}
+
+func process(path: string) -> string or Error {
+    let conn = try DbConn.open(path)
+    let limit = path.len()        // ERROR: a panic here and `conn` is gone
+    ensure conn.close()
+    return try conn.read_text()
+}
+```
+
+Keeping that gap short is a habit, and habits are not what the rest of this spec
+is made of. L7 makes it a rule instead: the statement after an acquisition
+commits the value, or the program doesn't build. Committing means `ensure`, a
+consuming call, a move, or handing it back — and since consuming it later
+cancels the `ensure` (L6), the line that used to sit at the bottom just moves to
+the top. Same code, one line earlier:
+
+<!-- test: parse -->
+```rask
+func process(path: string) -> string or Error {
+    let conn = try DbConn.open(path)
+    ensure conn.close()
+    let limit = path.len()        // panics here run the ensure
+    return try conn.read_text()
+}
+```
+
+A `take` parameter arrives owed too, so the first statement of the body commits
+it. The one place the rule doesn't reach is a `take self` method of the linear
+type itself: that method *is* the consumption, and there is nothing left to
+commit to.
+
+Two values acquired together may take one statement each — every `ensure`
+shortens the window, and registering them in acquisition order is what makes the
+LIFO teardown come out right (`ctrl.ensure/EN2`).
 
 ## Linearity + explicit consumption (transaction pattern)
 
@@ -105,6 +168,19 @@ See `mem.pools/PL9` and `mem.resources/R5` for the Pool<Linear> cleanup semantic
 
 Base error identifiers live here; per-context specs (resource-types, owned) show worked examples.
 
+**Cleanup not committed [L7]:**
+```
+ERROR [mem.linear/L7]: `file` has no cleanup committed yet
+
+WHY: A panic here would leak it — nothing is scheduled to clean it up, and
+     there are no destructors to fall back on.
+
+FIX: Move the cleanup up to directly after the acquisition:
+
+  let file = try File.open(path)
+  ensure file.close()
+```
+
 **Not consumed [L1]:**
 ```
 ERROR [mem.linear/L1]: linear value not consumed before scope exit
@@ -135,6 +211,8 @@ WHY: Linear values can be consumed exactly once. A second consumption
 | Conditional consumption | L1 | Both branches must consume |
 | Linear value + panic | L4 | `ensure` runs during unwind |
 | Linear value in loop | L1 | Each iteration's binding must be consumed that iteration |
+| `take` parameter | L7 | Arrives owed; the body's first statement commits it |
+| `take self` method of the linear type | — | The method is the consumption, so L7 doesn't apply to `self` |
 
 ## See Also
 
@@ -154,6 +232,19 @@ WHY: Linear values can be consumed exactly once. A second consumption
 Before this spec, the same rule set was restated in `resource-types.md` (R1–R4) and `heap.md` (OW1–OW4) with different identifiers. A reader learning about `Heap<T>` had no reason to connect it to `@resource` — the rules looked parallel but separate. They were the same rules.
 
 Pulling the rule set up into one spec and citing it from both contexts makes the shared idea visible. `@resource` and `Heap<T>` stop being two concepts and become two applications of one concept.
+
+### Why L7 is a rule and not a lint
+
+The narrower version of this — "no statement that can *panic* in the window" —
+states the invariant more exactly, and in practice permits almost nothing more.
+Conservatively, a call can panic, an index can panic, arithmetic can panic; what
+is left over is `let n = 5`. Trading a rule you can check by eye for one that
+needs a panic analysis, to buy the right to write a constant in the gap, is a bad
+trade.
+
+Panic-only drop glue is the other alternative, and it is the one `ctrl.panic/U5`
+rules out: cleanup that runs where nobody wrote it is the thing linear types
+exist to avoid. L7 keeps the cleanup written down and moves it one line up.
 
 ### What linearity does not cover
 

@@ -48,7 +48,9 @@ test "block exit waits for a detached task" {
 test "block exit waits for several detached tasks" {
     using Multitasking {
         let h1 = spawn(|| { return work("x") })
+        ensure h1.detach()
         let h2 = spawn(|| { return work("x") })
+        ensure h2.detach()
         h1.detach()
         h2.detach()
     }

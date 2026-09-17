@@ -50,7 +50,9 @@ test "several named closures in one block" {
         let a = own || { return 1 }
         let b = own || { return 2 }
         let ha = spawn(a)
+        ensure ha.detach()
         let hb = spawn(b)
+        ensure hb.detach()
         let sum = (ha.join() catch _ => 0) + (hb.join() catch _ => 0)
         assert sum == 3
     }

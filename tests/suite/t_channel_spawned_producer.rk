@@ -126,6 +126,7 @@ func spawned_sum(n: i64) -> i64 {
             }
             let _ = tx.close()
         })
+        ensure producer.detach()
         mut total = 0
         loop {
             let r = rx.receive()

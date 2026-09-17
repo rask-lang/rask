@@ -46,7 +46,7 @@ competitor to argue with.
 | Thread-local temp arena, freed at `@pool` scope exit | Already specced — `mem.alloc/AL12–AL13`, `Arena.scoped` (unimplemented) | **Have it** — the gap is a rewind marker, one rule |
 | Zero-ceremony C consumption (include the header, call it) | `import c "hdr.h"` + one `compile_c()` line — measured, works | **Tie** — but the string and struct bridges are broken (#946–#949) |
 | Safe/fast modes; violated contract is UB in fast mode | One behavior in all builds (`type.overflow/OV4`) | **Reject** |
-| No destructors; cleanup is manual `defer` | `ensure` blocks plus `@resource` linearity (`mem.linear/L1–L6`) | **Rask already wins** |
+| No destructors; cleanup is manual `defer` | `ensure` blocks plus `@resource` linearity (`mem.linear/L1–L7`) | **Rask already wins** |
 | Arenas as the memory-safety story | `Pool` + generational `Handle` catches stale access | **Rask already wins** |
 | Macro system (`$if`, `$foreach`, `#expr`, `@macro`, `$$builtin`) | No macros; `comptime` over typed values | **Cautionary tale** |
 

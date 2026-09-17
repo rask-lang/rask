@@ -668,6 +668,11 @@ impl<'a> OwnershipChecker<'a> {
                 if self.is_resource_type_name(&param.ty) {
                     let ty = self.declared_type_from_name(&param.ty);
                     self.register_resource_binding(&param.name.clone(), ty.as_ref());
+                    // A `take` parameter arrives owed, same as a local the body
+                    // acquired. The signature is where it came from, so that's
+                    // what L7 points back at.
+                    self.resource_acquired_at
+                        .insert(param.name.clone(), param.name_span);
                 }
             } else if param.is_mutate {
                 // Mutate parameters: treat as owned within the body.
@@ -731,6 +736,8 @@ impl<'a> OwnershipChecker<'a> {
         for (index, stmt) in stmts.iter().enumerate() {
             self.check_mutable_capture_access(stmt);
             let owed_before = self.resource_bindings.len();
+            let pending_before = self.commit_state();
+            let errors_before = self.errors.len();
             self.check_stmt(stmt);
             // Where each obligation started, for a diagnostic about a later
             // statement to point back at. One place rather than at each of the
@@ -747,6 +754,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_acquired_at.insert(name, stmt.span);
                 }
             }
+            self.check_commit_window(&pending_before, errors_before, stmt);
             // After the walk, not before: the closure's own body is where the
             // write lives, and checking it against its own record would report
             // every mutable capture as a conflict with itself.
@@ -2177,6 +2185,11 @@ impl<'a> OwnershipChecker<'a> {
                 let mut merged: Option<HashMap<String, BindingState>> = None;
                 for arm in arms {
                     self.bindings = pre_arms.clone();
+                    // A pattern's bindings belong to their own arm. Left on the
+                    // books they were still owed while the *next* arm was being
+                    // checked, which reads as that arm standing in a window it
+                    // has nothing to do with.
+                    let before_arm = self.resource_bindings.clone();
                     self.register_pattern_bindings_typed(
                         &arm.pattern,
                         scrutinee_ty.as_ref(),
@@ -2186,7 +2199,9 @@ impl<'a> OwnershipChecker<'a> {
                         self.check_expr(guard);
                     }
                     self.check_expr(&arm.body);
-                    if Self::is_terminal_expr(&arm.body) {
+                    let terminal = Self::is_terminal_expr(&arm.body);
+                    self.close_arm_resources(&before_arm, terminal, arm.body.span);
+                    if terminal {
                         continue;
                     }
                     let after_arm = self.bindings.clone();
@@ -4944,14 +4959,14 @@ impl<'a> OwnershipChecker<'a> {
     /// Only bindings still owed and not yet committed. An ensured one is
     /// covered by definition, and one already consumed owes nothing.
     fn check_try_leaks_a_resource(&mut self, span: Span) {
-        let mut open: Vec<(String, Span)> = self
-            .resource_bindings
-            .iter()
-            .filter(|n| !self.ensure_registered.contains(*n))
-            .filter(|n| !matches!(self.bindings.get(*n), Some(BindingState::Moved { .. })))
-            .map(|n| (n.clone(), self.resource_acquired_at.get(n).copied().unwrap_or(span)))
+        let open: Vec<(String, Span)> = self
+            .uncommitted_linears()
+            .into_iter()
+            .map(|n| {
+                let at = self.resource_acquired_at.get(&n).copied().unwrap_or(span);
+                (n, at)
+            })
             .collect();
-        open.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, acquired_at) in open {
             if !self.exit_reported.insert(format!("try:{}", name)) {
                 continue;
@@ -4959,6 +4974,120 @@ impl<'a> OwnershipChecker<'a> {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ResourceLeaksOnTry { name, acquired_at },
                 span,
+            });
+        }
+    }
+
+
+    /// Linear bindings that still owe a consumption and haven't committed to
+    /// one. Sorted, so a function with two of them reports in a stable order.
+    ///
+    /// Committed means either `ensure` (the consumption is scheduled) or gone
+    /// (already moved or consumed). Both leave nothing for an abnormal exit to
+    /// lose.
+    fn uncommitted_linears(&self) -> Vec<String> {
+        let mut open: Vec<String> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !self.ensure_registered.contains(*n))
+            .filter(|n| !matches!(self.bindings.get(*n), Some(BindingState::Moved { .. })))
+            .cloned()
+            .collect();
+        open.sort();
+        open
+    }
+
+    /// What each uncommitted linear still owes, as a count.
+    ///
+    /// A plain struct holding two resources owes one debt per field, and an
+    /// `ensure` pays them one at a time — so "is it still on the list" can't
+    /// tell the first of two `ensure`s from a statement that committed nothing.
+    /// The count can.
+    fn commit_state(&self) -> Vec<(String, usize)> {
+        self.uncommitted_linears()
+            .into_iter()
+            .map(|n| {
+                let debts = self.resource_field_debts.get(&n).map_or(0, |d| d.len());
+                (n, debts)
+            })
+            .collect()
+    }
+
+    /// mem.linear/L7: nothing may stand between acquiring a linear value and
+    /// committing its cleanup.
+    ///
+    /// ```text
+    /// let file = try File.open(path)
+    /// let limit = config.read_limit()   // panics here and `file` is gone
+    /// ensure file.close()
+    /// ```
+    ///
+    /// `try` was already refused in that window, because the error exit is
+    /// written in the source and can be pointed at. A panic is the same leak
+    /// through an exit nothing marks — any index, any overflow, any call — and
+    /// Rask has no destructor to catch what falls out. So the rule is the
+    /// window itself: the statement after an acquisition commits it, or the
+    /// program doesn't build.
+    ///
+    /// One commitment per statement is enough. `let (a, b) = pair()` is allowed
+    /// to take two statements to ensure both — each one shortens the window,
+    /// and registration order stays acquisition order, which is what makes the
+    /// LIFO teardown come out right.
+    fn check_commit_window(
+        &mut self,
+        pending_before: &[(String, usize)],
+        errors_before: usize,
+        stmt: &Stmt,
+    ) {
+        if pending_before.is_empty() {
+            return;
+        }
+        // An `ensure` body is the cleanup, not a statement racing it. It runs at
+        // scope exit, so a sibling resource still owed while it is being walked
+        // is the ordinary state of a block with two `ensure`s in it.
+        if self.in_ensure {
+            return;
+        }
+        // Leaving the scope is not standing in the window. L1 and the `try`
+        // check own those paths and phrase it better.
+        if matches!(
+            stmt.kind,
+            StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_)
+        ) {
+            return;
+        }
+        let still = self.commit_state();
+        let progressed = pending_before.iter().any(|(name, debts)| {
+            match still.iter().find(|(n, _)| n == name) {
+                None => true,
+                Some((_, now)) => now < debts,
+            }
+        });
+        if progressed {
+            return;
+        }
+        // The `try` in this statement already said it, with the better message.
+        if self.errors[errors_before..]
+            .iter()
+            .any(|e| matches!(e.kind, OwnershipErrorKind::ResourceLeaksOnTry { .. }))
+        {
+            return;
+        }
+        for (name, _) in pending_before {
+            if !self.exit_reported.insert(format!("commit:{}", name)) {
+                continue;
+            }
+            let acquired_at = self
+                .resource_acquired_at
+                .get(name)
+                .copied()
+                .unwrap_or(stmt.span);
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ResourceCommitDeferred {
+                    name: name.clone(),
+                    acquired_at,
+                },
+                span: stmt.span,
             });
         }
     }
@@ -4993,6 +5122,37 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         names.sort();
         self.check_resource_names(names, span);
+    }
+
+    /// End-of-arm for the resources a match arm's pattern introduced: L1 where
+    /// the arm falls through, then off the books either way.
+    ///
+    /// A diverging arm is somebody else's problem — the `return` it ends on ran
+    /// the exit checks already.
+    fn close_arm_resources(&mut self, before: &HashSet<String>, terminal: bool, span: Span) {
+        let introduced: Vec<String> = self
+            .resource_bindings
+            .iter()
+            .filter(|n| !before.contains(*n))
+            .cloned()
+            .collect();
+        for name in introduced {
+            if !terminal {
+                let consumed =
+                    matches!(self.bindings.get(&name), Some(BindingState::Moved { .. }))
+                        || self.ensure_registered.contains(&name);
+                if !consumed {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ResourceNotConsumed { name: name.clone() },
+                        span,
+                    });
+                }
+            }
+            self.resource_bindings.remove(&name);
+            self.ensure_registered.remove(&name);
+            self.resource_acquired_at.remove(&name);
+            self.resource_field_debts.remove(&name);
+        }
     }
 
     /// Give a binding away: mark it moved, or refuse if it was only borrowed.
@@ -5295,10 +5455,24 @@ impl<'a> OwnershipChecker<'a> {
     fn mark_ensure_expr(&mut self, expr: &Expr, ensure_span: Span) {
         match &expr.kind {
             ExprKind::MethodCall { object, .. } => {
-                if let ExprKind::Ident(name) = &object.kind {
-                    if self.resource_bindings.contains(name) {
-                        self.register_ensure(name, ensure_span);
+                match &object.kind {
+                    ExprKind::Ident(name) => {
+                        if self.resource_bindings.contains(name) {
+                            self.register_ensure(name, ensure_span);
+                        }
                     }
+                    // `ensure w.conn.close()` — the receiver is a field, so
+                    // what it commits is that field's debt, exactly as the
+                    // direct call pays it. Left out, a holder's field could be
+                    // consumed but never *ensured*, which L7 needs (#828's
+                    // per-field debts are what this walks).
+                    ExprKind::Field { .. } => {
+                        let (root, path) = Self::extract_root_and_fields(object);
+                        if let (Some(root), Some(path)) = (root, path) {
+                            self.pay_field_debt(&root, &path);
+                        }
+                    }
+                    _ => {}
                 }
             }
             ExprKind::Call { func, args } => {

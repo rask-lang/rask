@@ -329,6 +329,17 @@ pub enum OwnershipErrorKind {
         acquired_at: Span,
     },
 
+    /// mem.linear/L7: a statement stands between acquiring a linear value and
+    /// committing its cleanup. Every `try` in that window was already an error
+    /// (ResourceLeaksOnTry); a panic is the exit nothing in the source marks,
+    /// and there is no destructor behind it, so the window has to be empty.
+    #[error("`{name}` has no cleanup committed yet")]
+    ResourceCommitDeferred {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
+    },
+
     /// Resource captured by closure/spawn not consumed on all code paths.
     #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
     ResourceNotConsumedInClosure {

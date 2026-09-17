@@ -395,6 +395,7 @@ impl<'a> MirLowerer<'a> {
                 // The initializer can be the consuming call — `mut v = try
                 // c.finish()` — and then the ensure it cancels is this one.
                 self.check_resource_consume(init);
+                self.check_resource_moved(init);
                 r
             }
 
@@ -464,6 +465,7 @@ impl<'a> MirLowerer<'a> {
                 // The initializer can be the consuming call — `let v = try
                 // c.finish()` — and then the ensure it cancels is this one.
                 self.check_resource_consume(init);
+                self.check_resource_moved(init);
                 r
             }
 
@@ -472,8 +474,13 @@ impl<'a> MirLowerer<'a> {
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
                     // `return c.finish()` consumes `c` on the way out, so the
-                    // ensure is cancelled before the cleanup chain runs.
+                    // ensure is cancelled before the cleanup chain runs. `return
+                    // c` hands the value itself to the caller, which is the same
+                    // cancellation for a name rather than a call — without it the
+                    // cleanup ran as part of returning and the caller was given a
+                    // closed handle.
                     self.check_resource_consume(e);
+                    self.check_resource_moved(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
                     // `func -> User? { return User { ... } }` needs one layer,
@@ -536,6 +543,7 @@ impl<'a> MirLowerer<'a> {
                 // into the bindings and `return` and not into plain assignment
                 // left the same double consume one spelling away (#1216).
                 self.check_resource_consume(value);
+                self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
                 // accepts the widening; without the wrap the bare value lands in the
@@ -3409,6 +3417,11 @@ impl<'a> MirLowerer<'a> {
 
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
+            // `break a` carries the resource out of the loop, so the loop's own
+            // `ensure` must not still close it on the way past. Emitted before
+            // `emit_loop_cleanup` below, which is the chain that would.
+            self.check_resource_consume(val_expr);
+            self.check_resource_moved(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,

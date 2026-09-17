@@ -60,9 +60,18 @@ func observe() {
 | **U2: Access released, writes kept** | Unwind releases *access* (locks, borrows, bindings) but never rolls back *data*. Values keep whatever mutations happened before the panic |
 | **U3: `with` release** | Unwinding through a `with` block releases what the block held: Mutex/Shared unlock, Cell borrow flag clears, pool element access ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
-| **U5: Unensured linears leak** | A linear value with no scheduled ensure at panic time is leaked — no destructor runs, ever. The leak window is acquisition-to-ensure; keep it to one statement (`ctrl.ensure/L2` covers the `try` paths; panics are the residual) |
+| **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
 
-U5 is deliberate. Rask has no hidden destructors — that's the point of linear types + `ensure`. Inventing panic-only drop glue would reintroduce invisible cleanup to cover code that is, by definition, already broken. Mitigation is a lint (candidate) that wants `ensure` on the line right after acquisition, shrinking the window to zero statements.
+Rask has no hidden destructors — that's the point of linear types + `ensure`.
+Panic-only drop glue would put invisible cleanup back to cover code that is, by
+definition, already broken, so the hole is closed from the other side: L7 makes
+the acquisition-to-commitment window empty, which is a rule the compiler checks
+rather than a habit the author keeps. Requiring the `ensure` one line earlier
+costs nothing — it is the line that used to sit at the bottom of the function.
+
+The remaining leaks are the ones no static rule can see: a `Pool` whose contents
+are a runtime fact trips its own guard instead (R5, and E3 below for what that
+looks like mid-unwind).
 
 ## Locks: Released, Not Poisoned
 

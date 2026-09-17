@@ -28,7 +28,6 @@ fn all_rules() -> Vec<Rule> {
         // Idiomatic patterns
         Rule { id: "idiom/unwrap-production", check: idiom::check_unwrap_production },
         Rule { id: "idiom/missing-ensure", check: idiom::check_missing_ensure },
-        Rule { id: "idiom/ensure-ordering", check: idiom::check_ensure_ordering },
         Rule { id: "idiom/large-unsafe-block", check: idiom::check_large_unsafe_blocks },
         Rule { id: "idiom/duck-trait", check: idiom::check_duck_trait },
         Rule { id: "idiom/equality-absent-check", check: idiom::check_equality_absent_check },

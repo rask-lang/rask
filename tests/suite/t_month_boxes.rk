@@ -141,12 +141,14 @@ test "mem.heap — Heap() heap-allocates and derefs back" {
 // to free (#819).
 test "mem.heap — a Heap struct payload" {
     let p: Heap<Counter> = Heap(Counter { n: 5 })
+    ensure drop(p)
     assert (*p).n == 5
     drop(p)
 }
 
 test "mem.heap — a Heap field on a struct" {
     let c: Heap<Counter> = Heap(Counter { n: 7 })
+    ensure drop(c)
     assert (*c).n == 7
     drop(c)
 }

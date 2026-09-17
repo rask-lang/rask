@@ -34,7 +34,9 @@ test "two tasks counting on one atomic agree on the total" {
     using Multitasking {
         COUNTER.store(0, SeqCst)
         let a = spawn(own || { bump(250) })
+        ensure a.detach()
         let b = spawn(own || { bump(250) })
+        ensure b.detach()
         a.join()!
         b.join()!
         assert COUNTER.load(SeqCst) == 500

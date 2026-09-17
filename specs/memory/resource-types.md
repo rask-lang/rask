@@ -29,7 +29,7 @@ struct Connection {
 
 ## Consumption Rules
 
-`@resource` values follow the linearity rules `mem.linear/L1–L6`. This table restates them in `@resource` context with the rule identifiers they're cited by in other specs:
+`@resource` values follow the linearity rules `mem.linear/L1–L7`. This table restates them in `@resource` context with the rule identifiers they're cited by in other specs:
 
 | Rule | Citation | Description |
 |------|----------|-------------|
@@ -38,7 +38,8 @@ struct Connection {
 | **R3** | `mem.linear/L3` | Can borrow for reading without consuming |
 | **R4** | `mem.linear/L4` | Registering with `ensure` counts as consumption commitment |
 | **R5** | — | `Pool<Resource>` panics at runtime if non-empty when dropped |
-| **EO1** | — | `ensure` bodies run LIFO, so a resource derived from another has its `ensure` registered **second** — the source order reads backwards from the run order. Registered the other way round, the dependency is torn down while its dependent is still live and the dependent's cleanup calls into it; across an FFI boundary that's undefined behaviour the language otherwise makes impossible. Both orders are valid code, so this is a warning (`tool.warnings/W10`), not an error |
+| **R6** | `mem.linear/L7` | Nothing may stand between acquiring the resource and committing its cleanup |
+| **EO1** | `mem.linear/L7` | `ensure` bodies run LIFO, so a resource derived from another has its `ensure` registered **second** — the source order reads backwards from the run order. That order is the only one L7 permits: deriving from a resource is a statement in that resource's window, so the dependency's `ensure` has to come first. Registered the other way round, the dependency would be torn down while its dependent is still live |
 
 A resource is consumed by calling a method with `take self`, passing to a `take` parameter, or explicit consumption (e.g., `file.close()`).
 
@@ -388,7 +389,7 @@ func handle_connections(pool: Pool<Connection>) -> void or Error {
 
 ### Rationale
 
-**Why `@resource` exists:** Linearity is a property, but in real code you want to attach it to a specific kind of value — a file, a socket, a transaction. `@resource` is the annotation that says "every value of this struct type is linear." Rules L1–L4 do the work; the annotation just scopes them to a concrete type.
+**Why `@resource` exists:** Linearity is a property, but in real code you want to attach it to a specific kind of value — a file, a socket, a transaction. `@resource` is the annotation that says "every value of this struct type is linear." Rules L1–L7 do the work; the annotation just scopes them to a concrete type.
 
 **L4 (ensure):** The bridge between linearity and error handling. Commit to cleanup early, then use `try` freely knowing it'll happen.
 
@@ -466,7 +467,7 @@ func process_files(paths: Vec<string>) -> void or Error {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
+- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
 - [Owned Pointers](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)

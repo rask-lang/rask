@@ -44,6 +44,7 @@ struct Record {
 
 test "mem.heap/HP3 — a local box is freed and reads right until then" {
     let p = Heap(Big { a: 1, b: 2, c: 3 })
+    ensure drop(p)
     assert p.a == 1
     assert p.c == 3
     drop(p)
@@ -91,6 +92,7 @@ test "mem.heap/HP3 — a payload holding a string and a vector" {
         name: "a record name long enough to allocate",
         marks: [1, 2, 3],
     })
+    ensure drop(r)
     assert r.name == "a record name long enough to allocate"
     assert r.marks.len() == 3
     assert r.marks[2] == 3
@@ -102,6 +104,7 @@ test "mem.heap/HP3 — a box per turn" {
     mut total = 0
     for i in 1..6 {
         let p = Heap(Big { a: i, b: i * 2, c: i * 3 })
+        ensure drop(p)
         total = total + p.a + p.b + p.c
         drop(p)
     }
@@ -111,8 +114,11 @@ test "mem.heap/HP3 — a box per turn" {
 // Several alive at once, so the frees don't depend on there being one.
 test "mem.heap/HP3 — three at a time, dropped out of order" {
     let a = Heap(Big { a: 1, b: 0, c: 0 })
+    ensure drop(a)
     let b = Heap(Big { a: 2, b: 0, c: 0 })
+    ensure drop(b)
     let c = Heap(Big { a: 3, b: 0, c: 0 })
+    ensure drop(c)
     drop(b)
     assert a.a == 1
     assert c.a == 3
