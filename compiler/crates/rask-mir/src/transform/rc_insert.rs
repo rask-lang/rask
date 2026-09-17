@@ -1665,11 +1665,42 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// Blocks the program never leaves — a terminator of `unreachable`, or a chain
 /// of gotos that only reaches those. A release placed in one of these is dead
 /// code: the process is gone before it runs.
+///
+/// An `ensure` body's blocks are not these, however they look. A cleanup chain
+/// ends in `unreachable` because there is nothing left in MIR to say after it —
+/// codegen turns that into the function's actual return. Reading it as an abort
+/// made every exit through an `ensure` an abort too, which is what kept the
+/// release below from firing in a function that has one: `assert out.stdout ==
+/// "…"` in a test that also writes `ensure p.kill_and_wait()` leaked the string
+/// it compared, while the same assert in a function without the `ensure` did
+/// not (#1224).
 fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
+    let mut cleanup: HashSet<BlockId> = HashSet::new();
+    let mut queue: Vec<BlockId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => Some(cleanup_chain.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    while let Some(bid) = queue.pop() {
+        if !cleanup.insert(bid) {
+            continue;
+        }
+        if let Some(b) = func.blocks.iter().find(|b| b.id == bid) {
+            queue.extend(cfg::successors(&b.terminator));
+        }
+    }
+
     let mut aborting: HashSet<BlockId> = func
         .blocks
         .iter()
-        .filter(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable))
+        .filter(|b| {
+            matches!(b.terminator.kind, MirTerminatorKind::Unreachable)
+                && !cleanup.contains(&b.id)
+        })
         .map(|b| b.id)
         .collect();
     // Walk backwards: a block all of whose successors abort, aborts too.

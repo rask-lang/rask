@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What an `ensure` body touches still has to be given back (#1224).
+//
+// An ensure body can run on a panic, long after the frame stopped executing,
+// so the hook it registers holds the *address* of each variable it names
+// rather than a copy. That turns the variable into a memory slot, and nothing
+// in the pipeline freed what those slots held — a `Vec` named by an ensure
+// leaked its handle and its array, a `Shared` leaked its box. Delete the one
+// `ensure` line from any of these and the same function was clean, which is
+// what made it hard to see: the leak was in the safety net, not in the code
+// it was protecting.
+//
+// The second half is subtler and has nothing to do with capture. A cleanup
+// chain ends in `unreachable` because MIR has nothing left to say after it —
+// codegen turns that into the function's real return. Read as an abort, it
+// made every exit through an `ensure` look like a path the process never
+// leaves, and the release the assert lowering owes on the passing branch was
+// skipped as dead code. So `assert s == "…"` leaked its string, but only in a
+// function that also had an `ensure` somewhere.
+//
+// The leak gate is what these are for: they pass either way, and the count is
+// the test.
+
+import sync.Shared
+
+test "a Vec an ensure body pushes to is still freed" {
+    assert grown() == 1
+}
+
+func grown() -> u64 {
+    mut v = Vec.new()
+    v.push(1)
+    ensure v.push(2)
+    return v.len()
+}
+
+test "a Shared an ensure body writes to is still released" {
+    assert bumped() == 0
+}
+
+func bumped() -> i64 {
+    let s = Shared.new(0)
+    ensure s.set(1)
+    return s.get()
+}
+
+test "a string compared by a passing assert is released under an ensure" {
+    mut v = Vec.new()
+    ensure v.push(1)
+    // The string has to be a real heap allocation the frame holds a reference
+    // of its own to — built at runtime, not a literal, and read out of a
+    // temporary the frame gives back on the spot.
+    let held = boxed(4)!
+    assert held.text == "through the pipe, and out 4 the other side"
+}
+
+struct Held {
+    text: string
+}
+
+struct Missing {
+    what: string
+}
+
+extend Missing {
+    func message(self) -> string {
+        return "missing: {self.what}"
+    }
+}
+
+func boxed(n: i64) -> Held or Missing {
+    return Held { text: "through the pipe, and out {n} the other side" }
+}
+
+func main() {}
