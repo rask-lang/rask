@@ -132,6 +132,8 @@ RaskPool *rask_pool_new(int64_t elem_size) {
     // owns nothing.
     p->owned = NULL;
     p->owned_count = 0;
+    p->elem_type = NULL;
+    p->holds_resource = 0;
     return p;
 }
 

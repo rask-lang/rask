@@ -283,6 +283,7 @@ laptop finding it before.
 ```
 tests/differential.sh          # every suite file, both backends, compared
 tests/leak_gate.sh             # allocations never released, against the ledger
+tests/memcheck_gate.sh         # the other direction: freed early, read uninitialised
 tests/examples_gate.sh
 tests/projects_gate.sh
 tests/prototypes_gate.sh
