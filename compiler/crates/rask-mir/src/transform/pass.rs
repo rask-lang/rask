@@ -5,7 +5,7 @@
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
 //! threading a `PassContext` for metadata collection and diagnostic accumulation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use rask_diagnostics::Diagnostic;
 use crate::MirFunction;
 use crate::transform::bounds_elim::BoundsCheckElimPass;
@@ -24,6 +24,14 @@ pub struct PassContext {
     pub bounds_checks_eliminated: u32,
     /// BE2: Number of bounds checks retained (couldn't prove in-bounds).
     pub bounds_checks_retained: u32,
+    /// Every function name in the program, refreshed before each pass.
+    ///
+    /// A call to one of these is the program's own, never a spelling MIR
+    /// minted for itself — which is the only thing that tells the two apart
+    /// once they are both just a name (see `crate::own_names`). Refreshed
+    /// rather than computed once because passes add functions: the closure
+    /// environment glue arrives mid-pipeline.
+    pub own_functions: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -73,6 +81,7 @@ impl PassManager {
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
+            ctx.own_functions = fns.iter().map(|f| f.name.clone()).collect();
             pass.run(fns, &mut ctx);
             if dump_after.as_deref().is_some_and(|w| w == "all" || w == pass.name()) {
                 eprintln!("──── after {} ────", pass.name());
@@ -222,10 +231,10 @@ impl MirPass for StringRcInsertionPass {
     // Whole-program rather than per-function: releasing a struct that arrived
     // by value needs to know whether the callee kept it, and that answer is
     // read off every body (see `container_drop::params_a_callee_keeps`).
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         let kept = crate::container_drop::params_a_callee_keeps(fns);
         for func in fns.iter_mut() {
-            crate::transform::rc_insert::insert_rc_ops(func, &kept);
+            crate::transform::rc_insert::insert_rc_ops(func, &kept, &ctx.own_functions);
         }
     }
 }
@@ -246,8 +255,8 @@ pub struct StringRcElisionPass;
 
 impl MirPass for StringRcElisionPass {
     fn name(&self) -> &str { "string_rc_elide" }
-    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
-        crate::transform::rc_elide::elide_rc_ops(func);
+    fn run_function(&self, func: &mut MirFunction, ctx: &mut PassContext) {
+        crate::transform::rc_elide::elide_rc_ops(func, &ctx.own_functions);
     }
 }
 

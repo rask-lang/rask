@@ -20,11 +20,15 @@
 //
 // It is `Vec_debug` now, like the type (#1217).
 //
-// Still true for a head that really is a type name: a user function called
-// `string_shoutify` gets the same report and leaks its return value, because
-// `string` is a family whatever else is called that. Telling those apart needs
-// the metadata to know which names the program itself declares, which it has no
-// way to ask — that half is still open on the issue.
+// A head that really is a type name can't be fixed by renaming anything:
+// `string`, `char` and `cstring` are families whatever else is called that, so
+// `string_shoutify` got the same report and leaked its return value. Telling
+// those apart takes the one fact a name can't carry — whether the program
+// declares a function by that name. It does now: the two questions whose
+// unmapped answer leaks are asked through `rask_mir::own_names`, which checks
+// the program's own function names first and only then falls through to the
+// metadata. The report moved there with them, so a real unaccounted-for
+// spelling is still reported and the gate still fails on it.
 //
 // The gate that would otherwise not see this is `tests/spellings_gate.sh`: it
 // sweeps the corpus for that report, and nothing in the corpus was named this
@@ -56,6 +60,20 @@ func vec_joined(n: i64) -> string {
     return "a joined string long enough to live on the heap, {n}"
 }
 
+// The heads that are real type names. Each returns a heap string, because that
+// is where reading it as a family shows up as a leak rather than as a warning.
+func string_shoutify(s: string) -> string {
+    return "{s}!!!"
+}
+
+func char_describe(n: i64) -> string {
+    return "a character number {n}, spelled out at some length"
+}
+
+func cstring_label(n: i64) -> string {
+    return "a c-string label number {n}, spelled out at some length"
+}
+
 func main() {}
 
 test "a user function named like a stdlib family" {
@@ -72,4 +90,10 @@ test "and one that hands back a container" {
 test "and one that hands back a string" {
     let s = vec_joined(7)
     assert s.len() > 10
+}
+
+test "a head that is a real type name, which renaming can't help" {
+    assert string_shoutify("a long enough string to live on the heap").len() == 43
+    assert char_describe(65).len() > 20
+    assert cstring_label(7).len() > 20
 }

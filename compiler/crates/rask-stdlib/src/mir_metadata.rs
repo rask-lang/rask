@@ -524,7 +524,6 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     // A name that doesn't belong to an accountable family is an ordinary user
     // function, which owns what it returns like any other. That's the honest
     // answer, not a gap.
-    let family = accountable_family_of(base)?;
     // Otherwise: not declared, not listed, not a specialisation of anything.
     // Rather than guess — or crash a build over it — answer every question the
     // way that leaks.
@@ -533,16 +532,40 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     // container's storage is the caller's and the caller frees what the
     // container still holds; guess that it is the container's and nothing
     // frees it. One is a use-after-free, the other is a leak the leak gate
-    // already catches by name. So an unaccounted-for name leaks, loudly, and
+    // already catches by name. So an unaccounted-for name leaks, and
     // `tests/spellings_gate.sh` fails on the report so it gets a line here
     // instead of staying that way.
-    report_unmapped(base, family);
+    //
+    // The report is not made here. This function is handed a bare name and
+    // cannot tell a spelling MIR minted from a function the program declared
+    // with the same shape — `string_shoutify` read as one for a month, warning
+    // on every compile about the author's own code (#1217). The caller knows,
+    // so the caller reports: `rask_mir::own_names`.
+    accountable_family_of(base)?;
     None
+}
+
+/// The name and the family it would belong to, if it reads as a spelling MIR
+/// minted and nothing here accounts for it. `None` when something does, or when
+/// it looks like nothing this module owns.
+///
+/// Only the caller can finish the question, because a function the program
+/// itself declares answers all of this for itself.
+pub fn unmapped_spelling(qualified_name: &str) -> Option<(&str, &str)> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    if lookup(base).is_some()
+        || internal_spelling(base).is_some()
+        || declared_prefix_of(base).is_some()
+    {
+        return None;
+    }
+    accountable_family_of(base).map(|family| (base, family))
 }
 
 /// Note an internal spelling nothing accounts for. Once per name per process:
 /// a `Vec_get_unchecked` in a loop would otherwise bury the report.
-fn report_unmapped(base: &str, family: &str) {
+pub fn report_unmapped(base: &str, family: &str) {
     use std::sync::Mutex;
     static SEEN: Mutex<Option<HashSet<std::string::String>>> = Mutex::new(None);
     let mut seen = SEEN.lock().unwrap();
