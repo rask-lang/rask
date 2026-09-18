@@ -1890,10 +1890,8 @@ static void json_buf_append_escaped(struct RaskJsonBuf *b, const char *s, int64_
 
 RaskJsonBuf *rask_json_buf_new(void) {
     RaskJsonBuf *b = (RaskJsonBuf *)rask_alloc(sizeof(RaskJsonBuf));
-    b->cap = 256;
+    *b = (RaskJsonBuf){ .cap = 256 };
     b->data = (char *)rask_alloc(b->cap);
-    b->len = 0;
-    b->field_count = 0;
     json_buf_append_cstr(b, "{");
     return b;
 }
@@ -1951,10 +1949,8 @@ void rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf) {
 
 RaskJsonBuf *rask_json_buf_new_array(void) {
     RaskJsonBuf *b = (RaskJsonBuf *)rask_alloc(sizeof(RaskJsonBuf));
-    b->cap = 256;
+    *b = (RaskJsonBuf){ .cap = 256 };
     b->data = (char *)rask_alloc(b->cap);
-    b->len = 0;
-    b->field_count = 0;
     json_buf_append_cstr(b, "[");
     return b;
 }

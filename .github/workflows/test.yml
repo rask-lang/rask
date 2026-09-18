@@ -109,9 +109,9 @@ jobs:
 
   # ── What the runtime hands back, and what a learner reads.
   gates-memory:
-    name: gates-memory (leaks, tutorials)
+    name: gates-memory (leaks, memory errors, tutorials)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
@@ -147,6 +147,21 @@ jobs:
     - name: Memory leak gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
+
+    - name: Install valgrind
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: sudo apt-get update && sudo apt-get install -y valgrind
+
+    # The leak gate above measures one direction of "who frees this": memory
+    # nobody gave back. The other direction — giving it back too early, reading
+    # a field nobody wrote — had no instrument at all, in any gate or here, and
+    # everything found in it so far was found by a crash. Within a minute of
+    # first being pointed at the suite this found a pool built field by field
+    # that had grown two fields nobody initialised, which the leak gate, twelve
+    # other gates, this workflow and a 30x poisoned-stack run all called green.
+    - name: Memory error gate (valgrind)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/memcheck_gate.sh
 
     # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
     # by nothing at all, and seven of nineteen solutions didn't compile (#1030)

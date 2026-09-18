@@ -196,8 +196,13 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmtKind::ResourceRegister { dst, type_name, scope_depth } => {
-                write!(f, "_{} = resource_register({}, depth={})", dst.0, type_name, scope_depth)
+            MirStmtKind::ResourceRegister { dst, type_name, scope_depth, slot } => {
+                match slot {
+                    Some(l) => write!(f, "_{} = resource_register({} in _{}, depth={})",
+                                      dst.0, type_name, l.0, scope_depth),
+                    None => write!(f, "_{} = resource_register({}, depth={})",
+                                   dst.0, type_name, scope_depth),
+                }
             }
             MirStmtKind::ResourceConsume { resource_id } => {
                 write!(f, "resource_consume(_{})", resource_id.0)

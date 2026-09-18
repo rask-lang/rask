@@ -1906,6 +1906,25 @@ fn cells_this_frame_frees(
         .filter(|c| c.by_ref)
         .map(|c| c.local_id)
         .collect();
+    // An `ensure` body that touches a variable makes the same kind of cell: the
+    // hook's environment holds the slot's address so the body — which may run
+    // on a panic, long after this frame stopped executing — reads the live
+    // value rather than a copy. `ensure v.push(2)` was therefore a `Vec` in a
+    // slot nobody freed, and `ensure s.set(1)` a `Shared` box nobody released
+    // (#1224). The hook is not a `ClosureCreate`, so none of the reasoning
+    // below had ever been pointed at it.
+    by_ref_cells.extend(
+        func.blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::EnsureHookRegister { captures, .. } => Some(captures),
+                _ => None,
+            })
+            .flatten()
+            .filter(|c| c.by_ref)
+            .map(|c| c.local_id),
+    );
     by_ref_cells.extend(slots_whose_address_is_taken(func));
     if by_ref_cells.is_empty() {
         return Vec::new();
@@ -2093,24 +2112,17 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let return_blocks: Vec<usize> = func
-        .blocks
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| {
-            matches!(
-                b.terminator.kind,
-                MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
-            )
-        })
-        .map(|(i, _)| i)
-        .collect();
+    let return_blocks = exit_blocks(func);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
-    for block_idx in return_blocks {
+    for (block_idx, consumed_here) in return_blocks {
         let exit = func.blocks[block_idx].id;
         for (cell, holds, store_block) in cells {
             if !dom.dominates(*store_block, exit) {
+                continue;
+            }
+            // Already handed away on the path that reaches this exit.
+            if consumed_here.contains(cell) {
                 continue;
             }
             // A string's 16-byte header *is* the slot, so the release takes the
@@ -2151,6 +2163,120 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
     }
 }
 
+/// Where a free belongs: the blocks that are the last thing to run before the
+/// frame returns.
+///
+/// For a plain `return` that is the block itself. A `cleanup_return` is not:
+/// it names a chain of blocks that run *after* it, which is where an `ensure`
+/// body lives, and appending the free to the `cleanup_return` block frees the
+/// value the ensure body is about to use. So for those, follow the chain to its
+/// ends — codegen turns a cleanup block with nowhere left to go into the actual
+/// return, so those ends are the frame's real exits.
+///
+/// Each exit also carries the slots that must not be freed *there*: the ones
+/// an `ensure`'s registered resource names, on the arm reached because that
+/// resource turned out to be consumed. Freeing on that arm would be a second
+/// free of something already handed away.
+///
+/// Both blunter answers are wrong, and each was tried. Skipping the whole arm
+/// stands down every release in the function, not just the one at issue —
+/// `ensure out.close()` beside an explicit `out.close()` takes that arm on
+/// every run, and an unrelated `Vec` in the same function ended up freed by
+/// nobody. Freeing on it regardless leans on `find_escaping` having stood the
+/// cell down for any value anything hands away, which is true today and is
+/// still an argument rather than a check. `ResourceRegister` names its slot, so
+/// this asks the question directly: this arm, this slot, no free.
+fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
+    let index: HashMap<BlockId, usize> =
+        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    // The runtime token each registration hands back, and the slot it is about.
+    let registered: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ResourceRegister { dst, slot: Some(slot), .. } => Some((*dst, *slot)),
+            _ => None,
+        })
+        .collect();
+    // `_n = rask_resource_is_consumed(tok)`: the flag, and the slot it answers
+    // for. Its `then` arm is the one that must not free that slot.
+    let consumed_flag: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Call { dst: Some(dst), func: fref, args }
+                if fref.name.ends_with("rask_resource_is_consumed") =>
+            {
+                let tok = args.first().and_then(crate::analysis::uses::operand_local)?;
+                Some((*dst, *registered.get(&tok)?))
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut out: Vec<(usize, HashSet<LocalId>)> = Vec::new();
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    let mut queue: Vec<(BlockId, HashSet<LocalId>)> = Vec::new();
+    for block in &func.blocks {
+        match &block.terminator.kind {
+            MirTerminatorKind::Return { .. } => {
+                if seen.insert(block.id) {
+                    out.push((index[&block.id], HashSet::new()));
+                }
+            }
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
+                if cleanup_chain.is_empty() {
+                    if seen.insert(block.id) {
+                        out.push((index[&block.id], HashSet::new()));
+                    }
+                } else {
+                    queue.extend(cleanup_chain.iter().map(|b| (*b, HashSet::new())));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut walked: HashSet<(BlockId, bool)> = HashSet::new();
+    while let Some((bid, consumed)) = queue.pop() {
+        // Keyed on whether anything was consumed on the way, so a block reached
+        // both ways is walked both ways and keeps the narrower answer.
+        if !walked.insert((bid, !consumed.is_empty())) {
+            continue;
+        }
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        let next: Vec<(BlockId, HashSet<LocalId>)> = match &block.terminator.kind {
+            MirTerminatorKind::Branch { cond, then_block, else_block } => {
+                let taken = crate::analysis::uses::operand_local(cond).and_then(|c| consumed_flag.get(&c));
+                let mut then_set = consumed.clone();
+                if let Some(slot) = taken {
+                    then_set.insert(*slot);
+                }
+                vec![(*then_block, then_set), (*else_block, consumed.clone())]
+            }
+            _ => crate::analysis::cfg::successors(&block.terminator)
+                .into_iter()
+                .map(|b| (b, consumed.clone()))
+                .collect(),
+        };
+        if next.is_empty() {
+            match out.iter_mut().find(|(i, _)| *i == index[&bid]) {
+                // Reached twice: free only what neither path consumed.
+                Some((_, skip)) => skip.retain(|s| consumed.contains(s)),
+                None => {
+                    seen.insert(bid);
+                    out.push((index[&bid], consumed));
+                }
+            }
+        } else {
+            queue.extend(next);
+        }
+    }
+    out
+}
+
 /// Does every closure that captured `cell` only ever read it?
 ///
 /// The capture arrives in the closure as the cell's address, so a write back
@@ -2167,8 +2293,13 @@ fn cell_is_read_only_in_closures(
 ) -> bool {
     for block in &func.blocks {
         for stmt in &block.statements {
-            let MirStmtKind::ClosureCreate { func_name, captures, .. } = &stmt.kind else {
-                continue;
+            // An ensure hook's thunk is a closure body in everything that
+            // matters here: it reaches the cell through the same address and
+            // can write back through it.
+            let (func_name, captures) = match &stmt.kind {
+                MirStmtKind::ClosureCreate { func_name, captures, .. } => (func_name, captures),
+                MirStmtKind::EnsureHookRegister { thunk, captures } => (thunk, captures),
+                _ => continue,
             };
             for cap in captures.iter().filter(|c| c.local_id == cell) {
                 let Some(callee) = all.iter().find(|f| f.name == *func_name) else {

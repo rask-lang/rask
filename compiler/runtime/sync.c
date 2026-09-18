@@ -51,13 +51,13 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
     }
 
     RaskMutex *m = (RaskMutex *)rask_alloc(sizeof(RaskMutex));
-
+    *m = (RaskMutex){
+        .data_size = data_size,
+        .data = rask_alloc(data_size),
+        .payload_kind = RASK_BOX_PAYLOAD_NONE,
+    };
     pthread_mutex_init(&m->lock, NULL);
-    m->data_size = data_size;
-    m->data = rask_alloc(data_size);
-
     atomic_store(&m->refcount, 1);
-    m->payload_kind = RASK_BOX_PAYLOAD_NONE;
     memcpy(m->data, initial_data, (size_t)data_size);
     return m;
 }
@@ -102,13 +102,13 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
     }
 
     RaskShared *s = (RaskShared *)rask_alloc(sizeof(RaskShared));
-
+    *s = (RaskShared){
+        .data_size = data_size,
+        .data = rask_alloc(data_size),
+        .payload_kind = RASK_BOX_PAYLOAD_NONE,
+    };
     pthread_rwlock_init(&s->lock, NULL);
-    s->data_size = data_size;
-    s->data = rask_alloc(data_size);
-
     atomic_store(&s->refcount, 1);
-    s->payload_kind = RASK_BOX_PAYLOAD_NONE;
     memcpy(s->data, initial_data, (size_t)data_size);
     return s;
 }
@@ -241,11 +241,13 @@ static int64_t staged_begin(int64_t handle, void *payload, int64_t size,
         rask_panic("out of memory staging a locked value");
     }
     memcpy(scratch, payload, (size_t)size);
-    f->handle  = handle;
-    f->scratch = scratch;
-    f->payload = payload;
-    f->size    = size;
-    f->next    = tl_staged;
+    *f = (StagedFrame){
+        .handle = handle,
+        .scratch = scratch,
+        .payload = payload,
+        .size = size,
+        .next = tl_staged,
+    };
     tl_staged  = f;
     rask_access_push(discard, handle);
     return (int64_t)(intptr_t)scratch;
@@ -550,9 +552,11 @@ typedef struct {
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
     if (data_size <= 0) data_size = 8;
     RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
-    c->data_size = data_size;
-    c->payload_kind = payload_kind;
-    c->data = rask_alloc(data_size);
+    *c = (RaskCell){
+        .data_size = data_size,
+        .data = rask_alloc(data_size),
+        .payload_kind = payload_kind,
+    };
     if (data_ptr) {
         memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)data_size);
     } else {

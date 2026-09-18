@@ -147,9 +147,7 @@ static __thread int tl_in_unwind = 0;
 void rask_ensure_push(RaskEnsureFn fn, void *ctx) {
     EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
     if (!hook) return;
-    hook->fn   = fn;
-    hook->ctx  = ctx;
-    hook->next = tl_ensure_stack;
+    *hook = (EnsureHook){ .fn = fn, .ctx = ctx, .next = tl_ensure_stack };
     tl_ensure_stack = hook;
 }
 
@@ -241,9 +239,7 @@ static __thread HeldAccess *tl_held_access = NULL;
 void rask_access_push(RaskReleaseFn fn, int64_t handle) {
     HeldAccess *held = (HeldAccess *)rask_alloc(sizeof(HeldAccess));
     if (!held) return;
-    held->fn     = fn;
-    held->handle = handle;
-    held->next   = tl_held_access;
+    *held = (HeldAccess){ .fn = fn, .handle = handle, .next = tl_held_access };
     tl_held_access = held;
 }
 

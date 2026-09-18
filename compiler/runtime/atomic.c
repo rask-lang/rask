@@ -42,6 +42,7 @@ typedef struct { _Atomic(int64_t) value; } RaskAtomicInt;
 
 int64_t rask_atomic_int_new(int64_t val) {
     RaskAtomicInt *a = rask_alloc(sizeof(RaskAtomicInt));
+    *a = (RaskAtomicInt){0};
     atomic_init(&a->value, val);
     return (int64_t)(uintptr_t)a;
 }

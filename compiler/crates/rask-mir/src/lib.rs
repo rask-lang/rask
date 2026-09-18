@@ -28,6 +28,7 @@ pub mod layout_check;
 pub mod lower;
 mod const_free;
 mod container_drop;
+pub mod own_names;
 mod trait_drop;
 
 pub use builder::BlockBuilder;

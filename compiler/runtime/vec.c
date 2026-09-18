@@ -244,27 +244,24 @@ static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
 
 RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->data = NULL;
-    v->len = 0;
-    v->cap = 0;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .data = NULL,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     return v;
 }
 
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->len = 0;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    // CP1: a capacity hint pre-allocates but sets no ceiling.
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .elem_size = elem_size,
+        // CP1: a capacity hint pre-allocates but sets no ceiling.
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     if (cap > 0) {
         v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
@@ -281,13 +278,13 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
                               const int32_t *str_offs, int64_t n_str_offs) {
     if (elem_size <= 0) elem_size = 8;
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->len = count;
-    v->cap = count;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .len = count,
+        .cap = count,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);

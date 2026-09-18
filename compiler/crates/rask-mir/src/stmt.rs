@@ -30,6 +30,14 @@ pub enum MirStmtKind {
         dst: LocalId,
         type_name: String,
         scope_depth: u32,
+        /// The local the registration is about, when lowering knew one.
+        ///
+        /// `dst` is the runtime token; this is the variable the `ensure` names.
+        /// Without it a pass reading `rask_resource_is_consumed(dst)` can tell
+        /// that *something* was handed away on this path but not what, which is
+        /// the difference between standing one release down and standing every
+        /// release in the function down (#1224's first cut did the latter).
+        slot: Option<LocalId>,
     },
     ResourceConsume {
         resource_id: LocalId,

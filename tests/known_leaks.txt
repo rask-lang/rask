@@ -431,6 +431,3 @@ t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hand
                         # the file's own header says so. Zero is reachable — it waits on
                         # the elision knowing which box came back.
 
-t_subprocess_spawn.rk  # 1 allocation — an `ensure` body that captures a
-                        # refcounted value leaks that value's allocation, run or
-                        # cancelled. Nothing releases the hook's env. #1224.

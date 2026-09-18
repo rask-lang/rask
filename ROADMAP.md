@@ -34,22 +34,29 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 500 of 505, 5 registered red | `tests/differential.sh` |
-| Programs that leak | 31, holding 86 allocations | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 520 of 525, 5 registered red | `tests/differential.sh` |
+| Programs that leak | 1, holding 2 allocations, both deferred | `tests/leak_gate.sh` |
+| Programs memcheck finds an error in | 0 of 522 | `tests/memcheck_gate.sh` |
 | Examples with a pinned golden | 35 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 40 of 85 open issues | issue search |
+| Open bugs | 37 of 78 open issues | issue search |
 | Open design questions | 20 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
 All green.
 
+This table was a month stale when it was last checked — it claimed 31 leaking
+programs holding 86 allocations while the gate printed 0, and 500 of 505 while
+the suite had grown to 525. That is the failure the preamble above says this
+file exists to prevent, so: re-measure before quoting it, and if you quoted it,
+you have re-measured it.
+
 ## v0.3 — Memory is settled
 
 **Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
 
-The gate's condition is met — 514 suite files clean. That is the measure, not
+The gate's condition is met — 521 suite files clean. That is the measure, not
 the claim that nothing leaks, and what "settled" should mean beyond a green gate
 is the open question now.
 
@@ -58,6 +65,16 @@ is the polite version of that mistake — the same confusion releasing early
 instead is a use-after-free, which is what
 [#1161](https://github.com/rask-lang/rask/issues/1161) was. Ownership is the
 whole thesis of the language, so this goes first.
+
+**The impolite half now has a gate too.** Nothing measured it: no valgrind, no
+sanitiser, in any of the thirteen gates or in CI, so every use-after-free,
+double free and read of an uninitialised field found so far was found by a
+crash. `tests/memcheck_gate.sh` runs the same suite binaries under memcheck.
+Within a minute of first being pointed at the suite it found a live bug in
+week-old code — a pool built field by field that had grown two fields nobody
+initialised — which the leak gate, twelve other gates, CI and a 30× poisoned
+stack run had all called green. It is in CI beside the leak gate now, with
+`tests/known_memcheck.txt` as its ledger, currently empty.
 
 The gate reports a second number beside that one, and it isn't part of this
 milestone. It is 2 allocations now, down from 15, and one file:
@@ -94,6 +111,18 @@ that hands its old version into its new one, freed by nobody — and was found b
 running the repro rather than by the gate. It is fixed and now has a suite file,
 but the next one of its kind will hide in the same place.
 
+[#1224](https://github.com/rask-lang/rask/issues/1224) was the last one the
+gate still counted, and it was two bugs wearing one number. A variable an
+`ensure` body names becomes a memory slot — the hook holds its address, because
+the body may run on a panic long after the frame stopped — and nothing freed
+what those slots held: `ensure v.push(2)` leaked the vector. Underneath it, a
+cleanup chain ends in `unreachable` because MIR has nothing left to say after
+it, and codegen turns that into the real return; read as an abort, it made every
+exit through an `ensure` look like a path the process never leaves, so a release
+the assert lowering owes on the *passing* branch was dropped as dead code. That
+second one is why `assert s == "…"` leaked its string only in functions that
+also had an `ensure` somewhere.
+
 The list of leaks that were open without showing in the gate is empty now. Each
 one's repro was re-run on both backends and each has a suite file keeping it
 that way: [#1035](https://github.com/rask-lang/rask/issues/1035) (a string
@@ -108,13 +137,20 @@ struct fields), [#1157](https://github.com/rask-lang/rask/issues/1157)
 [#1158](https://github.com/rask-lang/rask/issues/1158) (`io.copy` through a
 boxed writer).
 
-What is left of the milestone is [#882](https://github.com/rask-lang/rask/issues/882):
-linearity is enforced at particular syntactic points, and the holes are wherever
-a point was missed. Every row of its own table is fixed. What it is still open
-for is the audit — where an obligation can be created, where control can leave a
-scope, and every way a value can be consumed, checked cell by cell instead of one
-repro at a time. Six holes turned up in a single session and not one was looked
-for, which is the reason to stop waiting for the seventh.
+[#882](https://github.com/rask-lang/rask/issues/882) was the last thing this
+milestone was waiting on, and the audit it asked for is done: four passes over
+the grid — `@resource`, `Heap<T>`, `Pool<Linear>`, then the crossed cells and
+the panic path — seventy-odd cells, six holes, all fixed. The result worth
+keeping is the shape. Not one was a wrong rule. Every one was a point nobody had
+put on the list: a `break`, a wrapper, a call form, a thunk. And the crossed
+cells were each caught by the fix for an uncrossed one, so the grid is
+`creation + exit + consumption` rather than the product of the three — the next
+pass doesn't have to be combinatorial.
+
+The issue stays open for one cell the audit couldn't reach: a resource crossing
+a *task* boundary when the task panics. That waits on
+[#299](https://github.com/rask-lang/rask/issues/299) — captures aren't unwound
+at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position
 

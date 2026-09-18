@@ -1115,6 +1115,7 @@ impl<'a> MirLowerer<'a> {
                             dst: resource_id,
                             type_name: name.clone(),
                             scope_depth: 0,
+                            slot: Some(*local_id),
                         }));
                         self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
                         // Store resource_id in local_meta so method calls on this
