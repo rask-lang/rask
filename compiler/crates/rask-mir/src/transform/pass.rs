@@ -125,6 +125,13 @@ impl PassManager {
         // registered the result as ours to free, and elision then made that a
         // free of the source — which is why the clones could never be listed in
         // `elem_strs::CTORS` (#1050, #1045).
+        // Right here, because the three passes below are the ones that read
+        // ownership metadata, and a name is only "treated as owning everything
+        // it touches" if one of them asks about it. Sweeping before inlining
+        // instead reported `Option_clone`, which inlining removes and nothing
+        // ever consults — a warning about a name that had no answer to get
+        // wrong.
+        pm.add(UnmappedSpellingReportPass);
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
@@ -136,7 +143,27 @@ impl PassManager {
         // above are what settle that (clone elision in particular).
         pm.add(ConstFreePass);
         pm.add(DeadCodeEliminationPass);
+        // Again at the end: `container_drop` adds the closure environment glue,
+        // whose calls no earlier sweep has seen.
+        pm.add(UnmappedSpellingReportPass);
         pm
+    }
+}
+
+/// Report every call naming a spelling MIR minted that nothing accounts for.
+///
+/// Prints rather than transforms. `tests/spellings_gate.sh` sweeps the corpus
+/// for the report, so a new mint nobody wrote a line for is a red gate instead
+/// of a silent leak. It used to be a side effect of `mir_metadata::declared()`,
+/// which every query goes through — but that function is handed a bare name and
+/// cannot tell a mint from the program's own `func string_shoutify` (#1217), so
+/// the question moved to where the program's function names are in hand.
+pub struct UnmappedSpellingReportPass;
+
+impl MirPass for UnmappedSpellingReportPass {
+    fn name(&self) -> &str { "unmapped_spelling_report" }
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::own_names::report_unmapped_calls(fns, &ctx.own_functions);
     }
 }
 

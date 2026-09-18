@@ -32,31 +32,36 @@ use std::collections::HashSet;
 
 /// Does this call hand back a view into storage its receiver keeps owning?
 pub fn returns_a_view(name: &str, own: &HashSet<String>) -> bool {
-    if own.contains(name) {
-        return false;
-    }
-    report_if_unmapped(name);
-    rask_stdlib::mir_metadata::returns_a_view(name)
+    !own.contains(name) && rask_stdlib::mir_metadata::returns_a_view(name)
 }
 
 /// Does this call keep the argument at `index`?
 pub fn keeps_argument(name: &str, index: usize, own: &HashSet<String>) -> bool {
-    if own.contains(name) {
-        return false;
-    }
-    report_if_unmapped(name);
-    rask_stdlib::mir_metadata::keeps_argument(name, index)
+    !own.contains(name) && rask_stdlib::mir_metadata::keeps_argument(name, index)
 }
 
-/// A spelling nothing accounts for, once per name per process.
+/// Report every call in the program whose name reads as a spelling MIR minted
+/// and that nothing accounts for. Once per name per process.
 ///
-/// `tests/spellings_gate.sh` sweeps the corpus for these, so a new mint that
-/// nobody wrote a line for is a red gate rather than a silent leak. Reported
-/// from here rather than from `mir_metadata` because this is the first place
-/// that knows the name isn't the program's own — which is the difference
-/// between a real gap and a warning about somebody's `func string_shoutify`.
-fn report_if_unmapped(name: &str) {
-    if let Some((base, family)) = rask_stdlib::mir_metadata::unmapped_spelling(name) {
-        rask_stdlib::mir_metadata::report_unmapped(base, family);
+/// `tests/spellings_gate.sh` sweeps the corpus for these, so a new mint nobody
+/// wrote a line for is a red gate rather than a silent leak. It used to come
+/// out of `mir_metadata::declared()`, which every query goes through — but that
+/// function is handed a bare name and cannot tell a mint from the program's own
+/// `func string_shoutify`, which is the bug this module exists for.
+///
+/// So the sweep is its own pass over the calls rather than a side effect of
+/// asking a question. The first cut hung it off the two queries this module
+/// wraps, which does cover every call today — `rc_elide` asks `returns_a_view`
+/// of every one — but only by accident of how that pass is written. A sweep
+/// says what it means and can't quietly narrow when somebody rewrites a pass.
+pub fn report_unmapped_calls(fns: &[crate::MirFunction], own: &HashSet<String>) {
+    for stmt in fns.iter().flat_map(|f| f.blocks.iter()).flat_map(|b| b.statements.iter()) {
+        let crate::MirStmtKind::Call { func: fref, .. } = &stmt.kind else { continue };
+        if own.contains(&fref.name) {
+            continue;
+        }
+        if let Some((base, family)) = rask_stdlib::mir_metadata::unmapped_spelling(&fref.name) {
+            rask_stdlib::mir_metadata::report_unmapped(base, family);
+        }
     }
 }
