@@ -137,13 +137,20 @@ struct fields), [#1157](https://github.com/rask-lang/rask/issues/1157)
 [#1158](https://github.com/rask-lang/rask/issues/1158) (`io.copy` through a
 boxed writer).
 
-What is left of the milestone is [#882](https://github.com/rask-lang/rask/issues/882):
-linearity is enforced at particular syntactic points, and the holes are wherever
-a point was missed. Every row of its own table is fixed. What it is still open
-for is the audit — where an obligation can be created, where control can leave a
-scope, and every way a value can be consumed, checked cell by cell instead of one
-repro at a time. Six holes turned up in a single session and not one was looked
-for, which is the reason to stop waiting for the seventh.
+[#882](https://github.com/rask-lang/rask/issues/882) was the last thing this
+milestone was waiting on, and the audit it asked for is done: four passes over
+the grid — `@resource`, `Heap<T>`, `Pool<Linear>`, then the crossed cells and
+the panic path — seventy-odd cells, six holes, all fixed. The result worth
+keeping is the shape. Not one was a wrong rule. Every one was a point nobody had
+put on the list: a `break`, a wrapper, a call form, a thunk. And the crossed
+cells were each caught by the fix for an uncrossed one, so the grid is
+`creation + exit + consumption` rather than the product of the three — the next
+pass doesn't have to be combinatorial.
+
+The issue stays open for one cell the audit couldn't reach: a resource crossing
+a *task* boundary when the task panics. That waits on
+[#299](https://github.com/rask-lang/rask/issues/299) — captures aren't unwound
+at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position
 
