@@ -327,8 +327,8 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
 
     RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
     RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
-    tx->chan = ch;
-    rx->chan = ch;
+    *tx = (RaskSender){ .chan = ch };
+    *rx = (RaskRecver){ .chan = ch };
 
     *tx_out = tx;
     *rx_out = rx;
@@ -372,7 +372,7 @@ int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out) {
 RaskSender *rask_sender_clone(RaskSender *tx) {
     atomic_fetch_add_explicit(&tx->chan->sender_count, 1, memory_order_relaxed);
     RaskSender *clone = (RaskSender *)rask_alloc(sizeof(RaskSender));
-    clone->chan = tx->chan;
+    *clone = (RaskSender){ .chan = tx->chan };
     return clone;
 }
 
@@ -425,13 +425,13 @@ int64_t rask_channel_new_i64(int64_t capacity) {
 
 int64_t rask_channel_get_tx(int64_t chan) {
     RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
-    tx->chan = (RaskChannel *)(intptr_t)chan;
+    *tx = (RaskSender){ .chan = (RaskChannel *)(intptr_t)chan };
     return (int64_t)(intptr_t)tx;
 }
 
 int64_t rask_channel_get_rx(int64_t chan) {
     RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
-    rx->chan = (RaskChannel *)(intptr_t)chan;
+    *rx = (RaskRecver){ .chan = (RaskChannel *)(intptr_t)chan };
     return (int64_t)(intptr_t)rx;
 }
 

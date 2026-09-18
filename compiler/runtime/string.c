@@ -1612,17 +1612,13 @@ typedef struct {
 
 int64_t rask_string_builder_new(void) {
     RaskStringBuilder *sb = (RaskStringBuilder *)rask_alloc(sizeof(RaskStringBuilder));
-    sb->data = NULL;
-    sb->len = 0;
-    sb->cap = 0;
+    *sb = (RaskStringBuilder){ .data = NULL };
     return (int64_t)(uintptr_t)sb;
 }
 
 int64_t rask_string_builder_with_capacity(int64_t cap) {
     RaskStringBuilder *sb = (RaskStringBuilder *)rask_alloc(sizeof(RaskStringBuilder));
-    sb->data = (char *)rask_alloc((size_t)cap);
-    sb->len = 0;
-    sb->cap = cap;
+    *sb = (RaskStringBuilder){ .data = (char *)rask_alloc((size_t)cap), .cap = cap };
     return (int64_t)(uintptr_t)sb;
 }
 

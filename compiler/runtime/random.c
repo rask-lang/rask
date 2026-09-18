@@ -48,6 +48,7 @@ static uint64_t rng_next_u64(RaskRng *rng) {
 
 RaskRng *rask_rng_new(void) {
     RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
+    *rng = (RaskRng){0};
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t seed = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
@@ -57,6 +58,7 @@ RaskRng *rask_rng_new(void) {
 
 RaskRng *rask_rng_from_seed(int64_t seed) {
     RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
+    *rng = (RaskRng){0};
     rng_seed(rng, (uint64_t)seed);
     return rng;
 }

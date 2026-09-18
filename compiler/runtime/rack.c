@@ -216,8 +216,11 @@ static void edge_register(int32_t kind, void *holder, void *target) {
         return;   // one record per (container, target), however many entries match
     }
     RackEdge *e = edge_alloc(r);
-    e->kind = kind;
-    e->holder = holder;
+    // Whole-struct: `edge_alloc` hands back either a fresh block or one off the
+    // free pool with a stale `prev`/`next` still in it, and `list_push` below
+    // is the only thing that overwrites those today. A field added to RackEdge
+    // would be garbage on one path and stale on the other.
+    *e = (RackEdge){ .kind = kind, .holder = holder };
     list_push(&n->heap_in, e);
 }
 

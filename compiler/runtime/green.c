@@ -648,7 +648,7 @@ void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
         fprintf(stderr, "rask: green handle alloc failed\n");
         abort();
     }
-    h->task = t;
+    *h = (GreenHandle){ .task = t };
     return h;
 }
 
@@ -934,9 +934,7 @@ void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
         fprintf(stderr, "rask: closure poll state alloc failed\n");
         abort();
     }
-    ps->func = func;
-    ps->env  = env;
-    ps->alloc_base = closure_ptr;
+    *ps = (ClosurePollState){ .func = func, .env = env, .alloc_base = closure_ptr };
 
     void *handle = rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
     GreenHandle *h = (GreenHandle *)handle;

@@ -293,18 +293,13 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq) {
     RaskMap *m = (RaskMap *)rask_alloc(sizeof(RaskMap));
-    m->key_size = key_size;
-    m->val_size = val_size;
-    m->len = 0;
-    m->tombstones = 0;
-    m->hash_fn = hash;
-    m->eq_fn = eq;
-    m->borrows = 0;
-    m->displaced = NULL;
-    m->key_strs.offsets = NULL;
-    m->key_strs.count = 0;
-    m->val_strs.offsets = NULL;
-    m->val_strs.count = 0;
+    *m = (RaskMap){
+        .key_size = key_size,
+        .val_size = val_size,
+        .hash_fn = hash,
+        .eq_fn = eq,
+        .displaced = NULL,
+    };
     map_alloc_tables(m, MAP_INITIAL_CAP);
     return m;
 }

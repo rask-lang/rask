@@ -94,13 +94,17 @@ static void epoll_submit_read(RaskIoEngine *e, int fd, void *buf, size_t len,
     // Slow path: register with epoll
     PendingOp *op = (PendingOp *)malloc(sizeof(PendingOp));
     if (!op) { cb(ud, -1, ENOMEM); return; }
-    op->type = OP_READ;
-    op->fd   = fd;
-    op->buf  = buf;
-    op->len  = len;
-    op->cb   = cb;
-    op->ud   = ud;
-    op->next = NULL;
+    // Whole-struct, so `deadline_ns` — which only a timeout op uses — is zero
+    // rather than whatever the allocator left, and a field added to PendingOp
+    // later can't be read here before anyone writes it.
+    *op = (PendingOp){
+        .type = OP_READ,
+        .fd   = fd,
+        .buf  = buf,
+        .len  = len,
+        .cb   = cb,
+        .ud   = ud,
+    };
 
     pthread_mutex_lock(&ee->lock);
     if (fd >= 0 && fd < MAX_FDS) {
@@ -124,13 +128,17 @@ static void epoll_submit_write(RaskIoEngine *e, int fd, const void *buf,
 
     PendingOp *op = (PendingOp *)malloc(sizeof(PendingOp));
     if (!op) { cb(ud, -1, ENOMEM); return; }
-    op->type = OP_WRITE;
-    op->fd   = fd;
-    op->buf  = (void *)buf;
-    op->len  = len;
-    op->cb   = cb;
-    op->ud   = ud;
-    op->next = NULL;
+    // Whole-struct, so `deadline_ns` — which only a timeout op uses — is zero
+    // rather than whatever the allocator left, and a field added to PendingOp
+    // later can't be read here before anyone writes it.
+    *op = (PendingOp){
+        .type = OP_WRITE,
+        .fd   = fd,
+        .buf  = (void *)buf,
+        .len  = len,
+        .cb   = cb,
+        .ud   = ud,
+    };
 
     pthread_mutex_lock(&ee->lock);
     if (fd >= 0 && fd < MAX_FDS) {
@@ -154,13 +162,17 @@ static void epoll_submit_accept(RaskIoEngine *e, int listen_fd,
 
     PendingOp *op = (PendingOp *)malloc(sizeof(PendingOp));
     if (!op) { cb(ud, -1, ENOMEM); return; }
-    op->type = OP_ACCEPT;
-    op->fd   = listen_fd;
-    op->buf  = NULL;
-    op->len  = 0;
-    op->cb   = cb;
-    op->ud   = ud;
-    op->next = NULL;
+    // Whole-struct, so `deadline_ns` — which only a timeout op uses — is zero
+    // rather than whatever the allocator left, and a field added to PendingOp
+    // later can't be read here before anyone writes it.
+    *op = (PendingOp){
+        .type = OP_ACCEPT,
+        .fd   = listen_fd,
+        .buf  = NULL,
+        .len  = 0,
+        .cb   = cb,
+        .ud   = ud,
+    };
 
     pthread_mutex_lock(&ee->lock);
     if (listen_fd >= 0 && listen_fd < MAX_FDS) {
@@ -177,14 +189,15 @@ static void epoll_submit_timeout(RaskIoEngine *e, uint64_t ns,
 
     PendingOp *op = (PendingOp *)malloc(sizeof(PendingOp));
     if (!op) { cb(ud, -1, ENOMEM); return; }
-    op->type = OP_TIMEOUT;
-    op->fd   = -1;
-    op->buf  = NULL;
-    op->len  = 0;
-    op->cb   = cb;
-    op->ud   = ud;
-    op->deadline_ns = clock_ns() + ns;
-    op->next = NULL;
+    *op = (PendingOp){
+        .type = OP_TIMEOUT,
+        .fd   = -1,
+        .buf  = NULL,
+        .len  = 0,
+        .cb   = cb,
+        .ud   = ud,
+        .deadline_ns = clock_ns() + ns,
+    };
 
     pthread_mutex_lock(&ee->lock);
     PendingOp **pp = &ee->timeouts;

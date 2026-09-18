@@ -119,21 +119,19 @@ static void pool_grow(RaskPool *p, int64_t new_cap) {
 
 RaskPool *rask_pool_new(int64_t elem_size) {
     RaskPool *p = (RaskPool *)rask_alloc(sizeof(RaskPool));
-    p->pool_id = g_next_pool_id++;
-    p->_pad = 0;
-    p->elem_size = elem_size;
-    p->slot_stride = compute_stride(elem_size);
-    p->cap = 0;
-    p->len = 0;
-    p->slots = NULL;
-    p->free_head = -1;
-    p->max_cap = -1;  // unbounded by default
-    // The element shape arrives with the first insert; until then the pool
-    // owns nothing.
-    p->owned = NULL;
-    p->owned_count = 0;
-    p->elem_type = NULL;
-    p->holds_resource = 0;
+    // The element shape arrives with the first insert, so `owned`, `elem_type`
+    // and `holds_resource` start empty — and start empty by being left out of
+    // this literal rather than by a line each. Two of them were added to the
+    // struct and not to the constructor, and every pool then read two fields of
+    // allocator garbage until the memory-error gate found it.
+    *p = (RaskPool){
+        .pool_id = g_next_pool_id++,
+        .elem_size = elem_size,
+        .slot_stride = compute_stride(elem_size),
+        .slots = NULL,
+        .free_head = -1,
+        .max_cap = -1,  // unbounded by default
+    };
     return p;
 }
 

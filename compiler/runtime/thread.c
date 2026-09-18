@@ -84,25 +84,24 @@ static atomic_int detached_outstanding;
 
 static RaskTaskState *state_new(void) {
     RaskTaskState *s = (RaskTaskState *)rask_alloc(sizeof(RaskTaskState));
+    // Assigned whole rather than field by field, which is what stops a field
+    // added later from being read as whatever the allocator left there. C99
+    // zero-fills every member this literal doesn't name, so "nobody wrote a
+    // line for it" means NULL and 0 instead of a pointer `state_release` would
+    // free. That is #1223: `closure_base` was added to this struct and the
+    // pooled path never set it, so the release freed garbage and ran drop glue
+    // on it. `thread` is in the same position today — only the spawn that
+    // creates a real thread writes it — and needs no line here now.
+    *s = (RaskTaskState){
+        .panic_msg = NULL,
+        .result = 0,
+        .task_id = rask_next_task_id(),
+    };
     atomic_init(&s->refcount, 2);  // handle + thread
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
-    s->panic_msg = NULL;
-    s->result = 0;
-    // Both of these are set again by whichever spawn built this state, and
-    // both are read by `state_release` whether or not that happened — a pooled
-    // job never sets `closure_base`, because the pool frees the closure itself.
-    // This struct is filled in field by field rather than zeroed, so a field
-    // added without a line here is read as whatever the allocator last left
-    // there: `state_release` freed a garbage pointer and ran drop glue on it.
-    s->result_owned = 0;
-    s->closure_base = NULL;
-    s->pooled = 0;
     pthread_cond_init(&s->done_cond, NULL);
     pthread_mutex_init(&s->report_lock, NULL);
-    s->detached = 0;
-    s->counted_detached = 0;
-    s->task_id = rask_next_task_id();
     return s;
 }
 
@@ -205,9 +204,7 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     RaskTaskState *state = state_new();
 
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
-    entry->func  = func;
-    entry->env   = env;
-    entry->state = state;
+    *entry = (TaskEntry){ .func = func, .env = env, .state = state };
 
     int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
@@ -218,7 +215,7 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     }
 
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    h->state = state;
+    *h = (RaskTaskHandle){ .state = state };
     return h;
 }
 
@@ -391,8 +388,7 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
-    ctx->func = func;
-    ctx->env = env;
+    *ctx = (RaskSpawnCtx){ .func = func, .env = env };
 
     RaskTaskHandle *h = rask_task_spawn(closure_spawn_entry, ctx);
     if (h && h->state) {
@@ -421,7 +417,7 @@ RaskTaskState *rask_task_state_new_pooled(void) {
 
 RaskTaskHandle *rask_task_handle_for(RaskTaskState *state) {
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    h->state = state;
+    *h = (RaskTaskHandle){ .state = state };
     return h;
 }
 
