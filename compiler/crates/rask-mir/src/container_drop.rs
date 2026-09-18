@@ -2112,13 +2112,17 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let return_blocks: Vec<usize> = exit_blocks(func);
+    let return_blocks = exit_blocks(func);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
-    for block_idx in return_blocks {
+    for (block_idx, consumed_here) in return_blocks {
         let exit = func.blocks[block_idx].id;
         for (cell, holds, store_block) in cells {
             if !dom.dominates(*store_block, exit) {
+                continue;
+            }
+            // Already handed away on the path that reaches this exit.
+            if consumed_here.contains(cell) {
                 continue;
             }
             // A string's 16-byte header *is* the slot, so the release takes the
@@ -2169,53 +2173,102 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
 /// ends — codegen turns a cleanup block with nowhere left to go into the actual
 /// return, so those ends are the frame's real exits.
 ///
-/// Every arm of the cleanup path counts, including the one taken when the
-/// `ensure`'s registered resource turned out to be consumed. The first cut
-/// skipped that arm, reasoning that a consumed value must not be freed twice —
-/// but the arm is about the *registered resource*, not about the cell being
-/// freed, and the two are rarely the same. `ensure out.close()` beside an
-/// explicit `out.close()` takes that arm on every run, and skipping it left an
-/// unrelated `Vec` in the same function freed by nobody. Whether the cell's own
-/// value was handed away is a question `find_escaping` already answered, before
-/// any of this: it stands the whole cell down, so a cell that reaches here is
-/// one nothing takes on any path.
-fn exit_blocks(func: &MirFunction) -> Vec<usize> {
+/// Each exit also carries the slots that must not be freed *there*: the ones
+/// an `ensure`'s registered resource names, on the arm reached because that
+/// resource turned out to be consumed. Freeing on that arm would be a second
+/// free of something already handed away.
+///
+/// Both blunter answers are wrong, and each was tried. Skipping the whole arm
+/// stands down every release in the function, not just the one at issue —
+/// `ensure out.close()` beside an explicit `out.close()` takes that arm on
+/// every run, and an unrelated `Vec` in the same function ended up freed by
+/// nobody. Freeing on it regardless leans on `find_escaping` having stood the
+/// cell down for any value anything hands away, which is true today and is
+/// still an argument rather than a check. `ResourceRegister` names its slot, so
+/// this asks the question directly: this arm, this slot, no free.
+fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
     let index: HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    // The runtime token each registration hands back, and the slot it is about.
+    let registered: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ResourceRegister { dst, slot: Some(slot), .. } => Some((*dst, *slot)),
+            _ => None,
+        })
+        .collect();
+    // `_n = rask_resource_is_consumed(tok)`: the flag, and the slot it answers
+    // for. Its `then` arm is the one that must not free that slot.
+    let consumed_flag: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Call { dst: Some(dst), func: fref, args }
+                if fref.name.ends_with("rask_resource_is_consumed") =>
+            {
+                let tok = args.first().and_then(crate::analysis::uses::operand_local)?;
+                Some((*dst, *registered.get(&tok)?))
+            }
+            _ => None,
+        })
+        .collect();
 
-    let mut out: Vec<usize> = Vec::new();
+    let mut out: Vec<(usize, HashSet<LocalId>)> = Vec::new();
     let mut seen: HashSet<BlockId> = HashSet::new();
-    let mut queue: Vec<BlockId> = Vec::new();
+    let mut queue: Vec<(BlockId, HashSet<LocalId>)> = Vec::new();
     for block in &func.blocks {
         match &block.terminator.kind {
             MirTerminatorKind::Return { .. } => {
                 if seen.insert(block.id) {
-                    out.push(index[&block.id]);
+                    out.push((index[&block.id], HashSet::new()));
                 }
             }
             MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
                 if cleanup_chain.is_empty() {
                     if seen.insert(block.id) {
-                        out.push(index[&block.id]);
+                        out.push((index[&block.id], HashSet::new()));
                     }
                 } else {
-                    queue.extend(cleanup_chain.iter().copied());
+                    queue.extend(cleanup_chain.iter().map(|b| (*b, HashSet::new())));
                 }
             }
             _ => {}
         }
     }
 
-    let mut walked: HashSet<BlockId> = HashSet::new();
-    while let Some(bid) = queue.pop() {
-        if !walked.insert(bid) {
+    let mut walked: HashSet<(BlockId, bool)> = HashSet::new();
+    while let Some((bid, consumed)) = queue.pop() {
+        // Keyed on whether anything was consumed on the way, so a block reached
+        // both ways is walked both ways and keeps the narrower answer.
+        if !walked.insert((bid, !consumed.is_empty())) {
             continue;
         }
         let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
-        let next = crate::analysis::cfg::successors(&block.terminator);
+        let next: Vec<(BlockId, HashSet<LocalId>)> = match &block.terminator.kind {
+            MirTerminatorKind::Branch { cond, then_block, else_block } => {
+                let taken = crate::analysis::uses::operand_local(cond).and_then(|c| consumed_flag.get(&c));
+                let mut then_set = consumed.clone();
+                if let Some(slot) = taken {
+                    then_set.insert(*slot);
+                }
+                vec![(*then_block, then_set), (*else_block, consumed.clone())]
+            }
+            _ => crate::analysis::cfg::successors(&block.terminator)
+                .into_iter()
+                .map(|b| (b, consumed.clone()))
+                .collect(),
+        };
         if next.is_empty() {
-            if seen.insert(bid) {
-                out.push(index[&bid]);
+            match out.iter_mut().find(|(i, _)| *i == index[&bid]) {
+                // Reached twice: free only what neither path consumed.
+                Some((_, skip)) => skip.retain(|s| consumed.contains(s)),
+                None => {
+                    seen.insert(bid);
+                    out.push((index[&bid], consumed));
+                }
             }
         } else {
             queue.extend(next);

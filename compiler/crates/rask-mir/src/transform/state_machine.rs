@@ -589,11 +589,12 @@ fn remap_stmt(
         MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
             closure: remap_id(*closure, map),
         },
-        MirStmtKind::ResourceRegister { dst, type_name, scope_depth } => {
+        MirStmtKind::ResourceRegister { dst, type_name, scope_depth, slot } => {
             MirStmtKind::ResourceRegister {
                 dst: remap_id(*dst, map),
                 type_name: type_name.clone(),
                 scope_depth: *scope_depth,
+                slot: slot.map(|s| remap_id(s, map)),
             }
         }
         MirStmtKind::ResourceConsume { resource_id } => MirStmtKind::ResourceConsume {
