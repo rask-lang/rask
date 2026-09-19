@@ -24,8 +24,7 @@ Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary 
 to keep its contents on the heap, so it's owned by one name like anything else.
 
 What breaks this shape is one of three things: another part of the program needs the same value,
-your values need to refer to each other, or the value is big enough that moving it costs. A box
-for each.
+your values need to refer to each other, or the value can't sit where it is. A box for each.
 
 ## When another part needs the same value: `Shared`
 
@@ -102,12 +101,41 @@ That's the part worth keeping. Deleting a node doesn't leave `hall.exit` aiming 
 and it doesn't leave you an index that now means some other room. Every link into the deleted node
 reads as absent, so the `if` above simply takes its other branch.
 
-## Big, and moved a lot: `Heap`
+## Recursive, or big and moved often: `Heap`
 
 A `Heap<T>` puts the value somewhere else and keeps only its address. An address is the same small
-size however big the value is, so moving the box copies one address instead of every byte.
+size however big the value is, and that one fact is what makes it useful twice.
 
-That matters once a value is large and gets handed around. This one is six fields wide:
+The first use is recursion. A struct that contains itself has no size: a `Step` holding a `Step`
+holds a `Step`, and the number never settles. Hold the address instead and it settles at once,
+because an address doesn't grow.
+
+<!-- test: run-interp | wash\nrinse -->
+```rask
+import memory.Heap
+
+struct Step {
+    label: string
+    next: Heap<Step>?
+}
+
+func main() {
+    let second = Heap(Step { label: "rinse", next: none })
+    let first = Heap(Step { label: "wash", next: second })
+    ensure drop(first)
+
+    println("{(*first).label}")
+    if (*first).next? as n {
+        println("{(*n).label}")
+    }
+}
+```
+
+`second` is committed by the next line moving it into `first`, and storing it in that field hands
+it over for good: the chain belongs to `first` now, so releasing `first` releases all of it.
+
+The second use is size. Moving a large value copies every byte of it, and moving the box copies one
+address. This snapshot is six fields wide:
 
 ```rask
 {{#include ../../../../examples/boxes.rk:heaptype}}
@@ -148,8 +176,8 @@ Four questions, asked in order. Stop at the first yes.
 4. Does another part of the program need the same value, and does it change? `Shared`.
 
 One more question sits outside that list, and mixing it in is what makes the set feel harder than
-it is: is the value large and moved around a lot? That's `Heap`, and it's independent of all four
-answers above.
+it is: does the value need to be on the heap, because it's recursive or large and moved often?
+That's `Heap`, and it's independent of all four answers above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
 each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are

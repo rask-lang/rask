@@ -92,6 +92,27 @@ what it would have cost are design writing, and they live in `specs/` and
 learning `Shared` needs the reason the lock is visible. They don't need to know it was
 ever up for debate.
 
+## Write the language, not the compiler's current mood
+
+A chapter describes the language as it's designed. A bug in one backend is a bug, not a
+smaller language, and it never decides what a page is allowed to teach.
+
+When the two backends disagree the interpreter is the reference, so a block that runs
+correctly there is correct. Mark it `<!-- test: run-interp | expected -->`, which exists
+for this, and file the native gap. The block stays verified, the chapter stays honest,
+and the marker is what the fix later deletes.
+
+What this rules out is quietly teaching less. The boxes chapter dropped recursive `Heap`
+for a day because the recursive case doesn't lower on native ([#1234]), and what the page
+taught instead was a smaller language that happens to match one backend's bugs. A reader
+can't tell the difference between "Rask doesn't do this" and "Rask does this and the
+compiler is behind", and only one of those is true.
+
+Caveats about what's broken don't belong in a chapter either. They date instantly and
+they're the issue tracker's job.
+
+[#1234]: https://github.com/rask-lang/rask/issues/1234
+
 ## The book teaches the ruling, not just the rule
 
 The specs are normative and say what the rule is. A chapter's job is the part the spec
