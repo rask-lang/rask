@@ -57,16 +57,25 @@ func main() {
     // ANCHOR_END: callsite
 
     // ANCHOR: copy
-    // Small values (16 bytes or less, all-Copy fields) copy instead of moving,
-    // so handing one to `take` leaves the caller's copy alone.
+    // Small values (16 bytes or less, all-Copy fields) are copied, so the
+    // callee gets its own and nothing is marked at either end.
     let fee = 5
     let doubled = charge_twice(fee)
     println("doubled to {doubled}, and fee is still {fee}")
     // ANCHOR_END: copy
+
+    // ANCHOR: copytake
+    // A Copy value handed to a generic `take` is copied too. `Vec.push` is
+    // declared `push(mutate self, take item: T)`, and `fee` survives both.
+    mut charges: Vec<i64> = []
+    charges.push(fee)
+    charges.push(fee * 2)
+    println("charged {charges[0]} and {charges[1]}, and fee is still {fee}")
+    // ANCHOR_END: copytake
 }
 
 // ANCHOR: copyfn
-func charge_twice(take amount: i64) -> i64 {
+func charge_twice(amount: i64) -> i64 {
     return amount * 2
 }
 // ANCHOR_END: copyfn

@@ -5,7 +5,7 @@ issues = []
 
 contract = """
 @resource
-struct Session { id: i32 }
+struct Session { number: i32 }
 
 extend Session {
     func open(id: i32) -> Session

@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Must not compile: `take` promises the caller loses the value, and an `i64`
+// is copied — they don't. Quoted by docs/book/src/guide/passing-values.md;
+// rendering in .out.
+
+func charge_twice(take amount: i64) -> i64 {
+    return amount * 2
+}
+
+func main() {
+    let fee = 5
+    println("{charge_twice(fee)}")
+}

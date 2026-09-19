@@ -3590,7 +3590,7 @@ impl<'a> MirLowerer<'a> {
                 let values: [(&str, MirOperand); 6] = [
                     ("start", start_op),
                     ("end", end_op),
-                    ("step", one),
+                    ("stride", one),
                     ("inclusive", MirOperand::Constant(MirConst::Bool(*inclusive))),
                     ("descending", MirOperand::Constant(MirConst::Bool(false))),
                     ("bounded", MirOperand::Constant(MirConst::Bool(end.is_some()))),

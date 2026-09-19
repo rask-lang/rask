@@ -12,17 +12,23 @@ func test_structural_mutation() {
 }
 
 // LP16: passing for-mutate item to take parameter
+//
+// The element type is a `Vec` rather than a `string` because `take` only means
+// something for a type that is given away: a `string` is Copy, and `take s:
+// string` is the PM6c error rather than the rule this file is about.
 
-func consume(take s: string) {
-    println(s)
+func consume(take tags: Vec<string>) {
+    println("{tags.len()}")
 }
 
 func test_take_item() {
-    mut items = Vec.new<string>()
-    items.push("hello")
+    mut rows: Vec<Vec<string>> = Vec.new()
+    mut first: Vec<string> = Vec.new()
+    first.push("hello")
+    rows.push(first)
 
-    for mutate item in items {
-        consume(own item)      // ERROR LP16: take from borrowed element
+    for mutate row in rows {
+        consume(own row)       // ERROR LP16: take from borrowed element
     }
 }
 

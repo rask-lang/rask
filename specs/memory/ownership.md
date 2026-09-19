@@ -16,6 +16,24 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 | **O2: Move on assignment** | For large types (>16 bytes), assignment transfers the value — the original variable becomes unusable |
 | **O3: Invalid after move** | Using the original variable after a move is a compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
+| **O11: A const can't be given away** | A module-level `const` is one value the whole program reads, so no function owns it. Handing a non-Copy const to a `take` parameter, or storing it into an aggregate, is a compile error at that line; `.clone()` is the fix. A Copy const — a scalar, a `string`, a small struct — is copied into the `take` and needs nothing written (`mem.parameters/PM6b`) |
+
+O11 is PM6 one step out: a borrowed parameter can't be given away because the
+caller keeps it, and a const can't because *everyone* keeps it. The error has
+to land at the consume rather than at the next read — tracked as a move it was
+per function, so the same line was rejected in a body that read the const again
+and accepted in one that didn't.
+
+The clone is written for the same reason every other one is. Producing a second
+`Vec` allocates, and an allocation is visible in the source.
+
+```rask
+const NAMES: Vec<string> = ["a", "b"]
+
+take_it(NAMES)            // error: NAMES isn't yours to give
+take_it(NAMES.clone())    // the allocation is written
+```
+
 
 > **Note:** `string` is Copy (immutable, refcounted, 16 bytes) — assignment copies the header and bumps the refcount. No `.clone()` needed. O2/O4 apply to collections (`Vec`, `Map`) and other heap-owning types.
 

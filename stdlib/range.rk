@@ -4,7 +4,7 @@
 //
 // `0..n`, `0..=n`, `0..`, `.rev()` and `.step(s)` are all this one struct with
 // different fields — not seven types, each of which would need its own copy of
-// the sequence surface. `start`, `end` and `step` are values; direction,
+// the sequence surface. `start`, `end` and `stride` are values; direction,
 // inclusivity and boundedness are flags.
 //
 // A range is its own chain head (SEQ48), the same way a collection is: the
@@ -23,7 +23,8 @@ public struct Range<T> {
     /// The bound. Meaningless when `bounded` is false.
     public end: T
     /// Distance between values. Always positive — `descending` carries the sign.
-    public step: T
+    /// Named apart from the `step(s)` builder below: one name per member (M7).
+    public stride: T
     /// Does `end` count as a value.
     public inclusive: bool
     /// Walk down from `start` instead of up.
@@ -55,14 +56,14 @@ extend Range<T> where T: Integer {
     func last_value(self) -> T {
         if self.descending {
             if self.inclusive {
-                return self.end + (self.start - self.end) % self.step
+                return self.end + (self.start - self.end) % self.stride
             }
-            return self.end + 1 + (self.start - self.end - 1) % self.step
+            return self.end + 1 + (self.start - self.end - 1) % self.stride
         }
         if self.inclusive {
-            return self.end - (self.end - self.start) % self.step
+            return self.end - (self.end - self.start) % self.stride
         }
-        return self.end - 1 - (self.end - 1 - self.start) % self.step
+        return self.end - 1 - (self.end - 1 - self.start) % self.stride
     }
 
     /// The same values, other way round (RV1). Ascending becomes descending
@@ -79,7 +80,7 @@ extend Range<T> where T: Integer {
             return Range {
                 start: self.start,
                 end: self.start,
-                step: self.step,
+                stride: self.stride,
                 inclusive: false,
                 descending: false,
                 bounded: true,
@@ -89,7 +90,7 @@ extend Range<T> where T: Integer {
             return Range {
                 start: self.start,
                 end: self.start,
-                step: self.step,
+                stride: self.stride,
                 inclusive: false,
                 descending: false,
                 bounded: true,
@@ -98,7 +99,7 @@ extend Range<T> where T: Integer {
         return Range {
             start: self.last_value(),
             end: self.start,
-            step: self.step,
+            stride: self.stride,
             inclusive: true,
             descending: !self.descending,
             bounded: true,
@@ -122,7 +123,7 @@ extend Range<T> where T: Integer {
                 return Range {
                     start: self.start,
                     end: self.start,
-                    step: 0 - s,
+                    stride: 0 - s,
                     inclusive: false,
                     descending: false,
                     bounded: true,
@@ -131,7 +132,7 @@ extend Range<T> where T: Integer {
             return Range {
                 start: self.start,
                 end: self.end,
-                step: 0 - s,
+                stride: 0 - s,
                 inclusive: self.inclusive,
                 descending: true,
                 bounded: self.bounded,
@@ -140,7 +141,7 @@ extend Range<T> where T: Integer {
         return Range {
             start: self.start,
             end: self.end,
-            step: s,
+            stride: s,
             inclusive: self.inclusive,
             descending: self.descending,
             bounded: self.bounded,
@@ -164,7 +165,7 @@ extend Range<T> where T: Integer {
                     if i == last {
                         return
                     }
-                    i = i - self.step
+                    i = i - self.stride
                 }
             }
             loop {
@@ -179,7 +180,7 @@ extend Range<T> where T: Integer {
                         return
                     }
                 }
-                i = i + self.step
+                i = i + self.stride
             }
         }
     }

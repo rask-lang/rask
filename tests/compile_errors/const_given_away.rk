@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: handing a module-level `const` to something that takes ownership
+//
+// A `const` is one value the whole program reads, so no function owns it
+// (mem.ownership/O11). Giving it away here would leave every other reader
+// holding something that's gone.
+//
+// It used to be tracked as a move, which put the error in the wrong place and
+// made it come and go: the move was per function, so this same line was
+// rejected in a body that read `NAMES` again afterwards and accepted silently
+// in one that didn't. Two functions could each "consume" the same const and
+// both ran (#1079). The error belongs at the consumption, where the fix is.
+//
+// A Copy const never reaches this rule — a scalar, a `string` or a small struct
+// is copied into the `take` rather than given (mem.parameters/PM6b). That's why
+// `GREETING` and `LIMIT` below go through with nothing written. Neither sink
+// writes `take`: PM6c forbids it on a Copy type, and PM6b is about what happens
+// to the argument, not about what the signature says.
+
+const NAMES: Vec<string> = ["a", "b"]
+const GREETING: string = "hi"
+const LIMIT: i64 = 3
+
+func consume_vec(take v: Vec<string>) -> u64 {
+    return v.len()
+}
+
+func read_string(s: string) -> u64 {
+    return s.len()
+}
+
+func read_int(n: i64) -> i64 {
+    return n
+}
+
+// ERROR: a const isn't yours to give away — clone it
+func gives_it_away() -> u64 {
+    return consume_vec(NAMES)
+}
+
+// ERROR: still an error in a function that never reads the const again
+func gives_it_away_again() -> u64 {
+    return consume_vec(NAMES)
+}
+
+// The way to write it:
+//
+//   func fine() -> u64 {
+//       return consume_vec(NAMES.clone())
+//   }
+
+// Copy consts are copied, not given — nothing to write, and the const is still
+// there on the next line.
+func copies_are_fine() -> u64 {
+    let a = read_string(GREETING)
+    let b = read_int(LIMIT)
+    return a + b.wrap<u64>() + GREETING.len()
+}

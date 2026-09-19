@@ -1993,6 +1993,44 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("type aliases cannot form cycles — each alias must eventually resolve to a concrete type (T6)")
             }
 
+            CallableFieldNotAMethod { ty, field, span } => {
+                Diagnostic::error(format!("`{}` is a field on `{}`, not a method", field, ty))
+                    .with_code("E0405")
+                    .with_primary(*span, "the name is a field — the call is what doesn't resolve")
+                    .with_help(format!(
+                        "read it first, then call it: `let f = <receiver>.{}` and `f(…)`", field
+                    ))
+                    .with_fix(format!("`(<receiver>.{})(…)`, or bind it to a name first", field))
+                    .with_why("method calls resolve against the type's extend blocks, and a field isn't in one. A single swappable behaviour is usually a trait — `any Handler` — which gives the call the spelling it wants [type.structs/M6]")
+            }
+
+            TakeOnCopyType { param, ty, span } => {
+                Diagnostic::error(format!(
+                    "`take` on `{}` takes nothing — a Copy value is copied, not given", ty
+                ))
+                .with_code("E0404")
+                .with_primary(*span, format!("`{}` is a `{}`, and the caller keeps theirs", param, ty))
+                .with_help(format!(
+                    "the signature promises the caller loses `{}`, and they don't", param
+                ))
+                .with_fix(format!("drop the keyword: `{}: {}`", param, ty))
+                .with_why("a mode marker is read at the call site to know what happens to the argument, so one that says the wrong thing is worse than none [mem.parameters/PM6c]")
+            }
+
+            FieldMethodCollision { ty, name, span } => {
+                Diagnostic::error(format!(
+                    "`{}` has both a field and a method named `{}`", ty, name
+                ))
+                .with_code("E0403")
+                .with_primary(*span, "this name is already a field")
+                .with_help(format!(
+                    "a field holding a function is callable, so `{}` would mean the field in one line and the method in the next",
+                    name
+                ))
+                .with_fix("rename the method, or the field")
+                .with_why("a type's fields and methods share one namespace, so a call site never has to know which of two things it reached [type.structs/M7]")
+            }
+
             PrivateFieldAccess { ty, field, span } => {
                 Diagnostic::error(format!("field `{}` on `{}` is private", field, ty))
                     .with_code("E0396")
@@ -2946,6 +2984,20 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     .with_secondary(*declared_at, format!("`{}` is declared `mutate`", name))
                     .with_fix(fix)
                     .with_why("a `mutate` parameter is exclusive access, not ownership: the caller keeps the value and reads it after the call. Taking it out and writing a replacement back is what the mode is for — leaving the slot empty hands them a hole [mem.parameters/PM2, PM6]".to_string())
+            }
+
+            ConsumeConst { name, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and a const isn't anyone's to give", s),
+                    None => "this takes ownership, and a const isn't anyone's to give".to_string(),
+                };
+                Diagnostic::error(format!("cannot give away `{}` — it's a const", name))
+                    .with_code("E0883")
+                    .with_primary(self.span, label)
+                    .with_fix(format!("hand over a copy: `{}.clone()`", name))
+                    .with_why(
+                        "every function reads the same const, so giving it away here would leave the rest holding nothing. The clone is written because it allocates [mem.ownership/O11]".to_string()
+                    )
             }
 
             ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {

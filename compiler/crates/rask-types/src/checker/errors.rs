@@ -676,6 +676,30 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// M6: `h.run(5)` where `run` is a field holding a function, not a method.
+    #[error("`{field}` is a field on `{ty}`, not a method")]
+    CallableFieldNotAMethod {
+        ty: String,
+        field: String,
+        span: Span,
+    },
+
+    /// PM6c: `take` written on a type that is Copy at every instantiation.
+    #[error("`take` on `{ty}` takes nothing — a Copy value is copied, not given")]
+    TakeOnCopyType {
+        param: String,
+        ty: String,
+        span: Span,
+    },
+
+    /// M7: a field and a method on one type share a name.
+    #[error("`{ty}` has both a field and a method named `{name}`")]
+    FieldMethodCollision {
+        ty: String,
+        name: String,
+        span: Span,
+    },
+
     /// V5: private field accessed outside extend block
     #[error("field `{field}` on `{ty}` is private")]
     PrivateFieldAccess {
@@ -1311,6 +1335,9 @@ impl TypeError {
             | EntryPointContext { .. }
             | SpawnOutsideBlock { .. }
             | CyclicTypeAlias { .. }
+            | CallableFieldNotAMethod { .. }
+            | TakeOnCopyType { .. }
+            | FieldMethodCollision { .. }
             | PrivateFieldAccess { .. }
             | MissingFields { .. }
             | TypeCalledAsFunction { .. }

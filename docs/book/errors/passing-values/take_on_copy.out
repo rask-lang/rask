@@ -1,0 +1,9 @@
+error[E0404]: `take` on `i64` takes nothing — a Copy value is copied, not given
+  --> docs/book/errors/passing-values/take_on_copy.rk:6:24
+    |
+  6 | func charge_twice(take amount: i64) -> i64 {
+    |                        ^^^^^^ `amount` is a `i64`, and the caller keeps theirs
+    = fix: drop the keyword: `amount: i64`
+    = why: a mode marker is read at the call site to know what happens to the
+          argument, so one that says the wrong thing is worse than none
+          [mem.parameters/PM6c]
