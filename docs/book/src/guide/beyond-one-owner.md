@@ -23,8 +23,8 @@ it, and when `hero` goes out of scope the whole thing is released. Nothing more 
 Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary value that happens
 to keep its contents on the heap, so it's owned by one name like anything else.
 
-So what breaks it? Another part of the program needs the same value. Or your values need to
-refer to each other. Or the value can't sit where it is.
+So what breaks it? Another part of the program needs the same value. Or your values need to refer
+to each other. Or a type needs to contain itself.
 
 ## When another part needs the same value: `Shared`
 
