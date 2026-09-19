@@ -24,7 +24,8 @@ Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary 
 to keep its contents on the heap, so it's owned by one name like anything else.
 
 What breaks this shape is one of three things: another part of the program needs the same value,
-your values need to refer to each other, or the value can't sit where it is. A box for each.
+your values need to refer to each other, or the value is big enough that moving it costs. A box
+for each.
 
 ## When another part needs the same value: `Shared`
 
@@ -101,23 +102,27 @@ That's the part worth keeping. Deleting a node doesn't leave `hall.exit` aiming 
 and it doesn't leave you an index that now means some other room. Every link into the deleted node
 reads as absent, so the `if` above simply takes its other branch.
 
-## Recursive, or big and moved often: `Heap`
+## Big, and moved a lot: `Heap`
 
 A `Heap<T>` puts the value somewhere else and keeps only its address. An address is the same small
-size no matter how big the value is, and that one fact is what makes it useful twice.
+size however big the value is, so moving the box copies one address instead of every byte.
 
-A struct that contains itself has no size: a `Node` holding a `Node` holds a `Node`, and the
-number never settles. Hold the address instead and it settles immediately, because the address
-doesn't grow. And when a value is large and gets moved a lot, moving it means copying its address
-rather than all of its bytes.
+That matters once a value is large and gets handed around. This one is six fields wide:
 
 ```rask
 {{#include ../../../../examples/boxes.rk:heaptype}}
 ```
 
 ```rask
+{{#include ../../../../examples/boxes.rk:heapfn}}
+```
+
+```rask
 {{#include ../../../../examples/boxes.rk:heapuse}}
 ```
+
+Passing `shot` to `describe` moves the address. The six fields never get copied, and the caller
+gives the value up, which is what `take` in that signature says.
 
 `Heap` is the one box that has to be released by hand, because it's the one that owns an allocation
 of its own with no container around it to do the job. Rask has no destructors, so nothing runs
@@ -143,8 +148,8 @@ Four questions, asked in order. Stop at the first yes.
 4. Does another part of the program need the same value, and does it change? `Shared`.
 
 One more question sits outside that list, and mixing it in is what makes the set feel harder than
-it is: does the value need to be on the heap, because it's recursive or large and moved often?
-That's `Heap`, and it's independent of all four answers above.
+it is: is the value large and moved around a lot? That's `Heap`, and it's independent of all four
+answers above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
 each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are
@@ -153,7 +158,13 @@ most programs.
 ## One thing to watch
 
 A box is not the only place a value can be held in place while you look at it. Reading an element
-of a `Vec` in a `with` block does the same thing, and growing the `Vec` underneath it is refused:
+of a `Vec` in a `with` block does the same thing:
+
+```rask
+{{#include ../../errors/boxes/push_inside_with.rk:body}}
+```
+
+That doesn't build, and the `push` is why:
 
 ```text
 {{#include ../../errors/boxes/push_inside_with.out}}

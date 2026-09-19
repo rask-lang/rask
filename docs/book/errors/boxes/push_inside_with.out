@@ -1,10 +1,10 @@
 error[E0808]: cannot push `items` inside `with` block
-  --> docs/book/errors/boxes/push_inside_with.rk:13:9
+  --> docs/book/errors/boxes/push_inside_with.rk:14:9
     |
- 11 |     with items[0] as first {
+ 12 |     with items[0] as first {
     |     ------------- element borrowed here
    ...
- 13 |         items.push(Item { count: 9 })
+ 14 |         items.push(Item { count: 9 })
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ push not allowed inside with block
     = fix: move the structural mutation outside the with block
     = why: items can reallocate, invalidating the borrowed element. Pool handles

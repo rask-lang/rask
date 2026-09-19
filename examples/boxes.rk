@@ -32,12 +32,23 @@ struct Room {
 // ANCHOR_END: racktype
 
 // ANCHOR: heaptype
-struct Frame {
+struct Snapshot {
     label: string
+    author: string
+    notes: string
     width: i64
     height: i64
+    revision: i64
 }
 // ANCHOR_END: heaptype
+
+// ANCHOR: heapfn
+func describe(take s: Heap<Snapshot>) -> string {
+    let line = "{(*s).label} r{(*s).revision} by {(*s).author}"
+    drop(s)
+    return line
+}
+// ANCHOR_END: heapfn
 
 func main() {
     // ANCHOR: plainuse
@@ -94,9 +105,15 @@ func main() {
     // ANCHOR_END: rackdelete
 
     // ANCHOR: heapuse
-    let frame = Heap(Frame { label: "canvas", width: 1920, height: 1080 })
-    ensure drop(frame)
+    let shot = Heap(Snapshot {
+        label: "canvas",
+        author: "ada",
+        notes: "first pass",
+        width: 1920,
+        height: 1080,
+        revision: 7,
+    })
 
-    println("{(*frame).label} is {(*frame).width}x{(*frame).height}")
+    println("{describe(shot)}")
     // ANCHOR_END: heapuse
 }
