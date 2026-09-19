@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A type parameter whose name is longer than one letter (#1247).
+//
+// Monomorphization carries the checker's recorded types across to each copy,
+// substituting the type parameters as it goes. What counted as a type
+// parameter was a single uppercase letter — `T`, `K`, `V` — so `Item`,
+// `Output` and `Elem` were carried through untouched, and the leftover name
+// was then resolved against real types further down.
+//
+// `Output` is the one that bit, because `os.Output` exists and has two string
+// fields:
+//
+//     public struct Output {
+//         public status: i32      //  8 with padding
+//         public stdout: string   // 16
+//         public stderr: string   // 16
+//     }
+//
+// So `Vec<Output>` built inside `map_all<Item, Output>` was constructed with
+// 40-byte elements carrying that struct's two string offsets. Releasing the
+// vector walked each `i32` as if it were an `os.Output` and freed two pointers
+// that were never strings:
+//
+//     Vec_new(40, 41)     inside the generic — os.Output's size and tag
+//     Vec_new(8, 0)       the same vector built outside — owns nothing
+//
+// The values came out right and the program segfaulted on the way out, which
+// is why this hid: it depends on what is on the stack, so it crashed about one
+// run in forty and passed the rest. `RASK_POISON_STACK=1` makes it every time.
+//
+// It is also `SYNTAX.md`'s own generics example, so the spec's illustration
+// segfaulted as written. `t_week_generic_param_shadowing.rk` covers the
+// name-resolution half of the same collision (#915); this file covers what
+// monomorphization does with the name afterwards.
+//
+// Spec: specs/types/generics.md — a type parameter is whatever the `<>` list
+// declares, regardless of how it is spelled.
+
+func map_all<Item, Output>(list: Vec<Item>, f: func(Item) -> Output) -> Vec<Output> {
+    mut out: Vec<Output> = Vec.new()
+    for it in list {
+        out.push(f(it))
+    }
+    return out
+}
+
+// The control: same shape, multi-letter parameters that shadow nothing.
+//
+// Not `map_all_free`, which is what this was first called: a generic whose
+// name ends in `_free` and takes a Vec leaks its result (#1248), and the
+// control would have been red for a reason that has nothing to do with
+// what it is here to check.
+func map_all_plain<Elem, Made>(list: Vec<Elem>, f: func(Elem) -> Made) -> Vec<Made> {
+    mut out: Vec<Made> = Vec.new()
+    for it in list {
+        out.push(f(it))
+    }
+    return out
+}
+
+test "type.generics — a Vec of a shadowing type parameter holds its own elements" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let doubled: Vec<i32> = map_all(ints, |x| x * 2)
+    assert doubled.len() == 3
+    assert doubled[0] == 2
+    assert doubled[2] == 6
+}
+
+// A string payload is the one that says the element tag is right rather than
+// merely harmless: the elements really do own an allocation each, so a vector
+// told it holds something else releases the wrong thing.
+
+test "type.generics — a Vec of strings built inside the generic" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = map_all(ints, |x| "n{x}")
+    assert labels.len() == 3
+    assert labels[0] == "n1"
+    assert labels.join(",") == "n1,n2,n3"
+}
+
+test "type.generics — the same function with names nothing claims" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = map_all_plain(ints, |x| "n{x}")
+    assert labels.join(",") == "n1,n2,n3"
+}
+
+// Two instantiations of one generic, in one program. The copies each carry
+// their own substitution, and it was sharing a layout across them that #814
+// and #820 were about — this keeps that honest for multi-letter names too.
+
+test "type.generics — two instantiations of the same multi-letter generic" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = map_all(ints, |x| "n{x}")
+    let doubled: Vec<i32> = map_all(ints, |x| x * 2)
+    assert labels[1] == "n2"
+    assert doubled[1] == 4
+}
+
+func main() {}
