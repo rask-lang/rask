@@ -65,7 +65,7 @@ TYPES = {
 
     # A growable container. Non-Copy, heap-backed, released by the frame.
     # `Vec.from` rather than a bare `[7, 42]` on purpose: the literal only
-    # takes its shape from an annotated `let` right now (#1231), so a bare one
+    # takes its shape from an annotated `let` right now (#1233), so a bare one
     # would make eight cells measure that single inference gap instead of
     # their own carriers.
     "vec": dict(
