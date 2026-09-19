@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a returned closure may capture (#869, mem.closures/SL3, SL4).
+//
+// Two bugs wearing one number, and they were the same bug.
+//
+// The false positive: this was rejected —
+//
+//     let xs: Vec<i64> = [1, 2, 3]
+//     let a = |extra| {
+//         mut sum = extra
+//         sum = sum + xs.len().wrap<i64>()
+//         return sum
+//     }
+//     println("{a(0)}")
+//
+//     error[E0862]: closure `sum` captures scoped borrow and cannot escape
+//
+// `sum` is an i64, the closure is called two lines later and escapes nothing.
+// The scope limit was published into a single `Option<u32>` slot before the
+// closure's body was walked, with "record scope limit for the next binding to
+// pick up". The next binding was the closure's own first `mut`, so *that local*
+// got registered as the scope-limited closure. Remove either half of the repro
+// — the capture or the closure's own local — and it went away.
+//
+// The false negative underneath: the tiwaz middleware compiled only *because*
+// its own `let start = Instant.now()` swallowed the flag before the return-site
+// check could see it. Keying the limit to the closure's own node fixes the
+// first and exposes the second, which is why they had to be answered together.
+//
+// SL3 is the answer: a returned closure may capture the function's lent
+// parameters — they're the caller's, and still there when the call returns —
+// and not its locals or its `take` parameters, which die with the frame. SL4
+// carries the limit to the caller, which is what makes `logging(handler)` work
+// without a lifetime anywhere. PM6 is what makes SL4 sound: a borrowed
+// parameter can't be stored or given away, so the return value is the only way
+// it reaches the caller again.
+//
+// The rejections live in tests/compile_errors/returned_closure_escapes.rk.
+
+func logging(next: func(i64) -> i64) -> func(i64) -> i64 {
+    return |x| next(x) + 1
+}
+
+func metrics(next: func(i64) -> i64) -> func(i64) -> i64 {
+    return |x| next(x) * 10
+}
+
+func apply(f: func(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+// SL4's other half: a `take` argument is given away, so it lends the result
+// nothing. Recording a limit from it made `return f` below an escape — over a
+// vector the closure owns, with no borrow left to outlive. Found in review.
+func make_counter(take tags: Vec<string>) -> func() -> u64 {
+    return own || tags.len()
+}
+
+test "a closure with a Copy local of its own, over a non-Copy capture" {
+    let xs: Vec<i64> = [1, 2, 3]
+    let a = |extra| {
+        mut sum = extra
+        sum = sum + xs.len().wrap<i64>()
+        return sum
+    }
+    assert a(0) == 3
+    assert a(10) == 13
+}
+
+test "a returned closure may capture a lent parameter" {
+    let base = |x| x + 1
+    let wrapped = logging(base)
+    assert wrapped(10) == 12
+}
+
+test "middleware chains, which is the shape SL4 is for" {
+    let base: Vec<i64> = [1, 2]
+    let inner = |x| x + base.len().wrap<i64>()
+    let chained = metrics(logging(inner))
+    // 10 + 2 = 12, +1 = 13, *10 = 130
+    assert chained(10) == 130
+}
+
+test "a take argument lends the returned closure nothing" {
+    mut tags: Vec<string> = Vec.new()
+    tags.push("a")
+    tags.push("b")
+    let counter = make_counter(tags)
+    assert counter() == 2
+}
+
+test "a call that answers something other than a closure carries no limit" {
+    let base: Vec<i64> = [1, 2]
+    let inner = |x| x + base.len().wrap<i64>()
+    let n = apply(inner, 10)
+    assert n == 12
+}

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a closure leaving the function over something the frame owns
+//
+// SL3 draws the line at who owns the capture, not at whether `own` is written.
+// A lent parameter is the caller's and outlives the call, so a returned closure
+// may borrow one — that's the whole middleware shape, and the sequence surface
+// rests on it (`vec.filter(|u| u.active)` is a closure over a borrowed
+// receiver). A local and a `take` parameter belong to the frame, and the frame
+// is going away.
+//
+// The passing side is in tests/suite/t_returned_closure_captures.rk.
+
+struct Holder {
+    public f: func(i64) -> i64
+}
+
+func make(base: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + base.len().wrap<i64>()
+}
+
+func consume(take f: func(i64) -> i64) -> i64 {
+    return f(1)
+}
+
+// ERROR: the closure borrows a local, which dies at the return
+func returns_over_a_local() -> func(i64) -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let f = |x| x + tags.len().wrap<i64>()
+    return f
+}
+
+// ERROR: a `take` parameter is the frame's too — it goes when the frame goes
+func returns_over_a_take(take tags: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + tags.len().wrap<i64>()
+}
+
+// ERROR: SL4 carries the limit out of `make`, and `v` dies here
+func returns_a_borrowed_result() -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    return make(v)
+}
+
+// ERROR: storing one in an aggregate outlives the borrow the same way
+func stores_in_a_struct() -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let h = Holder { f: |x| x + tags.len().wrap<i64>() }
+    // Read the field, then call it: `h.f(1)` is M6's error, which is a
+    // different rule and would report here on top of the one this tests.
+    let g = h.f
+    return g(1)
+}
+
+// ERROR: a `take` parameter keeps it, and the caller can't see where it went
+func hands_it_to_a_take() -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let f = |x| x + tags.len().wrap<i64>()
+    return consume(f)
+}
+
+// The way to write each of these is `own`, which moves the capture in:
+//
+//   func fine() -> func(i64) -> i64 {
+//       let tags: Vec<i64> = [1, 2, 3]
+//       return own |x| x + tags.len().wrap<i64>()
+//   }

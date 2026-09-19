@@ -7,8 +7,10 @@ public struct Thread { }
 
 extend Thread {
     /// Spawn an OS thread. Returns a handle that must be joined or detached.
+    ///
+    /// `take f`: the thread keeps the closure past this call (PM3).
     @native("rask_closure_spawn")
-    public func spawn(f: func() -> T) -> ThreadHandle<T> {}
+    public func spawn(take f: func() -> T) -> ThreadHandle<T> {}
 }
 
 /// Handle to a spawned OS thread. Must be joined or detached.
@@ -31,6 +33,8 @@ public struct ThreadPool { }
 
 extend ThreadPool {
     /// Spawn work on the thread pool. Returns a handle.
+    ///
+    /// `take f`: the pool keeps the closure past this call (PM3).
     @native("rask_threadpool_spawn")
-    public func spawn(f: func() -> T) -> ThreadHandle<T> {}
+    public func spawn(take f: func() -> T) -> ThreadHandle<T> {}
 }

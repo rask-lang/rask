@@ -127,6 +127,21 @@ pub enum OwnershipErrorKind {
         collection: Option<String>,
     },
 
+    /// mem.ownership/O11: a `const` can't be given away.
+    ///
+    /// Every function in the program reads the same const, so no one of them
+    /// owns it. Tracking a consume as a move made the error land at the next
+    /// read *in that function* and vanish entirely in a function that didn't
+    /// read it again — the same line was an error in one body and fine in the
+    /// next (#1079). A Copy const never reaches here: a scalar, a `string` or a
+    /// small struct is copied into the `take`, under PM6b.
+    #[error("cannot give away `{name}` — it's a const")]
+    ConsumeConst {
+        name: String,
+        /// What the value was being handed to, when it has a name.
+        sink: Option<String>,
+    },
+
     /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
     /// lent out can't be given away.
     ///

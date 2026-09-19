@@ -55,24 +55,54 @@ func make_filter(tags: Vec<string>) -> |Entry| -> bool {
 ```
 
 Without `own`, a closure can still escape — it just can't outlive what it borrowed (MC3).
-Returning one *through a binding* is where SL2 fires:
+
+## What a returned closure may capture
+
+| Rule | Description |
+|------|-------------|
+| **SL3: Parameters, not locals** | A non-`own` closure that leaves the function may capture the function's *lent* parameters — `param: T`, `mutate param: T`, `self` — and not its locals or its `take` parameters. A lent parameter is the caller's and is still there when the call returns; a local and a `take` are the frame's, and the frame is going away |
+| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away, and handing a scope-limited closure to a `take` parameter is the SL2 error instead |
+
+SL3 is the difference between these two:
 
 ```rask
-let f = || process(tags)
-return f     // error[E0813]: closure `f` captures scoped borrow and cannot escape
-```
+func logging(next: |Request| -> Response) -> |Request| -> Response {
+    return |request| { … next(request) … }   // fine — `next` is the caller's
+}
 
-Returning the literal directly is fine, and the whole sequence protocol is built on it:
-
-```rask
-public func in_order(self) -> Sequence<i32> {
-    return |emit| { walk(self.root, emit) }    // SEQ36 — the slot says what this is
+func broken() -> |i64| -> i64 {
+    let tags = get_tags()
+    return |x| x + tags.len()                // error: `tags` dies here
 }
 ```
 
-The difference isn't the keyword, it's whether the borrow outlives the closure. `self` here
-outlives the call; a local `tags` does not. `type.sequence/SEQ26` says the same thing from the
-other side: a sequence capturing a block-scoped borrow is limited to that borrow's scope.
+and it is what the whole sequence protocol rests on — `vec.filter(|u| u.active)` is
+`Vec.filter(self, pred) -> Sequence<T>` returning a closure over a borrowed receiver. Requiring
+`own` there would cost every adapter chain a `take self`.
+
+SL4 is why nobody writes a lifetime. The signature already says it: the return type is a
+closure and the parameters say `take` or not, so the caller works out what the result is
+limited to without reading the body. `type.sequence/SEQ26` is this rule under another name —
+a sequence over a borrowed source is limited to that source, so it can be consumed in place
+and not stored.
+
+What makes SL4 sound is PM6: a borrowed parameter can't be given away or stored in an
+aggregate, so the *only* way one reaches the caller again is the return value. There is
+nowhere else for the borrow to go.
+
+**Which means the signature has to be true.** SL4 reads parameter modes and nothing else —
+there is no "and if the mode can't be determined, assume the worst" clause, because a rule
+whose meaning depends on what the compiler managed to look up is not a rule. `spawn` is the
+case that proves it: it is declared
+
+```rask
+public func spawn(take f: func() -> T) -> TaskHandle<T>
+```
+
+and the `take` is not decoration. The task keeps the closure and runs it after the call
+returns, so a scope-limited closure handed to `spawn` is the SL2 error, and that falls out of
+the signature rather than out of `spawn` being special. It said `f: func() -> T` for a long
+time — a borrow — which is how `conc.tasks/T3` came to be enforced by a guess.
 
 I had this written as a flat "scope-limited closures cannot escape", which is what SL1-SL2 were
 originally drafted against. That was never what the compiler did, and it contradicted the escape

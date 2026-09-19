@@ -3256,6 +3256,86 @@ impl TypeChecker {
         self.types.get_type_id(&qualified).map(|_| qualified)
     }
 
+    /// M6: `h.run(5)` where `run` is a field holding a function.
+    ///
+    /// A field is not a method, so this is an error — but "no method `run`
+    /// found" is the wrong sentence, because the name is right there. Say what
+    /// is actually true and name the two ways to call it.
+    ///
+    /// Answers `None` when the receiver isn't a struct with a callable field of
+    /// that name, so the ordinary method resolver carries on and reports what
+    /// it always has.
+    fn check_callable_field(
+        &mut self,
+        recv: &Type,
+        name: &str,
+        span: Span,
+    ) -> Option<Type> {
+        let (type_id, type_args) = match recv {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (*base, args.clone()),
+            _ => return None,
+        };
+        let Some(TypeDef::Struct {
+            name: struct_name,
+            type_params,
+            fields,
+            methods,
+            private_fields,
+            ..
+        }) = self.types.get(type_id)
+        else {
+            return None;
+        };
+        // A method of this name wins outright — and M7 means there isn't one.
+        // Kept as a guard so a stdlib type that grows a same-named field later
+        // can't silently reroute its own calls.
+        if methods.iter().any(|m| m.name == name) {
+            return None;
+        }
+        let field_ty = fields.iter().find(|(f, _)| f == name).map(|(_, t)| t.clone())?;
+        let struct_name = struct_name.clone();
+        let is_private = private_fields.contains(&name.to_string());
+        let subst: std::collections::HashMap<&str, Type> = type_params
+            .iter()
+            .map(|p| p.as_str())
+            .zip(type_args.iter().filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            }))
+            .collect();
+        let field_ty = Self::substitute_type_params(&field_ty, &subst);
+        // Only a function-typed field reads as an attempted call. Anything else
+        // stays the method resolver's problem, reported the way it always has
+        // been — `h.name(5)` on a `string` field is a plain unknown method.
+        let Type::Fn { ret, .. } = self.resolve_named(&field_ty) else {
+            return None;
+        };
+        let ret = *ret;
+
+        let inside_own_extend = matches!(
+            self.current_self_type.as_ref().map(|t| self.resolve_named(t)),
+            Some(Type::Named(id)) | Some(Type::Generic { base: id, .. }) if id == type_id
+        );
+        if is_private && !inside_own_extend {
+            self.errors.push(TypeError::PrivateFieldAccess {
+                ty: struct_name,
+                field: name.to_string(),
+                span,
+            });
+            return Some(Type::Error);
+        }
+
+        self.errors.push(TypeError::CallableFieldNotAMethod {
+            ty: struct_name,
+            field: name.to_string(),
+            span,
+        });
+        // The field's own result type, so one rejected call doesn't cascade
+        // into "couldn't work out the type of" on every line downstream.
+        return Some(ret);
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         call_id: NodeId,
@@ -3714,6 +3794,13 @@ impl TypeChecker {
 
         // Raw pointer methods — resolve directly instead of through HasMethod constraints
         let resolved_obj = self.ctx.apply(&obj_ty);
+
+        // M6: `h.run(5)` where `run` is a function-typed field. Rejected, with
+        // a message that says the name is a field and how to call it — rather
+        // than "no method `run` found", which says it isn't there at all.
+        if let Some(ret) = self.check_callable_field(&resolved_obj, method, span) {
+            return ret;
+        }
         if let Type::RawPtr(ref inner) = resolved_obj {
             if let Some(ret) = self.check_raw_ptr_method(inner, method, &arg_types, span) {
                 return ret;

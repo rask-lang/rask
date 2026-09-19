@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 @resource
 struct Session {
-    id: i32
+    number: i32
 }
 
 extend Session {
     func open(id: i32) -> Session {
-        return Session { id }
+        return Session { number: id }
     }
 
     func id(self) -> i32 {
-        return self.id
+        return self.number
     }
 
     func close(take self) -> i32 {
-        return self.id
+        return self.number
     }
 }
 

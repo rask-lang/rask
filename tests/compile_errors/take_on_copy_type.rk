@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `take` written on a type that is Copy at every instantiation
+//
+// PM4 and PM5 make the mode marker syntactic so that reading the call site is
+// enough. That only pays off if the marker is true, and `take` on an `i64` is
+// the one that isn't: the caller is told they lose the value, and PM6b copies
+// it instead. A missing marker sends the reader to the signature; a wrong one
+// doesn't send them anywhere, because they have already been told.
+//
+// The check is on the spelling, for the types whose Copy-ness can't change.
+// A struct's can — it stops being Copy the day it grows past sixteen bytes —
+// so `take p: Point` below is legal and says something true either way. A type
+// parameter's can't be known at all, which is where PM6b lives: `Vec.push` is
+// `push(mutate self, take item: T)`, and at `T = i64` the push copies.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+// ERROR: `take` on `i64` takes nothing
+func charge_twice(take amount: i64) -> i64 {
+    return amount * 2
+}
+
+// ERROR: `take` on `string` takes nothing — a string is Copy (16 bytes, refcounted)
+func shout(take word: string) -> u64 {
+    return word.len()
+}
+
+// ERROR: `take` on `bool` takes nothing
+func flip(take b: bool) -> bool {
+    return !b
+}
+
+// Legal: a struct's Copy-ness is a layout question, and this one is over the
+// threshold. Nothing about the spelling says which.
+func consume_big(take b: Big) -> i64 {
+    return b.a + b.b + b.c
+}
+
+// Legal: under the threshold today, and the signature stays true if a field
+// is added tomorrow.
+func consume_point(take p: Point) -> i64 {
+    return p.x + p.y
+}
+
+// Legal: a `take` on a container is the ordinary case.
+func consume_tags(take tags: Vec<string>) -> u64 {
+    return tags.len()
+}
+
+// The way to write the rejected ones:
+//
+//   func charge_twice(amount: i64) -> i64 { return amount * 2 }
+//
+// and the call site is unchanged, because a borrow needs no marker either.
+
+func main() {
+    println("{consume_tags(Vec.new<string>())}")
+}
