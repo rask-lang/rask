@@ -1757,15 +1757,21 @@ impl Interpreter {
                         let vec = v.lock().unwrap();
                         let mut pairs = MapData::with_capacity(vec.len());
                         for item in vec.iter() {
-                            match item {
-                                Value::Vec(tuple) => {
-                                    let t = tuple.lock().unwrap();
-                                    if t.len() >= 2 {
-                                        pairs.insert(MapKey(t[0].clone()), t[1].clone());
-                                    }
-                                }
-                                _ => {}
+                            // #1063 split tuples out of `Value::Vec`; matching
+                            // `Vec` alone silently built an empty map.
+                            let t = item.as_tuple_elements().ok_or_else(|| {
+                                RuntimeError::TypeError(format!(
+                                    "Map.from expects (key, value) pairs, found {}",
+                                    item.type_name()
+                                ))
+                            })?;
+                            if t.len() < 2 {
+                                return Err(RuntimeError::TypeError(format!(
+                                    "Map.from expects (key, value) pairs, found a {}-element tuple",
+                                    t.len()
+                                )));
                             }
+                            pairs.insert(MapKey(t[0].clone()), t[1].clone());
                         }
                         Ok(Value::Map(Arc::new(Mutex::new(pairs))))
                     }

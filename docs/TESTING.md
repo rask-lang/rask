@@ -12,6 +12,7 @@ done until both agree. This is the map of what enforces that.
 | Rust integration | `cargo test` (compiler/) | Fixtures compile+run natively; `compile_errors/` are rejected for the right reason |
 | Suite (per backend) | `rask test tests/suite/` | `test { … assert }` blocks on one backend |
 | **Differential** | `tests/differential.sh` | **Every suite file on BOTH backends; fails on any untracked divergence** |
+| **Matrix gate** | `tests/matrix/run.sh` | Every (payload type, carrier) pair on both backends — the cross-product nobody wrote by hand |
 | **Example gate** | `tests/examples_gate.sh` | Every example with a golden matches on both backends |
 | **Agent benchmark gate** | `tests/agentbench_gate.sh` | Every `agentbench/` reference solution still builds on both backends, and the harness runs end to end on a mock model |
 
@@ -28,6 +29,63 @@ The differential harness is the parity gate. `rask test` runs one backend per
 invocation, so interp/native drift was invisible; the harness runs both, strips
 timings, and compares pass/fail **and** output. A test that passes on interp but
 crashes, mis-prints, or emits nothing on native is a failure — that's the point.
+
+## The matrix gate
+
+The differential harness can only see files somebody wrote, and nobody writes
+the boring combinations. Most codegen bugs aren't "feature X is broken" — they
+are "payload type P doesn't survive carrier C", and the cluster only shows up
+once you look at the whole grid. An `f32` is fine in a `Vec`, a `Map`, a tuple
+and a struct field, and reads back as `2` from a `Heap` and `0` from a
+sequence. Nobody was going to write those two files.
+
+`tests/matrix/gen.py` generates one small standalone program per pair — 18
+payload types across 16 carriers, 286 cells — and `tests/matrix/run.sh` runs each on both
+backends and prints the grid:
+
+```
+                i64      f32      string   struct   vec      map      closure  heap
+local           .        .        .        .        .        .        .        .
+struct_field    .        .        .        .        .        .        .        N
+heap_box        .        N        .        .        N        N        N        -
+```
+
+`.` both right, `N` native wrong with interp right, `I` the other way, `X` both
+wrong, `-` a pair that isn't legal Rask.
+
+Three ways a cell can be non-green, and they mean different things:
+
+- **`-` — not legal Rask.** `gen.py`'s `SKIPS` holds these, each naming the
+  rule: a `Heap<T>` in a `Vec` is `std.collections/C4`. Keep this list tiny. A
+  skip is a claim the compiler *enforces*, and the first draft of it was mostly
+  wrong — a `Heap` in an optional or a tuple, a `Sequence` in a Vec or a box,
+  all looked ruled out by linearity and SEQ38, and the compiler accepts every
+  one. Twenty cells were sitting behind citations instead of being run. If the
+  spec says no and the compiler says yes, that is a missing check to file, not
+  a pair to stop generating.
+- **registered red.** `tests/matrix/known_red.txt`, one line per cell, with an
+  issue and a claim of which backend fails and how far it gets — the same
+  discipline `known_divergences.txt` applies to a suite file.
+- **anything else.** The gate fails.
+
+It also fails on a registered cell that starts passing (prune the line) and on
+one whose claim no longer matches what the run saw, so a cell registered for a
+codegen bug can't quietly stop type-checking for an unrelated reason and go on
+looking covered (#1005).
+
+Each cell's native binary runs five times under `RASK_POISON_STACK=1`, and the
+first wrong answer decides it. A miscompile that reads a slot codegen never
+wrote depends on whatever was already on the stack, so it isn't reliably wrong
+— the enum in #1235 prints the right answer about one run in forty, and
+poisoning only takes that to about one in fifteen. One sample per cell would
+have made this gate go red on somebody else's lucky run. `MATRIX_RUNS`
+overrides the five.
+
+Run a slice while working on one: `tests/matrix/run.sh --types f32,f64
+--carriers heap_box,seq_yield`. `--keep` leaves the generated sources behind.
+
+Fixing a cell is the same two steps as a suite file: delete its line, and the
+cell rejoins the green gate.
 
 ## Expected-red files: bugs vs. the TDD backlog
 

@@ -1,0 +1,81 @@
+# Matrix cells with a KNOWN, TRACKED failure.
+#
+# tests/matrix/run.sh runs these like every other cell, reports them as
+# expected-red (non-fatal), and FAILS if one silently starts passing (prune it)
+# or a NEW untracked red cell appears.
+#
+# Format: one `carrier__payload` per line. Trailing
+# `# <what it is> — #<issue> (<backend> <phase>)`, where backend is native,
+# interp or both and phase is check, compile, run or output — how far that
+# backend gets before it fails. The gate checks the cell still fails that way,
+# the same discipline tests/differential.sh applies to a suite file (#1005): a
+# cell registered for a codegen bug that stops type-checking for an unrelated
+# reason is red either way, and the bug quietly stops being exercised.
+#
+# When a bug is fixed, delete its line so the cell rejoins the green gate.
+#
+# A pair that isn't legal Rask does NOT belong here — it belongs in gen.py's
+# SKIPS, with the rule that says so. This file is for things that should work.
+
+# --- #1234: Heap(expr) never allocates; the box local holds the payload ---
+# An i64 survives by accident (it is a word). A float goes through a
+# pointer-typed slot and truncates; a container's own pointer gets freed as if
+# it were the box.
+heap_box__f32     # Heap holds the payload, not a pointer to it — #1234 (native output)
+heap_box__f64     # Heap holds the payload, not a pointer to it — #1234 (native output)
+heap_box__vec     # the Vec's pointer freed as a box — #1234 (native run)
+heap_box__map     # the Map's pointer freed as a box — #1234 (native run)
+heap_box__closure # the closure's pointer freed as a box — #1234 (native run)
+heap_box__funcref # the function's pointer freed as a box — #1234 (native run)
+heap_box__shared  # the box's pointer freed as a box — #1234 (native run)
+struct_field__heap # the same box bug reached through a field — #1234 (native run)
+
+# --- #1235: an aggregate handed to a closure parameter ---
+# Capturing the same payload works, so it is the parameter slot. The enum's
+# SIGILL is the same corruption landing on a tag that isn't one of the two.
+closure_param__struct # struct parameter comes back as a stack address — #1235 (native output)
+closure_param__enum   # enum parameter lands on an out-of-range tag — #1235 (native run)
+
+# --- #1236: a struct literal in a call argument inside an `if` condition ---
+# The yield of a sequence is always in a condition (type.sequence/SEQ3), so
+# authoring one over a struct hits this first.
+seq_yield__struct # `if !yield(Pay { … })` doesn't parse — #1236 (both check)
+
+# --- #1237: the derived `compare` for a struct with a tuple field ---
+# Nothing calls compare; the derive is emitted because the type exists, and it
+# sign-extends an i64.
+param_return__tuple # derived compare fails the Cranelift verifier — #1237 (native compile)
+struct_field__tuple # derived compare fails the Cranelift verifier — #1237 (native compile)
+
+# --- #1238: `if o? as v` on a tuple optional ---
+optional__tuple       # reported as `try` needing a Result — #1238 (both check)
+optional_param__tuple # reported as `try` needing a Result — #1238 (both check)
+
+# --- #1239: a function value in an optional or a Map, on native ---
+# Type-checks, then MIR lowering gives up at lower/expr:1156. A named function
+# fails the same way, so it isn't the closure's environment.
+optional__closure  # MIR lowering gives up — #1239 (native compile)
+optional__funcref  # MIR lowering gives up — #1239 (native compile)
+map_value__closure # MIR lowering gives up — #1239 (native compile)
+map_value__funcref # MIR lowering gives up — #1239 (native compile)
+
+# --- #1240: a closure literal doesn't take its shape from a tuple annotation ---
+tuple__closure # parameter types stay open — #1240 (both check)
+tuple__funcref # parameter types stay open — #1240 (both check)
+
+# --- #1241: Shared.local of a function value is checked as Readers ---
+shared_box__closure # the constructor and the annotation disagree — #1241 (both check)
+shared_box__funcref # the constructor and the annotation disagree — #1241 (both check)
+
+# --- #1242: one `with` opens two boxes ---
+shared_box__shared # the intermediate box is read through — #1242 (both check)
+
+# --- #1243: an f32 through a Sequence ---
+seq_yield__f32 # the yielded f32 collects as 0 — #1243 (native output)
+
+# --- #1244: a function type on the left of `or` ---
+# `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, and
+# there is no parenthesised type form to say the other thing. Needs a ruling,
+# not a patch.
+result__closure # no way to spell a Result of a function — #1244 (both check)
+result__funcref # no way to spell a Result of a function — #1244 (both check)

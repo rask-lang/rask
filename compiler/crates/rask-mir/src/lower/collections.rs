@@ -127,26 +127,63 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Map.from([(k, v), ...]) → Map.new() + Map.insert() per pair.
+    ///
+    /// `call` is the `Map.from(...)` expression and `name` the receiver as
+    /// written, because between them they say what the key and value types
+    /// are — and the constructor needs to be told.
+    ///
+    /// It used to be told nothing: the call went out with no arguments and
+    /// codegen filled in its generic defaults, one machine word per slot. A
+    /// `string` key is sixteen bytes, so `Map.from([("k", 42)])` stored half a
+    /// string in the key slot and hashed it as a word. Every later lookup
+    /// missed — the map had the entry and could not find it (#812 is the same
+    /// bug on `Map.new`, fixed there and not here).
     pub(super) fn lower_map_from_pairs(
         &mut self,
+        call: &Expr,
+        name: &str,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
-        let has_string_keys = elems.first()
-            .and_then(|e| match &e.kind {
+        // The checker knows the map's own type; the spelling answers when it
+        // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
+        // recorded type). The first pair is the last resort.
+        let spelled = super::generic_args_of_str(name);
+        let arg_ty = |i: usize| -> Option<MirType> {
+            self.container_elem_mir_type(call.id, i)
+        };
+        let spelled_ty = |i: usize| -> Option<MirType> {
+            spelled.as_ref()
+                .and_then(|args| args.get(i).copied())
+                .map(|arg| self.ctx.resolve_type_str(arg))
+        };
+        let pair_ty = |i: usize| -> Option<MirType> {
+            elems.first().and_then(|e| match &e.kind {
                 ExprKind::Tuple(parts) if parts.len() == 2 => {
-                    self.ctx.lookup_raw_type(parts[0].id)
-                        .map(|ty| matches!(ty, rask_types::Type::String))
-                },
+                    self.ctx.lookup_node_type(parts[i].id)
+                }
                 _ => None,
             })
-            .unwrap_or(false);
+        };
 
-        let ctor = if has_string_keys { "Map_new_string_keys" } else { "Map_new" };
+        let key_ty = arg_ty(0).or_else(|| spelled_ty(0)).or_else(|| pair_ty(0))
+            .unwrap_or(MirType::I64);
+        let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
+            .unwrap_or(MirType::I64);
+
+        // A string key hashes and compares by its contents; anything else by
+        // its word.
+        let ctor = if key_ty == MirType::String { "Map_new_string_keys" } else { "Map_new" };
+        let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
-            args: vec![],
+            args: vec![
+                MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
+                MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+                MirOperand::Constant(MirConst::Int(tag(&key_ty))),
+                MirOperand::Constant(MirConst::Int(tag(&val_ty))),
+            ],
         }));
 
         for elem in elems {

@@ -5320,7 +5320,7 @@ impl<'a> MirLowerer<'a> {
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_map_from_pairs(elems).map(Some);
+                                    return self.lower_map_from_pairs(expr, name, elems).map(Some);
                                 }
                             }
                         }
