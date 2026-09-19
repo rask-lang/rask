@@ -49,9 +49,8 @@ What you give up is reaching the value with a dot. Access is scoped, and it says
 {{#include ../../../../examples/boxes.rk:sharedwrite}}
 ```
 
-I picked scoped access over making the box feel like a plain value. Taking a lock is a real cost
-and it belongs in the source where it happens, not hidden behind a field access that sometimes
-blocks. It also means the unlock point is something you can see: the block ends, the lock releases.
+Taking a lock is a real cost, and a real cost is visible in Rask source. Scoping it puts the
+unlock where you can see it too: the block ends, the lock releases.
 
 A block is for several statements under one lock. One statement doesn't need it:
 
@@ -63,11 +62,8 @@ A block is for several statements under one lock. One statement doesn't need it:
 {{#include ../../../../examples/boxes.rk:sharedstore}}
 ```
 
-There are two other strategies, and you name one only to move off the default. `Shared.mutex` takes
-a plain exclusive lock, which is the better trade when writes dominate. `Shared.local` takes no
-lock at all, for a box that never leaves the task it was made in. Sending a `Shared.local` to
-another task is a compile error, and that check is what makes the no-lock version safe to reach
-for rather than a thing you have to be careful with.
+`Shared` takes a strategy that decides which lock it uses, and the default is the one above. The
+other two are worth reading about the day a profiler points at the lock, and not before.
 
 ## Things that point at each other: `Rack` and `Link`
 
@@ -99,8 +95,7 @@ The same `if`, run twice, prints `hall leads to cell` and then `hall leads nowhe
 
 That's the part worth keeping. Deleting a node doesn't leave `hall.exit` aiming at a dead value,
 and it doesn't leave you an index that now means some other room. Every link into the deleted node
-reads as absent, so the `if` above simply takes its other branch. The stale reference is not a
-mistake you can make here, which is why this is a box and not something you assemble yourself.
+reads as absent, so the `if` above simply takes its other branch.
 
 ## Recursive, or big and moved often: `Heap`
 
@@ -139,14 +134,13 @@ Four questions, asked in order. Stop at the first yes.
 3. They refer to each other and can be deleted? `Rack` and `Link`.
 4. Several names reach one value that changes? `Shared`.
 
-Two more sit outside that list, and mixing them in is what makes the set feel harder than it is:
-
-- Does it need to be on the heap, because it's recursive or large and moved often? `Heap`.
-- Is it a contended counter or flag, and have you measured that? `Atomic`.
+One more question sits outside that list, and mixing it in is what makes the set feel harder than
+it is: does the value need to be on the heap, because it's recursive or large and moved often?
+That's `Heap`, and it's independent of all four answers above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
-each other, `Rack` when they do, and the locking strategies only once a second task exists.
-Steps 1 and 2 are most programs.
+each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are
+most programs.
 
 ## One thing to watch
 
