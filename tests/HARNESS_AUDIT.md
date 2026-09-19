@@ -348,7 +348,15 @@ executed spec blocks.
   it's a CI step now, and a missing golden fails instead of being written —
   `--bless` writes it deliberately. **Turning it on found a use-after-free that
   was corrupting every response the native server sent** (below).
-- `tests/matrix/run.sh` exits 0 always — documented as a survey, not a gate.
+- ~~`tests/matrix/run.sh` exits 0 always — documented as a survey, not a gate.~~
+  Fixed. It's a gate now, in its own CI job, with `tests/matrix/known_red.txt`
+  as its expected-red registry. The same change gave it a payload axis beyond
+  scalars — containers, closures, named functions, boxes and sequences — which
+  is what made a gate worth having: the scalar grid it had before was 100/100
+  clean, so exiting 1 on it would have changed nothing. The wider grid found
+  eleven bugs (#1233–#1244) and one that was fixed on the spot: `Map.from`
+  built its map with no type information at all, so a `string` key went into an
+  8-byte slot and no lookup ever found it again.
 - ~~Companion `*_test.rk` files (T3/T4) exist nowhere in the repo.~~ Added, as
   `tests/fixtures/companion_tests/`.
 
