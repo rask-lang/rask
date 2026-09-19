@@ -42,6 +42,42 @@ Regenerate after a deliberate diagnostics change:
 tests/book_gate.sh --update
 ```
 
+## How to explain it
+
+The machine is the metaphor. Describe what actually happens in memory, in plain words,
+and don't build a story on top of it.
+
+Lending is the cautionary case. In a library the book leaves the shelf; in Rask the
+caller goes on reading the value for the whole call. A reader who builds the library
+model predicts the wrong thing at their first `mutate` call — and learned it here.
+
+Rask can afford the literal route where most languages can't. No lifetime annotations,
+no reference type, no effects: every rule is a claim about bytes and where they sit. So
+make the claim.
+
+**One noun carries it: storage.** A place in memory holding a value. A name reaches
+storage, a move hands it over, a borrow reads storage the function doesn't own, a copy
+makes a second one. Define it once and don't introduce a parallel vocabulary three
+chapters later.
+
+**Idea first, word second.** Build the model in plain language, then attach the term in
+one sentence, as a hook for the error messages:
+
+> A function that takes a value without `take` reads the caller's storage where it sits
+> — it doesn't get a copy, and it doesn't get to keep it. The compiler calls this
+> **borrowing**, and you'll see the word in error messages.
+
+Jargon is a label for something the reader already has. Arriving before the idea is what
+makes a language feel like it was written for people who already know it.
+
+**Spend a metaphor only where the literal thing isn't observable.** In Rask that's
+almost nowhere, which is the design working rather than a style choice. Every spend
+should feel like a defeat.
+
+The test for a paragraph: could a reader predict the next error message from what it
+just told them? If they'd have to re-derive it from a metaphor first, the paragraph is
+doing the wrong job.
+
 ## The book teaches the ruling, not just the rule
 
 The specs are normative and say what the rule is. A chapter's job is the part the spec
