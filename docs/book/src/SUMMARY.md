@@ -11,6 +11,7 @@
 # Learn the language
 
 - [Passing Values](guide/passing-values.md)
+- [Boxes](guide/boxes.md)
 
 # Look things up
 
