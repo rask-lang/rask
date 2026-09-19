@@ -112,7 +112,8 @@ public enum Stdio {
 /// `@native` functions below.
 public struct Command {
     program: string
-    args: Vec<string>
+    /// Named apart from the `args(…)` builder below: one name per member (M7).
+    argv: Vec<string>
     /// Flattened key, value, key, value — a `Vec<(string, string)>` would be
     /// one more shape for the runtime to read.
     envs: Vec<string>
@@ -130,7 +131,7 @@ extend Command {
     public func new(program: string) -> Command {
         return Command {
             program,
-            args: Vec.new(),
+            argv: Vec.new(),
             envs: Vec.new(),
             dir: "",
             stdin_cfg: Stdio.Inherit,
@@ -142,7 +143,7 @@ extend Command {
     /// Add a single argument.
     public func arg(take self, arg: string) -> Command {
         mut c = self
-        c.args.push(arg)
+        c.argv.push(arg)
         return c
     }
 
@@ -150,7 +151,7 @@ extend Command {
     public func args(take self, args: Vec<string>) -> Command {
         mut c = self
         for a in args {
-            c.args.push(a)
+            c.argv.push(a)
         }
         return c
     }
@@ -197,7 +198,7 @@ extend Command {
     /// reports why through a close-on-exec pipe, so "no such program" and "the
     /// program ran and exited 127" stay apart.
     public func run(take self) -> Output or IoError {
-        let status = os.process_run(self.program, self.args, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
+        let status = os.process_run(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if status < 0 {
             // The negative of the child's errno. ENOENT(2) and EACCES(13) are
             // the two worth naming; POSIX fixes both numbers.
@@ -217,7 +218,7 @@ extend Command {
     /// Unlike `run`, the piped streams stay open: stdout so `read_stdout` has
     /// something to read, stdin so `write_stdin` has somewhere to write.
     public func spawn(take self) -> Process or IoError {
-        let h = os.process_spawn(self.program, self.args, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
+        let h = os.process_spawn(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if h < 0 {
             if h == -2 { return IoError.NotFound(self.program) }
             if h == -13 { return IoError.PermissionDenied(self.program) }

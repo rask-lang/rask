@@ -24,6 +24,27 @@ impl TypeChecker {
         f.name == "main" && self.current_self_type.is_none()
     }
 
+    /// PM6c: a written type that is Copy at every instantiation.
+    ///
+    /// Only the spelling is asked, and only for the types whose Copy-ness is
+    /// not a layout question: the primitives and `string`. A struct's is —
+    /// sixteen bytes and all-Copy fields, both of which move when a field is
+    /// added — so `take p: Point` stays legal and says something true the day
+    /// `Point` grows. A type parameter is not asked either: `take item: T` is
+    /// the declaration `Vec.push` is written from, and its instantiation at
+    /// `T = i64` is not a written `take`.
+    fn always_copy_spelling(written: &str) -> Option<String> {
+        let t = written.trim();
+        let copy = matches!(
+            t,
+            "i8" | "i16" | "i32" | "i64" | "isize"
+                | "u8" | "u16" | "u32" | "u64" | "usize"
+                | "f32" | "f64"
+                | "bool" | "char" | "string"
+        );
+        return copy.then(|| t.to_string());
+    }
+
     /// Check a function with its own type parameters in scope.
     ///
     /// A declared parameter has to win over a type of the same name for as long
@@ -272,6 +293,16 @@ impl TypeChecker {
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);
+            // PM6c: `take` on a Copy type takes nothing.
+            if param.is_take && param.name != "self" {
+                if let Some(spelled) = Self::always_copy_spelling(&param.ty) {
+                    self.errors.push(TypeError::TakeOnCopyType {
+                        param: param.name.clone(),
+                        ty: spelled,
+                        span: param.name_span,
+                    });
+                }
+            }
             if param.is_mutate || param.is_take {
                 self.define_local(param.name.clone(), ty.clone());
             } else {

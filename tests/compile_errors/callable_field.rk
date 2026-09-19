@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: calling a function-typed field as though it were a method
+//
+// `h.run(5)` resolves `run` against the type's extend blocks (M2, M5), and a
+// field is not in one. The old message said "no method `run` found for type
+// `Handler`", which is the wrong sentence: the name is right there, and
+// reading it works. E0405 says that, and names the two ways to call it.
+//
+// It stays an error rather than becoming a call. The shape it would serve — a
+// struct of functions — is one Rask answers with a trait, and it appears
+// nowhere in the tree: not in `stdlib/`, not in a validation program, not in a
+// spec. The text editor is the tell, keeping an enum of commands where the
+// classic design keeps a stack of closures.
+//
+// M7, which is about the same two namespaces, is a separate rule and is tested
+// by a different fixture — it fires on a field and a method sharing a name
+// whatever their types.
+
+struct Handler {
+    public run: func(i64) -> i64
+    public name: string
+}
+
+struct Pair<T> {
+    public make: func(T) -> T
+}
+
+func main() {
+    let h = Handler { run: |x| x + 1, name: "inc" }
+
+    // ERROR: `run` is a field, not a method
+    println("{h.run(5)}")
+
+    // ERROR: the same through a generic struct
+    let p = Pair<i64> { make: |x| x * 3 }
+    println("{p.make(4)}")
+
+    // Reading the field is fine, and so is a field that isn't callable.
+    println("{h.name}")
+}
+
+// The way to write it:
+//
+//   let f = h.run
+//   println("{f(5)}")
+//
+// or, when a name is overkill:
+//
+//   println("{(h.run)(5)}")
+//
+// or, when the behaviour is the point rather than the storage:
+//
+//   trait Handles {
+//       func run(self, x: i64) -> i64
+//   }

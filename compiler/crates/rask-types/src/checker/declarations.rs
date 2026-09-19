@@ -474,6 +474,26 @@ impl TypeChecker {
             .iter()
             .map(|m| self.method_signature(m, &decl_params, &owner_patterns))
             .collect();
+        // M7: one name per member. A field and a method that share one make
+        // `h.run` and `h.run(5)` reach different things, which is the reader
+        // problem M6 exists to avoid — so the declaration is the error, and
+        // neither spelling has to carry a precedence rule.
+        if let Some(TypeDef::Struct { name, fields, .. }) = self.types.get(type_id) {
+            let ty_name = name.clone();
+            let clashes: Vec<(String, Span)> = i
+                .methods
+                .iter()
+                .filter(|m| fields.iter().any(|(f, _)| *f == m.name))
+                .map(|m| (m.name.clone(), m.span))
+                .collect();
+            for (name, span) in clashes {
+                self.errors.push(TypeError::FieldMethodCollision {
+                    ty: ty_name.clone(),
+                    name,
+                    span,
+                });
+            }
+        }
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }

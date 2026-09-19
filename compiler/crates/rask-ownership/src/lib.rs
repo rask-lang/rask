@@ -185,11 +185,26 @@ pub struct OwnershipChecker<'a> {
     /// binding_block: the block where the closure binding was declared.
     /// Escape: binding_block < borrow_block (binding outlives borrow).
     scope_limited_closures: HashMap<String, (u32, u32)>,
-    /// Temporary: scope limit from the last closure expression processed.
-    /// Picked up by the next Let/Const binding that uses it.
-    last_closure_scope_limit: Option<u32>,
-    /// Free-function `take` parameters by name → per-position take flags.
-    /// Lets a call consume arguments to `take` params without call-site `own` (#296).
+    /// O11: module-level const names. A const is never given away, so a
+    /// consumption of one is an error rather than a move.
+    module_consts: std::collections::HashSet<String>,
+    /// SL1: each non-`own` closure expression's scope limit, keyed by the
+    /// closure's own node.
+    ///
+    /// This was one `Option<u32>`, published before the body was walked with
+    /// "record scope limit for the next binding to pick up". The next binding
+    /// was often *inside* the body: the closure's own first `let` took the
+    /// flag, so the closure itself came back unlimited and an innocent local
+    /// got the limit instead. `mut sum = extra` inside a closure that captured
+    /// a Vec was enough to reject the whole thing (#869). Keyed by node, a
+    /// binding asks about its own initializer and the body can't answer for it.
+    closure_scope_limits: HashMap<rask_ast::NodeId, u32>,
+    /// Free-function parameter modes by name → per-position `take` flags.
+    ///
+    /// Lets a call consume arguments to `take` params without call-site `own`
+    /// (#296). Every function is in here, including those with no `take` at
+    /// all: SL4 needs to know a parameter positively *is* a borrow, and an
+    /// absent entry means "no signature in reach", which stays conservative.
     fn_take_params: HashMap<String, Vec<bool>>,
     /// Per function name, which parameters carry `deleting`.
     fn_deleting_params: HashMap<String, Vec<bool>>,
@@ -276,7 +291,8 @@ impl<'a> OwnershipChecker<'a> {
             borrow_bindings: HashMap::new(),
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
-            last_closure_scope_limit: None,
+            module_consts: std::collections::HashSet::new(),
+            closure_scope_limits: HashMap::new(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
@@ -286,7 +302,27 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Run ownership analysis on all declarations.
-    pub fn check(mut self, decls: &[Decl]) -> OwnershipResult {
+    pub fn check(self, decls: &[Decl]) -> OwnershipResult {
+        return self.check_with_signatures(decls, &[]);
+    }
+
+    /// Run ownership analysis, reading parameter modes from `extra` as well.
+    ///
+    /// `extra` is the stdlib. Its bodies are not walked — only its signatures
+    /// are read, so a call to `spawn` can see that it takes its closure. The
+    /// ownership checker had never been handed them: `stdlib_decls` was built
+    /// for the type checker and stopped there, so PM3 had never fired for a
+    /// stdlib function called by name, and `mem.closures/SL4` had to guess a
+    /// mode it could have read. A user function of the same name still wins —
+    /// the program's own declarations are collected second.
+    pub fn check_with_signatures(mut self, decls: &[Decl], extra: &[Decl]) -> OwnershipResult {
+        self.collect_signatures(extra);
+        self.collect_signatures(decls);
+        return self.run(decls);
+    }
+
+    /// Parameter modes, per function and per method. No bodies.
+    fn collect_signatures(&mut self, decls: &[Decl]) {
         // Collect `take`-parameter positions for every free function so calls
         // can consume the matching argument (PM3) without call-site `own` (#296).
         for decl in decls {
@@ -321,9 +357,18 @@ impl<'a> OwnershipChecker<'a> {
                 let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
                 let deletings: Vec<bool> = fn_decl.params.iter().map(|p| p.is_deleting).collect();
                 self.fn_deleting_params.insert(fn_decl.name.clone(), deletings);
-                if takes.iter().any(|&t| t) {
-                    self.fn_take_params.insert(fn_decl.name.clone(), takes);
-                }
+                self.fn_take_params.insert(fn_decl.name.clone(), takes);
+            }
+        }
+    }
+
+    fn run(mut self, decls: &[Decl]) -> OwnershipResult {
+        // O11: which names are module-level consts. Collected before any body
+        // is walked, because a const is visible in every function whether or
+        // not its declaration came first in the file.
+        for decl in decls {
+            if let DeclKind::Const(c) = &decl.kind {
+                self.module_consts.insert(c.name.clone());
             }
         }
         for decl in decls {
@@ -549,7 +594,7 @@ impl<'a> OwnershipChecker<'a> {
         self.active_with_bindings.clear();
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
-        self.last_closure_scope_limit = None;
+        self.closure_scope_limits.clear();
         self.mutable_captures.clear();
         self.param_type_strings.clear();
         self.identified_links.clear();
@@ -1009,7 +1054,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.binding_types.insert(name.clone(), t);
                 }
                 // SL1: inherit scope limit from closure expression
-                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
                 // Track resource types. The annotation and the initializer are
@@ -1068,7 +1113,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 // SL1: inherit scope limit from closure expression
-                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
                 // Track resource types. The annotation and the initializer are
@@ -1264,7 +1309,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
-                if let Some(borrow_block) = self.last_closure_scope_limit.take() {
+                if let Some(&borrow_block) = self.closure_scope_limits.get(&value.id) {
                     if let ExprKind::Ident(target_name) = &target.kind {
                         let decl_block = self.binding_decl_blocks
                             .get(target_name).copied()
@@ -1307,11 +1352,12 @@ impl<'a> OwnershipChecker<'a> {
                             // Remove to avoid double-reporting at block exit
                             self.scope_limited_closures.remove(name);
                         }
-                    } else if matches!(&expr.kind, ExprKind::Closure { is_own: false, .. })
-                        && self.last_closure_scope_limit.take().is_some()
-                    {
-                        // Direct return of a non-`own` closure literal that captured
-                        // non-resource bindings. The closure can't outlive its captures.
+                    } else if self.closure_scope_limits.contains_key(&expr.id) {
+                        // A returned expression carrying a scope limit: a
+                        // non-`own` closure literal over a local, or (SL3) a
+                        // call that built one over an argument this frame owns.
+                        // `return make(v)` hands back a closure over `v`, and
+                        // `v` dies here.
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
                                 name: "<closure>".to_string(),
@@ -1538,29 +1584,18 @@ impl<'a> OwnershipChecker<'a> {
                 let rack_args = self.rack_arg_roots(args);
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
-                    // SL2: scope-limited closure passed as function argument
-                    if let ExprKind::Ident(name) = &arg.expr.kind {
-                        if self.scope_limited_closures.contains_key(name) {
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                    name: name.clone(),
-                                },
-                                span: arg.expr.span,
-                            });
-                            self.scope_limited_closures.remove(name);
-                        }
-                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
-                        && self.last_closure_scope_limit.take().is_some()
-                    {
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                name: "<closure>".to_string(),
-                            },
-                            span: arg.expr.span,
-                        });
-                    }
-                    let is_take_param =
-                        callee_takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                    let known_mode = callee_takes.as_ref().and_then(|t| t.get(i)).copied();
+                    let is_take_param = known_mode.unwrap_or(false);
+                    // SL4: a scope-limited closure handed to a *borrow*
+                    // parameter doesn't escape. PM6 says a borrowed parameter
+                    // can't be given away or stored in an aggregate, so the
+                    // only way out of the callee is the return value — and the
+                    // limit rides along with it. That's the whole middleware
+                    // shape: `logging(handler)` borrows the handler and answers
+                    // a closure over it, which lives as long as the handler
+                    // does. A `take` parameter is the real escape: the callee
+                    // keeps it and the caller can't see where it goes (SL2).
+                    self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
                     // Passing a rack to a `deleting` parameter revokes every link
                     // local into it — but not until the rest of the arguments have
                     // been checked, or a link passed alongside it reads as already
@@ -1645,30 +1680,16 @@ impl<'a> OwnershipChecker<'a> {
                 for (i, arg) in args.iter().enumerate() {
                     self.check_expr(&arg.expr);
                     // SL2: scope-limited closure passed as method argument
-                    if let ExprKind::Ident(name) = &arg.expr.kind {
-                        if self.scope_limited_closures.contains_key(name) {
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                    name: name.clone(),
-                                },
-                                span: arg.expr.span,
-                            });
-                            self.scope_limited_closures.remove(name);
-                        }
-                    } else if matches!(&arg.expr.kind, ExprKind::Closure { is_own: false, .. })
-                        && self.last_closure_scope_limit.take().is_some()
-                    {
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                name: "<closure>".to_string(),
-                            },
-                            span: arg.expr.span,
-                        });
-                    }
                     let is_take_param = matches!(
                         method_takes.as_ref().and_then(|t| t.get(i)),
                         Some(ParamMode::Take)
                     ) || (channel_send && i == 0);
+                    // SL4, as above: only a `take` parameter keeps it.
+                    let known_mode = method_takes
+                        .as_ref()
+                        .and_then(|t| t.get(i))
+                        .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
+                    self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
                     if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -1880,7 +1901,7 @@ impl<'a> OwnershipChecker<'a> {
                             self.scope_limited_closures.remove(name);
                         }
                     } else if matches!(&field.value.kind, ExprKind::Closure { is_own: false, .. })
-                        && self.last_closure_scope_limit.take().is_some()
+                        && self.closure_scope_limits.contains_key(&field.value.id)
                     {
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
@@ -1978,6 +1999,7 @@ impl<'a> OwnershipChecker<'a> {
                     let mut scope_limit: Option<u32> = None;
                     let has_escaping_captures = captures.iter().any(|name| {
                         !resource_captures.contains(name)
+                            && !self.outlives_this_call(name)
                             && self.bindings.contains_key(name)
                             && !self.capture_is_copy(name)
                     });
@@ -1991,6 +2013,7 @@ impl<'a> OwnershipChecker<'a> {
                     // so it never dangles and must not scope-limit the closure.
                     for name in &captures {
                         if resource_captures.contains(name) { continue; }
+                        if self.outlives_this_call(name) { continue; }
                         if self.capture_is_copy(name) { continue; }
                         if let Some(&block_id) = self.borrow_bindings.get(name) {
                             scope_limit = Some(match scope_limit {
@@ -2027,8 +2050,12 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                     }
-                    // SL1: Record scope limit for the next binding to pick up
-                    self.last_closure_scope_limit = scope_limit;
+                    // SL1: record this closure's scope limit against its own
+                    // node, so whoever binds, assigns, returns or passes *this
+                    // expression* reads it and nothing else can.
+                    if let Some(limit) = scope_limit {
+                        self.closure_scope_limits.insert(expr.id, limit);
+                    }
                 }
 
                 // Check closure body with isolated state
@@ -5162,7 +5189,143 @@ impl<'a> OwnershipChecker<'a> {
     /// state with `Moved`, so the callee consumed something it didn't own and the
     /// caller was never told — a double-close for a `@resource`, and a use of a
     /// given-away value for anything else (#804).
+    /// SL2/SL4: a scope-limited closure passed as an argument.
+    ///
+    /// Handed to a `take` parameter it escapes, and that's the error. Handed to
+    /// a borrow the callee cannot keep it (PM6), so the only way it reaches the
+    /// caller again is the return value — record the limit against the call, and
+    /// whatever binds the result inherits it.
+    fn check_closure_arg_escape(
+        &mut self,
+        call_id: rask_ast::NodeId,
+        arg: &Expr,
+        param_is_take: Option<bool>,
+    ) {
+        // The signature decides, and only the signature. This used to read
+        // "trust the mode, unless no mode is in reach, in which case assume the
+        // worst", which made a language rule mean different things depending on
+        // what the compiler managed to look up — and the case it was protecting
+        // was `spawn`, whose declaration said it borrowed the closure while the
+        // task it starts keeps it. That declaration says `take` now, so the
+        // guess has nothing left to protect and SL4 can be read off the
+        // signature at every call site (conc.tasks/T3 holds because `spawn`
+        // says what it does, not because this line distrusts it).
+        //
+        // A callee with no mode in reach — a call through a closure variable —
+        // is a call whose argument the callee cannot store either: it is a
+        // Rask body, so PM6 binds it.
+        let is_take = param_is_take.unwrap_or(false);
+        let limit = match &arg.kind {
+            ExprKind::Ident(name) => self
+                .scope_limited_closures
+                .get(name)
+                .map(|&(b, _)| (b, name.clone()))
+                // SL3: a plain local lent to a call that answers a closure. The
+                // closure may be built over it — `make_filter(tags)` — so the
+                // result is limited to the local's block. A parameter needs no
+                // entry: it outlives the whole body already.
+                .or_else(|| {
+                    if self.outlives_this_call(name) || self.capture_is_copy(name) {
+                        return None;
+                    }
+                    self.binding_decl_blocks.get(name).map(|&b| (b, name.clone()))
+                }),
+            ExprKind::Closure { is_own: false, .. } => self
+                .closure_scope_limits
+                .get(&arg.id)
+                .map(|&b| (b, "<closure>".to_string())),
+            _ => None,
+        };
+        let Some((borrow_block, name)) = limit else { return };
+        // A `take` argument was given away, so it lends the result nothing.
+        // Anything else would be the rule contradicting itself: SL4 says a
+        // `take` argument contributes no limit, and recording one here made
+        //
+        //     let f = make_filter(tags)    // take tags: Vec<string>
+        //     return f
+        //
+        // an escape, when `tags` is the closure's own and there is no borrow
+        // left to outlive. The one thing still wrong at a `take` is handing
+        // over a closure that is itself scope-limited: the callee keeps it and
+        // the caller can't see where it goes (SL2).
+        if is_take {
+            if matches!(&arg.kind, ExprKind::Ident(n) if self.scope_limited_closures.contains_key(n))
+                || matches!(&arg.kind, ExprKind::Closure { is_own: false, .. })
+            {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name: name.clone() },
+                    span: arg.span,
+                });
+                self.scope_limited_closures.remove(&name);
+            }
+            return;
+        }
+        // Only if the call hands a closure back. `apply(f, 10) -> i64` borrows
+        // the closure and answers a number — the number carries no borrow, and
+        // marking the call limited made `return n` on an `i64` read as a
+        // closure escaping.
+        if !self.call_answers_a_closure(call_id) {
+            return;
+        }
+        let existing = self.closure_scope_limits.get(&call_id).copied();
+        self.closure_scope_limits
+            .insert(call_id, existing.map_or(borrow_block, |e| e.max(borrow_block)));
+    }
+
+    /// Does this call's result hold a closure, and so a borrow worth tracking?
+    fn call_answers_a_closure(&self, call_id: rask_ast::NodeId) -> bool {
+        let Some(ty) = self.program.node_types.get(&call_id) else { return false };
+        return Self::type_is_callable(ty);
+    }
+
+    fn type_is_callable(ty: &Type) -> bool {
+        match ty {
+            Type::Fn { .. } => true,
+            Type::UnresolvedNamed(n) => {
+                n.starts_with("func(") || n.starts_with('|') || n.starts_with("Sequence<")
+            }
+            Type::UnresolvedGeneric { name, .. } => name == "Sequence",
+            _ => false,
+        }
+    }
+
+    /// SL3: does this name outlive the call, so a returned closure may borrow it?
+    ///
+    /// A lent parameter does. The caller holds the value across the call and
+    /// keeps holding it after — that's what `param: T` and `mutate param: T`
+    /// mean (PM1, PM2) — so a closure built over one is still pointing at
+    /// something live when the function returns. `self` is the case the whole
+    /// sequence surface rests on: `vec.filter(|u| u.active)` returns a
+    /// `Sequence<T>` over a borrowed receiver, and refusing that would cost
+    /// every adapter chain a `take self`.
+    ///
+    /// A local does not, and a `take` parameter does not either — the frame
+    /// owns it and the frame is going away. Those still scope-limit the
+    /// closure, and `own` is still the fix for them.
+    fn outlives_this_call(&self, name: &str) -> bool {
+        self.borrowed_params.contains_key(name) || self.mutate_params.contains_key(name)
+    }
+
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
+        // O11: a const is not the function's to give away. Every function sees
+        // the same one, so a move would leave the others holding nothing —
+        // which is what happened: the move was tracked per function, so the
+        // same consume was an error in a body that read the const again and
+        // silently fine in one that didn't (#1079).
+        //
+        // Only reached for a non-Copy const. A scalar, a `string` or a small
+        // struct is copied into the `take` rather than given, under PM6b, and
+        // never gets here.
+        if self.module_consts.contains(name) {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeConst {
+                    name: name.to_string(),
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
         if let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(name) {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ConsumeBorrowedParam {
@@ -5927,6 +6090,16 @@ impl<'a> OwnershipChecker<'a> {
 pub fn check_ownership(program: &TypedProgram, decls: &[Decl]) -> OwnershipResult {
     let checker = OwnershipChecker::new(program);
     checker.check(decls)
+}
+
+/// Ownership analysis that can also read the stdlib's parameter modes.
+pub fn check_ownership_with_stdlib(
+    program: &TypedProgram,
+    decls: &[Decl],
+    stdlib_decls: &[Decl],
+) -> OwnershipResult {
+    let checker = OwnershipChecker::new(program);
+    checker.check_with_signatures(decls, stdlib_decls)
 }
 
 /// Every `Name<Args…>` reachable inside a type, including nested ones.

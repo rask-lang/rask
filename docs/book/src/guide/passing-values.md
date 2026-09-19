@@ -17,8 +17,7 @@ Start with the easy half. Pass an `i64` and the callee gets its own copy:
 {{#include ../../../../examples/parameter_modes.rk:copy}}
 ```
 
-`take` says "I'm keeping this", and it still doesn't touch `fee`. You can't take away something the
-caller never gave up — there are two copies now, one on each side of the call.
+No marker at either end, because nothing happened to `fee` that the caller needs to know about.
 
 The line is **16 bytes or less, with every field itself copyable**. That covers the integers, the
 floats, `bool`, `char`, and small structs built out of those. It's fixed and not configurable:
@@ -121,6 +120,28 @@ Now the caller doesn't have it. Reach for the name again and it's gone:
 That note is the whole reason `take` needs no marker at the call site: the compiler will tell you
 exactly where the value went, the moment you reach for it again. `own account` is available when
 you want the call site to shout anyway.
+
+### You can't `take` a small value
+
+Back to the easy half for a second, because the two rules meet here. Write `take` on an `i64` and
+the compiler stops you:
+
+```text
+{{#include ../../errors/passing-values/take_on_copy.out}}
+```
+
+`take` is a promise to the caller that they lose the value, and an `i64` is copied — they don't.
+A marker that says the wrong thing is worse than no marker, so the signature has to drop it.
+
+That is about what you *write*. Handing a Copy value to a `take` parameter is still fine, and
+common — it just happens through a generic, where the declaration couldn't know:
+
+```rask
+{{#include ../../../../examples/parameter_modes.rk:copytake}}
+```
+
+`Vec.push` is `push(mutate self, take item: T)`. At `T = i64` the push copies, and `fee` is still
+there for the next line.
 
 ## Receivers are never marked
 

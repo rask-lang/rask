@@ -167,17 +167,39 @@ and then the bugs it lights up. Sequence is in there because
 adapters are written and work, and `Vec.iter()` not returning a `Sequence` is the
 position they can't occupy.
 
-[#843](https://github.com/rask-lang/rask/issues/843) ·
-[#869](https://github.com/rask-lang/rask/issues/869) ·
-[#886](https://github.com/rask-lang/rask/issues/886) ·
-[#985](https://github.com/rask-lang/rask/issues/985) ·
 [#1046](https://github.com/rask-lang/rask/issues/1046) ·
-[#1079](https://github.com/rask-lang/rask/issues/1079) ·
-[#1151](https://github.com/rask-lang/rask/issues/1151) ·
-[#1152](https://github.com/rask-lang/rask/issues/1152)
+[#1151](https://github.com/rask-lang/rask/issues/1151)
 
 [#1151](https://github.com/rask-lang/rask/issues/1151) is the worst of them —
 making it compile currently gives a wrong answer.
+
+**What this list used to say.** It named eight. Two were already closed when
+the milestone was written (#843, #886), and three were not bugs at all — they
+were questions `specs/` didn't answer, which the "Not in any version" section
+below says don't belong in a version. They were answered first, before the
+matrix work, rather than left to stall it:
+
+- **#1152** — is `h.run(5)` on a function-typed field a call? No
+  (`type.structs/M6`). A struct of functions is a shape Rask answers with a
+  trait, and it appears in no spec, no validation program and no stdlib module;
+  the error says the name is a field and how to call it instead. `M7` — one
+  name per member — is separate and did land, and found three collisions on its
+  first run (`Range.step`, `Command.args`, `Session.id`).
+- **#1079** — what does consuming a `const` mean? It can't be consumed
+  (`mem.ownership/O11`). The error lands at the consume rather than at the next
+  read, which is what made it come and go per function. `PM6c` came with it:
+  `take` on a type that is always Copy is a signature that lies, so it is
+  rejected too.
+- **#869** — must a returned closure own its captures? No: it may borrow the
+  function's lent parameters, not its locals (`mem.closures/SL3`), and the
+  limit travels to the caller (`SL4`). Requiring `own` would have cost every
+  adapter chain a `take self`. The fix needed `spawn` to stop declaring that it
+  borrows a closure it keeps, and the ownership checker to be handed the stdlib
+  signatures it had never seen.
+
+**#985 went to the backlog.** It's a `Vec` layout and raw-pointer-width
+disagreement, not a value kind failing in a position — a narrow theme is the
+only kind that closes.
 
 ## v0.5 — Concurrency you can trust
 

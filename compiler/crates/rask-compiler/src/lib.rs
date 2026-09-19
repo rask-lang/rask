@@ -437,7 +437,8 @@ fn check_loaded(
     }
 
     // --- Ownership (non-blocking — accumulate and continue) ---
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    let ownership_result =
+        rask_ownership::check_ownership_with_stdlib(&typed, &parse_result.decls, &stdlib_decls);
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
@@ -782,7 +783,8 @@ fn check_package_scoped(
     }
 
     // --- Ownership (non-blocking) ---
-    let ownership_result = rask_ownership::check_ownership(&typed, &pkg_ctx.all_decls);
+    let ownership_result =
+        rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }

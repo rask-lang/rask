@@ -51,7 +51,7 @@ pub(crate) fn range_value(
     let mut fields = IndexMap::new();
     fields.insert("start".to_string(), Value::int(start));
     fields.insert("end".to_string(), Value::int(end));
-    fields.insert("step".to_string(), Value::int(step));
+    fields.insert("stride".to_string(), Value::int(step));
     fields.insert("inclusive".to_string(), Value::Bool(inclusive));
     fields.insert("descending".to_string(), Value::Bool(descending));
     fields.insert("bounded".to_string(), Value::Bool(bounded));
@@ -79,7 +79,7 @@ pub(crate) fn as_range(v: &Value) -> Option<(i64, i64, bool, i64, bool, bool)> {
         int("start")?,
         int("end")?,
         flag("inclusive"),
-        int("step")?,
+        int("stride")?,
         flag("descending"),
         flag("bounded"),
     ))

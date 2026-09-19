@@ -91,6 +91,40 @@ See `mem.ownership` for complete Copy/move semantics.
 | **M3: Same module** | `extend` blocks MUST be in the same module as the struct definition |
 | **M4: Self type** | `self` always refers to the extended struct type |
 | **M5: Multiple blocks** | Multiple `extend` blocks for the same type are allowed (for organization) |
+| **M6: A field is not a method** | A field whose type is a function is not callable as `h.run(5)`. Method resolution looks at the type's `extend` blocks, and a field is not in one. Reading the field is fine, and so is calling what you read |
+| **M7: One name per member** | A field and a method on the same type may not share a name. The declaration is the error, reported at the method |
+
+```rask
+struct Handler {
+    public run: func(i64) -> i64
+}
+
+let h = Handler { run: |x| x + 1 }
+h.run(5)          // error[E0405]: `run` is a field on `Handler`, not a method
+let f = h.run     // fine
+f(5)              // 6
+```
+
+**Why M6 isn't the other way.** Making `h.run(5)` call the field is two lines of
+resolution, and the argument against it is what a struct of functions *is*. Rask
+has a better answer for one swappable behaviour — a trait, and `any Handler` for
+the case where it varies — and the shape the field spelling is for appears
+nowhere: not in `stdlib/`, not in a validation program, not in a spec. The text
+editor is the tell. It is the program that most obviously wants a stack of
+closures, and it keeps an enum of commands instead, which is inspectable and
+gives `redo` for free.
+
+So the spelling would be support for a shape the canon doesn't use
+([RULINGS.md](../RULINGS.md), test 6). The asymmetry decides the rest: adding it
+later is small, and removing it once programs lean on it is not.
+
+**M7 is separate and stands on its own.** It is not about function types at all
+— a `Session` with an `id` field and an `id()` method has two things under one
+name, and `h.id` and `h.id(…)` reach different ones. Three such collisions were
+in the tree when the rule first ran: `Range.step` beside `.step(s)`,
+`Command.args` beside `.args(…)`, and that `Session.id`. Each was fixed by
+renaming the field, since the method is the surface the specs name.
+
 
 | Declaration | Mode | Effect |
 |-------------|------|--------|

@@ -31,7 +31,7 @@ extend Holder {
         return Holder { m: Map.new() }
     }
 
-    public func add(mutate self, take v: i64) -> void {
+    public func add(mutate self, v: i64) -> void {
         self.m.insert(v, true)
         return
     }

@@ -446,10 +446,10 @@ So SEQ17–SEQ19 are the target, not the present state, and this section says so
 | Rule | Description |
 |------|-------------|
 | **SEQ25: Owned captures = storable** | A `Sequence<T>` whose closure captures only owned or Copy data can be stored in structs, returned across function boundaries, and sent across tasks. The canonical pattern is `take self` on the method that builds it |
-| **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot be returned past the source, stored in a struct, or sent across tasks |
+| **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot outlive the source, be stored in a struct, or be sent across tasks. Returning one from the function that borrowed the source is fine — the limit travels to the caller, who holds the source (`mem.closures/SL3`, `SL4`) |
 | **SEQ27: No separate closed-world rule** | There is no "Sequence-specific" storability constraint. The rule above is `mem.closures/SL1-SL2` applied verbatim to the closure that implements the sequence |
 
-Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the returned Sequence is expression-scoped (like a closure that captures a block-scoped borrow). If the method takes `take self`, the Sequence owns the source and is freely storable.
+Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the returned Sequence is limited to that borrow. If the method takes `take self`, the Sequence owns the source and is freely storable.
 
 <!-- test: skip -->
 ```rask
@@ -459,15 +459,22 @@ func collect_active(users: Vec<User>) -> Vec<User> {
         .to_vec()                      // Materialized here — no Sequence escapes
 }
 
-func bad_return(users: Vec<User>) -> Sequence<User> {
+func active_seq(users: Vec<User>) -> Sequence<User> {
     return users.filter(|u| u.active)
-    // ERROR: Sequence borrows `users` (a parameter borrow);
-    // cannot escape the function. Same rule as returning a closure
-    // that captures a block-scoped borrow (mem.closures/SL2).
+    // Fine. `users` is the caller's, and it's still there when this returns —
+    // so the sequence is theirs to consume, limited to their `users`
+    // (mem.closures/SL3, SL4). What they can't do is store it past that.
+}
+
+func bad_return() -> Sequence<User> {
+    let users = load_users()
+    return users.filter(|u| u.active)
+    // ERROR: `users` is a local, and it dies at this return. Nothing at the
+    // call site holds the source (mem.closures/SL3).
 }
 ```
 
-To return a sequence-producing function, accept the source by `take`:
+To hand back a sequence that owns its source, take it:
 
 <!-- test: skip -->
 ```rask
@@ -485,12 +492,12 @@ func make_active_seq(take users: Vec<User>) -> Sequence<User> {
 
 ## Error Messages
 
-**Sequence escapes scope [mem.closures/SL2]:**
+**Sequence escapes scope [mem.closures/SL3]:**
 ```
-ERROR [mem.closures/SL2]: sequence borrows a value that does not outlive the return
+ERROR [mem.closures/SL3]: sequence borrows a value that does not outlive the return
    |
 3  |  return users.filter(|u| u.active)
-   |         ^^^^^ borrows `users` (parameter borrow)
+   |         ^^^^^ borrows `users` (a local)
    |               sequence cannot escape the function
 
 WHY: A Sequence<T> built over a borrowed source is scope-limited
