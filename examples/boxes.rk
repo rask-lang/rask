@@ -51,28 +51,24 @@ func main() {
     let settings = Shared.new(Settings { theme: "dark", retries: 3 })
     // ANCHOR_END: sharedmake
 
-    // ANCHOR: sharedread
-    with settings.read() as s {
-        println("theme {s.theme}, {s.retries} retries")
-    }
-    // ANCHOR_END: sharedread
+    // ANCHOR: sharedget
+    let theme = settings.read().theme
+    println("theme is {theme}")
+    // ANCHOR_END: sharedget
 
-    // ANCHOR: sharedwrite
+    // ANCHOR: sharedset
+    settings.write().retries = 2
+    // ANCHOR_END: sharedset
+
+    // ANCHOR: sharedblock
     with settings.write() as s {
         if s.retries < 5 {
             s.retries = s.retries + 1
         }
     }
-    // ANCHOR_END: sharedwrite
+    // ANCHOR_END: sharedblock
 
-    // ANCHOR: sharedstore
-    settings.write().retries = 2
-    // ANCHOR_END: sharedstore
-
-    // ANCHOR: sharedinline
-    let retries = settings.read().retries
-    println("retries now {retries}")
-    // ANCHOR_END: sharedinline
+    println("retries now {settings.read().retries}")
 
     // ANCHOR: rackmake
     mut rooms: Rack<Room> = Rack.new()

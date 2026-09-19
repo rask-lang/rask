@@ -3,8 +3,9 @@
 A value in Rask sits in one place and one name is responsible for it. That covers almost
 everything you write. A box is what you reach for when it doesn't.
 
-There are four of them and you can go a long way without meeting any. So this page starts with
-the code you already know how to write, and only adds a box when the plain version stops working.
+There are three you'll meet, and you can go a long way without needing any of them. So this page
+starts with the code you already know how to write, and adds a box only where the plain version
+stops working.
 
 ## Most of the time: a plain field
 
@@ -16,16 +17,20 @@ the code you already know how to write, and only adds a box when the plain versi
 {{#include ../../../../examples/boxes.rk:plainuse}}
 ```
 
-One owner, fields you read and write directly, a `Vec` inside it that grows. No box anywhere, and
-nothing on this page applies. Reach for `Vec` or `Map` when you have many of something and this
-still holds: they're ordinary values that happen to own heap storage.
+`hero` owns that player. The fields are reached with a dot, the `Vec` inside grows when you push to
+it, and when `hero` goes out of scope the whole thing is released. No box in sight.
 
-The rest of the page is the three times that isn't enough.
+Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary value that happens
+to keep its contents on the heap, so it's owned by one name like anything else.
 
-## Several names, one value: `Shared`
+What breaks this shape is one of three things: another part of the program needs the same value,
+your values need to refer to each other, or the value can't sit where it is. A box for each.
 
-Say two parts of your program need to see the same settings, and one of them updates it. You can't
-give them each a copy, because then there are two settings. You need one value that both reach.
+## When another part needs the same value: `Shared`
+
+Say your settings are read in one place and updated in another. A copy for each is the wrong shape,
+because then there are two settings and an update to one is invisible to the other. What you want
+is a single value that both places reach.
 
 ```rask
 {{#include ../../../../examples/boxes.rk:sharedtype}}
@@ -39,28 +44,27 @@ That's the whole of it for most uses. `Shared.new` is always a correct answer: i
 read-write lock, so any number of readers go at once and a writer gets it to itself. It's safe to
 send to another task.
 
-What you give up is reaching the value with a dot. Access is scoped, and it says `read` or `write`:
+What you give up is reaching the value with a plain dot. Every access says `read` or `write`:
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedread}}
+{{#include ../../../../examples/boxes.rk:sharedget}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedwrite}}
+{{#include ../../../../examples/boxes.rk:sharedset}}
+```
+
+Each of those takes the lock, does the one thing, and releases it, all inside the expression.
+
+When you need several statements to happen under one lock, `with` holds it open for a block. Here
+the read and the write have to be the same lock, or another task could change `retries` in between:
+
+```rask
+{{#include ../../../../examples/boxes.rk:sharedblock}}
 ```
 
 Taking a lock is a real cost, and a real cost is visible in Rask source. Scoping it puts the
 unlock where you can see it too: the block ends, the lock releases.
-
-A block is for several statements under one lock. One statement doesn't need it:
-
-```rask
-{{#include ../../../../examples/boxes.rk:sharedinline}}
-```
-
-```rask
-{{#include ../../../../examples/boxes.rk:sharedstore}}
-```
 
 `Shared` takes a strategy that decides which lock it uses, and the default is the one above. The
 other two are worth reading about the day a profiler points at the lock, and not before.
@@ -99,9 +103,13 @@ reads as absent, so the `if` above simply takes its other branch.
 
 ## Recursive, or big and moved often: `Heap`
 
-A struct can't contain itself by value, because nothing could decide how large it is. `Heap<T>` is
-one pointer's worth of indirection, which breaks the cycle. It's also what you use for a large
-value you move around a lot, so the moves copy a pointer instead of the whole thing.
+A `Heap<T>` puts the value somewhere else and keeps only its address. An address is the same small
+size no matter how big the value is, and that one fact is what makes it useful twice.
+
+A struct that contains itself has no size: a `Node` holding a `Node` holds a `Node`, and the
+number never settles. Hold the address instead and it settles immediately, because the address
+doesn't grow. And when a value is large and gets moved a lot, moving it means copying its address
+rather than all of its bytes.
 
 ```rask
 {{#include ../../../../examples/boxes.rk:heaptype}}
@@ -132,7 +140,7 @@ Four questions, asked in order. Stop at the first yes.
 1. One value, one owner? A plain field. Done.
 2. Many values? `Vec` or `Map`, unless:
 3. They refer to each other and can be deleted? `Rack` and `Link`.
-4. Several names reach one value that changes? `Shared`.
+4. Does another part of the program need the same value, and does it change? `Shared`.
 
 One more question sits outside that list, and mixing it in is what makes the set feel harder than
 it is: does the value need to be on the heap, because it's recursive or large and moved often?
