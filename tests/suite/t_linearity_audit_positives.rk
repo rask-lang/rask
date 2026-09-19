@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The shapes linearity has to *allow*, from the audit in #882.
+//
+// L1–L6 are written as "consumed exactly once", and the implementation is a
+// check at particular syntactic points. Enumerating the three dimensions — where
+// an obligation can be created, where control can leave a scope, every way a
+// value can be consumed — turned up four points nobody had put on the list, and
+// one place the check fired where it shouldn't have:
+//
+//   - storing a resource in a struct field left *both* the field and the source
+//     binding owing it. Consuming the aggregate satisfies `h.c` and there is
+//     nothing left for `c` to be consumed by, so there was no version of the
+//     program that compiled.
+//
+// The rejections live in `tests/compile_errors/linearity_exits.rk`; a test can't
+// assert on a compile error. What is here is the other half: every way of
+// consuming exactly once, which has to keep working, and which is where a fix
+// for the rejections would show up as a false alarm.
+//
+// #1216 is here too, because it is a *runtime* fact rather than a compile-time
+// one: an `ensure` cancelled by an explicit consume must not run. That held for
+// a bare `c.close()` and not for `let v = try c.finish()`, where native ran the
+// cleanup on a value the call had already taken.
+
+import sync.Shared
+import sync.Mutex
+
+struct Oops {
+    public why: string
+}
+
+extend Oops {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 {
+        return self.id
+    }
+    public func finish(take self) -> i32 or Oops {
+        return self.id
+    }
+    public func ping(self) -> i32 {
+        return self.id
+    }
+    // What an `ensure` would run. Nothing calls it directly, so the counter
+    // moving is proof the cleanup ran.
+    public func discard(take self) -> void {
+        with CLEANUPS.write() as n {
+            n = n + 1
+        }
+    }
+}
+
+const CLEANUPS: Shared<i64, Mutex> = Shared.mutex(0)
+
+struct Holder {
+    public c: Conn
+}
+
+extend Holder {
+    public func shut(take self) -> i32 {
+        return self.c.close()
+    }
+}
+
+func consume(take c: Conn) -> i32 {
+    return c.close()
+}
+
+func borrow_it(c: Conn) -> i32 {
+    return c.id
+}
+
+func make() -> Conn {
+    let c = Conn { id: 7 }
+    return c
+}
+
+// The ensure is cancelled by the explicit consume, even wrapped in `try`
+// (#1216). Native ran the cleanup anyway — a second consume of a value the
+// `finish` had already taken — while the interpreter got it right.
+func wrapped_consume(n: i32) -> i32 or Oops {
+    let c = Conn { id: n }
+    ensure c.discard()
+    let v = try c.finish()
+    return v
+}
+
+// The same, reached by plain assignment rather than a binding. Wiring the
+// cancellation into `let`, `mut` and `return` and not into `x = …` left the
+// double consume one spelling away.
+func wrapped_consume_assigned(n: i32) -> i32 or Oops {
+    let c = Conn { id: n }
+    ensure c.discard()
+    mut v = 0
+    v = try c.finish()
+    return v
+}
+
+// Nothing consumes it, so the ensure is what does.
+func ensure_runs(n: i32) -> i32 {
+    let c = Conn { id: n }
+    ensure c.discard()
+    return c.ping()
+}
+
+func cleanups() -> i64 {
+    with CLEANUPS.read() as n {
+        return n
+    }
+    return -1
+}
+
+func main() {}
+
+test "mem.linear/L5 — a take self method" {
+    let c = Conn { id: 1 }
+    assert c.close() == 1
+}
+
+test "mem.linear/L5 — a take parameter" {
+    let c = Conn { id: 2 }
+    assert consume(c) == 2
+}
+
+test "mem.linear/L3 — a borrow is not a consume" {
+    let c = Conn { id: 3 }
+    ensure c.close()
+    assert borrow_it(c) == 3
+    assert c.ping() == 3
+    assert c.close() == 3
+}
+
+test "mem.linear/L5 — rebinding" {
+    let c = Conn { id: 4 }
+    let d = c
+    assert d.close() == 4
+}
+
+test "mem.linear/L5 — returned to the caller" {
+    assert make().close() == 7
+}
+
+test "mem.linear/L5 — stored in a struct field" {
+    // The aggregate owns it now, and consuming the aggregate is what pays the
+    // debt. Both owing it is what made this unwritable.
+    let c = Conn { id: 5 }
+    let h = Holder { c: c }
+    assert h.shut() == 5
+}
+
+test "mem.linear/L1 — consumed on every branch" {
+    mut total = 0
+    for flag in [true, false] {
+        let c = Conn { id: 6 }
+        if flag {
+            total = total + c.close()
+        } else {
+            total = total + consume(c)
+        }
+    }
+    assert total == 12
+}
+
+test "mem.linear/L1 — consumed on the turn it was acquired" {
+    mut total = 0
+    mut i = 1
+    while i <= 4 {
+        let c = Conn { id: i }
+        total = total + c.close()
+        i = i + 1
+    }
+    assert total == 10
+}
+
+test "mem.linear/L1 — a resource that outlives a break" {
+    let c = Conn { id: 9 }
+    ensure c.close()
+    mut i = 0
+    while i < 5 {
+        if i == 2 {
+            break
+        }
+        i = i + 1
+    }
+    assert c.close() == 9
+}
+
+test "mem.linear/L4 — an ensure nothing cancels runs" {
+    let before = cleanups()
+    assert ensure_runs(3) == 3
+    assert cleanups() == before + 1
+}
+
+test "mem.linear/L6 — cancelled by a consume on the right of an assignment" {
+    let before = cleanups()
+    assert (wrapped_consume_assigned(5) catch e => -1) == 5
+    assert cleanups() == before
+}
+
+test "mem.linear/L6 — an ensure the consume cancelled does not run" {
+    // `finish` takes the connection, so `discard` must not run on it. The
+    // counter is how that is visible: if the cleanup ran, it moves.
+    let before = cleanups()
+    assert (wrapped_consume(11) catch e => -1) == 11
+    assert cleanups() == before
+}
+
+// conc.async/CH1: the channel ends are not resources, whatever they carry.
+//
+// `Channel<Conn>.buffered(1)` made `tx` and `rx` linear because the payload is
+// — so both demanded a `close()` that neither end has, and a channel carrying a
+// resource was unwritable. `mem.linear/L5` names `ch.send(file)` as one of the
+// four ways to consume, so this is a shape the rules bless.
+struct Ticket {
+    public seat: i32
+}
+
+@resource
+struct Pass {
+    public seat: i32
+}
+
+extend Pass {
+    public func tear(take self) -> i32 {
+        return self.seat
+    }
+}
+
+test "conc.async/CH1 — a channel carrying a resource" {
+    using Multitasking {
+        mut (tx, rx) = Channel<Pass>.buffered(2)
+        tx.send(Pass { seat: 4 })
+        tx.send(Pass { seat: 9 })
+        let first = rx.receive() catch e => {
+            assert false
+            return
+        }
+        // Consumed before the next receive on purpose: the `return` in that
+        // handler is a way out of the scope, and `first` would be owed on it.
+        assert first.tear() == 4
+        let second = rx.receive() catch e => {
+            assert false
+            return
+        }
+        assert second.tear() == 9
+    }
+}
+
+test "conc.async/CH1 — and one carrying something ordinary" {
+    using Multitasking {
+        mut (tx, rx) = Channel<Ticket>.buffered(1)
+        tx.send(Ticket { seat: 7 })
+        let t = rx.receive() catch e => {
+            assert false
+            return
+        }
+        assert t.seat == 7
+    }
+}

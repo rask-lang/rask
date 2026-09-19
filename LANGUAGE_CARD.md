@@ -50,7 +50,7 @@ eat(own v)                         // caller marks the transfer with `own`
 ```
 
 - `string` is Copy (16 bytes, immutable, refcounted) — pass it freely, never `.clone()` it.
-- Handles (12 bytes) are Copy. Explicit `.clone()` for everything bigger is deliberate design — don't work around it (`mem.value-semantics`).
+- A `Link<T>` is one word and Copy — pushing one into a `Vec` leaves you holding it. Explicit `.clone()` for everything over 16 bytes is deliberate design; don't work around it (`mem.value-semantics`).
 - `discard x` drops early and invalidates the binding. `@unique` forces move-only.
 
 ## Borrowing and access
@@ -58,7 +58,7 @@ eat(own v)                         // caller marks the transfer with `own`
 No references can be stored in structs, returned, or sent cross-task — this is the keystone rule; it's why there are no lifetimes (`mem.borrowing`). What you get instead depends on one question: **can the source change size?**
 
 - **Fixed layout** (struct fields, arrays): views last until end of block.
-- **Growable** (Vec, Map, Pool, string): access is per-expression, or a `with` block for multiple statements.
+- **Growable** (Vec, Map, string): access is per-expression, or a `with` block for multiple statements.
 
 <!-- test: parse -->
 ```rask
@@ -74,44 +74,79 @@ with pool[h] as entity {           // multi-statement access; writes back at blo
 with pool[h] as e: e.health -= 10  // one-liner form
 ```
 
-- Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). Pool allows `insert` and `remove(other)`; removing the bound handle is a compile error (W2a–W2d).
+- Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.
 - Aliasing: many readers XOR one mutator, per field — disjoint fields of the same struct can be borrowed simultaneously (F2).
 - String slices `s[i..j]` are expression-scoped views; store `s[i..j].to_string()` or `Span` indices instead.
 - All checks are function-local. Errors point at the function you're editing.
 
-## Pools, handles, context clauses
+## Racks and links
 
-Graphs, trees, entity systems — anything that needs stored identity — use `Pool<T>` + `Handle<T>` (a pool_id/index/generation triple, like a database primary key) instead of pointers (`mem.pools`).
+Graphs, trees, entity systems — anything that needs stored identity — live in a
+`Rack<T>`. A `Link<T>` names one node, and it is the one reference in Rask you
+may put in a struct field (`mem.racks`).
 
-<!-- test: parse -->
+Deleting a node sets every `Link<T>?` field pointing at it to `none` *before*
+the delete returns. So a link to a dead node can't be observed, and following a
+live one is a pointer hop — no lookup, no generation check, no cleanup to
+remember.
+
+<!-- test: compile -->
 ```rask
-import memory.{Pool, Handle}
+import memory.Rack
+import memory.Link
 
-struct Node { parent: Handle<Node>, children: Vec<Handle<Node>> }  // handles, not pointers
+struct Entity {
+    name: string
+    health: i32
+    damage: i32
+    target: Link<Entity>?      // a stored reference — links are the exception
+}
 
-func spawn_and_hurt() {
-    mut entities = Pool.new()
-    let h = entities.insert(Entity { health: 100 })  // panics on alloc failure (no try)
-    entities[h].health -= 10                         // validated: stale handle = panic
-    entities.get(h)                                  // T? — non-panicking (Copy types)
-    entities.remove(h)
+func combat_round(mutate world: Rack<Entity>) {
+    for e in world.nodes() {
+        if e.target? as t {    // `?`-test binds; there's no flow typing
+            t.health -= e.damage
+        }
+    }
+}
+
+func fight() {
+    mut world = Rack<Entity>.new()
+    let a = world.insert(Entity { name: "A", health: 100, damage: 7, target: none })
+    let b = world.insert(Entity { name: "B", health: 100, damage: 5, target: none })
+    a.target = b
+    b.target = a
+
+    combat_round(mutate world)
+    world.delete(b)            // a.target is `none` now, set by the delete
 }
 ```
 
-`using` threads a pool as a hidden parameter (`mem.context-clauses`):
+Permission to write a node travels with the link, not with the rack — so
+nothing has to be threaded through, and there is no context clause here:
 
-<!-- test: parse -->
+<!-- test: compile -->
 ```rask
-import memory.{Pool, Handle}
+import memory.Rack
+import memory.Link
 
-func damage(h: Handle<Player>, n: i32) using Pool<Player> {
-    h.health -= n                     // auto-resolves through the context pool
+struct Player { name: string, health: i32 }
+
+func heal(mutate p: Link<Player>, n: i32) {   // `p: Link<Player>` is read-only
+    p.health += n
 }
-func kill(h: Handle<Player>) using players: Pool<Player> {
-    players.remove(h)                 // named form for structural ops
+
+func tend(mutate roster: Rack<Player>) {
+    let first = roster.insert(Player { name: "Ada", health: 10 })
+    heal(mutate first, 5)                     // the caller marks it too
+    for p in roster.nodes() { p.health += 1 } // writing through the rack directly
 }
-// callers just call damage(h, 5) — compiler finds the pool in scope; two same-typed pools = error
 ```
+
+- A link a *caller* owns travels freely. One into a rack this body declared can't be returned or stored anywhere longer-lived (RK6).
+- Edges are `Link<T>?` for now. A required edge is rejected — delete would have no `none` to write (RK7).
+- A function that deletes nodes its caller didn't hand it says `deleting`, and the call revokes the caller's links into that rack (RK9).
+- `Pool<T>` + `Handle<T>` is the deprecated predecessor (`mem.pools`). Same job, one extra indirection and a staleness check you had to remember.
 
 Public functions must declare their `using` clauses; `frozen` marks read-only contexts.
 
@@ -362,7 +397,7 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 
 - Package = directory; all files in it share visibility. Default is package-visible; `public` exports; `private` (fields/methods) restricts to `extend` blocks. Struct with any private field → construct via factory function.
 - `import http` then `http.get(...)` — qualified by default; `import mylib.{Parser, Lexer}` for unqualified names.
-- **Nothing comes pre-imported.** Only primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none` are in scope on their own. Everything else in the stdlib needs asking for: `import string.StringBuilder`, `import sync.{Shared, Mutex}`, `import memory.{Rack, Link, Pool, Handle, Heap}`, `import fs.File`, `import time.Duration`, `import thread.Thread`. There is no prelude — a name you didn't import is a name the compiler leaves free for you to declare yourself.
+- **Nothing comes pre-imported.** Only primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none` are in scope on their own. Everything else in the stdlib needs asking for: `import string.StringBuilder`, `import sync.{Shared, Mutex}`, `import memory.{Rack, Link, Heap}`, `import fs.File`, `import time.Duration`, `import thread.Thread`. There is no prelude — a name you didn't import is a name the compiler leaves free for you to declare yourself.
 - `build.rk` declares the package in Rask syntax (deps, features, profiles) and can contain a `func build(ctx)` script. Capabilities (fs/net/ffi) are inferred from imports and gated by `allow:` (`struct.build`).
 - C interop and raw pointers live in `unsafe` blocks only (`mem.unsafe`). Cross-platform: `comptime if cfg.os`.
 - Testing: `test "name" { assert x == y }` blocks; `rask test`.
@@ -375,7 +410,7 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means absence, on optionals only — and **`?`-tests don't narrow; there is no flow typing.** `if x? { use(x) }` doesn't unwrap `x`; Kotlin/TypeScript smart-cast instincts fail here. Bind instead (`if x? as v { use(v) }`) or exit with the fallback (`let v = x ?? return`).
 5. **Methods live in `extend Point { }` blocks**, not in the struct body; trait conformance is `extend Point with Trait { }` — and it's required (nominal), methods matching by shape is not enough.
 6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Trait`, even when the target type is known.
-7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store `Handle<T>`, indices, or `Span`s instead of references; use `with` for multi-statement element access.
+7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store a `Link<T>` into a rack, an index, or a `Span` instead of a reference; use `with` for multi-statement element access.
 8. **Explicit `return` in functions.** Only block *expressions* (if/match arms, `with`) use last-expression value.
 9. **No string `+` or concat** — interpolation `"{a}{b}"`, `StringBuilder`, or `join`. Strings are Copy: never `.clone()` a string, never try to mutate one.
 10. **`.clone()` on collections/large types is required and intentional** — don't add reference workarounds; the visible cost is the design.
@@ -383,7 +418,7 @@ No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `
 12. **Map iteration order is seeded-random** — sort before iterating if order matters. `push`/`insert` panic on OOM; `try_push` for fallible.
 13. **Static paths use `.`**: `Shape.Circle(2.0)`, `Vec.new()`, `Token.Plus` — never `::`.
 14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`.
-15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `Pool`, `Handle`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
+15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
 ## Spec vs compiler (temporary)
 

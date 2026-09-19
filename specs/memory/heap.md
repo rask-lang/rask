@@ -37,7 +37,7 @@ drop(ptr)                         // Consume (deallocate)
 
 ## Linearity Rules
 
-`Heap<T>` is linear: it follows the rules in `mem.linear/L1–L6`. The table below maps the rule identifiers other specs cite to their canonical source.
+`Heap<T>` is linear: it follows the rules in `mem.linear/L1–L7`. The table below maps the rule identifiers other specs cite to their canonical source.
 
 | Rule | Citation | Description |
 |------|----------|-------------|
@@ -47,6 +47,24 @@ drop(ptr)                         // Consume (deallocate)
 | **HP4** | `mem.linear/L5` | Passing to `take` or assigning to another binding consumes |
 
 Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
+
+**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the box is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+
+I went back and forth on making that `drop` a silent no-op instead. It's worse: the author writes a consume and gets none, and whether `drop(x)` frees anything then depends on whether `x` is a binding or a projection, which the line doesn't say.
+
+<!-- test: skip -->
+```rask
+struct Holder {
+    inner: Heap<Big>
+}
+
+let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+assert h.inner.b == 2
+// drop(h.inner)              // error: `h` gives it back already
+// nothing here — `h` going out of scope frees the block
+```
+
+This is what makes a recursive type work. `Cons(i64, Heap<List>)` holds its tail in a field, so each node owns the one after it, and releasing the head releases the whole chain.
 
 <!-- test: parse -->
 ```rask
@@ -276,7 +294,7 @@ The name a binary heap would want is a casualty I'll take: a priority queue shou
 
 **Why linear heap pointers?** I wanted heap allocation without runtime overhead. `Handle<T>` uses generation checks — safe but costs 4+ bytes and a branch on every access. `Heap<T>` has exactly one owner, so the compiler can track it statically via the linearity rules (`mem.linear`). Use-after-free, double-free, and leaks are all prevented without any runtime cost.
 
-**Why the same rules as `@resource`?** Both `Heap<T>` and `@resource` structs are linear values — the compiler uses one rule set (`mem.linear/L1–L6`) for both. A reader who understands `@resource` already understands `Heap<T>`; only the use cases differ.
+**Why the same rules as `@resource`?** Both `Heap<T>` and `@resource` structs are linear values — the compiler uses one rule set (`mem.linear/L1–L7`) for both. A reader who understands `@resource` already understands `Heap<T>`; only the use cases differ.
 
 **HP5 (transparent type checking):** I don't want `Heap<T>` to infect every function signature. If a function takes `T`, it should accept `Heap<T>` with auto-deref. The alternative — explicit unwrapping everywhere — adds noise without safety benefit.
 
@@ -326,7 +344,7 @@ enum Expr {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L6) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
+- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
 - [Boxes](boxes.md) — `Heap<T>` as a linear box in the container family (`mem.boxes`)
 - [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)

@@ -247,11 +247,12 @@ this pass's #974, #997, #1000, #1002, #1021, #1022.
 Exit condition per cluster: the probe file leaves `tests/known_divergences.txt` and rejoins
 the green gate.
 
-**Track A is finished.** `tests/known_divergences.txt` holds no entries as of 2026-09-04 —
-every clustered bug and every single is fixed on both backends, and the file's header records
-what each one turned out to be rather than just that it's gone. What's left of the coverage
-backlog is `tests/pending_features.txt`, which is roadmap rather than regression; see
-ROADMAP.md §3 for where each of those stands.
+**Track A is finished.** `tests/known_divergences.txt` was empty as of 2026-09-04 — every
+clustered bug and every single one was fixed on both backends, and the file's header records
+what each turned out to be rather than just that it's gone. It has since taken two entries
+again (`p08_sequence.rk` and `t_raw_pointer_width.rk`); re-read the file rather than this
+line. What's left of the coverage backlog is `tests/pending_features.txt`, which is roadmap
+rather than regression; [ROADMAP.md](ROADMAP.md) says which version each belongs to.
 
 ## Track B — #725, measured, and smaller than it looked
 
@@ -355,6 +356,6 @@ prerequisite rather than a parallel track.
 
 ## Beyond this
 
-ROADMAP Phase 2 (stdlib breadth), Phase 3 (runtime trait dispatch, cross-compilation) and
-Phase 4 (incremental compilation) stand as written. They were waiting on the validation
-programs, which no longer block them — but Track A does.
+The roadmap no longer has numbered phases — it's versions now, each with a gate that says
+when it's done. Stdlib breadth is v0.6; cross-compilation and incremental compilation aren't
+scheduled. See [ROADMAP.md](ROADMAP.md).

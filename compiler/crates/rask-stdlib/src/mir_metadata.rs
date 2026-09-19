@@ -275,6 +275,15 @@ enum Internal {
     /// Not a method at all — a static constructor, a raw pointer. No receiver
     /// to borrow, nothing kept, nothing pointed into.
     NoReceiver,
+    /// A free of what an aggregate's slot held, emitted on the way to writing
+    /// something else into that slot (`h.list = h.list.filter(…)`).
+    ///
+    /// Argument zero is the handle read out of the slot, not the aggregate —
+    /// so the aggregate is neither borrowed nor consumed here and stays the
+    /// frame's. Spelled apart from a plain free for exactly that: a
+    /// `Vec_free` of a field's handle reads as the whole struct being handed
+    /// away, and the struct then never got a release of its own.
+    ReplacesSlot,
 }
 
 /// Every name MIR mints that looks like a stdlib method but isn't one.
@@ -309,6 +318,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_lock", Internal::SameAs("Shared_read")),
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
+    // `with s.staged() as v` hands back the working copy the runtime holds
+    // under the lock until the scope commits it, not a value the frame took
+    // over — so the frame releases nothing. Without this line it was read as
+    // owning what it touched, which leaks (#1157).
+    ("Mutex_staged_data", Internal::SameAs("Shared_read")),
     ("Cell_get", Internal::SameAs("Shared_get")),
     ("Shared_data", Internal::SameAs("Shared_read")),
     ("Mutex_get", Internal::SameAs("Shared_get")),
@@ -350,6 +364,21 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // rendering is `{}` and `{:debug}`, which every type gets without asking.
     ("char_to_string", Internal::FreshFromReceiver),
     ("char_debug", Internal::FreshFromReceiver),
+    // Giving back what a field held, right before the field holds something
+    // else. See `Internal::ReplacesSlot`.
+    ("string_free_replaced", Internal::ReplacesSlot),
+    // `{v:debug}` reads the container and builds a string out of it; the
+    // container is still the caller's afterwards. Unaccounted for, the read of
+    // the handle off a struct field looked like handing the whole struct away,
+    // so `"{h:debug}"` on a `struct { items: Vec<i64> }` stopped the struct
+    // being released at all and leaked the vector. `{:debug}` is a rendering
+    // every type gets without asking, which is why `stdlib` declares it for
+    // neither. There is no `map_debug` to pair with it — a map renders through
+    // its entry sort, not through a call of its own — and inventing the name
+    // here would make `map` an accountable family and fail every user function
+    // called `map_something`.
+    ("Vec_debug", Internal::FreshFromReceiver),
+
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
     ("string_new", Internal::NoReceiver),
@@ -448,6 +477,16 @@ fn accountable_family_of(name: &str) -> Option<&str> {
     if cache().type_names.contains(head) {
         return Some(head);
     }
+    // Or a head the list itself uses — a strategy rather than a type, as in
+    // `Cell_acquire` and `Mutex_lock`, where `Shared<T, Cell>` is the type and
+    // `Cell` is how the call site spells the family.
+    //
+    // A head here is a family by declaration, so spell it the way the thing it
+    // belongs to is spelled: `vec_debug` made `vec` a family, and every user
+    // function named `vec_*` then read as an unaccounted-for internal spelling
+    // — a warning on each compile telling the author to edit a table inside the
+    // compiler, and their function treated as owning everything it touches,
+    // which leaks (#1217). It is `Vec_debug` now, like the type.
     INTERNAL_SPELLINGS
         .iter()
         .any(|(n, _)| n.split_once('_').is_some_and(|(h, _)| h == head))
@@ -469,7 +508,8 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::SameAs(decl)) => return lookup(decl),
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
-        | Some(Internal::NoReceiver) => return None,
+        | Some(Internal::NoReceiver)
+        | Some(Internal::ReplacesSlot) => return None,
         None => {}
     }
     // A generic method reaches MIR with its type argument welded on —
@@ -484,7 +524,6 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     // A name that doesn't belong to an accountable family is an ordinary user
     // function, which owns what it returns like any other. That's the honest
     // answer, not a gap.
-    let family = accountable_family_of(base)?;
     // Otherwise: not declared, not listed, not a specialisation of anything.
     // Rather than guess — or crash a build over it — answer every question the
     // way that leaks.
@@ -493,16 +532,40 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
     // container's storage is the caller's and the caller frees what the
     // container still holds; guess that it is the container's and nothing
     // frees it. One is a use-after-free, the other is a leak the leak gate
-    // already catches by name. So an unaccounted-for name leaks, loudly, and
+    // already catches by name. So an unaccounted-for name leaks, and
     // `tests/spellings_gate.sh` fails on the report so it gets a line here
     // instead of staying that way.
-    report_unmapped(base, family);
+    //
+    // The report is not made here. This function is handed a bare name and
+    // cannot tell a spelling MIR minted from a function the program declared
+    // with the same shape — `string_shoutify` read as one for a month, warning
+    // on every compile about the author's own code (#1217). The caller knows,
+    // so the caller reports: `rask_mir::own_names`.
+    accountable_family_of(base)?;
     None
+}
+
+/// The name and the family it would belong to, if it reads as a spelling MIR
+/// minted and nothing here accounts for it. `None` when something does, or when
+/// it looks like nothing this module owns.
+///
+/// Only the caller can finish the question, because a function the program
+/// itself declares answers all of this for itself.
+pub fn unmapped_spelling(qualified_name: &str) -> Option<(&str, &str)> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    if lookup(base).is_some()
+        || internal_spelling(base).is_some()
+        || declared_prefix_of(base).is_some()
+    {
+        return None;
+    }
+    accountable_family_of(base).map(|family| (base, family))
 }
 
 /// Note an internal spelling nothing accounts for. Once per name per process:
 /// a `Vec_get_unchecked` in a loop would otherwise bury the report.
-fn report_unmapped(base: &str, family: &str) {
+pub fn report_unmapped(base: &str, family: &str) {
     use std::sync::Mutex;
     static SEEN: Mutex<Option<HashSet<std::string::String>>> = Mutex::new(None);
     let mut seen = SEEN.lock().unwrap();
@@ -674,6 +737,16 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         return false;
     }
     match declared(qualified_name) {
+        // A `take self` method has no receiver left for the result to point
+        // into — it consumed it, and what comes back is the caller's. That is
+        // a rule, where `TRANSFERS_OUT` above is a list, because the list is
+        // for `mutate self` methods that hand out storage they keep.
+        //
+        // `TaskHandle.join(take self) -> T or JoinError` is what this was
+        // getting wrong: it names a type parameter, so it read as a view, so
+        // the frame released nothing — and a panicking task's message string
+        // was freed by nobody (#1223).
+        Some(m) if m.take_self => false,
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
         // releases nothing it got back — a leak, where the other guess is a
@@ -765,6 +838,17 @@ pub fn consumes_receiver(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     matches!(internal_spelling(base), Some(Internal::ConsumesReceiver))
+}
+
+/// Is this the free of a container a slot is about to stop holding?
+///
+/// The aggregate is untouched by it — argument zero is the handle that was in
+/// the slot — so a pass asking "was this value handed away here" should answer
+/// no for the aggregate the handle was read out of.
+pub fn frees_a_replaced_slot(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::ReplacesSlot))
 }
 
 /// Does this call borrow its receiver rather than consume it? True for

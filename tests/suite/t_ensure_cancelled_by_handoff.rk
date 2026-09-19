@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L6: consuming a linear value cancels the `ensure` scheduled for
+// it. Handing the value *away* is consuming it (L5), and that half kept being
+// missed one spelling at a time.
+//
+// The spellings here all leave the scope carrying the resource rather than
+// closing it: a `return`, a `break` out of a loop, a rebinding, an argument to
+// a `take` parameter. Each has to cancel the ensure, or the cleanup runs on the
+// way out and whoever catches the value is handed a closed one — which the
+// interpreter reported as a double consume and native performed in silence.
+//
+// L7 is why these matter now: nothing may stand between an acquisition and its
+// commitment, so `ensure` at the acquisition is the ordinary shape and every
+// hand-off happens with one already scheduled.
+//
+// Every case counts closes, because on native a second close has no symptom at
+// all — a check that only read the answer passed with the cleanup running
+// twice. The counter is a module-level `Atomic` rather than something passed
+// in: a refcounted value reaching the ensure body leaks its allocation whether
+// the ensure runs or is cancelled (#1224), which would put this file on the
+// leak ledger for a bug it isn't about.
+
+import sync.Atomic
+import sync.SeqCst
+
+const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func open(id: i64) -> Conn {
+        return Conn { id: id }
+    }
+
+    func close(take self) -> i64 {
+        CLOSES.fetch_add(1, SeqCst)
+        return self.id
+    }
+}
+
+// `return c` hands it to the caller.
+func returned() -> Conn {
+    let c = Conn.open(1)
+    ensure c.close()
+    return c
+}
+
+// `break c` carries it out of the loop the ensure belongs to.
+func broken_out() -> Conn {
+    mut i = 0
+    let out = loop {
+        let c = Conn.open(2)
+        ensure c.close()
+        i = i + 1
+        break c
+    }
+    return out
+}
+
+// `let d = c` is a move, so the obligation is `d`'s now.
+func rebound() -> i64 {
+    let c = Conn.open(3)
+    ensure c.close()
+    let d = c
+    ensure d.close()
+    return d.close()
+}
+
+func eat(take c: Conn) -> i64 {
+    ensure c.close()
+    return c.close()
+}
+
+// A `take` parameter takes ownership; a borrow would not.
+func handed_to_take() -> i64 {
+    let c = Conn.open(4)
+    ensure c.close()
+    return eat(c)
+}
+
+test "mem.linear/L6 — returning the value cancels its ensure" {
+    CLOSES.store(0, SeqCst)
+    let c = returned()
+    ensure c.close()
+    assert CLOSES.load(SeqCst) == 0
+    assert c.close() == 1
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "mem.linear/L6 — breaking out with the value cancels its ensure" {
+    CLOSES.store(0, SeqCst)
+    let c = broken_out()
+    ensure c.close()
+    assert CLOSES.load(SeqCst) == 0
+    assert c.close() == 2
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "mem.linear/L6 — a rebinding moves the obligation, it doesn't double it" {
+    CLOSES.store(0, SeqCst)
+    assert rebound() == 3
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "mem.linear/L6 — a `take` parameter takes the obligation with it" {
+    CLOSES.store(0, SeqCst)
+    assert handed_to_take() == 4
+    assert CLOSES.load(SeqCst) == 1
+}
+
+func main() {}

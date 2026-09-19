@@ -71,17 +71,29 @@ language-wide, by every use site, not by the feature. That's the real price tag.
 
 ## 5. Guarantees are about the paths a program takes, not about surviving
 
-Generates: an unensured linear value leaking on panic, admitted outright
-(`ctrl.panic/U5`), unwind releasing access but never rolling back data (`U2`),
-torn application invariants being yours while language-level ones always hold
-(`LK3`).
+Generates: unwind releasing access but never rolling back data
+(`ctrl.panic/U2`), torn application invariants being yours while language-level
+ones always hold (`LK3`).
 
 Linearity is a claim about normal exit, `return`, and `try` propagation. A panic
-is task death, not a path. Anything stronger needs destructors, which is
-principle 1 again.
+is task death, not a path.
+
+This test used to also generate "an unensured linear value leaks on panic,
+admitted outright" (`ctrl.panic/U5`), on the reasoning that anything stronger
+needs destructors — principle 1 again. That reasoning was wrong, and the
+counterexample is worth keeping: `mem.linear/L7` made the acquisition-to-commitment
+window empty, so there is never an unensured linear value for a panic to lose,
+and the ensure that is always scheduled runs during unwind (`U1`). No
+destructors. The third option was to make the bad state unrepresentable rather
+than to catch it or to admit it, which is principle 3 reaching into this one.
+
+What survives is narrower and still true: the panic *inside* an acquisition —
+after the syscall, before the value is anyone's — is nobody's to clean up, and
+the process staying alive is not a guarantee on offer.
 
 **Applying it:** separate "the compiler promised this" from "the process stayed
-alive". The second was never on offer.
+alive". Before admitting a path can't be guaranteed, check whether the state it
+loses can be made not to exist.
 
 ## 6. Machinery that only type-checks code the canon says not to write gets deleted
 

@@ -478,6 +478,9 @@ fn rename_stmt(
         | MirStmtKind::RcDecContents { local } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
+        MirStmtKind::ReleaseSlot { addr, .. } => {
+            *addr = current_version(*addr, version_stack, num_orig_locals);
+        }
         MirStmtKind::EnsureHookRegister { captures, .. } => {
             for cap in captures.iter_mut() {
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);

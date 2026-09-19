@@ -803,7 +803,10 @@ pub struct MultitaskingRuntime {
 }
 
 impl MultitaskingRuntime {
-    pub fn new(workers: usize) -> Self {
+    /// Fallible because it starts its workers here: a target with no threads
+    /// refuses at the first one rather than handing back a runtime that can
+    /// never run anything (#1172).
+    pub fn new(workers: usize) -> Result<Self, crate::RuntimeError> {
         let (tx, rx) = mpsc::channel::<PoolTask>();
         let rx = Arc::new(Mutex::new(rx));
 
@@ -818,14 +821,14 @@ impl MultitaskingRuntime {
                         Err(_) => break, // Channel closed
                     }
                 }
-            }));
+            })?);
         }
 
-        Self {
+        Ok(Self {
             workers,
             sender: Mutex::new(Some(tx)),
             pool_threads: Mutex::new(threads),
-        }
+        })
     }
 
     /// Shut down the pool: drop sender, join all workers, then wait for every
@@ -1185,12 +1188,7 @@ impl RngState {
     }
 
     pub fn from_system() -> Self {
-        use std::time::SystemTime;
-        let seed = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42);
-        Self::from_seed(seed)
+        Self::from_seed(crate::seed_entropy())
     }
 
     pub fn next_u64(&mut self) -> u64 {

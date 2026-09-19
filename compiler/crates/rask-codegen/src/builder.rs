@@ -1288,6 +1288,17 @@ impl<'a> FunctionBuilder<'a> {
                 let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
                 Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
             }
+
+            // One slot of an aggregate, about to be written over. The same walk
+            // `RcDecContents` does, told where to start and what it will find
+            // there instead of reading it off a local's type.
+            MirStmtKind::ReleaseSlot { addr, offset, ty } => {
+                if !Self::holds_string_mir(ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*addr), ctx)?;
+                Self::release_strings_mir(builder, base, *offset as i32, ty, ctx, 0)?;
+            }
         }
         Ok(())
     }
@@ -7229,6 +7240,11 @@ impl<'a> FunctionBuilder<'a> {
             MirType::String => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
+            // A box moved into a field is the aggregate's: the block, and the
+            // value's own contents through the vtable. Left out, a struct whose
+            // only owning field was an `any Trait` was skipped by the whole
+            // walk and the box leaked (#1149's field case).
+            MirType::TraitObject { .. } => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7287,8 +7303,21 @@ impl<'a> FunctionBuilder<'a> {
         if crate::drop_fields::container_free_for(ty).is_some() {
             return true;
         }
+        // A box a field holds is the aggregate's: it was moved in, so the block
+        // and the value's own contents go when the aggregate does. Asked before
+        // the name lookup below, which would read `any Handler` as a struct
+        // nobody declared and answer no.
+        if crate::drop_fields::is_trait_object(ty) {
+            return true;
+        }
+        // The block is the aggregate's whatever is inside it, so a `Heap<i32>`
+        // field counts as much as a `Heap<Record>` does.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return true;
+        }
         match ty {
             RaskType::String => true,
+
             RaskType::Result { ok, err } => {
                 Self::holds_string_ty(ok, ctx, depth + 1)
                     || Self::holds_string_ty(err, ctx, depth + 1)
@@ -7327,6 +7356,12 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Container(kind) => Self::emit_container_release(
                 builder, base, offset, Self::container_free_for_kind(*kind), ctx,
             ),
+            // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
+            // entry walker reads both words and the vtable's release hook, so
+            // hand it the slot rather than repeating that here — and the hook
+            // is what makes this different from `TraitDrop`, which frees the
+            // block and leaves the contents to the frame (#1144).
+            MirType::TraitObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
@@ -7414,6 +7449,18 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(free_fn) = crate::drop_fields::container_free_for(ty) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
+        // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
+        // the runtime's own entry walker reads both words and the vtable's
+        // release hook. Before the match for the reason `holds_string_ty` asks
+        // it early — a field's `any Trait` is a name, not a parsed form.
+        if crate::drop_fields::is_trait_object(ty) {
+            return Self::emit_boxed_field_release(builder, base, offset, ctx);
+        }
+        // Before the match for the same reason: a `Heap<T>` field reaches here
+        // as a name, and what is inside the block is the runtime's to walk.
+        if crate::elem_offsets::is_heap_field(ty) {
+            return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
+        }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
             RaskType::Result { ok, err } => {
@@ -7489,6 +7536,75 @@ impl<'a> FunctionBuilder<'a> {
     ///
     /// The slot holds the handle, so this loads it and passes the pointer —
     /// where a string's slot *is* the header and its release takes the address.
+    /// Release the box a slot holds: the block, and the value's own contents
+    /// through the vtable's hook.
+    ///
+    /// That hook is what separates this from `TraitDrop`, which frees the block
+    /// and leaves the contents to the frame — a box built for a *call* borrows
+    /// its value, and one moved into a field or an element owns it (#1144).
+    /// A `Heap<T>` field: hand the slot and the type's descriptor to the
+    /// runtime walker, which releases what the block holds and then frees it.
+    ///
+    /// Through the runtime rather than inline, because the block holds a `T`
+    /// and `T` may be the type that holds the block — `Cons(i64, Heap<List>)`.
+    /// An inline walk can't express "and now do this again", which is why this
+    /// one stops at pointers and carries a depth cap; the descriptor says
+    /// `SELF` and the runtime starts its list over (#1202).
+    ///
+    /// Nothing emitted when the descriptor won't build or wasn't registered as
+    /// data. That leaks, which is this file's answer everywhere it can't
+    /// describe something exactly.
+    fn emit_heap_field_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &RaskType,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let Some(desc) = crate::elem_offsets::heap_field_descriptor(
+            ty, ctx.struct_layouts, ctx.enum_layouts,
+        ) else {
+            return Ok(());
+        };
+        let release = ctx
+            .func_refs
+            .get("rask_heap_field_release")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_heap_field_release".to_string()))?;
+        let slot = builder.ins().iadd_imm(base, offset as i64);
+        // A scalar payload describes nothing inside the block. The block is
+        // still the aggregate's, so the call still happens — with no list.
+        let (entries, count) = match ctx.element_offset_globals.get(&desc) {
+            Some(gv) => (
+                builder.ins().global_value(types::I64, *gv),
+                builder.ins().iconst(types::I64, desc.len() as i64),
+            ),
+            None => (
+                builder.ins().iconst(types::I64, 0),
+                builder.ins().iconst(types::I64, 0),
+            ),
+        };
+        builder.ins().call(*release, &[slot, entries, count]);
+        Ok(())
+    }
+
+    fn emit_boxed_field_release(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<()> {
+        let slot = builder.ins().iadd_imm(base, offset as i64);
+        let entry = builder
+            .ins()
+            .iconst(types::I32, crate::elem_offsets::TRAITBOX_AT_ZERO as i64);
+        let release = ctx
+            .func_refs
+            .get("rask_owned_release")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_release".to_string()))?;
+        builder.ins().call(*release, &[slot, entry]);
+        Ok(())
+    }
+
     fn emit_container_release(
         builder: &mut ClifFunctionBuilder,
         base: Value,
@@ -8101,6 +8217,7 @@ impl<'a> FunctionBuilder<'a> {
     /// The same walk a container's struct elements get — a node in a rack and a
     /// struct in a vector own their fields the same way — so it comes off the
     /// same function rather than a second copy of the rules.
+    ///
     fn node_owned_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -8112,6 +8229,39 @@ impl<'a> FunctionBuilder<'a> {
         let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
         crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
             .unwrap_or_default()
+    }
+
+    /// The same entries for a pooled element, off the tag lowering appended.
+    ///
+    /// A pooled element doesn't have to be a struct: `Pool<string>` and
+    /// `Pool<Vec<i64>>` hold elements that *are* the owned thing. Reading the
+    /// argument's local can't see that — MIR types every container as a bare
+    /// `Ptr` — so lowering settles the tag from the checker's type and passes
+    /// it as the last argument. The tag is not a runtime argument, so it comes
+    /// back off the value list before the call is built.
+    fn pooled_owned_descriptor(
+        mir_args: &[MirOperand],
+        args: &mut Vec<Value>,
+        ctx: &CodegenCtx,
+    ) -> (Vec<i32>, Option<String>) {
+        // Pool, element, tag. Anything else is a call this didn't build, and
+        // popping a value off one of those would drop the element instead.
+        if mir_args.len() != 3 || args.len() != 3 {
+            return (Vec::new(), None);
+        }
+        args.pop();
+        let Some(MirOperand::Constant(MirConst::Int(tag))) = mir_args.last() else {
+            return (Vec::new(), None);
+        };
+        let owned =
+            crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
+                .unwrap_or_default();
+        // R5: a `@resource` element makes a non-empty drop a panic, and the
+        // message names the element type. Both ride the same "told once, on the
+        // first insert" route as the descriptor.
+        let resource = crate::elem_offsets::resource_elem_name(*tag, ctx.struct_layouts)
+            .map(str::to_string);
+        (owned, resource)
     }
 
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
@@ -8567,14 +8717,57 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Pool insert: wrap value as pointer, append elem_size
+            // Pool insert: the element's bytes by address, its size, and what
+            // one element owns — the same entries a rack node carries, off the
+            // same layout. `Pool.new()` has no argument to read `T` off, so
+            // this is where the runtime learns it; without it a pooled struct's
+            // strings and `Vec` fields were freed by nobody.
             "Pool_insert" | "Pool_try_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
                     let val = args[1];
                     args[1] = Self::value_to_ptr(builder, val);
                 }
+                let (owned, resource) = Self::pooled_owned_descriptor(mir_args, args, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    // The runtime copies it on the first insert, so a stack
+                    // slot is enough to hand it over.
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    ));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        builder.ins().stack_store(e, ss, (i * 4) as i32);
+                    }
+                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                }
+                // R5's three: is the element a resource, and what is it called.
+                // The name goes over on a stack slot for the same reason the
+                // descriptor does — the runtime copies it on the first insert.
+                match &resource {
+                    Some(name) => {
+                        args.push(builder.ins().iconst(types::I64, 1));
+                        let bytes = name.as_bytes();
+                        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot, bytes.len() as u32, 0,
+                        ));
+                        for (i, b) in bytes.iter().enumerate() {
+                            let v = builder.ins().iconst(types::I8, *b as i64);
+                            builder.ins().stack_store(v, ss, i as i32);
+                        }
+                        args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                        args.push(builder.ins().iconst(types::I64, bytes.len() as i64));
+                    }
+                    None => {
+                        args.push(builder.ins().iconst(types::I64, 0));
+                        args.push(builder.ins().iconst(types::I64, 0));
+                        args.push(builder.ins().iconst(types::I64, 0));
+                    }
+                }
                 CallAdapt::None
             }
 

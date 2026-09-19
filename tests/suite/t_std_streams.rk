@@ -29,17 +29,21 @@ import io.IoError
 
 test "std.io — a handle can be acquired and closed" {
     mut out = io.stdout()
+    ensure out.close()
     out.close()
 
     mut err = io.stderr()
+    ensure err.close()
     err.close()
 
     mut inp = io.stdin()
+    ensure inp.close()
     inp.close()
 }
 
 test "std.io — writing text through a handle reports no error" {
     mut out = io.stdout()
+    ensure out.close()
     let w = out.write_text("")
     w catch e => {
         assert false
@@ -54,6 +58,7 @@ test "std.io — writing text through a handle reports no error" {
 // W1: `write` answers how many bytes went in.
 test "std.io — write answers the byte count" {
     mut out = io.stdout()
+    ensure out.close()
     let empty: Vec<u8> = []
     let n = out.write(empty)
     if n is i64 as k {
@@ -67,6 +72,7 @@ test "std.io — write answers the byte count" {
 // W2: `write_bytes` writes them all and answers nothing.
 test "std.io — write_bytes takes a byte vector" {
     mut err = io.stderr()
+    ensure err.close()
     let empty: Vec<u8> = []
     let w = err.write_bytes(empty)
     w catch e => {
@@ -80,6 +86,7 @@ test "std.io — write_bytes takes a byte vector" {
 // a zero-length buffer reads zero and doesn't fail.
 test "std.io — reading into an empty buffer is zero, not an error" {
     mut inp = io.stdin()
+    ensure inp.close()
     mut buf: Vec<u8> = []
     let n = inp.read(mutate buf)
     if n is i64 as k {
@@ -94,7 +101,9 @@ test "std.io — reading into an empty buffer is zero, not an error" {
 // once, closed in the other order.
 test "std.io — two handles at once" {
     mut a = io.stdout()
+    ensure a.close()
     mut b = io.stderr()
+    ensure b.close()
     let wa = a.write_text("")
     wa catch e => {
         assert false
@@ -111,6 +120,7 @@ test "std.io — two handles at once" {
 // with an error path actually wants.
 func write_or_fail(text: string) -> void or IoError {
     mut out = io.stdout()
+    ensure out.close()
     ensure out.close()
     try out.write_text(text)
     return

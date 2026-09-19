@@ -149,9 +149,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // are here only to tell the drop pass the result is the caller's to free.
     ("Vec_skip", 0, 0, "Vec_free"),
     ("Vec_take", 0, 0, "Vec_free"),
-    // `chunks` hands back a fresh `Vec<Vec<T>>`. Freeing it releases the outer
-    // Vec only — the inner ones are elements, and `Vec_free` frees a byte
-    // store, not what its elements point at. That nested half is #943.
+    // `chunks` hands back a fresh `Vec<Vec<T>>`, and the runtime builds it
+    // with an element map saying the elements are Vec handles — so freeing it
+    // frees the chunks too. The zero here is this table's own tag, which
+    // describes what *lowering* knows; the nested answer is settled at the
+    // construction site in `rask_vec_chunks`.
     ("Vec_chunks", 0, 0, "Vec_free"),
     ("Map_new", 2, 2, "Map_free"),
     ("Map_new_string_keys", 2, 2, "Map_free"),
@@ -215,6 +217,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // below, which look identical from here and are not.
     ("string_chars", 0, 0, "Vec_free"),
     ("string_graphemes", 0, 0, "Vec_free"),
+    // The third of that family and the one left out: `char_indices` pushes a
+    // (byte offset, scalar) pair per character into a fresh vector. Two
+    // integers — nothing points into the source, and nothing in it owns
+    // anything — so the vector is the caller's, elements and all.
+    ("string_char_indices", 0, 0, "Vec_free"),
     // The three the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single
@@ -286,6 +293,12 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // Same shape on the C side: the bytes up to the terminator, copied into a
     // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
     ("cstring_bytes", 0, 0, "Vec_free"),
+    // Bytes off standard input, into a Vec the runtime made for this call and
+    // nothing else holds. Without it `Stdin.read_bytes` handed back a vector
+    // nobody owned — and, because a trait call's answer is only as good as the
+    // worst implementation behind it, it also stopped `reader.read_bytes()`
+    // from being anyone's (#1199).
+    ("io_read_std_bytes", 0, 0, "Vec_free"),
     //
     // The string splitters — `string_split`, `string_lines` and friends — are
     // absent for a nearer reason: each does hand back a fresh Vec, and

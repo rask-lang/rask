@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure a struct field holds.
+//
+// The layout couldn't parse a `func(…)` field type, so the field landed as an
+// unknown name — pointer-sized, which is the right size and no identity. The
+// release walk asks a field's type what it owns, got nothing back, and the
+// block leaked. It warned about it on every compile, too.
+//
+// A bare function used as a value is the same thing: lowering wraps one in a
+// closure block like any other, so there is no raw function address in a field
+// for the release to trip over.
+//
+// The generic spelling — `Holder<func(i64) -> bool>` — is still #1204: a
+// function type has no key a layout can be named by, so the instantiation
+// shares the generic layout and the slot reads back as a scalar.
+
+struct Holder {
+    v: func(i64) -> bool
+}
+
+struct Pair {
+    tag: string
+    check: func(i64) -> bool
+}
+
+func is_positive(x: i64) -> bool {
+    return x > 0
+}
+
+func main() {}
+
+test "a closure in a field is called and freed" {
+    let h = Holder { v: |x| x > 0 }
+    let f = h.v
+    assert f(3)
+    assert !f(-1)
+}
+
+test "a named function in a field" {
+    let h = Holder { v: is_positive }
+    let f = h.v
+    assert f(3)
+}
+
+test "a closure beside a string in the same struct" {
+    let n = 1
+    let p = Pair { tag: "t{n}", check: |x| x > 10 }
+    assert p.tag == "t1"
+    let f = p.check
+    assert f(20)
+    assert !f(5)
+}

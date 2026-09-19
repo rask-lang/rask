@@ -607,7 +607,7 @@ impl Interpreter {
                         }
                         Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
-                });
+                })?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
@@ -670,7 +670,7 @@ impl Interpreter {
                         }
                         Err(diag) => Err(interp.task_failure_message(&diag)),
                     }
-                });
+                })?;
 
                 // Return TaskHandle (not ThreadHandle) for type distinction
                 let handle_inner = Arc::new(ThreadHandleInner {
@@ -771,7 +771,7 @@ impl Interpreter {
                     result_rx
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
-                });
+                })?;
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),

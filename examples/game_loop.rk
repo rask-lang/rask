@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Game Loop with Entities
-// Demonstrates: Pool pattern, handle-based refs, traits, threading, time/delta, game systems
+// Demonstrates: Rack + Link for entities, traits, threading, time/delta, game systems
 
 import time
 import random
 import thread.ThreadPool
-import memory.Pool
-import memory.Handle
+import memory.Rack
+import memory.Link
 import random.Random
 
 // Trait for updatable components
@@ -59,8 +59,8 @@ enum EntityType {
 
 // Game state
 struct GameState {
-    entities: Pool<Entity>
-    player: Handle<Entity>?
+    entities: Rack<Entity>
+    player: Link<Entity>?
     score: i32
     game_over: bool
     // Seeded so a run is reproducible. Enemy spawn positions decide which
@@ -70,11 +70,19 @@ struct GameState {
 }
 
 extend GameState {
-    func new() -> GameState or Error {
-        mut entities = Pool.new()
+    func new() -> GameState {
+        // The rack has to exist before anything links into it: a link into a
+        // rack this body owns can't be returned (mem.racks/RK6), so the player
+        // is inserted through the finished state rather than beside it.
+        mut state = GameState {
+            entities: Rack<Entity>.new(),
+            player: none,
+            score: 0,
+            game_over: false,
+            rng: Random.from_seed(20260809),
+        }
 
-        // Spawn player at center
-        let player_handle = entities.insert(Entity {
+        state.player = state.entities.insert(Entity {
             position: Position { x: 400.0f32, y: 300.0f32 },
             velocity: Velocity { dx: 0.0f32, dy: 0.0f32 },
             health: Health { current: 100, max: 100 },
@@ -83,16 +91,10 @@ extend GameState {
             entity_type: EntityType.Player,
         })
 
-        return GameState {
-            entities,
-            player: player_handle,
-            score: 0,
-            game_over: false,
-            rng: Random.from_seed(20260809),
-        }
+        return state
     }
 
-    func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {
+    func spawn_enemy(mutate self, x: f32, y: f32) -> Link<Entity> {
         return self.entities.insert(Entity {
             position: Position { x, y },
             velocity: Velocity { dx: -50.0f32, dy: 0.0f32 },
@@ -103,7 +105,7 @@ extend GameState {
         })
     }
 
-    func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Handle<Entity> or Error {
+    func spawn_projectile(mutate self, x: f32, y: f32, dx: f32, dy: f32) -> Link<Entity> {
         return self.entities.insert(Entity {
             position: Position { x, y },
             velocity: Velocity { dx, dy },
@@ -116,92 +118,92 @@ extend GameState {
 }
 
 // System: Update positions based on velocities
-// Takes Pool<Entity> directly — decoupled from GameState, works with any entity pool
-func movement_system(mutate entities: Pool<Entity>, dt: f32) {
-    for h in entities {
-        if !entities[h].active { continue }
+// Takes the Rack directly — decoupled from GameState, works with any entity rack
+func movement_system(mutate entities: Rack<Entity>, dt: f32) {
+    for e in entities.nodes() {
+        if !e.active { continue }
 
-        entities[h].position.x += entities[h].velocity.dx * dt
-        entities[h].position.y += entities[h].velocity.dy * dt
+        e.position.x += e.velocity.dx * dt
+        e.position.y += e.velocity.dy * dt
     }
 }
 
 // System: Check collisions between entities
 func collision_system(mutate state: GameState) {
-    mut to_check = state.entities.handles()
+    mut to_check = state.entities.nodes()
 
     for i in 0..to_check.len() {
         for j in i + 1..to_check.len() {
-            let h1 = to_check[i]
-            let h2 = to_check[j]
+            let e1 = to_check[i]
+            let e2 = to_check[j]
 
-            if !state.entities[h1].active || !state.entities[h2].active { continue }
+            if !e1.active || !e2.active { continue }
 
             // Take the components the check needs, not the whole entity —
             // `Position` is 8 bytes and copies, an `Entity` doesn't
             // (mem.borrowing/E4).
-            let p1 = state.entities[h1].position
-            let p2 = state.entities[h2].position
+            let p1 = e1.position
+            let p2 = e2.position
 
             // Calculate distance
             let dx = p1.x - p2.x
             let dy = p1.y - p2.y
             let dist = (dx * dx + dy * dy).sqrt()
-            let r1 = state.entities[h1].collider.radius
-            let r2 = state.entities[h2].collider.radius
-            let min_dist = r1 + r2
+            let min_dist = e1.collider.radius + e2.collider.radius
 
             if dist < min_dist {
-                handle_collision(mutate state, h1, h2)
+                resolve_collision(mutate state, e1, e2)
             }
         }
     }
 }
 
-func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) {
-    let type1 = state.entities[h1].entity_type
-    let type2 = state.entities[h2].entity_type
+func resolve_collision(mutate state: GameState, e1: Link<Entity>, e2: Link<Entity>) {
+    let type1 = e1.entity_type
+    let type2 = e2.entity_type
 
     // Player vs Enemy
     if type1 == EntityType.Player && type2 == EntityType.Enemy || type1 == EntityType.Enemy && type2 == EntityType.Player {
-        let player_h = if type1 == EntityType.Player { h1 } else { h2 }
-        let enemy_h = if type1 == EntityType.Enemy { h1 } else { h2 }
+        let player = if type1 == EntityType.Player { e1 } else { e2 }
+        let enemy = if type1 == EntityType.Enemy { e1 } else { e2 }
 
-        state.entities[player_h].health.current -= 10
-        state.entities[enemy_h].active = false
+        player.health.current -= 10
+        enemy.active = false
 
-        if state.entities[player_h].health.current <= 0 {
+        if player.health.current <= 0 {
             state.game_over = true
         }
     }
 
     // Projectile vs Enemy
     if type1 == EntityType.Projectile && type2 == EntityType.Enemy || type1 == EntityType.Enemy && type2 == EntityType.Projectile {
-        let enemy_h = if type1 == EntityType.Enemy { h1 } else { h2 }
-        let proj_h = if type1 == EntityType.Projectile { h1 } else { h2 }
+        let enemy = if type1 == EntityType.Enemy { e1 } else { e2 }
+        let proj = if type1 == EntityType.Projectile { e1 } else { e2 }
 
-        state.entities[enemy_h].health.current -= 25
-        state.entities[proj_h].active = false
+        enemy.health.current -= 25
+        proj.active = false
 
-        if state.entities[enemy_h].health.current <= 0 {
-            state.entities[enemy_h].active = false
+        if enemy.health.current <= 0 {
+            enemy.active = false
             state.score += 100
         }
     }
 }
 
 // System: Remove inactive entities
-func cleanup_system(mutate state: GameState) {
-    mut to_remove = Vec.new()
+//
+// `delete` nulls every `Link<Entity>?` field pointing at the node before it
+// returns — so `state.player` becomes `none` on its own if the player dies,
+// with nothing here to remember.
+func cleanup_system(deleting state: GameState) {
+    mut to_remove: Vec<Link<Entity>> = Vec.new()
 
-    for h in state.entities {
-        if !state.entities[h].active {
-            to_remove.push(h)
-        }
+    for e in state.entities.nodes() {
+        if !e.active { to_remove.push(e) }
     }
 
-    for h in to_remove {
-        state.entities.remove(h)
+    for e in to_remove {
+        state.entities.delete(e)
     }
 }
 
@@ -223,51 +225,49 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 
 // Movement update across all entities.
 //
-// The aspirational form (specs/concurrency/runtime.md:1807) shares the
-// pool across green tasks via a context clause:
+// The aspirational form (specs/concurrency/runtime.md:1807) splits the work
+// across green tasks:
 //
-//     func parallel_movement_system(dt: f32, num_threads: usize)
-//         using Pool<Entity>, Multitasking
+//     func parallel_movement_system(mutate entities: Rack<Entity>, dt: f32, num_threads: usize)
+//         using Multitasking
 //     {
-//         let handles = pool.handles()
-//         let chunk_size = (handles.len() + num_threads - 1) / num_threads
+//         let nodes = entities.nodes()
+//         let chunk_size = (nodes.len() + num_threads - 1) / num_threads
 //         mut tasks = Vec.new()
-//         for chunk in handles.chunks(chunk_size) {
+//         for chunk in nodes.chunks(chunk_size) {
 //             let work = chunk.to_vec()
 //             tasks.push(spawn(own || {
-//                 for h in work {
-//                     if !pool[h].active: continue
-//                     pool[h].position.x += pool[h].velocity.dx * dt
-//                     pool[h].position.y += pool[h].velocity.dy * dt
+//                 for e in work {
+//                     if !e.active: continue
+//                     e.position.x += e.velocity.dx * dt
+//                     e.position.y += e.velocity.dy * dt
 //                 }
 //             }))
 //         }
 //         for t in tasks { let _ = t.join() }
 //     }
 //
-// This doesn't typecheck yet — three compiler gaps block it:
-//   #266 `using Pool<Entity>` parser rejects generic args
+// This doesn't typecheck yet — two compiler gaps block it:
 //   #267 `spawn` builtin not registered in the type checker
 //   #268 `with mutex as v { ... }` doesn't unwrap to inner T
-// (Pool's internal Arc<Shared<Vec, Mutex>> threading depends on #268 too.)
 //
-// Until then, run movement single-threaded. The shape stays close to
-// the aspirational form so the only delta when the gaps land is moving
-// the body into a `spawn(own || { ... })` per chunk.
-func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize) {
+// A link is an address, so it also means nothing in another task's address
+// space (mem.racks): sending the graph across needs `snapshot()`, which copies
+// the nodes and re-points the internal edges. That is the real design question
+// the gaps are hiding, and it's why this stays single-threaded rather than
+// being one `spawn` away.
+func parallel_movement_system(mutate entities: Rack<Entity>, dt: f32, num_threads: usize) {
     let _ = num_threads
-    mut handles = entities.handles()
-    for i in 0..handles.len() {
-        let h = handles[i]
-        if !entities[h].active { continue }
-        entities[h].position.x += entities[h].velocity.dx * dt
-        entities[h].position.y += entities[h].velocity.dy * dt
+    for e in entities.nodes() {
+        if !e.active { continue }
+        e.position.x += e.velocity.dx * dt
+        e.position.y += e.velocity.dy * dt
     }
 }
 
 // Main game loop with fixed timestep and threading
 func main() -> void or Error {
-    mut state = try GameState.new()
+    mut state = GameState.new()
 
     let target_fps = 60.0f32
     let dt = 1.0f32 / target_fps
@@ -295,10 +295,10 @@ func main() -> void or Error {
                 // Handle input (simulated - would be real input in actual game)
                 if frame_count % 30 == 0 {
                     // Fire projectile
-                    if state.player? as player_h {
-                        let px = state.entities[player_h].position.x
-                        let py = state.entities[player_h].position.y
-                        try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
+                    if state.player? as player {
+                        let px = player.position.x
+                        let py = player.position.y
+                        let _ = state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
                     }
                 }
 
@@ -312,7 +312,7 @@ func main() -> void or Error {
 
                 // Game logic on main thread
                 spawn_timer = spawn_system(mutate state, spawn_timer + dt)
-                cleanup_system(mutate state)
+                cleanup_system(deleting state)
 
                 accumulator -= dt
             }
@@ -321,8 +321,8 @@ func main() -> void or Error {
             if frame_count % 60 == 0 {
                 let entity_count = state.entities.len()
                 mut player_health = 0
-                if state.player? as h {
-                    player_health = state.entities[h].health.current
+                if state.player? as player {
+                    player_health = player.health.current
                 }
                 println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
             }

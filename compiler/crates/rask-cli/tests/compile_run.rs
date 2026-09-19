@@ -814,6 +814,116 @@ fn bounded_pool_insert_full_panics() {
     assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
 }
 
+/// mem.linear/L4 (#882): `ensure` runs during unwind for a `Heap` box, not
+/// only for a `@resource`.
+///
+/// Two bugs met here. `ensure drop(p)` marked the box moved at the `ensure`
+/// rather than at scope exit, so any later read was a use-after-move and the
+/// form `mem.heap` documents was unwritable. And the cleanup the unwinder runs
+/// is a synthesized thunk whose copy of `p` was typed as the payload rather
+/// than as the pointer cell the frame holds, so it freed the cell's address
+/// instead of the block — `free(): invalid pointer`, SIGABRT on top of the
+/// panic. The inline cleanup on the ordinary exit path had the load the thunk
+/// was missing, which is why it only showed when something panicked.
+///
+/// Both ensures have to run, inner frame first, and the program has to die of
+/// its own panic rather than of an allocator abort.
+#[test]
+fn ensure_runs_on_unwind_for_a_box_and_a_resource() {
+    let rask = rask_binary();
+    let run = |mode: &[&str]| -> (String, i32) {
+        let out = Command::new(&rask)
+            .args(mode)
+            .arg(fixture("ensure_drop_on_unwind.rk"))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code().unwrap_or(-1),
+        )
+    };
+    let modes: [(&str, &[&str]); 2] =
+        [("native", &["run", "--native"]), ("interp", &["run", "--interp"])];
+    for (mode, args) in modes {
+        let (out, code) = run(args);
+        assert_eq!(code, 101, "{mode}: a panic exits 101, not an allocator abort: {out}");
+        assert!(out.contains("holding 1"), "{mode}: the box is readable after the ensure: {out}");
+        assert!(out.contains("closed 9"), "{mode}: the outer frame's ensure runs too: {out}");
+        assert!(out.contains("boom"), "{mode}: the panic is the program's own: {out}");
+        assert!(
+            !out.contains("invalid pointer") && !out.contains("free()"),
+            "{mode}: the box's cleanup frees the block, not the cell: {out}"
+        );
+        assert!(!out.contains("MUST-NOT-PRINT"), "{mode}: nothing past the panic runs: {out}");
+    }
+}
+
+/// mem.resources/R5 (#1219): a `Pool<Resource>` dropped non-empty panics, on
+/// both backends and with the same message.
+///
+/// A pool's contents are dynamic, so the compiler can't say whether one is
+/// empty at scope exit — which is why R5 is a runtime rule and why `rask check`
+/// passes on the fixture. Native did nothing at all: the connection leaked and
+/// the program exited 0. The interpreter panicked with its generic ledger
+/// message, `Conn '?' not consumed before scope exit`, where the `'?'` is there
+/// because a pooled value has no binding to name.
+///
+/// This can't be a suite file — a test that panics fails — so it lives here,
+/// which is also the only harness that can check the message and the exit code
+/// together.
+#[test]
+fn pool_of_resources_dropped_non_empty_panics() {
+    // The panic goes to stderr, so `run_native`/`run_interp` (stdout only)
+    // would show the message as missing rather than as wrong.
+    let rask = rask_binary();
+    let run = |mode: &[&str]| -> (String, i32) {
+        let out = Command::new(&rask)
+            .args(mode)
+            .arg(fixture("pool_resource_dropped.rk"))
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        (
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            out.status.code().unwrap_or(-1),
+        )
+    };
+    let (nout, ncode) = run(&["run", "--native"]);
+    let (iout, icode) = run(&["run", "--interp"]);
+    assert_eq!(ncode, 101, "native should panic on a non-empty resource pool: {nout}");
+    assert_eq!(icode, 101, "interp should panic on a non-empty resource pool: {iout}");
+    for (mode, out) in [("native", &nout), ("interp", &iout)] {
+        assert!(
+            out.contains("Pool<Conn> has 1 unconsumed resource element at scope exit."),
+            "{mode} should name the pool and the count: {out}"
+        );
+        assert!(
+            out.contains("use take_all() before scope ends"),
+            "{mode} should say what to do about it: {out}"
+        );
+    }
+    // Where the panic lands differs: the interpreter reports at `leaky`'s scope
+    // exit, native when the pool's release is placed — after inlining, the end
+    // of `main`. Both fail; only one of them gets there before `main`'s last
+    // statement, which is why this asserts on the exit code and the message
+    // rather than on what did or didn't print.
+}
+
+/// The other half of R5: a pool emptied before it goes out of scope is fine.
+#[test]
+fn pool_of_resources_emptied_is_clean() {
+    assert_native_eq_interp("pool_resource_emptied.rk", "4\n");
+}
+
 // mem.pools/PL8 (#435): `try_insert` returns Some until the bounded pool is full,
 // then none. Interpreter is the reference (native try_insert is tracked in #438).
 #[test]
@@ -1783,70 +1893,30 @@ fn error_try_shape_rule() {
     assert!(out.contains("catch _ => return none"), "the error side's fix: {}", out);
 }
 
-// EO1 (#584): `ensure` runs LIFO, so a resource derived from another needs its
-// cleanup registered *second* — source order reads backwards from run order.
-// Registered the other way, the dependency is torn down first and the
-// dependent's cleanup calls into it. Both orders are valid code and only one is
-// what anyone meant, so this is a warning, not an error.
+// mem.linear/L7: `ensure` bodies run LIFO, so a resource derived from another
+// needs its cleanup registered *second* — source order reads backwards from run
+// order. That used to be a warning (W10) about the inverted order; L7 makes the
+// inverted order unwritable, because deriving from a resource is a statement in
+// that resource's commit window. The rejection is covered by
+// tests/compile_errors/linearity_commit_window.rk; this is the behaviour the
+// forced order produces.
 #[test]
-fn warns_when_ensure_order_inverts_a_derivation() {
-    let rask = rask_binary();
-    let fixture = fixture("ensure_order_inverted.rk");
-    let out = Command::new(&rask)
-        .arg("check")
-        .arg(&fixture)
-        .output()
-        .expect("failed to run rask check");
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-
-    assert!(out.status.success(), "a warning must not fail the check: {}", combined);
-    assert!(
-        combined.contains("`w` is cleaned up before `b`, which needs it"),
-        "should name both resources: {}", combined,
-    );
-    // Exactly one — `correct`, `independent` and `mixed` in the same file must
-    // stay quiet, and the independent pair is the false positive worth pinning.
-    assert_eq!(
-        combined.matches("W0908").count(), 1,
-        "only the inverted function warns: {}", combined,
-    );
-    // The fix shows the reordered lines rather than describing the rule.
-    assert!(
-        combined.contains("ensure w.destroy()") && combined.contains("ensure b.close(w)"),
-        "the fix should show both lines in the right order: {}", combined,
-    );
-}
-
-// The behaviour behind the warning, on both backends: the inverted order really
-// does run the world's cleanup first.
-#[test]
-fn inverted_ensure_order_runs_cleanups_backwards() {
+fn forced_ensure_order_tears_down_lifo() {
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "ensure_order_inverted.rk");
+        let (stdout, stderr, code) = run_capture(mode, "ensure_order_lifo.rk");
         assert_eq!(code, 0, "{mode}: {stdout}{stderr}");
-        // inverted(): the world goes before the body that still needs it.
-        let inverted = stdout
-            .split("correct body")
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let world = inverted.find("world gone");
-        let body = inverted.find("body gone");
+        // derived(): the body goes first, while the world it needs is alive.
+        let derived = stdout.split("independent body").next().unwrap_or_default();
+        let body = derived.find("body gone");
+        let world = derived.find("world gone");
         assert!(
-            world < body,
-            "{mode}: the inverted order should tear the world down first: {stdout}",
+            body < world,
+            "{mode}: the derived resource must be torn down first: {stdout}",
         );
-        // correct(): the body goes first, while the world is still alive.
-        let rest = stdout.split("correct body").nth(1).unwrap_or_default();
-        let world2 = rest.find("world gone");
-        let body2 = rest.find("body gone");
+        // And its cleanup saw a live world, not a destroyed one.
         assert!(
-            body2 < world2,
-            "{mode}: the correct order should tear the body down first: {stdout}",
+            derived.contains("body gone, world 1"),
+            "{mode}: the dependency must still be alive in the dependent's cleanup: {stdout}",
         );
     }
 }
@@ -3973,14 +4043,19 @@ fn panic_ensure_e3_first_panic_wins() {
 
 #[test]
 fn panic_guard_during_unwind_is_secondary() {
-    // E3, issue #298: an H1 guard (unconsumed TaskHandle) tripping at scope
-    // exit while already unwinding from "boom" must not override it. Interp
-    // only — native's ensure/guard-on-panic plumbing has bigger pre-existing
-    // gaps here, untouched by this fix (ctrl.panic implementation notes).
+    // E3, issue #298: a runtime guard tripping at scope exit while already
+    // unwinding from "boom" must not override it. Interp only — native's
+    // ensure/guard-on-panic plumbing has bigger pre-existing gaps here,
+    // untouched by this fix (ctrl.panic implementation notes).
+    //
+    // The guard is R5 (a Pool still holding a resource). It used to be H1 — an
+    // unconsumed TaskHandle parked behind a `join()` the panic jumped over —
+    // which mem.linear/L7 now rejects at compile time. A pool's contents are a
+    // runtime fact, so it is the guard the static rules still can't reach.
     let (_stdout, stderr, code) = run_capture("--interp", "panic_guard_unwind_secondary.rk");
     assert_eq!(code, 101, "panic should exit 101 (P4): {}", stderr);
     assert!(stderr.contains("panic: boom"), "the body's panic must win: {}", stderr);
-    assert!(stderr.contains("secondary panic during unwind") && stderr.contains("resource leak"),
+    assert!(stderr.contains("secondary panic during unwind") && stderr.contains("unconsumed resource"),
         "the guard trip must be contained and reported as secondary: {}", stderr);
 }
 

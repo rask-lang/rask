@@ -162,11 +162,13 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     rask_task_state_set_result_owned(state, result_owned);
 
     PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
-    job->func = func;
-    job->env = env;
-    job->alloc_base = closure_ptr;
-    job->state = state;
-    job->next = NULL;
+    *job = (PoolJob){
+        .func = func,
+        .env = env,
+        .alloc_base = closure_ptr,
+        .state = state,
+        .next = NULL,
+    };
 
     pthread_mutex_lock(&g_pool.lock);
     if (g_pool.tail) {

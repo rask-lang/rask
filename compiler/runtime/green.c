@@ -62,6 +62,13 @@ typedef struct GreenTask {
     // `rask_green_join` hands ownership to the joiner by clearing `result`, so
     // exactly one of the two frees it (#963).
     int64_t         result_owned;
+
+    // The closure allocation the task body runs out of. The task owns it for
+    // the same reason it owns `result_owned` above: joined, cancelled or
+    // detached, the task is present for all three endings. The body used to
+    // free it on the line after its own call, which a panicking body longjmps
+    // past (#1223).
+    void           *closure_base;
     char           *panic_msg;
 
     // Completion signaling
@@ -306,6 +313,8 @@ static void task_release(GreenTask *t) {
         pthread_cond_destroy(&t->done_cond);
         if (t->panic_msg) free(t->panic_msg);
         if (t->state) free(t->state);
+        // The task body's closure allocation, whichever way the body ended.
+        if (t->closure_base) rask_closure_free(t->closure_base);
         // Still set means nobody took it — a detached task whose value no join
         // ever came for.
         if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
@@ -639,7 +648,7 @@ void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
         fprintf(stderr, "rask: green handle alloc failed\n");
         abort();
     }
-    h->task = t;
+    *h = (GreenHandle){ .task = t };
     return h;
 }
 
@@ -905,8 +914,11 @@ static int closure_poll_fn(void *state, void *task_ctx) {
     // and the payload is never read.
     int64_t r = s->func(s->env);
     if (task_ctx) ((GreenTask *)task_ctx)->result = r;
-    rask_closure_free(s->alloc_base);
-    s->alloc_base = NULL; // prevent double-free in task_release
+    // The closure allocation is the task's to free, not this frame's — see
+    // `GreenTask::closure_base`. Freeing it here as well would race the
+    // spawner, which can only name the task after `rask_green_spawn` has
+    // returned, by which time a short body may already have run.
+    s->alloc_base = NULL;
     return RASK_POLL_READY;
 }
 
@@ -922,13 +934,14 @@ void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
         fprintf(stderr, "rask: closure poll state alloc failed\n");
         abort();
     }
-    ps->func = func;
-    ps->env  = env;
-    ps->alloc_base = closure_ptr;
+    *ps = (ClosurePollState){ .func = func, .env = env, .alloc_base = closure_ptr };
 
     void *handle = rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
     GreenHandle *h = (GreenHandle *)handle;
-    if (h && h->task) h->task->result_owned = result_owned;
+    if (h && h->task) {
+        h->task->result_owned = result_owned;
+        h->task->closure_base = closure_ptr;
+    }
     return handle;
 }
 

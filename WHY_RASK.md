@@ -83,7 +83,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Two-tier borrowing** — fixed-layout sources (struct fields, arrays) keep references to block end; growable sources (Vec, Map) release at the semicolon. The rule is simple: "can it reallocate?"
 - **`with` blocks** — scoped mutable access with full control flow. `break`, `return`, and `try` propagate naturally because `with` is a real block, not a closure. Single-expression access works inline: `shared.read().timeout` holds the lock for just the expression
 - **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
-- **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
+- **Context clauses** — `using Allocator` threads an arena or fixed-buffer allocator through a call tree without putting it in every signature. Graphs don't need one: permission to write a node travels with the `Link<T>` itself
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
 - **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `Error`. `@message` generates the method from variant templates. `catch e => return wrap(e)` chains transformation with leaving; every exit is written where it happens. See below
 - **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `is none`). Match on `T?` is a style lint. Payload access is the `x? as v` bind — no flow narrowing to remember. Kotlin/TypeScript nullable ergonomics, not Rust Option
@@ -147,10 +147,10 @@ Rust needs `fs::read(path).map_err(|e| ...)?`. And the discard is never silent: 
 |---|---|---|
 | Short borrowed strings | `&str` with `'a` | not needed — `string` is Copy |
 | Long-lived strings | `String` (owned) | `string` (Copy, refcounted, 16 bytes) |
-| Graphs / cycles | `Rc<RefCell<T>>` | `Pool<T>` + `Handle<T>` (generation-checked, builtin) |
+| Graphs / cycles | `Rc<RefCell<T>>` | `Rack<T>` + `Link<T>` (delete nulls incoming edges, builtin) |
 | Cleanup | `Drop` (implicit, can't error) | `@resource` + `ensure` (explicit, composes with errors) |
 | Scoped mutation | closure-based | `with` block (real control flow) |
-| Implicit state | thread-locals or params | `using Pool<T>`, `using Allocator` (context clauses) |
+| Implicit state | thread-locals or params | `using Allocator` (context clauses) |
 | Custom allocators | type parameter (`Vec<T, A>`) | `using Allocator` context (zero-sized default) |
 | Concurrency | `async`/`await` (call-site coloring) | green tasks, `using` signature coloring, must-use handles |
 | Zero-copy returns | lifetime-generic | not supported — return owned values or work within `with` scope |
@@ -170,9 +170,9 @@ Hylo is more formal. It comes from Google Research, has academic publications be
 
 Rask is more pragmatic. I hit problems that pure MVS doesn't solve and built extensions:
 
-- **Pool+Handle for graphs and cycles.** Hylo doesn't have a built-in answer for self-referential structures. Entity-component systems, dependency graphs, caches with cross-references — these need some form of indirect access. Rask provides typed pools with generational handles.
+- **Racks and links for graphs and cycles.** Hylo doesn't have a built-in answer for self-referential structures. Entity-component systems, dependency graphs, caches with cross-references — all of them need one. A `Rack<T>` owns the nodes; a `Link<T>` is a stored reference to one, and deleting a node nulls every edge pointing at it before the delete returns, so there is no stale link to check for.
 - **`with` blocks with control flow.** Hylo uses subscripts (similar to computed properties) for scoped access. These are closures underneath, which means you can't `return` from the enclosing function, `break` from a loop, or `try` an error inside them. Rask's `with` is a real lexical block — all control flow works.
-- **Context clauses.** When every handle function needs a pool parameter, you end up threading pools through 15 layers of calls. `using Pool<T>` makes this implicit where it's noise and explicit where it matters (public API boundaries).
+- **Context clauses.** An allocator that every layer needs, and that no layer's signature is about, is threaded with `using Allocator` — implicit where it's noise, explicit where it matters (public API boundaries).
 - **Custom allocators.** Arena, FixedBuffer, and scoped allocation blocks — all using the same `using` context mechanism as pools. Compiler-enforced scope restriction replaces lifetime annotations. Hylo doesn't specify custom allocator support.
 - **Concurrency model.** Green tasks, channels, must-use handles, thread pools. Hylo doesn't specify a concurrency story yet.
 
@@ -194,7 +194,7 @@ This is a narrow audience. Most developers don't need a new language. If Go or p
 
 **OS kernel and driver developers.** You need raw pointer manipulation, memory-mapped I/O, and control over every allocation. Rask has `unsafe` blocks but isn't optimized for code that's 50% unsafe.
 
-**Nanosecond-budget hot paths.** Handle validation has overhead on every access (generation check + bounds check, estimated ~1-2ns but not yet benchmarked). For audio engines, HFT, or inner loops processing many entities per frame, that overhead matters. The workaround is batch processing — which works, but adds friction.
+**Nanosecond-budget hot paths.** Reading through a link is free — a pointer hop, same as any field. Writing an *edge* isn't quite: it costs ~2.6 ns against ~2.9 ns for a raw pointer store, because the rack records the incoming edge so it can null it on delete. For audio engines, HFT, or inner loops rewiring many entities per frame, that's a real number to know about.
 
 **Anyone who needs production-ready today.** Rask is in design phase. The interpreter runs programs. There's no optimizing compiler. Don't build your startup on this.
 
@@ -221,19 +221,21 @@ This is deliberate. For types above the copy threshold, `.clone()` marks a decis
 
 Clone calls concentrate at collection API boundaries, roughly 1-2% of lines. With Copy strings, everyday code rarely needs them.
 
-### Handle indirection
+### Graphs live in a rack
 
-Parent pointers, back-references, and cross-references become handles into pools instead of direct pointers.
+Parent pointers, back-references and cross-references go in a `Rack<T>`, and the fields hold `Link<T>` rather than a pointer you allocated yourself.
 
 ```rask
 struct TreeNode {
-    parent: Handle<TreeNode>?    // not a reference — a validated index
-    children: Vec<Handle<TreeNode>>
+    parent: Link<TreeNode>?      // the one reference that may be stored
+    children: Vec<Link<TreeNode>>
     value: string
 }
 ```
 
-Each handle access validates a generation counter. The overhead is estimated at ~1-2ns per access but hasn't been benchmarked in the current runtime — the real number could be higher with cache misses on pool metadata. In application code (web services, CLIs, game logic outside hot loops) this is likely invisible. In tight inner loops processing thousands of entities per frame, it's a real concern. The workaround — copy data out, batch-process, write back — is exactly the kind of restructuring that adds friction.
+What you give up is deciding where the nodes live. What you get is that `delete` sets every `Link<TreeNode>?` pointing at the deleted node to `none` before it returns — so following a live link is an ordinary pointer hop with nothing to validate, and a dangling one never exists to be followed.
+
+The bill arrives on edge *writes*: assigning a link into a field writes the target too, so the rack knows who points at whom. Measured at ~2.6 ns against ~2.9 ns for a raw pointer store.
 
 ### No zero-copy returns
 

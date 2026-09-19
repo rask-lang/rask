@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A trait object in a struct field, called through, and who frees the block.
+//
+// Storing a box in a struct field moves it in, and the struct's release gives
+// it back — through the vtable's `owned_release`, so the containers and strings
+// inside the boxed value come back too. Reading the field to call a method is a
+// borrow: the block is still the struct's.
+//
+// That read used to get a `TraitDrop` of its own. The rule it matched was
+// written for a *wrapper* — a `T?` or a `T or E` holds its payload and nothing
+// else releases it, so the frame has to — and a struct is the other way round.
+// Two owners, and the weaker one ran first:
+//
+//     *(_0+0) = _10           // the box, into the field
+//     _12 = _11.0             // and out again, to call through
+//     trait_drop(_12)         // the frame frees the block...
+//     rc_dec_contents(_11)    // ...and the struct's release reads it after
+//
+// The `Vec` inside the boxed value was freed by nobody, and the release walk
+// ran over memory that was already gone (#1161).
+//
+// The other half of the rule stays: a `T or E` holds its payload and nothing
+// else releases it, so the frame still owns a box on the error side.
+// `t_any_error_boxing.rk` and `t_bare_error_type.rk` are that half.
+
+trait Describes {
+    func describe(self) -> string
+}
+
+struct Holder {
+    public label: string
+    public counts: Vec<i64>
+}
+
+extend Holder with Describes {
+    public func describe(self) -> string {
+        return "{self.label}:{self.counts.len()}"
+    }
+}
+
+struct Shelf {
+    public item: any Describes
+}
+
+struct Pair {
+    public left: any Describes
+    public right: any Describes
+}
+
+func main() {}
+
+test "a boxed value called through its field" {
+    let s = Shelf { item: Holder { label: "long enough to allocate", counts: [1, 2] } }
+    assert s.item.describe() == "long enough to allocate:2"
+}
+
+test "the same field read twice" {
+    let s = Shelf { item: Holder { label: "also long enough to allocate", counts: [7] } }
+    assert s.item.describe() == "also long enough to allocate:1"
+    assert s.item.describe() == "also long enough to allocate:1"
+}
+
+test "two boxed fields in one struct" {
+    let p = Pair {
+        left: Holder { label: "the left one is long enough", counts: [1, 2, 3] },
+        right: Holder { label: "the right one is long enough", counts: [4] },
+    }
+    assert p.left.describe() == "the left one is long enough:3"
+    assert p.right.describe() == "the right one is long enough:1"
+}
+
+test "a boxed field never read" {
+    let s = Shelf { item: Holder { label: "nobody calls through this one", counts: [9, 9] } }
+    assert s.item.describe().len() > 0
+}
+

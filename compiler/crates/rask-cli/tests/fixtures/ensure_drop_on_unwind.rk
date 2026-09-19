@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L4: `ensure` runs during unwind, for a `Heap` box as well as for
+// a `@resource`.
+//
+// `ensure drop(p)` is the form `mem.heap` documents for deferring a box's
+// consumption, and the only reason to write it is to go on using the box. Two
+// things were wrong with it:
+//
+//   - the ownership pass marked `p` moved at the `ensure` rather than at scope
+//     exit, so every later read was a use-after-move and the form was
+//     unwritable;
+//   - and the cleanup the unwinder runs is a synthesized thunk, whose copy of
+//     `p` was typed as the payload rather than as the pointer cell the frame
+//     holds. It freed the cell's address instead of the block —
+//     `free(): invalid pointer`, and SIGABRT on top of the panic.
+//
+// The inline cleanup on the ordinary exit path had the load and the thunk did
+// not, which is why this only showed when something panicked.
+
+import memory.Heap
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> void {
+        println("closed {self.id}")
+    }
+}
+
+func boxed() {
+    let p = Heap(Big { a: 1, b: 2, c: 3 })
+    ensure drop(p)
+    println("holding {p.a}")
+    panic("boom")
+}
+
+func main() {
+    let c = Conn { id: 9 }
+    ensure c.close()
+    boxed()
+    println("MUST-NOT-PRINT")
+}

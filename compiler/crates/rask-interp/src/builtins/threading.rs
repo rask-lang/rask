@@ -12,23 +12,31 @@ use crate::value::{ThreadHandleInner, Value};
 /// disappearing. `detach()` can't block on the result, so a reaper thread
 /// waits for it in the background — the process keeps running either way.
 fn report_detached_panic(task_id: i64, jh: std::thread::JoinHandle<Result<Value, String>>) {
-    crate::register_detached_reaper(crate::spawn_interp_thread(move || {
+    // Reaching here means a task is already running, so the target has threads
+    // and the spawn can't fail for want of them. If it fails anyway there is
+    // nothing to reap and nobody to tell, so the reaper is simply not
+    // registered (#1172).
+    if let Ok(reaper) = crate::spawn_interp_thread(move || {
         if let Ok(Err(msg)) = jh.join() {
             // F1: say which task, since a runtime task is what died and nobody
             // is going to join it and read the message. Same line as native's.
             eprintln!("task {} panic at {}", task_id, msg);
         }
-    }));
+    }) {
+        crate::register_detached_reaper(reaper);
+    }
 }
 
 /// Same as `report_detached_panic`, for tasks submitted to a thread pool
 /// (result arrives over a channel instead of a JoinHandle).
 fn report_detached_panic_recv(task_id: i64, rx: mpsc::Receiver<Result<Value, String>>) {
-    crate::register_detached_reaper(crate::spawn_interp_thread(move || {
+    if let Ok(reaper) = crate::spawn_interp_thread(move || {
         if let Ok(Err(msg)) = rx.recv() {
             eprintln!("task {} panic at {}", task_id, msg);
         }
-    }));
+    }) {
+        crate::register_detached_reaper(reaper);
+    }
 }
 
 impl Interpreter {

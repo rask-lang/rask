@@ -57,6 +57,7 @@ func consume_it(take c: Conn) -> i32 {
 // L1: every path out consumes it exactly once.
 func both_arms(id: i32, early: bool) -> i32 {
     mut c = Conn.open(id)
+    ensure c.close()
     if early {
         return c.close()
     }
@@ -83,6 +84,7 @@ func ensured(id: i32) -> i32 {
 
 func three_early_returns(n: i32) -> i32 {
     mut c = Conn.open(n)
+    ensure c.close()
     if n == 1 {
         return c.close() + 10
     }
@@ -99,6 +101,7 @@ test "mem.linear — L1: consumed once on the straight path" {
 
 test "mem.linear — read before consuming doesn't count as consuming" {
     mut c = Conn.open(5)
+    ensure c.close()
     assert c.id_of() == 5
     assert c.id_of() == 5
     assert c.close() == 5
@@ -123,6 +126,7 @@ test "mem.linear — handing it to a take parameter is consuming it" {
 
 test "mem.linear — returning it passes the debt to the caller" {
     mut c = make_conn(4)
+    ensure c.close()
     assert c.id_of() == 4
     assert c.close() == 4
 }
@@ -143,13 +147,17 @@ test "mem.linear — one per iteration in a loop" {
 
 test "mem.linear — several linear values in one scope, each closed once" {
     mut a = Conn.open(1)
+    ensure a.close()
     mut b = Conn.open(2)
+    ensure b.close()
     mut c = Conn.open(3)
+    ensure c.close()
     assert a.close() + b.close() + c.close() == 6
 }
 
 test "mem.linear — a linear value inside a struct field" {
     let s = Session.start("db", 42)
+    ensure s.finish()
     assert s.label == "db"
     assert s.conn.id_of() == 42
     assert s.finish() == 42

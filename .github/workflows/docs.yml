@@ -7,9 +7,10 @@ on:
     branches: [ main ]
     paths:
       - 'docs/book/**'
-      - 'docs/blog/**'
       - 'docs/playground/**'
       - 'docs/landing/**'
+      - 'docs/shared/**'
+      - 'writing/**'
       - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
@@ -55,28 +56,27 @@ jobs:
         wasm-pack build --target web --out-dir ../../../docs/playground/pkg
         rm -f ../../../docs/playground/pkg/.gitignore
 
+    # The blog is rendered by examples/markdown_renderer.rk — a Rask program —
+    # so the deploy needs a compiler that can run it. Same crates the wasm build
+    # above already compiled, so the cargo cache carries most of it.
+    - name: Build the Rask compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
     - name: Setup mdBook
       uses: peaceiris/actions-mdbook@v2
       with:
         mdbook-version: 'latest'
 
-    - name: Setup Ruby
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: '3.2'
-        bundler-cache: true
-        working-directory: docs/blog
-
     - name: Build mdBook
       run: |
+        # The palette is served from the site root and the book's theme
+        # @imports it from there, so it has to be in place before mdbook runs.
+        mkdir -p docs/build
+        cp docs/shared/tokens.css docs/build/tokens.css
+        cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
         cd docs/book
         mdbook build -d ../build/book
-
-    - name: Build Jekyll blog
-      run: |
-        cd docs/blog
-        bundle install
-        bundle exec jekyll build --source . --destination ../build/blog
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -86,16 +86,38 @@ jobs:
     - name: Build playground examples
       run: node docs/playground/build-examples.js
 
+    - name: Build the blog
+      run: node docs/blog/build.js
+
     - name: Add landing page and other content
       run: |
         # Copy landing page to root
         cp docs/landing/index.html docs/build/index.html
         cp docs/landing/landing.css docs/build/landing.css
+        cp docs/landing/try.js docs/build/try.js
 
         # Copy playground to /app/
         mkdir -p docs/build/app
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
         cp -r docs/playground/pkg docs/build/app/
+
+        # Assets loaded under fixed names leave a browser with an old copy no
+        # reason to fetch the new one, and the page half-updates: new HTML
+        # against old JavaScript. Stamping the commit into the query makes
+        # every changed deploy a new URL.
+        #
+        # One pass over everything built, because the references are spread
+        # across all three kinds of file: `?v=dev` in the two page headers, in
+        # the book's `@import url("/tokens.css")` and its inlined head.hbs, in
+        # the blog pages, and in the dynamic `import()` of the interpreter.
+        # mdBook content-hashes its own generated CSS and JS, but not the
+        # shared files those reach for at the site root.
+        #
+        # This runs last on purpose: the book, the blog, the landing page and
+        # the playground are all in docs/build by now.
+        find docs/build -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' \) -print0 \
+          | xargs -0 sed -i "s/?v=dev/?v=${GITHUB_SHA::12}/g"
+
 
         # Copy meta files
         cp docs/CNAME docs/build/CNAME

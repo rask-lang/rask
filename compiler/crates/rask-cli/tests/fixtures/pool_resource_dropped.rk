@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.resources/R5: a `Pool<Resource>` dropped non-empty panics at runtime.
+//
+// The compiler can't track what a pool holds — that is the whole reason R5 is a
+// runtime rule rather than a compile error — so `rask check` passes here and the
+// program is supposed to fail loudly instead of leaking the connection.
+//
+// Native did nothing at all. The interpreter panicked, with its generic ledger
+// message (`Conn '?' not consumed`), which is the wrong report for a value that
+// has no binding to name.
+
+import memory.Pool
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> void {
+        println("closed {self.id}")
+    }
+}
+
+func leaky() {
+    mut p: Pool<Conn> = Pool.new()
+    let h = p.insert(Conn { id: 1 })
+    println("inserted")
+}
+
+func main() {
+    leaky()
+    println("MUST-NOT-PRINT-AFTER-A-CLEAN-EXIT")
+}

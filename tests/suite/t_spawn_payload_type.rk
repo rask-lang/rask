@@ -16,7 +16,13 @@ import thread.Thread
 func pair_of_tasks() -> i64 or JoinError {
     using Multitasking {
         let a = spawn(|| { return 10i64 })
+        ensure a.detach()
         let b = spawn(|| { return 32i64 })
+        // If `a.join()` fails the error leaves the function, and `b` is
+        // never joined — a task handle is a resource, so committing the
+        // cleanup here is what covers that path (E0881). The `join`
+        // below consumes `b` and cancels this on the happy path.
+        ensure b.detach()
         let x = try a.join()
         let y = try b.join()
         return x + y

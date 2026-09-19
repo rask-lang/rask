@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic argument that two places spell differently.
+//
+// Mono gives a generic type its own layout when an argument doesn't fit the
+// shared 8-byte slot, and names it from the argument's type: `Holder<(i64,
+// string)>` becomes `Holder$tupi64$string`. MIR lowering has to find that
+// layout again from the written form, and it used to build the name by hand
+// from the source text — which agreed for `Holder<Big>` and `Holder<One<Big>>`
+// and parted company on a tuple, looking for `Holder$(i64, string)`.
+//
+// A miss is silent: lowering falls back to the shared layout, so `first(h)`
+// read 8 bytes of a 24-byte tuple and the string came back empty. Native only;
+// the interpreter has no layouts to disagree about.
+//
+// Lowering now parses the written arguments and asks `generic_instance_name`,
+// the same function that named the layout, so there is one spelling instead of
+// two that have to agree.
+
+struct Holder<T> {
+    public v: T
+}
+
+struct Pair<A, B> {
+    public a: A
+    public b: B
+}
+
+func first<T>(h: Holder<T>) -> T {
+    return h.v
+}
+
+func main() {}
+
+test "a tuple wider than the shared slot" {
+    let h = Holder<(i64, string)> { v: (7, "long enough to allocate a buffer") }
+    let got = first(h)
+    assert got.0 == 7
+    assert got.1 == "long enough to allocate a buffer"
+}
+
+test "a tuple of three" {
+    let h = Holder<(i64, i64, i64)> { v: (1, 2, 3) }
+    let got = first(h)
+    assert got.0 == 1
+    assert got.1 == 2
+    assert got.2 == 3
+}
+
+test "a tuple inside a two-parameter generic" {
+    let p = Pair<(i64, string), i64> { a: (9, "also long enough to allocate"), b: 4 }
+    assert p.a.0 == 9
+    assert p.a.1 == "also long enough to allocate"
+    assert p.b == 4
+}
+
+test "a function type as the argument" {
+    let h = Holder<func(i64) -> i64> { v: |n| n * 3 }
+    let f = first(h)
+    assert f(5) == 15
+}
+
+test "the shapes that already worked" {
+    let n = Holder<i64> { v: 42 }
+    assert first(n) == 42
+
+    let inner = Holder<i64> { v: 8 }
+    let outer = Holder<Holder<i64>> { v: inner }
+    assert first(outer).v == 8
+}

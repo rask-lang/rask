@@ -39,6 +39,7 @@ test "std.os/C3 — the exit status is the child's" {
 
 test "std.os/C3 — the handle knows the child's pid" {
     let p = os.Command.new("sh").arg("-c").arg("exit 0").spawn()!
+    ensure p.kill_and_wait()
     assert p.pid() > 0
     let out = p.wait()!
     assert out.status == 0
@@ -63,6 +64,7 @@ test "std.os/C3 — write_stdin reaches the child, and wait closes it" {
         .stdin(Stdio.Piped)
         .stdout(Stdio.Piped)
         .spawn()!
+    ensure p.kill_and_wait()
     p.write_stdin("through the pipe\n")!
     let out = p.wait()!
     assert out.status == 0
@@ -75,6 +77,7 @@ test "std.os/C3 — read_stdout takes what the child wrote, wait gets the rest" 
         .arg("echo first")
         .stdout(Stdio.Piped)
         .spawn()!
+    ensure p.kill_and_wait()
     let early = p.read_stdout()!
     assert early == "first\n"
     let out = p.wait()!
@@ -91,6 +94,7 @@ test "std.os/C3 — an unpiped stream is a message, not an errno" {
         .arg("exit 0")
         .stdout(Stdio.Null)
         .spawn()!
+    ensure p.kill_and_wait()
     mut on_stdin = ""
     p.write_stdin("nowhere") catch e => {
         on_stdin = e.message()
@@ -123,6 +127,7 @@ test "std.os/C3 — poll answers none while the child is still running" {
         .arg("echo done")
         .stdout(Stdio.Piped)
         .spawn()!
+    ensure p.kill_and_wait()
     // Nothing here waits for the child, so a `some` is as correct as a `none`
     // — what's pinned is that polling doesn't consume the handle and doesn't
     // block. `wait` below still works either way.

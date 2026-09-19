@@ -65,7 +65,11 @@ fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
 ///
 /// `kept` says, per callee, which of its parameters it holds on to — see
 /// `insert_aggregate_release`, which is the only part that needs it.
-pub fn insert_rc_ops(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) {
+pub fn insert_rc_ops(
+    func: &mut MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    own: &HashSet<String>,
+) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
     // The three string steps only have work when there is a string. The
@@ -83,11 +87,84 @@ pub fn insert_rc_ops(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) 
 
         // A returned parameter is handed out, not owned — take a reference for it.
         retain_returned_params(func, &string_locals);
+
+        // And a write through a captured variable's address gives back what
+        // that variable held.
+        release_replaced_captures(func, &string_locals);
     }
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept);
+    insert_aggregate_release(func, kept, own);
+}
+
+/// Release what a captured string variable held, where a closure writes a new
+/// one over it.
+///
+/// ```text
+/// mut seen = ""
+/// upto(2).for_each(|x| { seen = "{seen}{prefix}:{x};" })
+/// ```
+///
+/// The closure captures `seen` by reference, so the body holds the address of
+/// the frame's variable and the write is a store through it
+/// (mem.closures/MC1). The new string is retained for the slot and the one it
+/// replaced was released by nobody — one buffer per turn but the last (#1162).
+///
+/// No aliasing guard, unlike the container case: a string is refcounted, so
+/// every name holds a count of its own and giving back the slot's is right
+/// whoever else is reading. And a capture points at a variable the frame
+/// established before building the closure, so a store through one is always a
+/// replacement — there is no "is this the first write" to get wrong.
+fn release_replaced_captures(func: &mut MirFunction, string_locals: &[LocalId]) {
+    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+    // Addresses of a captured variable, as the body sees them.
+    let capture_refs: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => Some(*dst),
+            _ => None,
+        })
+        .collect();
+
+    for block_idx in 0..func.blocks.len() {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
+            let MirStmtKind::Store { addr, value, offset: 0, .. } = &stmt.kind else {
+                continue;
+            };
+            if !capture_refs.contains(addr) || !strings.contains(addr) {
+                continue;
+            }
+            // Writing the slot back to itself replaces nothing.
+            if uses::operand_local(value) == Some(*addr) {
+                continue;
+            }
+            // A `Call`, not an `RcDec`. A dec on this name reads as "give back
+            // the reference this name took", and a capture read takes none —
+            // so `rc_elide` strips it, correctly, along with the one this
+            // wants. What is being released is the reference the *slot* holds,
+            // which is a different thing wearing the same local.
+            insertions.push((
+                si,
+                MirStmt::new(
+                    MirStmtKind::Call {
+                        dst: None,
+                        func: crate::FunctionRef::internal(
+                            "string_free_replaced".to_string(),
+                        ),
+                        args: vec![MirOperand::Local(*addr)],
+                    },
+                    stmt.span,
+                ),
+            ));
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            func.blocks[block_idx].statements.insert(idx, stmt);
+        }
+    }
 }
 
 /// Insert `RcInc` after each assignment that copies a string local.
@@ -213,6 +290,7 @@ fn container_handles_from(
     func: &MirFunction,
     aggregates: &HashSet<LocalId>,
     ty_of: &HashMap<LocalId, MirType>,
+    own: &HashSet<String>,
 ) -> (HashMap<LocalId, LocalId>, HashMap<LocalId, LocalId>) {
     let mut from: HashMap<LocalId, LocalId> = HashMap::new();
     // What a call handed back that points into a container this group holds:
@@ -237,7 +315,7 @@ fn container_handles_from(
             for stmt in &block.statements {
                 // A call that hands back a view into its receiver's storage.
                 if let MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } = &stmt.kind {
-                    if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+                    if crate::own_names::returns_a_view(&fref.name, own) {
                         let root = args
                             .first()
                             .and_then(uses::operand_local)
@@ -315,10 +393,18 @@ fn container_handles_from(
                             // Wrappers only. Every scalar field read admitted
                             // here pushes the release to that local's last use,
                             // which cost four suite files a small leak each.
+                            //
+                            // A trait object joins them: it is a 16-byte fat
+                            // pointer read out of the struct's own storage, not
+                            // a scalar copied out of it, and `r.inner` passed
+                            // on to something else is read long after the read
+                            // that produced it.
                             .or((aggregates.contains(&base)
                                 && matches!(
                                     ty_of.get(dst),
-                                    Some(MirType::Option(_)) | Some(MirType::Result { .. })
+                                    Some(MirType::Option(_))
+                                        | Some(MirType::Result { .. })
+                                        | Some(MirType::TraitObject { .. })
                                 ))
                             .then_some(&base))
                             .copied();
@@ -381,7 +467,11 @@ fn container_handles_from(
     (from, views)
 }
 
-fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<bool>>) {
+fn insert_aggregate_release(
+    func: &mut MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    own: &HashSet<String>,
+) {
     let ty_of: HashMap<LocalId, MirType> =
         func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
     let aggregates: HashSet<LocalId> = func
@@ -397,7 +487,7 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     if aggregates.is_empty() {
         return;
     }
-    let (handles, views) = container_handles_from(func, &aggregates, &ty_of);
+    let (handles, views) = container_handles_from(func, &aggregates, &ty_of, own);
 
     // Closures this frame drops, and the aggregates they hold.
     //
@@ -604,7 +694,7 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                 // points into the vector's own buffer. The declaration says
                 // which (`mir_metadata::returns_a_view`).
                 MirStmtKind::Call { func: fref, .. } => {
-                    !rask_stdlib::mir_metadata::returns_a_view(&fref.name)
+                    !crate::own_names::returns_a_view(&fref.name, own)
                 }
                 // A pool element, a capture, a global, a dynamic call: all
                 // views into storage somebody else keeps.
@@ -631,7 +721,7 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     let mut handed_over_in: HashMap<usize, HashSet<BlockId>> = HashMap::new();
 
     for block in &func.blocks {
-        for stmt in &block.statements {
+        for (si, stmt) in block.statements.iter().enumerate() {
             match &stmt.kind {
                 // Handed to something else, which may keep it.
                 MirStmtKind::Call { func: fref, args, .. } => {
@@ -645,6 +735,16 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         // a call is one whose fields might now be somebody
                         // else's, whatever the callee does with argument zero.
                         if i == 0 && borrows_recv && handles.contains_key(&id) {
+                            continue;
+                        }
+                        // Giving back what a field held, right before the field
+                        // holds something else. Argument zero is the handle
+                        // that was in the slot; the aggregate is untouched and
+                        // still needs its own release, for whatever ends up in
+                        // there (#1198).
+                        if i == 0
+                            && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name)
+                        {
                             continue;
                         }
                         // A callee whose body this pass can read, and which
@@ -702,6 +802,11 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                         // leaked the map, because the encoder is handed the
                         // field's handle through exactly such a buffer.
                         if handles.contains_key(&id) && !aggregates.contains(addr) {
+                            continue;
+                        }
+                        // Or the value went into its own successor, which is
+                        // not leaving the frame at all. See `moved_within_the_group`.
+                        if moved_within_the_group(func, block, si, *addr, id, &group_of) {
                             continue;
                         }
                         if let Some(gi) = group_of.get(&id) {
@@ -830,6 +935,14 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
 
     let (live_in, live_out) = aggregate_liveness(func, &groups, &reaches);
 
+    // Which aggregate each one was read out of. A group can hold both a struct
+    // and a struct *inside* it — `p.home` on a `Rec { home: Address, counts:
+    // Vec<i64> }` is one storage read at an offset, which is why the two are
+    // grouped at all. The release then has to name the outer one: it walks
+    // every field, the inner's included, where naming the inner walks a strict
+    // subset and leaves the outer's containers to nobody.
+    let enclosing = enclosing_aggregates(func);
+
     // A group that only stays live because of a branch that doesn't end it
     // needs its release on the branch that does. The normal placement below
     // anchors a release to the group's last *use* in a block where it dies —
@@ -841,12 +954,26 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
     let edge_releases =
         aggregate_edge_releases(func, &groups, &handles, &views, &live_in, &live_out, &gone);
 
+    // Groups something else already placed a release for, read once — the loop
+    // below adds releases of its own, and re-reading the function would let one
+    // block's release suppress another block's.
+    let released_already: Vec<bool> =
+        groups.iter().map(|g| already_released(func, g)).collect();
+
     for block_idx in 0..func.blocks.len() {
         let stmts_len = func.blocks[block_idx].statements.len();
         let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
 
         for (gi, group) in groups.iter().enumerate() {
             if live_out[block_idx][gi] || gone[gi].contains(&func.blocks[block_idx].id) {
+                continue;
+            }
+            // Somebody already said where this one dies. `drop(p)` on a
+            // `Heap<T>` releases the payload's contents before giving the block
+            // back — the block is where they live, and after `rask_free` there
+            // is nothing left to walk — so lowering emits the release itself.
+            // A second one here is a second release of the same strings.
+            if released_already[gi] {
                 continue;
             }
             let mut last = None;
@@ -902,6 +1029,16 @@ fn insert_aggregate_release(func: &mut MirFunction, kept: &HashMap<String, Vec<b
                 }
             }
             let (Some(si), Some(local)) = (last, local) else { continue };
+            // Up to the outermost member of this group. Reading `p.home` means
+            // `p` was written first — you can't read a field of something that
+            // was never established — so the base is always a valid name here.
+            let mut local = local;
+            while let Some(&base) = enclosing.get(&local) {
+                if !group.contains(&base) || not_a_name(&base) {
+                    break;
+                }
+                local = base;
+            }
             let local = &local;
             let span = func.blocks[block_idx].statements[si].span;
             // Step over the retains already sitting here. The last use of a
@@ -1031,6 +1168,23 @@ fn aggregate_edge_releases(
                 if gone[gi].contains(&succ) {
                     continue;
                 }
+                // And the successor must not still need the value. Liveness
+                // answers that per *group*, so a block that builds the next
+                // version while reading the current one — two names, one
+                // group — has the write hide the read and reads as dead on
+                // entry:
+                //
+                //     bb12:
+                //       *(_34+0)  = 1      // the new node: a write
+                //       *(_44+0)  = _41    // the old list: a read of another name
+                //
+                // That put an `rc_dec_contents` at the top of a loop body, on a
+                // name nothing had written yet the first time round (#1213).
+                // Asking the block itself is cheap and exact where the group
+                // answer is not.
+                if reads_before_writing(func, succ, group) {
+                    continue;
+                }
                 out.push((succ, name));
             }
         }
@@ -1038,6 +1192,144 @@ fn aggregate_edge_releases(
     out.sort_by_key(|(b, l)| (b.0, l.0));
     out.dedup_by_key(|(b, l)| (b.0, l.0));
     out
+}
+
+/// Does `block` read one of the group's names before writing that same name?
+///
+/// The precise half of "is the group live on entry here". `aggregate_liveness`
+/// answers it for the group as a whole, which is enough for placing a release
+/// inside a block and not enough for putting one at the top of one.
+fn reads_before_writing(func: &MirFunction, block: BlockId, group: &HashSet<LocalId>) -> bool {
+    let Some(b) = func.blocks.iter().find(|b| b.id == block) else { return false };
+    let mut written: HashSet<LocalId> = HashSet::new();
+    for stmt in &b.statements {
+        let stored_into = match &stmt.kind {
+            MirStmtKind::Store { addr, .. } if group.contains(addr) => Some(*addr),
+            _ => None,
+        };
+        // A store's destination address is the write, not a read of what was
+        // there before; its *value* is an ordinary read.
+        let reads = match (&stmt.kind, stored_into) {
+            (MirStmtKind::Store { value, .. }, Some(_)) => uses::operand_local(value)
+                .is_some_and(|v| group.contains(&v) && !written.contains(&v)),
+            _ => group
+                .iter()
+                .any(|l| !written.contains(l) && uses::stmt_reads(stmt, *l)),
+        };
+        if reads {
+            return true;
+        }
+        if let Some(addr) = stored_into {
+            written.insert(addr);
+        }
+        if let Some(d) = uses::stmt_def(stmt) {
+            if group.contains(&d) {
+                written.insert(d);
+            }
+        }
+    }
+    group
+        .iter()
+        .any(|l| !written.contains(l) && uses::terminator_reads(&b.terminator, *l))
+}
+
+/// A store that moves a value from one of a group's names to another, rather
+/// than out of the frame.
+///
+/// `out = List.Cons(i, Heap(out))` builds a new node whose tail is the old
+/// list, and in MIR that is a copy of the old value into a fresh block:
+///
+/// ```text
+///   bb5:
+///     _27 = phi [_25 from bb4, _31 from bb6]
+///   bb6:
+///     *(_20+0)  = 1
+///     *(_20+8)  = _28
+///     _30 = rask_alloc(24)
+///     *(_30+0)  = _27  [24B]   // the old list, copied into the new block
+///     *(_20+16) = _30          // the block goes into the new node
+///     _31 = _20                // and the new node is what comes round again
+/// ```
+///
+/// Read that middle store on its own and it is a hand-over: whoever owns the
+/// block owns the copy now, so releasing `_27` from there on would free it
+/// twice. Read the three together and the block never left the frame — it is
+/// inside `_20`, `_20` is the same group as `_27`, and the group's release
+/// walks into it and frees the whole chain. Calling it a hand-over left every
+/// node of a list built this way freed by nobody (#1213).
+///
+/// Both halves have to hold:
+///
+///   - the block lands in a name of the same group, which is what makes that
+///     group's release cover the copy;
+///   - and that name takes `_27`'s place — straight through, or round the loop
+///     as the phi operand arriving from this block. Without it the old value
+///     would still have a live name of its own and the release would be a
+///     double free rather than a leak, which is the wrong half of the trade.
+fn moved_within_the_group(
+    func: &MirFunction,
+    block: &crate::MirBlock,
+    at: usize,
+    into: LocalId,
+    value: LocalId,
+    group_of: &HashMap<LocalId, usize>,
+) -> bool {
+    let Some(gi) = group_of.get(&value) else { return false };
+    let rest = &block.statements[at + 1..];
+
+    // Where the block ends up, followed as far as the rest of this block goes.
+    // An enum variant with a struct payload takes three hops — block into the
+    // struct's field, struct into the variant's payload, variant into the name
+    // that comes round again — and stopping at the first would miss it.
+    let mut carries: HashSet<LocalId> = HashSet::from([into]);
+    for st in rest {
+        match &st.kind {
+            MirStmtKind::Store { addr, value: stored, .. } => {
+                if uses::operand_local(stored).is_some_and(|v| carries.contains(&v)) {
+                    carries.insert(*addr);
+                }
+            }
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                if carries.contains(src) {
+                    carries.insert(*dst);
+                }
+            }
+            _ => {}
+        }
+    }
+    // It has to end up inside one of the group's own names, or its release is
+    // somebody else's business and this really was a hand-over.
+    if !carries.iter().any(|l| group_of.get(l) == Some(gi)) {
+        return false;
+    }
+    let successor_names = carries;
+
+    // Taken over on the spot.
+    let reassigned = rest.iter().any(|st| match &st.kind {
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+            *dst == value && successor_names.contains(src)
+        }
+        _ => false,
+    });
+    if reassigned {
+        return true;
+    }
+
+    // Or round the loop: the phi that names `value` takes its operand on this
+    // block's edge from one of them.
+    func.blocks.iter().any(|b| {
+        b.statements.iter().any(|st| match &st.kind {
+            MirStmtKind::Phi { dst, args } => {
+                *dst == value
+                    && args.iter().any(|(from, op)| {
+                        *from == block.id
+                            && uses::operand_local(op)
+                                .is_some_and(|l| successor_names.contains(&l))
+                    })
+            }
+            _ => false,
+        })
+    })
 }
 
 /// Every block a group's value might already be gone in: the blocks where it
@@ -1160,6 +1452,40 @@ fn aggregate_value_groups(
     groups.into_values().collect()
 }
 
+/// Aggregate field reads: the local a nested aggregate was read out of.
+///
+/// Only aggregate-to-aggregate, which is the same test the grouping uses — a
+/// string read out of a struct takes its own reference and is released on its
+/// own.
+fn enclosing_aggregates(func: &MirFunction) -> HashMap<LocalId, LocalId> {
+    let ty_of: HashMap<LocalId, &MirType> = func
+        .locals
+        .iter()
+        .chain(func.params.iter())
+        .map(|l| (l.id, &l.ty))
+        .collect();
+    let mut out = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } = &stmt.kind else {
+            continue;
+        };
+        let (Some(base), Some(dst_ty)) = (uses::operand_local(base), ty_of.get(dst)) else {
+            continue;
+        };
+        if dst_ty.passed_by_address() && ty_of.get(&base).is_some_and(|t| t.passed_by_address()) {
+            out.insert(*dst, base);
+        }
+    }
+    out
+}
+
+/// Does a release for this group already exist in the function?
+fn already_released(func: &MirFunction, group: &HashSet<LocalId>) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| {
+        matches!(&stmt.kind, MirStmtKind::RcDecContents { local } if group.contains(local))
+    })
+}
+
 /// Which groups are still live at each block's exit.
 ///
 /// The shared liveness analysis is no use here. An aggregate local with its own
@@ -1189,7 +1515,22 @@ fn aggregate_liveness(
     let mut gen = vec![vec![false; n_groups]; n_blocks];
     let mut kill = vec![vec![false; n_groups]; n_blocks];
 
+    // How big the value each group names is, so "did this block write all of
+    // it" has an answer.
     for (bi, block) in func.blocks.iter().enumerate() {
+        // Slots this block gives back before writing over them. A store that
+        // follows one is a *replacement*, not the end of the value: what was
+        // there has just been freed by name, and what lands next is the group's
+        // as much as the old one was. Counting it as a kill is what put the
+        // release one statement after the literal in `parse_args` (#1198).
+        let released_here: HashSet<(LocalId, u32)> = block
+            .statements
+            .iter()
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::ReleaseSlot { addr, offset, .. } => Some((*addr, *offset)),
+                _ => None,
+            })
+            .collect();
         for (gi, group) in groups.iter().enumerate() {
             let mut written = false;
             for stmt in &block.statements {
@@ -1214,8 +1555,14 @@ fn aggregate_liveness(
                 if reads && !written {
                     gen[bi][gi] = true;
                 }
-                let writes =
-                    stores_into || uses::stmt_def(stmt).is_some_and(|d| group.contains(&d));
+                let replaced = match &stmt.kind {
+                    MirStmtKind::Store { addr, offset, .. } => {
+                        released_here.contains(&(*addr, *offset))
+                    }
+                    _ => false,
+                };
+                let writes = (stores_into && !replaced && !store_is_narrow(stmt))
+                    || uses::stmt_def(stmt).is_some_and(|d| group.contains(&d));
                 if writes {
                     written = true;
                     kill[bi][gi] = true;
@@ -1255,6 +1602,22 @@ fn aggregate_liveness(
         }
     }
     (live_in, live_out)
+}
+
+/// A store too narrow to be replacing anything the release walks.
+///
+/// The narrowest thing that walk ever frees is a container handle at eight
+/// bytes; a string's header is sixteen. So a one-byte store is a flag being
+/// written and the strings and containers beside it are exactly where they
+/// were — `opts.ignore_case = true` is not the end of the six-field struct
+/// around it, and counting it as one put the release inside the loop that
+/// writes the flags (#1198).
+///
+/// Asked of the store's own recorded width rather than the operand's type,
+/// because that width is what codegen copies and a `None` there means "as wide
+/// as the value", which is not a claim this can act on.
+fn store_is_narrow(stmt: &MirStmt) -> bool {
+    matches!(&stmt.kind, MirStmtKind::Store { store_size: Some(n), .. } if *n < 8)
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would
@@ -1311,11 +1674,42 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// Blocks the program never leaves — a terminator of `unreachable`, or a chain
 /// of gotos that only reaches those. A release placed in one of these is dead
 /// code: the process is gone before it runs.
+///
+/// An `ensure` body's blocks are not these, however they look. A cleanup chain
+/// ends in `unreachable` because there is nothing left in MIR to say after it —
+/// codegen turns that into the function's actual return. Reading it as an abort
+/// made every exit through an `ensure` an abort too, which is what kept the
+/// release below from firing in a function that has one: `assert out.stdout ==
+/// "…"` in a test that also writes `ensure p.kill_and_wait()` leaked the string
+/// it compared, while the same assert in a function without the `ensure` did
+/// not (#1224).
 fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
+    let mut cleanup: HashSet<BlockId> = HashSet::new();
+    let mut queue: Vec<BlockId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => Some(cleanup_chain.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    while let Some(bid) = queue.pop() {
+        if !cleanup.insert(bid) {
+            continue;
+        }
+        if let Some(b) = func.blocks.iter().find(|b| b.id == bid) {
+            queue.extend(cfg::successors(&b.terminator));
+        }
+    }
+
     let mut aborting: HashSet<BlockId> = func
         .blocks
         .iter()
-        .filter(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable))
+        .filter(|b| {
+            matches!(b.terminator.kind, MirTerminatorKind::Unreachable)
+                && !cleanup.contains(&b.id)
+        })
         .map(|b| b.id)
         .collect();
     // Walk backwards: a block all of whose successors abort, aborts too.
@@ -1470,6 +1864,13 @@ fn copies_reach(func: &MirFunction, from: LocalId, target: LocalId) -> bool {
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
+    // The same question with a phi's operands read on their own incoming edge.
+    // Used for one decision below — whether a string is still live when a block
+    // ends — because the shared answer says a phi operand is live out of every
+    // predecessor, and a filtered loop's accumulator is then never dead
+    // anywhere (#1200). Every other consumer of liveness keeps the shared one:
+    // the doc on `analyze_phis_on_edges` says what happened when they didn't.
+    let live_edges = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
     // use released the buffer one statement before the call read it (#1036).
@@ -1589,8 +1990,11 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 continue;
             }
 
-            // If the local is live at block exit, it's used downstream — no dec here
-            if live.live_at_exit(block_id, *local) {
+            // If the local is live at block exit, it's used downstream — no dec
+            // here. Asked of the edge-aware answer: a successor phi that takes
+            // this local from a *different* predecessor doesn't keep it alive
+            // on the way out of this one.
+            if live_edges.live_at_exit(block_id, *local) {
                 continue;
             }
 
@@ -1773,7 +2177,7 @@ mod tests {
             is_extern_c: false,
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -1821,7 +2225,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -1872,7 +2276,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -1941,7 +2345,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2010,7 +2414,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2043,7 +2447,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2062,7 +2466,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2082,7 +2486,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2107,7 +2511,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2153,7 +2557,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2174,7 +2578,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }

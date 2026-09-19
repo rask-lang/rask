@@ -388,6 +388,28 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.ctx.shared_elem_types.borrow().get(key).cloned())
     }
 
+    /// Is this receiver a Copy scalar — a number, a bool, a char?
+    ///
+    /// Asked of the checker rather than of MIR, because MIR types a channel's
+    /// `Sender<T>` and several other runtime handles as `I64`, and `.clone()`
+    /// on one of those is a reference count rather than nothing.
+    ///
+    /// `false` for a receiver whose type isn't recorded: that answer keeps the
+    /// call, which is what happened before this question was asked at all.
+    fn receiver_is_copy_scalar(&self, object: &Expr) -> bool {
+        use rask_types::Type;
+        matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(
+                Type::Bool
+                    | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                    | Type::F32 | Type::F64
+                    | Type::Char
+            )
+        )
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_string(&self, object: &Expr) -> bool {
@@ -1978,38 +2000,40 @@ impl<'a> MirLowerer<'a> {
                     let arg_expr = args.first().map(|a| &a.expr);
                     let boxed = arg_expr.is_some_and(|e| self.expr_yields_owned_box(e))
                         && arg_mir_types.first().is_some_and(|t| t.passed_by_address());
-                    // Reading a boxed field gives a *copy of the payload*: the
-                    // result local is typed `T`, so codegen sizes it for `T` and
-                    // copies the struct out through the pointer. The pointer
-                    // itself is never named, and freeing the copy's stack slot
-                    // aborted in glibc. Load the field's word instead.
-                    let boxed_field = match arg_expr.map(|e| &e.kind) {
-                        Some(ExprKind::Field { .. }) if boxed => {
-                            self.place_address(arg_expr.unwrap()).map(|addr| {
-                                let ptr = self.builder.alloc_temp(MirType::Ptr);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                    dst: ptr,
-                                    rvalue: MirRValue::Deref(addr),
-                                }));
-                                MirOperand::Local(ptr)
-                            })
-                        }
-                        _ => None,
-                    };
-                    // A field whose address lowering can't work out — a call
-                    // result, say — gets no free. The read's operand names a
-                    // *copy* of the payload, so falling back to it would hand
-                    // `rask_free` a stack address, and leaking is the safe half.
-                    let field_arg = matches!(arg_expr.map(|e| &e.kind), Some(ExprKind::Field { .. }));
-                    let box_ptr = match boxed_field {
-                        Some(op) => Some(op),
-                        None if boxed && field_arg => None,
-                        None if boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)) => {
-                            arg_operands.into_iter().next()
-                        }
-                        None => None,
+                    // A field never reaches here: the aggregate's release owns
+                    // what its field holds, so `drop(h.inner)` is E0880 and the
+                    // check stops before MIR. What used to stand here loaded
+                    // the field's word, because the read hands back a *copy* of
+                    // the payload and freeing that stack slot aborted in glibc
+                    // — machinery for a shape that no longer compiles (#1202).
+                    let box_ptr = if boxed
+                        || matches!(arg_mir_types.first(), Some(MirType::Ptr))
+                    {
+                        arg_operands.into_iter().next()
+                    } else {
+                        None
                     };
                     if let Some(op) = box_ptr {
+                        // What the payload holds goes first. Freeing the block
+                        // says nothing about the string and the `Vec` inside a
+                        // `Heap<Record>` — the block is where they live, and
+                        // after `rask_free` there is nothing left to walk.
+                        //
+                        // An aggregate local *is* an address, so a local typed
+                        // as the payload and holding the block's pointer is the
+                        // payload, and the ordinary contents release walks it.
+                        if let Some(payload_ty) =
+                            arg_mir_types.first().filter(|t| t.passed_by_address()).cloned()
+                        {
+                            let payload = self.builder.alloc_temp(payload_ty);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: payload,
+                                rvalue: MirRValue::Use(op.clone()),
+                            }));
+                            self.builder.push_stmt(MirStmt::dummy(
+                                MirStmtKind::RcDecContents { local: payload },
+                            ));
+                        }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
                             func: FunctionRef::internal("rask_free".to_string()),
@@ -6040,6 +6064,19 @@ impl<'a> MirLowerer<'a> {
                 // `UnresolvedGeneric` only, so a resolved type or a Map missed.
                 .or_else(|| self.collection_elem_of_expr(object))
                 .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
+            // `remove` hands the element over, `get` only lends it. So a
+            // removed `Vec` or `Map` is the frame's to free and the local has
+            // to say which container it holds — MIR spells every container a
+            // bare `Ptr`, and `Pool<Vec<string>>.remove(h)` left the whole
+            // vector to nobody. A *borrowed* element must keep saying `Ptr`,
+            // or the frame frees what the pool still has.
+            let elem_ty = if qualified_name == "Pool_remove" {
+                self.container_elem_payload_type(object.id, 0)
+                    .filter(|t| matches!(t, MirType::Container(_)))
+                    .unwrap_or(elem_ty)
+            } else {
+                elem_ty
+            };
             Some(super::option_of(elem_ty))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
@@ -6114,6 +6151,24 @@ impl<'a> MirLowerer<'a> {
         // heap fields (string, Vec, Map). Avoids needing a generated
         // runtime clone function for every user struct.
         if method == "clone" {
+            // A Copy scalar's clone is the value, and there is nothing to
+            // call: no `i64_clone` exists and none should. The call only
+            // reaches MIR at all because a generic body written for `T` keeps
+            // it after substitution — `Map<string, i64>.get_clone(k)` is
+            // `v.clone()` with `V` now `i64`, and that failed codegen outright
+            // rather than compiling to nothing (#1210).
+            //
+            // The *checker's* type, not the MIR one, and that distinction is
+            // the whole of it. MIR types several runtime handles as `I64` — a
+            // channel's `Sender<T>` among them, which is `let tx: i64` in the
+            // dump. Asked over `MirType` this reads a sender as a number, so
+            // `tx.clone()` became a no-op: three names for one sender, each
+            // dropped, and `t57_spawn.rk` died on a signal 11.
+            //
+            // Unknown means not a scalar, which leaves today's behaviour.
+            if self.receiver_is_copy_scalar(object) {
+                return Ok((all_args[0].clone(), obj_ty));
+            }
             if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
@@ -6267,6 +6322,19 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
+        // What one pooled element owns, settled here because here is where the
+        // checker's type is. MIR calls every container a bare `Ptr`, so codegen
+        // looking at the argument's local can tell a `Pool<Point>` from a
+        // `Pool<i64>` but not a `Pool<Vec<i64>>` from a pool of raw addresses.
+        // A `Pool<string>` or `Pool<Vec<_>>` element *is* the owned thing, and
+        // with nothing describing that the runtime freed the slot and left the
+        // string or the vector behind. Codegen pops this back off and expands it
+        // into the offset entries `rask_owned_release` reads.
+        let mut final_args = final_args;
+        if matches!(final_name.as_str(), "Pool_insert" | "Pool_try_insert") {
+            let tag = self.container_elem_tag(object.id, 0);
+            final_args.push(MirOperand::Constant(MirConst::Int(tag)));
+        }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(final_name.clone()),
@@ -8375,7 +8443,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Ptr => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
                 Some(kind) => Ok(call(
                     self,
-                    "vec_debug",
+                    "Vec_debug",
                     vec![op.clone(), MirOperand::Constant(MirConst::Int(kind))],
                 )),
                 None => {
@@ -9062,7 +9130,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// How the runtime should read a slot of this type: the `RASK_DEBUG_ELEM_*`
-    /// codes, shared by `vec_debug` and by the map renderer's key sort. `None`
+    /// codes, shared by `Vec_debug` and by the map renderer's key sort. `None`
     /// for anything the runtime can't read a slot at a time.
     fn debug_elem_kind(ty: &MirType) -> Option<i64> {
         Some(match ty {
@@ -9985,6 +10053,11 @@ impl<'a> MirLowerer<'a> {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
                     let (val, ty) = self.lower_expr(e)?;
+                    // The tail is lowered here rather than through `lower_stmt`,
+                    // so the consumption check has to be repeated — without it
+                    // a block ending in `c.close()` never cancelled the `ensure`
+                    // that scheduled the same cleanup, and both ran.
+                    self.check_resource_consume(e);
                     last_val = val;
                     last_ty = ty;
                     continue;

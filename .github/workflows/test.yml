@@ -8,51 +8,78 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Two concurrent jobs, split so they finish at about the same time:
+# Six jobs that all start at once. Four of them run the gates that need a rask
+# binary, one runs cargo test, one compiles the C runtime on Darwin.
 #
-#   gates      — everything that needs the rask binary (~3m25 warm)
-#   rust-tests — cargo test, which needs no rask binary of its own (~1m50 warm)
+# The shape is "everything in parallel, nothing waits". No job needs another, so
+# the run takes as long as its slowest job and no longer. Each gate job builds
+# its own rask — four builds instead of one, which is pure waste in CPU and
+# free in wall-clock, and Actions minutes cost nothing on a public repo. Handing
+# one build to the others as an artifact would be tidier and about 45s slower,
+# because then every gate waits for that build to finish before it starts.
 #
-# Warm is the number that matters: a cold cache adds ~1m20 to the compiler
-# build and ~1m25 to cargo test. Measured on run 31270117921.
+# How the gates are split: the differential harness is the long pole at ~1m35
+# and can't be cut, so it gets a job to itself and the other three are packed to
+# match it. If one grows past ~2m, move something out of it rather than letting
+# the whole run stretch. rust-tests is the slowest job now, so that is where the
+# next minute is.
 #
-# gates is now the critical path. What's left in it is Rust compilation
-# (~1m) and the differential harness (~1m10); everything else is under 15s.
+# Split them further whenever it helps — but leave the `gates` job alone. It is
+# the name branch protection requires, and the only one here that has to stay
+# put; see the comment on it.
 #
-# The old single job ran cargo test *after* a `cargo build -p rask-cli` it never
-# needed, so ~2m30 of Rust compilation sat behind ~1m of unrelated work.
+# How this got from 12m29 to where it is:
 #
-# Measured before changing anything (run 31259380257, 10m15s total): the
-# differential harness and cargo test were 29% and 25%, and a third step — a
-# `continue-on-error` re-run of the suite the differential harness already
-# subsumes — was another 28% that could never fail the build. That one is gone.
+#   12m29  one gates job running its gates one at a time, on one core each
+#    8m00  the slow gates learned to use all four cores (tests/lib/fanout.sh)
+#    5m13  four gate jobs at once, and cargo test back on --release
+#    3m03  sccache, so an unchanged crate stops being rebuilt every run
 #
-# cargo test is compile-bound, not run-bound: 2m52 to build the test binaries
-# vs 40s to run them, both already saturating cores. So a faster test runner
-# (nextest) would only touch the 40s — not worth the dependency.
+# Three different causes, and none of them was "the tests are slow":
 #
-# Within a job every gate keeps its `!cancelled()` guard, so one failing gate
-# never masks the others and each run still reports the full matrix.
+#   gates       8m00 = 1m21 building rask + 5m46 of gates, one after another
+#   rust-tests  4m20 =   31s compiling   + 3m17 running, 3m12 of it in ONE
+#                                          test binary, compile_run.rs
+#
+# sccache is here for the third one. Cargo decides a crate is dirty by comparing
+# source mtimes, and actions/cache restores compiler/target/ with its old mtimes
+# while the checkout stamps every .rs file with "now" — so every run rebuilt all
+# 23 workspace crates whether or not any Rust had changed. Commit 31d234c
+# changed a single comment in this file and still paid 1m01 for it. sccache keys
+# on content instead, so an unchanged crate is a hit no matter what its mtime
+# says: the build went from 1m25 to 22-33s across the four gate jobs. The cargo
+# cache stays for the dependency builds and the linked artifacts, which sccache
+# doesn't cover.
+#
+# A cold sccache costs about 30s extra and looks like a regression. Judge a
+# change here on the run after it, not the run that carries it.
+#
+# Every gate keeps its `!cancelled()` guard, so one failing gate never masks the
+# others in the same job and each run still reports the full matrix.
+#
+# None of the gate jobs run `make -C compiler/runtime`. Nothing needs it: the
+# rask binary carries the runtime sources baked in and the linker compiles them
+# itself into its own cache (~2.7s, once per job). `make` builds
+# librask_runtime.a, which nothing links — so it survives as one explicit
+# "the runtime still builds with gcc" step next to the clang one.
 
 jobs:
-  gates:
-    name: gates (needs the rask binary)
+  # ── The differential harness, alone. It's the longest single gate (~1m30) and
+  # the other three jobs are sized against it.
+  gates-suite:
+    name: gates-suite (both backends, every suite file)
     runs-on: ubuntu-latest
-    # A run takes 20-30 minutes. Without this the default is six hours, so a
-    # runner that wedges holds the PR for a working day before anyone learns
-    # anything. Both numbers are roughly double what the job actually takes, so
-    # a genuine slowdown still passes.
-    timeout-minutes: 60
+    timeout-minutes: 20
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
-
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: wasm32-unknown-unknown
-
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -63,62 +90,78 @@ jobs:
           ~/.cargo/git/db/
           compiler/target/
         key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
-        # Falls back to this job's last cache, then to the pre-split key. Without
-        # that second line, renaming the key costs one fully cold run per branch
-        # — 2m24 to build the compiler instead of ~1m, and 3m56 for cargo test.
         restore-keys: |
           ${{ runner.os }}-cargo-gates-
-          ${{ runner.os }}-cargo-test-
-
-    # Build steps are hard prerequisites: if either fails, the gates below are
-    # skipped (nothing can run without the binary).
-    - name: Build C runtime
-      id: runtime
-      run: make -C compiler/runtime
-
     - name: Build compiler (release)
       id: compiler
       run: cargo build --release -p rask-cli
       working-directory: compiler
 
-    # Differential backend harness — every tests/suite/ file on BOTH backends,
-    # fails on any UNTRACKED interp/native divergence. Tracked bugs/pending
-    # features live in tests/known_divergences.txt + tests/pending_features.txt.
-    # This is the native-execution gate; it subsumes a bare `rask test
-    # tests/suite/` and additionally checks parity.
-    #
-    # Fans out across cores (DIFF_JOBS, default nproc): 3m35 -> 52s locally,
-    # with byte-identical output and exit code to the serial version.
+    # Every tests/suite/ file on BOTH backends, failing on any UNTRACKED
+    # interp/native divergence. Tracked bugs and pending features live in
+    # tests/known_divergences.txt + tests/pending_features.txt. This is the
+    # native-execution gate; it subsumes a bare `rask test tests/suite/` and
+    # additionally checks parity. Fans out across cores (tests/lib/fanout.sh;
+    # DIFF_JOBS overrides the default of one job per core).
     - name: Differential harness (interp vs native)
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/differential.sh
 
-    # Example run-gate — every example with a tests/golden/ output must match on
-    # both backends. Catches native codegen rot in examples/. Also parallel
-    # (GATE_JOBS): 45s -> 16s locally.
-    - name: Example run-gate
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: tests/examples_gate.sh
+  # ── What the runtime hands back, and what a learner reads.
+  gates-memory:
+    name: gates-memory (leaks, memory errors, tutorials)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
 
-    # Memory leak gate. Every heap string in the language leaked for as long
-    # as the compiler had strings (#1024) and nothing went red — a leak has no
-    # symptom, the answers are all correct and there's just no memory coming
-    # back. This runs the suite with the runtime counting what it allocated and
-    # never gave back; a clean program ends at exactly zero.
+    # Every heap string in the language leaked for as long as the compiler had
+    # strings (#1024) and nothing went red — a leak has no symptom, the answers
+    # are all correct and there's just no memory coming back. This runs the
+    # suite with the runtime counting what it allocated and never gave back; a
+    # clean program ends at exactly zero. Parallel (LEAK_JOBS): 2m42 -> 1m07.
     - name: Memory leak gate
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
 
-    # Internal-spelling gate. MIR mints names for operations the stdlib
-    # declares under another spelling, and `INTERNAL_SPELLINGS` says what each
-    # stands for — that is what decides who owns what crosses the call. A name
-    # with no line there is treated as owning everything it touches, which
-    # leaks rather than double-frees; this is what stops it staying that way.
-    # Runs the suite through `rask test` as well as `compile`, because the two
-    # lowering paths reach different names.
-    - name: Internal spelling gate
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: tests/spellings_gate.sh
+    - name: Install valgrind
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: sudo apt-get update && sudo apt-get install -y valgrind
+
+    # The leak gate above measures one direction of "who frees this": memory
+    # nobody gave back. The other direction — giving it back too early, reading
+    # a field nobody wrote — had no instrument at all, in any gate or here, and
+    # everything found in it so far was found by a crash. Within a minute of
+    # first being pointed at the suite this found a pool built field by field
+    # that had grown two fields nobody initialised, which the leak gate, twelve
+    # other gates, this workflow and a 30x poisoned-stack run all called green.
+    - name: Memory error gate (valgrind)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/memcheck_gate.sh
 
     # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
     # by nothing at all, and seven of nineteen solutions didn't compile (#1030)
@@ -126,20 +169,58 @@ jobs:
     # before the string-API change that surfaced them. These are what a learner
     # reads when they're stuck, so a wrong one costs more than a missing one.
     - name: Tutorial solutions
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/tutorials_gate.sh
 
-    # The book, against the compiler. "Docs snippets parse" below already runs
-    # the book's inline blocks, but parsing is a weak signal: the front-page
-    # snippet parsed fine while calling an API the real grep program doesn't
-    # use, with both imports missing. This gate adds what parsing can't see:
-    # every block must be an {{#include}} from a program another gate runs or
-    # carry a compile/run marker; every include must resolve; and the compile
-    # errors a chapter teaches with are pinned renderings of `rask check`, so
-    # improving a diagnostic shows up as a diff on the page that teaches it.
-    - name: Book gate
+  # ── Who owns what crosses a call, and whether the programs we show people
+  # still produce the output we claim.
+  gates-names:
+    name: gates-names (spellings, examples, prototypes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    # MIR mints names for operations the stdlib declares under another spelling,
+    # and `INTERNAL_SPELLINGS` says what each stands for — that is what decides
+    # who owns what crosses the call. A name with no line there is treated as
+    # owning everything it touches, which leaks rather than double-frees; this
+    # is what stops it staying that way. Runs the suite through `rask test` as
+    # well as `compile`, because the two lowering paths reach different names.
+    # Parallel too (SPELL_JOBS): 3m13 -> 1m16.
+    - name: Internal spelling gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/book_gate.sh
+      run: tests/spellings_gate.sh
+
+    # Every example with a tests/golden/ output must match on both backends.
+    # Catches native codegen rot in examples/. Also parallel (GATE_JOBS).
+    - name: Example run-gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/examples_gate.sh
 
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
@@ -147,7 +228,7 @@ jobs:
     # had no parity coverage at all. That is how #984 left the linked list
     # printing nothing on native, and how #866 hid in the scene tree.
     - name: Prototype backend parity
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/prototypes_gate.sh
 
     # The agent benchmark's reference solutions, as a differential test over
@@ -159,8 +240,68 @@ jobs:
     # end-to-end check is deliberately not here: CI shouldn't depend on
     # benchmark plumbing, so that one is run by hand.
     - name: Agent benchmark reference gate
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/agentbench_gate.sh
+
+  # ── Everything that is about the surface we publish: formatting, packages,
+  # prose, and the C the runtime is written in.
+  gates-surface:
+    name: gates-surface (fmt, packages, docs, runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    # The formatter's output has to still be the same program. Nothing compared
+    # the two, which is how `rask fmt` came to drop `as` bindings, `using`
+    # clauses, enum and trait attributes and every parenthesis that mattered —
+    # 21 of 30 examples stopped compiling after being formatted (#805). Parallel
+    # as well (FMT_JOBS): 1m32 -> 41s.
+    - name: Formatter round-trip
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/fmt_roundtrip_gate.sh
+
+    # The multi-file validation program. Nothing built it before, which is how
+    # a package-wide `catch` migration (#607) and the span mis-attribution
+    # (#621) both shipped — every other gate runs single files.
+    - name: Flagship package builds
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: ./compiler/target/release/rask build examples/validation --release
+
+    # A build that crosses a package boundary. Every package in the repo was a
+    # self-contained root — nothing declared a dependency — so `dep "x" { path }`
+    # had no coverage at all, and #1112 sat in the tree: a library exporting a
+    # function that constructs its own struct breaks every consumer, called or
+    # not.
+    - name: Multi-package builds
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/packages_gate.sh
 
     # projects/*/ type-checks. Nothing checked them, which is how raido reached
     # 48 errors and tiwaz 11 (#774) — every rule change since they were written
@@ -176,32 +317,20 @@ jobs:
     # be. A string cast to an address was released at the cast, so the buffer
     # was freed before the write read it.
     - name: HTTP server harness (both backends)
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/http_api_harness.sh
 
-    # The multi-file validation program. Nothing built it before, which is how
-    # a package-wide `catch` migration (#607) and the span mis-attribution
-    # (#621) both shipped — every other gate runs single files.
-    - name: Flagship package builds
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask build examples/validation --release
-
-    # A build that crosses a package boundary. Every package in the repo was a
-    # self-contained root — nothing declared a dependency — so `dep "x" { path }`
-    # had no coverage at all, and #1112 sat in the tree: a library exporting a
-    # function that constructs its own struct breaks every consumer, called or
-    # not.
-    - name: Multi-package builds
-      if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.compiler.outcome == 'success' }}
-      run: tests/packages_gate.sh
-
-    # The formatter's output has to still be the same program. Nothing compared
-    # the two, which is how `rask fmt` came to drop `as` bindings, `using`
-    # clauses, enum and trait attributes and every parenthesis that mattered —
-    # 21 of 30 examples stopped compiling after being formatted (#805).
-    - name: Formatter round-trip
+    # The book, against the compiler. "Docs snippets parse" below already runs
+    # the book's inline blocks, but parsing is a weak signal: the front-page
+    # snippet parsed fine while calling an API the real grep program doesn't
+    # use, with both imports missing. This gate adds what parsing can't see:
+    # every block must be an {{#include}} from a program another gate runs or
+    # carry a compile/run marker; every include must resolve; and the compile
+    # errors a chapter teaches with are pinned renderings of `rask check`, so
+    # improving a diagnostic shows up as a diff on the page that teaches it.
+    - name: Book gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/fmt_roundtrip_gate.sh
+      run: tests/book_gate.sh
 
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
@@ -218,7 +347,25 @@ jobs:
     # passed on a card full of nonsense.
     - name: Docs snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: ./compiler/target/release/rask test-specs docs/ README.md LANGUAGE_CARD.md
+      run: ./compiler/target/release/rask test-specs docs/ writing/ README.md LANGUAGE_CARD.md
+
+    # The runtime through gcc. Nothing links librask_runtime.a, so this exists
+    # only to say the runtime still builds the ordinary way — the linker's own
+    # copy is compiled per-object and would hide a Makefile that rotted.
+    - name: Runtime builds with gcc
+      if: ${{ !cancelled() }}
+      run: make -C compiler/runtime
+
+    # The runtime through clang. gcc builds it above and clang builds it on the
+    # macOS job, so a gcc/clang difference could only surface there — and that
+    # job can't build green.c or the two I/O engines at all, since they need
+    # Linux headers. Those three had no clang coverage anywhere, which is how
+    # a `_Atomic` variable touched with gcc's `__atomic_*` builtins (fine to
+    # gcc, rejected by clang) sat in string.c. Compiles only, ~10s, no macOS
+    # runner.
+    - name: Runtime builds with clang
+      if: ${{ !cancelled() }}
+      run: tests/clang_gate.sh
 
     # The playground's wasm build. Nothing here compiled for wasm32, so a
     # cfg-gated stdlib module could lose its callers' guards and only break in
@@ -229,22 +376,74 @@ jobs:
       run: cargo check -p rask-wasm --target wasm32-unknown-unknown
       working-directory: compiler
 
+  # Branch protection on main requires a check with this exact name. It used to
+  # be the one big gates job; splitting that into four renamed it out of
+  # existence, so the required check had nothing reporting it and every PR sat
+  # "waiting for status to be reported" with six green jobs above it.
+  #
+  # So this is the name branch protection points at from now on, and it is the
+  # one thing here that has to stay stable: the gates behind it can be split,
+  # merged or renamed freely without anyone touching repository settings. It
+  # runs nothing itself — it passes when all four gate jobs passed.
+  #
+  # `needs:` alone would not do it. A needed job that fails normally skips this
+  # one, and a skipped required check never reports — the same stuck-pending
+  # state it exists to prevent. `always()` makes it run whatever happened, and
+  # the step reads the four results itself.
+  gates:
+    name: gates (needs the rask binary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [gates-suite, gates-memory, gates-names, gates-surface]
+    steps:
+    - name: Every gate passed
+      env:
+        RESULTS: >-
+          gates-suite=${{ needs.gates-suite.result }}
+          gates-memory=${{ needs.gates-memory.result }}
+          gates-names=${{ needs.gates-names.result }}
+          gates-surface=${{ needs.gates-surface.result }}
+      run: |
+        echo "$RESULTS"
+        failed=0
+        for pair in $RESULTS; do
+          case "${pair#*=}" in
+            success) ;;
+            *) echo "::error::${pair%%=*} did not pass (${pair#*=})"; failed=1 ;;
+          esac
+        done
+        exit "$failed"
+
   rust-tests:
     name: rust-tests (cargo test)
     runs-on: ubuntu-latest
-    # Five to six minutes in practice.
     timeout-minutes: 30
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
 
-    # Separate key from the gates job so the two don't race to write the same
-    # cache; restore-keys warms this one from its own last run, then from the
-    # pre-split key so renaming doesn't cost a cold run on every new branch.
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+
+    # Separate key from the gate jobs so the two don't race to write the same
+    # cache. The gate jobs share one key between them, which is fine — whoever
+    # finishes first writes it and the rest find it already there.
+    #
+    # `-release-` is in the key because the profile decides what lands in
+    # compiler/target/, and actions/cache never overwrites a key that already
+    # exists. This job used to build debug, so the old key holds debug
+    # artifacts: asking for it back after the switch handed cargo a target dir
+    # with nothing in it cargo could use, and then refused to save the release
+    # build it did instead. Every run started cold — 5m11 of it, for as long as
+    # Cargo.lock stayed put. Anything that changes what goes in that directory
+    # has to change this key with it.
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -254,54 +453,63 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           compiler/target/
-        key: ${{ runner.os }}-cargo-rust-tests-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-cargo-rust-tests-release-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-rust-tests-
-          ${{ runner.os }}-cargo-test-
-
-    # The native compile+run golden fixtures shell out to the C runtime.
-    - name: Build C runtime
-      run: make -C compiler/runtime
+          ${{ runner.os }}-cargo-rust-tests-release-
 
     # Rust integration + unit tests (fixtures, compile_errors wiring, native
-    # compile+run golden fixtures). cargo builds whatever binaries the tests
-    # need, so this job needs no separate `cargo build -p rask-cli`.
+    # compile+run golden fixtures).
     #
-    # Debug, not --release. These tests are compile-bound, and dropping
-    # optimization cuts the build far more than it costs at run time:
+    # --release, and the reason is `compile_run.rs`. It has 379 tests that each
+    # shell out to the rask binary cargo just built, compile a .rk fixture, link
+    # it and run it. So every one of them pays for however fast that binary is,
+    # and an unoptimized rask is slow: the same 20 fixtures take 37.6s through
+    # `target/debug/rask` and 6.3s through `target/release/rask`. Six times.
     #
-    #   --release   2m52 compile + 40s run
-    #   debug       1m38 compile + 43s run
+    # On run 34747869130 that one test binary was 192s of the job's 197s of
+    # running, against 31s of compiling. Trading ~1m of extra compile for ~2m30
+    # of that is the right way round.
     #
-    # Same 942 tests, both green — debug isn't skipping anything. The run
-    # barely moves because the fixtures shell out to a rask binary from the
-    # same profile but spend their time in process startup and linking, not
-    # in optimized inner loops.
+    # It used not to be. When this job was put on debug the trade was measured
+    # as 2m52 compile + 40s run against 1m38 + 43s, and debug won easily.
+    # compile_run.rs has roughly quadrupled since, and it is now the job. If it
+    # ever stops being the job, measure again rather than trusting this note.
     #
-    # The other half of the trade is the point: debug turns on integer
-    # overflow checks and `debug_assert!`. Nothing fires today, so this costs
-    # no red CI now and catches the next arithmetic bug for free.
+    # What --release costs, beyond compile time: debug turns on integer overflow
+    # checks and `debug_assert!`, and those are real. They still run — every
+    # other test binary in the workspace is unaffected by how fast rask is, so
+    # if the arithmetic checks matter more than the wall clock the answer is to
+    # split this job, not to put the whole thing back on debug.
     #
-    # What dropping --release here does NOT give up, checked rather than
-    # assumed:
-    #   - Rask's generated code is identical either way. Cranelift is pinned to
-    #     opt_level "speed" unconditionally (codegen/module.rs:56,95), not
-    #     derived from how rask itself was built, so the codegen tests assert
-    #     the same machine code in both profiles.
-    #   - Profile-divergent Rust: one `cfg!(debug_assertions)` in the whole
-    #     tree (codegen/dispatch.rs) and it's a debug-ONLY duplicate-key
-    #     diagnostic — debug is the stricter side of that branch, not the
-    #     weaker one.
-    #   - Optimization-exposed UB: two `unsafe` sites in the tree, both signal
-    #     and fd handling in interp/stdlib/os.rs, which these tests don't
-    #     reach in either profile.
-    #   - Timing flakes: no sleeps, timeouts or duration assertions in tests.
-    #
-    # And the release build is still exercised hard every run — the gates job
-    # builds rask with --release and pushes ~360 program compilations through
-    # it (differential 158x2, examples 20x2, plus snippets and the flagship
-    # package). What's left uncovered is a rustc miscompile of safe Rust,
-    # which isn't worth ~3m30 on every run to chase.
+    # What it does NOT cost, checked rather than assumed: Rask's generated code
+    # is identical either way. Cranelift is pinned to opt_level "speed"
+    # unconditionally (codegen/module.rs:56,95), not derived from how rask
+    # itself was built, so the codegen tests assert the same machine code in
+    # both profiles.
     - name: cargo test
-      run: cargo test
+      run: cargo test --release
       working-directory: compiler
+
+  # The C runtime, compiled on Darwin. Everything above runs on Linux, and the
+  # release ships a macOS binary — so the first time anyone compiled this code
+  # with Apple's headers was release day, twice in a row. Both breaks were the
+  # same kind: glibc hands out a non-POSIX name anyway, Darwin doesn't, and the
+  # Makefile asks for strict POSIX. A green Linux run says nothing about either.
+  #
+  # On Darwin this compiles the 26 sources macOS actually links — the Makefile
+  # drops the three Linux-only ones — so it covers the same set `rask build`
+  # feeds to the linker there.
+  #
+  # Deliberately just the runtime: no Rust toolchain, no cargo, no gates. That
+  # is where both failures were, it is ~30s of clang, and it needs no cache.
+  # macOS runners bill at 10x, so a full macOS matrix is a real cost; this is
+  # the thin slice that would have caught both. (#1170 asks for the wider leg.)
+  macos-runtime:
+    name: macos-runtime (C runtime compiles on Darwin)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build C runtime
+      run: make -C compiler/runtime

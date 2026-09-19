@@ -7,14 +7,21 @@ cd "$(dirname "$0")"
 build_site() {
     echo "Building website..."
 
-    # Build mdBook to build/book
+    # The palette lives in shared/tokens.css and is served from the site root.
+    # The book's theme @imports it from there, so it has to exist before mdbook
+    # runs for the book to come out in the right colours.
+    mkdir -p build
+    cp shared/tokens.css build/tokens.css
+    # Rask's words, read by the book, the playground and the Try box alike.
+    cp shared/rask-vocabulary.js build/rask-vocabulary.js
+
     cd book
     mdbook build -d ../build/book
     cd ..
 
-    # Copy landing page to root
     cp landing/index.html build/index.html
     cp landing/landing.css build/landing.css
+    cp landing/try.js build/try.js
 
     # Rebuild playground examples from examples/*.rk
     node playground/build-examples.js
@@ -26,14 +33,16 @@ build_site() {
         cp -r playground/pkg build/app/
     fi
 
-    # Build blog with Jekyll
-    if command -v bundle &>/dev/null; then
-        cd blog
-        bundle exec jekyll build --destination ../build/blog --quiet 2>/dev/null
-        cd ..
-    else
-        echo "Warning: bundle not found, skipping blog build (install ruby + bundle install in docs/blog/)"
-    fi
+    # The blog. Rendered from writing/*.md by examples/markdown_renderer.rk,
+    # so it needs the compiler built: `cargo build --release -p rask-cli`.
+    node blog/build.js
+
+    # Same cache-busting the deploy does, with the clock instead of a commit:
+    # locally every rebuild should be a new URL, since you're rebuilding
+    # precisely because something changed. Last, so everything is in build/.
+    STAMP="$(date +%s)"
+    find build -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' \) -print0 \
+      | xargs -0 sed -i "s/?v=dev/?v=$STAMP/g"
 
     echo "Build complete at $(date +%H:%M:%S)"
 }
@@ -43,7 +52,7 @@ build_site
 
 echo ""
 echo "Server running at http://localhost:8080"
-echo "Watching for changes in book/ and landing/..."
+echo "Watching for changes in book/, landing/, blog/, shared/ and writing/..."
 echo "Press Ctrl+C to stop"
 echo ""
 
@@ -56,7 +65,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src landing/ blog/_posts blog/_config.yml blog/assets ../examples/ 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src book/theme landing/ shared/ blog/ ../writing/ ../examples/ 2>/dev/null && {
         echo ""
         build_site
     }

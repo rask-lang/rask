@@ -5,7 +5,7 @@
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
 //! threading a `PassContext` for metadata collection and diagnostic accumulation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use rask_diagnostics::Diagnostic;
 use crate::MirFunction;
 use crate::transform::bounds_elim::BoundsCheckElimPass;
@@ -24,6 +24,14 @@ pub struct PassContext {
     pub bounds_checks_eliminated: u32,
     /// BE2: Number of bounds checks retained (couldn't prove in-bounds).
     pub bounds_checks_retained: u32,
+    /// Every function name in the program, refreshed before each pass.
+    ///
+    /// A call to one of these is the program's own, never a spelling MIR
+    /// minted for itself — which is the only thing that tells the two apart
+    /// once they are both just a name (see `crate::own_names`). Refreshed
+    /// rather than computed once because passes add functions: the closure
+    /// environment glue arrives mid-pipeline.
+    pub own_functions: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -73,6 +81,7 @@ impl PassManager {
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
+            ctx.own_functions = fns.iter().map(|f| f.name.clone()).collect();
             pass.run(fns, &mut ctx);
             if dump_after.as_deref().is_some_and(|w| w == "all" || w == pass.name()) {
                 eprintln!("──── after {} ────", pass.name());
@@ -116,6 +125,13 @@ impl PassManager {
         // registered the result as ours to free, and elision then made that a
         // free of the source — which is why the clones could never be listed in
         // `elem_strs::CTORS` (#1050, #1045).
+        // Right here, because the three passes below are the ones that read
+        // ownership metadata, and a name is only "treated as owning everything
+        // it touches" if one of them asks about it. Sweeping before inlining
+        // instead reported `Option_clone`, which inlining removes and nothing
+        // ever consults — a warning about a name that had no answer to get
+        // wrong.
+        pm.add(UnmappedSpellingReportPass);
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
@@ -127,7 +143,27 @@ impl PassManager {
         // above are what settle that (clone elision in particular).
         pm.add(ConstFreePass);
         pm.add(DeadCodeEliminationPass);
+        // Again at the end: `container_drop` adds the closure environment glue,
+        // whose calls no earlier sweep has seen.
+        pm.add(UnmappedSpellingReportPass);
         pm
+    }
+}
+
+/// Report every call naming a spelling MIR minted that nothing accounts for.
+///
+/// Prints rather than transforms. `tests/spellings_gate.sh` sweeps the corpus
+/// for the report, so a new mint nobody wrote a line for is a red gate instead
+/// of a silent leak. It used to be a side effect of `mir_metadata::declared()`,
+/// which every query goes through — but that function is handed a bare name and
+/// cannot tell a mint from the program's own `func string_shoutify` (#1217), so
+/// the question moved to where the program's function names are in hand.
+pub struct UnmappedSpellingReportPass;
+
+impl MirPass for UnmappedSpellingReportPass {
+    fn name(&self) -> &str { "unmapped_spelling_report" }
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::own_names::report_unmapped_calls(fns, &ctx.own_functions);
     }
 }
 
@@ -222,10 +258,10 @@ impl MirPass for StringRcInsertionPass {
     // Whole-program rather than per-function: releasing a struct that arrived
     // by value needs to know whether the callee kept it, and that answer is
     // read off every body (see `container_drop::params_a_callee_keeps`).
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         let kept = crate::container_drop::params_a_callee_keeps(fns);
         for func in fns.iter_mut() {
-            crate::transform::rc_insert::insert_rc_ops(func, &kept);
+            crate::transform::rc_insert::insert_rc_ops(func, &kept, &ctx.own_functions);
         }
     }
 }
@@ -246,8 +282,8 @@ pub struct StringRcElisionPass;
 
 impl MirPass for StringRcElisionPass {
     fn name(&self) -> &str { "string_rc_elide" }
-    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
-        crate::transform::rc_elide::elide_rc_ops(func);
+    fn run_function(&self, func: &mut MirFunction, ctx: &mut PassContext) {
+        crate::transform::rc_elide::elide_rc_ops(func, &ctx.own_functions);
     }
 }
 

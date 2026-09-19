@@ -607,8 +607,27 @@ impl TypeTable {
     /// Container wrappers that hold values without becoming linear themselves.
     /// `Pool` is the sanctioned resource container (RC2); `Handle`/`WeakHandle`
     /// are copyable references; `Vec`/`Map` are handled by the outer walk.
+    ///
+    /// The channel ends are here because `conc.async/CH1` says so outright:
+    /// they can go out of scope without an explicit close. Without them,
+    /// `Channel<Conn>.buffered(1)` made the two ends resources of their own —
+    /// so a channel carrying a resource, which is the shape `mem.linear/L5`
+    /// blesses as a consumption (`ch.send(file)`), demanded a `close()` that
+    /// neither end has (#882).
     fn is_nonlinear_wrapper(name: &str) -> bool {
-        matches!(name, "Handle" | "WeakHandle" | "Pool" | "Vec" | "Map" | "Link" | "Rack")
+        matches!(
+            name,
+            "Handle"
+                | "WeakHandle"
+                | "Pool"
+                | "Vec"
+                | "Map"
+                | "Link"
+                | "Rack"
+                | "Channel"
+                | "Sender"
+                | "Receiver"
+        )
     }
 
     /// RC1/RC3: find the first `Vec<T>` or `Map<K, V>` anywhere in `ty` whose

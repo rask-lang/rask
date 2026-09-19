@@ -2788,6 +2788,67 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            DropOfAnOwnedField { path, root, field_ty } => {
+                Diagnostic::error(format!(
+                    "`{}` belongs to `{}` — dropping it here frees it twice",
+                    path, root
+                ))
+                .with_code("E0880")
+                .with_primary(
+                    self.span,
+                    format!("`{}` moved in when it was stored, so `{}` gives it back", field_ty, root),
+                )
+                .with_fix(format!(
+                    "drop the whole thing — `drop({})` — or let it go out of scope, \
+                     which releases the field either way",
+                    root
+                ))
+                .with_why(
+                    "storing a box in a field moves it in, and the aggregate's \
+                     release hands it back when the aggregate dies. A hand-drop of \
+                     the same field is a second owner and both of them run — the \
+                     drop frees the block and the release frees it again. A `drop` \
+                     that quietly did nothing here would be worse: whether it frees \
+                     anything would depend on whether its argument is a binding or a \
+                     projection, which the line doesn't say \
+                     [mem.heap/HP3, mem.linear/L5]"
+                        .to_string(),
+                )
+            }
+
+            LentValueEscapes { call, holder, lender, payload_ty, clone_form, lent_at } => {
+                let fix = match clone_form {
+                    Some(m) => format!(
+                        "hand back a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
+                        lender, m, payload_ty
+                    ),
+                    None => format!(
+                        "hand back a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
+                        payload_ty
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "`{}` hands back what `{}` still holds — returning it gives the caller a second name for it",
+                    call, holder
+                ))
+                .with_code("E0879")
+                .with_primary(
+                    self.span,
+                    format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
+                )
+                .with_secondary(*lent_at, format!("`{}` keeps the value; the lookup reads it in place", holder))
+                .with_fix(fix)
+                .with_why(
+                    "a lookup reads the element where the container keeps it, so what \
+                     comes back is the container's, not a copy. A `??` makes that \
+                     invisible: the default side is fresh and the lookup side isn't, \
+                     and one return slot can't be both. Freeing it corrupts the \
+                     container and not freeing it leaks, so the copy is the program's \
+                     to write [mem.borrowing/S3, mem.parameters/PM1]"
+                        .to_string(),
+                )
+            }
+
             NonCopyElementCopiedOut { binding, elem_ty, collection } => {
                 let from = collection
                     .as_deref()
@@ -3270,6 +3331,51 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup", name))
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+
+            ResourceLeaksOnTry { name, acquired_at } => {
+                Diagnostic::error(format!(
+                    "`{}` would leak if this fails",
+                    name
+                ))
+                .with_code("E0881")
+                .with_primary(
+                    self.span,
+                    format!("the error leaves the function here, with `{}` still open", name),
+                )
+                .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                .with_help(format!(
+                    "commit the cleanup where `{0}` is acquired, so every way out runs it:                      `ensure {0}.<consume>()` (e.g. `.close()`, `.detach()`)",
+                    name
+                ))
+                .with_fix(format!(
+                    "add `ensure {}.<consuming method>()` right after acquiring it",
+                    name
+                ))
+                .with_why(
+                    "a resource has to be consumed on every way out of the scope, and `try` is one of them",
+                )
+            }
+
+            ResourceCommitDeferred { name, acquired_at } => {
+                Diagnostic::error(format!("`{}` has no cleanup committed yet", name))
+                    .with_code("E0882")
+                    .with_primary(
+                        self.span,
+                        format!("this runs while `{}` has nothing scheduled to close it", name),
+                    )
+                    .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                    .with_help(format!(
+                        "commit the cleanup on the next line, then use `{0}` freely:                          `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
+                        name
+                    ))
+                    .with_fix(format!(
+                        "move `ensure {0}.<consuming method>()` up to directly after `{0}` is acquired",
+                        name
+                    ))
+                    .with_why(
+                        "a panic here would leak it — nothing is scheduled to clean it up, and there are no destructors to fall back on",
+                    )
             }
 
             ResourceDiscardedAsStatement { type_name } => {

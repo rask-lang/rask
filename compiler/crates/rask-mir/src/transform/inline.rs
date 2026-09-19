@@ -693,10 +693,12 @@ fn remap_stmt(
             dst,
             type_name,
             scope_depth,
+            slot,
         } => MirStmtKind::ResourceRegister {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             type_name: type_name.clone(),
             scope_depth: *scope_depth,
+            slot: slot.map(|s| local_map.get(&s).copied().unwrap_or(s)),
         },
         MirStmtKind::ResourceConsume { resource_id } => MirStmtKind::ResourceConsume {
             resource_id: local_map.get(resource_id).copied().unwrap_or(*resource_id),
@@ -817,6 +819,11 @@ fn remap_stmt(
         },
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
+        },
+        MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
+            addr: local_map.get(addr).copied().unwrap_or(*addr),
+            offset: *offset,
+            ty: ty.clone(),
         },
         MirStmtKind::EnsureHookRegister { thunk, captures } => MirStmtKind::EnsureHookRegister {
             thunk: thunk.clone(),

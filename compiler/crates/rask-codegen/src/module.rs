@@ -87,6 +87,14 @@ impl CodeGenerator {
         // LLVM's own convention — a register pair on SysV — which is what a C
         // compiler already does with `__int128`, so the two agree (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // Darwin has no non-PIE option. Without this Cranelift reaches a string
+        // constant by writing its absolute address into the instruction stream,
+        // which is a relocation in __text — and ld64 refuses those outright
+        // ("Illegal text-relocations"), so nothing links. Linux gets away with
+        // it because link.rs passes -no-pie there.
+        if cfg!(target_os = "macos") {
+            let _ = flag_builder.set("is_pic", "true");
+        }
         let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
@@ -133,8 +141,15 @@ impl CodeGenerator {
         let _ = flag_builder.set("opt_level", "speed");
         // See `new` — 128-bit values in signatures need this (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
-        // Set is_pic for position-independent code on relevant targets
-        if matches!(target.operating_system, target_lexicon::OperatingSystem::Linux) {
+        // Position-independent code. Linux wants it; Darwin *requires* it —
+        // see `new` above: a non-PIC build puts an absolute address in __text
+        // and ld64 rejects the object.
+        if matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Linux
+                | target_lexicon::OperatingSystem::Darwin
+                | target_lexicon::OperatingSystem::MacOSX { .. }
+        ) {
             let _ = flag_builder.set("is_pic", "true");
         }
         let flags = settings::Flags::new(flag_builder);
@@ -856,6 +871,52 @@ impl CodeGenerator {
                 .declare_function("rask_box_release", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_box_release".to_string(), id);
+        }
+
+        // rask_owned_release(slot: i64, entry: i32) -> void — one entry of the
+        // element map, applied to a slot. The release walk uses it for a trait
+        // object in a field, where the box was moved in and the value's
+        // contents go with it: that logic already lives in the runtime and
+        // needs the vtable's release hook, which codegen would have to fetch by
+        // hand otherwise.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            let id = self.module
+                .declare_function("rask_owned_release", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_owned_release".to_string(), id);
+        }
+
+        // rask_owned_release_all(slot: i64, entries: i64, count: i64) -> void —
+        // the whole list rather than one entry, which a `Heap<T>` field needs:
+        // its description is a `HEAP` entry followed by the block's own, and a
+        // guard inside decides which of those apply (#1202).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_owned_release_all", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_owned_release_all".to_string(), id);
+        }
+
+        // rask_heap_field_release(slot: i64, entries: i64, count: i64) -> void
+        // — a `Heap<T>` field: release what the block holds, then free it. The
+        // entries describe a `T`, so a `SELF` inside them restarts against the
+        // same list, which is what lets a recursive type be described (#1202).
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_heap_field_release", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_heap_field_release".to_string(), id);
         }
 
         // rask_bench_run(fn_ptr: i64, name_ptr: i64) -> void
@@ -1653,6 +1714,13 @@ impl CodeGenerator {
         for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts) {
             self.register_element_offsets(&offsets)?;
         }
+        // And one per `Heap<T>` field anywhere in the program. Not per function:
+        // which frames release which aggregate is the release walk's business,
+        // and the walk asks for the list by its contents — so the list has to
+        // already be data. Registering is idempotent and the set is tiny.
+        for offsets in collect_heap_descriptors(&self.struct_layouts, &self.enum_layouts) {
+            self.register_element_offsets(&offsets)?;
+        }
 
         let func_id = *self.func_ids.get(&mir_fn.name)
             .ok_or_else(|| CodegenError::FunctionNotFound(mir_fn.name.clone()))?;
@@ -2188,6 +2256,43 @@ impl crate::Backend for CodeGenerator {
 /// Mirrors the tag encoding `container_drop.rs` writes and the flattening
 /// `FunctionBuilder::element_string_offsets` does — kept here because the data
 /// objects have to exist before any function body references one.
+/// One descriptor per distinct `Heap<T>` field type in the program.
+///
+/// Keyed by the list's own contents, the way every other offset list is, so the
+/// release walk finds it again by calling `heap_field_descriptor` on the field
+/// it is looking at.
+fn collect_heap_descriptors(
+    struct_layouts: &[rask_mono::StructLayout],
+    enum_layouts: &[rask_mono::EnumLayout],
+) -> Vec<Vec<i32>> {
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
+        let rendered = format!("{}", ty);
+        if !rendered.trim().starts_with("Heap<") || !seen.insert(rendered) {
+            return;
+        }
+        if let Some(d) =
+            crate::elem_offsets::heap_field_descriptor(ty, struct_layouts, enum_layouts)
+        {
+            out.push(d);
+        }
+    };
+    for l in struct_layouts {
+        for f in &l.fields {
+            take(&f.ty, &mut out);
+        }
+    }
+    for l in enum_layouts {
+        for v in &l.variants {
+            for f in &v.fields {
+                take(&f.ty, &mut out);
+            }
+        }
+    }
+    out
+}
+
 fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],

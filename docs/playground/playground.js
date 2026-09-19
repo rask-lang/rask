@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Rask Playground - Browser-based code execution
 import { EditorView, basicSetup } from 'https://esm.sh/codemirror';
-import { StreamLanguage } from 'https://esm.sh/@codemirror/language@6';
-import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
+import { StreamLanguage, HighlightStyle, syntaxHighlighting } from 'https://esm.sh/@codemirror/language@6';
+import { tags } from 'https://esm.sh/@lezer/highlight@1';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
 import { keymap } from 'https://esm.sh/@codemirror/view@6';
 import { indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
@@ -10,6 +10,25 @@ import { linter } from 'https://esm.sh/@codemirror/lint@6';
 import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
 
 // Rask language definition for CodeMirror
+// The interpreter, under the build stamp. `?v=dev` is a placeholder the build
+// replaces with the commit; both spellings have to stay identical wherever they
+// appear, since the URL is the module-map key.
+const WASM_GLUE = './pkg/rask_wasm.js?v=dev';
+const WASM_BINARY = './pkg/rask_wasm_bg.wasm?v=dev';
+
+// One alternation per word class, anchored, longest-first so `i64` can't be
+// eaten by a shorter prefix. `window.RASK_VOCAB` is set by a plain script in
+// the page head, which runs before this module.
+const anchored = words => new RegExp(
+    '^(' + [...words].sort((a, b) => b.length - a.length).join('|') + ')\\b'
+);
+
+const WORDS = {
+    keywords: anchored(window.RASK_VOCAB.keywords.concat(window.RASK_VOCAB.literals)),
+    types: anchored(window.RASK_VOCAB.types),
+    builtins: anchored(window.RASK_VOCAB.builtins),
+};
+
 const raskLanguage = StreamLanguage.define({
     name: "rask",
     startState: () => ({ inComment: false }),
@@ -30,18 +49,18 @@ const raskLanguage = StreamLanguage.define({
             return "number";
         }
 
-        // Keywords
-        if (stream.match(/^(func|let|mut|const|if|else|match|loop|while|for|in|is|as|return|struct|enum|trait|extend|union|public|private|try|catch|ensure|with|using|comptime|take|read|mutate|own|where|unsafe|break|continue|spawn|import|export|type|test|assert)\b/)) {
+        // Keywords, types and builtins come from the shared vocabulary rather
+        // than a list here. This one had gone stale: it still painted `Pool`
+        // and `Handle` as types long after `Rack` and `Link` replaced them.
+        if (stream.match(WORDS.keywords)) {
             return "keyword";
         }
 
-        // Types
-        if (stream.match(/^(i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64|bool|string|char|void|none|Vec|Map|Set|Pool|Handle|Rack|Link|Shared|Heap|Atomic|StringView)\b/)) {
+        if (stream.match(WORDS.types)) {
             return "type";
         }
 
-        // Builtins
-        if (stream.match(/^(println|print|format|assert|panic)\b/)) {
+        if (stream.match(WORDS.builtins)) {
             return "builtin";
         }
 
@@ -54,6 +73,85 @@ const raskLanguage = StreamLanguage.define({
         return null;
     }
 });
+
+// Editor theme. Reads the site's colour tokens rather than restating them, so
+// the editor tracks the palette (and the reader's light/dark preference) with
+// the rest of the site.
+const token = name => getComputedStyle(document.documentElement)
+    .getPropertyValue(name).trim();
+
+// Tints that have to sit on the code surface — the active line, the selection —
+// are mixed from tokens at runtime. Hardcoding them meant an rgba tuned for the
+// dark surface staying put once the light one arrived, where a white overlay is
+// invisible and a mint selection belongs to nothing.
+function channels(hex) {
+    const h = hex.replace('#', '');
+    const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    return [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16));
+}
+
+const tint = (hex, alpha) => `rgba(${channels(hex).join(', ')}, ${alpha})`;
+
+// Which way the code surface runs decides the overlay direction, and it is what
+// CodeMirror's own `dark` flag has to agree with.
+function surfaceIsDark(hex) {
+    const [r, g, b] = channels(hex).map(v => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.35;
+}
+
+function raskEditorTheme() {
+    const dark = surfaceIsDark(token('--code-bg'));
+    const overlay = dark ? '255, 255, 255' : '26, 24, 21';
+    const accent = token('--accent');
+
+    return EditorView.theme({
+        "&": {
+            height: "100%",
+            backgroundColor: token('--code-bg'),
+            color: token('--code-fg'),
+            fontSize: "0.85rem",
+        },
+        ".cm-scroller": { overflow: "auto", fontFamily: token('--font-mono'), lineHeight: "1.7" },
+        ".cm-content": { caretColor: token('--accent') },
+        ".cm-cursor, .cm-dropCursor": { borderLeftColor: token('--accent') },
+        ".cm-gutters": {
+            backgroundColor: token('--code-chrome'),
+            color: token('--c-cmt'),
+            border: "none",
+            borderRight: `1px solid ${token('--code-rule')}`,
+        },
+        ".cm-activeLine": { backgroundColor: `rgba(${overlay}, 0.04)` },
+        ".cm-activeLineGutter": { backgroundColor: "transparent", color: token('--code-fg') },
+        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
+            backgroundColor: tint(accent, 0.22),
+        },
+        ".cm-selectionMatch": { backgroundColor: tint(accent, 0.15) },
+        ".cm-tooltip": {
+            backgroundColor: token('--code-chrome'),
+            border: `1px solid ${token('--code-rule')}`,
+            color: token('--code-fg'),
+        },
+        ".cm-lintRange-error": { backgroundImage: "none", borderBottom: `2px solid ${token('--c-bad')}` },
+        ".cm-lintRange-warning": { backgroundImage: "none", borderBottom: `2px solid ${token('--c-kw')}` },
+    }, { dark });
+}
+
+function raskHighlightStyle() {
+    return HighlightStyle.define([
+        { tag: tags.comment, color: token('--c-cmt'), fontStyle: "italic" },
+        { tag: tags.keyword, color: token('--c-kw') },
+        { tag: tags.typeName, color: token('--c-ty') },
+        { tag: tags.string, color: token('--c-str') },
+        { tag: tags.number, color: token('--c-str') },
+        { tag: tags.variableName, color: token('--code-fg') },
+        { tag: tags.operator, color: token('--c-cmt') },
+        // The Rask tokenizer labels println/print/format as builtins.
+        { tag: tags.standard(tags.variableName), color: token('--c-fn') },
+    ]);
+}
 
 // Rask syntax error linter
 function raskLinter(view) {
@@ -90,9 +188,15 @@ async function init() {
     try {
         showLoading(true);
 
-        // Load WASM module
-        const wasm = await import('./pkg/rask_wasm.js');
-        await wasm.default();
+        // Load WASM module. Both URLs carry the build stamp, and the binary
+        // needs its own: the glue resolves it as `new URL('rask_wasm_bg.wasm',
+        // import.meta.url)`, and resolving a relative path against a URL drops
+        // the query, so stamping the glue alone leaves the 6 MB module on a
+        // fixed name. The stamp here has to match `reviveInterpreter`'s
+        // exactly, or the two imports are two module-map entries and the
+        // interpreter gets loaded twice.
+        const wasm = await import(WASM_GLUE);
+        await wasm.default({ module_or_path: WASM_BINARY });
         playground = new wasm.Playground();
 
         // Get version
@@ -110,13 +214,15 @@ async function init() {
 
         // Set up event listeners
         document.getElementById('run-btn').addEventListener('click', runCode);
+        document.getElementById('test-btn').addEventListener('click', runTests);
         document.getElementById('reset-btn').addEventListener('click', resetEditor);
         document.getElementById('share-btn').addEventListener('click', shareCode);
         document.getElementById('clear-output-btn').addEventListener('click', clearOutput);
         document.getElementById('examples').addEventListener('change', loadExample);
 
         showLoading(false);
-        showToast('Playground ready! Press Ctrl+Enter to run.', 'success');
+        window.__raskPlaygroundReady = true;
+        showToast('Ready. Ctrl+Enter runs.', 'success');
 
     } catch (error) {
         showLoading(false);
@@ -125,39 +231,29 @@ async function init() {
     }
 }
 
-// Populate examples dropdown from metadata
+// Populate examples dropdown from metadata.
+//
+// build-examples.js has already dropped anything that reads files, the clock,
+// sockets or threads, so everything listed here runs.
 function populateExamples() {
     const dropdown = document.getElementById('examples');
+    dropdown.innerHTML = '<option value="">Load an example\u2026</option>';
 
-    // Clear existing options except the first one
-    dropdown.innerHTML = '<option value="">Examples...</option>';
-
-    const learningExamples = EXAMPLE_METADATA.filter(ex => ex.key.match(/^\d+_/));
-    if (learningExamples.length > 0) {
+    const addGroup = (label, items) => {
+        if (items.length === 0) return;
         const group = document.createElement('optgroup');
-        group.label = 'Learn Rask';
-        learningExamples.forEach(ex => {
-            const option = document.createElement('option');
-            option.value = ex.key; 
-            option.textContent = ex.title;
-            group.appendChild(option);
-        });
-        dropdown.appendChild(group);
-    }
-
-    // Add other examples
-    const otherExamples = EXAMPLE_METADATA.filter(ex => !ex.key.match(/^\d+_/));
-    if (otherExamples.length > 0) {
-        const group = document.createElement('optgroup');
-        group.label = 'More Examples';
-        otherExamples.forEach(ex => {
+        group.label = label;
+        items.forEach(ex => {
             const option = document.createElement('option');
             option.value = ex.key;
             option.textContent = ex.title;
             group.appendChild(option);
         });
         dropdown.appendChild(group);
-    }
+    };
+
+    addGroup('Learn the language', EXAMPLE_METADATA.filter(ex => ex.key.match(/^\d+_/)));
+    addGroup('Whole programs', EXAMPLE_METADATA.filter(ex => !ex.key.match(/^\d+_/)));
 }
 
 // Initialize CodeMirror editor
@@ -185,14 +281,11 @@ function initEditor() {
         extensions: [
             basicSetup,
             raskLanguage,
-            oneDark,
+            raskEditorTheme(),
+            syntaxHighlighting(raskHighlightStyle()),
             linter(raskLinter, { delay: 300 }),
             keymap.of([indentWithTab]),
-            runKeymap,
-            EditorView.theme({
-                "&": { height: "100%" },
-                ".cm-scroller": { overflow: "auto" }
-            })
+            runKeymap
         ]
     });
 
@@ -203,7 +296,17 @@ function initEditor() {
 }
 
 // Run code
-async function runCode() {
+function runCode() {
+    return invoke('Running\u2026', code => playground.run(code));
+}
+
+function runTests() {
+    return invoke('Running tests\u2026', code => playground.run_tests(code));
+}
+
+// `Playground::run` and `run_tests` both answer `Result<String, String>`, so
+// the two differ only in which one to call.
+async function invoke(pending, call) {
     if (!playground) {
         showError('Playground not initialized');
         return;
@@ -212,18 +315,51 @@ async function runCode() {
     const code = editor.state.doc.toString();
     const output = document.getElementById('output');
 
-    // Clear previous output
-    output.textContent = 'Running...';
+    output.textContent = pending;
     output.className = 'output-content running';
 
     try {
-        const result = playground.run(code);
+        const result = call(code);
         output.textContent = result || '(no output)';
         output.className = 'output-content success';
     } catch (error) {
-        // Error messages may contain HTML from ANSI-to-HTML conversion
-        output.innerHTML = error.toString();
+        // A compiler or runtime diagnostic arrives as a JS string — already
+        // HTML-escaped by the Rust side, with spans for the ANSI colours.
+        // Those spans do the colouring, so the block keeps the normal code
+        // foreground; painting it all red would swallow the source line and
+        // the text after `fix:`, which carry no span of their own.
+        // Anything else is an object, and means the interpreter fell over.
+        if (typeof error === 'string') {
+            output.className = 'output-content diagnostic';
+            output.innerHTML = error;
+            return;
+        }
+
         output.className = 'output-content error';
+        output.textContent =
+            'The interpreter crashed on this program. That is a compiler bug, not your code:\n\n' +
+            `  ${error}\n\n` +
+            'Please report it at https://github.com/rask-lang/rask/issues — the program above\n' +
+            'is the whole repro. Restarting the interpreter; your code is untouched.';
+        await reviveInterpreter();
+    }
+}
+
+// Replace a wasm instance that has stopped being usable.
+//
+// A Rust panic or trap inside the module skips every destructor, so
+// wasm-bindgen's mutable borrow of `Playground` is never handed back: every
+// later call answers "recursive use of an object detected" instead of running
+// anything. Nothing on the JS side can release that borrow, and the fix used to
+// be for the reader to guess they should reload the page.
+async function reviveInterpreter() {
+    try {
+        const wasm = await import(WASM_GLUE);
+        playground = new wasm.Playground();
+    } catch (error) {
+        playground = null;
+        console.error('Could not restart the interpreter:', error);
+        showToast('Could not restart the interpreter — reload the page', 'error');
     }
 }
 
@@ -237,13 +373,13 @@ function resetEditor() {
         }
     });
     clearOutput();
-    showToast('Editor reset');
+    showToast('Reset.');
 }
 
 // Clear output
 function clearOutput() {
     const output = document.getElementById('output');
-    output.textContent = 'Click "Run" to execute your code...';
+    output.textContent = 'Press Run, or Ctrl+Enter.';
     output.className = 'output-content';
 }
 
@@ -261,8 +397,9 @@ function loadExample(e) {
                 insert: code
             }
         });
+
         clearOutput();
-        showToast(`Loaded example: ${example.replace('_', ' ')}`);
+        showToast(`Loaded ${example.replace(/_/g, ' ')}`);
     }
 
     // Reset dropdown
@@ -276,7 +413,7 @@ function shareCode() {
     const url = `${window.location.origin}${window.location.pathname}?code=${encoded}`;
 
     navigator.clipboard.writeText(url).then(() => {
-        showToast('Link copied to clipboard!', 'success');
+        showToast('Link copied.', 'success');
     }).catch(() => {
         // Fallback: show URL in prompt
         prompt('Copy this link:', url);

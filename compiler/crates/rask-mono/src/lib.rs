@@ -14,8 +14,8 @@ mod reachability;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
-    compute_enum_layout, compute_struct_layout, compute_union_layout, is_stdlib_span,
-    ordering_layout, parse_field_type, type_size_align,
+    arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
+    is_stdlib_span, ordering_layout, parse_field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
@@ -341,6 +341,37 @@ fn bare_type_name(name: &str) -> String {
     name.split('<').next().unwrap_or(name).trim().to_string()
 }
 
+/// The head name of a type argument, in whichever spelling it arrives in.
+///
+/// A resolved generic carries its base as a `TypeId` and renders as
+/// `<type#7><i64>`, so `Display` is no use — the name comes from the table.
+fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
+    match ty {
+        Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+            Some(bare_type_name(name))
+        }
+        Type::Named(id) | Type::Generic { base: id, .. } => {
+            type_names.get(id).map(|n| bare_type_name(n))
+        }
+        _ => None,
+    }
+}
+
+/// Does storing this type argument in a field make the aggregate responsible
+/// for heap the shared layout wouldn't know about?
+///
+/// A container is a handle and a closure is a pointer to its block, so both fit
+/// the shared word and both are invisible in it: the shared layout says `i64`,
+/// the release walk believes it, and nobody gives the storage back. The
+/// instance layout names the real type, which is what `container_free_for`
+/// reads to pick `rask_vec_free` or `rask_closure_free`.
+fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> bool {
+    match ty {
+        Type::Fn { .. } => true,
+        _ => arg_head_name(ty, type_names).is_some_and(|h| arg_owns_storage(&h)),
+    }
+}
+
 /// One type argument, spelled so it can key a layout. `None` for anything whose
 /// identity isn't settled — an inference variable, an unresolved parameter name,
 /// a shape with one of those inside.
@@ -382,6 +413,17 @@ fn type_arg_key(
                 parts.push(type_arg_key(elem, type_names)?);
             }
             format!("tup{}", parts.join("$"))
+        }
+        // A closure argument. The arity goes in the key because the parameters
+        // and the return run together otherwise, and `func(i64, i64) -> void`
+        // would key the same as `func(i64) -> func(i64) -> void`.
+        Type::Fn { params, ret } => {
+            let mut parts = Vec::with_capacity(params.len() + 1);
+            for p in params {
+                parts.push(type_arg_key(p, type_names)?);
+            }
+            parts.push(type_arg_key(ret, type_names)?);
+            format!("fn{}${}", params.len(), parts.join("$"))
         }
         // Spelled exactly as the source writes it, because MIR reaches the same
         // layout from a type *string* — `Wrap<i64?>` there splits into the
@@ -776,12 +818,25 @@ fn monomorphize_inner(
             if !emitted.insert(instance_name.clone()) {
                 continue;
             }
-            // Only when an argument can actually overflow the shared slot.
+            // Only when an argument can actually overflow the shared slot...
             let overflows = args.iter().any(|a| {
                 inline_arg_size(a, &type_names, &program.types, &layout_cache)
                     .is_some_and(|size| size > 8)
             });
-            if !overflows {
+            // ...or when it owns storage. A container argument fits the shared
+            // word fine, and that is the problem: the shared layout says `i64`,
+            // the release walk reads the layout, and `Pair<i64, Vec<i64>>`'s
+            // vector was freed by nobody. The instance layout names the real
+            // type, and this one is kept whatever its size.
+            //
+            // User declarations only. The stdlib's own generics are runtime
+            // objects behind an empty struct — there is no field to describe —
+            // and giving `Map<string, Vec<i32>>` an instance layout renamed the
+            // type out from under method dispatch: `Map$string$Vec$i32_index`,
+            // a function nobody emitted.
+            let owns = !is_stdlib_span(decl.span)
+                && args.iter().any(|a| arg_owns_heap(a, &type_names));
+            if !overflows && !owns {
                 continue;
             }
             // The type arguments have to be nameable to the layout code too —
@@ -795,7 +850,7 @@ fn monomorphize_inner(
             match &decl.kind {
                 DeclKind::Struct(_) => {
                     let mut layout = compute_struct_layout(decl, &named_args, &layout_cache);
-                    if layout.size <= shared {
+                    if !owns && layout.size <= shared {
                         continue;
                     }
                     layout.name = instance_name.clone();
@@ -804,7 +859,7 @@ fn monomorphize_inner(
                 }
                 DeclKind::Enum(_) => {
                     let mut layout = compute_enum_layout(decl, &named_args, &layout_cache);
-                    if layout.size <= shared {
+                    if !owns && layout.size <= shared {
                         continue;
                     }
                     layout.name = instance_name.clone();

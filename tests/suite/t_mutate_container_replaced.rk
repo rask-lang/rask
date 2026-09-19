@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Replacing a whole container through a `mutate` parameter.
+//
+// mem.parameters/PM2: what a `mutate` callee leaves in the slot is what the
+// caller has afterwards. That worked for a scalar and for a struct and not for
+// a container, and the difference was the calling convention:
+//
+//     _8 = &_0                    // i64:       the address of the caller's slot
+//     _9 = set(_8)
+//
+//     _9 = replace(_8)            // Vec<i32>:  the handle itself
+//
+// So the callee's `v = Vec.new()` stored through the handle instead of through
+// the slot — it landed on the vector's own header, overwriting `data` and
+// leaving `len` from the old vector. `xs.len()` still answered 1 after the
+// whole thing was replaced, and reading an element read into another vector's
+// header (#1197).
+//
+// Mutating *through* the handle was always fine — `slot.push(…)` reaches the
+// same vector either way — which is why only whole replacement was wrong.
+//
+// `self` keeps the old convention on purpose: every container method is lowered
+// from the receiver operand directly, and handing `Vec.push(mutate self, …)` a
+// pointer to a handle makes the intrinsics read the pointer as the vector.
+
+func replace(mutate v: Vec<i32>) {
+    v = Vec.new()
+}
+
+func fill(mutate v: Vec<string>) {
+    mut fresh: Vec<string> = []
+    fresh.push("a string long enough to live on the heap")
+    v = fresh
+}
+
+func grow(mutate v: Vec<i32>) {
+    v.push(3)
+}
+
+func swap_map(mutate m: Map<string, i64>) {
+    mut fresh: Map<string, i64> = Map.new()
+    fresh.insert("a key long enough to need the heap", 9i64)
+    m = fresh
+}
+
+func main() {}
+
+test "mem.parameters/PM2 — a replaced container is the caller's new one" {
+    mut xs: Vec<i32> = Vec.new()
+    xs.push(7)
+    replace(mutate xs)
+    assert xs.len() == 0
+}
+
+test "mem.parameters/PM2 — and what it holds comes with it" {
+    mut xs: Vec<string> = []
+    xs.push("the original is long enough to allocate")
+    fill(mutate xs)
+    assert xs.len() == 1
+    assert xs[0].starts_with("a string")
+}
+
+test "mutating through the handle still reaches the caller" {
+    mut xs: Vec<i32> = Vec.new()
+    xs.push(1)
+    grow(mutate xs)
+    assert xs.len() == 2
+    assert xs[1] == 3
+}
+
+test "a map, not a vector" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("the first key is long enough to need the heap", 1i64)
+    swap_map(mutate m)
+    assert m.len() == 1
+    // Reading the value would be `get_clone`, and that doesn't compile for a
+    // scalar payload yet (#1210). The length is enough to say which map this is.
+    assert m.contains_key("a key long enough to need the heap")
+}
+
+test "replaced twice" {
+    mut xs: Vec<string> = []
+    xs.push("the original is long enough to allocate")
+    fill(mutate xs)
+    fill(mutate xs)
+    assert xs.len() == 1
+    assert xs[0].starts_with("a string")
+}
+
+test "a receiver method is untouched by the convention" {
+    mut xs: Vec<i32> = Vec.new()
+    xs.push(1)
+    xs.push(2)
+    assert xs.len() == 2
+    assert xs.pop()! == 2
+    assert xs.len() == 1
+}

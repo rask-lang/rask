@@ -3,7 +3,6 @@
 //!
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
-//! - ensure-ordering: Flag ensure registration order that doesn't match acquisition order
 //! - duck-trait: Flag `duck trait` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
@@ -303,46 +302,6 @@ fn check_expr_for_resource(
             });
         }
     }
-}
-
-/// idiom/ensure-ordering: cleanup order that tears a dependency down too early.
-///
-/// `ensure` bodies run LIFO, so a resource derived from another has its
-/// `ensure` registered *second*:
-///
-///   let w = make_world()
-///   ensure w.destroy()          // registered 1st -> runs LAST
-///   let b = make_body(w)
-///   ensure b.close(w)           // registered 2nd -> runs FIRST
-///
-/// Swap the two and `b.close(w)` runs against a destroyed world.
-///
-/// This used to compare *creation order* as a proxy for derivation, which
-/// flagged two unrelated resources whose order genuinely doesn't matter — a
-/// world and a log file cleaned up in either sequence is fine, and the lint
-/// called it an error. It now shares its evidence with the W10 compiler warning
-/// (`rask_effects::ensure_order`, mem.resource-types/EO1) so `rask lint` and
-/// `rask check` can't disagree about the same two lines (#584).
-pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
-    rask_effects::ensure_order::check(decls)
-        .into_iter()
-        .map(|w| {
-            let (line, col) = util::line_col(source, w.span.start);
-            let source_line = util::get_source_line(source, line);
-            LintDiagnostic {
-                rule: "idiom/ensure-ordering".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "`{}` is cleaned up before `{}`, which needs it — \
-                     `ensure` runs LIFO, so the dependency's ensure comes first \
-                     (mem.resource-types/EO1)",
-                    w.dependency, w.dependent
-                ),
-                location: LintLocation { line, column: col, source_line },
-                fix: w.fixed_order.replace('\n', " then "),
-            }
-        })
-        .collect()
 }
 
 /// idiom/too-many-contexts: a signature that has become an environment dump.

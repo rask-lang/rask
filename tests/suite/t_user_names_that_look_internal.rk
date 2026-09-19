@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A user function whose name starts like a stdlib family.
+//
+// MIR mints names for operations the stdlib declares under another spelling,
+// and `INTERNAL_SPELLINGS` says what each one stands for. A name nobody
+// accounts for is treated as owning everything it touches — which leaks, and is
+// reported loudly so it gets a line.
+//
+// What decides whether a name is in that world is its head: the part before the
+// first `_`. A head is a family when it names a stdlib type, or when the list
+// itself uses it — `Cell_acquire` and `Mutex_lock` are families by declaration,
+// since `Shared<T, Cell>` is the type and `Cell` is how the call site spells it.
+//
+// So a head there has to be spelled the way the thing it belongs to is spelled,
+// and one entry wasn't: `vec_debug` made `vec` a family. A plain user function
+// named `vec_max` then got the report on every compile, telling its author to
+// edit a table inside the compiler, and was treated as owning what it touched:
+//
+//     [unmapped-spelling] vec_max (family vec): no stdlib file declares it …
+//
+// It is `Vec_debug` now, like the type (#1217).
+//
+// A head that really is a type name can't be fixed by renaming anything:
+// `string`, `char` and `cstring` are families whatever else is called that, so
+// `string_shoutify` got the same report and leaked its return value. Telling
+// those apart takes the one fact a name can't carry — whether the program
+// declares a function by that name. It does now: the two questions whose
+// unmapped answer leaks are asked through `rask_mir::own_names`, which checks
+// the program's own function names first and only then falls through to the
+// metadata. The report moved there with them, so a real unaccounted-for
+// spelling is still reported and the gate still fails on it.
+//
+// The gate that would otherwise not see this is `tests/spellings_gate.sh`: it
+// sweeps the corpus for that report, and nothing in the corpus was named this
+// way.
+
+func vec_max(v: Vec<i64>) -> i64 {
+    mut m = v[0]
+    for x in v {
+        if x > m {
+            m = x
+        }
+    }
+    return m
+}
+
+// Returns something that allocates, which is where the wrong answer shows as a
+// leak rather than as only a warning.
+func vec_labels(n: i64) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    mut i = 0
+    while i < n {
+        out.push("a label long enough to live on the heap")
+        i = i + 1
+    }
+    return out
+}
+
+func vec_joined(n: i64) -> string {
+    return "a joined string long enough to live on the heap, {n}"
+}
+
+// The heads that are real type names. Each returns a heap string, because that
+// is where reading it as a family shows up as a leak rather than as a warning.
+func string_shoutify(s: string) -> string {
+    return "{s}!!!"
+}
+
+func char_describe(n: i64) -> string {
+    return "a character number {n}, spelled out at some length"
+}
+
+func cstring_label(n: i64) -> string {
+    return "a c-string label number {n}, spelled out at some length"
+}
+
+func main() {}
+
+test "a user function named like a stdlib family" {
+    let v: Vec<i64> = [3, 9, 4]
+    assert vec_max(v) == 9
+}
+
+test "and one that hands back a container" {
+    let labels = vec_labels(3)
+    assert labels.len() == 3
+    assert labels[0].len() == 39
+}
+
+test "and one that hands back a string" {
+    let s = vec_joined(7)
+    assert s.len() > 10
+}
+
+test "a head that is a real type name, which renaming can't help" {
+    assert string_shoutify("a long enough string to live on the heap").len() == 43
+    assert char_describe(65).len() > 20
+    assert cstring_label(7).len() > 20
+}

@@ -116,10 +116,11 @@ pub(crate) enum IterAdapter<'a> {
     Enumerate,
 }
 
-/// #270: classify a function's params for scalar `mutate` write-back. Returns one
-/// entry per param: `Some(scalar_ty)` for a `mutate` param of a Copy scalar type
-/// (passed by pointer), `None` otherwise. Aggregates already pass by pointer, so
-/// they stay `None` here.
+/// #270: classify a function's params for `mutate` write-back. Returns one entry
+/// per param: `Some(ty)` for a `mutate` param that needs a pointer of its own,
+/// `None` otherwise. A real aggregate's local already is an address, so it stays
+/// `None`; a scalar and a container handle both need one, for the same reason —
+/// the local holds a value rather than a place (#270, #1197).
 fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<Option<MirType>> {
     params
         .iter()
@@ -128,10 +129,10 @@ fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> V
                 return None;
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
-            if crate::lower::stmt::mutate_param_by_pointer(&ty) {
-                None
-            } else {
+            if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
                 Some(ty)
+            } else {
+                None
             }
         })
         .collect()
@@ -148,6 +149,7 @@ fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -
             }
             let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
             crate::lower::stmt::mutate_param_by_pointer(&ty)
+                && !crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty)
         })
         .collect()
 }
@@ -774,32 +776,25 @@ impl<'a> MirContext<'a> {
 
     /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
     ///
-    /// The key is built the same way `rask_mono::generic_instance_name` builds it,
-    /// which for a written argument is the argument's own spelling — a name for a
-    /// user type, the primitive's name otherwise. A nested `One<One<Big>>` folds
-    /// the same way because its inner `<…>` becomes `$…` too.
+    /// The written arguments are parsed back into types and handed to the same
+    /// `rask_mono::generic_instance_name` that named the layout, so there is one
+    /// spelling rather than two that have to agree.
+    ///
+    /// They didn't. This used to build the key by hand from the source text,
+    /// which matched for a name and a nested `<…>` and parted company on a
+    /// tuple: mono names `Holder<(i64, string)>`'s layout `Holder$tupi64$string`
+    /// and this looked for `Holder$(i64, string)`, found nothing, and fell back
+    /// to the shared 8-byte layout. `first(h)` then read eight bytes of a
+    /// 24-byte tuple and the string came back empty — the answer was wrong, not
+    /// just slow, and only on native.
     fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
         let args = generic_args_of_str(full)?;
         if args.is_empty() {
             return None;
         }
-        let mut parts = Vec::with_capacity(args.len());
-        for arg in args {
-            // A nested instantiation, spelled the same way.
-            let key = match arg.split_once('<') {
-                Some(_) => {
-                    let inner = generic_args_of_str(arg)?;
-                    let head = arg.split('<').next()?.trim();
-                    format!("{}${}", head, inner.join("$"))
-                }
-                None => arg.trim().to_string(),
-            };
-            if key.is_empty() {
-                return None;
-            }
-            parts.push(key);
-        }
-        let name = format!("{}${}", base.trim(), parts.join("$"));
+        let parsed: Vec<rask_types::Type> =
+            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
+        let name = rask_mono::generic_instance_name(base.trim(), &parsed, self.type_names)?;
         if let Some((idx, sl)) = self.find_struct(&name) {
             return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
         }
@@ -1746,6 +1741,15 @@ pub struct MirLowerer<'a> {
     /// Qualified method names that have `take self` (consume the receiver).
     /// Used for consumption cancellation (C1/C2).
     take_self_methods: std::collections::HashSet<String>,
+    /// Which parameter positions a callee declares `take`, keyed the same way
+    /// `take_self_methods` is. Passing a linear value to one of them is a move
+    /// (mem.linear/L5), so it cancels the `ensure` the caller scheduled — and a
+    /// borrowed parameter must not, which is why this can't be read off the
+    /// argument alone. Positions exclude `self`.
+    take_param_positions: std::collections::HashMap<String, Vec<usize>>,
+    /// Lowering an `ensure` body into its own thunk function, where a consuming
+    /// call cancels nothing and the resource slot isn't in this frame.
+    in_ensure_thunk: bool,
     /// Methods that write through `self` — declared `mutate self`/`take self`,
     /// or private ones that assign into self (GC9 infers the mode there).
     pub(crate) mutate_self_methods: std::collections::HashSet<String>,
@@ -2919,7 +2923,145 @@ impl<'a> MirLowerer<'a> {
     /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
     fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
         use rask_ast::expr::ExprKind;
-        if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
+        // An ensure body *is* the deferred consumption, so a consuming call in
+        // it cancels nothing — and the resource's slot belongs to the function
+        // that registered it, not to the thunk. Emitting one here made codegen
+        // look up a local the thunk's frame doesn't have.
+        if self.in_ensure_thunk {
+            return;
+        }
+        self.walk_for_resource_consume(expr);
+    }
+
+    /// The consuming call can be anywhere in the expression, not only at its
+    /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
+    /// handles from inside a sum. Peeling only the outermost wrappers found
+    /// neither, and both ensures ran on handles that were already joined.
+    ///
+    /// Emitting for a call the program might not reach would be wrong, and
+    /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
+    /// on some paths and not others, so whatever is here runs.
+    ///
+    /// Closure and `spawn` bodies are their own functions with their own
+    /// obligations — a consume in there is not this frame's.
+    fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        // Their own functions, with their own obligations — a consume in there
+        // is not this frame's. A nested block runs through `lower_block`, which
+        // asks on its own.
+        if matches!(
+            expr.kind,
+            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Block(_)
+        ) {
+            return;
+        }
+        self.emit_resource_consume(expr);
+        match &expr.kind {
+            ExprKind::Try { expr: inner }
+            | ExprKind::Unwrap { expr: inner, .. }
+            | ExprKind::Cast { expr: inner, .. } => self.walk_for_resource_consume(inner),
+            ExprKind::Unary { operand, .. } => self.walk_for_resource_consume(operand),
+            ExprKind::Catch { value, clause } => {
+                self.walk_for_resource_consume(value);
+                self.walk_for_resource_consume(&clause.body);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.walk_for_resource_consume(left);
+                self.walk_for_resource_consume(right);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                self.walk_for_resource_consume(value);
+                self.walk_for_resource_consume(default);
+            }
+            // `a + b` is `a.add(b)` by the time it gets here (rask-desugar), so
+            // the operands of every arithmetic expression arrive as a receiver
+            // and an argument.
+            ExprKind::MethodCall { object, args, .. } => {
+                self.walk_for_resource_consume(object);
+                for arg in args {
+                    self.walk_for_resource_consume(&arg.expr);
+                }
+            }
+            ExprKind::Call { args, .. } => {
+                for arg in args {
+                    self.walk_for_resource_consume(&arg.expr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// This whole expression is being moved somewhere else, so a bare name in
+    /// it is a consumption (mem.linear/L5) and cancels the `ensure` scheduled
+    /// for it.
+    ///
+    /// Separate from the walk above because position is what decides: `return a`
+    /// hands `a` away, `a.id()` does not, and both arrive as an `Ident` under
+    /// some node. Only the callers that *are* a move — `return`, `break`, a
+    /// binding, an assignment — ask this one.
+    pub(super) fn check_resource_moved(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        if self.in_ensure_thunk {
+            return;
+        }
+        let mut expr = expr;
+        loop {
+            expr = match &expr.kind {
+                ExprKind::Try { expr: inner } | ExprKind::Unwrap { expr: inner, .. } => inner,
+                _ => break,
+            };
+        }
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                    resource_id: res_id,
+                }));
+            }
+        }
+    }
+
+    /// One expression, no recursion: is *this* the consuming call?
+    fn emit_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        // Storing a linear value in an aggregate moves it in — the aggregate's
+        // release frees it from then on. The `ensure` that was scheduled at
+        // acquisition has to be cancelled by that move exactly as a `close()`
+        // cancels it, or the block is freed twice. The ownership pass already
+        // reads the move this way (`consume_owned_into_aggregate`); this is the
+        // same walk on the lowering side.
+        if matches!(
+            expr.kind,
+            ExprKind::StructLit { .. } | ExprKind::Tuple(_) | ExprKind::Array(_)
+        ) {
+            self.consume_resources_moved_into_aggregate(expr);
+            return;
+        }
+        // `drop(p)` is a call, not a method call, so the arm below never saw it
+        // and the `ensure drop(p)` it was meant to cancel ran anyway — a second
+        // free of the same block, which glibc reports as a double free rather
+        // than as anything to do with the two lines that caused it. Native only:
+        // the interpreter tracks consumption by value.
+        if let ExprKind::Call { func, args, .. } = &expr.kind {
+            if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
+                if let Some(ExprKind::Ident(name)) = args.first().map(|a| &a.expr.kind) {
+                    if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                            resource_id: res_id,
+                        }));
+                    }
+                }
+            }
+            if let ExprKind::Ident(callee) = &func.kind {
+                self.consume_take_arguments(&callee.clone(), args);
+            }
+            return;
+        }
+        if let ExprKind::MethodCall { object, method, args, .. } = &expr.kind {
+            if let ExprKind::Ident(receiver_name) = &object.kind {
+                if let Some(prefix) = self.meta(receiver_name).and_then(|m| m.type_prefix.clone()) {
+                    self.consume_take_arguments(&format!("{}_{}", prefix, method), args);
+                }
+            }
             if let ExprKind::Ident(receiver_name) = &object.kind {
                 // Check if this receiver has a resource_id (registered by an ensure)
                 let resource_id = self.meta(receiver_name)
@@ -2940,17 +3082,83 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Cancel the `ensure` on any linear value this call takes ownership of.
+    ///
+    /// Only the positions the callee declares `take`: a parameter without it is
+    /// the caller's value on loan (mem.parameters/PM1), and cancelling there
+    /// would leave nothing to close it.
+    fn consume_take_arguments(&mut self, callee: &str, args: &[rask_ast::expr::CallArg]) {
+        use rask_ast::expr::ExprKind;
+        let Some(positions) = self.take_param_positions.get(callee).cloned() else {
+            return;
+        };
+        for i in positions {
+            let Some(arg) = args.get(i) else { continue };
+            if let ExprKind::Ident(name) = &arg.expr.kind {
+                if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                        resource_id: res_id,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Emit `ResourceConsume` for every linear binding this aggregate takes in.
+    fn consume_resources_moved_into_aggregate(&mut self, expr: &rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                        resource_id: res_id,
+                    }));
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems {
+                    self.consume_resources_moved_into_aggregate(e);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields {
+                    self.consume_resources_moved_into_aggregate(&f.value);
+                }
+                if let Some(sp) = spread {
+                    self.consume_resources_moved_into_aggregate(sp);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Extract the receiver variable name from an ensure body.
-    /// For `ensure X.method()`, returns Some("X").
+    /// For `ensure X.method()` and `ensure drop(X)`, returns Some("X").
+    ///
+    /// `drop` is the whole cleanup vocabulary of `Heap<T>` — there is no
+    /// `take self` method to name — so leaving the call form out meant a boxed
+    /// value's ensure had no receiver, and nothing could cancel it.
     fn extract_ensure_receiver(body: &[rask_ast::stmt::Stmt]) -> Option<String> {
         use rask_ast::expr::ExprKind;
         use rask_ast::stmt::StmtKind;
         if let Some(first) = body.first() {
             if let StmtKind::Expr(expr) = &first.kind {
-                if let ExprKind::MethodCall { object, .. } = &expr.kind {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        return Some(name.clone());
+                match &expr.kind {
+                    ExprKind::MethodCall { object, .. } => {
+                        if let ExprKind::Ident(name) = &object.kind {
+                            return Some(name.clone());
+                        }
                     }
+                    ExprKind::Call { func, args, .. } => {
+                        if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
+                            if let Some(ExprKind::Ident(name)) =
+                                args.first().map(|a| &a.expr.kind)
+                            {
+                                return Some(name.clone());
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -3443,7 +3651,7 @@ impl<'a> MirLowerer<'a> {
             let cap_ty = self
                 .builder
                 .local_type(cap.outer)
-                .filter(|t| cap.by_ref && t.passed_by_address())
+                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr)))
                 .unwrap_or_else(|| cap.ty.clone());
             let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
@@ -3501,6 +3709,7 @@ impl<'a> MirLowerer<'a> {
         // inside the body would otherwise mark an outer `mut` of the same name
         // immutable, and a later ensure would snapshot it.
         let saved_meta = self.local_meta.clone();
+        let saved_in_thunk = std::mem::replace(&mut self.in_ensure_thunk, true);
         let body_result = (|| -> Result<(), LoweringError> {
             for s in body {
                 self.lower_stmt(s)?;
@@ -3510,6 +3719,7 @@ impl<'a> MirLowerer<'a> {
             }
             Ok(())
         })();
+        self.in_ensure_thunk = saved_in_thunk;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
@@ -3853,6 +4063,33 @@ impl<'a> MirLowerer<'a> {
         // consumption cancellation. When such a method is called on an
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
+        // The stdlib's own `take self` methods, which are declarations in
+        // `stdlib/*.rk` rather than decls in this program. `TaskHandle.join`
+        // consumes its handle exactly the way a user method does, and not
+        // knowing that let a registered `ensure h.detach()` run after it and
+        // detach a handle that was already gone (#1216).
+        let mut take_param_positions: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        {
+            let reg = rask_stdlib::stubs::StubRegistry::load();
+            for ty in reg.type_names() {
+                for m in reg.methods(ty) {
+                    if m.take_self {
+                        take_self_methods.insert(format!("{}_{}", ty, m.name));
+                    }
+                    let takes: Vec<usize> = m
+                        .param_modes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, mode)| mode.is_take)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !takes.is_empty() {
+                        take_param_positions.insert(format!("{}_{}", ty, m.name), takes);
+                    }
+                }
+            }
+        }
         // Methods that write through `self`. A receiver reached through a field
         // has to be passed as that field's address for these, or the write lands
         // in a copy — see `place_address` in lower/expr.rs (#702). Declared
@@ -3864,8 +4101,26 @@ impl<'a> MirLowerer<'a> {
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
                         if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                            let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
-                            take_self_methods.insert(qualified);
+                            take_self_methods
+                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
+                            // `extend TaskHandle<T>` gives a target of
+                            // `TaskHandle<T>`, and what a call site dispatches
+                            // through is `TaskHandle`. Without the base name
+                            // `join` wasn't known to consume its receiver, so a
+                            // registered `ensure h.detach()` ran after it and
+                            // detached a handle that was already gone (#1216).
+                            if let Some(base) = impl_decl.target_ty.split('<').next() {
+                                take_self_methods.insert(format!("{}_{}", base, m.name));
+                            }
+                        }
+                        let takes = take_positions(&m.params);
+                        if !takes.is_empty() {
+                            take_param_positions
+                                .insert(format!("{}_{}", impl_decl.target_ty, m.name), takes.clone());
+                            if let Some(base) = impl_decl.target_ty.split('<').next() {
+                                take_param_positions
+                                    .insert(format!("{}_{}", base, m.name), takes);
+                            }
                         }
                         if method_mutates_self(m, ctx) {
                             mutate_self_methods
@@ -3878,6 +4133,10 @@ impl<'a> MirLowerer<'a> {
                     // named "Type_method" with a `take self` first parameter.
                     if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                         take_self_methods.insert(f.name.clone());
+                    }
+                    let takes = take_positions(&f.params);
+                    if !takes.is_empty() {
+                        take_param_positions.insert(f.name.clone(), takes);
                     }
                     if method_mutates_self(f, ctx) {
                         mutate_self_methods.insert(f.name.clone());
@@ -3918,6 +4177,8 @@ impl<'a> MirLowerer<'a> {
             mutate_writebacks: Vec::new(),
             elem_writebacks: Vec::new(),
             take_self_methods,
+            take_param_positions,
+            in_ensure_thunk: false,
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
@@ -3970,7 +4231,7 @@ impl<'a> MirLowerer<'a> {
             // write back through it. Register the param local as a pointer; reads
             // load and writes store through it, keyed by the recorded scalar type.
             let scalar_mutate = param.is_mutate
-                && !crate::lower::stmt::mutate_param_by_pointer(&param_ty);
+                && crate::lower::stmt::mutate_param_needs_own_pointer(&param.name, &param_ty);
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
@@ -4383,7 +4644,16 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
     ) -> Option<MirType> {
         if is_niche {
-            return Some(val_ty.clone());
+            // A niche optional and its payload share a representation — `none`
+            // is the null pointer, so there is no wrapper to unwrap. They do
+            // not share a *type*: handing back `val_ty` bound `t` in
+            // `x is Link<T> as t` at `Link<T>?`, so every later read of `t`
+            // was lowered as an unwrap of an optional that isn't there. One
+            // dereference too many, and `t.name` read through whatever the
+            // first field held (#1179).
+            return Some(
+                Self::payload_of_mir(val_ty).unwrap_or_else(|| val_ty.clone()),
+            );
         }
         self.payload_type_of(expr, val_ty)
     }
@@ -5898,6 +6168,17 @@ pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
 /// have the compiler decide from the body, and that decision happens in the type
 /// checker. It records the spans it decided for, so this reads the answer rather
 /// than walking the body again — one implementation of GC9, not two that drift.
+/// Parameter positions declared `take`, `self` excluded and not counted.
+fn take_positions(params: &[rask_ast::decl::Param]) -> Vec<usize> {
+    params
+        .iter()
+        .filter(|p| p.name != "self")
+        .enumerate()
+        .filter(|(_, p)| p.is_take)
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
     let Some(p) = f.params.first() else { return false };
     if p.name != "self" {

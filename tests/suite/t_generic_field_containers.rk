@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container reached through a generic type parameter.
+//
+// A generic type shares one layout with a word-sized placeholder in every
+// parameter slot, which is the right size for a handle and the wrong type: the
+// release walk reads the layout, sees a scalar, and frees nothing. So
+// `Pair<i64, Vec<i64>>` held a vector that belonged to nobody, while the same
+// struct written out with a `Vec<i64>` field was fine. A string didn't show it
+// either — a string is refcounted, so the frame's own name gives it back.
+//
+// The instantiation gets its own layout now, which is the same machinery a type
+// argument too wide for the shared slot already got.
+
+struct Pair<A, B> {
+    public a: A
+    public b: B
+}
+
+struct Box1<T> {
+    public v: T
+}
+
+func main() {}
+
+test "a Vec reached through a type parameter" {
+    let v: Vec<i64> = [1, 2]
+    let p = Pair<i64, Vec<i64>> { a: 5, b: v }
+    assert p.a == 5
+    assert p.b.len() == 2
+}
+
+test "a Vec as the only type argument" {
+    let v: Vec<i64> = [1]
+    let b = Box1<Vec<i64>> { v }
+    assert b.v.len() == 1
+}
+
+test "a Map reached through a type parameter" {
+    let n = 1
+    mut m = Map<string, string>.new()
+    m.insert("k{n}", "v{n}")
+    let b = Box1<Map<string, string>> { v: m }
+    assert b.v.len() == 1
+}
+
+test "a string through a type parameter still works" {
+    let n = 1
+    let p = Pair<i64, string> { a: 5, b: "s{n}" }
+    assert p.b == "s1"
+}
+
+test "two containers in one instantiation" {
+    let v: Vec<i64> = [1, 2, 3]
+    mut m = Map<string, i64>.new()
+    m.insert("k", 1)
+    let p = Pair<Vec<i64>, Map<string, i64>> { a: v, b: m }
+    assert p.a.len() == 3
+    assert p.b.len() == 1
+}

@@ -5,5 +5,9 @@ error[E0835]: cannot give away `account` — it's borrowed, not owned
     |               ------- `account` is declared as a borrowed parameter
  15 |     return close_out(account)
     |                      ^^^^^^^ `close_out` takes ownership, and `account` isn't yours to give
-    = fix: take it: `take account: …` in the signature — then the caller can see it goes
-    = why: the caller keeps a parameter it didn't mark `take` and goes on using it, so consuming it here would leave them holding something that's gone. For a `@resource` that's a second close of a real handle. [mem.parameters/PM1, mem.linear/L1]
+    = fix: take it: `take account: …` in the signature — then the caller can see
+          it goes
+    = why: the caller keeps a parameter it didn't mark `take` and goes on using
+          it, so consuming it here would leave them holding something that's
+          gone. For a `@resource` that's a second close of a real handle.
+          [mem.parameters/PM1, mem.linear/L1]

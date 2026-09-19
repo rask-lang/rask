@@ -44,12 +44,18 @@ import async.spawn
 func example_concurrency() -> void or Error {
     // Spawn two tasks, each returns a value. Join both.
     using Multitasking {
+        // A handle has to be consumed on every way out — including the ones
+        // nobody writes down, like a `try` that fails or a panic. So the
+        // cleanup is committed where the handle is acquired (L7), and the
+        // `join` below cancels it (L6).
         let h1 = spawn(|| {
             21
         })
+        ensure h1.detach()
         let h2 = spawn(|| {
             21
         })
+        ensure h2.detach()
         let a = try h1.join()
         let b = try h2.join()
         println("sum: {a + b}")  // 42

@@ -177,6 +177,24 @@ fn hands_one_back(func: &MirFunction, fresh: &HashSet<LocalId>) -> bool {
 /// the box to the caller instead (`hands_one_back`), and freeing it here as
 /// well is a double free. And one box-typed read per wrapper only, the same
 /// discipline `boxes_handed_over` keeps — two reads name one box.
+///
+/// A *wrapper*, though, not any aggregate. A `T?` or a `T or E` holds its
+/// payload and nothing releases it, which is why the frame has to. A struct or
+/// an enum is the other way round: its own release walks its fields, and a
+/// trait-object field goes through the vtable's `owned_release` — block and
+/// contents both, which is more than a `TraitDrop` does. Letting this rule
+/// match a struct gave the block two owners, and the one that ran first was
+/// the weaker one:
+///
+/// ```text
+/// *(_0+0) = _10           // the box, into Shelf's field
+/// _12 = _11.0             // and out again, to call through
+/// trait_drop(_12)         // the frame frees the block...
+/// rc_dec_contents(_11)    // ...and the struct's release reads it afterwards
+/// ```
+///
+/// The `Vec` inside the boxed value was freed by nobody and the walk ran over
+/// memory that was already gone (#1161).
 fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> HashSet<LocalId> {
     let ty_of = local_types(func);
     let mut out: HashSet<LocalId> = HashSet::new();
@@ -184,11 +202,24 @@ fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> Ha
         let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
             continue;
         };
+        if releases_its_own_fields(&ty_of, addr) {
+            continue;
+        }
         if fresh.contains(v) && is_box(&ty_of, v) {
             out.extend(box_read_out_of(func, *addr, &ty_of));
         }
     }
     out
+}
+
+/// Does this aggregate give back what its fields hold when it dies?
+///
+/// A struct and an enum do — `rc_insert` puts an `RcDecContents` on one that
+/// stays in the frame, and the walk reaches a trait-object field through the
+/// vtable. A `T?` and a `T or E` don't: the release walk goes through them to
+/// the payload, and the payload's box is the frame's to free.
+fn releases_its_own_fields(ty_of: &HashMap<LocalId, MirType>, id: &LocalId) -> bool {
+    matches!(ty_of.get(id), Some(MirType::Struct(_)) | Some(MirType::Enum(_)))
 }
 
 /// The one name that ends up owning the box in `wrapper`'s payload.
@@ -342,9 +373,28 @@ fn insert_for_function(
 ) {
     let mut trait_locals = collect_fresh_trait_locals(func);
     trait_locals.extend(boxes_handed_over(func, hands_back));
-    trait_locals.extend(boxes_parked_in_a_wrapper(func, &trait_locals));
     if trait_locals.is_empty() {
         return;
+    }
+    // Out of one wrapper and into the next, as many times as the frame does it.
+    // Inlining puts every hop of `quadrupled → doubled → classify` in one body,
+    // so the box is read out of what `classify` returned, parked in `doubled`'s
+    // wrapper, read out of that, parked in `quadrupled`'s, and read out again.
+    // Each step is the one `boxes_parked_in_a_wrapper` describes; running it
+    // once followed the first hop and lost the second.
+    //
+    // And a box that arrived from a callee gets copied like any other: inlining
+    // `describe(e)` writes it into the callee's parameter local, and that last
+    // name is the one that owns it. Without this the original read as moved-away
+    // and the copy was never a candidate, so nobody dropped it.
+    loop {
+        let before = trait_locals.len();
+        carry_through_moves(func, &mut trait_locals);
+        let parked = boxes_parked_in_a_wrapper(func, &trait_locals);
+        trait_locals.extend(parked);
+        if trait_locals.len() == before {
+            break;
+        }
     }
 
     let escaping = find_escaping(func, &trait_locals, callee_escapes);
@@ -385,24 +435,29 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
         return fresh;
     }
 
-    // Propagate through moves and phi-merges to a fixed point: `_4 = _3`
-    // (real lowering copies a `TraitBox` result into the source-named local
-    // before first use) or a multi-hop chain both carry the same fresh
-    // allocation to a new name.
+    carry_through_moves(func, &mut fresh);
+    fresh
+}
+
+/// Carry every name in `held` forward through plain moves and phi-merges, to a
+/// fixed point: `_4 = _3` (real lowering copies a `TraitBox` result into the
+/// source-named local before first use) or a multi-hop chain both carry the
+/// same allocation to a new name, and the last name is the one that owns it.
+fn carry_through_moves(func: &MirFunction, held: &mut HashSet<LocalId>) {
     loop {
         let mut added = false;
         for block in &func.blocks {
             for stmt in &block.statements {
                 match &stmt.kind {
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                        if fresh.contains(src) && !fresh.contains(dst) =>
+                        if held.contains(src) && !held.contains(dst) =>
                     {
-                        fresh.insert(*dst);
+                        held.insert(*dst);
                         added = true;
                     }
-                    MirStmtKind::Phi { dst, args } if !fresh.contains(dst) => {
-                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(id) if fresh.contains(id))) {
-                            fresh.insert(*dst);
+                    MirStmtKind::Phi { dst, args } if !held.contains(dst) => {
+                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(id) if held.contains(id))) {
+                            held.insert(*dst);
                             added = true;
                         }
                     }
@@ -411,11 +466,9 @@ fn collect_fresh_trait_locals(func: &MirFunction) -> HashSet<LocalId> {
             }
         }
         if !added {
-            break;
+            return;
         }
     }
-
-    fresh
 }
 
 /// A trait object escapes if it's returned, stored, or passed as a call or

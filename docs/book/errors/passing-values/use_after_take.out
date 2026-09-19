@@ -5,5 +5,6 @@ error[E0800]: use of moved value: `account`
     |                       ------- value moved here
  17 |     println("{n} {account.balance}")
     |                   ^^^^^^^ value used here after move
-    = note: `Account` is 24 bytes (copy threshold is 16) — assignment moves instead of copying
+    = note: `Account` is 24 bytes (copy threshold is 16) — assignment moves
+           instead of copying
     = help: add `account.clone()` if you need an independent copy

@@ -82,6 +82,7 @@ test "select blocks until a spawned producer sends" {
             let _ = tx.send(5)
             return 0
         })
+        ensure h.detach()
         let got = select {
             rx -> v: v,
         }

@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: handing back a value the container still holds
+//
+// Spec: mem.borrowing (S3), mem.parameters (PM1)
+//
+// `m.get(k)` reads the value where the map keeps it. A function whose return
+// type is `Vec<i64>` promises the caller something to own, so returning that
+// lookup gives two names to one buffer. `??` is what hides it: the default side
+// is fresh and the lookup side isn't, and the line doesn't say which ran.
+//
+// One marker per rejection, on the line the compiler points at.
+
+// --- straight out of a map (the shape #1206 was filed for) ---
+func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
+    // ERROR: `index.get(…)` hands back what `index` still holds [E0879]
+    return index.get(word) ?? Vec.new()
+}
+
+// --- through a local, which is where a flag on the type would miss it ---
+func lookup_via_local(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
+    let found = index.get(word) ?? Vec.new()
+    // ERROR: `index.get(…)` hands back what `index` still holds [E0879]
+    return found
+}
+
+// --- a vector's own element, unwrapped rather than defaulted ---
+func first_row(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    // ERROR: `rows.first(…)` hands back what `rows` still holds [E0879]
+    return rows.first()!
+}
+
+// --- a local the frame owns is no better: it dies at the return ---
+func stale() -> Vec<i64> {
+    mut m: Map<string, Vec<i64>> = Map.new()
+    mut row: Vec<i64> = []
+    row.push(1i64)
+    m.insert("a key long enough to need the heap", row)
+    // ERROR: `m.get(…)` hands back what `m` still holds [E0879]
+    return m.get("a key long enough to need the heap") ?? Vec.new()
+}
+
+func main() {}

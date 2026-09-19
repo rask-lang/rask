@@ -1,0 +1,12 @@
+# Suite files valgrind's memcheck reports an error in, with the issue that
+# tracks each. tests/memcheck_gate.sh runs every suite file under memcheck and
+# FAILS on a file that starts tripping without a line here — so the gate
+# enforces "no NEW memory errors" rather than "no memory errors".
+#
+# When a file stops tripping, delete its line. The gate says so by name.
+#
+# Leaks are not this file's business: the leak gate owns that question and
+# tests/known_leaks.txt holds its ledger. This one is for reads of
+# uninitialised memory, frees of something already freed, and writes past the
+# end of a block — the half of "who frees this" that crashes instead of
+# growing.

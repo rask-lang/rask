@@ -78,33 +78,9 @@ impl DataflowAnalysis for LivenessAnalysis {
 
     fn transfer_block(&self, block: &MirBlock, in_state: &LiveSet) -> LiveSet {
         // Backward: in_state is the exit state (what's live after the block).
-        // Walk statements in reverse, applying kill then gen.
-        let mut state = in_state.clone();
-
-        // Terminator reads are gen (live before terminator)
-        for local_idx in 0..self.num_locals {
-            let local = LocalId(local_idx as u32);
-            if self.aliases.terminator_reads(&block.terminator, local) {
-                state.set(local);
-            }
-        }
-
-        // Walk statements in reverse
-        for stmt in block.statements.iter().rev() {
-            // Kill: if this statement defines a local, it's no longer live above
-            if let Some(def) = uses::stmt_def(stmt) {
-                state.clear(def);
-            }
-            // Gen: if this statement reads a local, it becomes live above
-            for local_idx in 0..self.num_locals {
-                let local = LocalId(local_idx as u32);
-                if self.aliases.stmt_reads(stmt, local) {
-                    state.set(local);
-                }
-            }
-        }
-
-        state
+        // A phi's operands gen here rather than on their edge — see
+        // `analyze_phis_on_edges` for the other answer and why this one stays.
+        transfer_backward(block, in_state, self.num_locals, &self.aliases, false)
     }
 }
 
@@ -130,6 +106,135 @@ impl LivenessResults {
             .get(&block)
             .map_or(false, |s| s.is_live(local))
     }
+}
+
+/// Liveness with a phi's operands read on their own incoming edge.
+///
+/// The textbook formulation, and *not* what `analyze` below does. There, a phi
+/// reads its operands in the phi's own block, so every operand comes out live
+/// across every incoming edge rather than the one it arrives on:
+///
+/// ```text
+/// bb3:
+///   _32 = phi [_24 from bb5, _38 from bb6]
+/// ```
+///
+/// `_24` arrives only from bb5. On the bb6 edge the value is `_38`, so `_24` is
+/// dead at the end of bb6 and that is where its release belongs — which is what
+/// `analyze` can't say, and why a string accumulator in a *filtered* loop leaked
+/// a buffer per turn while the same loop without the filter was clean (#1200).
+///
+/// This is a second answer rather than a fix to the first on purpose. Five
+/// passes read `analyze`, and `transform/ssa.rs` uses it during phi elimination
+/// where the operands have to be live through the block. Handing all of them a
+/// smaller live set turns a conservative leak into a double free wherever one of
+/// them was leaning on the imprecision — measured: the compiler builds and then
+/// SIGKILLs on the reduction above. So the precise answer is available by name
+/// and `rc_insert` is the only caller.
+///
+/// Its own fixpoint rather than the generic framework, because `join` there
+/// merges successor states with no idea which edge it came along, and the edge
+/// is the whole question.
+pub fn analyze_phis_on_edges(func: &MirFunction) -> LivenessResults {
+    let num_locals = func.locals.len() + func.params.len();
+    let aliases = AddrAliases::build(func);
+    let preds_of_phi = phi_operands_by_edge(func, num_locals);
+
+    let mut entry: std::collections::HashMap<BlockId, LiveSet> = func
+        .blocks
+        .iter()
+        .map(|b| (b.id, LiveSet::new(num_locals)))
+        .collect();
+    let mut exit: std::collections::HashMap<BlockId, LiveSet> = entry.clone();
+
+    loop {
+        let mut changed = false;
+        for block in func.blocks.iter().rev() {
+            let mut out = LiveSet::new(num_locals);
+            for succ in crate::analysis::cfg::successors(&block.terminator) {
+                if let Some(s) = entry.get(&succ) {
+                    out = out.union(s);
+                }
+                // What the successor's phis take along *this* edge.
+                if let Some(taken) = preds_of_phi.get(&(block.id, succ)) {
+                    out = out.union(taken);
+                }
+            }
+            let inn = transfer_backward(block, &out, num_locals, &aliases, true);
+            if exit.get(&block.id) != Some(&out) {
+                exit.insert(block.id, out);
+                changed = true;
+            }
+            if entry.get(&block.id) != Some(&inn) {
+                entry.insert(block.id, inn);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    LivenessResults {
+        results: DataflowResults { entry, exit },
+        num_locals,
+    }
+}
+
+/// For each `(predecessor, phi block)` edge, the locals the phis there take
+/// along it.
+fn phi_operands_by_edge(
+    func: &MirFunction,
+    num_locals: usize,
+) -> std::collections::HashMap<(BlockId, BlockId), LiveSet> {
+    let mut out: std::collections::HashMap<(BlockId, BlockId), LiveSet> =
+        std::collections::HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let crate::MirStmtKind::Phi { args, .. } = &stmt.kind else { continue };
+            for (from, op) in args {
+                if let Some(id) = crate::analysis::uses::operand_local(op) {
+                    out.entry((*from, block.id))
+                        .or_insert_with(|| LiveSet::new(num_locals))
+                        .set(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One block's backward transfer. `skip_phi_gen` leaves a phi's operands to the
+/// edge they arrive on instead of genning them here.
+fn transfer_backward(
+    block: &MirBlock,
+    exit_state: &LiveSet,
+    num_locals: usize,
+    aliases: &AddrAliases,
+    skip_phi_gen: bool,
+) -> LiveSet {
+    let mut state = exit_state.clone();
+    for local_idx in 0..num_locals {
+        let local = LocalId(local_idx as u32);
+        if aliases.terminator_reads(&block.terminator, local) {
+            state.set(local);
+        }
+    }
+    for stmt in block.statements.iter().rev() {
+        if let Some(def) = uses::stmt_def(stmt) {
+            state.clear(def);
+        }
+        if skip_phi_gen && matches!(stmt.kind, crate::MirStmtKind::Phi { .. }) {
+            continue;
+        }
+        for local_idx in 0..num_locals {
+            let local = LocalId(local_idx as u32);
+            if aliases.stmt_reads(stmt, local) {
+                state.set(local);
+            }
+        }
+    }
+    state
 }
 
 /// Run liveness analysis on a function.

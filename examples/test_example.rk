@@ -77,8 +77,21 @@ benchmark "add 1000 times" {
     }
 }
 
-// Entry point (not needed for rask test, but makes the file also runnable)
+// The tests above are the point of this file, but it runs on its own too.
 func main() {
-    println("Run 'rask test examples/test_example.rk' to run tests")
-    println("Run 'rask benchmark examples/test_example.rk' to run benchmarks")
+    println("add(2, 3) = {add(2, 3)}")
+
+    let half = divide(10.0, 2.0)
+    if half is f64 as v {
+        println("divide(10, 2) = {v}")
+    } else as e {
+        println("divide(10, 2) failed: {e.message()}")
+    }
+
+    let bad = divide(1.0, 0.0)
+    if bad is f64 as v {
+        println("divide(1, 0) = {v}")
+    } else as e {
+        println("divide(1, 0) failed: {e.message()}")
+    }
 }

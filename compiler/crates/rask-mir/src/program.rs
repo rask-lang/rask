@@ -115,6 +115,7 @@ mod tests {
             align: 8,
             fields: vec![],
             is_stdlib: false,
+            is_resource: false,
         });
         let layout = prog.struct_layout(crate::StructLayoutId::new(0, 16, 8));
         assert_eq!(layout.name, "Point");

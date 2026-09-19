@@ -47,6 +47,8 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOOK_SRC="$ROOT/docs/book/src"
+# The long-form posts left the book but still carry rask blocks.
+WRITING_SRC="$ROOT/writing"
 ERRORS_DIR="$ROOT/docs/book/errors"
 
 UPDATE=0
@@ -93,7 +95,7 @@ while IFS= read -r md; do
             fi
         fi
     done
-done < <(find "$BOOK_SRC" -name '*.md') > "$ROOT/.book_gate_includes" 2>/dev/null
+done < <(find "$BOOK_SRC" "$WRITING_SRC" -name '*.md') > "$ROOT/.book_gate_includes" 2>/dev/null
 
 if [ -s "$ROOT/.book_gate_includes" ]; then
     cat "$ROOT/.book_gate_includes"
@@ -140,7 +142,7 @@ while IFS= read -r md; do
     else
         ok=$((ok + 1))
     fi
-done < <(find "$BOOK_SRC" -name '*.md')
+done < <(find "$BOOK_SRC" "$WRITING_SRC" -name '*.md')
 
 # ── 3. Error renderings match what the compiler prints ────────────────────────
 

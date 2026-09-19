@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a statement standing between acquiring a linear value and committing
+// its cleanup.
+//
+// Spec: mem.linear (L7), ctrl.panic (U5)
+//
+// A linear value owes a consumption from the moment it exists. Between the line
+// that acquires it and the line that commits the cleanup, nothing is scheduled
+// to close it — and a panic anywhere in that gap takes the task down without
+// running anything. There is no destructor behind it.
+//
+// `try` in that gap was already rejected (E0881), because a failing `try` is an
+// exit written in the source and can be pointed at. A panic is the same leak
+// through an exit nothing marks: an index, an overflow, a call that asserts. So
+// the gap has to be empty rather than short.
+//
+// One marker per rejection, on the line the compiler points at.
+
+@resource
+struct World {
+    public id: i64
+}
+
+@resource
+struct Body {
+    public id: i64
+}
+
+extend World {
+    public func destroy(take self) -> void {
+        println("world gone")
+    }
+}
+
+extend Body {
+    public func close(take self, w: World) -> void {
+        println("body gone, world {w.id}")
+    }
+}
+
+func make_world() -> World {
+    return World { id: 1 }
+}
+
+func make_body(w: World) -> Body {
+    return Body { id: w.id + 1 }
+}
+
+// --- an ordinary statement in the window ---
+func gap_before_ensure() {
+    let w = make_world()
+    // ERROR: a panic in `println` leaves `w` with nothing scheduled [E0882]
+    println("about to commit")
+    ensure w.destroy()
+}
+
+// --- the inverted `ensure` order is this same gap ---
+// The derived resource's `ensure` has to be registered second for LIFO to tear
+// it down first, and the only way to get there is to commit the dependency
+// before deriving from it. Writing it the other way round puts `let b = ...` in
+// `w`'s window.
+func inverted_order() {
+    let w = make_world()
+    // ERROR: `let b` runs while `w` has nothing scheduled [E0882]
+    let b = make_body(w)
+    ensure b.close(w)
+    ensure w.destroy()
+}
+
+// --- two acquisitions in a row ---
+func both_then_both() {
+    let a = make_world()
+    // ERROR: the second acquisition runs in the first's window [E0882]
+    let b = make_world()
+    ensure a.destroy()
+    ensure b.destroy()
+}
+
+// --- a `take` parameter arrives owed, same as a local ---
+func handed_over(take w: World) {
+    // ERROR: `w` is owed from the signature on [E0882]
+    println("received {w.id}")
+    w.destroy()
+}
+
+func main() {
+    gap_before_ensure()
+    inverted_order()
+    both_then_both()
+    handed_over(make_world())
+}

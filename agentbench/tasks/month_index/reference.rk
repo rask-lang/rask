@@ -5,7 +5,7 @@ func build_index(documents: Vec<string>) -> Map<string, Vec<i64>> {
     for text in documents {
         for raw in text.split_whitespace().to_vec() {
             let word = raw.to_lowercase()
-            mut postings = index.get(word) ?? Vec.new()
+            mut postings = index.get_clone(word) ?? Vec.new()
             if postings.len() == 0 || postings[postings.len() - 1] != doc {
                 postings.push(doc)
                 index.insert(word, postings)
@@ -17,7 +17,7 @@ func build_index(documents: Vec<string>) -> Map<string, Vec<i64>> {
 }
 
 func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
-    return index.get(word) ?? Vec.new()
+    return index.get_clone(word) ?? Vec.new()
 }
 
 func documents_with_all(index: Map<string, Vec<i64>>, words: Vec<string>) -> Vec<i64> {

@@ -93,6 +93,14 @@ pub fn owned_fields(
 /// TypeId and no name, and there is no table here to look one up in. Rendering
 /// it and taking the head is what works.
 pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
+    // A closure a field holds is the aggregate's: storing one moves it in, and
+    // the frame stops dropping it the moment it does. The block describes
+    // itself — `rask_closure_free` reads its size and its environment glue out
+    // of the header words — so this needs nothing type-specific, and a bare
+    // function used as a value is wrapped in a block like any other closure.
+    if matches!(ty, RaskType::Fn { .. }) {
+        return Some("rask_closure_free");
+    }
     let rendered = format!("{}", ty);
     // Only the container itself. `Vec<i64>?` renders with the same head and is
     // a different thing: the slot holds a tag and a payload, the handle is
@@ -130,7 +138,33 @@ pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
         // `io.Buffer` keeps its read position in a `Shared<i64, Local>` and
         // leaked two allocations per buffer.
         "Shared" | "Cell" | "Mutex" => Some(box_release_for(&rendered)),
+        // One-word handles onto a heap block the runtime made. Not containers —
+        // they hold no elements — but the same ownership: the field owns the
+        // block, and nothing else was going to give it back. `Random.from_seed`
+        // in a struct field leaked its state on every construction, and an
+        // `Atomic` counter in one leaked eight bytes.
+        //
+        // `StringBuilder` is deliberately not here. `build()` takes the builder
+        // away, so a builder reached through a field and built would leave this
+        // release pointing at a block that is already gone — which is a worse
+        // answer than the leak.
+        "Random" => Some("rask_rng_free"),
+        "Atomic" => Some("rask_atomic_int_free"),
+        "cstring" => Some("rask_cstring_free"),
         _ => None,
+    }
+}
+
+/// Is this a trait object, however the type happens to be spelled?
+///
+/// A field written `any Trait` reaches the layout as a *name* rather than a
+/// parsed `TraitObject` (#474), so asking for the parsed form alone answers no
+/// for every field — which is exactly where the question matters.
+pub fn is_trait_object(ty: &RaskType) -> bool {
+    match ty {
+        RaskType::TraitObject { .. } => true,
+        RaskType::UnresolvedNamed(name) => name.starts_with("any "),
+        _ => false,
     }
 }
 

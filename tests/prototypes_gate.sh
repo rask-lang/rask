@@ -36,6 +36,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROTO_DIR="$ROOT/specs/analysis/prototype"
+source "$ROOT/tests/lib/fanout.sh"
 KNOWN_FILE="$ROOT/tests/known_prototype_divergences.txt"
 
 if [ -x "$ROOT/compiler/target/release/rask" ]; then
@@ -66,7 +67,7 @@ known_fail() {
     grep -qE "^$1([[:space:]]|#|$)" "$KNOWN_FILE"
 }
 
-JOBS="${GATE_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+JOBS="${GATE_JOBS:-${JOBS:-$(nproc 2>/dev/null || echo 4)}}"
 RUN_TIMEOUT="${GATE_TIMEOUT:-300}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -111,11 +112,11 @@ run_one() {
             > "$WORK/$base.diff"
     fi
 }
-export -f run_one normalize
+export -f normalize
 export RASK WORK ROOT RUN_TIMEOUT
 
-find "$PROTO_DIR" -maxdepth 1 -name '*.rk' -print0 \
-    | xargs -0 -r -P "$JOBS" -I{} bash -c 'run_one "$@"' _ {}
+mapfile -t proto_files < <(find "$PROTO_DIR" -maxdepth 1 -name '*.rk')
+fan_out run_one "${proto_files[@]}"
 
 ok=0
 known=0

@@ -46,6 +46,11 @@ typedef struct RaskTaskState {
     // value — a payload wider than a machine word, or one that comes back in a
     // float register. Freed here when no join ever came for it (#963).
     int64_t      result_owned;
+    // The closure allocation the task body runs out of. The task owns it for
+    // the same reason it owns `result_owned` above: it is the only party
+    // present at every ending. The body used to free it on the line after its
+    // own call, which a panicking body longjmps past (#1223).
+    void        *closure_base;
     pthread_t    thread;        // valid only when !pooled
 
     // A pooled job shares a worker with other jobs, so there is no thread of
@@ -79,23 +84,32 @@ static atomic_int detached_outstanding;
 
 static RaskTaskState *state_new(void) {
     RaskTaskState *s = (RaskTaskState *)rask_alloc(sizeof(RaskTaskState));
+    // Assigned whole rather than field by field, which is what stops a field
+    // added later from being read as whatever the allocator left there. C99
+    // zero-fills every member this literal doesn't name, so "nobody wrote a
+    // line for it" means NULL and 0 instead of a pointer `state_release` would
+    // free. That is #1223: `closure_base` was added to this struct and the
+    // pooled path never set it, so the release freed garbage and ran drop glue
+    // on it. `thread` is in the same position today — only the spawn that
+    // creates a real thread writes it — and needs no line here now.
+    *s = (RaskTaskState){
+        .panic_msg = NULL,
+        .result = 0,
+        .task_id = rask_next_task_id(),
+    };
     atomic_init(&s->refcount, 2);  // handle + thread
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
-    s->panic_msg = NULL;
-    s->result = 0;
-    s->pooled = 0;
     pthread_cond_init(&s->done_cond, NULL);
     pthread_mutex_init(&s->report_lock, NULL);
-    s->detached = 0;
-    s->counted_detached = 0;
-    s->task_id = rask_next_task_id();
     return s;
 }
 
 static void state_release(RaskTaskState *s) {
     if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
         if (s->panic_msg) rask_free(s->panic_msg);
+        // The task body's closure allocation, whichever way the body ended.
+        if (s->closure_base) rask_closure_free(s->closure_base);
         // Still set means nobody took it — a detached thread whose value no
         // join ever came for.
         if (s->result_owned && s->result) rask_free((void *)(intptr_t)s->result);
@@ -190,9 +204,7 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     RaskTaskState *state = state_new();
 
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
-    entry->func  = func;
-    entry->env   = env;
-    entry->state = state;
+    *entry = (TaskEntry){ .func = func, .env = env, .state = state };
 
     int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
@@ -203,7 +215,7 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     }
 
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    h->state = state;
+    *h = (RaskTaskHandle){ .state = state };
     return h;
 }
 
@@ -351,19 +363,22 @@ int64_t rask_time_sleep_ms(int64_t ms) {
 typedef struct {
     RaskTaskFn     func;
     void          *env;
-    void          *alloc_base;  // closure allocation to free after task
 } RaskSpawnCtx;
 
 static int64_t closure_spawn_entry(void *arg) {
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)arg;
     RaskTaskFn func = ctx->func;
     void *env = ctx->env;
-    void *alloc_base = ctx->alloc_base;
     rask_free(ctx);
 
-    int64_t result = func(env);
-    rask_closure_free(alloc_base);
-    return result;
+    // The closure allocation is the state's to free, not this frame's. It used
+    // to be freed right here, on the line after the call — which a panicking
+    // body longjmps straight past, one frame up into `rask_task_run_body`,
+    // taking the local that held the pointer with it. Handing it to the state
+    // is what makes the two endings agree; freeing it here *as well* would
+    // need this frame to tell the state, and the thread is already running by
+    // the time the spawner could have said which state that is.
+    return func(env);
 }
 
 // `result_owned`: the closure hands back a heap box rather than a plain value.
@@ -373,12 +388,13 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
-    ctx->func = func;
-    ctx->env = env;
-    ctx->alloc_base = closure_ptr;
+    *ctx = (RaskSpawnCtx){ .func = func, .env = env };
 
     RaskTaskHandle *h = rask_task_spawn(closure_spawn_entry, ctx);
-    if (h && h->state) h->state->result_owned = result_owned;
+    if (h && h->state) {
+        h->state->result_owned = result_owned;
+        h->state->closure_base = closure_ptr;
+    }
     return h;
 }
 
@@ -401,7 +417,7 @@ RaskTaskState *rask_task_state_new_pooled(void) {
 
 RaskTaskHandle *rask_task_handle_for(RaskTaskState *state) {
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    h->state = state;
+    *h = (RaskTaskHandle){ .state = state };
     return h;
 }
 

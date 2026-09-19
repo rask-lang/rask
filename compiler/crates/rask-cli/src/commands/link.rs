@@ -292,6 +292,15 @@ fn profile_cflags(release: bool) -> Vec<String> {
     }
 }
 
+/// The runtime is POSIX 2008 plus two platform extensions: `dladdr` for symbol
+/// names in leak traces, `_SC_NPROCESSORS_ONLN` for the default worker count.
+/// Each libc hides those behind its own macro, and each macro is inert on the
+/// other platform. `compiler/runtime/Makefile` passes the same pair — the two
+/// have to agree, or `make` builds a dialect nobody ships.
+fn feature_cflags() -> Vec<String> {
+    vec!["-D_GNU_SOURCE".into(), "-D_DARWIN_C_SOURCE".into()]
+}
+
 fn extra_cflags() -> Vec<String> {
     std::env::var("RASK_EXTRA_CFLAGS")
         .map(|e| e.split_whitespace().map(str::to_string).collect())
@@ -333,6 +342,7 @@ fn runtime_cache_key(
     config.cc.hash(&mut hasher);
     config.cc_args.hash(&mut hasher);
     profile_cflags(release).hash(&mut hasher);
+    feature_cflags().hash(&mut hasher);
     extra_cflags().hash(&mut hasher);
     config.link_flags.hash(&mut hasher);
 
@@ -364,6 +374,7 @@ fn runtime_objects(
         .map_err(|e| format!("failed to create runtime cache dir {}: {}", dir.display(), e))?;
 
     let profile = profile_cflags(release);
+    let features = feature_cflags();
     let extra = extra_cflags();
     let mut objects = Vec::with_capacity(config.sources.len());
 
@@ -382,6 +393,7 @@ fn runtime_objects(
         let mut cmd = process::Command::new(&config.cc);
         cmd.args(&config.cc_args);
         cmd.args(&profile);
+        cmd.args(&features);
         // The link is -no-pie on Linux, so the objects must not be PIE either.
         if config.link_flags.iter().any(|f| f == "-no-pie") {
             cmd.arg("-fno-pie");

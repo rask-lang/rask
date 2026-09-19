@@ -3,16 +3,19 @@
 //
 // A `Vec` or a `Map` built here belongs to this frame, and that survives being
 // handed back out of a function — `make_words()` returning a `Vec<string>` is
-// the caller's, elements and all. What it must not survive is a name that
-// holds this frame's container on one path and somebody else's on the other:
+// the caller's, elements and all.
+//
+// What the compiler rejects is a name that holds this frame's container on one
+// path and somebody else's on the other:
 //
 //     func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
-//         return index.get(word) ?? Vec.new()
+//         return index.get(word) ?? Vec.new()      // E0879
 //     }
 //
-// One name, two sources — a fresh vector, or the map's own. Treating that as
-// the caller's freed a vector the map still held, and the next lookup read
-// memory that was already gone.
+// One name, two sources — a fresh vector, or the map's own. Freeing it corrupts
+// the map; not freeing it leaks one vector per miss. Neither is right for both
+// paths, so the copy is the program's to write: `get_clone` allocates on the
+// hit path and says so at the call site.
 
 func make_words() -> Vec<string> {
     mut v: Vec<string> = []
@@ -31,7 +34,7 @@ func build_index() -> Map<string, Vec<i64>> {
 }
 
 func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
-    return index.get(word) ?? Vec.new()
+    return index.get_clone(word) ?? Vec.new()
 }
 
 test "mem.ownership — a container handed back is the caller's" {
@@ -40,7 +43,7 @@ test "mem.ownership — a container handed back is the caller's" {
     assert words[0].len() == 44
 }
 
-test "mem.ownership — a lookup that falls back to a fresh container is safe to repeat" {
+test "mem.ownership — a lookup that copies is safe to repeat" {
     let index = build_index()
     let key = "shared-key-long-enough-to-need-the-heap"
     // Reading the same entry twice: neither read may free what the map holds.

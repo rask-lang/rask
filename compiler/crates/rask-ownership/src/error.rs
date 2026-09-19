@@ -80,6 +80,41 @@ pub enum OwnershipErrorKind {
         is_mutate: bool,
     },
 
+    /// mem.heap/HP3 with mem.linear/L5: `drop(x.field)` on an aggregate's field.
+    ///
+    /// Storing a box in a field moves it in and the aggregate's release gives it
+    /// back. A hand-drop is a second owner, and both of them run.
+    #[error("`{path}` belongs to `{root}` — dropping it here frees it twice")]
+    DropOfAnOwnedField {
+        /// `h.inner`, `direct.inner`.
+        path: String,
+        /// The aggregate holding it.
+        root: String,
+        field_ty: String,
+    },
+
+    /// mem.borrowing/S3 one level out: a value a container lent, returned.
+    ///
+    /// `return index.get(word) ?? Vec.new()` is fresh on one path and the map's
+    /// own vector on the other. One name, two owners — freeing it corrupts the
+    /// map, not freeing it leaks — so the shape is rejected and the copy is
+    /// written down.
+    #[error("`{call}` hands back what `{holder}` still holds — returning it gives the caller a second name for it")]
+    LentValueEscapes {
+        /// `index.get(…)`.
+        call: String,
+        /// The container the value belongs to. Not called `source`:
+        /// `thiserror` reads that name as the error cause.
+        holder: String,
+        /// `Vec` or `Map`.
+        lender: String,
+        payload_ty: String,
+        /// The copying twin, when the container has one (`get_clone`).
+        clone_form: Option<String>,
+        /// The lookup, which may be lines above the `return`.
+        lent_at: Span,
+    },
+
     /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
     /// Copy. Indexing hands the element back in place, so the binding is a
     /// second name for storage the collection still owns.
@@ -282,6 +317,27 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` must be dropped before the end of this block")]
     OwnedNotConsumed {
         name: String,
+    },
+
+    /// mem.linear/L1 on the error path: a `try` after a resource is acquired
+    /// and before it is committed. If the call fails, the error leaves the
+    /// function and the resource is never consumed.
+    #[error("`{name}` would leak if this fails")]
+    ResourceLeaksOnTry {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
+    },
+
+    /// mem.linear/L7: a statement stands between acquiring a linear value and
+    /// committing its cleanup. Every `try` in that window was already an error
+    /// (ResourceLeaksOnTry); a panic is the exit nothing in the source marks,
+    /// and there is no destructor behind it, so the window has to be empty.
+    #[error("`{name}` has no cleanup committed yet")]
+    ResourceCommitDeferred {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
     },
 
     /// Resource captured by closure/spawn not consumed on all code paths.

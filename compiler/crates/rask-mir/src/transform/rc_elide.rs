@@ -15,8 +15,8 @@ use crate::{LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmtKind};
 use std::collections::{HashMap, HashSet};
 
 /// Elide unnecessary RC operations on string locals.
-pub fn elide_rc_ops(func: &mut MirFunction) {
-    elide_local_only(func);
+pub fn elide_rc_ops(func: &mut MirFunction, own: &HashSet<String>) {
+    elide_local_only(func, own);
     elide_literals(func);
     cancel_inc_dec_pairs(func);
 }
@@ -99,18 +99,19 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
 fn views_and_handovers(
     func: &MirFunction,
     string_locals: &HashSet<LocalId>,
+    own: &HashSet<String>,
 ) -> (HashSet<LocalId>, HashSet<LocalId>) {
     let mut views: HashSet<LocalId> = HashSet::new();
     let mut handed: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
-        if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+        if crate::own_names::returns_a_view(&fref.name, own) {
             if let Some(dst) = dst.filter(|d| string_locals.contains(d)) {
                 views.insert(dst);
             }
         }
         for (i, arg) in args.iter().enumerate() {
-            if !rask_stdlib::mir_metadata::keeps_argument(&fref.name, i) {
+            if !crate::own_names::keeps_argument(&fref.name, i, own) {
                 continue;
             }
             if let Some(id) =
@@ -146,7 +147,11 @@ fn views_and_handovers(
 }
 
 /// String locals that cross a stdlib boundary that takes the reference with it.
-fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
+fn container_touched(
+    func: &MirFunction,
+    string_locals: &HashSet<LocalId>,
+    own: &HashSet<String>,
+) -> HashSet<LocalId> {
     let mut touched: HashSet<LocalId> = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -158,7 +163,7 @@ fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Ha
             // `pop` and `remove` do transfer out, and read the same way from a
             // signature — so they stay elided too, and leak rather than risk
             // the double free (#1035).
-            if rask_stdlib::mir_metadata::returns_a_view(&fref.name) {
+            if crate::own_names::returns_a_view(&fref.name, own) {
                 if let Some(dst) = dst {
                     if string_locals.contains(dst) {
                         touched.insert(*dst);
@@ -168,7 +173,7 @@ fn container_touched(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Ha
             // An argument the callee keeps. The reference moves in with it, so
             // this function no longer owes a release on it.
             for (i, arg) in args.iter().enumerate() {
-                if !rask_stdlib::mir_metadata::keeps_argument(&fref.name, i) {
+                if !crate::own_names::keeps_argument(&fref.name, i, own) {
                     continue;
                 }
                 if let Some(id) = crate::analysis::uses::operand_local(arg) {
@@ -239,12 +244,12 @@ fn copy_groups(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Vec<Hash
 }
 
 /// RE2: Remove all RcInc/RcDec for string locals that never escape the function.
-fn elide_local_only(func: &mut MirFunction) -> usize {
+fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let escaped = escape::escaping_strings(func);
     let string_locals: HashSet<LocalId> =
         func.locals_of_type(&crate::MirType::String).into_iter().collect();
     let owned = owned_from_elsewhere(func, &string_locals);
-    let containers = container_touched(func, &string_locals);
+    let containers = container_touched(func, &string_locals, own);
 
     // Decide per group, not per local: keeping one local's release while
     // dropping the increment on the copy that outlives it frees the buffer out
@@ -262,7 +267,7 @@ fn elide_local_only(func: &mut MirFunction) -> usize {
     // is `fs.read_lines` — split the text, push each piece into the vector it
     // hands back — and every line read as freed bytes once the split's own
     // vector started being freed (#1035).
-    let (views, handed_over) = views_and_handovers(func, &string_locals);
+    let (views, handed_over) = views_and_handovers(func, &string_locals, own);
 
     let mut keep: HashSet<LocalId> = HashSet::new();
     // Retain only, for the container-to-container case: the copy's increment is
@@ -601,7 +606,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        let removed = elide_local_only(&mut f);
+        let removed = elide_local_only(&mut f, &HashSet::new());
         assert!(removed > 0);
         assert_eq!(count_rc_ops(&f.blocks[0].statements), 0);
     }
@@ -621,7 +626,7 @@ mod tests {
                 }),
             }],
         );
-        let removed = elide_local_only(&mut f);
+        let removed = elide_local_only(&mut f, &HashSet::new());
         assert_eq!(removed, 0);
         assert_eq!(count_rc_ops(&f.blocks[0].statements), 1);
     }
@@ -737,7 +742,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        elide_rc_ops(&mut f);
+        elide_rc_ops(&mut f, &HashSet::new());
         assert_eq!(count_rc_ops(&f.blocks[0].statements), 0);
     }
 }

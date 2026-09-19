@@ -32,6 +32,10 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op);
 
 const int32_t rask_elem_strs_one[1] = {0};
 const int32_t rask_elem_strs_pair[2] = {0, 16};
+// The element *is* a container handle: one entry, offset zero, kind VEC. What
+// a runtime call that builds a `Vec<Vec<T>>` has to hand its result, or the
+// free walks the outer array and leaves every inner vector behind.
+const int32_t rask_elem_vec_one[1] = {(int32_t)(RASK_OWNED_VEC << RASK_OWNED_KIND_SHIFT)};
 
 // One entry of an element map. Shared by every container's free and retain
 // walks — the encoding is described next to `RaskElemStrs` in the header.
@@ -130,11 +134,18 @@ void rask_owned_retain(char *elem, int32_t entry) {
 // bottoms out because each arm is strictly shorter than the list holding it.
 typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
 
-static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+// `root`/`root_count` are the list this walk started from, carried down so a
+// `RASK_OWNED_SELF` entry can start it over. That is how a recursive type is
+// described: the block inside a `Cons` holds another `List`, and the entries
+// for it are the ones already in hand.
+static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
+                            const int32_t *root, int64_t root_count,
+                            RaskOwnedOp op) {
     if (!elem || !entries) return;
     for (int64_t i = 0; i < count; i++) {
         int32_t e = entries[i];
-        if (((uint32_t)e >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_TAG_IF) {
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
             int64_t body = RASK_OWNED_TAG_COUNT(e);
             // A list that claims more entries than it has is malformed; stop
             // rather than read past it.
@@ -148,9 +159,35 @@ static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOw
                 default: tag = *(const int64_t *)at;           break;
             }
             if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
-                owned_walk(elem, entries + i + 1, body, op);
+                owned_walk_from(elem, entries + i + 1, body, root, root_count, op);
             }
             i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_HEAP) {
+            int64_t body = RASK_OWNED_HEAP_COUNT(e);
+            if (i + body >= count) return;
+            char **slot = (char **)(elem + RASK_OWNED_HEAP_OFFSET(e));
+            char *block = *slot;
+            if (block) {
+                // What the block holds goes first: after the free there is
+                // nothing left to walk. Only on release — a retain would have
+                // to copy the block, and a block carries no size to copy.
+                if (op == OWNED_RELEASE) {
+                    owned_walk_from(block, entries + i + 1, body, root, root_count, op);
+                    rask_free(block);
+                    *slot = NULL;
+                }
+            }
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_SELF) {
+            // Start the list over against the value at this offset. The guards
+            // in it are what end the recursion: a variant that owns nothing
+            // matches none of them.
+            owned_walk_from(elem + (e & RASK_OWNED_OFFSET_MASK),
+                            root, root_count, root, root_count, op);
             continue;
         }
         switch (op) {
@@ -160,8 +197,32 @@ static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOw
     }
 }
 
+static void owned_walk(char *elem, const int32_t *entries, int64_t count, RaskOwnedOp op) {
+    owned_walk_from(elem, entries, count, entries, count, op);
+}
+
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count) {
     owned_walk(elem, entries, count, OWNED_RELEASE);
+}
+
+// A `Heap<T>` field: `slot` holds the pointer, `entries` describe a `T`.
+//
+// The description is T's, with no entry for the slot itself, and that is the
+// whole point — a `RASK_OWNED_SELF` inside it means "a T lives here", so the
+// list it restarts from has to *be* T's, at every depth. Handing the walk a
+// list that began with the slot's own entry made the first `SELF` read T's
+// first bytes as a pointer: a `List`'s tag is 1, and 0x1 is not an address.
+void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count) {
+    if (!slot) return;
+    char **p = (char **)slot;
+    char *block = *p;
+    if (!block) return;
+    // Contents first: after the free there is nothing left to walk.
+    if (entries && count > 0) {
+        owned_walk_from(block, entries, count, entries, count, OWNED_RELEASE);
+    }
+    rask_free(block);
+    *p = NULL;
 }
 
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
@@ -183,27 +244,24 @@ static void vec_retain_elems(const RaskVec *v, int64_t from, int64_t count) {
 
 RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->data = NULL;
-    v->len = 0;
-    v->cap = 0;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .data = NULL,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     return v;
 }
 
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs) {
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->len = 0;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    // CP1: a capacity hint pre-allocates but sets no ceiling.
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .elem_size = elem_size,
+        // CP1: a capacity hint pre-allocates but sets no ceiling.
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     if (cap > 0) {
         v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
@@ -220,13 +278,13 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
                               const int32_t *str_offs, int64_t n_str_offs) {
     if (elem_size <= 0) elem_size = 8;
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
-    v->len = count;
-    v->cap = count;
-    v->elem_size = elem_size;
-    v->borrows = 0;
-    v->bound = -1;
-    v->strs.offsets = str_offs;
-    v->strs.count = n_str_offs;
+    *v = (RaskVec){
+        .len = count,
+        .cap = count,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
     int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
@@ -700,7 +758,10 @@ void rask_vec_retain_all(RaskVec *v) {
 // chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.
 // Each chunk is a freshly allocated Vec with copied elements.
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
-    RaskVec *result = rask_vec_new(8, NULL, 0); // Vec of pointers (8 bytes each)
+    // A Vec of Vec handles. Saying so is what makes freeing the result free
+    // the chunks: with a NULL element map the free gave back the array of
+    // pointers and every chunk in it leaked.
+    RaskVec *result = rask_vec_new(8, rask_elem_vec_one, 1);
     if (!src || chunk_size <= 0) return result;
     for (int64_t i = 0; i < src->len; i += chunk_size) {
         int64_t remaining = src->len - i;

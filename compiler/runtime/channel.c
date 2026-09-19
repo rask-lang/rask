@@ -19,6 +19,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <sched.h>
 
 // ─── Channel internals ─────────────────────────────────────
 
@@ -326,8 +327,8 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
 
     RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
     RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
-    tx->chan = ch;
-    rx->chan = ch;
+    *tx = (RaskSender){ .chan = ch };
+    *rx = (RaskRecver){ .chan = ch };
 
     *tx_out = tx;
     *rx_out = rx;
@@ -371,7 +372,7 @@ int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out) {
 RaskSender *rask_sender_clone(RaskSender *tx) {
     atomic_fetch_add_explicit(&tx->chan->sender_count, 1, memory_order_relaxed);
     RaskSender *clone = (RaskSender *)rask_alloc(sizeof(RaskSender));
-    clone->chan = tx->chan;
+    *clone = (RaskSender){ .chan = tx->chan };
     return clone;
 }
 
@@ -424,13 +425,13 @@ int64_t rask_channel_new_i64(int64_t capacity) {
 
 int64_t rask_channel_get_tx(int64_t chan) {
     RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
-    tx->chan = (RaskChannel *)(intptr_t)chan;
+    *tx = (RaskSender){ .chan = (RaskChannel *)(intptr_t)chan };
     return (int64_t)(intptr_t)tx;
 }
 
 int64_t rask_channel_get_rx(int64_t chan) {
     RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
-    rx->chan = (RaskChannel *)(intptr_t)chan;
+    *rx = (RaskRecver){ .chan = (RaskChannel *)(intptr_t)chan };
     return (int64_t)(intptr_t)rx;
 }
 
@@ -523,8 +524,23 @@ int64_t rask_select_rotate(int64_t num_arms) {
 // Try non-blocking send/recv. If would block, yield and retry.
 // Outside green tasks, fall back to blocking ops.
 
+#if RASK_HAS_GREEN
 extern void rask_yield(void);
 extern int  rask_green_task_is_cancelled(void);
+#else
+// Off Linux there is no green scheduler to yield to, and channel.o would
+// otherwise carry two undefined symbols into every link — which is why a macOS
+// hello-world failed to link at all, channels or no channels.
+//
+// These are what green.c already does when it's called from outside a green
+// task: `rask_yield` returns immediately and nothing is ever cancelled. The
+// retry loops below become a spin against the other OS threads, so this yields
+// the CPU slice rather than burning it. Concurrency itself is still missing
+// here — codegen emits rask_green_spawn for `spawn`, and that stays undefined
+// off Linux on purpose, so a program that spawns fails loudly at link.
+static void rask_yield(void) { sched_yield(); }
+static int  rask_green_task_is_cancelled(void) { return 0; }
+#endif
 
 // ─── Pointer-based wrappers for aggregate types ──────────
 //

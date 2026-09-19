@@ -217,6 +217,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
+        // Giving back the reference a captured variable's slot held, on the way
+        // to the slot holding another one. Spelled apart from the refcount
+        // ops because it is not this name's reference being released — see
+        // `release_replaced_captures`.
+        StdlibEntry::simple("string_free_replaced", "rask_string_free", &[types::I64], None, false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Vec_push", c_name: "rask_vec_push",
@@ -342,7 +347,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
         // how to read one element, since the header only carries its width.
         StdlibEntry {
-            mir_name: "vec_debug", c_name: "rask_vec_debug",
+            mir_name: "Vec_debug", c_name: "rask_vec_debug",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
@@ -398,7 +403,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Closure-free ops only. `.wide()`/`.read()` reuse Vec clone (Wide is a
         // RaskVec* at runtime); `sum` folds int64 lanes. map/zip_with need the
         // closure-callback path, which currently segfaults natively (#441) —
-        // see NOTES_native_wide.md — so they run under the interpreter only.
+        // see docs/working/native-wide.md — so they run under the interpreter only.
         StdlibEntry::simple("Vec_wide", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Wide_read", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Wide_sum", "rask_wide_sum", &[types::I64], Some(types::I64), false),
@@ -912,7 +917,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64,
+                // R5: is the element a `@resource`, and its name and length.
+                types::I64, types::I64, types::I64,
+            ],
+            ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
         // try_insert on a bounded pool: the handle, or `none` when it's full
@@ -921,7 +931,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // niche `Option<Handle>`, so the tag has to be written out.
         StdlibEntry {
             mir_name: "Pool_try_insert", c_name: "rask_pool_try_insert_packed_sized",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[
+                types::I64, types::I64, types::I64, types::I64, types::I64,
+                types::I64, types::I64, types::I64,
+            ],
+            ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegNone,
         },
         StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
