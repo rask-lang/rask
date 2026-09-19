@@ -718,7 +718,18 @@ impl<'a> Monomorphizer<'a> {
         type_args: &[Type],
         bindings: &HashMap<&str, &Type>,
     ) -> Option<Type> {
-        fn is_type_param(name: &str) -> bool {
+        // A last-resort guess at whether a name is a type parameter, for the
+        // instantiations that reach here with no name list. `bindings` is the
+        // real answer and is checked first everywhere below — this only decides
+        // what to do when it is empty.
+        //
+        // It is one uppercase letter, and it used to be the *only* test. That
+        // made every multi-letter parameter invisible: `Output`, `Item`, `Elem`
+        // carried through verbatim, and MIR then resolved the leftover name
+        // against real types. `Vec<Output>` inside `map_all<Item, Output>` got
+        // the layout of the stdlib struct `os.Output` and freed two of its
+        // string fields out of an i32 (#1247).
+        fn looks_like_type_param(name: &str) -> bool {
             let mut chars = name.chars();
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }
@@ -729,9 +740,14 @@ impl<'a> Monomorphizer<'a> {
             // `describe_all<T: Describable, U: Describable>` carried no dispatch
             // target for either `first.describe()` or `second.describe()` and
             // lowering fell back to guessing (#425).
-            Type::UnresolvedNamed(name) if is_type_param(name) => {
+            Type::UnresolvedNamed(name) => {
                 if let Some(bound) = bindings.get(name.as_str()) {
                     return Some((*bound).clone());
+                }
+                if !looks_like_type_param(name) {
+                    // An ordinary named type — a struct, an enum — which this
+                    // instantiation has nothing to say about.
+                    return Some(ty.clone());
                 }
                 // No name list available — a single argument still pins it.
                 if type_args.len() == 1 { Some(type_args[0].clone()) } else { None }
@@ -742,7 +758,9 @@ impl<'a> Monomorphizer<'a> {
             // its result as `Pair<B, A>`, so nothing could name the layout that
             // copy's caller was passing (#814).
             Type::UnresolvedGeneric { name, args } => {
-                if is_type_param(name) {
+                // A parameter used as the *base* of a generic is one this
+                // instantiation can't name a layout for, whatever it's called.
+                if bindings.contains_key(name.as_str()) || looks_like_type_param(name) {
                     return None;
                 }
                 Some(Type::UnresolvedGeneric {
