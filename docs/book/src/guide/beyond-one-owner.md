@@ -101,14 +101,13 @@ That's the part worth keeping. Deleting a node doesn't leave `hall.exit` aiming 
 and it doesn't leave you an index that now means some other room. Every link into the deleted node
 reads as absent, so the `if` above simply takes its other branch.
 
-## Recursive, or too big for the frame: `Heap`
+## Types that contain themselves: `Heap`
 
-A `Heap<T>` puts the value somewhere else and keeps only its address. An address is the same small
-size however big the value is, and that one fact is what makes it useful twice.
+A `Heap<T>` puts the value somewhere else and keeps only its address.
 
-The first use is recursion. A struct that contains itself has no size: a `Step` holding a `Step`
-holds a `Step`, and the number never settles. Hold the address instead and it settles at once,
-because an address doesn't grow.
+That's what a recursive type needs. A struct containing itself has no size: a `Step` holding a
+`Step` holds a `Step`, and the number never settles. An address doesn't grow, so holding one
+settles it at once.
 
 <!-- test: run-interp | wash\nrinse -->
 ```rask
@@ -134,12 +133,8 @@ func main() {
 `second` is committed by the next line moving it into `first`, and storing it in that field hands
 it over for good: the chain belongs to `first` now, so releasing `first` releases all of it.
 
-The second use is where the value sits. A local lives in its function's stack frame, and a frame
-is a small, fixed place. A `Heap` keeps the value off it and leaves the address behind instead.
-Note what this isn't about: handing a value to a function doesn't copy it whatever its size, since
-that's a move, and a move transfers ownership rather than bytes.
-
-This snapshot is six fields wide:
+That example makes a `Heap` and releases it in the same function. Handing one to a function that
+consumes it instead looks like this:
 
 ```rask
 {{#include ../../../../examples/shared_rack_heap.rk:heaptype}}
@@ -180,8 +175,8 @@ Four questions, asked in order. Stop at the first yes.
 4. Does another part of the program need the same value, and does it change? `Shared`.
 
 One more question sits outside that list, and asking it alongside the others is what makes these
-feel harder than they are: does the value need to be off the stack, because it's recursive or too
-large for a frame? That's `Heap`, and the answer doesn't depend on any of the four above.
+feel harder than they are: does the type contain itself? That's `Heap`, and the answer doesn't
+depend on any of the four above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
 each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are

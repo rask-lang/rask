@@ -35,9 +35,6 @@ struct Room {
 struct Snapshot {
     label: string
     author: string
-    notes: string
-    width: i64
-    height: i64
     revision: i64
 }
 // ANCHOR_END: heaptype
@@ -105,14 +102,7 @@ func main() {
     // ANCHOR_END: rackdelete
 
     // ANCHOR: heapuse
-    let shot = Heap(Snapshot {
-        label: "canvas",
-        author: "ada",
-        notes: "first pass",
-        width: 1920,
-        height: 1080,
-        revision: 7,
-    })
+    let shot = Heap(Snapshot { label: "canvas", author: "ada", revision: 7 })
 
     println("{describe(shot)}")
     // ANCHOR_END: heapuse
