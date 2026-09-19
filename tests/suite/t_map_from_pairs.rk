@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Map.from([(k, v), …])` builds a map you can read back.
+//
+// It didn't, on either backend, for different reasons.
+//
+// Native told the constructor nothing: the call went out with no arguments and
+// codegen filled in its generic defaults, one machine word per slot. A
+// `string` key is sixteen bytes, so half a string went into the key slot and
+// got hashed as a word. The map held the entry and could never find it —
+// `Map.from([("k", 42)])` then `m["k"]` panicked with "key not found in map"
+// while `m.len()` said 1. `Map.new()` had learned this in #812 and the other
+// path never did.
+//
+// The interpreter's copy matched `Value::Vec` for each pair, which stopped
+// being what a tuple is in #1063. Non-matching items were skipped rather than
+// refused, so the answer was an empty map and no error.
+//
+// The two failures are worth pinning together: the same call, silently wrong
+// in two different ways, and the shared symptom was a lookup that missed.
+//
+// Spec: specs/stdlib/collections.md — `Map.from(pairs)`.
+
+test "std.collections — Map.from with string keys finds its own entries" {
+    let m: Map<string, i64> = Map.from([("k", 42), ("j", 7)])
+    assert m.len() == 2
+    assert m["k"] == 42
+    assert m["j"] == 7
+}
+
+test "std.collections — Map.from with integer keys" {
+    let m: Map<i64, string> = Map.from([(1, "one"), (2, "two")])
+    assert m.len() == 2
+    assert m[1] == "one"
+    assert m[2] == "two"
+}
+
+test "std.collections — a key that isn't in the map is still absent" {
+    let m: Map<string, i64> = Map.from([("k", 42)])
+    if m.get("nope")? as v {
+        assert false
+    } else {
+        assert m.len() == 1
+    }
+}
+
+// A Map.from map is an ordinary map: what goes in after it is built reads back
+// the same way. The key-comparison strategy is picked once, at construction,
+// so a later insert that hashed differently from the literal ones would show
+// up here.
+
+test "std.collections — inserting into a Map.from map" {
+    mut m: Map<string, i64> = Map.from([("k", 42)])
+    m.insert("later", 7)
+    assert m.len() == 2
+    assert m["k"] == 42
+    assert m["later"] == 7
+}
