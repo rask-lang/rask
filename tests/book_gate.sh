@@ -126,6 +126,15 @@ while IFS= read -r md; do
             marker = ""
             next
         }
+        # A ```text block is compiler or program output. Typing it by hand is
+        # how a page ends up quoting a diagnostic nobody emits any more, so the
+        # only accepted form is an include of a pinned .out or a golden.
+        /^```text/ {
+            verified = 0
+            infence = 1
+            marker = ""
+            next
+        }
         infence == 1 {
             if ($0 ~ /\{\{#include/) verified = 1
             if (verified == 0) { count++; printf "    line %d\n", NR > "/dev/stderr" }
@@ -137,7 +146,7 @@ while IFS= read -r md; do
     ' "$md" 2>/dev/null)
 
     if [ "$loose" -gt 0 ]; then
-        echo "FAIL: $rel has $loose unverified rask block(s). Use {{#include}}, or mark the block \`<!-- test: compile -->\` / \`<!-- test: run | output -->\`"
+        echo "FAIL: $rel has $loose unverified block(s). Code: use {{#include}}, or mark it \`<!-- test: compile -->\` / \`<!-- test: run | output -->\`. Output: use {{#include}} of a pinned .out or a golden"
         fails=$((fails + 1))
     else
         ok=$((ok + 1))

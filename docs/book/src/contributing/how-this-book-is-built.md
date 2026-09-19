@@ -42,12 +42,66 @@ Regenerate after a deliberate diagnostics change:
 tests/book_gate.sh --update
 ```
 
+## How to explain it
+
+The machine is the metaphor. Describe what actually happens in memory, in plain words,
+and don't build a story on top of it.
+
+Lending is the cautionary case. In a library the book leaves the shelf; in Rask the
+caller goes on reading the value for the whole call. A reader who builds the library
+model predicts the wrong thing at their first `mutate` call — and learned it here.
+
+Rask can afford the literal route where most languages can't. No lifetime annotations,
+no reference type, no effects: every rule is a claim about bytes and where they sit. So
+make the claim.
+
+**One noun carries it: storage.** A place in memory holding a value. A name reaches
+storage, a move hands it over, a borrow reads storage the function doesn't own, a copy
+makes a second one. Define it once and don't introduce a parallel vocabulary three
+chapters later.
+
+**Idea first, word second.** Build the model in plain language, then attach the term in
+one sentence, as a hook for the error messages:
+
+> A function that takes a value without `take` reads the caller's storage where it sits
+> — it doesn't get a copy, and it doesn't get to keep it. The compiler calls this
+> **borrowing**, and you'll see the word in error messages.
+
+Jargon is a label for something the reader already has. Arriving before the idea is what
+makes a language feel like it was written for people who already know it.
+
+**Spend a metaphor only where the literal thing isn't observable.** In Rask that's
+almost nowhere, which is the design working rather than a style choice. Every spend
+should feel like a defeat.
+
+The test for a paragraph: could a reader predict the next error message from what it
+just told them? If they'd have to re-derive it from a metaphor first, the paragraph is
+doing the wrong job.
+
+**No "I", and no decisions.** The style guide keeps first person for design writing,
+where someone is owning a tradeoff. A chapter isn't that. It explains a language that
+already works, to someone trying to use it, so it says what the rule is and why it holds:
+"taking a lock is a real cost, so it belongs in the source where it happens", never "I
+picked scoped access over making the box feel like a plain value". Same reasoning, no
+author in the room.
+
+The difference from the section below is worth keeping straight. The *why* belongs in a
+chapter. The *choosing* doesn't: alternatives that were weighed, what was rejected and
+what it would have cost are design writing, and they live in `specs/` and
+[RULINGS.md](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md). A reader
+learning `Shared` needs the reason the lock is visible. They don't need to know it was
+ever up for debate.
+
 ## The book teaches the ruling, not just the rule
 
 The specs are normative and say what the rule is. A chapter's job is the part the spec
-tables leave out: why it's that way, and what it would cost to be otherwise. "The marker
-is required" is a spec line. "A misread move is caught for you and a misread mutation
-isn't, so the one that can't be caught is the one you write down" is a chapter.
+tables leave out: why it holds. "The marker is required" is a spec line. "A misread move
+is caught for you and a misread mutation isn't, so the one that can't be caught is the
+one you write down" is a chapter.
+
+Note what that example doesn't do: it never mentions the alternative, or that anyone
+chose. It gives the reader the reason and stops. That's the line between a why, which
+belongs here, and a decision, which belongs in `specs/`.
 
 [specs/RULINGS.md](https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md) is where those arguments come from. If a
 chapter can't say why, it's restating the spec and should link to it instead.
