@@ -10,11 +10,11 @@ have its problem.
 ## Most of the time: a plain field
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:plain}}
+{{#include ../../../../examples/shared_and_rack.rk:plain}}
 ```
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:plainuse}}
+{{#include ../../../../examples/shared_and_rack.rk:plainuse}}
 ```
 
 `hero` owns that player. The fields are reached with a dot, the `Vec` inside grows when you push to
@@ -33,11 +33,11 @@ because then there are two settings and an update to one is invisible to the oth
 is a single value that both places reach.
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:sharedtype}}
+{{#include ../../../../examples/shared_and_rack.rk:sharedtype}}
 ```
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:sharedmake}}
+{{#include ../../../../examples/shared_and_rack.rk:sharedmake}}
 ```
 
 That's the whole of it for most uses. `Shared.new` is always a correct answer: it takes a
@@ -47,11 +47,11 @@ send to another task.
 What you give up is reaching the value with a plain dot. Every access says `read` or `write`:
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:sharedget}}
+{{#include ../../../../examples/shared_and_rack.rk:sharedget}}
 ```
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:sharedset}}
+{{#include ../../../../examples/shared_and_rack.rk:sharedset}}
 ```
 
 Each of those takes the lock, does the one thing, and releases it, all inside the expression.
@@ -60,7 +60,7 @@ When you need several statements to happen under one lock, `with` holds it open 
 the read and the write have to be the same lock, or another task could change `retries` in between:
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:sharedblock}}
+{{#include ../../../../examples/shared_and_rack.rk:sharedblock}}
 ```
 
 Taking a lock is a real cost, and a real cost is visible in Rask source. Scoping it puts the
@@ -76,23 +76,23 @@ removed while others still refer to them. A `Vec` can't do this: the index you s
 something different after a removal, and nothing tells you.
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:racktype}}
+{{#include ../../../../examples/shared_and_rack.rk:racktype}}
 ```
 
 A `Rack` holds the values. A `Link` is how one of them refers to another.
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:rackmake}}
+{{#include ../../../../examples/shared_and_rack.rk:rackmake}}
 ```
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:rackread}}
+{{#include ../../../../examples/shared_and_rack.rk:rackread}}
 ```
 
 Now delete the room that `hall` points at:
 
 ```rask
-{{#include ../../../../examples/shared_rack_heap.rk:rackdelete}}
+{{#include ../../../../examples/shared_and_rack.rk:rackdelete}}
 ```
 
 The same `if`, run twice, prints `hall leads to cell` and then `hall leads nowhere`.
@@ -133,27 +133,9 @@ func main() {
 `second` is committed by the next line moving it into `first`, and storing it in that field hands
 it over for good: the chain belongs to `first` now, so releasing `first` releases all of it.
 
-That example makes a `Heap` and releases it in the same function. Handing one to a function that
-consumes it instead looks like this:
-
-```rask
-{{#include ../../../../examples/shared_rack_heap.rk:heaptype}}
-```
-
-```rask
-{{#include ../../../../examples/shared_rack_heap.rk:heapfn}}
-```
-
-```rask
-{{#include ../../../../examples/shared_rack_heap.rk:heapuse}}
-```
-
-`describe` takes the `Heap`, reads through it, and releases it there. The caller gives the value
-up, which is what `take` in that signature says.
-
 `Heap` is the one of the three you release by hand, because it's the one that owns an allocation of
-its own with nothing around it to do the job. Rask has no destructors, so nothing runs
-behind your back at the closing brace.
+its own with nothing around it to do the job. Rask has no destructors, so nothing runs behind your
+back at the closing brace. That's the `ensure drop(first)` above.
 
 The `ensure` goes immediately after the line that allocates, and the compiler holds you to it:
 
@@ -204,10 +186,10 @@ moves things.
 
 ## Running it
 
-The whole program on this page, start to finish:
+The `Shared` and `Rack` code above is one program, and it prints:
 
 ```text
-{{#include ../../../../tests/golden/shared_rack_heap.out}}
+{{#include ../../../../tests/golden/shared_and_rack.out}}
 ```
 
 ## Rules behind this page

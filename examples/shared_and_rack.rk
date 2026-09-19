@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: when a value needs a box, and which one
+// Learn: Shared for one value two places reach, Rack+Link for values that refer
+// to each other and get deleted
 //
-// Included by docs/book/src/guide/boxes.md via mdBook anchors.
+// Included by docs/book/src/guide/beyond-one-owner.md via mdBook anchors.
 // Keep the ANCHOR comments; the chapter quotes the regions between them.
 
 import sync.Shared
 import memory.Rack
 import memory.Link
-import memory.Heap
 
 // ANCHOR: plain
 struct Player {
@@ -30,22 +30,6 @@ struct Room {
     exit: Link<Room>?
 }
 // ANCHOR_END: racktype
-
-// ANCHOR: heaptype
-struct Snapshot {
-    label: string
-    author: string
-    revision: i64
-}
-// ANCHOR_END: heaptype
-
-// ANCHOR: heapfn
-func describe(take s: Heap<Snapshot>) -> string {
-    let line = "{(*s).label} r{(*s).revision} by {(*s).author}"
-    drop(s)
-    return line
-}
-// ANCHOR_END: heapfn
 
 func main() {
     // ANCHOR: plainuse
@@ -100,14 +84,4 @@ func main() {
         println("hall leads nowhere")
     }
     // ANCHOR_END: rackdelete
-
-    // ANCHOR: heapuse
-    let shot = Heap(Snapshot {
-        label: "canvas",
-        author: "ada",
-        revision: 7,
-    })
-
-    println("{describe(shot)}")
-    // ANCHOR_END: heapuse
 }
