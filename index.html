@@ -1,0 +1,193 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rask — a language where references can't be stored</title>
+<meta name="description" content="Rask is a systems language betting that if references can't be stored, lifetime annotations stop being necessary. No GC, no lifetime annotations, deterministic cleanup.">
+<meta property="og:title" content="Rask">
+<meta property="og:description" content="A systems language betting that if references can't be stored, lifetime annotations stop being necessary.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://rask-lang.dev/">
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/tokens.css?v=2e9e8d2cea1a">
+<script src="/rask-vocabulary.js?v=2e9e8d2cea1a"></script>
+<link rel="stylesheet" href="landing.css?v=2e9e8d2cea1a">
+</head>
+<body>
+
+<header class="page masthead">
+    <a class="brand" href="/">
+        <img src="/book/assets/rask48.png" alt="">
+        rask
+    </a>
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+    </nav>
+</header>
+
+<main>
+
+<div class="page hero">
+    <div>
+        <span class="pill">runs real programs, nothing is stable yet</span>
+        <h1>No garbage collector. No lifetime annotations.</h1>
+        <p>Rask is a systems language that buys both by taking something away. You can borrow a value for a call or an expression, but you can&rsquo;t keep the borrow: not in a struct field, not as a return value. Nothing outlives what it points at. Keeping track of that is the entire job of the <code>'a</code> that spreads through a Rust signature, so Rask has no equivalent and no need for one.</p>
+        <p>Whether that&rsquo;s pleasant to write is the open question. I think it is, which is a sample size of one.</p>
+        <div class="actions">
+            <a class="btn solid" href="/book/">Read the book</a>
+        </div>
+        <p class="install">or <a href="/book/getting-started/installation.html">install it</a>. It builds from source with <code>cargo build --release</code> and needs a Rust toolchain.</p>
+    </div>
+
+    <div>
+        <div id="try-rask" class="try-box"></div>
+        <noscript><p class="prose">This one needs JavaScript. The <a href="/app/">playground</a> does too.</p></noscript>
+    </div>
+</div>
+
+<section class="page">
+    <h2>Why another language</h2>
+
+    <div class="prose">
+        <p>There is a way of writing Rust that people call pragmatic. Keep lifetimes out of your structs. Use indices instead of references. Clone when it isn&rsquo;t hot. Reach for <code>Rc&lt;RefCell&lt;T&gt;&gt;</code> when you have to.</p>
+        <p>It works. It is also a set of rules the compiler doesn&rsquo;t know about, that every codebase rediscovers and half-follows. C++ has the same shape: RAII, smart pointers, the Core Guidelines. A whole discipline to get memory safety out of a language that won&rsquo;t hand it to you, and no way to check that anyone kept it.</p>
+        <p class="claim">When the advice is &ldquo;don&rsquo;t use the feature&rdquo;, the feature is the problem.</p>
+        <p>That is the bet Rask is making, and it could be wrong. If you want a language to ship something in this year, use Rust or Go.</p>
+    </div>
+</section>
+
+<section class="page">
+    <h2>The rule everything follows from</h2>
+    <p class="lede prose"><strong>A reference can&rsquo;t be stored.</strong></p>
+
+    <div class="idea">
+        <div>
+            <p>So Rask doesn&rsquo;t have it. You can borrow a value for a call or an expression. You cannot put the borrow in a struct field, and you cannot return it.</p>
+            <p>It is a real restriction: a struct that wants to point at something has to own it, or hold a <code>Link</code> into a <code>Rack</code>. What it buys is that nothing spreads. One <code>&amp;'a str</code> in a Rust struct field puts <code>'a</code> on that struct, then on every struct that holds it, on the traits it implements, and on every function that hands one back. Rask has no <code>'a</code> to propagate, so none of that happens.</p>
+            <p>The other rules are consequences: values move, files get closed exactly once, graphs live in a rack.</p>
+        </div>
+        <figure class="window runnable">
+            <figcaption><span>borrow.rk</span></figcaption>
+<pre><code>struct Item {
+    name: string
+    price: i64
+}
+
+// `cart` is borrowed for the call. The caller still
+// owns it afterwards, and no signature says so.
+func total(cart: Vec&lt;Item&gt;) -&gt; i64 {
+    mut sum: i64 = 0
+    for item in cart { sum += item.price }
+    return sum
+}
+
+func main() {
+    mut cart = Vec.new()
+    cart.push(Item { name: "coffee", price: 45 })
+    cart.push(Item { name: "beans", price: 120 })
+
+    println("{cart.len()} items, {total(cart)} kr")
+}</code></pre>
+        </figure>
+    </div>
+
+</section>
+
+<section class="page">
+    <h2>What you get</h2>
+    <p class="lede prose">A signature you read once and know what the call does to its arguments: whether it takes them, changes them, or only looks.</p>
+
+    <div class="ledger">
+        <div class="get">
+            <h3>You get</h3>
+            <ul>
+                <li>No lifetime annotations, anywhere</li>
+                <li>Signatures you read in one pass</li>
+                <li>Allocations visible at the call site</li>
+                <li>Deterministic cleanup, no GC pauses</li>
+            </ul>
+        </div>
+        <div class="give">
+            <h3>You give up</h3>
+            <ul>
+                <li>References in struct fields</li>
+                <li>Returning a reference from a function</li>
+                <li>Implicit copies of anything large</li>
+                <li>Pointer-chasing a graph you built by hand</li>
+            </ul>
+        </div>
+    </div>
+
+    <p class="prose">Raw pointers are behind <code>unsafe</code>, same as in Rust, and they are there for talking to C. What neither language gives you is a hand-built pointer graph in safe code: in Rask that shape lives in a <code>Rack</code> and you pay an indirection to reach through a <code>Link</code>. C and C++ hand you the pointers with no ceremony at all, and if that is the trade you want, they are the honest answer.</p>
+</section>
+
+<section class="page">
+    <h2>Where it actually stands</h2>
+
+    <div class="status-grid">
+        <div>
+            <h3>Runs today</h3>
+            <ul>
+                <li>Native codegen via Cranelift, plus an interpreter that acts as the reference for what the answer should be</li>
+                <li>Ownership, moves, borrows, linear resources</li>
+                <li><code>Rack</code> and <code>Link</code> for graphs, on both backends</li>
+                <li>Structs, enums, generics, traits, <code>comptime</code></li>
+                <li><code>spawn</code>/<code>join</code>, channels, thread pools</li>
+                <li>Packages, workspaces, watch mode, LSP</li>
+            </ul>
+        </div>
+        <div>
+            <h3>Not there yet</h3>
+            <ul>
+                <li><strong>No fibers.</strong> <code>spawn</code> is an OS thread; the M:N scheduler is designed, not built</li>
+                <li>Panics abort instead of unwinding</li>
+                <li>x86-64 only, and SIMD is a stub</li>
+            </ul>
+        </div>
+        <div>
+            <h3>Caveats</h3>
+            <ul>
+                <li><strong>Not memory-safe yet.</strong> The design is; this implementation isn&rsquo;t. Codegen still gets memory release wrong in known cases, so a correct program can still corrupt or leak</li>
+                <li>It&rsquo;s a solo project, so fixes land in waves</li>
+                <li>No compatibility promise: breaking changes land whenever a design turns out wrong</li>
+            </ul>
+        </div>
+    </div>
+
+</section>
+
+<section class="page">
+    <h2>Should you learn it?</h2>
+
+    <div class="prose">
+        <p>Not yet.</p>
+        <p>It&rsquo;s a solo project, the ecosystem is what you see in this repository, and breaking changes land whenever a design turns out wrong.</p>
+        <p>Ideas and complaints are both welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>, and the <a href="/blog/">blog</a> has the longer argument.</p>
+    </div>
+</section>
+
+</main>
+
+<script type="module" src="try.js?v=2e9e8d2cea1a"></script>
+
+<footer class="page">
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+        <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">Language card</a>
+    </nav>
+    <span>MIT or Apache-2.0, your choice.</span>
+</footer>
+
+</body>
+</html>
