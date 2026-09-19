@@ -3,12 +3,9 @@
 A value in Rask sits in one place and one name is responsible for it. That covers almost
 everything you write.
 
-This page is the three times it doesn't, and what to reach for in each: `Shared`, `Rack` with
-`Link`, and `Heap`. They have little in common with each other, so there's nothing to learn as a
-set. Each one answers a different problem, and you go looking for it when you have that problem.
-
-So the page starts with the code you already know how to write, and changes it only where it
-stops working.
+Three situations break it, and each has one answer: `Shared`, `Rack` with `Link`, and `Heap`.
+They have little in common, so there's nothing to learn as a set. You go looking for one when you
+have its problem.
 
 ## Most of the time: a plain field
 
@@ -21,14 +18,13 @@ stops working.
 ```
 
 `hero` owns that player. The fields are reached with a dot, the `Vec` inside grows when you push to
-it, and when `hero` goes out of scope the whole thing is released. Nothing on this page yet.
+it, and when `hero` goes out of scope the whole thing is released. Nothing more is involved.
 
 Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary value that happens
 to keep its contents on the heap, so it's owned by one name like anything else.
 
-What breaks this shape is one of three things: another part of the program needs the same value,
-your values need to refer to each other, or the value can't sit where it is. One type each,
-and they're the three sections below.
+So what breaks it? Another part of the program needs the same value. Or your values need to
+refer to each other. Or the value can't sit where it is.
 
 ## When another part needs the same value: `Shared`
 
@@ -105,7 +101,7 @@ That's the part worth keeping. Deleting a node doesn't leave `hall.exit` aiming 
 and it doesn't leave you an index that now means some other room. Every link into the deleted node
 reads as absent, so the `if` above simply takes its other branch.
 
-## Recursive, or big and moved often: `Heap`
+## Recursive, or too big for the frame: `Heap`
 
 A `Heap<T>` puts the value somewhere else and keeps only its address. An address is the same small
 size however big the value is, and that one fact is what makes it useful twice.
@@ -138,8 +134,12 @@ func main() {
 `second` is committed by the next line moving it into `first`, and storing it in that field hands
 it over for good: the chain belongs to `first` now, so releasing `first` releases all of it.
 
-The second use is size. Moving a large value copies every byte of it, and moving a `Heap` copies
-one address. This snapshot is six fields wide:
+The second use is where the value sits. A local lives in its function's stack frame, and a frame
+is a small, fixed place. A `Heap` keeps the value off it and leaves the address behind instead.
+Note what this isn't about: handing a value to a function doesn't copy it whatever its size, since
+that's a move, and a move transfers ownership rather than bytes.
+
+This snapshot is six fields wide:
 
 ```rask
 {{#include ../../../../examples/shared_rack_heap.rk:heaptype}}
@@ -153,8 +153,8 @@ one address. This snapshot is six fields wide:
 {{#include ../../../../examples/shared_rack_heap.rk:heapuse}}
 ```
 
-Passing `shot` to `describe` moves the address. The six fields never get copied, and the caller
-gives the value up, which is what `take` in that signature says.
+`describe` takes the `Heap`, reads through it, and releases it there. The caller gives the value
+up, which is what `take` in that signature says.
 
 `Heap` is the one of the three you release by hand, because it's the one that owns an allocation of
 its own with nothing around it to do the job. Rask has no destructors, so nothing runs
@@ -180,8 +180,8 @@ Four questions, asked in order. Stop at the first yes.
 4. Does another part of the program need the same value, and does it change? `Shared`.
 
 One more question sits outside that list, and asking it alongside the others is what makes these
-feel harder than they are: does the value need to be on the heap, because it's recursive or large
-and moved often? That's `Heap`, and the answer doesn't depend on any of the four above.
+feel harder than they are: does the value need to be off the stack, because it's recursive or too
+large for a frame? That's `Heap`, and the answer doesn't depend on any of the four above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
 each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are
