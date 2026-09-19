@@ -1,30 +1,34 @@
-# Boxes
+# When one owner isn't enough
 
 A value in Rask sits in one place and one name is responsible for it. That covers almost
-everything you write. A box is what you reach for when it doesn't.
+everything you write.
 
-There are three you'll meet, and you can go a long way without needing any of them. So this page
-starts with the code you already know how to write, and adds a box only where the plain version
+This page is the three times it doesn't, and what to reach for in each: `Shared`, `Rack` with
+`Link`, and `Heap`. They have little in common with each other, so there's nothing to learn as a
+set. Each one answers a different problem, and you go looking for it when you have that problem.
+
+So the page starts with the code you already know how to write, and changes it only where it
 stops working.
 
 ## Most of the time: a plain field
 
 ```rask
-{{#include ../../../../examples/boxes.rk:plain}}
+{{#include ../../../../examples/shared_rack_heap.rk:plain}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:plainuse}}
+{{#include ../../../../examples/shared_rack_heap.rk:plainuse}}
 ```
 
 `hero` owns that player. The fields are reached with a dot, the `Vec` inside grows when you push to
-it, and when `hero` goes out of scope the whole thing is released. No box in sight.
+it, and when `hero` goes out of scope the whole thing is released. Nothing on this page yet.
 
 Having many of something doesn't change that. A `Vec` or a `Map` is an ordinary value that happens
 to keep its contents on the heap, so it's owned by one name like anything else.
 
 What breaks this shape is one of three things: another part of the program needs the same value,
-your values need to refer to each other, or the value can't sit where it is. A box for each.
+your values need to refer to each other, or the value can't sit where it is. One type each,
+and they're the three sections below.
 
 ## When another part needs the same value: `Shared`
 
@@ -33,11 +37,11 @@ because then there are two settings and an update to one is invisible to the oth
 is a single value that both places reach.
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedtype}}
+{{#include ../../../../examples/shared_rack_heap.rk:sharedtype}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedmake}}
+{{#include ../../../../examples/shared_rack_heap.rk:sharedmake}}
 ```
 
 That's the whole of it for most uses. `Shared.new` is always a correct answer: it takes a
@@ -47,11 +51,11 @@ send to another task.
 What you give up is reaching the value with a plain dot. Every access says `read` or `write`:
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedget}}
+{{#include ../../../../examples/shared_rack_heap.rk:sharedget}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedset}}
+{{#include ../../../../examples/shared_rack_heap.rk:sharedset}}
 ```
 
 Each of those takes the lock, does the one thing, and releases it, all inside the expression.
@@ -60,7 +64,7 @@ When you need several statements to happen under one lock, `with` holds it open 
 the read and the write have to be the same lock, or another task could change `retries` in between:
 
 ```rask
-{{#include ../../../../examples/boxes.rk:sharedblock}}
+{{#include ../../../../examples/shared_rack_heap.rk:sharedblock}}
 ```
 
 Taking a lock is a real cost, and a real cost is visible in Rask source. Scoping it puts the
@@ -76,23 +80,23 @@ removed while others still refer to them. A `Vec` can't do this: the index you s
 something different after a removal, and nothing tells you.
 
 ```rask
-{{#include ../../../../examples/boxes.rk:racktype}}
+{{#include ../../../../examples/shared_rack_heap.rk:racktype}}
 ```
 
 A `Rack` holds the values. A `Link` is how one of them refers to another.
 
 ```rask
-{{#include ../../../../examples/boxes.rk:rackmake}}
+{{#include ../../../../examples/shared_rack_heap.rk:rackmake}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:rackread}}
+{{#include ../../../../examples/shared_rack_heap.rk:rackread}}
 ```
 
 Now delete the room that `hall` points at:
 
 ```rask
-{{#include ../../../../examples/boxes.rk:rackdelete}}
+{{#include ../../../../examples/shared_rack_heap.rk:rackdelete}}
 ```
 
 The same `if`, run twice, prints `hall leads to cell` and then `hall leads nowhere`.
@@ -134,32 +138,32 @@ func main() {
 `second` is committed by the next line moving it into `first`, and storing it in that field hands
 it over for good: the chain belongs to `first` now, so releasing `first` releases all of it.
 
-The second use is size. Moving a large value copies every byte of it, and moving the box copies one
-address. This snapshot is six fields wide:
+The second use is size. Moving a large value copies every byte of it, and moving a `Heap` copies
+one address. This snapshot is six fields wide:
 
 ```rask
-{{#include ../../../../examples/boxes.rk:heaptype}}
+{{#include ../../../../examples/shared_rack_heap.rk:heaptype}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:heapfn}}
+{{#include ../../../../examples/shared_rack_heap.rk:heapfn}}
 ```
 
 ```rask
-{{#include ../../../../examples/boxes.rk:heapuse}}
+{{#include ../../../../examples/shared_rack_heap.rk:heapuse}}
 ```
 
 Passing `shot` to `describe` moves the address. The six fields never get copied, and the caller
 gives the value up, which is what `take` in that signature says.
 
-`Heap` is the one box that has to be released by hand, because it's the one that owns an allocation
-of its own with no container around it to do the job. Rask has no destructors, so nothing runs
+`Heap` is the one of the three you release by hand, because it's the one that owns an allocation of
+its own with nothing around it to do the job. Rask has no destructors, so nothing runs
 behind your back at the closing brace.
 
 The `ensure` goes immediately after the line that allocates, and the compiler holds you to it:
 
 ```text
-{{#include ../../errors/boxes/heap_no_cleanup.out}}
+{{#include ../../errors/beyond-one-owner/heap_no_cleanup.out}}
 ```
 
 That program does release the value, on the last line. The complaint is about the lines in
@@ -175,9 +179,9 @@ Four questions, asked in order. Stop at the first yes.
 3. They refer to each other and can be deleted? `Rack` and `Link`.
 4. Does another part of the program need the same value, and does it change? `Shared`.
 
-One more question sits outside that list, and mixing it in is what makes the set feel harder than
-it is: does the value need to be on the heap, because it's recursive or large and moved often?
-That's `Heap`, and it's independent of all four answers above.
+One more question sits outside that list, and asking it alongside the others is what makes these
+feel harder than they are: does the value need to be on the heap, because it's recursive or large
+and moved often? That's `Heap`, and the answer doesn't depend on any of the four above.
 
 Reading it as one sentence: plain fields until you have many, `Vec` and `Map` until they refer to
 each other, `Rack` when they do, and a lock only once a second task exists. Steps 1 and 2 are
@@ -185,17 +189,17 @@ most programs.
 
 ## One thing to watch
 
-A box is not the only place a value can be held in place while you look at it. Reading an element
+`Shared` is not the only thing that holds a value still while you look at it. Reading an element
 of a `Vec` in a `with` block does the same thing:
 
 ```rask
-{{#include ../../errors/boxes/push_inside_with.rk:body}}
+{{#include ../../errors/beyond-one-owner/push_inside_with.rk:body}}
 ```
 
 That doesn't build, and the `push` is why:
 
 ```text
-{{#include ../../errors/boxes/push_inside_with.out}}
+{{#include ../../errors/beyond-one-owner/push_inside_with.out}}
 ```
 
 Pushing can move the whole buffer somewhere else, which would leave the binding pointing at
@@ -208,12 +212,12 @@ moves things.
 The whole program on this page, start to finish:
 
 ```text
-{{#include ../../../../tests/golden/boxes.out}}
+{{#include ../../../../tests/golden/shared_rack_heap.out}}
 ```
 
 ## Rules behind this page
 
-- [Boxes](https://github.com/rask-lang/rask/blob/main/specs/memory/boxes.md): the family, and why it's closed
+- [Shared, Rack and Heap](https://github.com/rask-lang/rask/blob/main/specs/memory/boxes.md): all three, and why you can't write your own
 - [Racks](https://github.com/rask-lang/rask/blob/main/specs/memory/racks.md): links, deletion, and what a stale one reads as
 - [Synchronization](https://github.com/rask-lang/rask/blob/main/specs/concurrency/sync.md): the three strategies
 - [Borrowing](https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md): inline access and `with`

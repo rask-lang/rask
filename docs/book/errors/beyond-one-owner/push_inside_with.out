@@ -1,5 +1,5 @@
 error[E0808]: cannot push `items` inside `with` block
-  --> docs/book/errors/boxes/push_inside_with.rk:14:9
+  --> docs/book/errors/beyond-one-owner/push_inside_with.rk:14:9
     |
  12 |     with items[0] as first {
     |     ------------- element borrowed here

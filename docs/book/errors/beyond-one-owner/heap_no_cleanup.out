@@ -1,5 +1,5 @@
 error[E0882]: `frame` has no cleanup committed yet
-  --> docs/book/errors/boxes/heap_no_cleanup.rk:14:5
+  --> docs/book/errors/beyond-one-owner/heap_no_cleanup.rk:14:5
     |
  12 |     let frame = Heap(Frame { label: "canvas", width: 1920 })
     |     -------------------------------------------------------- `frame` was acquired here
