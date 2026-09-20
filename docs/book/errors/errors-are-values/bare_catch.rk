@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `catch` with a bare value and no binder
+// Rejects: `catch 3` — the error would die without the source saying so
+//
+// type.errors/ER14: `catch` is the only form in the family that can destroy
+// information, so the binder is mandatory. `catch _ => 3` is the spelling that
+// drops an error on purpose, and it greps.
+
+func main() {
+    let text = "eighty-eighty"
+    let n = text.parse<i64>() catch 3
+    println("{n}")
+}

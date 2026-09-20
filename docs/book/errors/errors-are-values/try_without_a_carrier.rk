@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `try` in a function that can't carry the error
+// Rejects: `try port_of(text)` where the enclosing function returns nothing
+//
+// type.errors/ER16: `try` hands the error to the caller, so the caller's
+// signature needs somewhere to put it.
+//
+// A non-void return with no error branch — `-> i64` — is the same mistake and
+// is not caught yet: #1251.
+
+enum ConfigError {
+    Missing(string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        return "nothing set"
+    }
+}
+
+func port_of(text: string) -> i64 or ConfigError {
+    if text == "" {
+        return ConfigError.Missing("port")
+    }
+    return 8080
+}
+
+// ANCHOR: body
+func report(text: string) {
+    let port = try port_of(text)
+    println("{port}")
+}
+// ANCHOR_END: body
+
+func main() {
+    report("")
+}

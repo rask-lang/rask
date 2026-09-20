@@ -76,4 +76,4 @@ func main() {
 
 ## Next: Explore the Guide
 
-Next: [Passing Values](../guide/passing-values.md), on what happens to a value when you hand it to a function.
+Next: [Errors are values](../guide/errors-are-values.md), on what a function returns when it can't do what you asked.

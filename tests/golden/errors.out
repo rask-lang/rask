@@ -1,0 +1,5 @@
+listening on 8080
+bad config: port is not set
+bad config: port is not a number
+name is unnamed
+retries is 3

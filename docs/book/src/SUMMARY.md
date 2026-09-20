@@ -4,12 +4,13 @@
 
 # Start here
 
+- [Try it in the browser](playground/README.md)
 - [Install it](getting-started/installation.md)
 - [Your first program](getting-started/first-program.md)
-- [Try it in the browser](playground/README.md)
 
 # Learn the language
 
+- [Errors are values](guide/errors-are-values.md)
 - [Passing Values](guide/passing-values.md)
 - [When one owner isn't enough](guide/beyond-one-owner.md)
 

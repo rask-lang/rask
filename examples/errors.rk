@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: errors are values — `T or E`, `try`, `catch`, `??`
+//
+// The chapter at docs/book/src/guide/errors.md includes the anchored regions
+// below rather than quoting them, so what the page shows is what CI runs.
+// tests/examples_gate.sh runs this on both backends against
+// tests/golden/errors.out.
+
+// ANCHOR: errtype
+enum ConfigError {
+    Missing(string)
+    Malformed(string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        match self {
+            ConfigError.Missing(key) => return "{key} is not set"
+            ConfigError.Malformed(key) => return "{key} is not a number"
+        }
+    }
+}
+// ANCHOR_END: errtype
+
+// ANCHOR: fallible
+func port_of(settings: Map<string, string>) -> i64 or ConfigError {
+    let text = settings.get("port") ?? {
+        return ConfigError.Missing("port")
+    }
+    let n = text.parse<i64>() catch _ => {
+        return ConfigError.Malformed("port")
+    }
+    return n
+}
+// ANCHOR_END: fallible
+
+// ANCHOR: propagate
+func banner(settings: Map<string, string>) -> string or ConfigError {
+    let port = try port_of(settings)
+    return "listening on {port}"
+}
+// ANCHOR_END: propagate
+
+// ANCHOR: absence
+func name_of(settings: Map<string, string>) -> string {
+    return settings.get("name") ?? "unnamed"
+}
+// ANCHOR_END: absence
+
+// ANCHOR: drop
+func retries_of(settings: Map<string, string>) -> i64 {
+    let text = settings.get("retries") ?? "3"
+    return text.parse<i64>() catch _ => 3
+}
+// ANCHOR_END: drop
+
+func settings_with(port: string) -> Map<string, string> {
+    mut m = Map.new()
+    m.insert("port", port)
+    return m
+}
+
+func main() {
+    let good = settings_with("8080")
+
+    // ANCHOR: handle
+    let b = banner(good)
+    if b is string as line {
+        println(line)
+    } else as e {
+        println("bad config: {e.message()}")
+    }
+    // ANCHOR_END: handle
+
+    mut empty = Map.new()
+    let missing = banner(empty)
+    if missing is string as line {
+        println(line)
+    } else as e {
+        println("bad config: {e.message()}")
+    }
+
+    let junk = banner(settings_with("eighty-eighty"))
+    if junk is string as line {
+        println(line)
+    } else as e {
+        println("bad config: {e.message()}")
+    }
+
+    println("name is {name_of(empty)}")
+    println("retries is {retries_of(empty)}")
+}
