@@ -33,7 +33,12 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::union_named(types_vec?, |id| Some(types.type_name(id))));
     }
 
-    if s.ends_with('?') && !s.starts_with('(') {
+    // `T?`, including a parenthesised `T`. The parenthesised case used to be
+    // excluded outright, so `(i64, bool)?` matched neither this nor the tuple
+    // arm below — it ends with `?`, not `)` — and fell through to a name. What
+    // reported it was `if o? as v`, which then read the annotation as something
+    // that isn't an optional and asked for a Result (#1238).
+    if s.ends_with('?') {
         let inner = parse_type_string(&s[..s.len() - 1], types)?;
         return Ok(Type::option(inner));
     }

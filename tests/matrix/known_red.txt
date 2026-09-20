@@ -17,26 +17,10 @@
 # A pair that isn't legal Rask does NOT belong here — it belongs in gen.py's
 # SKIPS, with the rule that says so. This file is for things that should work.
 
-# --- #1235: an aggregate handed to a closure parameter ---
-# Capturing the same payload works, so it is the parameter slot. The enum's
-# SIGILL is the same corruption landing on a tag that isn't one of the two.
-closure_param__struct # struct parameter comes back as a stack address — #1235 (native output)
-closure_param__enum   # enum parameter lands on an out-of-range tag — #1235 (native run)
-
 # --- #1236: a struct literal in a call argument inside an `if` condition ---
 # The yield of a sequence is always in a condition (type.sequence/SEQ3), so
 # authoring one over a struct hits this first.
 seq_yield__struct # `if !yield(Pay { … })` doesn't parse — #1236 (both check)
-
-# --- #1237: the derived `compare` for a struct with a tuple field ---
-# Nothing calls compare; the derive is emitted because the type exists, and it
-# sign-extends an i64.
-param_return__tuple # derived compare fails the Cranelift verifier — #1237 (native compile)
-struct_field__tuple # derived compare fails the Cranelift verifier — #1237 (native compile)
-
-# --- #1238: `if o? as v` on a tuple optional ---
-optional__tuple       # reported as `try` needing a Result — #1238 (both check)
-optional_param__tuple # reported as `try` needing a Result — #1238 (both check)
 
 # --- #1240: a closure literal doesn't take its shape from a tuple annotation ---
 tuple__closure # parameter types stay open — #1240 (both check)

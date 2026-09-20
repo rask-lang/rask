@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A tuple in the places a value is carried.
+//
+// Two of them were broken.
+//
+// A struct holding a tuple couldn't be compiled at all. The derived `compare`
+// is emitted because the type exists, and the element comparison widened every
+// field to i64 — including the ones that already were, where `sextend.i64` is
+// not an instruction. The Cranelift verifier rejected the function, and with it
+// the whole build: `Metadata` and `SystemTime` both hold tuples and both went
+// down in the same run (#1237).
+//
+// And `(i64, bool)?` parsed as neither an optional nor a tuple — it ends with
+// `?`, not `)`, and the optional arm skipped anything starting with `(`. So
+// `if o? as v` read the annotation as something that isn't an optional and
+// asked for a Result (#1238):
+//
+//     error[E0369]: `try` requires a Result type, found `(i64, bool)?`
+
+struct Holder {
+    public inner: (i64, i64)
+}
+
+func roundtrip(t: (i64, bool)) -> (i64, bool) {
+    return t
+}
+
+func unwrap_it(o: (i64, bool)?) -> (i64, bool) {
+    if o? as v {
+        return v
+    }
+    return (7, false)
+}
+
+test "a tuple in a struct field" {
+    let h = Holder { inner: (42, 7) }
+    assert h.inner.0 == 42
+    assert h.inner.1 == 7
+}
+
+// What the derive is for: the compare has to order, not just compile.
+test "structs holding tuples sort by the tuple" {
+    mut hs: Vec<Holder> = Vec.new()
+    hs.push(Holder { inner: (3, 1) })
+    hs.push(Holder { inner: (1, 9) })
+    hs.push(Holder { inner: (2, 5) })
+    hs.sort()
+    assert hs[0].inner.0 == 1
+    assert hs[1].inner.0 == 2
+    assert hs[2].inner.0 == 3
+}
+
+test "a tuple through a parameter and a return" {
+    let t = roundtrip((42, true))
+    assert t.0 == 42
+    assert t.1
+}
+
+test "a tuple optional, unwrapped inline" {
+    let o: (i64, bool)? = (42, true)
+    if o? as v {
+        assert v.0 == 42
+    } else {
+        assert false
+    }
+}
+
+test "a tuple optional written the long way" {
+    let o: Option<(i64, bool)> = (42, true)
+    if o? as v {
+        assert v.0 == 42
+    } else {
+        assert false
+    }
+}
+
+test "a tuple optional that is absent" {
+    let o: (i64, bool)? = none
+    if o? as v {
+        assert v.0 == 0
+    } else {
+        assert true
+    }
+}
+
+test "a tuple optional through a parameter" {
+    assert unwrap_it((42, true)).0 == 42
+    assert unwrap_it(none).0 == 7
+}
+
+func main() {}
