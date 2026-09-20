@@ -303,12 +303,6 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
-            // `read` is reserved by the lexer but has no structural role in the grammar.
-            // Allow it anywhere a plain identifier is expected.
-            TokenKind::ReadKw => {
-                self.advance();
-                Ok("read".to_string())
-            }
             _ => Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -3329,7 +3323,7 @@ impl Parser {
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Take
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Null | TokenKind::ReadKw
+                | TokenKind::None | TokenKind::Null
         )
     }
 
@@ -4069,16 +4063,6 @@ impl Parser {
                         })
                     }
                 }
-            }
-
-            // `read` is reserved as a parameter mode keyword but has no syntactic
-            // role in expressions. Allow it as a plain identifier so user-defined
-            // functions and variables named `read` work correctly.
-            TokenKind::ReadKw => {
-                self.advance();
-                let name = "read".to_string();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
             }
 
             TokenKind::LParen => self.parse_paren_or_tuple(),
@@ -5957,7 +5941,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::None
             | TokenKind::Null
             | TokenKind::Own
-            | TokenKind::ReadKw
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try
@@ -6003,7 +5986,6 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Private => "private",
         TokenKind::Take => "take",
         TokenKind::Own => "own",
-        TokenKind::ReadKw => "read",
         TokenKind::MutateKw => "mutate",
         TokenKind::Unsafe => "unsafe",
         TokenKind::Comptime => "comptime",
