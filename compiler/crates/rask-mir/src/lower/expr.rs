@@ -1692,6 +1692,12 @@ impl<'a> MirLowerer<'a> {
                         }));
                         return Ok((MirOperand::Local(result_local), MirType::I64));
                     }
+                    // A `Heap<T>` that was never boxed has nothing to load
+                    // through: the local *is* the payload (mem.heap). The load
+                    // read the vector's first word and indexed that (#1234).
+                    UnaryOp::Deref if self.expr_is_unboxed_heap(operand) => {
+                        return Ok((operand_op, operand_ty));
+                    }
                     // A raw pointer needs the load. An `Owned<T>` doesn't —
                     // it's transparent (OW5), so the checker's type for the
                     // pointee is `T` itself, not a `RawPtr`. Once `own` boxes an
@@ -2006,8 +2012,14 @@ impl<'a> MirLowerer<'a> {
                     // the field's word, because the read hands back a *copy* of
                     // the payload and freeing that stack slot aborted in glibc
                     // — machinery for a shape that no longer compiles (#1202).
-                    let box_ptr = if boxed
-                        || matches!(arg_mir_types.first(), Some(MirType::Ptr))
+                    // A `Heap<T>` that was never boxed frees nothing: the
+                    // payload fits the slot, so what is in the local is the
+                    // `Vec` or the closure itself, and the frame already gives
+                    // that back. Freeing it handed `rask_free` the vector's own
+                    // handle — the SIGSEGV in #1234.
+                    let unboxed_heap = arg_expr.is_some_and(|e| self.expr_is_unboxed_heap(e));
+                    let box_ptr = if !unboxed_heap
+                        && (boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)))
                     {
                         arg_operands.into_iter().next()
                     } else {
@@ -9899,6 +9911,7 @@ impl<'a> MirLowerer<'a> {
         val: &MirOperand,
         payload_ty: &MirType,
         is_niche: bool,
+        scrutinee: &Expr,
     ) {
         let local = self.builder.alloc_local(name.to_string(), payload_ty.clone());
         let rvalue = if is_niche {
@@ -9920,6 +9933,36 @@ impl<'a> MirLowerer<'a> {
         if let Some(prefix) = self.mir_type_name(payload_ty) {
             self.meta_mut(name).type_prefix = Some(prefix);
         }
+        // A callable payload binds a closure, and calling it has to emit an
+        // indirect call. Every other way of binding one registers it; this one
+        // didn't, so `if m.get(k)? as f` left `f(2)` lowering as a call to a
+        // function named `f` — which is nothing, so lowering gave up (#1151).
+        if let Some(ret_ty) = self.presence_payload_callable_ret(scrutinee) {
+            self.closure_locals.insert(name.to_string());
+            self.func_sigs.insert(
+                name.to_string(),
+                super::FuncSig {
+                    ret_ty,
+                    scalar_mutate_params: Vec::new(),
+                    aggregate_mutate_params: Vec::new(),
+                    ret_vec_elem: None,
+                    param_ty_strs: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// What the payload of `scrutinee` answers when called, if it is callable.
+    ///
+    /// The scrutinee of `x? as f` is a `T?` or a `T or E`; what `f` binds is the
+    /// good side of it.
+    fn presence_payload_callable_ret(&self, scrutinee: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(scrutinee.id)?;
+        let payload = match ty {
+            rask_types::Type::Result { ok, .. } => ok.as_ref(),
+            other => other,
+        };
+        self.ctx.callable_ret_ty(payload, self.ctx.type_names)
     }
 
     fn lower_if_present(
@@ -9966,7 +10009,7 @@ impl<'a> MirLowerer<'a> {
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
-            self.bind_presence_payload(name, &val, &payload_ty, is_niche);
+            self.bind_presence_payload(name, &val, &payload_ty, is_niche, inner);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         self.locals = outer_locals;

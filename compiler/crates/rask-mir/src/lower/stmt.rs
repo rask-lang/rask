@@ -1616,6 +1616,14 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
+        // A `Heap<T>` whose payload fits the slot holds the payload, not a
+        // block. Nothing in the type says so (HP5 erases `Heap<T>` to `T`), so
+        // the binding records it — `*b` and `drop(b)` both ask (#1234).
+        if matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Heap, .. }) && !init_may_be_box {
+            self.meta_mut(name).is_heap_unboxed = true;
+        } else if ty.is_some_and(|s| self.ctx.is_unboxed_heap_annotation(s)) {
+            self.meta_mut(name).is_heap_unboxed = true;
+        }
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         // A `mut` scalar that an `ensure` reads and this function writes again
         // gets a cell of its own (#1011).
@@ -2242,7 +2250,7 @@ impl<'a> MirLowerer<'a> {
                     else_block: exit_block,
                 }));
                 let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-                Some((name, val, payload_ty, is_niche))
+                Some((name, val, payload_ty, is_niche, inner))
             }
             None => {
                 let (cond_op, _) = self.lower_expr(cond)?;
@@ -2256,8 +2264,8 @@ impl<'a> MirLowerer<'a> {
         };
 
         self.builder.switch_to_block(body_block);
-        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
-            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
+        if let Some((name, val, payload_ty, is_niche, inner)) = bind_in_body {
+            self.bind_presence_payload(&name, &val, &payload_ty, is_niche, inner);
         }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {

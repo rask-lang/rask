@@ -22,10 +22,15 @@ fn split_type_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0;
     let mut start = 0;
+    let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
+            '<' | '(' => depth += 1,
+            // The `>` of `->` closes nothing — a function type's arrow is not a
+            // bracket, and counting it made `func(i64, i64) -> i64` split down
+            // the middle.
+            '>' if i == 0 || bytes[i - 1] != b'-' => depth -= 1,
+            ')' => depth -= 1,
             ',' if depth == 0 => {
                 args.push(s[start..i].trim().to_string());
                 start = i + 1;
@@ -44,6 +49,37 @@ fn split_type_args(s: &str) -> Vec<String> {
 /// "Map<string, bool>" → UnresolvedGeneric { name: "Map", args: [string, bool] }
 /// "Route" → UnresolvedNamed("Route")
 fn parse_type_arg(s: &str) -> Type {
+    // A function type, before the generic test below: `func(Vec<i64>) -> i64`
+    // has a `<` in it and is not a generic. Without this arm the argument of
+    // `Map<string, func(i64) -> i64>.new()` stayed a bare name, so the closure
+    // handed to `insert` never learned what its parameter was — `|x| x + 1`
+    // lowered as pointer arithmetic and answered 13 for 5 (#1151).
+    if let Some(rest) = s.trim().strip_prefix("func(") {
+        let mut depth = 1usize;
+        let close = rest.char_indices().find_map(|(i, c)| match c {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' => {
+                depth -= 1;
+                (depth == 0).then_some(i)
+            }
+            _ => None,
+        });
+        if let Some(close) = close {
+            let params = split_type_args(&rest[..close])
+                .iter()
+                .map(|p| parse_type_arg(p))
+                .collect();
+            let ret = rest[close + 1..]
+                .trim()
+                .strip_prefix("->")
+                .map(|r| parse_type_arg(r.trim()))
+                .unwrap_or(Type::Unit);
+            return Type::Fn { params, ret: Box::new(ret) };
+        }
+    }
     if let Some(open) = s.find('<') {
         let base = &s[..open];
         let inner = &s[open+1..s.len()-1];

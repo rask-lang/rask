@@ -1052,6 +1052,16 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Rack<") || name == "Rack" {
                     return MirType::Ptr;
                 }
+                // `Heap<T>` is transparent (mem.heap/HP5), and its slot holds
+                // the payload itself unless the payload needs a block of its
+                // own. Answering `Ptr` for every one of them is what made
+                // `Heap(2.5)` print 2: the float went through an
+                // integer-shaped local, and `*b` on a `Heap<Vec<i64>>` loaded
+                // through the vector's own handle (#1234).
+                if let Some(inner) = name.strip_prefix("Heap<").and_then(|s| s.strip_suffix('>')) {
+                    let payload = self.resolve_type_str(inner.trim());
+                    return if payload.passed_by_address() { MirType::Ptr } else { payload };
+                }
                 if name.starts_with("Channel<") || name.starts_with("Sender<")
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
                 {
@@ -1088,6 +1098,21 @@ impl<'a> MirContext<'a> {
                 }
             }
         }
+    }
+
+    /// Is this annotation a `Heap<T>` that holds the payload itself?
+    ///
+    /// `Heap(x)` allocates only when the payload needs a block (see
+    /// `heap_payload_is_boxed`), so `Heap<f64>` and `Heap<Vec<i64>>` are the
+    /// payload and nothing else. The name has to remember which it got: the
+    /// type says nothing, and `*b` and `drop(b)` mean different things for the
+    /// two (#1234).
+    pub fn is_unboxed_heap_annotation(&self, ty_str: &str) -> bool {
+        ty_str
+            .trim()
+            .strip_prefix("Heap<")
+            .and_then(|s| s.strip_suffix('>'))
+            .is_some_and(|inner| !self.resolve_type_str(inner.trim()).passed_by_address())
     }
 
     /// A type reached through its module — `http.Response`, or `h.Response`
@@ -1575,6 +1600,15 @@ impl<'a> MirContext<'a> {
         if let Type::Fn { ret, .. } = ty {
             return Some(self.type_to_mir(ret));
         }
+        // A function type the checker never resolved past its spelling. A
+        // `Map`'s value type and an optional's payload both arrive this way, so
+        // `if m.get(k)? as f` bound a name nothing knew was callable and `f(2)`
+        // lowered as a call to a function called `f` (#1151).
+        if let Type::UnresolvedNamed(name) = ty {
+            if let Some(ret) = fn_type_ret_str(name) {
+                return Some(self.resolve_type_str(ret));
+            }
+        }
         let head = Self::type_prefix(ty, type_names)?;
         match head.split('<').next() {
             Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
@@ -1646,6 +1680,14 @@ pub(crate) struct LocalMeta {
     /// tell the two apart: storing into a declared `Owned` slot must not box a
     /// second time, and `drop` frees exactly one box.
     pub is_owned_box: bool,
+    /// This local is a `Heap<T>` that was never boxed — it holds the payload.
+    ///
+    /// The payloads that fit the box's slot don't get a block (mem.heap), and
+    /// nothing in the type says which happened: `Heap<T>` erases to `T` (HP5).
+    /// `*b` is a relabel rather than a load for one of these, and `drop(b)`
+    /// frees nothing — freeing it handed `rask_free` a vector's own handle
+    /// (#1234).
+    pub is_heap_unboxed: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -2345,11 +2387,33 @@ impl<'a> MirLowerer<'a> {
     /// how `Holder { inner: p }` ended up with a box holding a box (#739).
     pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Heap, .. } => true,
+            ExprKind::Unary { op: UnaryOp::Heap, operand } => self.heap_payload_is_boxed(operand),
             ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
             ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
             _ => false,
         }
+    }
+
+    /// Does this expression name a `Heap<T>` that holds the payload itself?
+    ///
+    /// The mirror of `expr_yields_owned_box`: that one asks "is this a block
+    /// pointer", this one asks "is this a `Heap` that never got a block". They
+    /// are not each other's negation — an ordinary `Vec` local is neither.
+    pub(crate) fn expr_is_unboxed_heap(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Unary { op: UnaryOp::Heap, operand } => !self.heap_payload_is_boxed(operand),
+            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_heap_unboxed),
+            ExprKind::Field { object, field } => self.unboxed_heap_field(object, field),
+            _ => false,
+        }
+    }
+
+    /// Does `object.field` name a `Heap<T>` field holding the payload itself?
+    fn unboxed_heap_field(&self, object: &Expr, field: &str) -> bool {
+        let Some(layout) = self.struct_layout_of_expr(object) else { return false };
+        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
+        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
+        !self.ctx.type_to_mir(&payload).passed_by_address()
     }
 
     /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
@@ -2364,6 +2428,24 @@ impl<'a> MirLowerer<'a> {
             return val;
         }
         self.box_into_owned(val, val_ty)
+    }
+
+    /// Does `Heap(operand)` allocate a block, or hand the payload straight back?
+    ///
+    /// A payload that fits the box's slot never moves (mem.heap): `Heap<i32>`
+    /// really is an `i32`, and a `Vec`'s or a closure's handle is one word too.
+    /// Only the by-address payloads — a struct, an enum, a tuple, a string —
+    /// get a block, which is the same test `box_into_owned` makes when it
+    /// allocates. Answering "always a box" is what had `drop` hand `rask_free`
+    /// a vector's own handle (#1234).
+    ///
+    /// An expression the checker left untyped is not a box, and lowering gives
+    /// it a word-sized fallback type, so the two halves agree there too.
+    pub(crate) fn heap_payload_is_boxed(&self, operand: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(operand.id)
+            .map(|t| self.ctx.type_to_mir(t))
+            .is_some_and(|t| t.passed_by_address())
     }
 
     /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
@@ -4254,6 +4336,11 @@ impl<'a> MirLowerer<'a> {
                 // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
                 if param_ty_str.contains('<') {
                     meta.full_type = Some(param_ty_str.to_string());
+                    // A `Heap<T>` parameter carrying a payload that fits the
+                    // slot holds the payload, not a block (#1234).
+                    if ctx.is_unboxed_heap_annotation(param_ty_str) {
+                        meta.is_heap_unboxed = true;
+                    }
                     // Track collection element types so for-loop iteration resolves correctly.
                     // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
                     if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
@@ -5804,23 +5891,7 @@ fn collect_pattern_names(
 /// `|T| -> R` to the `func(...)` form, so only that spelling needs handling.
 pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
     let inner = ty.trim().strip_prefix("func(")?;
-    // Cut at the paren that closes the parameter list, not at a nested one.
-    let mut depth = 1usize;
-    let mut end = None;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let params = &inner[..end?];
+    let params = &inner[..fn_type_params_end(inner)?];
     if params.trim().is_empty() {
         return Some(Vec::new());
     }
@@ -5830,6 +5901,33 @@ pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
             .map(|p| p.trim().to_string())
             .collect(),
     )
+}
+
+/// Where the parameter list of a `func(...)` spelling closes — the paren that
+/// matches the one already stripped, not a nested one, since a parameter can be
+/// a function type of its own.
+fn fn_type_params_end(inner: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    inner.char_indices().find_map(|(i, c)| match c {
+        '(' => {
+            depth += 1;
+            None
+        }
+        ')' => {
+            depth -= 1;
+            (depth == 0).then_some(i)
+        }
+        _ => None,
+    })
+}
+
+/// What a function-type annotation answers, e.g. `"func(i64) -> i64"` → `"i64"`.
+/// `None` for anything that isn't one, and for a function type written without
+/// a return.
+pub(crate) fn fn_type_ret_str(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_prefix("func(")?;
+    let rest = inner[fn_type_params_end(inner)? + 1..].trim();
+    Some(rest.strip_prefix("->")?.trim())
 }
 
 /// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →

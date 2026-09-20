@@ -17,19 +17,6 @@
 # A pair that isn't legal Rask does NOT belong here — it belongs in gen.py's
 # SKIPS, with the rule that says so. This file is for things that should work.
 
-# --- #1234: Heap(expr) never allocates; the box local holds the payload ---
-# An i64 survives by accident (it is a word). A float goes through a
-# pointer-typed slot and truncates; a container's own pointer gets freed as if
-# it were the box.
-heap_box__f32     # Heap holds the payload, not a pointer to it — #1234 (native output)
-heap_box__f64     # Heap holds the payload, not a pointer to it — #1234 (native output)
-heap_box__vec     # the Vec's pointer freed as a box — #1234 (native run)
-heap_box__map     # the Map's pointer freed as a box — #1234 (native run)
-heap_box__closure # the closure's pointer freed as a box — #1234 (native run)
-heap_box__funcref # the function's pointer freed as a box — #1234 (native run)
-heap_box__shared  # the box's pointer freed as a box — #1234 (native run)
-struct_field__heap # the same box bug reached through a field — #1234 (native run)
-
 # --- #1235: an aggregate handed to a closure parameter ---
 # Capturing the same payload works, so it is the parameter slot. The enum's
 # SIGILL is the same corruption landing on a tag that isn't one of the two.
@@ -50,14 +37,6 @@ struct_field__tuple # derived compare fails the Cranelift verifier — #1237 (na
 # --- #1238: `if o? as v` on a tuple optional ---
 optional__tuple       # reported as `try` needing a Result — #1238 (both check)
 optional_param__tuple # reported as `try` needing a Result — #1238 (both check)
-
-# --- #1239: a function value in an optional or a Map, on native ---
-# Type-checks, then MIR lowering gives up at lower/expr:1156. A named function
-# fails the same way, so it isn't the closure's environment.
-optional__closure  # MIR lowering gives up — #1239 (native compile)
-optional__funcref  # MIR lowering gives up — #1239 (native compile)
-map_value__closure # MIR lowering gives up — #1239 (native compile)
-map_value__funcref # MIR lowering gives up — #1239 (native compile)
 
 # --- #1240: a closure literal doesn't take its shape from a tuple annotation ---
 tuple__closure # parameter types stay open — #1240 (both check)
