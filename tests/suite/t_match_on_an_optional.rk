@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `match` on a `T?` is legal, per type.optionals/OPT27.
+//
+// It used to be E0349, a hard error left over from a migration, although the
+// spec said all along that it should be a style lint: "hard errors should
+// enforce safety or correctness, not style" (#1258). Exhaustiveness still
+// applies, which is the part that was ever about safety — leave the `none` arm
+// off and the compiler names it.
+//
+// The lint that replaced the error is `idiom/match-on-optional`, so each block
+// here says it means the match.
+
+@allow(idiom/match-on-optional)
+test "type.optionals/OPT27 — a struct payload" {
+    let p: string? = "ada"
+    let got = match p {
+        string as s => s
+        none => "nobody"
+    }
+    assert got == "ada"
+}
+
+@allow(idiom/match-on-optional)
+test "type.optionals/OPT27 — the absent arm" {
+    let p: string? = none
+    let got = match p {
+        string as s => s
+        none => "nobody"
+    }
+    assert got == "nobody"
+}
+
+@allow(idiom/match-on-optional)
+test "type.optionals/OPT27 — a scalar payload, as a value" {
+    let a: i64? = 7
+    let b: i64? = none
+    assert (match a { i64 as n => n, none => -1 }) == 7
+    assert (match b { i64 as n => n, none => -1 }) == -1
+}

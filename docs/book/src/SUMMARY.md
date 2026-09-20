@@ -10,6 +10,7 @@
 
 # Learn the language
 
+- [When there might be nothing](guide/when-there-might-be-nothing.md)
 - [Errors are values](guide/errors-are-values.md)
 - [Passing Values](guide/passing-values.md)
 - [When one owner isn't enough](guide/beyond-one-owner.md)

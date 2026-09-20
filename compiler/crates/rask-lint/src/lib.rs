@@ -244,4 +244,52 @@ func main() {}
             report.diagnostics
         );
     }
+
+    // ─── the shared walk ────────────────────────────────────
+    //
+    // Each of these lints used to carry its own partial walk of the AST, so a
+    // node the walk didn't list — a struct literal, an array, a field access —
+    // hid whatever was inside it. `match-on-optional` and `equality-absent-check`
+    // both missed the case below; `unwrap-production` happened to list struct
+    // literals and didn't. They all go through `rask_ast::visit` now, which is
+    // exhaustive by construction, so the next AST node can't reopen the gap.
+
+    #[test]
+    fn match_on_optional_is_found_inside_a_struct_literal() {
+        let report = lint_default(
+            "struct W { v: string }\n\
+             func f(p: string?) -> W {\n\
+                 return W { v: match p { none => \"x\", string as s => s } }\n\
+             }",
+        );
+        assert!(has_rule(&report, "idiom/match-on-optional"), "got {:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn unwrap_is_found_inside_a_struct_literal() {
+        let report = lint_default(
+            "struct H { n: i64 }\n\
+             func f(r: i64 or string) -> H {\n\
+                 return H { n: r.unwrap() }\n\
+             }",
+        );
+        assert!(has_rule(&report, "idiom/unwrap-production"), "got {:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn equality_absent_check_is_found_inside_a_struct_literal() {
+        let report = lint_default(
+            "struct W { flag: bool }\n\
+             func f(p: string?) -> W {\n\
+                 return W { flag: p == none }\n\
+             }",
+        );
+        assert!(has_rule(&report, "idiom/equality-absent-check"), "got {:?}", report.diagnostics);
+    }
+
+    #[test]
+    fn unwrap_in_a_test_block_is_the_test_asserting() {
+        let report = lint_default("test \"t\" {\n    let x = load().unwrap()\n}");
+        assert!(!has_rule(&report, "idiom/unwrap-production"), "got {:?}", report.diagnostics);
+    }
 }
