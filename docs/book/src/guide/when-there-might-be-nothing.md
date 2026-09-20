@@ -46,17 +46,18 @@ side when the left is absent:
 The right side can also leave instead of producing a value — `?? return`, `?? break`,
 `?? continue`. There's no binder, because there's nothing to bind: absence carries no payload.
 
-## Reaching through
+## `?.` reads a field without the test
 
-`?.` reads a field through a value that might be absent. When it is, the result is `none`:
+`p?.email` reads `email` when `p` is there and gives `none` when it isn't — no branch, no
+binder:
 
 ```rask
 {{#include ../../../../examples/optionals.rk:chain}}
 ```
 
-`p` might be absent and `p.email` might be absent, and `p?.email` is one `string?` rather than
-two layers of absence — both mean the same thing to whoever reads it. So a single `??` finishes
-the job.
+Two things can be missing here: the profile, and the email on it. `p?.email` is a `string?` all
+the same, not two layers of absence — "no profile" and "a profile with no email" are the same
+answer to whoever asked for an email. So one `??` finishes the job.
 
 ## Running it
 
