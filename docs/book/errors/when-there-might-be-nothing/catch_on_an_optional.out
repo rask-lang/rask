@@ -1,0 +1,7 @@
+error[E0363]: `catch` on `string?` — an absence carries no error to bind
+  --> docs/book/errors/when-there-might-be-nothing/catch_on_an_optional.rk:15:19
+    |
+ 15 |     let address = p.email catch _ => "no email"
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ nothing to catch
+    = fix: use `??` for the absent case: `x ?? <value>`
+    = why: `catch` names or drops an error; `none` isn't one [type.errors/ER14]
