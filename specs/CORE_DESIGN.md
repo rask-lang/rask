@@ -318,7 +318,7 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
-**Concrete benefit — relocatable state:** Because user-visible types contain only owned values and integer handles (never pointers), pool state can be serialized, memory-mapped, and sent across processes without pointer fixup. Handles survive round-trips because they're integers, not addresses. See `mem.relocatable` for the full specification.
+**Concrete benefit — relocatable state:** Because a container preserves its slot layout, graph state can be serialized and sent across processes: every reference is written as the slot number it names and resolved back on arrival. The graph survives; a reference held across the boundary does not, so name a node with an id field if it has to be found again. See `mem.relocatable` for the full specification.
 
 **Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/SL2). Self-referential futures are impossible by construction, so `Pin` is unnecessary. Tasks are plain movable values. See conc.runtime/T1.
 

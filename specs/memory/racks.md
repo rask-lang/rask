@@ -59,6 +59,8 @@ who points at whom, and that index needs one home per graph.
 | **RK7: Edges are optional for now** | A required edge (`Link<T>` with no `?`) is rejected (E0327): delete has no `none` to set it to, so it needs a declared policy, and construction needs a batch. Both are deferred — see below |
 | **RK8: A node write asks permission** | Writing a node's field needs write access to that node, which travels with the link or the rack. See `mem.parameters/PM10` for the parameter modes and the view-versus-writer distinction |
 | **RK9: An unnamed delete is declared** | A function that deletes nodes the caller didn't hand it declares `deleting` (`mem.parameters/PM8`, PM9). The call then revokes the caller's links into that rack, because which nodes died isn't knowable from outside |
+| **RK10: A node has a slot number** | Every node carries the index of the slot it occupies, and the rack keeps a directory from index to node. A link is an address, but a node always knows its position, and the position is stable for the node's life. Deleting frees the slot; a later insert may reuse it, so a slot number names a *position*, not an identity — to name a node across anything, give it an id field |
+| **RK11: Position is what crosses a boundary** | Wherever a graph has to leave this allocation, links are written as the slot numbers they point at and resolved back to addresses on arrival. `snapshot()` does this in-process, which is what `corresponding()` translates through; `mem.relocatable` does it against a byte buffer. Both are one pass over nodes plus edges, at the copy, never at a read |
 
 ## Crossing a task boundary
 
@@ -173,8 +175,9 @@ Named here so the gaps are on the record rather than discovered:
   cascade or restrict mandatory. Both wait on batch construction.
 - **Retiring `mem.pools`.** Native lowering has landed, which was the condition
   (rask-lang/rask#908), but the pool corpus hasn't been converted yet.
-- **Slab affordances.** The backing store is a slab already; whether to promise
-  contiguous iteration, or offer an explicit `compact()`, wants measurement
+- **Slab affordances.** The backing store is a slab already, and RK10 promises
+  the slot number and the directory. What's still open is whether to promise
+  *contiguous* iteration, or offer an explicit `compact()`; both want measurement
   first (`analysis.fourth-option`).
 - **A link escaping inside a collection.** RK6 covers returns, assignments and
   aggregate literals; a link pushed into a `Vec` that then escapes is not yet
