@@ -2029,7 +2029,25 @@ impl<'a> Printer<'a> {
                 if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
+                // A field holding a function keeps its parentheses. `h.run(5)`
+                // is a method call on `h` (type.structs/M6), so `(h.run)(5)` is
+                // the only way to call the field — and the parser only ever
+                // builds a `Call` over a field from the parenthesised form.
+                // Printing it bare turned a program that compiled into
+                // "`run` is a field on `Handler`, not a method".
+                let callee_needs_parens = matches!(
+                    func.kind,
+                    ExprKind::Field { .. }
+                        | ExprKind::OptionalField { .. }
+                        | ExprKind::DynamicField { .. }
+                );
+                if callee_needs_parens {
+                    self.emit("(");
+                }
                 self.format_expr(func);
+                if callee_needs_parens {
+                    self.emit(")");
+                }
                 self.emit("(");
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
