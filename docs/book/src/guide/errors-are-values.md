@@ -1,57 +1,38 @@
 # Errors are values
 
-A function that can fail says so in its return type, and the failure comes back as an ordinary
-value. Nothing is thrown, nothing unwinds past you, and there is no handler wrapped around the
-call site waiting to catch something.
+When a call can fail, the failure comes back out of it. Same `return`, same assignment, same
+place in the line as the answer. Nothing is thrown, nothing unwinds past you, and there is no
+handler wrapped around the call waiting to catch something.
 
-So the question at every call is the one you can already answer from the signature: what do I do
-with the bad half?
-
-## Saying it can fail
-
-`i64 or ConfigError` is a return type. It means this call gives back a number, or it gives back a
-`ConfigError` — and a caller reading the line knows that before reading the body.
+So a function that can fail says both halves in its return type. `parse` says
+`i64 or ParseError`: a number, or a reason it isn't one.
 
 ```rask
-{{#include ../../../../examples/errors.rk:errtype}}
+{{#include ../../../../examples/errors.rk:simplest}}
 ```
 
-An error type answers one question: `message()`. That's the whole obligation, and declaring it is
-what lets a type stand on the right of `or`. Leave it out on an enum and you get one built from
-the variant names, which is enough while a program is young.
+`n` holds one of the two. `is` asks which one arrived, `as` names it, and the `else` arm gets
+the other. Both branches are reachable and both are yours to write — there is no path where the
+failure turns up somewhere you didn't put it.
 
-```rask
-{{#include ../../../../examples/errors.rk:fallible}}
-```
-
-There is no `Ok` or `Err` to wrap anything in. `return n` returns the number and
-`return ConfigError.Missing("port")` returns the error; the compiler picks the branch from the
-type of what you handed it.
-
-## Handling it here
-
-```rask
-{{#include ../../../../examples/errors.rk:handle}}
-```
-
-`is` asks which of the two came back, `as` names it, and the `else` arm gets the other one. Both
-branches are reachable and both are yours to write — there is no path where the error arrives
-somewhere you didn't put it.
+Two smaller things in there. `e.message()` works without knowing what kind of error arrived,
+because answering `message()` is what makes a type usable as the failure half. And the
+annotation on `n` is only there to show the shape; you would normally let it be inferred.
 
 ## Handing it up
 
-Usually the function holding the failure isn't the one that knows what to do about it. `try`
-gives it to the caller:
+Usually the function that hit the failure isn't the one that knows what to do about it. `try`
+takes the value out, and on the bad branch leaves — the failure goes to *your* caller:
 
 ```rask
 {{#include ../../../../examples/errors.rk:propagate}}
 ```
 
-One word, and the bad half leaves. `banner` returns `string or ConfigError` because that is now
-true of it: a line, or the error `port_of` produced, passed along intact.
+`doubled` returns `i64 or ParseError` because that is now true of it: a number, or the failure
+`parse` produced, passed along intact.
 
-That is also the constraint. The error has to land somewhere, so the enclosing signature needs a
-place to put it. A function that returns nothing has none:
+The error has to land somewhere, so the enclosing signature needs a place to put it. A function
+that returns nothing has none:
 
 ```rask
 {{#include ../../errors/errors-are-values/try_without_a_carrier.rk:body}}
@@ -61,44 +42,59 @@ place to put it. A function that returns nothing has none:
 {{#include ../../errors/errors-are-values/try_without_a_carrier.out}}
 ```
 
-Give `report` a return type with an error branch and the same body is fine. The rule is worth
-reading the other way round: a signature without an error branch is a promise that nothing
-escapes this function, and `try` is how you'd break it.
+Worth reading the other way round: a signature with no error branch is a promise that nothing
+escapes this function, and `try` is how you would break it.
 
 ## Missing is not failed
 
-Two different things go wrong when you look something up, and Rask spells them differently.
+Two different things go wrong when you look something up, and they get different words.
 
 A key that isn't in the map is **absent**. Nothing went wrong and there is nothing to report, so
-`??` supplies a value and the line moves on:
+`??` supplies a value and the line carries on:
 
 ```rask
 {{#include ../../../../examples/errors.rk:absence}}
 ```
 
-A value that is there but won't parse is a **failure**. Something did go wrong and there's a
-payload saying what. That one takes `catch`:
+A value that is there but won't parse **failed**. Something did go wrong, and there's a payload
+saying what. That takes `catch`:
 
 ```rask
 {{#include ../../../../examples/errors.rk:drop}}
 ```
 
 Both lines fall back to a default, and they read differently because they are different. The
-first discards a `none`, which carried nothing. The second discards a `ParseError`, which carried
-something.
+first discards a `none`, which carried nothing. The second discards a `ParseError`, which
+carried something.
 
 ## An error that dies says so
 
-That is why `catch` has a binder and no bare-value form. `catch e =>` uses the error;
-`catch _ =>` drops it. Dropping is allowed — plenty of errors deserve it — but it is a thing you
-write down:
+Which is why `catch` takes a binder and has no bare-value form. `catch e =>` uses the error,
+`catch _ =>` drops it. Dropping is allowed — plenty of failures deserve it — but it is a thing
+you write down:
 
 ```text
 {{#include ../../errors/errors-are-values/bare_catch.out}}
 ```
 
-`catch _ =>` is one grep away when you come back wondering where a failure went. That's the whole
-reason the underscore is mandatory.
+So `catch _ =>` is one grep away when you come back later wondering where a failure went.
+
+## Your own errors
+
+`ParseError` came with `parse`. When the failures belong to your program, declare them: an error
+type is any type that answers `message()`.
+
+```rask
+{{#include ../../../../examples/errors.rk:owntype}}
+```
+
+```rask
+{{#include ../../../../examples/errors.rk:ownuse}}
+```
+
+Both words from the last section show up one function apart: `??` for the key that might not be
+there, `catch` for the value that might not parse. Each turns into the error this program wants
+its caller to see.
 
 ## Running it
 

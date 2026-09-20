@@ -1,43 +1,28 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: errors are values — `T or E`, `try`, `catch`, `??`
+// Learn: errors are values — reading one, handing it up, declaring your own
 //
-// The chapter at docs/book/src/guide/errors.md includes the anchored regions
-// below rather than quoting them, so what the page shows is what CI runs.
-// tests/examples_gate.sh runs this on both backends against
+// The chapter at docs/book/src/guide/errors-are-values.md includes the anchored
+// regions below rather than quoting them, so what the page shows is what CI
+// runs. tests/examples_gate.sh runs this on both backends against
 // tests/golden/errors.out.
 
-// ANCHOR: errtype
-enum ConfigError {
-    Missing(string)
-    Malformed(string)
-}
+import string.ParseError
 
-extend ConfigError with Error {
-    func message(self) -> string {
-        match self {
-            ConfigError.Missing(key) => return "{key} is not set"
-            ConfigError.Malformed(key) => return "{key} is not a number"
-        }
+// ANCHOR: simplest
+func years_from(text: string) -> string {
+    let n: i64 or ParseError = text.parse<i64>()
+    if n is i64 as years {
+        return "{years} years"
+    } else as e {
+        return "not a number: {e.message()}"
     }
 }
-// ANCHOR_END: errtype
-
-// ANCHOR: fallible
-func port_of(settings: Map<string, string>) -> i64 or ConfigError {
-    let text = settings.get("port") ?? {
-        return ConfigError.Missing("port")
-    }
-    let n = text.parse<i64>() catch _ => {
-        return ConfigError.Malformed("port")
-    }
-    return n
-}
-// ANCHOR_END: fallible
+// ANCHOR_END: simplest
 
 // ANCHOR: propagate
-func banner(settings: Map<string, string>) -> string or ConfigError {
-    let port = try port_of(settings)
-    return "listening on {port}"
+func doubled(text: string) -> i64 or ParseError {
+    let n = try text.parse<i64>()
+    return n * 2
 }
 // ANCHOR_END: propagate
 
@@ -54,39 +39,65 @@ func retries_of(settings: Map<string, string>) -> i64 {
 }
 // ANCHOR_END: drop
 
+// ANCHOR: owntype
+enum ConfigError {
+    Missing(string)
+    Malformed(string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        match self {
+            ConfigError.Missing(key) => return "{key} is not set"
+            ConfigError.Malformed(key) => return "{key} is not a number"
+        }
+    }
+}
+// ANCHOR_END: owntype
+
+// ANCHOR: ownuse
+func port_of(settings: Map<string, string>) -> i64 or ConfigError {
+    let text = settings.get("port") ?? {
+        return ConfigError.Missing("port")
+    }
+    let n = text.parse<i64>() catch _ => {
+        return ConfigError.Malformed("port")
+    }
+    return n
+}
+// ANCHOR_END: ownuse
+
 func settings_with(port: string) -> Map<string, string> {
     mut m = Map.new()
     m.insert("port", port)
     return m
 }
 
-func main() {
-    let good = settings_with("8080")
-
-    // ANCHOR: handle
-    let b = banner(good)
-    if b is string as line {
-        println(line)
+func report(settings: Map<string, string>) {
+    let p = port_of(settings)
+    if p is i64 as port {
+        println("port {port}")
     } else as e {
         println("bad config: {e.message()}")
     }
-    // ANCHOR_END: handle
+}
+
+func main() {
+    println(years_from("41"))
+    println(years_from("forty-one"))
+
+    let d = doubled("41")
+    if d is i64 as n {
+        println("doubled {n}")
+    } else as e {
+        println("could not double: {e.message()}")
+    }
 
     mut empty = Map.new()
-    let missing = banner(empty)
-    if missing is string as line {
-        println(line)
-    } else as e {
-        println("bad config: {e.message()}")
-    }
-
-    let junk = banner(settings_with("eighty-eighty"))
-    if junk is string as line {
-        println(line)
-    } else as e {
-        println("bad config: {e.message()}")
-    }
-
     println("name is {name_of(empty)}")
     println("retries is {retries_of(empty)}")
+
+    report(settings_with("8080"))
+    report(empty)
+    report(settings_with("eighty-eighty"))
 }

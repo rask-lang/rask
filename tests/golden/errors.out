@@ -1,5 +1,8 @@
-listening on 8080
-bad config: port is not set
-bad config: port is not a number
+41 years
+not a number: non-numeric character
+doubled 82
 name is unnamed
 retries is 3
+port 8080
+bad config: port is not set
+bad config: port is not a number
