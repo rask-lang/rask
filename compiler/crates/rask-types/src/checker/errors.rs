@@ -959,12 +959,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// OPT NO_MATCH: match on `T?` is rejected — migration error
-    #[error("match on an Option is not supported — use the `?`-operator family")]
-    MatchOnOption {
-        span: Span,
-    },
-
     /// type.primitives CV1–CV4, CH5, BL3: an `as` cast that isn't lossless
     /// widening. `class` selects the diagnostic + suggested conversion form.
     #[error("invalid `as` cast from {src_ty} to {dst_ty}")]
@@ -1359,7 +1353,6 @@ impl TypeError {
             | TryInEnsure { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
-            | MatchOnOption { .. }
             | InvalidConvert { .. } => {}
         }
     }
