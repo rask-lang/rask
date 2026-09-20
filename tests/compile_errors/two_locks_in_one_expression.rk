@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: one expression takes two locks at once
+// ERROR: this expression takes 2 locks at once
+//
+// An inline access holds its lock until the expression it starts ends
+// (conc.sync/R5), so two of them hold two locks at the same time — and two
+// tasks doing that in opposite orders wait on each other forever
+// (conc.sync/DL4).
+//
+// The rule was enforced; the message wasn't a message. It reused
+// `BareSyncAccess` and put its own explanation in the field that holds the
+// method name, so it read:
+//
+//     error[E0339]: standalone `.read (multiple sync accesses in one
+//     expression — deadlock risk [conc.sync/DL4])()` on `Shared` has nothing
+//     chained onto it
+//
+// — a method nobody wrote, and then the wrong thing said about it, since the
+// chain in the program below does have something chained onto it.
+//
+// The working spelling is one access per statement; see
+// `tests/suite/t_shared_inline_access.rk`.
+
+import sync.Shared
+
+struct Settings {
+    theme: string
+    size: i64
+}
+
+func main() {
+    let s = Shared.new(Settings { theme: "dark", size: 1 })
+    println("{s.read().theme} {s.read().size}")
+}
