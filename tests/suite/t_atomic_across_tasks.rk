@@ -8,7 +8,7 @@
 // worked either: `AtomicI64.new(0)` left its binding un-inferrable, `.clone()`
 // type-checked and wouldn't lower, and a module-level one couldn't name an
 // ordering. So the spec's metrics counter and its shutdown flag — the two
-// things the decision tree in `boxes.md` routes to an atomic — were both
+// things the decision tree in `shared-rack-heap.md` routes to an atomic — were both
 // unwritable, and `16_shared_state.rk`'s lock-free puzzle used a lock.
 //
 // A counter reached from several tasks is a module-level `const`, the shape

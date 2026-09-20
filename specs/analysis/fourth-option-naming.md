@@ -350,7 +350,7 @@ rather than inline. That's also where the cost is — an allocation — and
 Rask's transparency principle says major costs belong in the source.
 
 `Box<T>` is rejected for two reasons: it's familiar rather than better (a
-"box" says nothing about heap allocation), and `mem.boxes` already uses "box"
+"box" says nothing about heap allocation), and `mem.shared-rack-heap` already uses "box"
 for the whole family — `Cell`, `Rack`, `Shared`, `Owned`. Naming one member
 after the category is worse than the status quo.
 

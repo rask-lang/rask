@@ -403,9 +403,9 @@ See [stdlib/strings.md](stdlib/strings.md), [stdlib/fmt.md](stdlib/fmt.md).
 
 ---
 
-## Choosing a Box
+## Choosing Shared, Rack or Heap
 
-When a value needs cross-scope access — shared ownership, identity-based references, cross-task mutation — pick a box from the family. The choice is not neutral: it sets the shape of the program. Pick by access discipline, not by habit from another language.
+When a value needs cross-scope access — shared ownership, identity-based references, cross-task mutation — pick one of the three. The choice is not neutral: it sets the shape of the program. Pick by access discipline, not by habit from another language.
 
 | Need | Pick | Discipline |
 |------|------|------------|
@@ -414,7 +414,7 @@ When a value needs cross-scope access — shared ownership, identity-based refer
 | Read-heavy config / feature flags across tasks | `Shared<T>` | Many readers XOR one writer |
 | Queue / state machine / exclusive mutation across tasks | `Shared<T, Mutex>` | Plain lock |
 | Recursive types / single-owner heap value | `Heap<T>` | Linear, single consumer |
-| Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops (not a box) |
+| Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops, not scoped access |
 
 **Rule of thumb:** scope grows from left to right. `Cell` stays in one task; `Owned` is linear and moves; `Pool` is identity-durable and sendable; `Shared`/`Mutex` cross task boundaries. Start with the smallest discipline that fits.
 
@@ -439,7 +439,7 @@ func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
 - Using `Pool<T>` for simple containers where `Vec<T>` suffices — pools are for identity, not storage.
 - Using `Heap<T>` where a plain value works — `Owned` is for recursion or explicit heap placement, not a default.
 
-See [memory/boxes.md](memory/boxes.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
+See [memory/shared-rack-heap.md](memory/shared-rack-heap.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
 
 ---
 

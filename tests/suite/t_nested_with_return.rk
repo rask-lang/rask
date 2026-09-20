@@ -64,14 +64,14 @@ func fresh() -> Pool2 {
     return Pool2 { index: Shared.mutex(0), flag: Shared.mutex(0) }
 }
 
-test "mem.boxes — a return past an inner `with` releases only the scopes it left" {
+test "mem.shared-rack-heap — a return past an inner `with` releases only the scopes it left" {
     let p = fresh()
     // flag is 0, so the loop runs until `checked >= limit` and takes the
     // one-release exit.
     assert p.pick(3) == 0
 }
 
-test "mem.boxes — the inner scope's return releases both" {
+test "mem.shared-rack-heap — the inner scope's return releases both" {
     mut p = fresh()
     with p.flag.write() as f {
         f = 1
@@ -79,7 +79,7 @@ test "mem.boxes — the inner scope's return releases both" {
     assert p.pick(3) == 2
 }
 
-test "mem.boxes — an exit at every nesting level" {
+test "mem.shared-rack-heap — an exit at every nesting level" {
     let p = fresh()
     assert p.deep(0) == 10
     assert p.deep(1) == 11

@@ -87,7 +87,7 @@ test "the lock is free again after an early return" {
     }
 }
 
-// Two field writes in one `with` over a sync box is what W9 (tool.warnings)
+// Two field writes in one `with` over a `Shared` is what W9 (tool.warnings)
 // warns about. Nothing here is torn — the test is single-threaded — so the
 // block says so, which it can now that a `test` carries attributes (#1010).
 @allow(torn_lock_update)

@@ -393,7 +393,7 @@ button2.on_click(own |event| {
 
 - [Value Semantics](value-semantics.md) — Copy vs move (`mem.value`)
 - [Borrowing](borrowing.md) — Block-scoped views and `with`-based access (`mem.borrowing`)
-- [Boxes](boxes.md) — The box family (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — The three that hand out scoped access (`mem.shared-rack-heap`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>`, the single-value container (`conc.sync`)
 - [Pools](pools.md) — Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Linearity](linear.md) — Closures capturing linear values must consume them (`mem.linear`)

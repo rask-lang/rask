@@ -1,8 +1,8 @@
 Pair: (42, hello)
 Swapped: (hello, 42)
 
-Int box: 100
-String box: wrapped
+Wrapped int: 100
+Wrapped string: wrapped
 
 Auto-wrapped: 3.14
 

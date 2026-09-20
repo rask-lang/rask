@@ -532,7 +532,7 @@ fn insert_aggregate_release(
     // the frame outlive this box".
     //
     // The frame owns a boxed value's contents; the box borrows them
-    // (mem.boxes, #1144). `TraitBox` copies the value *shallowly*, so the box
+    // (mem.shared-rack-heap, #1144). `TraitBox` copies the value *shallowly*, so the box
     // and the frame's own local hold the same container handle, and two boxes
     // of one value hold it twice — a free has to happen exactly once and the
     // box is not a place where "exactly once" can be arranged. Calling the

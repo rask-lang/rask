@@ -82,7 +82,7 @@ doing the wrong job.
 where someone is owning a tradeoff. A chapter isn't that. It explains a language that
 already works, to someone trying to use it, so it says what the rule is and why it holds:
 "taking a lock is a real cost, so it belongs in the source where it happens", never "I
-picked scoped access over making the box feel like a plain value". Same reasoning, no
+picked scoped access over making a shared value feel like a plain one". Same reasoning, no
 author in the room.
 
 The difference from the section below is worth keeping straight. The *why* belongs in a
@@ -102,7 +102,7 @@ correctly there is correct. Mark it `<!-- test: run-interp | expected -->`, whic
 for this, and file the native gap. The block stays verified, the chapter stays honest,
 and the marker is what the fix later deletes.
 
-What this rules out is quietly teaching less. The boxes chapter dropped recursive `Heap`
+What this rules out is quietly teaching less. The scoped-access chapter dropped recursive `Heap`
 for a day because the recursive case doesn't lower on native ([#1234]), and what the page
 taught instead was a smaller language that happens to match one backend's bugs. A reader
 can't tell the difference between "Rask doesn't do this" and "Rask does this and the

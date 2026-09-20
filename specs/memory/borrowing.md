@@ -329,15 +329,13 @@ One syntax for all container types that hold values behind indirection. Bindings
 | Container | Access | Read-only access |
 |-----------|--------|------------------|
 | Pool/Vec/Map | `with pool[h] as e { ... }` | frozen pool context (PF5), or inline reads |
-| Cell | `with cell as v { ... }` | — (exclusive by design) |
 | Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
-| Mutex | `with mutex as v { ... }` | — (lock is exclusive) |
 
-A source that is neither an element reached by key nor a box is a compile error (`E0874`). Those are the two cases the block earns its keep in — it re-resolves the handle after a structural change (W2a-W2d) and holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does.
+A source that is neither an element reached by key nor a `Shared` is a compile error (`E0874`). Those are the two cases the block earns its keep in — it re-resolves the handle after a structural change (W2a-W2d) and holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does.
 
 Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 
-See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.
+See [sync.md](../concurrency/sync.md) for what each strategy costs.
 
 ## Disjoint Field Borrowing
 
@@ -719,7 +717,7 @@ Hover information shows the access type, duration, and suggested patterns for th
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value-semantics`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
-- [Boxes](boxes.md) — The container family whose `with` access follows these rules (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — The types whose `with` access follows these rules (`mem.shared-rack-heap`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Single-value `with` access (`mem.cell`)

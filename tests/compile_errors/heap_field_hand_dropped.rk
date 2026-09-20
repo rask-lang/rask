@@ -3,7 +3,7 @@
 //
 // Spec: mem.heap (HP3, HP4), mem.linear (L5)
 //
-// Storing a box in a field moves it in, so the aggregate's release gives the
+// Storing a `Heap` in a field moves it in, so the aggregate's release gives the
 // block back when the aggregate dies. A hand-drop of the same field is a second
 // owner and both of them run — the drop frees the block and the release frees
 // it again, which the allocator reports as a double free rather than as

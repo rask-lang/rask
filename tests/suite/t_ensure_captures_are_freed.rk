@@ -5,7 +5,7 @@
 // so the hook it registers holds the *address* of each variable it names
 // rather than a copy. That turns the variable into a memory slot, and nothing
 // in the pipeline freed what those slots held — a `Vec` named by an ensure
-// leaked its handle and its array, a `Shared` leaked its box. Delete the one
+// leaked its handle and its array, a `Shared` leaked its block. Delete the one
 // `ensure` line from any of these and the same function was clean, which is
 // what made it hard to see: the leak was in the safety net, not in the code
 // it was protecting.

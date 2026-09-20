@@ -38,7 +38,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger â€
 
 **The compiler teaches these when you meet them** â€” each arrives as an error that explains the rule: linear resources (`@resource`, consume-exactly-once), stale pool handles, disjoint field borrows, borrow escapes, `staged()` lock updates, runtime-scope errors.
 
-**Opt-in, announced by the code that uses them:** `Pool<T>` + `Handle<T>`, the box family (`Cell`, `Shared`, `Mutex`, `Owned`), `Atomic<T>`, `comptime`, `unsafe`/FFI, context clauses (`using Pool<T>`), duck traits and inferred signatures (sketch mode, lint-fenced).
+**Opt-in, announced by the code that uses them:** `Pool<T>` + `Handle<T>`, `Shared<T, S>`, `Rack<T>` + `Link<T>`, `Heap<T>`, `Atomic<T>`, `comptime`, `unsafe`/FFI, context clauses (`using Pool<T>`), duck traits and inferred signatures (sketch mode, lint-fenced).
 
 ## The budget rule
 

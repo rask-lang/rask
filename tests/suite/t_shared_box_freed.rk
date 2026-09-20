@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A `Shared` box built in a function is freed when the function is done
+// A `Shared` Shared built in a function is freed when the function is done
 // (#1099). Nothing ever freed one:
 //
 //     let s = Shared.new(0)
 //     rask: 2 allocations never released (88 bytes, undercounted)
 //
-// Two, whatever the payload — the box's own storage and the copy of the value
+// Two, whatever the payload — the Shared's own storage and the copy of the value
 // inside it. `rask_shared_free` had existed all along with nothing calling it,
 // the same way `rask_rack_free` and `rask_pool_free` had before #1048.
 //
 // This file is on `known_leaks.txt` for `s.clone()`, which is deliberately not
-// a registered constructor: `clone_elision` may leave the caller's own box in
+// a registered constructor: `clone_elision` may leave the caller's own Shared in
 // the slot, and freeing that is a double free rather than a smaller leak. The
 // count is what checks the rest — a regression that stopped freeing any of
-// these would push it back up, and one that started freeing a box twice would
+// these would push it back up, and one that started freeing a Shared twice would
 // abort the run.
 
 import sync.Shared
@@ -24,7 +24,7 @@ struct Reading {
     value: i64
 }
 
-test "a box holding a scalar" {
+test "a Shared holding a scalar" {
     let s = Shared.new(41)
     with s.write() as v {
         v = v + 1
@@ -34,16 +34,16 @@ test "a box holding a scalar" {
     }
 }
 
-// The payload has its own allocation, so a box that frees only its own storage
+// The payload has its own allocation, so a Shared that frees only its own storage
 // still shows here.
-test "a box holding a string" {
+test "a Shared holding a string" {
     let s = Shared.new("hello")
     with s.read() as v {
         assert v == "hello"
     }
 }
 
-test "a box holding a struct" {
+test "a Shared holding a struct" {
     let s = Shared.new(Reading { label: "temp", value: 21 })
     with s.write() as r {
         r.value = 22
@@ -62,9 +62,9 @@ func peek(s: Shared<i64>) -> i64 {
     return out
 }
 
-// PM1: a parameter is borrowed, so the box is still the caller's to free —
+// PM1: a parameter is borrowed, so the Shared is still the caller's to free —
 // freeing it in both places would be a double free, not a leak.
-test "a box lent to a function" {
+test "a Shared lent to a function" {
     let s = Shared.new(7)
     assert peek(s) == 7
     assert peek(s) == 7
@@ -73,9 +73,9 @@ test "a box lent to a function" {
     }
 }
 
-// A box made and dropped in a loop is the shape that turns a leak into an
+// A Shared made and dropped in a loop is the shape that turns a leak into an
 // out-of-memory rather than a number in a report.
-test "a box made many times" {
+test "a Shared made many times" {
     mut total = 0
     for i in 0..50 {
         let s = Shared.new(i)
@@ -100,6 +100,6 @@ test "a cloned handle sees the same cell" {
 }
 
 func main() {
-    println("shared box freed ok")
+    println("shared Shared freed ok")
     return
 }

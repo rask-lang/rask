@@ -194,7 +194,7 @@ The `Shared` and `Rack` code above is one program, and it prints:
 
 ## Rules behind this page
 
-- [Shared, Rack and Heap](https://github.com/rask-lang/rask/blob/main/specs/memory/boxes.md): all three, and why you can't write your own
+- [Shared, Rack and Heap](https://github.com/rask-lang/rask/blob/main/specs/memory/shared-rack-heap.md): all three, and why you can't write your own
 - [Racks](https://github.com/rask-lang/rask/blob/main/specs/memory/racks.md): links, deletion, and what a stale one reads as
 - [Synchronization](https://github.com/rask-lang/rask/blob/main/specs/concurrency/sync.md): the three strategies
 - [Borrowing](https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md): inline access and `with`

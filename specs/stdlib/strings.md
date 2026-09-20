@@ -172,7 +172,7 @@ SSO mode (last byte MSB = 1):
 
 The `start`/`len` fields cap views at 4 GiB source offset and 2 GiB view length (the tag bit lives in `len`'s top byte). `.view()` panics beyond those — sources that size are `mmap` territory; use `.to_string()` for the range instead. Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
 
-`StringView` is a language primitive like `string` — user types can't opt into refcounted sharing (see "Why Only String?" and `mem.boxes/BX2`).
+`StringView` is a language primitive like `string` — user types can't opt into refcounted sharing (see "Why Only String?" and `mem.shared-rack-heap/BX2`).
 
 ## The `Span` Type
 
@@ -611,9 +611,9 @@ Directions evaluated:
 
 **Why `.view()` and not `s.view(start, end)`:** slicing syntax already exists and composes — `line[0..colon].trim().view()` captures the trimmed sub-range with no copy. One method, no arity overloads, and every slice-producing operation (indexing, `trim`, `split`, `lines`, `Span` resolution) gets storability for free.
 
-**Why StringPool/StringSlice are gone:** `StringView` covers the same use case — validated storable substrings — with no pool value to thread through call graphs and no handle resolution at use sites. What remains of StringPool's pitch is interning, and interning is deduplication, not new sharing: `Map<string, Handle<T>>` per `mem.boxes/BX3`. Neither type was implemented.
+**Why StringPool/StringSlice are gone:** `StringView` covers the same use case — validated storable substrings — with no pool value to thread through call graphs and no handle resolution at use sites. What remains of StringPool's pitch is interning, and interning is deduplication, not new sharing: `Map<string, Handle<T>>` per `mem.shared-rack-heap/BX3`. Neither type was implemented.
 
-**What views don't cover:** binary data. Parsing bytes zero-copy (`Vec<u8>` views) has no equivalent — `Vec<u8>` is mutable, so views into it would need real borrow tracking. `Shared<Vec<u8>>` remains the refcounted-buffer answer (`mem.boxes/BX3`). If an immutable `bytes` primitive ever lands, it should get the same view treatment; that's a separate decision.
+**What views don't cover:** binary data. Parsing bytes zero-copy (`Vec<u8>` views) has no equivalent — `Vec<u8>` is mutable, so views into it would need real borrow tracking. `Shared<Vec<u8>>` remains the refcounted-buffer answer (`mem.shared-rack-heap/BX3`). If an immutable `bytes` primitive ever lands, it should get the same view treatment; that's a separate decision.
 
 ### Why Immutable Strings?
 
@@ -797,7 +797,7 @@ These will converge to spec behavior in the compiled version.
 ### See Also
 
 - `mem.borrowing` — Inline access (B2) for strings, block-scoped (B1) for struct fields/arrays
-- `mem.boxes` — Why refcounted sharing is a closed set (`BX1`–`BX4`)
+- `mem.shared-rack-heap` — Why refcounted sharing is a closed set (`BX1`–`BX4`)
 - `comp.string-refcount-elision` — Atomic op elision, applies to views identically
 - `std.iteration` — General iteration design
 - `std.path` — Path type wraps string

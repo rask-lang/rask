@@ -217,7 +217,7 @@ WHY: Linear values can be consumed exactly once. A second consumption
 ## See Also
 
 - [Resource Types](resource-types.md) — `@resource` struct annotation (`mem.resources`)
-- [Owned Pointers](heap.md) — Linear heap box (`mem.heap`)
+- [Owned Pointers](heap.md) — A value on the heap, consumed once (`mem.heap`)
 - [Ensure](../control/ensure.md) — Deferred consumption (`ctrl.ensure`)
 - [Pools](pools.md) — `Pool<Linear>` cleanup rules (`mem.pools`)
 - [Ownership](ownership.md) — Single-owner model that linearity refines (`mem.ownership`)

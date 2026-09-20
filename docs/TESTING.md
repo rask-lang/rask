@@ -58,7 +58,7 @@ Three ways a cell can be non-green, and they mean different things:
 - **`-` — not legal Rask.** `gen.py`'s `SKIPS` holds these, each naming the
   rule: a `Heap<T>` in a `Vec` is `std.collections/C4`. Keep this list tiny. A
   skip is a claim the compiler *enforces*, and the first draft of it was mostly
-  wrong — a `Heap` in an optional or a tuple, a `Sequence` in a Vec or a box,
+  wrong — a `Heap` in an optional or a tuple, a `Sequence` in a Vec or a `Heap`,
   all looked ruled out by linearity and SEQ38, and the compiler accepts every
   one. Twenty cells were sitting behind citations instead of being run. If the
   spec says no and the compiler says yes, that is a missing check to file, not
@@ -97,7 +97,7 @@ harness treats as non-fatal:
 - **`tests/pending_features.txt`** — the **TDD backlog**: tests that assert
   spec-correct behavior for features that aren't built yet (SIMD, bits, `select`,
   numeric limits, `.rev()`/`.step()`, operator overloading, `Owned<T>`, the
-  sequence protocol, `@binary`, native math/boxes/os…). These are *supposed* to
+  sequence protocol, `@binary`, native math/scoped-access/os…). These are *supposed* to
   be red — the test encodes the spec and drives the implementation. When the
   feature lands, the test flips green and the harness prints **UNEXPECTED PASS**
   telling you to promote it out of the backlog.
@@ -162,7 +162,7 @@ payload), #388 (f64 enum payload), #389 (union error handling), #390 (test-regis
 drop); interp: #391 (T-or-E discrimination), #392 (labeled break/continue), #393 (optional
 widening); checker: #394 (`??` on `T or E`), #395 (bogus import / `{:?}`). Reopened: #256,
 #258, #270. The breadth pass added a second wave (math/bits/collections-codegen/operator-
-overloading/select/boxes/comptime-native/interp-struct-copy-aliasing) — see the issue
+overloading/select/scoped-access/comptime-native/interp-struct-copy-aliasing) — see the issue
 tracker and `known_divergences.txt` for the live list.
 
 Pending-feature backlog (RED tests that assert spec behavior, in `pending_features.txt`):

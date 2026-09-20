@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: a `with` source that is neither an element nor a box
+// Rejects: a `with` source that is neither an element nor a `Shared`
 //
 // Spec: mem.borrowing (W1-W7), conc.sync (R4)
 //

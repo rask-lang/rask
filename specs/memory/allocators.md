@@ -338,6 +338,6 @@ func sensor_loop() {
 - [Linearity](linear.md) — Arena vs linear: why they're separate mechanisms (`mem.linear`)
 - [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
-- [Boxes](boxes.md) — Boxes allocate through the ambient allocator (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — All three allocate through the ambient allocator (`mem.shared-rack-heap`)
 - [Owned Pointers](heap.md) — `own expr` allocates through the context allocator (`mem.heap`)
 - [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)

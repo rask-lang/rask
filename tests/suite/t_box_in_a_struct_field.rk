@@ -20,7 +20,7 @@
 // values still read right — a box released while a `with` binding was live
 // would read freed storage.
 //
-// Spec: specs/memory/boxes.md — a box's storage lives as long as the last
+// Spec: specs/memory/shared-rack-heap.md — a box's storage lives as long as the last
 // handle on it.
 import sync.Shared
 import sync.Local
@@ -43,7 +43,7 @@ func fresh_counter(name: string) -> Counter {
     return Counter { name: name, hits: Shared.local(0) }
 }
 
-test "mem.boxes — a Local box in a field" {
+test "mem.shared-rack-heap — a `Local` Shared in a field" {
     let c = fresh_counter("clicks")
     with c.hits.write() as n {
         n = n + 3
@@ -54,7 +54,7 @@ test "mem.boxes — a Local box in a field" {
     assert c.name == "clicks"
 }
 
-test "mem.boxes — a Mutex box in a field" {
+test "mem.shared-rack-heap — a `Mutex` Shared in a field" {
     let g = Guarded { total: Shared.mutex(10) }
     with g.total.write() as t {
         t = t * 2
@@ -64,7 +64,7 @@ test "mem.boxes — a Mutex box in a field" {
     }
 }
 
-test "mem.boxes — a Readers box in a field" {
+test "mem.shared-rack-heap — a `Readers` Shared in a field" {
     let r = ReadMostly { config: Shared.new(7) }
     with r.config.read() as v {
         assert v == 7
@@ -73,7 +73,7 @@ test "mem.boxes — a Readers box in a field" {
 
 // All three at once, so a release that picked the wrong one of the three
 // runtime objects would read a cell as a lock.
-test "mem.boxes — the three strategies side by side" {
+test "mem.shared-rack-heap — the three strategies side by side" {
     let c = fresh_counter("mixed")
     let g = Guarded { total: Shared.mutex(1) }
     let r = ReadMostly { config: Shared.new(2) }
@@ -98,7 +98,7 @@ test "mem.boxes — the three strategies side by side" {
 
 // Repeatedly, so a box freed and handed back out would read wrong rather than
 // merely leak.
-test "mem.boxes — boxes in a loop" {
+test "mem.shared-rack-heap — Shareds in a loop" {
     mut total = 0
     for i in 1..6 {
         let c = fresh_counter("loop")

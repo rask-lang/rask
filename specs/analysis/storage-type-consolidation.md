@@ -1,7 +1,7 @@
 <!-- id: analysis.storage-consolidation -->
 <!-- status: accepted -->
 <!-- summary: Can the storage types merge? One real merge, two false ones, and a decision procedure for what's left -->
-<!-- depends: memory/boxes.md, analysis/fourth-option.md -->
+<!-- depends: memory/shared-rack-heap.md, analysis/fourth-option.md -->
 
 # Can the Storage Types Consolidate?
 
@@ -288,7 +288,7 @@ files a bug about.
 ### Accessing
 
 Two verbs, and both work inline or as a block — the box family's existing
-shape (`mem.boxes`), unchanged:
+shape (`mem.shared-rack-heap`), unchanged:
 
 | Form | Use |
 |---|---|
@@ -459,7 +459,7 @@ exchange, read-versus-write intent becomes visible at every use site, which
   `Cell` and `Mutex` survive as strategies so the familiar words aren't lost.
   Removes a question users can't answer at declaration time, and makes
   sending a task-local value a compile error rather than a race. Contradicts
-  `mem.boxes`' closed-family listing, so it's a deliberate change.
+  `mem.shared-rack-heap`' closed-family listing, so it's a deliberate change.
 - **Take `Heap<T>` out of the storage question.** It answers "stack or
   heap?", which is orthogonal to every other axis — mixing it in is part of
   why the set read as unchooseable.

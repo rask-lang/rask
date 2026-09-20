@@ -318,10 +318,10 @@ If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
   the problems they escape from don't exist.
 - DAY_ONE.md drops Handle, the get-dance, and `using Pool<T>`; gains `Link?`
   and two schema clauses that announce themselves.
-- boxes.md: the family stays five (`Cell`, `Graph`, `Shared`, `Mutex`,
+- shared-rack-heap.md: the family stays five (`Cell`, `Graph`, `Shared`, `Mutex`,
   `Heap`), with the "identity" discipline upgraded to "relational".
 
-The migration surface is honest: pools.md, boxes.md, context-clauses.md,
+The migration surface is honest: pools.md, shared-rack-heap.md, context-clauses.md,
 relocatable.md, closures.md guidance, every example using `Pool` — plus the
 interpreter, the checker, and codegen. This is a big lift; the exploration
 docs exist so the decision precedes the lift.

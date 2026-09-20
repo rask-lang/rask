@@ -1,6 +1,6 @@
 <!-- id: conc.sync -->
 <!-- status: decided -->
-<!-- summary: One box, `Shared<T, S>` — several accessors reach one value; the strategy says what synchronization it costs -->
+<!-- summary: One type, `Shared<T, S>` — several accessors reach one value; the strategy says what synchronization it costs -->
 <!-- depends: memory/ownership.md, types/generics.md -->
 <!-- implemented-by: compiler/crates/rask-interp/ -->
 
@@ -17,21 +17,21 @@ let counter = Shared.local(0)               // one task, no lock at all
 ```
 
 `Cell<T>` and `Mutex<T>` used to be separate types. They aren't different
-concepts — they're the same box with different synchronization — so they're now
+concepts — they're the same type with different synchronization — so they're now
 **strategies** on one type. The words survive; the fork in the road doesn't.
 
 ## The type
 
 | Rule | Description |
 |------|-------------|
-| **SH1: One box** | `Shared<T, S>` holds one value that several names reach. `S` is the access strategy: `Local`, `Readers`, or `Mutex` |
+| **SH1: One type** | `Shared<T, S>` holds one value that several names reach. `S` is the access strategy: `Local`, `Readers`, or `Mutex` |
 | **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Readers>`, resolved at monomorphization like the allocator parameter (`mem.alloc/AL4`). Zero cost — no dispatch, no stored tag. Defaulted, not absent: `Shared<T>` *is* `Shared<T, Readers>`, and mixing it with another strategy is a type error (E0381), not a coercion |
 | **SH3: Bare means `Readers`, everywhere** | `Shared<T>` is `Shared<T, Readers>` in a `let`, a parameter, a field and a return type alike. One type expression, one meaning, whatever position it sits in |
-| **SH4: Strategy-agnostic code says so** | A function that works with any strategy writes the parameter: `func serve<S>(c: Shared<Config, S>)`. Leaving it off means `Readers`, so a `Local` box handed to `serve(c: Shared<Config>)` is rejected — the strategy picks which lock the accessors take, and getting it wrong deadlocks rather than misbehaving visibly |
+| **SH4: Strategy-agnostic code says so** | A function that works with any strategy writes the parameter: `func serve<S>(c: Shared<Config, S>)`. Leaving it off means `Readers`, so a `Local` one handed to `serve(c: Shared<Config>)` is rejected — the strategy picks which lock the accessors take, and getting it wrong deadlocks rather than misbehaving visibly |
 | **SH5: Two verbs** | `read()` and `write()`, inline or as a `with` block. Both exist under every strategy — `read()` under `Mutex` takes the exclusive lock: slower than `Readers` would be, never wrong |
 | **SH6: Bare access forbidden** | `with s as v { }` is a compile error. Say `read()` or `write()`, so the page shows which one you meant |
 | **SH7: `Local` can't cross a task** | Sending a `Shared<T, Local>` to another task is a compile error. `Local` takes no lock, so two tasks touching it would race. This rule is what makes the opt-out safe to reach for |
-| **SH8: The default serves the common case** | Most boxes are reached by more than one task, so the default locks. Opting out is a word (`Shared.local`) and the compiler catches you if you were wrong; not opting out costs some time you can measure. The direction that can't be caught is the one that isn't the default |
+| **SH8: The default serves the common case** | Most shared values are reached by more than one task, so the default locks. Opting out is a word (`Shared.local`) and the compiler catches you if you were wrong; not opting out costs some time you can measure. The direction that can't be caught is the one that isn't the default |
 
 | Strategy | Who reaches it | Synchronization | Crosses tasks | Constructor |
 |---|---|---|---|---|
@@ -250,9 +250,9 @@ func transfer(amount: i64) {
 }
 ```
 
-The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. Cross-box invariants stay out of reach, but nested locks are already forbidden (DL1), so per-box atomicity is all the language promises anyway.
+The clone is the price and the method name says so — same visibility deal as `.clone()`. Plain `with mutex as v` stays free; only sites guarding a real invariant pay. An invariant spanning two `Shared`s stays out of reach, but nested locks are already forbidden (DL1), so one-value atomicity is all the language promises anyway.
 
-The compiler backs this up by default: a `with` block over a sync box that assigns two or more fields of the locked value without `staged()` gets the `torn_lock_update` warning (`tool.warnings/W9`). Suppress with `@allow(torn_lock_update)` where partial state is genuinely harmless.
+The compiler backs this up by default: a `with` block over a `Shared` that assigns two or more fields of the locked value without `staged()` gets the `torn_lock_update` warning (`tool.warnings/W9`). Suppress with `@allow(torn_lock_update)` where partial state is genuinely harmless.
 
 Panic is the only way another task can see a half-done update. Suspension keeps the lock held, and cancellation surfaces as an ordinary error return — never a kill at the pause point (`ctrl.panic/LK4`, `conc.async/CN4`).
 
@@ -301,7 +301,7 @@ let got_it = m.try_write(|v| v.push(item))
 
 **DL3 (indirect locks):** Detecting all lock acquisition paths requires whole-program analysis, which violates local-only compilation. Syntactic detection catches the most common mistakes; ordering discipline handles the rest.
 
-**Why `Readers` is the default and `Local` isn't.** The first draft had it the other way round, on the grounds that you should never accidentally pay for synchronization you didn't need. That reasoning is fine and the conclusion was still wrong, because it ignored how often each case actually turns up. A box that never leaves its task — the old `Cell` — is rare. A box several tasks reach is the ordinary reason to have one at all. A default that serves the rare case makes every common program write a word to get what it wanted, and `Shared<T>` would have meant the one thing a reader of the name least expects.
+**Why `Readers` is the default and `Local` isn't.** The first draft had it the other way round, on the grounds that you should never accidentally pay for synchronization you didn't need. That reasoning is fine and the conclusion was still wrong, because it ignored how often each case actually turns up. A value that never leaves its task — the old `Cell` — is rare. A value several tasks reach is the ordinary reason to reach for `Shared` at all. A default that serves the rare case makes every common program write a word to get what it wanted, and `Shared<T>` would have meant the one thing a reader of the name least expects.
 
 The costs aren't symmetric either. Taking a lock you didn't need costs time you can measure and then opt out of with `Shared.local`. Skipping one you did need costs correctness and shows up as a race. Defaulting to the locked strategy puts the recoverable mistake on the default path and leaves the unrecoverable one behind a word and a compile error (SH7).
 

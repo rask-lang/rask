@@ -224,7 +224,7 @@ const fn from(module: &'static str, name: &'static str, kind: BuiltinTypeKind) -
 /// `none`. Those are in scope with no import and BI3 reserves their names.
 ///
 /// Everything else needs its module. The box family is compiler-provided and
-/// closed (mem.boxes/BX1–BX4), but that's about who may *define* one, not about
+/// closed (mem.shared-rack-heap/BX1–BX4), but that's about who may *define* one, not about
 /// who can see the name without asking: `Pool`, `Handle`, `Rack`, `Link` and
 /// `Heap` live in `memory`, `Shared`, `Mutex` and the atomics in `sync`, and
 /// they're imported like anything else. All of them used to be in the always

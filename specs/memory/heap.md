@@ -48,7 +48,7 @@ drop(ptr)                         // Consume (deallocate)
 
 Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
 
-**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the box is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the `Heap` is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
 
 I went back and forth on making that `drop` a silent no-op instead. It's worse: the author writes a consume and gets none, and whether `drop(x)` frees anything then depends on whether `x` is a binding or a projection, which the line doesn't say.
 
@@ -102,7 +102,7 @@ HP5 is a deliberate simplification — auto-deref without ceremony.
 
 Linearity is enforced for an `Heap(…)` local: one that nothing consumes is an error, and so is a second consume. Consuming means `drop(name)`, handing it to a `take` parameter, storing it in a field, tuple, array or enum payload, or returning it. `ensure` covers the error paths. This is the same rule set `@resource` follows; the `Heap(…)` in the source is what marks the binding, since HP5 leaves nothing in the type to look at.
 
-HP5's transparency has one consequence worth stating: nothing in the *type* distinguishes a value from a pointer to it, so the compiler tracks which is which by where the value came from. `Heap(…)` allocates and hands back the pointer; a binding takes it over rather than copying out of it; a declared `Heap<T>` slot given something that is already a box stores it as-is rather than boxing twice. A scalar is never boxed — it fits its slot — so `Heap<i32>` really is an `i32`, and dropping one frees nothing.
+HP5's transparency has one consequence worth stating: nothing in the *type* distinguishes a value from a pointer to it, so the compiler tracks which is which by where the value came from. `Heap(…)` allocates and hands back the pointer; a binding takes it over rather than copying out of it; a declared `Heap<T>` slot given something already on the heap stores it as-is rather than allocating a second time. A scalar never moves to the heap — it fits its slot — so `Heap<i32>` really is an `i32`, and dropping one frees nothing.
 
 | Rule | Description |
 |------|-------------|
@@ -345,7 +345,7 @@ enum Expr {
 ### See Also
 
 - [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
-- [Boxes](boxes.md) — `Heap<T>` as a linear box in the container family (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — `Heap<T>` beside the other two (`mem.shared-rack-heap`)
 - [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)

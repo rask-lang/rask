@@ -121,7 +121,7 @@ Blast radius, measured: 102 of 444 corpus files need a new import (13 examples, 
 tutorials, 3 projects), dominated by memory.Pool (20), string.StringBuilder (8), memory.Rack (7).
 Script the mechanical part.
 
-DECISION YOU MAY NEED: BI1's builtin list is closed and does NOT include the box family — Pool,
+DECISION YOU MAY NEED: BI1's builtin list is closed and does NOT include the scoped-access types — Pool,
 Handle, Rack, Link, Mutex, Shared. That's ~60 of the 102 files. Following BI1 literally means
 `import memory` everywhere Pool is used. If that reads as too much ceremony, ask before deciding —
 it changes half the work.

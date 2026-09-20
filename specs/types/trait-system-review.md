@@ -270,7 +270,7 @@ Rust's most-derived and most-implemented traits, mapped: `Debug`/`Clone`/`Eq`/`H
 - **thiserror validates the Error proposal.** One of Rust's most popular crates exists solely to derive error messages for enums — the ecosystem already voted for this feature. The corpus survey (48 mechanical impls) and Rust's dependency graph point at the same gap independently.
 - **`From`/`Into` — Rust's most hand-written trait — stays out, on record.** Its three jobs are dissolved at the language level: error conversion for `?` (Rask `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string params (one `string` type, no `String`/`&str`/`Cow` to abstract), general conversion (residue covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
 
-Deliberate absences confirmed against Rust's remaining heavy hitters: `Deref` (no autoderef — boxes use `with`), `AsRef`/`Borrow` (no reference-flavor zoo), `Drop` (`ensure`/`@resource`), `Send`/`Sync` (compiler property). The Rust data surfaces no new core candidate beyond Error — most of Rust's trait traffic compensates for design choices Rask didn't make.
+Deliberate absences confirmed against Rust's remaining heavy hitters: `Deref` (no autoderef — scoped access instead), `AsRef`/`Borrow` (no reference-flavor zoo), `Drop` (`ensure`/`@resource`), `Send`/`Sync` (compiler property). The Rust data surfaces no new core candidate beyond Error — most of Rust's trait traffic compensates for design choices Rask didn't make.
 
 ## Ergonomics check: what the user writes, before and after
 
