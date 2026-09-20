@@ -95,9 +95,8 @@ harness treats as non-fatal:
 - **`tests/known_divergences.txt`** — bugs/regressions: a feature that *should*
   work but is broken on a backend. Red here is bad news.
 - **`tests/pending_features.txt`** — the **TDD backlog**: tests that assert
-  spec-correct behavior for features that aren't built yet (SIMD, bits, `select`,
-  numeric limits, `.rev()`/`.step()`, operator overloading, `Owned<T>`, the
-  sequence protocol, `@binary`, native math/scoped-access/os…). These are *supposed* to
+  spec-correct behavior for features that aren't built yet (SIMD, `@binary`,
+  gradual generalization). These are *supposed* to
   be red — the test encodes the spec and drives the implementation. When the
   feature lands, the test flips green and the harness prints **UNEXPECTED PASS**
   telling you to promote it out of the backlog.
@@ -155,7 +154,7 @@ Witnessed on BOTH backends (green in the harness):
 
 Tracked KNOWN-FAIL witnesses (RED until fixed, in `known_divergences.txt`):
 `t43_widening_regressions.rk` (optional widening interp #393, result T-bind native #389),
-`t53_math.rk` (math module unlinked in codegen), `t50_boxes.rk` (`Shared` strategies, native).
+`t53_math.rk` (math module unlinked in codegen), `t50_shared_strategies.rk` (`Shared` strategies, native).
 
 Filed from the harness — native codegen: #386 (struct param+return), #387 (enum string
 payload), #388 (f64 enum payload), #389 (union error handling), #390 (test-registration
@@ -166,11 +165,10 @@ overloading/select/scoped-access/comptime-native/interp-struct-copy-aliasing) �
 tracker and `known_divergences.txt` for the live list.
 
 Pending-feature backlog (RED tests that assert spec behavior, in `pending_features.txt`):
-`p01_bits`, `p02_numeric_limits`, `p03_comparison_surface` (char/tuple/bool ops),
-`p04_ranges_rev_step`, `p05_operator_overload`, `p06_select`, `p07_owned` (`Owned<T>`),
-`p08_sequence` (sequence protocol), `p09_simd`, `p10_binary` (`@binary`, interp-done/native-gap),
-plus the native-backend gaps `t41_os`, `t50_boxes`, `t53_math`. Each flips green when its
-feature is built.
+`p09_simd`, `p10_binary` (`@binary`, interp-done/native-gap), and
+`p11_gradual_generalization`. Each flips green when its feature is built. `p01`
+through `p07` have all shipped and are green; `p08_sequence` moved to
+`known_divergences.txt` (#1046), where the interpreter is the one that fails.
 
 Still without a witness (next): typed JSON, net/http (native-thin); panics/ensure have
 `cargo test` + `compile_errors/` coverage but no suite blocks (panics abort test runs); Batch 2

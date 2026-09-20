@@ -2,18 +2,18 @@
 
 // --- Shared: one value, several accessors, one scoped view (conc.sync) ---
 //
-// The strategy `S` says what synchronization the box takes, and it is a type
+// The strategy `S` says what synchronization the value takes, and it is a type
 // argument — so `Shared<T>` is `Shared<T, Readers>` everywhere, and nothing
 // about the choice survives into the emitted code. `Cell` and `Mutex` used to be
 // separate types; they are these strategies now.
 
 /// `Readers` — a read-write lock. Many readers at once, or one writer.
-/// The default: most boxes are reached by more than one task, and the ones that
+/// The default: most shared values are reached by more than one task, and the ones that
 /// aren't only pay for a lock they could have opted out of.
 public struct Readers { }
 
 /// `Local` — no lock at all. Several accessors, one task. Opt in with
-/// `Shared.local(…)` when a box provably never leaves its task.
+/// `Shared.local(…)` when the value provably never leaves its task.
 public struct Local { }
 
 /// `Mutex` — a plain lock. One holder at a time, reader or writer.
@@ -35,7 +35,7 @@ extend Shared<T, S> {
     @native("rask_mutex_new_ptr")
     public func mutex(take value: T) -> Shared<T, Mutex> {}
 
-    /// No lock at all. One task, several accessors — the box `Cell` used to be.
+    /// No lock at all. One task, several accessors — what `Cell` used to be.
     /// Sending one is a compile error (SH7), which is what makes it safe to
     /// reach for.
     @native("rask_cell_new")
@@ -80,7 +80,7 @@ extend Shared<T, S> {
     @native("rask_cell_replace")
     public func replace(self, take value: T) -> T {}
 
-    /// Consume the box, return what it held.
+    /// Consume the `Shared`, return what it held.
     @native("rask_cell_get")
     public func into_inner(take self) -> T {}
 }

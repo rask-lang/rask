@@ -7,7 +7,7 @@
 // known_divergences.txt line is gone. The note saying otherwise was left behind,
 // and is corrected here rather than left to mislead the next reader.
 //
-// Shared `with` access works now too — `t_month_boxes.rk` covers read/write
+// Shared `with` access works now too — `t_month_scoped_access.rk` covers read/write
 // alongside the rest.
 
 import sync.Shared

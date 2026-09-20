@@ -186,5 +186,5 @@ pool.get(h)?.transform().apply(|v| {
 - [Cell](cell.md) — Retired: one value, exclusive access (`mem.cell`)
 - [Closures](closures.md) — EC1-EC4 rules for expression-scoped closures (`mem.closures`)
 - [Pools](pools.md) — Pool `with`-based access (`mem.pools`)
-- [Owned Pointers](heap.md) — Single-consumer semantics remove aliasing entirely (`mem.heap`)
+- [Heap Values](heap.md) — Single-consumer semantics remove aliasing entirely (`mem.heap`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>` and its lock strategies (`conc.sync`)

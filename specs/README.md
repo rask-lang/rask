@@ -43,7 +43,7 @@ Quick navigation by task or concept:
 | "How do I..." | See |
 |---------------|-----|
 | Run tasks in parallel | [concurrency/async.md](concurrency/async.md) (spawn, join) |
-| Share data between tasks | [concurrency/sync.md](concurrency/sync.md) (Mutex, Shared) |
+| Share data between tasks | [concurrency/sync.md](concurrency/sync.md) (`Shared` and its strategies) |
 | Wait on multiple channels | [concurrency/select.md](concurrency/select.md) |
 | Use lock-free primitives | [memory/atomics.md](memory/atomics.md) |
 

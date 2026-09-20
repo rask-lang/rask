@@ -339,5 +339,5 @@ func sensor_loop() {
 - [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — All three allocate through the ambient allocator (`mem.shared-rack-heap`)
-- [Owned Pointers](heap.md) — `own expr` allocates through the context allocator (`mem.heap`)
+- [Heap Values](heap.md) — `own expr` allocates through the context allocator (`mem.heap`)
 - [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)

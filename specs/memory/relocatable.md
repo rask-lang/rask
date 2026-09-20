@@ -43,7 +43,7 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 
 | Rule | Description |
 |------|-------------|
-| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Cell`, `Shared`, `Mutex`, `any Trait`, closures, or resource types |
+| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
 | **FL3: Handles** | `Handle<T>` is flat (integer components only) |
 | **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A `Shared` Shared built in a function is freed when the function is done
+// A `Shared` built in a function is freed when the function is done
 // (#1099). Nothing ever freed one:
 //
 //     let s = Shared.new(0)

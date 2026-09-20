@@ -416,7 +416,7 @@ When a value needs cross-scope access — shared ownership, identity-based refer
 | Recursive types / single-owner heap value | `Heap<T>` | Linear, single consumer |
 | Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops, not scoped access |
 
-**Rule of thumb:** scope grows from left to right. `Cell` stays in one task; `Owned` is linear and moves; `Pool` is identity-durable and sendable; `Shared`/`Mutex` cross task boundaries. Start with the smallest discipline that fits.
+**Rule of thumb:** scope grows from left to right. `Shared<T, Local>` stays in one task; `Heap<T>` is linear and moves; `Pool` is identity-durable and sendable; `Shared` under `Readers` or `Mutex` crosses task boundaries. Start with the smallest discipline that fits.
 
 **Graph-shaped data is Pool-shaped.** If your program has cycles, parent pointers, entity references, or any "node A knows about node B" relationship that isn't a tree, it routes through `Pool<T>` + `Handle<T>`. There is no storable-reference alternative. A Rask codebase with significant graph state looks structurally different from a Go or Rust equivalent — pool declarations at the root, handles flowing through call graphs, `using Pool<T>` clauses on functions that dereference. This is not a bug; it's the shape.
 
@@ -437,9 +437,9 @@ func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
 **Anti-patterns:**
 - Reaching for `Shared<T, Readers>` when bare `Shared<T>` or a `mutate` parameter would do — adds cross-task machinery for single-task code.
 - Using `Pool<T>` for simple containers where `Vec<T>` suffices — pools are for identity, not storage.
-- Using `Heap<T>` where a plain value works — `Owned` is for recursion or explicit heap placement, not a default.
+- Using `Heap<T>` where a plain value works — it is for recursion or explicit heap placement, not a default.
 
-See [memory/shared-rack-heap.md](memory/shared-rack-heap.md), [memory/pools.md](memory/pools.md), [memory/cell.md](memory/cell.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
+See [memory/shared-rack-heap.md](memory/shared-rack-heap.md), [memory/racks.md](memory/racks.md), [memory/pools.md](memory/pools.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
 
 ---
 

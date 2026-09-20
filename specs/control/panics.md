@@ -58,7 +58,7 @@ func observe() {
 |------|-------------|
 | **U1: Ensures run** | Every ensure scheduled between the panic point and the task root runs during unwind |
 | **U2: Access released, writes kept** | Unwind releases *access* (locks, borrows, bindings) but never rolls back *data*. Values keep whatever mutations happened before the panic |
-| **U3: `with` release** | Unwinding through a `with` block releases what the block held: Mutex/Shared unlock, Cell borrow flag clears, pool element access ends |
+| **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, pool element access ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
 
@@ -77,7 +77,7 @@ looks like mid-unwind).
 
 | Rule | Description |
 |------|-------------|
-| **LK1: Clean release** | A Mutex/Shared lock held by the panicking task unlocks during unwind (via U3/U4). Waiting tasks acquire normally |
+| **LK1: Clean release** | A `Shared` lock held by the panicking task unlocks during unwind (via U3/U4). Waiting tasks acquire normally |
 | **LK2: No poison state** | There is no poisoned flag. The next `with mutex` succeeds and sees the value exactly as the dying task left it |
 | **LK3: Torn invariants are yours** | A panic mid-mutation can leave *application-level* invariants broken for survivors. Language-level invariants (memory safety, lock state, generation counts) always hold |
 | **LK4: Panic is the only mid-update death** | A task cannot be killed at a suspension point. Pausing on I/O keeps the lock held — waiters block, they never see intermediate state. Cancellation is cooperative and arrives as an ordinary error return (`conc.async/CN1–CN4`) — visible early-exit control flow, not a death. The only path from "lock held, update half-done" to "another task reads it" is a panic between the writes |
@@ -206,7 +206,7 @@ Silence hides bugs (violates "no unreproducible failures" — the failure didn't
 The interpreter already implements most of this model; compiled code has the big gaps. Deltas to file as issues once the spec is accepted:
 
 **Interpreter** (panic = `Err` propagation, `rask-interp`):
-- Matches P1–P3, U1, U3, LK1–LK2, O1: ensures run on unwind, task panic → `JoinError.Panicked`, locks/Cell borrows release cleanly, no poisoning.
+- Matches P1–P3, U1, U3, LK1–LK2, O1: ensures run on unwind, task panic → `JoinError.Panicked`, locks release cleanly, no poisoning.
 - Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
@@ -227,7 +227,7 @@ The interpreter already implements most of this model; compiled code has the big
 
 - [Ensure](ensure.md) — cleanup scheduling this spec extends (`ctrl.ensure`)
 - [Async](../concurrency/async.md) — task model, `JoinError` (`conc.async`)
-- [Sync](../concurrency/sync.md) — Mutex/Shared access rules (`conc.sync`)
+- [Sync](../concurrency/sync.md) — `Shared` access rules (`conc.sync`)
 - [Linear types](../memory/linear.md) — consume-exactly-once (`mem.linear`)
 - [Determinism](../determinism.md) — replay contract this spec plugs into
 - [Targets](../structure/targets.md) — process exit statuses (`struct.targets/EX3–EX4`)

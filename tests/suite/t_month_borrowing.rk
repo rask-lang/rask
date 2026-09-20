@@ -12,7 +12,7 @@
 //
 // Cell is not a `with` box — `get()` copies the value out and `set(v)` replaces
 // it. `with` is for the locking boxes: Mutex and Shared. The full box family is
-// in `t_month_boxes.rk`.
+// in `t_month_scoped_access.rk`.
 
 import sync.Shared
 import sync.Mutex

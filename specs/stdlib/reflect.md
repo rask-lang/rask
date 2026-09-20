@@ -45,7 +45,7 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_map<T>()` | `-> bool` | Whether T is `Map<K, V>` for some K, V |
 | `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
-| `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Cell`, `Shared`, `Mutex`, `any Trait`, closures, resources) |
+| `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, resources) |
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 

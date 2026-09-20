@@ -165,7 +165,7 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 
 ## Multi-Statement Access (`with...as`)
 
-`with` is a first-class block scope for multi-statement access to collection elements, Cell, Shared, and Mutex values. Not sugar for closures — `return`, `try`, `break`, and `continue` work naturally.
+`with` is a first-class block scope for multi-statement access to collection elements and `Shared` values. Not sugar for closures — `return`, `try`, `break`, and `continue` work naturally.
 
 | Rule | Description |
 |------|-------------|
@@ -720,6 +720,6 @@ Hover information shows the access type, duration, and suggested patterns for th
 - [Shared, Rack and Heap](shared-rack-heap.md) — The types whose `with` access follows these rules (`mem.shared-rack-heap`)
 - [Pools](pools.md) — Handle-based indirection (`mem.pools`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
-- [Cell](cell.md) — Single-value `with` access (`mem.cell`)
+- [Cell](cell.md) — Retired; folded into `Shared<T, Local>` (`mem.cell`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>` `with` access (`conc.sync`)
 - [Structs](../types/structs.md) — Struct definition, methods, value semantics (`type.structs`)

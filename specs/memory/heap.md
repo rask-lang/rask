@@ -286,7 +286,7 @@ FIX: Use the new binding instead:
 
 ### Rationale
 
-**Why the name changed from `Heap<T>`.** `Owned` named single ownership, which every Rask value already has — so it distinguished nothing and implied that unwrapped values were somehow unowned. What actually differs from a plain field is the indirection: the value lives on the heap instead of inline. That's also where the cost is, and principle 1 says allocations belong in the source. `Heap<T>` names it.
+**Why the name changed from `Owned<T>`.** `Owned` named single ownership, which every Rask value already has — so it distinguished nothing and implied that unwrapped values were somehow unowned. What actually differs from a plain field is the indirection: the value lives on the heap instead of inline. That's also where the cost is, and principle 1 says allocations belong in the source. `Heap<T>` names it.
 
 The name a binary heap would want is a casualty I'll take: a priority queue should be called `PriorityQueue<T>` anyway — "heap" there is an implementation detail, exactly the lifted-from-`std` naming `std.stdlib/SD*` warns against. Full argument in `analysis.fourth-option-naming`.
 

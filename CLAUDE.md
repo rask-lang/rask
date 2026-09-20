@@ -321,8 +321,8 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
-| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
-| Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell`/`Mutex` are strategies, not types | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
+| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
+| Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |

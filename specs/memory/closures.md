@@ -397,5 +397,5 @@ button2.on_click(own |event| {
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>`, the single-value container (`conc.sync`)
 - [Pools](pools.md) — Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Linearity](linear.md) — Closures capturing linear values must consume them (`mem.linear`)
-- [Owned Pointers](heap.md) — Moving an `Heap<T>` into a closure consumes it (`mem.heap`)
+- [Heap Values](heap.md) — Moving an `Heap<T>` into a closure consumes it (`mem.heap`)
 - [Concurrency](../concurrency/sync.md) — Closures sent cross-task must use `own` (`conc.sync`)
