@@ -46,7 +46,7 @@ side when the left is absent:
 The right side can also leave instead of producing a value — `?? return`, `?? break`,
 `?? continue`. There's no binder, because there's nothing to bind: absence carries no payload.
 
-## `?.` reads a field without the test
+## Chaining with `?.`
 
 `p?.email` reads `email` when `p` is there and gives `none` when it isn't — no branch, no
 binder:
@@ -58,6 +58,9 @@ binder:
 Two things can be missing here: the profile, and the email on it. `p?.email` is a `string?` all
 the same, not two layers of absence — "no profile" and "a profile with no email" are the same
 answer to whoever asked for an email. So one `??` finishes the job.
+
+A longer chain works the same way: every link short-circuits, and the end of it is still one
+layer.
 
 ## Running it
 
