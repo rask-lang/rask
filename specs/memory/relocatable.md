@@ -5,11 +5,11 @@
 
 # Relocatable Memory
 
-Rask's "no storable references" design means user-visible types contain only owned values and references *into a container* — never a bare pointer into someone else's memory. That's what makes container state relocatable, and it's worth being precise about why, because this page used to give the wrong reason.
+Rask's "no storable references" design means user-visible types contain only owned values and references *into a container* — never a bare pointer into someone else's memory. What makes container state relocatable is **position**: a container preserves its slot layout across a round trip, so slot N before is slot N after, and every reference can be written as the slot number it names.
 
-The old sentence said handles survive a round trip "because they're integers, not addresses." Integer-ness was how it was implemented, not the property. What the promise actually rested on is position: a handle is *a slot number plus a version stamp*, and `to_bytes` preserves the slot layout, so slot N still means slot N afterwards. Racks have slot numbers too — every node carries its `slot_index`, the rack keeps a live index→node directory, and address→position→address translation already ships as the thing `snapshot()` runs on. So the mechanism survives the move from handles to links.
+Racks are position-addressed. Every node carries its `slot_index`, the rack keeps a live index→node directory, and address→position→address translation already ships — it is what `snapshot()` runs on.
 
-What doesn't survive is handing the same reference back. A handle was a slot number you could keep; a link is an address, and an address from one allocation names nothing in another. The graph round-trips either way — a reference you held across the boundary does not.
+What position doesn't give you is handing the same reference back. A `Link<T>` is an address, and an address from one allocation names nothing in another. The graph round-trips; a reference you held across the boundary does not.
 
 **Terminology:** "Relocatable" here means *data that can be moved to a different memory address, process, or machine and rebuilt from its own bytes*. This is not the same as position-independent code (PIC/PIE). "Without pointer fixup" was true while every reference was a handle; with links it is true of the flat tier only, and the deep tier pays one linear pass that rewrites indices back into addresses.
 
@@ -51,9 +51,8 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 |------|-------------|
 | **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
-| **FL3: References are not flat** | No reference into a container is flat. `Link<T>` is an address, so it never is, and nothing replaces `Handle<T>` in this tier when handles go (`mem.racks`, rask-lang/rask#908). The flat tier is primitives and flat structs, full stop |
-| **FL3a: Handles, while they last** | `Handle<T>` and `WeakHandle<T>` still answer flat, because they are still index-plus-generation and `Pool` still ships. This is the deprecated half of FL3 and goes out with `mem.pools`; write nothing new that depends on it |
-| **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`). It cannot answer for a type holding a `Link<T>?` today — that is a generic instantiation and the walk reads the declaration's type parameters instead (rask-lang/rask#791). FL3 says what the answer will be |
+| **FL3: References are not flat** | No reference into a container is flat — `Link<T>`, `Handle<T>`, `WeakHandle<T>`. A link is an address; a handle is index-plus-generation and used to answer flat, which credited the zero-cost tier with graphs it cannot carry. The flat tier is primitives and flat structs, full stop |
+| **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |
 | **FL5: Enums** | An enum is flat if all variant payloads are flat |
 
 <!-- test: skip -->
@@ -290,9 +289,9 @@ FIX: Add a migration step, or keep the old field and add a new one.
 
 **R1–R3 (tiers):** I wanted to be upfront about what's actually relocatable. Every game dev will try `Entity { name: string }` with mmap and hit the wall. Being honest about the tiers prevents frustration. Flat types get the zero-cost path; deep types get the linear-scan path; opaque types don't pretend to work.
 
-**FL3 / RB3 (what a link costs):** The first framing of this page credited handles with a property they got from being *positions*, not from being integers, and then the arrival of links looked like it destroyed the property. It doesn't. Racks already carry slot numbers, already keep an index→node directory, and already translate address→position→address — that is what `snapshot()` is. So `to_bytes`/`from_bytes` needs no new machinery, just a second pass.
+**FL3 / RB3 (what a link costs):** Handles looked like they made persistence work because they're integers. They didn't — they made it work because they're *positions*, and racks are position-addressed too. So links need no new machinery here, just a second pass at deserialization.
 
-What it genuinely costs is two things, and I'd rather write them down than round them off. A link you held before the round trip is dead afterwards, so undo/redo and time-travel debugging carry a translation step that handles didn't need. And a graph can never be in the flat tier, so mmap-a-graph-and-go is gone — not deferred, gone, because flat means "no addresses" and a link is one. I'm taking both. The per-read cost is what these types exist for, and paying it back at serialization time — once, linearly, in the one place a program is already writing every byte it owns — is the right end to pay it at.
+They do cost two things, and I'd rather write them down than round them off. A link you held before the round trip is dead afterwards, so undo/redo and time-travel debugging carry a step that handles didn't need. And a graph can never be flat, so mmap-a-graph-and-go is gone — not deferred, gone, because flat means "no addresses" and a link is one. I'm taking both. Per-read speed is what these types exist for, and paying for it once at serialization time, in the one place a program is already writing every byte it owns, is the right end to pay at.
 
 **FL1–FL4 (flat constraint):** I considered a `Relocatable` trait but it would duplicate `Copy` for flat types and `Encode + Decode` for deep types. `reflect.is_flat<T>()` at comptime is simpler — it's a query, not a type-system concept. The compiler already knows the layout; just expose that knowledge.
 
@@ -302,37 +301,13 @@ What it genuinely costs is two things, and I'd rather write them down than round
 
 **MM1–MM4 (mmap):** Mmap is genuinely useful for particle systems, terrain data, and other flat-data workloads. But it's niche — most real structs have at least one `string` field. The error message quality matters more than the feature itself, because developers will hit the compile error and need to understand why.
 
-**NP3 (pool internal storage):** A common confusion: "if there are no pointers, how does the pool store data?" The pool's internal slot array is heap-allocated — it owns the memory. The no-pointer property applies to handles that *reference into* the pool. The pool manages its own storage; handles are just integer keys into that storage.
+**NP3 (container internal storage):** A common confusion: "if nothing serialized holds an address, how does the container store data?" Its storage is heap-allocated and it owns it. NP2 is about what crosses the boundary — a reference into the container is written as a slot number — not about how the container holds its own memory.
 
 ### Patterns & Guidance
 
-**State snapshot (undo/redo).** This is one of the two workflows that pays for links (RB3): `pop()` answers a graph, not the graph, so anything that wants to point back into it stores an id and looks it up.
-
-
-
-<!-- test: skip -->
-```rask
-struct UndoStack<T: Encode + Decode> {
-    public history: Vec<Vec<u8>>
-    public max_entries: usize
-}
-
-extend UndoStack<T: Encode + Decode> {
-    func push(mutate self, rack: Rack<T>) -> void or EncodeError {
-        if self.history.len() >= self.max_entries {
-            self.history.remove(0)
-        }
-        self.history.push(try rack.to_bytes())
-    }
-
-    func pop(mutate self) -> Rack<T> or DecodeError {
-        let bytes = self.history.pop() ?? return DecodeError.Empty
-        return Rack.from_bytes(bytes)
-    }
-}
-```
-
-Restoring "where the cursor was" is an id, not a link:
+**Point back into a restored graph with an id.** This is what RB3 costs, and the
+only thing about these workflows that isn't in the rules. `from_bytes` answers
+*a* graph, not *the* graph, so a link stored across the round trip is dead:
 
 <!-- test: skip -->
 ```rask
@@ -342,35 +317,9 @@ struct Editor {
 }
 ```
 
-**Hot code reloading:**
-
-Serialize state → recompile → deserialize. Uses field-by-field `Encode`/`Decode` (not bitwise), so layout changes between compilations are handled by schema evolution (SE1–SE3). Added fields get defaults, removed fields are skipped.
-
-<!-- test: skip -->
-```rask
-func hot_reload(state: Rack<GameState>) -> Rack<GameState> or Error {
-    let bytes = try state.to_bytes()
-    // ... recompile happens here ...
-    return try Rack.from_bytes(bytes)
-}
-```
-
-**Process migration:**
-
-Send `to_bytes()` over the network. The receiver rebuilds the graph with every internal edge re-pointed (RB2). Nobody carries a reference across a machine boundary, so this is one of the three workflows RB3 costs nothing.
-
-<!-- test: skip -->
-```rask
-func migrate_to(world: Rack<Entity>, target: TcpConnection) -> void or Error {
-    let bytes = try world.to_bytes()
-    try target.write_bytes(bytes)
-}
-
-func receive_migration(stream: TcpConnection) -> Rack<Entity> or Error {
-    let bytes = try stream.read_bytes()
-    return try Rack.from_bytes(bytes)
-}
-```
+**Hot reload** goes through field-by-field `Encode`/`Decode`, not a bitwise copy,
+so a layout change between compilations is handled by schema evolution (SE1–SE3)
+rather than corrupting the read.
 
 ### See Also
 
