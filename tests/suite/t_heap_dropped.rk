@@ -14,7 +14,7 @@
 // because a scalar fits the slot.
 //
 // A boxed *field* is a different question, and the answer changed: the field is
-// the aggregate's. Storing the box moves it in, so the struct's release gives
+// the aggregate's. Storing the Heap moves it in, so the struct's release gives
 // the block back and there is nothing to drop by hand — `drop(h.inner)` is
 // E0880, because the hand-drop and the release would both free it (#1202).
 // The tests below used to write that drop; they check the struct does it now.
@@ -42,7 +42,7 @@ struct Record {
     public marks: Vec<i64>
 }
 
-test "mem.heap/HP3 — a local box is freed and reads right until then" {
+test "mem.heap/HP3 — a local Heap is freed and reads right until then" {
     let p = Heap(Big { a: 1, b: 2, c: 3 })
     ensure drop(p)
     assert p.a == 1
@@ -51,7 +51,7 @@ test "mem.heap/HP3 — a local box is freed and reads right until then" {
 }
 
 // Dropped where it was made, with no binding in between.
-test "mem.heap/HP3 — a box dropped where it was made" {
+test "mem.heap/HP3 — a Heap dropped where it was made" {
     drop(Heap(Big { a: 1, b: 2, c: 3 }))
 }
 
@@ -63,28 +63,28 @@ test "mem.heap/HP3 — a scalar payload has no block" {
     drop(n)
 }
 
-test "mem.heap/HP3 — a boxed field, filled inline" {
+test "mem.heap/HP3 — a `Heap` field, filled inline" {
     let h = Holder { inner: Heap(Big { a: 7, b: 8, c: 9 }) }
     assert h.inner.b == 8
 }
 
-// The box moves into the slot rather than being boxed again, so there is one
+// The Heap moves into the slot rather than being boxed again, so there is one
 // block and one free.
-test "mem.heap/HP3 — a boxed field, filled from a local" {
+test "mem.heap/HP3 — a `Heap` field, filled from a local" {
     let p = Heap(Big { a: 4, b: 5, c: 6 })
     let h = Holder { inner: p }
     assert h.inner.a == 4
 }
 
 // HP5: a plain `T` where `Heap<T>` is asked for — the slot allocates.
-test "mem.heap/HP3 — a boxed field, filled from a plain value" {
+test "mem.heap/HP3 — a `Heap` field, filled from a plain value" {
     let plain = Big { a: 10, b: 11, c: 12 }
     let h = Holder { inner: plain }
     assert h.inner.c == 12
 }
 
 // A payload with its own heap data. The block is freed; the string and the
-// vector *inside* it are not — freeing a box says nothing about what the box
+// vector *inside* it are not — freeing a Heap says nothing about what the Heap
 // holds, which is the open half (#1144). What this pins is the other half: the
 // values are all readable right up to the drop, so nothing was freed early.
 test "mem.heap/HP3 — a payload holding a string and a vector" {
@@ -99,8 +99,8 @@ test "mem.heap/HP3 — a payload holding a string and a vector" {
     drop(r)
 }
 
-// One per turn, so a box freed twice lands on one the next turn has taken.
-test "mem.heap/HP3 — a box per turn" {
+// One per turn, so a Heap freed twice lands on one the next turn has taken.
+test "mem.heap/HP3 — a Heap per turn" {
     mut total = 0
     for i in 1..6 {
         let p = Heap(Big { a: i, b: i * 2, c: i * 3 })

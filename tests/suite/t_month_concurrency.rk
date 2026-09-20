@@ -117,7 +117,7 @@ test "conc.async — a handle joined after other work" {
 // `own ||` moves the captures in, so a Mutex handed to a thread is gone from the
 // caller — sharing one across two threads needs a `Shared`, not a move. Here the
 // thread owns its Mutex outright and reports through a channel, which is the
-// deterministic shape. `t_month_boxes.rk` covers Mutex on its own.
+// deterministic shape. `t_month_scoped_access.rk` covers Mutex on its own.
 test "conc.sync — a thread owning a Mutex reports its result" {
     let (tx, rx) = Channel<i64>.buffered(1)
     mut m = Shared.mutex(0)

@@ -250,7 +250,7 @@ v2.push(1)                      // ERROR: cannot mutate `v2` — declared `let`
 ```rask
 const MAX_RETRIES = 3
 const PRIMES = comptime { sieve(100) }        // frozen comptime data
-const db = Shared.new(Database.new())         // module global — sync boxes for mutable state
+const db = Shared.new(Database.new())         // module global — Shared for mutable state
 ```
 
 Module `const` follows the same rules as `let` (permanent, deep). Mutable package state goes through `Atomic`/`Mutex`/`Shared` — see [structure/modules.md](structure/modules.md) PS1–PS4.

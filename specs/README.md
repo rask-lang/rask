@@ -43,7 +43,7 @@ Quick navigation by task or concept:
 | "How do I..." | See |
 |---------------|-----|
 | Run tasks in parallel | [concurrency/async.md](concurrency/async.md) (spawn, join) |
-| Share data between tasks | [concurrency/sync.md](concurrency/sync.md) (Mutex, Shared) |
+| Share data between tasks | [concurrency/sync.md](concurrency/sync.md) (`Shared` and its strategies) |
 | Wait on multiple channels | [concurrency/select.md](concurrency/select.md) |
 | Use lock-free primitives | [memory/atomics.md](memory/atomics.md) |
 
@@ -74,7 +74,7 @@ Quick navigation by task or concept:
 | Term | Definition Location |
 |------|---------------------|
 | Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
-| Box | [memory/boxes.md](memory/boxes.md) — Container with `with`-scoped access (`Shared<T, S>`, Rack+Link, Heap) |
+| Scoped access | [memory/shared-rack-heap.md](memory/shared-rack-heap.md) — A value held elsewhere, reached through `with` (`Shared<T, S>`, Rack+Link, Heap) |
 | Link | [memory/racks.md](memory/racks.md) — A stored reference to a node in a Rack |
 | Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool (deprecated) |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
@@ -114,7 +114,7 @@ Quick navigation by task or concept:
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
 | [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L7) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` |
-| [boxes.md](memory/boxes.md) | The box family — `with`-scoped access across `Shared<T, S>`, Rack+Link, Heap |
+| [shared-rack-heap.md](memory/shared-rack-heap.md) | `with`-scoped access across `Shared<T, S>`, Rack+Link, Heap — and why the set is closed |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |
 | [resource-types.md](memory/resource-types.md) | `@resource` annotation — linear struct types |

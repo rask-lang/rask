@@ -90,7 +90,7 @@ surface stays gated instead of hiding behind a known-fail line.
 |---|---|---|---|---|
 | ownership, moves, 16-byte copy threshold | `t_month_ownership.rk` | 12/12 | 12/12 | |
 | borrowing, disjoint fields, `with` | `t_month_borrowing.rk` | 13/13 | 13/13 | |
-| box family — Cell, Mutex, Shared, Owned | `t_month_boxes.rk` | 13/13 | 13/13 | |
+| scoped access — Shared and its strategies, Heap, Atomic | `t_month_scoped_access.rk` | 13/13 | 13/13 | |
 | `@resource` and `ensure` | `t_month_resource_ensure.rk` | 11/11 | 11/11 | |
 | a program type named like a stdlib one | `t_month_stdlib_name_collision.rk` | 5/5 | 5/5 | |
 | threads, channels | `t_month_concurrency.rk` | 11/11 | 11/11 | #267 |

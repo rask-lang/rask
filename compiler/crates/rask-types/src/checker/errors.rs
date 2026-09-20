@@ -323,7 +323,7 @@ pub enum TypeError {
     },
     /// A `with` guard's bare identifier used as the block's own produced
     /// value, where the payload is a struct/enum/union. Boxes hand out no
-    /// guards — the payload is reachable only inside the block (mem.boxes,
+    /// guards — the payload is reachable only inside the block (mem.shared-rack-heap,
     /// "Why scoped access, not guards"). Scalars and `string` aren't checked
     /// here: copying them out is already an independent value (#559).
     #[error("the `with` guard `{name}` can't leave its block")]
@@ -343,7 +343,7 @@ pub enum TypeError {
     #[error("multi-field update under a lock without staged()")]
     TornLockUpdate {
         binding: String,
-        box_name: String,
+        source_name: String,
         first_field: String,
         second_field: String,
         first_span: Span,
@@ -426,7 +426,7 @@ pub enum TypeError {
     },
     /// mem.borrowing/W1: a `with` source that is neither an element reached by
     /// key nor a box.
-    #[error("`with` needs an element or a box, and `{place}` is a `{ty}`")]
+    #[error("`with` needs an element or a `Shared`, and `{place}` is a `{ty}`")]
     WithNeedsElementOrBox {
         /// Not called `source`: `thiserror` reads that name as the error cause.
         place: String,
@@ -656,7 +656,7 @@ pub enum TypeError {
     /// Not a deferrable obligation like most type mismatches — the strategy
     /// picks which lock the accessors take, so getting it wrong deadlocks
     /// rather than misbehaving visibly (#960).
-    #[error("this box uses the `{found}` strategy, but `{expected}` is expected here")]
+    #[error("this `Shared` uses the `{found}` strategy, but `{expected}` is expected here")]
     SharedStrategyMismatch {
         found: String,
         expected: String,
@@ -935,7 +935,7 @@ pub enum TypeError {
     /// PS2: package-level mutable state goes behind a sync box. A bare `const`
     /// collection is one instance every task can reach, so writing to it from
     /// two of them is a data race out of safe code.
-    #[error("`{name}` is package-level state — writing to it needs a sync box")]
+    #[error("`{name}` is package-level state — writing to it needs a lock")]
     MutatePackageState {
         name: String,
         ty: String,

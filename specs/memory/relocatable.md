@@ -43,7 +43,7 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 
 | Rule | Description |
 |------|-------------|
-| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Cell`, `Shared`, `Mutex`, `any Trait`, closures, or resource types |
+| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
 | **FL3: Handles** | `Handle<T>` is flat (integer components only) |
 | **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |
@@ -323,7 +323,7 @@ func receive_migration(stream: TcpConnection) -> Pool<Entity> or Error {
 - [Pools and Handles](pools.md) — Pool API, handle structure, generation counters (`mem.pools`)
 - [Value Semantics](value-semantics.md) — Copy vs move, 16-byte threshold (`mem.value`)
 - [Linearity](linear.md) — Why linear values are the Tier-3 opaque case (`mem.linear`)
-- [Boxes](boxes.md) — Box types and their relocatability tiers (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — Their relocatability tiers (`mem.shared-rack-heap`)
 - [Resource Types](resource-types.md) — Why resources are Tier-3 opaque (`mem.resources`)
 - [Encoding](../stdlib/encoding.md) — `Encode`/`Decode` traits, field annotations (`std.encoding`)
 - [Reflect](../stdlib/reflect.md) — `reflect.is_flat<T>()`, comptime type introspection (`std.reflect`)

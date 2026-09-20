@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Must not compile: a Heap value with nothing scheduled to release it.
+
+import memory.Heap
+
+struct Frame {
+    label: string
+    width: i64
+}
+
+func main() {
+    let frame = Heap(Frame { label: "canvas", width: 1920 })
+
+    println("{(*frame).label}")
+
+    drop(frame)
+}

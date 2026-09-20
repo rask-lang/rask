@@ -24,7 +24,7 @@
 // then name one inner container, which is a leak and not a double free, since
 // neither block's release touches what the value holds.
 //
-// Spec: mem.boxes — a container owns what its elements own.
+// Spec: type.traits — a container owns what its elements own.
 
 trait Shape {
     func area(self) -> i64
@@ -51,7 +51,7 @@ extend Rect with Shape {
     }
 }
 
-test "mem.boxes — a Vec of trait boxes frees their blocks" {
+test "type.traits — a Vec of trait boxes frees their blocks" {
     mut shapes: Vec<any Shape> = []
     shapes.push(Square { side: 3 })
     shapes.push(Rect { w: 2, h: 5 })
@@ -62,7 +62,7 @@ test "mem.boxes — a Vec of trait boxes frees their blocks" {
 
 // A literal rather than pushes, so the tag comes off the first element's type
 // instead of the annotation.
-test "mem.boxes — a literal of trait boxes" {
+test "type.traits — a literal of trait boxes" {
     let shapes: Vec<any Shape> = [Square { side: 4 }, Rect { w: 3, h: 3 }]
     assert shapes.len() == 2
     assert shapes[0].area() == 16
@@ -71,7 +71,7 @@ test "mem.boxes — a literal of trait boxes" {
 
 // The retain path: two vectors, and each must free its own block rather than
 // both freeing one.
-test "mem.boxes — a cloned Vec of trait boxes" {
+test "type.traits — a cloned Vec of trait boxes" {
     mut shapes: Vec<any Shape> = []
     shapes.push(Square { side: 5 })
     let copy = shapes.clone()
@@ -80,7 +80,7 @@ test "mem.boxes — a cloned Vec of trait boxes" {
     assert shapes[0].area() == 25
 }
 
-test "mem.boxes — a Map of trait boxes" {
+test "type.traits — a Map of trait boxes" {
     mut by_name: Map<string, any Shape> = Map.new()
     by_name.insert("sq", Square { side: 6 })
     by_name.insert("re", Rect { w: 4, h: 2 })
@@ -90,7 +90,7 @@ test "mem.boxes — a Map of trait boxes" {
 }
 
 // One per turn, so a block released twice lands on one the next turn reused.
-test "mem.boxes — a boxed element per turn" {
+test "type.traits — a boxed element per turn" {
     mut total = 0
     for i in 1..5 {
         mut shapes: Vec<any Shape> = []
@@ -102,7 +102,7 @@ test "mem.boxes — a boxed element per turn" {
 
 // Nested, so the outer release has to reach through the inner container's
 // descriptor to the blocks.
-test "mem.boxes — a Vec of Vecs of trait boxes" {
+test "type.traits — a Vec of Vecs of trait boxes" {
     mut outer: Vec<Vec<any Shape>> = []
     mut inner: Vec<any Shape> = []
     inner.push(Rect { w: 7, h: 2 })
@@ -116,7 +116,7 @@ struct Scene {
     items: Vec<any Shape>
 }
 
-test "mem.boxes — boxed elements in a struct's Vec field" {
+test "type.traits — boxed elements in a struct's Vec field" {
     mut s = Scene { items: [] }
     s.items.push(Square { side: 2 })
     s.items.push(Rect { w: 5, h: 1 })

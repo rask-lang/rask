@@ -131,7 +131,7 @@ test "type.optionals — a widened value survives an optional and a result" {
     assert res == 3000000000
 }
 
-test "mem.boxes — a widened value survives a closure and a Local box" {
+test "mem.shared-rack-heap — a widened value survives a closure and `Shared.local`" {
     let big: u32 = 3000000000
     let f = || {
         return big

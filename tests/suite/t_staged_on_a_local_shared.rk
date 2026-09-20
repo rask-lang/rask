@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `with s.staged()` on a box the frame owns, with a scalar inside it.
+// `with s.staged()` on a Shared the frame owns, with a scalar inside it.
 //
-// The staged tests that existed all went through a `const` box holding a
-// struct. A *local* box holding a scalar lowers the same block to a different
+// The staged tests that existed all went through a `const` Shared holding a
+// struct. A *local* Shared holding a scalar lowers the same block to a different
 // internal name — `Mutex_staged_data` — and nothing said what that name stands
 // for, so the compiler fell back to its deliberate worst case: treat it as
-// owning everything it touches, which leaks the box (#1157).
+// owning everything it touches, which leaks the Shared (#1157).
 //
 //     [unmapped-spelling] Mutex_staged_data (family Mutex): no stdlib file
 //     declares it and INTERNAL_SPELLINGS doesn't say what it stands for …
@@ -16,7 +16,7 @@
 // never took it over. Same as every other scoped accessor on a `Shared`.
 //
 // The warning is printed rather than guessed away because the other answer —
-// "no declaration, so the caller owns what came back" — frees a value the box
+// "no declaration, so the caller owns what came back" — frees a value the Shared
 // still holds. `spellings_gate.sh` sweeps the corpus for it, and it stayed
 // quiet because nothing in the corpus reached this shape.
 
@@ -30,7 +30,7 @@ struct Tally {
 
 func main() {}
 
-test "a scalar payload in a box the frame owns" {
+test "a scalar payload in a Shared the frame owns" {
     let s = Shared<i64>.mutex(5)
     with s.staged() as v {
         v = v + 2
@@ -40,7 +40,7 @@ test "a scalar payload in a box the frame owns" {
     }
 }
 
-test "the same box staged twice" {
+test "the same Shared staged twice" {
     let s = Shared<i64>.mutex(0)
     with s.staged() as v {
         v = v + 1
@@ -67,7 +67,7 @@ test "a payload that allocates, so a wrong owner would show as a double free" {
     }
 }
 
-test "staged in a loop on a local box" {
+test "staged in a loop on a `Shared.local`" {
     let s = Shared<i64>.mutex(0)
     mut i = 0
     while i < 6 {

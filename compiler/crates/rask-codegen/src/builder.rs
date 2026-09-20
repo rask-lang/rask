@@ -1226,7 +1226,7 @@ impl<'a> FunctionBuilder<'a> {
             // call, which `trait_drop` emits a drop for because the frame
             // outlives it. So the block goes and nothing inside it does: the
             // value's strings and containers are the frame's, and the box holds
-            // the same buffer and the same handle (mem.boxes, #1144).
+            // the same buffer and the same handle (mem.shared-rack-heap, #1144).
             // `rc_insert` puts the frame's own release after this statement.
             //
             // Hence the null hook. A box the value was *moved* into owns its

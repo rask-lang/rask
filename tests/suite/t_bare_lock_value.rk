@@ -40,17 +40,17 @@ extend Holder {
     func vec_len(self) -> usize { return self.v.write().len() }
 }
 
-test "mem.boxes — a bare lock() yields the scalar payload" {
+test "mem.shared-rack-heap — a bare lock() yields the scalar payload" {
     let h = Holder.new()
     assert h.read_scalar() == 3
 }
 
-test "mem.boxes — a bare lock() on a Vec payload" {
+test "mem.shared-rack-heap — a bare lock() on a Vec payload" {
     let h = Holder.new()
     assert h.vec_len() == 0
 }
 
-test "mem.boxes — the chained form still works" {
+test "mem.shared-rack-heap — the chained form still works" {
     let h = Holder.new()
     assert h.read_chained() == 7
 }

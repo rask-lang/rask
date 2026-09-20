@@ -160,7 +160,7 @@ try stdout.flush()
 | Rule | Description |
 |------|-------------|
 | **B4: In-memory** | `Buffer` implements both `Reader` and `Writer`. Not linear (no OS resource) |
-| **B5: Read position** | Reading advances a cursor. `Reader` takes `self`, not `mutate self`, so the cursor lives in a `Cell` — a `self` method changes something through a box |
+| **B5: Read position** | Reading advances a cursor. `Reader` takes `self`, not `mutate self`, so the cursor lives in a `Shared<i64, Local>` — a `self` method can still move it |
 
 <!-- test: skip -->
 ```rask

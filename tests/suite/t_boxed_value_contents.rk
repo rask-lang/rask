@@ -36,7 +36,7 @@
 // `two.counts.len()` came back 12209367259287946116 on the way here, and every
 // assertion below would have caught it.
 //
-// Spec: mem.boxes — a box's contents belong to whoever outlives it.
+// Spec: type.traits — a box's contents belong to whoever outlives it.
 
 trait Describes {
     func describe(self) -> string
@@ -76,7 +76,7 @@ func two_boxes(a: any Describes, b: any Describes) -> string {
     return "{a.describe()}|{b.describe()}"
 }
 
-test "mem.boxes — a container field read through a box" {
+test "type.traits — a container field read through a box" {
     let n = 1
     let h = Holder {
         label: "label {n}, long enough to allocate its own buffer",
@@ -89,7 +89,7 @@ test "mem.boxes — a container field read through a box" {
 }
 
 // The shape that double-freed. One value, two boxes alive at once.
-test "mem.boxes — one value in two boxes at once" {
+test "type.traits — one value in two boxes at once" {
     let n = 2
     let h = Holder {
         label: "shared label {n}, long enough to allocate",
@@ -101,7 +101,7 @@ test "mem.boxes — one value in two boxes at once" {
 
 // Boxed again after a box of it has already died. A release that ran at the
 // first drop makes this one read freed bytes.
-test "mem.boxes — boxed again after the first box died" {
+test "type.traits — boxed again after the first box died" {
     let n = 3
     let h = Holder {
         label: "reused label {n}, long enough to allocate",
@@ -119,7 +119,7 @@ test "mem.boxes — boxed again after the first box died" {
 
 // Two different values, one box each, so the releases don't get confused about
 // which group they belong to.
-test "mem.boxes — two values, a box each" {
+test "type.traits — two values, a box each" {
     let n = 4
     let a = Holder { label: "a label {n}, long enough to allocate", counts: [1] }
     let b = Holder { label: "b label {n}, long enough to allocate", counts: [2, 3] }
@@ -128,7 +128,7 @@ test "mem.boxes — two values, a box each" {
     assert b.counts.len() == 2
 }
 
-test "mem.boxes — two container fields behind one box" {
+test "type.traits — two container fields behind one box" {
     let n = 5
     let l = Ledger {
         name: "ledger {n}, with a name long enough to allocate",
@@ -142,7 +142,7 @@ test "mem.boxes — two container fields behind one box" {
 }
 
 // In a loop, so a value released twice lands on one the next turn has reused.
-test "mem.boxes — a boxed value per turn" {
+test "type.traits — a boxed value per turn" {
     mut total: usize = 0
     for i in 1..5 {
         let h = Holder { label: "turn {i}, long enough to allocate a buffer", counts: [i, i * 2] }

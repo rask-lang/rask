@@ -814,7 +814,7 @@ impl TypeChecker {
                 // never descends into a `with` binding.
                 if args.is_empty() && method == "staged" && self.sync_type_of(object).is_some() {
                     self.staged_outside_with.push((
-                        Self::sync_source_text(object).unwrap_or_else(|| "the box".to_string()),
+                        Self::sync_source_text(object).unwrap_or_else(|| "shared".to_string()),
                         expr.span,
                     ));
                 }

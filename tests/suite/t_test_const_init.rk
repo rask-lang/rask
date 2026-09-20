@@ -19,7 +19,7 @@ test "a folded literal const still works" {
     assert derived == 21
 }
 
-test "a boxed const is initialized before the first test runs" {
+test "a Shared const is initialized before the first test runs" {
     with guarded.write() as g {
         assert g.hits == 5
     }

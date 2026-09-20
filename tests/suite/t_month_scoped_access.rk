@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Month one: the box family — Cell, Shared, Mutex, Heap, Atomic.
+// Month one: scoped access — Shared and its strategies, Heap, Atomic.
 //
 // The family is closed: these are compiler types and you can't build an
 // equivalent. Each one answers a different question, and the source shows which:
@@ -33,14 +33,14 @@ struct Config {
     verbose: bool
 }
 
-test "conc.sync — a Local box holds a Copy value and hands it back" {
+test "conc.sync — `Shared.local` holds a Copy value and hands it back" {
     mut c = Shared.local(7)
     assert c.get() == 7
     c.set(8)
     assert c.get() == 8
 }
 
-test "conc.sync — a Local box of a small struct" {
+test "conc.sync — `Shared.local` of a small struct" {
     mut c = Shared.local(Config { retries: 3, verbose: false })
     assert c.get().retries == 3
     c.set(Config { retries: 5, verbose: true })
@@ -55,7 +55,7 @@ test "conc.sync — replace returns the old value in one step" {
     assert c.get() == 3
 }
 
-test "conc.sync — into_inner consumes the box" {
+test "conc.sync — into_inner consumes the Shared" {
     let c = Shared.local(99)
     assert c.into_inner() == 99
 }
@@ -136,7 +136,7 @@ test "mem.heap — Heap() heap-allocates and derefs back" {
     assert *p == 42
 }
 
-// A struct payload really is allocated, so the box owes a drop (mem.linear/L1).
+// A struct payload really is allocated, so the Shared owes a drop (mem.linear/L1).
 // `Heap<i64>` above doesn't: a scalar was never allocated, so there is nothing
 // to free (#819).
 test "mem.heap — a Heap struct payload" {

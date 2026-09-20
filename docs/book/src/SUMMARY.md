@@ -11,6 +11,7 @@
 # Learn the language
 
 - [Passing Values](guide/passing-values.md)
+- [When one owner isn't enough](guide/beyond-one-owner.md)
 
 # Look things up
 

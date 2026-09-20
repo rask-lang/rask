@@ -79,7 +79,7 @@ stack run had all called green. It is in CI beside the leak gate now, with
 
 The gate reports a second number beside that one, and it isn't part of this
 milestone. It is 2 allocations now, down from 15, and one file:
-`t_shared_box_freed.rk`, waiting on `clone_elision` knowing which box
+`t_shared_freed.rk`, waiting on `clone_elision` knowing which block
 `s.clone()` handed back. Freeing it today is a double free rather than a smaller
 leak, which is what makes it a wait rather than a task. Its line in
 `tests/known_leaks.txt` says `deferred`, and the gate still measures it and

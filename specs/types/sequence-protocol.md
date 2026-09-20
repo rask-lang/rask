@@ -228,7 +228,7 @@ func walk<T>(node: Node<T>, yield: |Node<T>| -> bool) -> bool {
 }
 ```
 
-This second shape is the one push exists to serve, and the one a pull cursor could not express: `Heap<T>` is a linear owning box, so there is no non-owning value that names a node halfway down the tree. The position has nowhere to live except the call stack.
+This second shape is the one push exists to serve, and the one a pull cursor could not express: `Heap<T>` is linear and owns what it points at, so there is no non-owning value that names a node halfway down the tree. The position has nowhere to live except the call stack.
 
 **Stack depth is the cost.** A push traversal recurses once per level, and nothing bounds that. A balanced tree is fine; a degenerate one overflows the native stack. Push trades a visible allocation (the explicit stack a pull cursor would need) for an invisible one, and this is the place where that shows.
 

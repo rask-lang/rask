@@ -135,7 +135,7 @@
 # block; `Cell.into_inner` was `Cell.get` under another name, so freeing the
 # cell would have dangled that pointer and the whole cell stayed behind. Both
 # write into the caller's own destination now — six more files clean,
-# `t_month_boxes.rk` among them.
+# `t_month_scoped_access.rk` among them.
 #
 # And 155 once a string variable written every turn released what it held. By
 # the time the reference-counting pass sees it the loop-carried write isn't a
@@ -213,7 +213,7 @@
 # file total on every run, and fails on a line whose number no longer matches
 # what the file leaks, which is where that belongs.
 #
-# Two of the entries are `t_heap_box_dropped.rk`, written for the `drop` fix and
+# Two of the entries are `t_heap_dropped.rk`, written for the `drop` fix and
 # left on the list because a freed box says nothing about the vector inside its
 # payload — a different question from #1144's, which is about `any Trait`.
 # `RASK_LEAK_TRACE=1` says which runtime function is still holding what, which
@@ -365,7 +365,7 @@
 # holding the block's pointer *is* the payload, and the ordinary contents
 # release walks it. The rc pass skips a group something already placed a
 # release for, read once before it starts adding its own
-# (`t_heap_box_dropped.rk` clean).
+# (`t_heap_dropped.rk` clean).
 #
 # And 37 once the trait-drop pass followed a box as far as the frame carries it.
 # Two gaps, both about a box that arrived from *somewhere else* rather than
@@ -423,7 +423,7 @@
 # above didn't reach. None are new leaks — they were on that branch's own
 # list before the merge.
 
-t_shared_box_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands back.
+t_shared_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands back.
                         # Not "held on purpose", which is what this line used to say:
                         # `clone_elision` may leave the caller's own box in the slot, so
                         # freeing the clone is a double free rather than a smaller leak.

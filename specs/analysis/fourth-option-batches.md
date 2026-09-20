@@ -31,7 +31,7 @@ with world.batch() as w {
 ```
 
 A `with` block rather than a closure, for the reason the box family already
-uses one (`mem.boxes`): `return`, `try`, `break` and `continue` propagate
+uses one (`mem.shared-rack-heap`): `return`, `try`, `break` and `continue` propagate
 naturally, and a closure would swallow them.
 
 ## B1 — Only deletes defer

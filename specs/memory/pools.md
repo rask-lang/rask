@@ -737,14 +737,14 @@ extend Observable<T> {
 ### See Also
 
 - [Borrowing](borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
-- [Boxes](boxes.md) — The container family Pool belongs to (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — The set Pool belongs to (`mem.shared-rack-heap`)
 - [Linearity](linear.md) — Rules for `Pool<Linear>` cleanup (`mem.linear`)
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
-- [Owned Pointers](heap.md) — Handle alternative for single-owner recursive types (`mem.heap`)
+- [Heap Values](heap.md) — Handle alternative for single-owner recursive types (`mem.heap`)
 - [Context Clauses](context-clauses.md) — Handle auto-resolution (`mem.context`)
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)
 - [Collections](../stdlib/collections.md) — Vec and Map types (`std.collections`)
 - [Aliasing Detection](aliasing-detection.md) — Compile-time closure aliasing analysis (`mem.aliasing`)
 - [Relocatable Memory](relocatable.md) — Pool serialization and mmap (`mem.relocatable`)
-- [Cell](cell.md) — Single-slot alternative when identity is not needed (`mem.cell`)
+- [Cell](cell.md) — Retired; folded into `Shared<T, Local>` (`mem.cell`)
 - [Generation Coalescing](../compiler/generation-coalescing.md) — Check elimination algorithm (`comp.gen-coalesce`)

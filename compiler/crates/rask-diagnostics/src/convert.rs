@@ -1216,7 +1216,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             SharedStrategyMismatch { found, expected, span } => {
                 Diagnostic::error(format!(
-                    "this box uses the `{}` strategy, but `{}` is expected here",
+                    "this `Shared` uses the `{}` strategy, but `{}` is expected here",
                     found, expected
                 ))
                     .with_code("E0381")
@@ -1402,10 +1402,10 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("`{}` (a `{}`) is only valid while this block holds access", name, type_name))
                     .with_help("copy a field out, or add a method that returns an owned value")
                     .with_fix(format!("with … as {} {{ {}.some_field }}", name, name))
-                    .with_why("`with` hands out access to the box's payload for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
+                    .with_why("`with` hands out access to the value inside, for the block's duration, not a value of its own — returning the guard itself would leave a view into memory the lock no longer protects once the block ends")
             }
 
-            TornLockUpdate { binding, box_name, first_field, second_field, first_span, second_span } => {
+            TornLockUpdate { binding, source_name, first_field, second_field, first_span, second_span } => {
                 Diagnostic::warning("multi-field update under a lock without staged()".to_string())
                     .with_code("W0907")
                     .with_primary(*first_span, format!("`{}` written first", first_field))
@@ -1415,9 +1415,9 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
                     .with_help(format!(
                         "stage the update: `with {}.staged() as {} {{ … }}` commits as one move on a clean exit and discards on a panic",
-                        box_name, binding,
+                        source_name, binding,
                     ))
-                    .with_fix(format!("with {}.staged() as {} {{ … }}", box_name, binding))
+                    .with_fix(format!("with {}.staged() as {} {{ … }}", source_name, binding))
                     .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
             }
 
@@ -1519,7 +1519,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             WithNeedsElementOrBox { place, ty, binding, span } => {
                 Diagnostic::error(format!(
-                    "`with` needs an element or a box, and `{}` is a `{}`",
+                    "`with` needs an element or a `Shared`, and `{}` is a `{}`",
                     place, ty
                 ))
                 .with_code("E0874")
@@ -1701,7 +1701,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "declare the error you mean — `enum MyError {{ {} }}` — and return `MyError.{}`",
                     member, member
                 ))
-                .with_why("`Error` is the trait every error type implements, and `any Error` is the erased box holding one. Neither has variants of its own — the variants belong to the concrete error enum")
+                .with_why("`Error` is the trait every error type implements, and `any Error` is the erased form holding one. Neither has variants of its own — the variants belong to the concrete error enum")
             }
 
             TraitObjectGenericMethod { trait_name, method, span } => {
@@ -2320,13 +2320,13 @@ impl ToDiagnostic for rask_types::TypeError {
 
             MutatePackageState { name, ty, span } => {
                 Diagnostic::error(format!(
-                    "`{}` is package-level state — writing to it needs a sync box",
+                    "`{}` is package-level state — writing to it needs a lock",
                     name,
                 ))
                     .with_code("E0856")
                     .with_primary(*span, format!("this writes to a bare `const {}`", ty))
                     .with_fix(format!(
-                        "hold it in a sync box — `const {n} = Shared.new(…)` — and write through `with {n}.write() as v {{ … }}`",
+                        "hold it in a `Shared` — `const {n} = Shared.new(…)` — and write through `with {n}.write() as v {{ … }}`",
                         n = name,
                     ))
                     .with_help("a module-level `const` is one instance for the whole program, so every task reaches the same value. `Shared.new(…)` gives it a read-write lock, `Shared.mutex(…)` an exclusive one, and `Atomic` covers a single word. There is no `mut` at package level to reach for instead [structure.modules/PS3]")

@@ -94,7 +94,7 @@ cover the ones that matter?
    one mark per 35 lines. PM4's cost is real but bounded.
 3. **Expert systems code barely uses iterator adapters** (tokio: 8 iter/10k, 0.6 filter) —
    plain loops dominate. Rask's loop-first design matches expert practice.
-4. **The box family maps 1:1 onto observed usage.** `Arc` common → `Shared`; `Rc` ≈ 0 →
+4. **`Shared`, `Rack` and `Heap` map 1:1 onto observed usage.** `Arc` common → `Shared`; `Rc` ≈ 0 →
    correctly omitted. `RefCell` sits flat at 2–3/10k in every corpus against `Arc`+`Mutex` at
    14–36 — an order of magnitude apart. That gap is why the unlocked strategy is `Shared.local`,
    opted into, and the locking one is what bare `Shared` means.

@@ -2,8 +2,8 @@
 // Compile Error: a `with` guard escaping its block
 // Rejects: the with guard `g` can't leave its block
 //
-// mem.boxes ("Why scoped access, not guards"): a box hands out access to its
-// payload for the with block's duration, not a value of its own. Returning
+// mem.shared-rack-heap ("Why scoped access, not guards"): a `with` hands out access to the
+// value inside for the block's duration, not a value of its own. Returning
 // the bare guard identifier let the caller keep reading through the mutex
 // after the lock released — silently, since the value happened to still be
 // there until something else wrote it (#559).

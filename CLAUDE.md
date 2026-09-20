@@ -61,7 +61,7 @@ wrong thing. Weigh whether the result is better.
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The box family is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Pool` (deprecated), `Atomic*`, `string` are compiler types; users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/boxes.md` (BX1–BX4). Don't propose one.
+- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Pool` (deprecated), `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one.
 
 # Working relationship
 
@@ -270,9 +270,9 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 
 The stdlib should feel Rask, not Rust-with-different-keywords. Don't lift names, shapes, or layering from `std::*` just because they're familiar.
 
-- Pick names from how Rask programs read, not from Rust precedent. `Vec`/`Map` survive because they fit; `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` do not — Rask has `T or E`, `T?`, `Owned`, `Shared`, `Cell`, `Mutex`.
+- Pick names from how Rask programs read, not from Rust precedent. `Vec`/`Map` survive because they fit; `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` do not — Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>`.
 - Method names follow Rask conventions, not Rust's (`unwrap`, `expect`, `ok_or`, `and_then` are Rust idioms; design from the actual operation, not the cheat sheet).
-- Layering should reflect Rask's box family and linearity rules — don't import Rust's trait hierarchy (`Deref`, `Borrow`, `AsRef`, `Iterator` adapters) by reflex.
+- Layering should reflect `Shared`/`Rack`/`Heap` and the linearity rules — don't import Rust's trait hierarchy (`Deref`, `Borrow`, `AsRef`, `Iterator` adapters) by reflex.
 - When in doubt, sketch how the call site reads in a real Rask program first, then pick the name.
 
 If a Rust name genuinely is the right one, fine — but justify it from Rask's side, not from "that's what `std` calls it."
@@ -321,8 +321,8 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
-| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Owned<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
-| Boxes | Container family with `with`-scoped access — `Shared<T, S>`, Rack+Link, Heap. `Cell`/`Mutex` are strategies, not types | [boxes.md](specs/memory/boxes.md) |
+| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
+| Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |

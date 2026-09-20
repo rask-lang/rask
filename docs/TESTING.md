@@ -58,7 +58,7 @@ Three ways a cell can be non-green, and they mean different things:
 - **`-` — not legal Rask.** `gen.py`'s `SKIPS` holds these, each naming the
   rule: a `Heap<T>` in a `Vec` is `std.collections/C4`. Keep this list tiny. A
   skip is a claim the compiler *enforces*, and the first draft of it was mostly
-  wrong — a `Heap` in an optional or a tuple, a `Sequence` in a Vec or a box,
+  wrong — a `Heap` in an optional or a tuple, a `Sequence` in a Vec or a `Heap`,
   all looked ruled out by linearity and SEQ38, and the compiler accepts every
   one. Twenty cells were sitting behind citations instead of being run. If the
   spec says no and the compiler says yes, that is a missing check to file, not
@@ -95,9 +95,8 @@ harness treats as non-fatal:
 - **`tests/known_divergences.txt`** — bugs/regressions: a feature that *should*
   work but is broken on a backend. Red here is bad news.
 - **`tests/pending_features.txt`** — the **TDD backlog**: tests that assert
-  spec-correct behavior for features that aren't built yet (SIMD, bits, `select`,
-  numeric limits, `.rev()`/`.step()`, operator overloading, `Owned<T>`, the
-  sequence protocol, `@binary`, native math/boxes/os…). These are *supposed* to
+  spec-correct behavior for features that aren't built yet (SIMD, `@binary`,
+  gradual generalization). These are *supposed* to
   be red — the test encodes the spec and drives the implementation. When the
   feature lands, the test flips green and the harness prints **UNEXPECTED PASS**
   telling you to promote it out of the backlog.
@@ -155,22 +154,21 @@ Witnessed on BOTH backends (green in the harness):
 
 Tracked KNOWN-FAIL witnesses (RED until fixed, in `known_divergences.txt`):
 `t43_widening_regressions.rk` (optional widening interp #393, result T-bind native #389),
-`t53_math.rk` (math module unlinked in codegen), `t50_boxes.rk` (`Shared` strategies, native).
+`t53_math.rk` (math module unlinked in codegen), `t50_shared_strategies.rk` (`Shared` strategies, native).
 
 Filed from the harness — native codegen: #386 (struct param+return), #387 (enum string
 payload), #388 (f64 enum payload), #389 (union error handling), #390 (test-registration
 drop); interp: #391 (T-or-E discrimination), #392 (labeled break/continue), #393 (optional
 widening); checker: #394 (`??` on `T or E`), #395 (bogus import / `{:?}`). Reopened: #256,
 #258, #270. The breadth pass added a second wave (math/bits/collections-codegen/operator-
-overloading/select/boxes/comptime-native/interp-struct-copy-aliasing) — see the issue
+overloading/select/scoped-access/comptime-native/interp-struct-copy-aliasing) — see the issue
 tracker and `known_divergences.txt` for the live list.
 
 Pending-feature backlog (RED tests that assert spec behavior, in `pending_features.txt`):
-`p01_bits`, `p02_numeric_limits`, `p03_comparison_surface` (char/tuple/bool ops),
-`p04_ranges_rev_step`, `p05_operator_overload`, `p06_select`, `p07_owned` (`Owned<T>`),
-`p08_sequence` (sequence protocol), `p09_simd`, `p10_binary` (`@binary`, interp-done/native-gap),
-plus the native-backend gaps `t41_os`, `t50_boxes`, `t53_math`. Each flips green when its
-feature is built.
+`p09_simd`, `p10_binary` (`@binary`, interp-done/native-gap), and
+`p11_gradual_generalization`. Each flips green when its feature is built. `p01`
+through `p07` have all shipped and are green; `p08_sequence` moved to
+`known_divergences.txt` (#1046), where the interpreter is the one that fails.
 
 Still without a witness (next): typed JSON, net/http (native-thin); panics/ensure have
 `cargo test` + `compile_errors/` coverage but no suite blocks (panics abort test runs); Batch 2

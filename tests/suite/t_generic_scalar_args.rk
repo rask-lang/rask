@@ -6,9 +6,9 @@
 // the shared layout's word-sized slot — so the size guard never trips and there's
 // no error, just a wrong value. Two things went wrong there:
 //
-//   - `Box.new("hei")` is a method on a generic type with no receiver to read the
+//   - `Wrapper.new("hei")` is a method on a generic type with no receiver to read the
 //     instantiation from, so it stayed on the shared layout while
-//     `Box<string>.get()` got a per-instantiation one. One wrote the field, the
+//     `Wrapper<string>.get()` got a per-instantiation one. One wrote the field, the
 //     other read it back at a different size, and the string came out as garbage.
 //   - The shared layout substitutes `i64` for every type parameter. Right size,
 //     wrong register class: `wrap(3.14).value` loaded the double's bits into an
@@ -18,13 +18,13 @@
 // Both showed up in `examples/09_generics.rk`, which the examples gate runs
 // without comparing output.
 
-struct Box<T> {
+struct Wrapper<T> {
     public value: T
 }
 
-extend Box<T> {
-    func new(value: T) -> Box<T> {
-        return Box { value }
+extend Wrapper<T> {
+    func new(value: T) -> Wrapper<T> {
+        return Wrapper { value }
     }
 
     func get(self) -> T {
@@ -32,19 +32,19 @@ extend Box<T> {
     }
 }
 
-func wrap<T>(value: T) -> Box<T> {
-    return Box { value }
+func wrap<T>(value: T) -> Wrapper<T> {
+    return Wrapper { value }
 }
 
 test "type.generics — a static method on a generic type sees its instantiation" {
-    let s = Box.new("wrapped")
+    let s = Wrapper.new("wrapped")
     assert s.get() == "wrapped"
     assert s.value == "wrapped"
 
-    let n = Box.new(100)
+    let n = Wrapper.new(100)
     assert n.get() == 100
 
-    let f = Box.new(2.5)
+    let f = Wrapper.new(2.5)
     assert f.get() == 2.5
 }
 

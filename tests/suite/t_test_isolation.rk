@@ -38,7 +38,7 @@ test "b — its own locals again, with the same name" {
 
 // Runs after "a", so the box it wrote is the box read here. Process-global
 // state is not reset between tests, and this is the line that says so.
-test "c — a module-level box carries across tests" {
+test "c — a module-level Shared carries across tests" {
     with counter.read() as c {
         assert c == 1
     }
