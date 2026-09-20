@@ -1414,10 +1414,38 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, suffix) => {
+                // An unsuffixed literal takes the type the checker gave it
+                // (type.primitives/L1). Calling it an `f64` outright left an
+                // `f32` slot being filled with a double — harmless where the
+                // callee's declared signature is on hand to convert against,
+                // and not harmless through a closure, where the caller's own
+                // argument types *are* the signature. `yield(1.5)` into a
+                // `func(f32) -> bool` passed eight bytes, the callee read the
+                // low four, and every f32 through a Sequence collected as 0
+                // (#1243).
+                //
+                // The narrow one goes through a local of its own so the width
+                // travels with the value: a bare `MirConst::Float` carries
+                // none, and every reader that has no expected type to hand
+                // defaults to f64.
                 let ty = match suffix {
                     Some(FloatSuffix::F32) => MirType::F32,
-                    Some(FloatSuffix::F64) | None => MirType::F64,
+                    Some(FloatSuffix::F64) => MirType::F64,
+                    None => self
+                        .ctx
+                        .lookup_raw_type(expr.id)
+                        .map(|t| self.ctx.type_to_mir(t))
+                        .filter(|t| matches!(t, MirType::F32))
+                        .unwrap_or(MirType::F64),
                 };
+                if ty == MirType::F32 {
+                    let local = self.builder.alloc_temp(MirType::F32);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Float(*val))),
+                    }));
+                    return Ok((MirOperand::Local(local), MirType::F32));
+                }
                 Ok((MirOperand::Constant(MirConst::Float(*val)), ty))
             }
             ExprKind::String(s) => Ok((
@@ -2018,6 +2046,27 @@ impl<'a> MirLowerer<'a> {
                     // that back. Freeing it handed `rask_free` the vector's own
                     // handle — the SIGSEGV in #1234.
                     let unboxed_heap = arg_expr.is_some_and(|e| self.expr_is_unboxed_heap(e));
+                    // What the box *is*, when it never got a block. `drop`
+                    // consumes it, so what it gives back is whatever the
+                    // payload is — a vector's buffer, a map's tables, a box's
+                    // reference. The frame can't: a linear value is registered
+                    // with an `ensure` before it is read (E0882), which puts
+                    // the handle in a cell, and a handle in a cell is not a
+                    // name the frame's own release walks.
+                    if unboxed_heap {
+                        if let Some(free_fn) = arg_expr
+                            .and_then(|e| self.ctx.lookup_raw_type(e.id))
+                            .and_then(|t| self.heap_payload_release(t))
+                        {
+                            if let Some(op) = arg_operands.first().cloned() {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: FunctionRef::internal(free_fn.to_string()),
+                                    args: vec![op],
+                                }));
+                            }
+                        }
+                    }
                     let box_ptr = if !unboxed_heap
                         && (boxed || matches!(arg_mir_types.first(), Some(MirType::Ptr)))
                     {
@@ -9938,18 +9987,35 @@ impl<'a> MirLowerer<'a> {
         // didn't, so `if m.get(k)? as f` left `f(2)` lowering as a call to a
         // function named `f` — which is nothing, so lowering gave up (#1151).
         if let Some(ret_ty) = self.presence_payload_callable_ret(scrutinee) {
-            self.closure_locals.insert(name.to_string());
-            self.func_sigs.insert(
-                name.to_string(),
-                super::FuncSig {
-                    ret_ty,
-                    scalar_mutate_params: Vec::new(),
-                    aggregate_mutate_params: Vec::new(),
-                    ret_vec_elem: None,
-                    param_ty_strs: Vec::new(),
-                },
-            );
+            self.note_callable_binding(name, ret_ty);
         }
+    }
+
+    /// What gives back the payload of a `Heap<T>` that was never boxed.
+    ///
+    /// A closure is deliberately not here: the frame that built it already
+    /// drops it, and a second release would be a double free. A scalar answers
+    /// nothing, which is the spec's "dropping one frees nothing".
+    fn heap_payload_release(&self, payload: &rask_types::Type) -> Option<&'static str> {
+        let (name, args) = self.generic_head(payload)?;
+        let strategy = || {
+            let Some(rask_types::GenericArg::Type(s)) = args.get(1) else { return "Shared_drop" };
+            match super::MirContext::type_prefix(s, self.ctx.type_names).as_deref() {
+                Some("Local") => "Cell_drop",
+                Some("Mutex") => "Mutex_drop",
+                _ => "Shared_drop",
+            }
+        };
+        Some(match name.as_str() {
+            "Vec" => "Vec_free",
+            "Map" => "Map_free",
+            "Rack" => "Rack_free",
+            "Pool" => "Pool_free",
+            "Shared" => strategy(),
+            "Cell" => "Cell_drop",
+            "Mutex" => "Mutex_drop",
+            _ => return None,
+        })
     }
 
     /// What the payload of `scrutinee` answers when called, if it is callable.

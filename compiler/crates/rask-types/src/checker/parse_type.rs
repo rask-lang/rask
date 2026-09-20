@@ -254,12 +254,18 @@ pub(crate) fn split_type_args(s: &str) -> Vec<&str> {
     let mut paren_depth = 0;
     let mut start = 0;
 
+    // `>` only closes a `<` that is open. The arrow of a function type carries
+    // one too, and counting it drove the depth negative — so the comma in
+    // `Shared<func(i64) -> i64, Local>` was never at depth 0, the whole thing
+    // came back as one argument, and the defaulting step then filled in the
+    // missing strategy: `Shared.local(f)` was checked as a `Readers` box and
+    // rejected the annotation that said `Local` (#1241).
     for (i, c) in s.char_indices() {
         match c {
             '<' => depth += 1,
-            '>' => depth -= 1,
+            '>' if depth > 0 => depth -= 1,
             '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            ')' if paren_depth > 0 => paren_depth -= 1,
             ',' if depth == 0 && paren_depth == 0 => {
                 result.push(s[start..i].trim());
                 start = i + 1;

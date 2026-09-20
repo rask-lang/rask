@@ -87,16 +87,20 @@ impl SharedStrategy {
         }
     }
 
-    /// Acquire and release for an inline guard access.
-    pub(super) fn guard_syms(self, write: bool) -> (&'static str, &'static str) {
+    /// Acquire and release for an inline guard access. `Local` takes no lock,
+    /// so it has nothing to give back — the name that used to stand there,
+    /// `Cell_noop_release`, was declared nowhere and codegen stopped at
+    /// "Function not found" for every inline `.read()`/`.write()` chain on a
+    /// `Shared<T, Local>`.
+    pub(super) fn guard_syms(self, write: bool) -> (&'static str, Option<&'static str>) {
         match self {
-            SharedStrategy::Local => ("Cell_acquire", "Cell_noop_release"),
-            SharedStrategy::Mutex => ("Mutex_acquire", "Mutex_release"),
+            SharedStrategy::Local => ("Cell_acquire", None),
+            SharedStrategy::Mutex => ("Mutex_acquire", Some("Mutex_release")),
             SharedStrategy::Readers => {
                 if write {
-                    ("Shared_write_acquire", "Shared_release")
+                    ("Shared_write_acquire", Some("Shared_release"))
                 } else {
-                    ("Shared_read_acquire", "Shared_release")
+                    ("Shared_read_acquire", Some("Shared_release"))
                 }
             }
         }
@@ -253,6 +257,15 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Release (and the write-back) go in a cleanup block on the ensure stack,
     /// so `return`, `try`, `break` and `continue` all run them on the way out.
+    /// What the payload of the box `object` answers when called, if it is
+    /// callable.
+    fn box_payload_callable_ret(&self, object: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(object.id)?;
+        let (_, args) = self.generic_head(ty)?;
+        let rask_types::GenericArg::Type(payload) = args.first()? else { return None };
+        self.ctx.callable_ret_ty(payload, self.ctx.type_names)
+    }
+
     pub(super) fn lower_box_with_block(
         &mut self,
         object: &Expr,
@@ -284,6 +297,12 @@ impl<'a> MirLowerer<'a> {
         let saved_binding = self.locals.insert(binding_name.to_string(), (guard_local, guard_ty.clone()));
         if let Some(ref type_name) = inner_type_name {
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
+        }
+        // A box holding a function value binds a callable, so `with b.read() as
+        // f { f(2) }` has to emit an indirect call — without it the call went
+        // looking for a function named `f` and lowering gave up (#1241).
+        if let Some(ret_ty) = self.box_payload_callable_ret(object) {
+            self.note_callable_binding(binding_name, ret_ty);
         }
 
         let writeback = (!by_address).then(|| guard_ty.size());
@@ -399,7 +418,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn sync_guard<'e>(
         &self,
         object: &'e Expr,
-    ) -> Option<(&'e Expr, &'static str, &'static str)> {
+    ) -> Option<(&'e Expr, &'static str, Option<&'static str>)> {
         let ExprKind::MethodCall { object: box_obj, method, args, .. } = &object.kind else {
             return None;
         };
@@ -408,7 +427,7 @@ impl<'a> MirLowerer<'a> {
         }
         match method.as_str() {
             "lock" if self.is_sync_box_expr(box_obj, "Mutex") => {
-                Some((box_obj, "Mutex_acquire", "Mutex_release"))
+                Some((box_obj, "Mutex_acquire", Some("Mutex_release")))
             }
             // `read`/`write` on a `Shared<T, S>`: which lock, if any, is the
             // strategy's business (SH5). All three answer to both verbs — a
@@ -434,23 +453,23 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `make_op` builds the trailing operation given the guard as an ident:
     /// `|g| g.method(args)` or `|g| g.field`.
-    pub(super) fn lower_sync_guard_access(
+    /// Take the lock and bind the payload to a synthetic guard local.
+    ///
+    /// The guard aliases the box's inner value — the acquire call returns a
+    /// pointer to it. The local is typed as the inner struct so method dispatch
+    /// and field offsets resolve, exactly like a `with pool[h] as e` binding.
+    /// Codegen special-cases the acquire functions to bind the returned pointer
+    /// directly (a struct pointer-alias), so it isn't copied into a fresh slot —
+    /// a `mutate self` method then writes through to the real value.
+    ///
+    /// Hands back the lowered box, the guard's name, its local and its type. The
+    /// caller runs whatever the chain does next and then releases.
+    pub(super) fn acquire_sync_guard(
         &mut self,
         box_obj: &Expr,
         acquire: &str,
-        release: &str,
-        ret_hint: Option<MirType>,
-        make_op: impl FnOnce(Expr) -> Expr,
-    ) -> Result<TypedOperand, LoweringError> {
+    ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
-
-        // The guard aliases the box's inner value — the acquire call returns a
-        // pointer to it. Type the local as the inner struct so method dispatch
-        // and field offsets resolve, exactly like a `with pool[h] as e`
-        // binding. Codegen special-cases the acquire functions to bind the
-        // returned pointer directly (a struct pointer-alias), so it isn't
-        // copied into a fresh slot — a `mutate self` method then writes through
-        // to the real value.
         let inner_name = self.resolve_shared_inner_type_name(box_obj);
         let guard_ty = inner_name.as_ref()
             .and_then(|n| self.ctx.find_struct(n))
@@ -466,7 +485,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal(acquire.to_string()),
             args: vec![box_op.clone()],
         }));
-        self.locals.insert(guard_name.clone(), (guard_local, guard_ty));
+        self.locals.insert(guard_name.clone(), (guard_local, guard_ty.clone()));
         if let Some(n) = &inner_name {
             self.meta_mut(&guard_name).type_prefix = Some(n.clone());
         }
@@ -479,6 +498,19 @@ impl<'a> MirLowerer<'a> {
         {
             self.meta_mut(&guard_name).elem_type = Some(elem);
         }
+        Ok((box_op, guard_name, guard_local, guard_ty))
+    }
+
+    pub(super) fn lower_sync_guard_access(
+        &mut self,
+        box_obj: &Expr,
+        acquire: &str,
+        release: Option<&str>,
+        ret_hint: Option<MirType>,
+        make_op: impl FnOnce(Expr) -> Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let (box_op, guard_name, _guard_local, _guard_ty) =
+            self.acquire_sync_guard(box_obj, acquire)?;
 
         // Lower the trailing operation on the guard through the normal path.
         let guard_ident = Expr {
@@ -489,12 +521,15 @@ impl<'a> MirLowerer<'a> {
         let (result, inner_ret_ty) = self.lower_expr(&make_op(guard_ident))?;
 
         // Release. The operation's value is a copy (or lives in a caller slot),
-        // so it stays valid after the lock is released.
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal(release.to_string()),
-            args: vec![box_op],
-        }));
+        // so it stays valid after the lock is released. A `Local` box took no
+        // lock and has nothing to give back.
+        if let Some(release) = release {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(release.to_string()),
+                args: vec![box_op],
+            }));
+        }
 
         // Pick the return type. The inner op's type (from the method's own
         // signature) is authoritative — it carries a resolved `T or E` result,

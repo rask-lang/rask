@@ -2394,6 +2394,27 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Record that `name` binds something callable, and what calling it
+    /// answers.
+    ///
+    /// This is what makes a call site emit an indirect call instead of looking
+    /// for a function by that name, so every way of binding a function value
+    /// has to do it: a `let`, a `for` element, a closure parameter, the payload
+    /// of a `T?`, the binding of a `with`.
+    pub(crate) fn note_callable_binding(&mut self, name: &str, ret_ty: MirType) {
+        self.closure_locals.insert(name.to_string());
+        self.func_sigs.insert(
+            name.to_string(),
+            FuncSig {
+                ret_ty,
+                scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            },
+        );
+    }
+
     /// Does this expression name a `Heap<T>` that holds the payload itself?
     ///
     /// The mirror of `expr_yields_owned_box`: that one asks "is this a block

@@ -2004,7 +2004,20 @@ impl TypeChecker {
                     //
                     // Pool is deliberately absent — a pool is reached by element
                     // (`with pool[h] as e`), so the source is already the payload.
-                    let unwraps = |name: &str| matches!(name, "Mutex" | "Shared" | "Cell");
+                    // `b.read()` already answers with the payload, so stripping
+                    // a wrapper off *that* reads through a box the program still
+                    // holds: one `with` on a `Shared<Shared<i64, Local>, Local>`
+                    // bound the `i64`, and `.get()` on the binding was "no method
+                    // `get` on i64" (#1242). One `with` opens one box. Only the
+                    // bare form has a wrapper left to strip.
+                    let names_a_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. }
+                            if matches!(method.as_str(), "read" | "write" | "staged")
+                    );
+                    let unwraps = |name: &str| {
+                        !names_a_lock && matches!(name, "Mutex" | "Shared" | "Cell")
+                    };
                     let inner_of = |args: &[GenericArg]| match args.first() {
                         Some(GenericArg::Type(inner)) => Some((**inner).clone()),
                         _ => None,
@@ -2029,11 +2042,6 @@ impl TypeChecker {
                     // ("expected Cell, Mutex, Shared … got Shared") and native
                     // compiled it and read the wrong bytes, printing 0 for a field
                     // that held 4 (#880).
-                    let names_a_lock = matches!(
-                        &binding.source.kind,
-                        ExprKind::MethodCall { method, .. }
-                            if matches!(method.as_str(), "read" | "write" | "staged")
-                    );
                     // ST3a: `staged()` under `Local`. The strategy is in the
                     // type, so the compiler can decide it — and ctrl.panic/S7
                     // says a condition fixed at the declaration is a diagnostic,

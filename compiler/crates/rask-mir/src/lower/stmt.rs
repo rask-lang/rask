@@ -687,6 +687,52 @@ impl<'a> MirLowerer<'a> {
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
+                        // `box.write().field = v`. The receiver is a lock chain,
+                        // so lowering it as an ordinary expression takes the
+                        // lock and gives it straight back — the store then
+                        // landed after the release, through a guard nobody
+                        // held, and with no field type to size it by: a string
+                        // went into a 16-byte slot as a bare word and read back
+                        // as garbage. The `with` form was right all along, which
+                        // is what made this look like a string bug (#1232).
+                        if let Some((box_obj, acquire, release)) = self.sync_guard(object) {
+                            let (box_op, _, guard_local, guard_ty) =
+                                self.acquire_sync_guard(box_obj, acquire)?;
+                            if let Some((offset, fty, fsize)) =
+                                self.field_offset_ty_size(&guard_ty, field)
+                            {
+                                // The value the slot is about to lose, exactly
+                                // as the place-chain path below gives it back.
+                                if let Some(old) = self.replaced_slot_type(target, &fty) {
+                                    self.builder.push_stmt(MirStmt::dummy(
+                                        MirStmtKind::ReleaseSlot { addr: guard_local, offset, ty: old },
+                                    ));
+                                }
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: guard_local,
+                                    offset,
+                                    value: val_op,
+                                    store_size: fsize,
+                                }));
+                                if let Some(release) = release {
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: None,
+                                        func: FunctionRef::internal(release.to_string()),
+                                        args: vec![box_op],
+                                    }));
+                                }
+                                return Ok(());
+                            }
+                            // No layout for the payload — release and fall
+                            // through rather than leave the lock held.
+                            if let Some(release) = release {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: FunctionRef::internal(release.to_string()),
+                                    args: vec![box_op],
+                                }));
+                            }
+                        }
                         // #411: a place rooted at an aggregate local (`p.x`,
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
@@ -2677,18 +2723,8 @@ impl<'a> MirLowerer<'a> {
         let Some(source_ty) = self.ctx.lookup_raw_type(source.id) else { return };
         let Some(elem) = self.checker_elem_of(source_ty) else { return };
         if let rask_types::Type::Fn { ret, .. } = elem {
-            self.closure_locals.insert(name.to_string());
             let ret_mir = self.ctx.type_to_mir(&ret);
-            self.func_sigs.insert(
-                name.to_string(),
-                super::FuncSig {
-                    ret_ty: ret_mir,
-                    scalar_mutate_params: Vec::new(),
-                    aggregate_mutate_params: Vec::new(),
-                    ret_vec_elem: None,
-                    param_ty_strs: Vec::new(),
-                },
-            );
+            self.note_callable_binding(name, ret_mir);
         }
     }
 
