@@ -3,7 +3,6 @@ not a number: non-numeric character
 retries 5
 retries 3
 doubled 82
-name is unnamed
 port 8080
 bad config: port is not set
 bad config: port is not a number

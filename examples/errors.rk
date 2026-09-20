@@ -32,12 +32,6 @@ func doubled(text: string) -> i64 or ParseError {
 }
 // ANCHOR_END: propagate
 
-// ANCHOR: absence
-func name_of(settings: Map<string, string>) -> string {
-    return settings.get("name") ?? "unnamed"
-}
-// ANCHOR_END: absence
-
 // ANCHOR: owntype
 enum ConfigError {
     Missing(string)
@@ -55,8 +49,8 @@ extend ConfigError with Error {
 // ANCHOR_END: owntype
 
 // ANCHOR: ownuse
-func port_of(settings: Map<string, string>) -> i64 or ConfigError {
-    let text = settings.get("port") ?? {
+func port_from(text: string) -> i64 or ConfigError {
+    if text == "" {
         return ConfigError.Missing("port")
     }
     let n = text.parse<i64>() catch _ => {
@@ -66,14 +60,8 @@ func port_of(settings: Map<string, string>) -> i64 or ConfigError {
 }
 // ANCHOR_END: ownuse
 
-func settings_with(port: string) -> Map<string, string> {
-    mut m = Map.new()
-    m.insert("port", port)
-    return m
-}
-
-func report(settings: Map<string, string>) {
-    let p = port_of(settings)
+func report(text: string) {
+    let p = port_from(text)
     if p is i64 as port {
         println("port {port}")
     } else as e {
@@ -95,10 +83,7 @@ func main() {
         println("could not double: {e.message()}")
     }
 
-    mut empty = Map.new()
-    println("name is {name_of(empty)}")
-
-    report(settings_with("8080"))
-    report(empty)
-    report(settings_with("eighty-eighty"))
+    report("8080")
+    report("")
+    report("eighty-eighty")
 }

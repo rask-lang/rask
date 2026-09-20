@@ -57,15 +57,6 @@ doesn't have one:
 {{#include ../../errors/errors-are-values/try_without_a_carrier.out}}
 ```
 
-## `??` is for missing, not failed
-
-A `Map` lookup returns `string?` — the value, or nothing. Nothing isn't a failure and carries
-no error to bind, so it gets `??` rather than `catch`:
-
-```rask
-{{#include ../../../../examples/errors.rk:absence}}
-```
-
 ## Your own error type
 
 `ParseError` came with `parse`. For your program's own failures, write an enum and give it a
@@ -92,5 +83,4 @@ The code above is one program, and it prints:
 ## Rules behind this page
 
 - [Error types](https://github.com/rask-lang/rask/blob/main/specs/types/error-types.md): `T or E`, `try`, `catch`, and the `Error` trait
-- [Optionals](https://github.com/rask-lang/rask/blob/main/specs/types/optionals.md): `T?`, `??`, and what absence means
 - [Panics](https://github.com/rask-lang/rask/blob/main/specs/control/panics.md): the other failure channel, for bugs rather than expected outcomes
