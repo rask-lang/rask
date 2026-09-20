@@ -19,16 +19,14 @@ string.
 {{#include ../../../../examples/optionals.rk:simplest}}
 ```
 
-For two cases that's more writing than it needs, and `rask lint` will say so. The shorter form
-tests with `x?` and names the value with `as`:
+The shorter form tests with `x?` and names the value with `as`:
 
 ```rask
 {{#include ../../../../examples/optionals.rk:bind}}
 ```
 
 `as found` names what the test just proved exists, and `found` is a plain `Profile` inside the
-block. The same `as` shows up after every test that proves a value is there, so it reads the
-same way each time.
+block.
 
 Without `as`, `x?` is just a `bool`:
 
@@ -48,16 +46,13 @@ side when the left is absent:
 The right side can also leave instead of producing a value — `?? return`, `?? break`,
 `?? continue`. There's no binder, because there's nothing to bind: absence carries no payload.
 
-That's also why a failure takes a different word. `catch` names or drops an error, and `none`
-isn't one:
-
 ```text
 {{#include ../../errors/when-there-might-be-nothing/catch_on_an_optional.out}}
 ```
 
 ## Reaching through
 
-`?.` reads a field when there's something to read it from, and gives `none` when there isn't:
+`?.` reads a field through a value that might be absent. When it is, the result is `none`:
 
 ```rask
 {{#include ../../../../examples/optionals.rk:chain}}
