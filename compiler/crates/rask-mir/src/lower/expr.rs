@@ -2040,19 +2040,19 @@ impl<'a> MirLowerer<'a> {
                     // the field's word, because the read hands back a *copy* of
                     // the payload and freeing that stack slot aborted in glibc
                     // — machinery for a shape that no longer compiles (#1202).
-                    // A `Heap<T>` that was never boxed frees nothing: the
-                    // payload fits the slot, so what is in the local is the
-                    // `Vec` or the closure itself, and the frame already gives
-                    // that back. Freeing it handed `rask_free` the vector's own
-                    // handle — the SIGSEGV in #1234.
+                    // A `Heap<T>` that was never boxed has no block to free:
+                    // the payload fits the slot, so what is in the local is the
+                    // `Vec` or the closure itself. Handing that to `rask_free`
+                    // freed the vector's own handle — the SIGSEGV in #1234.
                     let unboxed_heap = arg_expr.is_some_and(|e| self.expr_is_unboxed_heap(e));
-                    // What the box *is*, when it never got a block. `drop`
-                    // consumes it, so what it gives back is whatever the
-                    // payload is — a vector's buffer, a map's tables, a box's
-                    // reference. The frame can't: a linear value is registered
-                    // with an `ensure` before it is read (E0882), which puts
-                    // the handle in a cell, and a handle in a cell is not a
-                    // name the frame's own release walks.
+                    // It still has a payload to give back, and `drop` is what
+                    // gives it: a vector's buffer, a map's tables, a box's
+                    // reference. The frame can't — a linear value is registered
+                    // with an `ensure` before it is read (E0882), which puts the
+                    // handle in a cell, and a handle in a cell is not a name the
+                    // frame's own release walks. A closure is the exception and
+                    // is left out of `heap_payload_release`: the frame that
+                    // built it drops it, and a second release is a double free.
                     if unboxed_heap {
                         if let Some(free_fn) = arg_expr
                             .and_then(|e| self.ctx.lookup_raw_type(e.id))
