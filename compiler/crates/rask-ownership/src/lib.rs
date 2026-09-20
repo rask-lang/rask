@@ -4244,7 +4244,7 @@ impl<'a> OwnershipChecker<'a> {
         match pattern {
             Pattern::Wildcard => {
                 if let Some(ty) = scrutinee_ty {
-                    if self.type_is_resource(ty) {
+                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::LinearWildcardDiscard {
                                 position: error::LinearDiscardPosition::Scrutinee,
@@ -4267,7 +4267,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 if let Some(ty) = scrutinee_ty {
                     self.binding_types.insert(name.clone(), ty.clone());
-                    if self.type_is_resource(ty) {
+                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.resource_bindings.insert(name.clone());
                     }
                 }
@@ -4305,6 +4305,7 @@ impl<'a> OwnershipChecker<'a> {
                         for (fname, fty) in &struct_fields {
                             if !mentioned.contains(fname.as_str())
                                 && self.type_is_resource(fty)
+                                && !self.pattern_payload_is_borrowed(fty)
                             {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::LinearWildcardDiscard {
@@ -4333,7 +4334,9 @@ impl<'a> OwnershipChecker<'a> {
                     let pos_ty = payload_tys.as_ref().and_then(|tys| tys.get(i));
                     if let Pattern::Wildcard = pat {
                         if let Some(ty) = pos_ty {
-                            if self.type_is_resource(ty) {
+                            if self.type_is_resource(ty)
+                                && !self.pattern_payload_is_borrowed(ty)
+                            {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::LinearWildcardDiscard {
                                         position: error::LinearDiscardPosition::Field {
@@ -5506,20 +5509,20 @@ impl<'a> OwnershipChecker<'a> {
         self.program.types.is_linear_value(ty)
     }
 
-    /// The same question where an obligation is being *moved* rather than
-    /// created: out of an optional, out of a `catch`, into a binding.
+    /// Is a value of this type, read out of an aggregate by a pattern, the
+    /// aggregate's rather than the reader's?
     ///
-    /// A `Heap<T>` counts here whatever it holds — the block is consumed
-    /// exactly once (HP1, HP2) — where `type_is_resource` says no for a scalar
-    /// payload, because `Heap<i64>` used to be a number with no block behind
-    /// it. Without this the obligation on `if o? as v` had nowhere to go: `o`
-    /// kept it and `v` never took it (#1256).
+    /// A `Heap<T>` is. Storing one in a field or an enum payload consumed it
+    /// (mem.heap/HP4) and the aggregate's release gives the block back — which
+    /// is what makes `Cons(i64, Heap<List>)` free its whole chain. So
+    /// `match l { Cons(head, rest) => … }` borrows `rest`: it owes nothing, and
+    /// `Cons(_, rest)` discards nothing.
     ///
-    /// Not the same as `type_is_resource`, and deliberately: a pattern binding
-    /// read out of an enum is a borrow, and charging it would have the match
-    /// arm and the enum's own release free the block twice.
-    fn type_carries_obligation(&self, ty: &Type) -> bool {
-        ty.heap_payload().is_some() || self.type_is_resource(ty)
+    /// A `@resource` is not. There are no destructors, so nothing but an
+    /// explicit consume ever closes one, and matching it out of an enum is the
+    /// last chance to.
+    fn pattern_payload_is_borrowed(&self, ty: &Type) -> bool {
+        ty.heap_payload().is_some()
     }
 
     /// Whether an expression's inferred type is transitively linear.
@@ -5817,7 +5820,7 @@ impl<'a> OwnershipChecker<'a> {
             .get(&inner.id)
             .and_then(|ty| ty.as_option())?
             .clone();
-        if !self.type_carries_obligation(&payload) {
+        if !self.type_is_resource(&payload) {
             return None;
         }
         // The scrutinee gave the payload away. A call result had no binding to

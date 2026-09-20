@@ -1328,6 +1328,18 @@ impl<'a> MirContext<'a> {
                 self.link_mir_type(args.first())
             }
             Type::UnresolvedGeneric { name, .. } if name == "Rack" => MirType::Ptr,
+            // `Heap<T>` structurally, not through the rendered name: an inner
+            // type the checker has resolved is a `Named(TypeId)`, which renders
+            // as an id and leaves `resolve_type_str` nothing to look up. A
+            // `Shared<Heap<Pt>, Local>` came out as `heap<ptr>` and the read
+            // through it segfaulted.
+            Type::UnresolvedGeneric { name, args } if name == "Heap" => {
+                let payload = match args.first() {
+                    Some(rask_types::GenericArg::Type(inner)) => self.payload_to_mir(inner),
+                    _ => MirType::Ptr,
+                };
+                MirType::Heap(Box::new(payload))
+            }
             Type::Generic { args, .. } if self.is_link_type(ty) => {
                 self.link_mir_type(args.first())
             }

@@ -109,6 +109,37 @@ test "the block a field holds is freed with the struct" {
     assert i == 3
 }
 
+// HP4: storing a block in an aggregate consumes it and the aggregate gives it
+// back. A struct field already worked; a tuple didn't — it was an obligation
+// nothing could discharge, because `is_linear_value` answered "is this type
+// itself linear" and "does it hold anything linear" with one predicate.
+test "a tuple owns the blocks it holds" {
+    mut i = 0
+    while i < 3 {
+        let tup: (Heap<Pt>, Heap<i64>) = (Heap(Pt { x: 7 }), Heap(42))
+        assert (*tup.0).x == 7
+        assert *tup.1 == 42
+        i = i + 1
+    }
+    assert i == 3
+}
+
+// The enum owns the tail, so reading it out with a pattern is a borrow: `rest`
+// owes nothing, and `Cons(_, rest)` discards nothing. A `@resource` payload is
+// the other way round — nothing but an explicit consume ever closes one.
+test "a pattern borrows the block an enum holds" {
+    let l = List.Cons(1, Heap(List.Nil))
+    match l {
+        List.Cons(_, rest) => {
+            match rest {
+                List.Nil => assert true
+                List.Cons(_, _) => assert false
+            }
+        }
+        List.Nil => assert false
+    }
+}
+
 test "HP6 — a recursive enum holds its tail behind a Heap" {
     let l = List.Cons(1, Heap(List.Cons(2, Heap(List.Nil))))
     assert sum(l) == 3

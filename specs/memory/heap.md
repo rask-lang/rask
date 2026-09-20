@@ -48,7 +48,11 @@ drop(ptr)                         // Consume (deallocate)
 
 Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
 
-**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the `Heap` is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+**Storing one in an aggregate ends its linearity.** HP4 says assigning to another binding consumes, and a struct field, an enum payload, a tuple element and an array element are each another binding — so the `Heap` is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The slot is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+
+Reading one back out is a borrow for the same reason. `match l { Cons(head, rest) => … }` gives `rest` no obligation, and `Cons(_, rest)` discards nothing — the enum still owns the block either way. A `@resource` is the opposite: there are no destructors, so nothing but an explicit consume ever closes one, and matching it out of an enum is the last chance to.
+
+A wrapper is not an aggregate. `Heap<T>?` and `Heap<T> or E` carry their payload linearly, because nothing walks a wrapper and consumes what is behind its tag — `o? as v` moves the obligation to `v` instead.
 
 I went back and forth on making that `drop` a silent no-op instead. It's worse: the author writes a consume and gets none, and whether `drop(x)` frees anything then depends on whether `x` is a binding or a projection, which the line doesn't say.
 

@@ -321,8 +321,9 @@ def c_closure_capture(t, ty):
         return x
     }}
     let y = f()
-    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "y"))
+{commit}    println("got={show}")
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
+           show=read_expr(t, "y"))
 
 
 def c_closure_param(t, ty):
@@ -454,6 +455,11 @@ def skips():
     return {
         ("vec_index", "heap"): "std.collections/C4 — no linear resource in a Vec",
         ("map_value", "heap"): "std.collections/C4 — no linear resource in a Map",
+        # Both of these reach the payload through a `Vec`, so C4 rules them out
+        # for the same reason: `for x in v` needs the vector, and the sequence
+        # carrier reads its items back with `to_vec()`.
+        ("for_loop", "heap"): "std.collections/C4 — no linear resource in a Vec",
+        ("seq_yield", "heap"): "std.collections/C4 — the items come back in a Vec",
         # A borrow hands the value back when the call returns, so the closure
         # can't return it, and CP4 says a closure can't take it either — there
         # is no spelling of "a Heap handed into a closure and back out".

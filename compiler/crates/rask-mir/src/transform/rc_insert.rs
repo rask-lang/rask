@@ -1636,21 +1636,25 @@ fn store_is_narrow(stmt: &MirStmt) -> bool {
 fn aggregate_may_hold_string(ty: &MirType) -> bool {
     match ty {
         MirType::Struct(_) | MirType::Enum(_) => true,
-        MirType::Tuple(elems) => elems.iter().any(|e| {
-            *e == MirType::String || aggregate_may_hold_string(e)
-        }),
-        MirType::Array { elem, .. } => {
-            **elem == MirType::String || aggregate_may_hold_string(elem)
-        }
-        MirType::Option(inner) => aggregate_may_hold_string(inner) || **inner == MirType::String,
-        MirType::Result { ok, err } => {
-            aggregate_may_hold_string(ok)
-                || aggregate_may_hold_string(err)
-                || **ok == MirType::String
-                || **err == MirType::String
-        }
+        MirType::Tuple(elems) => elems.iter().any(slot_is_releasable),
+        MirType::Array { elem, .. } => slot_is_releasable(elem),
+        MirType::Option(inner) => slot_is_releasable(inner),
+        MirType::Result { ok, err } => slot_is_releasable(ok) || slot_is_releasable(err),
         _ => false,
     }
+}
+
+/// Is there something to give back in a slot of this type?
+///
+/// A `Heap<T>` slot is: storing a block in an aggregate moves it in
+/// (mem.heap/HP4), so the aggregate gives it back, and a tuple of them had no
+/// release emitted at all. A *bare* `Heap` local is not — that one is the
+/// obligation itself and `drop` is what discharges it. Releasing it here as
+/// well freed an `own` closure's captured block a second time.
+fn slot_is_releasable(ty: &MirType) -> bool {
+    *ty == MirType::String
+        || matches!(ty, MirType::Heap(_))
+        || aggregate_may_hold_string(ty)
 }
 
 /// Take a reference before handing a borrowed parameter back to the caller.

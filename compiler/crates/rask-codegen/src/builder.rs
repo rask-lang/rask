@@ -7272,6 +7272,10 @@ impl<'a> FunctionBuilder<'a> {
             MirType::String => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
+            // A block is the slot's whatever is in it, the same way a `Heap<T>`
+            // *field* counts (see `is_heap_field`). Storing one in an aggregate
+            // moves it in (mem.heap/HP4), so the aggregate gives it back.
+            MirType::Heap(_) => true,
             // A box moved into a field is the aggregate's: the block, and the
             // value's own contents through the vtable. Left out, a struct whose
             // only owning field was an `any Trait` was skipped by the whole
@@ -7388,6 +7392,24 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Container(kind) => Self::emit_container_release(
                 builder, base, offset, Self::container_free_for_kind(*kind), ctx,
             ),
+            // The slot holds the block's address. What the block holds goes
+            // first — after `rask_free` there is nothing left to walk — and
+            // then the block. Same two steps `drop(b)` emits for a named one.
+            MirType::Heap(payload) => {
+                let block = builder.ins().load(
+                    cranelift_codegen::ir::types::I64,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    base,
+                    offset,
+                );
+                Self::release_strings_mir(builder, block, 0, payload, ctx, depth + 1)?;
+                let free_ref = ctx
+                    .func_refs
+                    .get("rask_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                builder.ins().call(*free_ref, &[block]);
+                Ok(())
+            }
             // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
             // entry walker reads both words and the vtable's release hook, so
             // hand it the slot rather than repeating that here — and the hook
