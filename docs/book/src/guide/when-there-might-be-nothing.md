@@ -46,10 +46,6 @@ side when the left is absent:
 The right side can also leave instead of producing a value — `?? return`, `?? break`,
 `?? continue`. There's no binder, because there's nothing to bind: absence carries no payload.
 
-```text
-{{#include ../../errors/when-there-might-be-nothing/catch_on_an_optional.out}}
-```
-
 ## Reaching through
 
 `?.` reads a field through a value that might be absent. When it is, the result is `none`:
