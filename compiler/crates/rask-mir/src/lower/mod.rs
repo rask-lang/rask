@@ -3025,7 +3025,6 @@ impl<'a> MirLowerer<'a> {
     /// C1/C2: check if an expression is a consuming method call on an ensure
     /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
     fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
         // An ensure body *is* the deferred consumption, so a consuming call in
         // it cancels nothing — and the resource's slot belongs to the function
         // that registered it, not to the thunk. Emitting one here made codegen
@@ -3038,59 +3037,57 @@ impl<'a> MirLowerer<'a> {
 
     /// The consuming call can be anywhere in the expression, not only at its
     /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
-    /// handles from inside a sum. Peeling only the outermost wrappers found
-    /// neither, and both ensures ran on handles that were already joined.
+    /// handles from inside a sum, and `Wrapper { value: c.close() }` consumes
+    /// one from inside a struct literal.
+    ///
+    /// This used to name the shapes it looked inside — a method call, a plain
+    /// call, the operands of a binary, a cast — and every shape it forgot was a
+    /// double free: the `ensure` fired on a handle the program had already
+    /// closed (#1216, #1224, #1231). A list like that can only ever be behind
+    /// the AST, so there isn't one any more. The walk visits every
+    /// subexpression and stops only where a boundary says to.
     ///
     /// Emitting for a call the program might not reach would be wrong, and
     /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
     /// on some paths and not others, so whatever is here runs.
-    ///
-    /// Closure and `spawn` bodies are their own functions with their own
-    /// obligations — a consume in there is not this frame's.
     fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
         use rask_ast::expr::ExprKind;
-        // Their own functions, with their own obligations — a consume in there
-        // is not this frame's. A nested block runs through `lower_block`, which
-        // asks on its own.
-        if matches!(
-            expr.kind,
-            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Block(_)
-        ) {
-            return;
+        let mut consuming = Vec::new();
+        let mut heads = Vec::new();
+        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
+            match &e.kind {
+                // Their own functions, with their own obligations — a consume
+                // in there is not this frame's.
+                ExprKind::Closure { .. } | ExprKind::Spawn { .. } => return false,
+                // Statements. They run through `lower_block`, which asks about
+                // each of them on its own; walking in from here would emit the
+                // cancellation at the wrong point — before the block, whether
+                // or not it is reached.
+                ExprKind::Block(_)
+                | ExprKind::BlockCall { .. }
+                | ExprKind::Unsafe { .. }
+                | ExprKind::Comptime { .. }
+                | ExprKind::Loop { .. } => return false,
+                // Body as above, but the head is lowered here, so it keeps its
+                // walk: `using open(p) as f` evaluates `open(p)` in this frame.
+                ExprKind::UsingBlock { args, .. } => {
+                    heads.extend(args.iter().map(|a| &a.expr));
+                    return false;
+                }
+                ExprKind::WithAs { bindings, .. } => {
+                    heads.extend(bindings.iter().map(|b| &b.source));
+                    return false;
+                }
+                _ => {}
+            }
+            consuming.push(e);
+            true
+        });
+        for e in consuming {
+            self.emit_resource_consume(e);
         }
-        self.emit_resource_consume(expr);
-        match &expr.kind {
-            ExprKind::Try { expr: inner }
-            | ExprKind::Unwrap { expr: inner, .. }
-            | ExprKind::Cast { expr: inner, .. } => self.walk_for_resource_consume(inner),
-            ExprKind::Unary { operand, .. } => self.walk_for_resource_consume(operand),
-            ExprKind::Catch { value, clause } => {
-                self.walk_for_resource_consume(value);
-                self.walk_for_resource_consume(&clause.body);
-            }
-            ExprKind::Binary { left, right, .. } => {
-                self.walk_for_resource_consume(left);
-                self.walk_for_resource_consume(right);
-            }
-            ExprKind::NullCoalesce { value, default } => {
-                self.walk_for_resource_consume(value);
-                self.walk_for_resource_consume(default);
-            }
-            // `a + b` is `a.add(b)` by the time it gets here (rask-desugar), so
-            // the operands of every arithmetic expression arrive as a receiver
-            // and an argument.
-            ExprKind::MethodCall { object, args, .. } => {
-                self.walk_for_resource_consume(object);
-                for arg in args {
-                    self.walk_for_resource_consume(&arg.expr);
-                }
-            }
-            ExprKind::Call { args, .. } => {
-                for arg in args {
-                    self.walk_for_resource_consume(&arg.expr);
-                }
-            }
-            _ => {}
+        for e in heads {
+            self.walk_for_resource_consume(e);
         }
     }
 
