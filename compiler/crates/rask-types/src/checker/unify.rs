@@ -925,6 +925,25 @@ impl TypeChecker {
         // isn't known there: `m[key]` waits on a deferred Index constraint.
         // Anything still open is left alone — it can still turn out optional.
         let resolved_value = self.ctx.apply(&value);
+
+        // ER12, the same check `??` makes at inference and for the same reason
+        // it's repeated here: a generic call's error side is still a variable
+        // when the operand is first seen, so `text.parse<i64>() ?? 3` slipped
+        // through and dropped the `ParseError` in silence (#1250). By now the
+        // call is instantiated and the branch has a name.
+        if let Type::Result { err, .. } = &resolved_value {
+            if **err != Type::None && !matches!(**err, Type::Var(_) | Type::Error) {
+                self.errors.push(TypeError::CoalesceOnResult {
+                    found: resolved_value.clone(),
+                    span,
+                });
+                if let Type::Var(id) = self.ctx.apply(&result) {
+                    self.ctx.bind_var(id, Type::Error);
+                }
+                return Ok(true);
+            }
+        }
+
         if !self.coalesce_operand_can_be_absent(&resolved_value) {
             self.errors.push(TypeError::CoalesceOnNonOptional {
                 found: resolved_value,

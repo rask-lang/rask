@@ -11,10 +11,9 @@ import string.ParseError
 // ANCHOR: simplest
 func years_from(text: string) -> string {
     let n: i64 or ParseError = text.parse<i64>()
-    if n is i64 as years {
-        return "{years} years"
-    } else as e {
-        return "not a number: {e.message()}"
+    match n {
+        i64 as years => return "{years} years"
+        ParseError as e => return "not a number: {e.message()}"
     }
 }
 // ANCHOR_END: simplest
@@ -61,11 +60,9 @@ func port_from(text: string) -> i64 or ConfigError {
 // ANCHOR_END: ownuse
 
 func report(text: string) {
-    let p = port_from(text)
-    if p is i64 as port {
-        println("port {port}")
-    } else as e {
-        println("bad config: {e.message()}")
+    match port_from(text) {
+        i64 as port => println("port {port}")
+        ConfigError as e => println("bad config: {e.message()}")
     }
 }
 
@@ -76,11 +73,9 @@ func main() {
     println("retries {retries_from("5")}")
     println("retries {retries_from("many")}")
 
-    let d = doubled("41")
-    if d is i64 as n {
-        println("doubled {n}")
-    } else as e {
-        println("could not double: {e.message()}")
+    match doubled("41") {
+        i64 as n => println("doubled {n}")
+        ParseError as e => println("could not double: {e.message()}")
     }
 
     report("8080")

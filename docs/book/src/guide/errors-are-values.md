@@ -3,23 +3,22 @@
 When a call can fail, the failure comes back out of it.
 
 A function that can fail says both outcomes in its return type. `parse` returns
-`i64 or ParseError`: a number, or a reason it isn't one.
+`i64 or ParseError`: a number, or a reason it isn't one. `match` takes both:
 
 ```rask
 {{#include ../../../../examples/errors.rk:simplest}}
 ```
 
-`n` is either an `i64` or a `ParseError`. `is` tests which one it is, `as` names it, and
-`else as e` binds the other.
+One arm per outcome, each naming what it got.
 
 Every error type has a `message()`, so `e.message()` works whatever kind of error arrived.
 
 The annotation on `n` is there to show the type. You'd normally leave it off.
 
-## `catch` handles it
+## `catch` writes the error arm
 
-Branching on both outcomes is the long way round. When you only want a value out, `catch`
-gives one:
+Most of the time the error arm is just "use this value instead". `catch` is that arm on its
+own, and the success value comes straight out:
 
 ```rask
 {{#include ../../../../examples/errors.rk:handle}}
@@ -35,10 +34,10 @@ The binder is required. `catch e =>` uses the error, `catch _ =>` throws it away
 A `catch` body can also leave instead of producing a value — `catch e => return wrap(e)` turns
 the error into your own and hands it to the caller.
 
-## `try` passes it up
+## `try` writes the commonest one
 
-`try r` is `r catch e => return e`: take the value out, or return the error to the caller.
-That case is common enough to get a word.
+The error arm people write most is "hand it to my caller unchanged". `try r` does what
+`r catch e => return e` does:
 
 ```rask
 {{#include ../../../../examples/errors.rk:propagate}}

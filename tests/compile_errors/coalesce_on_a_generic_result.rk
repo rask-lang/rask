@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `??` on a result whose error type comes from a generic call
+// Rejects: `text.parse<i64>() ?? 3` — the ParseError would be dropped in silence
+//
+// type.errors/ER12: `?` and `??` are the absence family. A miss carries
+// nothing; a failure carries something, so dropping one is written with
+// `catch _ =>`.
+//
+// The rule was already checked where `??` is inferred, but a generic call's
+// error side is still a type variable at that point, so this spelling went
+// through and both backends printed the fallback (#1250). The same check runs
+// in the solver now, once the instantiation has a name.
+
+func main() {
+    let text = "eighty-eighty"
+    let n = text.parse<i64>() ?? 3
+    println("{n}")
+}
