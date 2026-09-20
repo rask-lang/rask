@@ -13,21 +13,28 @@ string.
 
 ## Getting at the value
 
-`x?` asks whether something is there:
-
-```rask
-{{#include ../../../../examples/optionals.rk:test}}
-```
-
-That gives you a `bool` and nothing else. To use the value, add `as` and a name:
+`match` takes both cases:
 
 ```rask
 {{#include ../../../../examples/optionals.rk:simplest}}
 ```
 
+For two cases that's more writing than it needs, and `rask lint` will say so. The shorter form
+tests with `x?` and names the value with `as`:
+
+```rask
+{{#include ../../../../examples/optionals.rk:bind}}
+```
+
 `as found` names what the test just proved exists, and `found` is a plain `Profile` inside the
 block. The same `as` shows up after every test that proves a value is there, so it reads the
 same way each time.
+
+Without `as`, `x?` is just a `bool`:
+
+```rask
+{{#include ../../../../examples/optionals.rk:test}}
+```
 
 ## `??` supplies the other branch
 

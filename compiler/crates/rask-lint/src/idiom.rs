@@ -779,3 +779,125 @@ fn binop_text(op: &BinOp) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// idiom/match-on-optional: a two-arm `match` where one arm is `none`.
+///
+/// `type.optionals/OPT27` — legal, and shorter with the operators. Match on a
+/// two-arm union is perfectly safe (exhaustiveness still names the missing
+/// `none`), so this is a lint rather than a warning: `tool.warnings/SB3`,
+/// "lints enforce how code should look".
+///
+/// Syntactic, and sound that way: `Pattern::TypePat` with the name `none`
+/// parses only from the `none` keyword, so an arm spelled that way means the
+/// scrutinee has a `none` branch.
+pub fn check_match_on_optional(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+    for decl in decls {
+        for body in decl_bodies(decl) {
+            walk_stmts_for_optional_match(body, source, &mut diags);
+        }
+    }
+    diags
+}
+
+fn is_none_pattern(p: &rask_ast::expr::Pattern) -> bool {
+    matches!(
+        p,
+        rask_ast::expr::Pattern::TypePat { ty_name, binding: None } if ty_name == "none"
+    )
+}
+
+fn walk_stmts_for_optional_match(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
+                check_expr_for_optional_match(init, source, diags)
+            }
+            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
+                check_expr_for_optional_match(init, source, diags)
+            }
+            StmtKind::LetStruct { init, .. } => check_expr_for_optional_match(init, source, diags),
+            StmtKind::Expr(e) => check_expr_for_optional_match(e, source, diags),
+            StmtKind::Return(Some(e)) => check_expr_for_optional_match(e, source, diags),
+            StmtKind::Break { value: Some(e), .. } => {
+                check_expr_for_optional_match(e, source, diags)
+            }
+            StmtKind::Assign { target, value, .. } => {
+                check_expr_for_optional_match(target, source, diags);
+                check_expr_for_optional_match(value, source, diags);
+            }
+            StmtKind::While { cond, body, .. } => {
+                check_expr_for_optional_match(cond, source, diags);
+                walk_stmts_for_optional_match(body, source, diags);
+            }
+            StmtKind::WhileLet { expr, body, .. } => {
+                check_expr_for_optional_match(expr, source, diags);
+                walk_stmts_for_optional_match(body, source, diags);
+            }
+            StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
+                check_expr_for_optional_match(iter, source, diags);
+                walk_stmts_for_optional_match(body, source, diags);
+            }
+            StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => {
+                walk_stmts_for_optional_match(body, source, diags)
+            }
+            StmtKind::Ensure { body, else_handler } => {
+                walk_stmts_for_optional_match(body, source, diags);
+                if let Some((_, handler)) = else_handler {
+                    walk_stmts_for_optional_match(handler, source, diags);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn check_expr_for_optional_match(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
+    match &expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            check_expr_for_optional_match(left, source, diags);
+            check_expr_for_optional_match(right, source, diags);
+        }
+        ExprKind::Unary { operand, .. } => check_expr_for_optional_match(operand, source, diags),
+        ExprKind::Block(stmts) => walk_stmts_for_optional_match(stmts, source, diags),
+        ExprKind::If { cond, then_branch, else_branch, .. } => {
+            check_expr_for_optional_match(cond, source, diags);
+            check_expr_for_optional_match(then_branch, source, diags);
+            if let Some(e) = else_branch {
+                check_expr_for_optional_match(e, source, diags);
+            }
+        }
+        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+            for a in args {
+                check_expr_for_optional_match(&a.expr, source, diags);
+            }
+        }
+        _ => {}
+    }
+
+    let ExprKind::Match { arms, .. } = &expr.kind else {
+        return;
+    };
+    for arm in arms {
+        check_expr_for_optional_match(&arm.body, source, diags);
+    }
+    if arms.len() != 2 || !arms.iter().any(|a| is_none_pattern(&a.pattern)) {
+        return;
+    }
+    // A guard changes what the arms mean and no operator form carries one.
+    if arms.iter().any(|a| a.guard.is_some()) {
+        return;
+    }
+    let (line, col) = util::line_col(source, expr.span.start);
+    let source_line = util::get_source_line(source, line);
+    diags.push(LintDiagnostic {
+        rule: "idiom/match-on-optional".to_string(),
+        severity: Severity::Warning,
+        message: "two-arm `match` with a `none` arm — the `?` operators say this in one line"
+            .to_string(),
+        location: LintLocation { line, column: col, source_line },
+        fix: "`if x? as v { … } else { … }` to branch, `x ?? value` for a fallback, \
+              `x ?? return` to leave [type.optionals/OPT27]"
+            .to_string(),
+    });
+}

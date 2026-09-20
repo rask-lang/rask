@@ -954,11 +954,6 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
-                // OPT NO_MATCH: reject `match x?` on an Option — migration error.
-                let resolved_sc = self.ctx.apply(&scrutinee_ty);
-                if resolved_sc.is_option() {
-                    self.errors.push(TypeError::MatchOnOption { span: expr.span });
-                }
                 let result_ty = self.ctx.fresh_var();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {

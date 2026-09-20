@@ -14,13 +14,25 @@ struct Profile {
 // ANCHOR_END: type
 
 // ANCHOR: simplest
+// `rask lint` nudges a two-arm match like this one towards the operators
+// below (idiom/match-on-optional). It's here because the chapter shows both.
+@allow(idiom/match-on-optional)
 func greet(p: Profile?) -> string {
+    match p {
+        Profile as found => return "hello {found.name}"
+        none => return "nobody here"
+    }
+}
+// ANCHOR_END: simplest
+
+// ANCHOR: bind
+func shout(p: Profile?) -> string {
     if p? as found {
-        return "hello {found.name}"
+        return "HELLO {found.name}"
     }
     return "nobody here"
 }
-// ANCHOR_END: simplest
+// ANCHOR_END: bind
 
 // ANCHOR: test
 func anybody(p: Profile?) -> string {
@@ -49,6 +61,9 @@ func main() {
 
     println(greet(ada))
     println(greet(none))
+
+    println(shout(ada))
+    println(shout(none))
 
     println(anybody(ada))
     println(anybody(none))

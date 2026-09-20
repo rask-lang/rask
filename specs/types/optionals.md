@@ -349,15 +349,19 @@ FIX: if user is none { return }
 
 **Match on `T or none` with two arms [style lint, non-fatal]:**
 ```
-LINT [type.optionals/lint-match]: prefer operators over `match` on optional
+warning[idiom/match-on-optional]: two-arm `match` with a `none` arm — the `?`
+operators say this in one line
    |
 5  |  match user {
-6  |      none => default_name(),
-7  |      u    => u.name,
-8  |  }
-
-SUGGEST: user?.name ?? default_name()
+   |
+   = fix: `if x? as v { … } else { … }` to branch, `x ?? value` for a fallback,
+          `x ?? return` to leave [type.optionals/OPT27]
 ```
+
+The rule is `idiom/match-on-optional` in `rask lint`, following that tool's
+`area/name` ids rather than a spec-shaped one. `@allow(idiom/match-on-optional)`
+silences it where the match is the clearer read — the full id, not the bare
+name.
 
 ---
 
