@@ -38,7 +38,7 @@ Re-measure these rather than trusting them — each line names the command.
 | Programs that leak | 3, holding 10 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 284 of 286 | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 534 | `tests/memcheck_gate.sh` |
-| Examples with a pinned golden | 35 of 37 | `tests/examples_gate.sh` |
+| Examples with a pinned golden | 36 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 39 of 95 open issues | issue search |
 | Open design questions | 20 | issue search |
