@@ -2373,13 +2373,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(fix)
                     .with_why(format!("{} [type.optionals/OPT2, type.errors/ER2]", what))
             }
-            MatchOnOption { span } => {
-                Diagnostic::error("match on an Option is not supported")
-                    .with_code("E0349")
-                    .with_primary(*span, "Option is not a user enum")
-                    .with_help("use the ?-operator family: `if x? { ... } else { ... }`, `x?.field ?? default`, or `if x == none { return }`")
-                    .with_why("Option has two states — the operator family covers both more concisely [type.optionals/NO_MATCH]")
-            }
             LegacyWrapperPattern { name, with_binding, span } => {
                 let fix = match name.as_str() {
                     "Some" if *with_binding => "use the operator form: `if x? as v { ... }`, or `let v = x ?? return none` in guard position",
