@@ -20,6 +20,10 @@
 # --- #1244: a function type on the left of `or` ---
 # `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, and
 # there is no parenthesised type form to say the other thing. Needs a ruling,
-# not a patch.
+# not a patch — so it is out of v0.4 (ROADMAP.md says why) and these two cells
+# are not what that milestone closes on. The gate keeps watching them either
+# way: if the ruling makes them legal, they go green here and the lines get
+# pruned; if it makes them illegal, they move to gen.py's SKIPS with the rule
+# that says so.
 result__closure # no way to spell a Result of a function — #1244 (both check)
 result__funcref # no way to spell a Result of a function — #1244 (both check)
