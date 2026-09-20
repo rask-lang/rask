@@ -804,7 +804,7 @@ impl TypeChecker {
                         out.push(SyncAccess {
                             method: method.clone(),
                             recv: Self::sync_source_text(object)
-                                .unwrap_or_else(|| "the box".to_string()),
+                                .unwrap_or_else(|| "shared".to_string()),
                             span: expr.span,
                         });
                     }

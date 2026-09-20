@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// `box.write().field = value` — a store through an inline lock chain.
+// `shared.write().field = value` — a store through an inline lock chain.
 //
 //     settings.write().theme = "light"
 //     println("{settings.read().theme}")     // interp: light, native: garbage
@@ -15,8 +15,8 @@
 //
 // While fixing it: an inline chain on a `Shared<T, Local>` didn't compile at
 // all. The release side of that pair named `Cell_noop_release`, which nothing
-// declares — a `Local` box takes no lock, so it has nothing to give back. And
-// the interpreter only accepted the inline form on the `Readers` box, where
+// declares — a `Local` takes no lock, so it has nothing to give back. And the
+// interpreter only accepted the inline form under `Readers`, where
 // conc.sync/SH5 says all three strategies answer to both verbs.
 import sync.Shared
 import sync.Local
@@ -53,13 +53,13 @@ test "written twice — the replaced string is given back" {
     assert settings.read().theme == "another one, also long enough to allocate"
 }
 
-test "a Local box takes both verbs" {
+test "a Local Shared takes both verbs" {
     let settings = Shared.local(Settings { theme: "dark", size: 1 })
     settings.write().theme = "light"
     assert settings.read().theme == "light"
 }
 
-test "a Mutex box takes both verbs" {
+test "a Mutex Shared takes both verbs" {
     let settings = Shared.mutex(Settings { theme: "dark", size: 1 })
     settings.write().theme = "light"
     assert settings.read().theme == "light"

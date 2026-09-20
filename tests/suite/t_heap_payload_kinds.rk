@@ -2,9 +2,9 @@
 //
 // What a `Heap<T>` holds depends on the payload, and the two halves disagreed.
 //
-// `Heap(x)` allocates a block only when the payload doesn't fit the box's slot
-// — a struct, a string, a tuple. A number fits, and so does a handle: a `Vec`,
-// a `Map`, a closure, a box are each one pointer to something the runtime
+// `Heap(x)` allocates a block only when the payload doesn't fit the slot — a
+// struct, a string, a tuple. A number fits, and so does a handle: a `Vec`,
+// a `Map`, a closure, a `Shared` are each one pointer to something the runtime
 // already made. Lowering knew that and wrote the payload straight into the
 // local; everything downstream still read the local as a block pointer. So:
 //
@@ -76,7 +76,7 @@ test "a named function as the payload" {
     drop(b)
 }
 
-test "a box as the payload" {
+test "a Shared as the payload" {
     let b: Heap<Shared<i64, Local>> = Heap(Shared.local(42))
     ensure drop(b)
     assert (*b).get() == 42

@@ -8,15 +8,16 @@
 //
 //   `Shared<func(i64) -> i64, Local>`  → one argument, and the defaulting step
 //     then supplied the missing strategy: `Shared.local(f)` was checked as a
-//     `Readers` box and rejected the annotation that said `Local` (#1241).
+//     `Readers` and rejected the annotation that said `Local` (#1241).
 //   `(func(i64) -> i64, func(i64) -> i64)` → one element, so the tuple never
 //     matched its annotation and the closures' parameter types stayed open
 //     (#1240).
 //   `Map<string, func(i64, i64) -> i64>` → split down the middle of the
 //     parameter list.
 //
-// And a box holding a function value binds a callable, which `with b.read() as
-// f { f(2) }` has to know or the call goes looking for a function named `f`.
+// And a `Shared` holding a function value binds a callable, which
+// `with b.read() as f { f(2) }` has to know, or the call goes looking for a
+// function named `f`.
 import sync.Shared
 import sync.Local
 
@@ -28,14 +29,14 @@ func add_five(n: i64) -> i64 {
     return n + 5
 }
 
-test "a closure in a Local box" {
+test "a closure in a Local Shared" {
     let b: Shared<func(i64) -> i64, Local> = Shared.local(|n| { return n + 40 })
     with b.read() as f {
         assert f(2) == 42
     }
 }
 
-test "a named function in a Local box" {
+test "a named function in a Local Shared" {
     let b: Shared<func(i64) -> i64, Local> = Shared.local(add_forty)
     with b.read() as f {
         assert f(2) == 42
@@ -63,10 +64,10 @@ test "a two-parameter function type in a type argument" {
     }
 }
 
-// One `with` opens one box. On a box holding a box it opened both, and the
-// binding came out as the innermost value — `.get()` on it was "no method on
-// i64" (#1242).
-test "a box holding a box" {
+// One `with` opens one `Shared`. On a `Shared` holding a `Shared` it opened
+// both, and the binding came out as the innermost value — `.get()` on it was
+// "no method on i64" (#1242).
+test "a Shared holding a Shared" {
     let b: Shared<Shared<i64, Local>, Local> = Shared.local(Shared.local(42))
     with b.read() as v {
         assert v.get() == 42
