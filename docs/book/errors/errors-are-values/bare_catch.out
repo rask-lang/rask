@@ -1,0 +1,13 @@
+error[E0100]: `catch` needs a binder
+  --> docs/book/errors/errors-are-values/bare_catch.rk:11:31
+    |
+ 11 |     let n = text.parse<i64>() catch 3
+    |                               ^^^^^ here
+    = fix: write `catch e => value` to use the error, or `catch _ => value` to
+          drop it — there is no bare-value form, so an error is never swallowed
+          silently
+    = why: a fallback is the one form here that can destroy information. `??`
+          discards a `none`, which carried nothing; `catch` discards or
+          transforms an error, which carried a payload someone should look at.
+          So the binder is what makes the second one legible — `catch _ =>` is
+          the spelling for "an error dies here", and it greps [type.errors/ER14]

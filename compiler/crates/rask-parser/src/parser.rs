@@ -3543,7 +3543,10 @@ impl Parser {
                          silently"
                             .to_string(),
                     ),
-                    why: None,
+                    why: Some(
+                        "a fallback is the one form here that can destroy information. `??`                          discards a `none`, which carried nothing; `catch` discards or                          transforms an error, which carried a payload someone should look at.                          So the binder is what makes the second one legible — `catch _ =>` is                          the spelling for \"an error dies here\", and it greps                          [type.errors/ER14]"
+                            .to_string(),
+                    ),
                 });
             }
         };

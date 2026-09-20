@@ -36,6 +36,11 @@
 #     A case that starts compiling is a hard failure, not a stale golden: the
 #     chapter is claiming the compiler rejects something it now accepts.
 #
+#  3. Panics. Same rule one phase later, for a page that quotes what a program
+#     prints as it dies. Each docs/book/panics/<chapter>/<case>.rk MUST exit
+#     non-zero on both backends; the committed .out is the native rendering,
+#     which is what `rask run` gives a reader.
+#
 # Regenerate the renderings after a deliberate diagnostics change:
 #
 #     tests/book_gate.sh --update
@@ -50,6 +55,7 @@ BOOK_SRC="$ROOT/docs/book/src"
 # The long-form posts left the book but still carry rask blocks.
 WRITING_SRC="$ROOT/writing"
 ERRORS_DIR="$ROOT/docs/book/errors"
+PANICS_DIR="$ROOT/docs/book/panics"
 
 UPDATE=0
 if [ "${1:-}" = "--update" ]; then
@@ -199,6 +205,67 @@ if [ -d "$ERRORS_DIR" ]; then
             ok=$((ok + 1))
         fi
     done < <(find "$ERRORS_DIR" -name '*.rk' | sort)
+fi
+
+# ── 3. Panics a chapter quotes ────────────────────────────────────────────────
+#
+# Same deal as the diagnostics above, one phase later: a page that shows what
+# `!` prints when it fires is quoting runtime output, and hand-typed runtime
+# output rots exactly like a hand-typed diagnostic. These can't be gated
+# examples — they exit non-zero on purpose, which the examples gate counts as a
+# failure — so they live here and get their own loop.
+#
+# Each docs/book/panics/<chapter>/<case>.rk MUST die at run time. The committed
+# .out is what the native run prints, which is what a reader gets from
+# `rask run`. The interpreter has to die too, but its rendering isn't pinned:
+# it frames the panic with the source line and native can't, and a page showing
+# one backend's extra detail as if it were the language would be teaching the
+# wrong thing.
+
+if [ -d "$PANICS_DIR" ]; then
+    while IFS= read -r rk; do
+        rel="${rk#$ROOT/}"
+        out="${rk%.rk}.out"
+
+        # Relative path from ROOT: the panic line carries the path it was given,
+        # and an absolute one would differ on every machine.
+        actual="$(cd "$ROOT" && "$RASK" run "$rel" 2>&1)"
+        status=$?
+
+        if [ $status -eq 0 ]; then
+            echo "FAIL: $rel exits cleanly, but the chapter says it panics"
+            fails=$((fails + 1))
+            continue
+        fi
+
+        (cd "$ROOT" && "$RASK" run --interp "$rel" > /dev/null 2>&1)
+        if [ $? -eq 0 ]; then
+            echo "FAIL: $rel panics on native and exits cleanly on the interpreter"
+            fails=$((fails + 1))
+            continue
+        fi
+
+        if [ $UPDATE -eq 1 ]; then
+            printf '%s\n' "$actual" > "$out"
+            echo "updated: ${out#$ROOT/}"
+            ok=$((ok + 1))
+            continue
+        fi
+
+        if [ ! -f "$out" ]; then
+            echo "FAIL: $rel has no committed rendering (run with --update)"
+            fails=$((fails + 1))
+            continue
+        fi
+
+        if ! printf '%s\n' "$actual" | diff -q - "$out" > /dev/null; then
+            echo "FAIL: $rel rendering changed:"
+            printf '%s\n' "$actual" | diff "$out" - | sed 's/^/    /'
+            fails=$((fails + 1))
+        else
+            ok=$((ok + 1))
+        fi
+    done < <(find "$PANICS_DIR" -name '*.rk' | sort)
 fi
 
 echo "──────────────────────────────────────────────────"
