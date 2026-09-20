@@ -15,212 +15,38 @@ use crate::util;
 /// idiom/unwrap-production: Flag .unwrap() calls outside test/benchmark blocks.
 pub fn check_unwrap_production(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-
     for decl in decls {
-        match &decl.kind {
-            DeclKind::Test(_) | DeclKind::Benchmark(_) => continue,
-            DeclKind::Fn(f) => walk_stmts_for_unwrap(&f.body, source, &mut diags),
-            DeclKind::Struct(s) => {
-                for m in &s.methods {
-                    walk_stmts_for_unwrap(&m.body, source, &mut diags);
-                }
-            }
-            DeclKind::Enum(e) => {
-                for m in &e.methods {
-                    walk_stmts_for_unwrap(&m.body, source, &mut diags);
-                }
-            }
-            DeclKind::Impl(imp) => {
-                for m in &imp.methods {
-                    walk_stmts_for_unwrap(&m.body, source, &mut diags);
-                }
-            }
-            _ => {}
+        // `.unwrap()` in a test is the test asserting it can't fail.
+        if matches!(decl.kind, DeclKind::Test(_) | DeclKind::Benchmark(_)) {
+            continue;
         }
+        rask_ast::visit::walk_decl(decl, &mut |expr| {
+            if let Some(d) = unwrap_diag(expr, source) {
+                diags.push(d);
+            }
+        });
     }
-
     diags
 }
 
-fn walk_stmts_for_unwrap(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
-    for stmt in stmts {
-        walk_stmt_for_unwrap(stmt, source, diags);
+fn unwrap_diag(expr: &Expr, source: &str) -> Option<LintDiagnostic> {
+    let ExprKind::MethodCall { method, .. } = &expr.kind else {
+        return None;
+    };
+    if method != "unwrap" {
+        return None;
     }
+    let (line, col) = util::line_col(source, expr.span.start);
+    let source_line = util::get_source_line(source, line);
+    Some(LintDiagnostic {
+        rule: "idiom/unwrap-production".to_string(),
+        severity: Severity::Warning,
+        message: "`.unwrap()` in production code — use `try` or `match` instead".to_string(),
+        location: LintLocation { line, column: col, source_line },
+        fix: "replace with `try expr` to propagate, or `match` to handle".to_string(),
+    })
 }
 
-fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    match &stmt.kind {
-        StmtKind::Expr(e) => walk_expr_for_unwrap(e, source, diags),
-        StmtKind::Mut { init, .. }
-        | StmtKind::Let { init, .. }
-        | StmtKind::Break { value: Some(init), .. } => {
-            walk_expr_for_unwrap(init, source, diags);
-        }
-        StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
-            walk_expr_for_unwrap(init, source, diags);
-        }
-        StmtKind::Return(Some(e)) => walk_expr_for_unwrap(e, source, diags),
-        StmtKind::Assign { target, value, .. } => {
-            walk_expr_for_unwrap(target, source, diags);
-            walk_expr_for_unwrap(value, source, diags);
-        }
-        StmtKind::While { cond, body, .. } => {
-            walk_expr_for_unwrap(cond, source, diags);
-            walk_stmts_for_unwrap(body, source, diags);
-        }
-        StmtKind::WhileLet { expr, body, .. } => {
-            walk_expr_for_unwrap(expr, source, diags);
-            walk_stmts_for_unwrap(body, source, diags);
-        }
-        StmtKind::For { iter, body, .. } => {
-            walk_expr_for_unwrap(iter, source, diags);
-            walk_stmts_for_unwrap(body, source, diags);
-        }
-        StmtKind::Loop { body, .. } => {
-            walk_stmts_for_unwrap(body, source, diags);
-        }
-        StmtKind::Ensure { body, else_handler } => {
-            walk_stmts_for_unwrap(body, source, diags);
-            if let Some((_, handler)) = else_handler {
-                walk_stmts_for_unwrap(handler, source, diags);
-            }
-        }
-        StmtKind::Comptime(stmts) => walk_stmts_for_unwrap(stmts, source, diags),
-        _ => {}
-    }
-}
-
-fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    match &expr.kind {
-        ExprKind::MethodCall {
-            object,
-            method,
-            args,
-            ..
-        } => {
-            if method == "unwrap" {
-                let (line, col) = util::line_col(source, expr.span.start);
-                let source_line = util::get_source_line(source, line);
-                diags.push(LintDiagnostic {
-                    rule: "idiom/unwrap-production".to_string(),
-                    severity: Severity::Warning,
-                    message: "`.unwrap()` in production code — use `try` or `match` instead"
-                        .to_string(),
-                    location: LintLocation {
-                        line,
-                        column: col,
-                        source_line,
-                    },
-                    fix: "replace with `try expr` to propagate, or `match` to handle".to_string(),
-                });
-            }
-            walk_expr_for_unwrap(object, source, diags);
-            for arg in args {
-                walk_expr_for_unwrap(&arg.expr, source, diags);
-            }
-        }
-        ExprKind::Call { func, args } => {
-            walk_expr_for_unwrap(func, source, diags);
-            for arg in args {
-                walk_expr_for_unwrap(&arg.expr, source, diags);
-            }
-        }
-        ExprKind::Binary { left, right, .. } => {
-            walk_expr_for_unwrap(left, source, diags);
-            walk_expr_for_unwrap(right, source, diags);
-        }
-        ExprKind::Unary { operand, .. } => {
-            walk_expr_for_unwrap(operand, source, diags);
-        }
-        ExprKind::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            walk_expr_for_unwrap(cond, source, diags);
-            walk_expr_for_unwrap(then_branch, source, diags);
-            if let Some(e) = else_branch {
-                walk_expr_for_unwrap(e, source, diags);
-            }
-        }
-        ExprKind::IfLet {
-            expr: scrutinee,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            walk_expr_for_unwrap(scrutinee, source, diags);
-            walk_expr_for_unwrap(then_branch, source, diags);
-            if let Some(e) = else_branch {
-                walk_expr_for_unwrap(e, source, diags);
-            }
-        }
-        ExprKind::IsPattern { expr, .. } => {
-            walk_expr_for_unwrap(expr, source, diags);
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            walk_expr_for_unwrap(scrutinee, source, diags);
-            for arm in arms {
-                walk_expr_for_unwrap(&arm.body, source, diags);
-            }
-        }
-        ExprKind::Block(stmts)
-        | ExprKind::UsingBlock { body: stmts, .. }
-        | ExprKind::Spawn { body: stmts }
-        | ExprKind::Unsafe { body: stmts }
-        | ExprKind::Comptime { body: stmts }
-        | ExprKind::BlockCall { body: stmts, .. }
-        | ExprKind::Loop { body: stmts, .. } => {
-            walk_stmts_for_unwrap(stmts, source, diags);
-        }
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-            walk_expr_for_unwrap(object, source, diags);
-        }
-        ExprKind::DynamicField { object, field_expr } => {
-            walk_expr_for_unwrap(object, source, diags);
-            walk_expr_for_unwrap(field_expr, source, diags);
-        }
-        ExprKind::Index { object, index } => {
-            walk_expr_for_unwrap(object, source, diags);
-            walk_expr_for_unwrap(index, source, diags);
-        }
-        ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
-            walk_expr_for_unwrap(inner, source, diags);
-        }
-        ExprKind::Catch { value, clause } => {
-            walk_expr_for_unwrap(value, source, diags);
-            walk_expr_for_unwrap(&clause.body, source, diags);
-        }
-        ExprKind::IsPresent { expr: inner, .. } => {
-            walk_expr_for_unwrap(inner, source, diags);
-        }
-        ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
-            walk_expr_for_unwrap(inner, source, diags);
-        }
-        ExprKind::NullCoalesce { value, default } => {
-            walk_expr_for_unwrap(value, source, diags);
-            walk_expr_for_unwrap(default, source, diags);
-        }
-        ExprKind::Closure { body, .. } => {
-            walk_expr_for_unwrap(body, source, diags);
-        }
-        ExprKind::Array(items) | ExprKind::Tuple(items) => {
-            for item in items {
-                walk_expr_for_unwrap(item, source, diags);
-            }
-        }
-        ExprKind::StructLit { fields, spread, .. } => {
-            for f in fields {
-                walk_expr_for_unwrap(&f.value, source, diags);
-            }
-            if let Some(s) = spread {
-                walk_expr_for_unwrap(s, source, diags);
-            }
-        }
-        _ => {}
-    }
-}
 
 /// idiom/missing-ensure: Flag @resource struct types created without ensure.
 pub fn check_missing_ensure(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
@@ -509,102 +335,26 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 /// `is` tests a branch everywhere else in the language (`type.optionals/OPT15`).
 pub fn check_equality_absent_check(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-    for decl in decls {
-        for body in decl_bodies(decl) {
-            walk_stmts_for_none_eq(body, source, &mut diags);
+    rask_ast::visit::walk_decls(decls, &mut |expr| {
+        if let Some(d) = none_eq_diag(expr, source) {
+            diags.push(d);
         }
-    }
+    });
     diags
 }
 
-/// Every statement list a declaration owns.
-fn decl_bodies(decl: &Decl) -> Vec<&[Stmt]> {
-    match &decl.kind {
-        DeclKind::Fn(f) => vec![f.body.as_slice()],
-        DeclKind::Test(t) => vec![t.body.as_slice()],
-        DeclKind::Benchmark(b) => vec![b.body.as_slice()],
-        DeclKind::Struct(s) => s.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Enum(e) => e.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Impl(i) => i.methods.iter().map(|m| m.body.as_slice()).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn walk_stmts_for_none_eq(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                check_expr_for_none_eq(init, source, diags)
-            }
-            StmtKind::LetTuple { init, .. } => check_expr_for_none_eq(init, source, diags),
-            StmtKind::Expr(e) => check_expr_for_none_eq(e, source, diags),
-            StmtKind::Return(Some(e)) => check_expr_for_none_eq(e, source, diags),
-            StmtKind::Assign { target, value, .. } => {
-                check_expr_for_none_eq(target, source, diags);
-                check_expr_for_none_eq(value, source, diags);
-            }
-            StmtKind::While { cond, body, .. } => {
-                check_expr_for_none_eq(cond, source, diags);
-                walk_stmts_for_none_eq(body, source, diags);
-            }
-            StmtKind::For { iter, body, .. } => {
-                check_expr_for_none_eq(iter, source, diags);
-                walk_stmts_for_none_eq(body, source, diags);
-            }
-            StmtKind::Loop { body, .. } => walk_stmts_for_none_eq(body, source, diags),
-            StmtKind::Ensure { body, .. } => walk_stmts_for_none_eq(body, source, diags),
-            _ => {}
-        }
-    }
-}
-
-fn check_expr_for_none_eq(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    use rask_ast::expr::BinOp;
-    // Descend first, so a comparison nested in a condition is still reached.
-    match &expr.kind {
-        ExprKind::Binary { left, right, .. } => {
-            check_expr_for_none_eq(left, source, diags);
-            check_expr_for_none_eq(right, source, diags);
-        }
-        ExprKind::Unary { operand, .. } => check_expr_for_none_eq(operand, source, diags),
-        ExprKind::Block(stmts) => walk_stmts_for_none_eq(stmts, source, diags),
-        ExprKind::If { cond, then_branch, else_branch, .. } => {
-            check_expr_for_none_eq(cond, source, diags);
-            check_expr_for_none_eq(then_branch, source, diags);
-            if let Some(e) = else_branch {
-                check_expr_for_none_eq(e, source, diags);
-            }
-        }
-        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
-            for a in args {
-                check_expr_for_none_eq(&a.expr, source, diags);
-            }
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            check_expr_for_none_eq(scrutinee, source, diags);
-            for arm in arms {
-                check_expr_for_none_eq(&arm.body, source, diags);
-            }
-        }
-        ExprKind::Assert { condition, .. } | ExprKind::Check { condition, .. } => {
-            check_expr_for_none_eq(condition, source, diags)
-        }
-        _ => {}
-    }
-
-    let (op, left, right) = match &expr.kind {
-        ExprKind::Binary { op, left, right } => (*op, left, right),
-        _ => return,
+fn none_eq_diag(expr: &Expr, source: &str) -> Option<LintDiagnostic> {
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
     };
     if !matches!(op, BinOp::Eq | BinOp::Ne) {
-        return;
+        return None;
     }
-    if !matches!(left.kind, ExprKind::None) && !matches!(right.kind, ExprKind::None) {
-        return;
-    }
+    let left_none = matches!(left.kind, ExprKind::None);
+    let right_none = matches!(right.kind, ExprKind::None);
     // `none == none` is a constant, not an absent check.
-    if matches!(left.kind, ExprKind::None) && matches!(right.kind, ExprKind::None) {
-        return;
+    if left_none == right_none {
+        return None;
     }
     let (line, col) = util::line_col(source, expr.span.start);
     let source_line = util::get_source_line(source, line);
@@ -614,19 +364,17 @@ fn check_expr_for_none_eq(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnos
             "write `x is none` — the same `is` test the rest of the language uses",
         )
     } else {
-        (
-            "`!= none` is the presence test spelled the long way",
-            "write `x?`",
-        )
+        ("`!= none` is the presence test spelled the long way", "write `x?`")
     };
-    diags.push(LintDiagnostic {
+    Some(LintDiagnostic {
         rule: "idiom/equality-absent-check".to_string(),
         severity: Severity::Warning,
         message: message.to_string(),
         location: LintLocation { line, column: col, source_line },
         fix: fix.to_string(),
-    });
+    })
 }
+
 
 /// idiom/mod-for-index: `%` producing an index, where a negative left operand
 /// would produce a negative index.
@@ -642,90 +390,44 @@ fn check_expr_for_none_eq(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnos
 /// wanted, and flagging those would drown the case that isn't.
 pub fn check_mod_for_index(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-    for decl in decls {
-        for body in decl_bodies(decl) {
-            walk_stmts_for_mod_index(body, source, &mut diags);
+    rask_ast::visit::walk_decls(decls, &mut |expr| {
+        if let Some(d) = mod_index_diag(expr, source) {
+            diags.push(d);
         }
-    }
+    });
     diags
 }
 
-fn walk_stmts_for_mod_index(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                walk_expr_for_mod_index(init, source, diags)
-            }
-            StmtKind::LetTuple { init, .. } => walk_expr_for_mod_index(init, source, diags),
-            StmtKind::Expr(e) => walk_expr_for_mod_index(e, source, diags),
-            StmtKind::Return(Some(e)) => walk_expr_for_mod_index(e, source, diags),
-            StmtKind::Assign { value, .. } => walk_expr_for_mod_index(value, source, diags),
-            StmtKind::While { body, .. }
-            | StmtKind::WhileLet { body, .. }
-            | StmtKind::For { body, .. }
-            | StmtKind::Loop { body, .. } => walk_stmts_for_mod_index(body, source, diags),
-            _ => {}
-        }
+fn mod_index_diag(expr: &Expr, source: &str) -> Option<LintDiagnostic> {
+    let ExprKind::Index { object, index } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Binary { op: BinOp::Mod, left, right } = &index.kind else {
+        return None;
+    };
+    if is_obviously_non_negative(left) {
+        return None;
     }
+    let (line, col) = util::line_col(source, index.span.start);
+    let source_line = util::get_source_line(source, line);
+    let container = expr_text(object).unwrap_or_else(|| "…".to_string());
+    // A compound left operand keeps its parens in both the message and the
+    // fix: `i - 1.mod(n)` parses as `i - (1.mod(n))`, so a fix printed without
+    // them is wrong code.
+    let lhs = expr_text_grouped(left).unwrap_or_else(|| "i".to_string());
+    let rhs = expr_text(right).unwrap_or_else(|| "n".to_string());
+    Some(LintDiagnostic {
+        rule: "idiom/mod-for-index".to_string(),
+        severity: Severity::Warning,
+        message: format!(
+            "`{lhs} % {rhs}` is negative when `{lhs}` is — `%` takes the dividend's sign, \
+             so this indexes out of range instead of wrapping (type.operators/AR2)"
+        ),
+        location: LintLocation { line, column: col, source_line },
+        fix: format!("{container}[{lhs}.mod({rhs})]"),
+    })
 }
 
-fn walk_expr_for_mod_index(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    if let ExprKind::Index { object, index } = &expr.kind {
-        if let ExprKind::Binary { op: BinOp::Mod, left, right } = &index.kind {
-            if !is_obviously_non_negative(left) {
-                let (line, col) = util::line_col(source, index.span.start);
-                let source_line = util::get_source_line(source, line);
-                let container = expr_text(object).unwrap_or_else(|| "…".to_string());
-                // A compound left operand keeps its parens in both the message
-                // and the fix: `i - 1.mod(n)` parses as `i - (1.mod(n))`, so a
-                // fix printed without them is wrong code.
-                let lhs = expr_text_grouped(left).unwrap_or_else(|| "i".to_string());
-                let rhs = expr_text(right).unwrap_or_else(|| "n".to_string());
-                diags.push(LintDiagnostic {
-                    rule: "idiom/mod-for-index".to_string(),
-                    severity: Severity::Warning,
-                    message: format!(
-                        "`{lhs} % {rhs}` is negative when `{lhs}` is — `%` takes the \
-                         dividend's sign, so this indexes out of range instead of \
-                         wrapping (type.operators/AR2)"
-                    ),
-                    location: LintLocation { line, column: col, source_line },
-                    fix: format!("{container}[{lhs}.mod({rhs})]"),
-                });
-            }
-        }
-        walk_expr_for_mod_index(object, source, diags);
-        walk_expr_for_mod_index(index, source, diags);
-        return;
-    }
-    match &expr.kind {
-        ExprKind::Binary { left, right, .. } => {
-            walk_expr_for_mod_index(left, source, diags);
-            walk_expr_for_mod_index(right, source, diags);
-        }
-        ExprKind::Unary { operand, .. } => walk_expr_for_mod_index(operand, source, diags),
-        ExprKind::Call { args, .. } => {
-            for a in args {
-                walk_expr_for_mod_index(&a.expr, source, diags);
-            }
-        }
-        ExprKind::MethodCall { object, args, .. } => {
-            walk_expr_for_mod_index(object, source, diags);
-            for a in args {
-                walk_expr_for_mod_index(&a.expr, source, diags);
-            }
-        }
-        ExprKind::Block(stmts) => walk_stmts_for_mod_index(stmts, source, diags),
-        ExprKind::If { cond, then_branch, else_branch, .. } => {
-            walk_expr_for_mod_index(cond, source, diags);
-            walk_expr_for_mod_index(then_branch, source, diags);
-            if let Some(e) = else_branch {
-                walk_expr_for_mod_index(e, source, diags);
-            }
-        }
-        _ => {}
-    }
-}
 
 /// Left operands that can't be negative, so `%` on them is already in range.
 ///
@@ -792,11 +494,11 @@ fn binop_text(op: &BinOp) -> Option<&'static str> {
 /// scrutinee has a `none` branch.
 pub fn check_match_on_optional(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
-    for decl in decls {
-        for body in decl_bodies(decl) {
-            walk_stmts_for_optional_match(body, source, &mut diags);
+    rask_ast::visit::walk_decls(decls, &mut |expr| {
+        if let Some(d) = optional_match_diag(expr, source) {
+            diags.push(d);
         }
-    }
+    });
     diags
 }
 
@@ -807,90 +509,20 @@ fn is_none_pattern(p: &rask_ast::expr::Pattern) -> bool {
     )
 }
 
-fn walk_stmts_for_optional_match(stmts: &[Stmt], source: &str, diags: &mut Vec<LintDiagnostic>) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                check_expr_for_optional_match(init, source, diags)
-            }
-            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
-                check_expr_for_optional_match(init, source, diags)
-            }
-            StmtKind::LetStruct { init, .. } => check_expr_for_optional_match(init, source, diags),
-            StmtKind::Expr(e) => check_expr_for_optional_match(e, source, diags),
-            StmtKind::Return(Some(e)) => check_expr_for_optional_match(e, source, diags),
-            StmtKind::Break { value: Some(e), .. } => {
-                check_expr_for_optional_match(e, source, diags)
-            }
-            StmtKind::Assign { target, value, .. } => {
-                check_expr_for_optional_match(target, source, diags);
-                check_expr_for_optional_match(value, source, diags);
-            }
-            StmtKind::While { cond, body, .. } => {
-                check_expr_for_optional_match(cond, source, diags);
-                walk_stmts_for_optional_match(body, source, diags);
-            }
-            StmtKind::WhileLet { expr, body, .. } => {
-                check_expr_for_optional_match(expr, source, diags);
-                walk_stmts_for_optional_match(body, source, diags);
-            }
-            StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
-                check_expr_for_optional_match(iter, source, diags);
-                walk_stmts_for_optional_match(body, source, diags);
-            }
-            StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => {
-                walk_stmts_for_optional_match(body, source, diags)
-            }
-            StmtKind::Ensure { body, else_handler } => {
-                walk_stmts_for_optional_match(body, source, diags);
-                if let Some((_, handler)) = else_handler {
-                    walk_stmts_for_optional_match(handler, source, diags);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn check_expr_for_optional_match(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
-    match &expr.kind {
-        ExprKind::Binary { left, right, .. } => {
-            check_expr_for_optional_match(left, source, diags);
-            check_expr_for_optional_match(right, source, diags);
-        }
-        ExprKind::Unary { operand, .. } => check_expr_for_optional_match(operand, source, diags),
-        ExprKind::Block(stmts) => walk_stmts_for_optional_match(stmts, source, diags),
-        ExprKind::If { cond, then_branch, else_branch, .. } => {
-            check_expr_for_optional_match(cond, source, diags);
-            check_expr_for_optional_match(then_branch, source, diags);
-            if let Some(e) = else_branch {
-                check_expr_for_optional_match(e, source, diags);
-            }
-        }
-        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
-            for a in args {
-                check_expr_for_optional_match(&a.expr, source, diags);
-            }
-        }
-        _ => {}
-    }
-
+fn optional_match_diag(expr: &Expr, source: &str) -> Option<LintDiagnostic> {
     let ExprKind::Match { arms, .. } = &expr.kind else {
-        return;
+        return None;
     };
-    for arm in arms {
-        check_expr_for_optional_match(&arm.body, source, diags);
-    }
     if arms.len() != 2 || !arms.iter().any(|a| is_none_pattern(&a.pattern)) {
-        return;
+        return None;
     }
     // A guard changes what the arms mean and no operator form carries one.
     if arms.iter().any(|a| a.guard.is_some()) {
-        return;
+        return None;
     }
     let (line, col) = util::line_col(source, expr.span.start);
     let source_line = util::get_source_line(source, line);
-    diags.push(LintDiagnostic {
+    Some(LintDiagnostic {
         rule: "idiom/match-on-optional".to_string(),
         severity: Severity::Warning,
         message: "two-arm `match` with a `none` arm — the `?` operators say this in one line"
@@ -899,5 +531,5 @@ fn check_expr_for_optional_match(expr: &Expr, source: &str, diags: &mut Vec<Lint
         fix: "`if x? as v { … } else { … }` to branch, `x ?? value` for a fallback, \
               `x ?? return` to leave [type.optionals/OPT27]"
             .to_string(),
-    });
+    })
 }
