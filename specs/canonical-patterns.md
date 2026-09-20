@@ -21,15 +21,14 @@ A tool can reason about one function without loading the entire codebase. Refact
 Function signatures carry a lot of information in Rask:
 
 ```rask
-func process(config: Config, take data: Vec<u8>) -> ProcessResult or IoError
-    using Pool<Node>
+func process(config: Config, take data: Vec<u8>, mutate nodes: Rack<Node>) -> ProcessResult or IoError
 ```
 
 From this single line, a tool can determine:
 - `config` is read-only (won't be modified)
 - `data` ownership transfers (caller loses access)
+- `nodes` is written through — the caller's rack, changed in place
 - Can fail with `IoError` (and only `IoError`)
-- Needs a `Pool<Node>` in scope
 - Returns `ProcessResult` on success
 
 Most languages require reading the function body to learn half of this. In Rask, the signature is a specification.
@@ -76,7 +75,7 @@ let buf = Buffer.new()
 let map = Map.new()
 
 // .with_* — builder-style for optional configuration
-const pool = Pool.new().with_capacity(64)
+let recent = Vec.with_capacity(64)
 let server = Server.new(8080).with_timeout(Duration.seconds(30))
 
 // Collection literals
@@ -88,7 +87,7 @@ let scores = Map.from([("alice", 100), ("bob", 85)])
 - Factory functions that hide which type is constructed — use `from_*` or struct literals instead.
 - Overloading `.new()` with many optional parameters — use `.with_*` chaining.
 
-See [stdlib/collections.md](stdlib/collections.md), [memory/pools.md](memory/pools.md).
+See [stdlib/collections.md](stdlib/collections.md), [memory/racks.md](memory/racks.md).
 
 ---
 
@@ -410,36 +409,56 @@ When a value needs cross-scope access — shared ownership, identity-based refer
 | Need | Pick | Discipline |
 |------|------|------------|
 | One mutable value shared across closures in one task | `Shared<T>` | `Local` strategy — no lock |
-| Graph / ECS / entity table / anything identity-shaped | `Pool<T>` + `Handle<T>` | Generation-checked, sendable |
+| Graph / ECS / entity table / anything identity-shaped | `Rack<T>` + `Link<T>` | Stored references; delete nulls every edge |
 | Read-heavy config / feature flags across tasks | `Shared<T>` | Many readers XOR one writer |
 | Queue / state machine / exclusive mutation across tasks | `Shared<T, Mutex>` | Plain lock |
 | Recursive types / single-owner heap value | `Heap<T>` | Linear, single consumer |
 | Single primitive read/written atomically | `Atomic<T>` | Intrinsic ops, not scoped access |
 
-**Rule of thumb:** scope grows from left to right. `Shared<T, Local>` stays in one task; `Heap<T>` is linear and moves; `Pool` is identity-durable and sendable; `Shared` under `Readers` or `Mutex` crosses task boundaries. Start with the smallest discipline that fits.
+**Rule of thumb:** scope grows from left to right. `Shared<T, Local>` stays in one task; `Heap<T>` is linear and moves; a `Rack` keeps identity and crosses tasks by `snapshot()`; `Shared` under `Readers` or `Mutex` crosses task boundaries. Start with the smallest discipline that fits.
 
-**Graph-shaped data is Pool-shaped.** If your program has cycles, parent pointers, entity references, or any "node A knows about node B" relationship that isn't a tree, it routes through `Pool<T>` + `Handle<T>`. There is no storable-reference alternative. A Rask codebase with significant graph state looks structurally different from a Go or Rust equivalent — pool declarations at the root, handles flowing through call graphs, `using Pool<T>` clauses on functions that dereference. This is not a bug; it's the shape.
+**Graph-shaped data is rack-shaped.** If your program has cycles, parent pointers, entity references, or any "node A knows about node B" relationship that isn't a tree, it routes through `Rack<T>` + `Link<T>`. A `Link` is the one reference in Rask you can keep in a field, and that is what makes the shape work at all. A codebase with real graph state looks structurally different from a Go or Rust equivalent: racks declared near the root, links in node fields, functions taking the rack as an ordinary parameter. This is not a bug; it's the shape.
 
-**Multiple pools of the same element type need nominal separation.** If you have `Pool<Entity>` for live entities and `Pool<Entity>` for archived ones in the same scope, `using Pool<Entity>` is ambiguous at call sites (`mem.context/CC8`). Wrap one or both in a newtype:
-
+<!-- test: run | hall leads to cell\nhall leads nowhere -->
 ```rask
-struct Live(Pool<Entity>)
-struct Archive(Pool<Entity>)
+import memory.Rack
+import memory.Link
 
-mut live = Live(Pool.new())
-mut archive = Archive(Pool.new())
+struct Room {
+    name: string
+    exit: Link<Room>?
+}
 
-func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
-    // auto-resolves against the pool that's currently in scope
+func describe(r: Link<Room>) -> string {
+    if r.exit? as e {
+        return "{r.name} leads to {e.name}"
+    }
+    return "{r.name} leads nowhere"
+}
+
+func main() {
+    mut rooms = Rack.new()
+    let cell = rooms.insert(Room { name: "cell", exit: none })
+    let hall = rooms.insert(Room { name: "hall", exit: cell })
+    println(describe(hall))
+
+    rooms.delete(cell)
+    println(describe(hall))
 }
 ```
 
+Same call, twice, two answers: `delete` set `hall.exit` to `none` before it returned (`mem.racks/RK3`), so the `if` took its other branch. There is no stale link to test for and no cleanup to remember.
+
+**A link can't outlive its rack.** Returning a link into a rack the function itself declared is a compile error (E0379) — the rack dies at the closing brace. Links into a rack the *caller* owns are unrestricted, which is why the shape is: declare the rack high, pass it down.
+
+**Deleting nodes the caller didn't name is declared.** A function that picks its own victims out of a rack it was handed writes `deleting` on the parameter (`mem.parameters/PM8`), and `deleting rooms` at the call site. The call revokes the caller's local links into that rack, because which nodes died isn't knowable from outside.
+
 **Anti-patterns:**
 - Reaching for `Shared<T, Readers>` when bare `Shared<T>` or a `mutate` parameter would do — adds cross-task machinery for single-task code.
-- Using `Pool<T>` for simple containers where `Vec<T>` suffices — pools are for identity, not storage.
+- Using `Rack<T>` for simple containers where `Vec<T>` suffices — a rack is for identity and edges, not storage.
 - Using `Heap<T>` where a plain value works — it is for recursion or explicit heap placement, not a default.
 
-See [memory/shared-rack-heap.md](memory/shared-rack-heap.md), [memory/racks.md](memory/racks.md), [memory/pools.md](memory/pools.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
+See [memory/shared-rack-heap.md](memory/shared-rack-heap.md), [memory/racks.md](memory/racks.md), [concurrency/sync.md](concurrency/sync.md), [memory/heap.md](memory/heap.md).
 
 ---
 
