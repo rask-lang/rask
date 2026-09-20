@@ -1,30 +1,31 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `parse` at a float target, and `??` on a `T or E` (#480, #394).
+// `parse` at a float target, and the two fallbacks on what each is for
+// (#480, #394, #1250).
 //
 // The target type reaches `parse` two ways: written out as `parse<f64>()`, or
 // inferred from what the result is used as. Both have to run the float parse.
 
 test "type.primitives — parse<f64> with the type written out" {
-    assert ("3.5".parse<f64>() ?? -1.0) == 3.5
-    assert ("junk".parse<f64>() ?? -1.0) == -1.0
+    assert ("3.5".parse<f64>() catch _ => -1.0) == 3.5
+    assert ("junk".parse<f64>() catch _ => -1.0) == -1.0
 }
 
 // Both spellings run the same parse now (#610): the target reaches it from
 // the annotation as well as from the turbofish, at f32 as well as f64.
 test "type.primitives — parse to a float inferred from the binding" {
-    let a: f64 = "3.5".parse() ?? -1.0
+    let a: f64 = "3.5".parse() catch _ => -1.0
     assert a == 3.5
-    let b: f32 = "2.25".parse() ?? -1.0
+    let b: f32 = "2.25".parse() catch _ => -1.0
     assert b == 2.25
-    let c: f64 = "junk".parse() ?? -1.0
+    let c: f64 = "junk".parse() catch _ => -1.0
     assert c == -1.0
 }
 
 test "type.primitives — integer targets still parse as integers" {
-    let a: i32 = "17".parse() ?? -1
+    let a: i32 = "17".parse() catch _ => -1
     assert a == 17
     // "3.5" is not an integer — trailing garbage after the digits.
-    let b: i64 = "3.5".parse() ?? -1
+    let b: i64 = "3.5".parse() catch _ => -1
     assert b == -1
 }
 
@@ -48,7 +49,7 @@ test "type.errors — ER14 value fallback on a T or E" {
     assert (divide(10, 0) catch _ => -1) == -1
 }
 
-test "type.errors — ER14 still works on an optional" {
+test "type.errors — the absent fallback is `??`, not `catch`" {
     let present: i64? = 4
     let absent: i64? = none
     assert (present ?? -1) == 4

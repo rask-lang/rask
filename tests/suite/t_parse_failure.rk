@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // `parse` has to report failure. The native runtime used atoll, which can't
-// tell "0" from "not a number", so every parse came back Ok and `??`/`try`
+// tell "0" from "not a number", so every parse came back Ok and `catch`/`try`
 // never fired (#472).
 //
 // Policy, matching what the interpreter already did: trim surrounding
@@ -9,43 +9,43 @@
 // Neither backend range-checks against a narrower target width.
 
 test "type.primitives — parse accepts a plain integer" {
-    assert ("42".parse() ?? -1) == 42
-    assert ("0".parse() ?? -1) == 0
-    assert ("-5".parse() ?? -1) == -5
+    assert ("42".parse() catch _ => -1) == 42
+    assert ("0".parse() catch _ => -1) == 0
+    assert ("-5".parse() catch _ => -1) == -5
 }
 
 test "type.primitives — parse trims surrounding whitespace" {
-    assert ("  7  ".parse() ?? -1) == 7
+    assert ("  7  ".parse() catch _ => -1) == 7
 }
 
 test "type.primitives — parse rejects non-numbers" {
-    assert ("notanumber".parse() ?? -1) == -1
-    assert ("".parse() ?? -1) == -1
+    assert ("notanumber".parse() catch _ => -1) == -1
+    assert ("".parse() catch _ => -1) == -1
 }
 
 // "0" and garbage both used to come back as Ok(0), so this is the case that
 // made the bug invisible: a failure that happens to look like a valid value.
 test "type.primitives — a rejected parse is not Ok(0)" {
-    let bad = "notanumber".parse() ?? -1
+    let bad = "notanumber".parse() catch _ => -1
     assert bad != 0
     assert bad == -1
 }
 
 test "type.primitives — parse rejects partial numbers" {
-    assert ("12abc".parse() ?? -1) == -1
-    assert ("abc12".parse() ?? -1) == -1
+    assert ("12abc".parse() catch _ => -1) == -1
+    assert ("abc12".parse() catch _ => -1) == -1
 }
 
 test "type.primitives — parse rejects out-of-range" {
-    assert ("99999999999999999999999".parse() ?? -1) == -1
+    assert ("99999999999999999999999".parse() catch _ => -1) == -1
 }
 
 test "type.primitives — parse at an explicit width" {
-    assert ("42".parse<i32>() ?? -1) == 42
-    assert ("nope".parse<i32>() ?? -1) == -1
-    // An unsigned width needs an unsigned fallback. `?? -1` compiled here only
+    assert ("42".parse<i32>() catch _ => -1) == 42
+    assert ("nope".parse<i32>() catch _ => -1) == -1
+    // An unsigned width needs an unsigned fallback. `catch _ => -1` compiled here only
     // while the turbofish was decorative (#1029) — with `parse<u16>` actually
     // meaning u16, `-1` is out of range and says so.
-    assert ("7".parse<u16>() ?? 0u16) == 7u16
-    assert ("nope".parse<u16>() ?? 0u16) == 0u16
+    assert ("7".parse<u16>() catch _ => 0u16) == 7u16
+    assert ("nope".parse<u16>() catch _ => 0u16) == 0u16
 }

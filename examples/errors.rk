@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: errors are values — `catch`, `try`, `??`, and your own error type
+//
+// The chapter at docs/book/src/guide/errors-are-values.md includes the anchored
+// regions below rather than quoting them, so what the page shows is what CI
+// runs. tests/examples_gate.sh runs this on both backends against
+// tests/golden/errors.out.
+
+import string.ParseError
+
+// ANCHOR: simplest
+func years_from(text: string) -> string {
+    let n: i64 or ParseError = text.parse<i64>()
+    match n {
+        i64 as years => return "{years} years"
+        ParseError as e => return "not a number: {e.message()}"
+    }
+}
+// ANCHOR_END: simplest
+
+// ANCHOR: handle
+func retries_from(text: string) -> i64 {
+    return text.parse<i64>() catch _ => 3
+}
+// ANCHOR_END: handle
+
+// ANCHOR: propagate
+func doubled(text: string) -> i64 or ParseError {
+    let n = try text.parse<i64>()
+    return n * 2
+}
+// ANCHOR_END: propagate
+
+// ANCHOR: owntype
+enum ConfigError {
+    Missing(string)
+    Malformed(string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        match self {
+            ConfigError.Missing(key) => return "{key} is not set"
+            ConfigError.Malformed(key) => return "{key} is not a number"
+        }
+    }
+}
+// ANCHOR_END: owntype
+
+// ANCHOR: ownuse
+func port_from(text: string) -> i64 or ConfigError {
+    if text == "" {
+        return ConfigError.Missing("port")
+    }
+    let n = text.parse<i64>() catch _ => {
+        return ConfigError.Malformed("port")
+    }
+    return n
+}
+// ANCHOR_END: ownuse
+
+func report(text: string) {
+    match port_from(text) {
+        i64 as port => println("port {port}")
+        ConfigError as e => println("bad config: {e.message()}")
+    }
+}
+
+func main() {
+    println(years_from("41"))
+    println(years_from("forty-one"))
+
+    println("retries {retries_from("5")}")
+    println("retries {retries_from("many")}")
+
+    match doubled("41") {
+        i64 as n => println("doubled {n}")
+        ParseError as e => println("could not double: {e.message()}")
+    }
+
+    report("8080")
+    report("")
+    report("eighty-eighty")
+}

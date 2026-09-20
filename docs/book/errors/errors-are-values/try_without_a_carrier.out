@@ -1,0 +1,8 @@
+error[E0316]: `try` requires function returning Result or Option, found `void`
+  --> docs/book/errors/errors-are-values/try_without_a_carrier.rk:30:16
+    |
+ 30 |     let port = try port_of(text)
+    |                ^^^^^^^^^^^^^^^^^ try used here
+    = fix: change the function return type to `T or E`
+    = why: `try` propagates errors upward — the enclosing function must declare
+          an error type in its return
