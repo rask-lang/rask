@@ -1,7 +1,6 @@
 # Errors are values
 
-When a call can fail, the failure comes back out of it. Same `return`, same assignment, same
-place in the line as the answer.
+When a call can fail, the failure comes back out of it.
 
 A function that can fail says both outcomes in its return type. `parse` returns
 `i64 or ParseError`: a number, or a reason it isn't one.
@@ -17,10 +16,29 @@ Every error type has a `message()`, so `e.message()` works whatever kind of erro
 
 The annotation on `n` is there to show the type. You'd normally leave it off.
 
-## Passing it up
+## `catch` handles it
 
-`try` takes the value out. If the error came back instead, the function returns it, and the
-caller deals with it.
+Branching on both outcomes is the long way round. When you only want a value out, `catch`
+gives one:
+
+```rask
+{{#include ../../../../examples/errors.rk:handle}}
+```
+
+The binder is required. `catch e =>` uses the error, `catch _ =>` throws it away. There is no
+`catch 3`:
+
+```text
+{{#include ../../errors/errors-are-values/bare_catch.out}}
+```
+
+A `catch` body can also leave instead of producing a value — `catch e => return wrap(e)` turns
+the error into your own and hands it to the caller.
+
+## `try` passes it up
+
+`try r` is `r catch e => return e`: take the value out, or return the error to the caller.
+That case is common enough to get a word.
 
 ```rask
 {{#include ../../../../examples/errors.rk:propagate}}
@@ -39,27 +57,13 @@ doesn't have one:
 {{#include ../../errors/errors-are-values/try_without_a_carrier.out}}
 ```
 
-## `??` and `catch`
+## `??` is for missing, not failed
 
-`??` supplies a value when something is **missing**. A `Map` lookup returns `string?` — the
-value, or nothing:
+A `Map` lookup returns `string?` — the value, or nothing. Nothing isn't a failure and carries
+no error to bind, so it gets `??` rather than `catch`:
 
 ```rask
 {{#include ../../../../examples/errors.rk:absence}}
-```
-
-`catch` supplies a value when something **failed**. `parse` hands back an error rather than
-nothing, so it takes `catch`:
-
-```rask
-{{#include ../../../../examples/errors.rk:drop}}
-```
-
-The binder is required. `catch e =>` uses the error, `catch _ =>` throws it away. There is no
-`catch 3`:
-
-```text
-{{#include ../../errors/errors-are-values/bare_catch.out}}
 ```
 
 ## Your own error type

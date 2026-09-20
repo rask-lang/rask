@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: errors are values — reading one, handing it up, declaring your own
+// Learn: errors are values — `catch`, `try`, `??`, and your own error type
 //
 // The chapter at docs/book/src/guide/errors-are-values.md includes the anchored
 // regions below rather than quoting them, so what the page shows is what CI
@@ -19,6 +19,12 @@ func years_from(text: string) -> string {
 }
 // ANCHOR_END: simplest
 
+// ANCHOR: handle
+func retries_from(text: string) -> i64 {
+    return text.parse<i64>() catch _ => 3
+}
+// ANCHOR_END: handle
+
 // ANCHOR: propagate
 func doubled(text: string) -> i64 or ParseError {
     let n = try text.parse<i64>()
@@ -31,13 +37,6 @@ func name_of(settings: Map<string, string>) -> string {
     return settings.get("name") ?? "unnamed"
 }
 // ANCHOR_END: absence
-
-// ANCHOR: drop
-func retries_of(settings: Map<string, string>) -> i64 {
-    let text = settings.get("retries") ?? "3"
-    return text.parse<i64>() catch _ => 3
-}
-// ANCHOR_END: drop
 
 // ANCHOR: owntype
 enum ConfigError {
@@ -86,6 +85,9 @@ func main() {
     println(years_from("41"))
     println(years_from("forty-one"))
 
+    println("retries {retries_from("5")}")
+    println("retries {retries_from("many")}")
+
     let d = doubled("41")
     if d is i64 as n {
         println("doubled {n}")
@@ -95,7 +97,6 @@ func main() {
 
     mut empty = Map.new()
     println("name is {name_of(empty)}")
-    println("retries is {retries_of(empty)}")
 
     report(settings_with("8080"))
     report(empty)
