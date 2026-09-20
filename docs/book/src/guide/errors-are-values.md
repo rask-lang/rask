@@ -56,6 +56,26 @@ doesn't have one:
 {{#include ../../errors/errors-are-values/try_without_a_carrier.out}}
 ```
 
+## `!` stops the program
+
+The last thing the error arm can do is give up. `!` takes the value out, and panics if the
+error came back instead:
+
+```rask
+{{#include ../../panics/errors-are-values/force_on_an_error.rk:body}}
+```
+
+```text
+{{#include ../../panics/errors-are-values/force_on_an_error.out}}
+```
+
+A panic is not an error value. It has no type, it never appears in a return type, and a caller
+can't handle it. The task dies, its `ensure` cleanups run on the way out, and any locks it held
+are released.
+
+Use `!` where there is no sensible way to carry on — a config the program can't start without.
+For anything the caller could deal with, hand it back with `try`.
+
 ## Your own error type
 
 `ParseError` came with `parse`. For your program's own failures, write an enum and give it a
