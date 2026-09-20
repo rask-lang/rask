@@ -12,14 +12,14 @@ struct Pair<T, U> {
 }
 
 // Generic struct with one type parameter
-struct Box<T> {
+struct Wrapper<T> {
     value: T
 }
 
 // Methods on generic types
-extend Box<T> {
-    func new(value: T) -> Box<T> {
-        return Box { value }
+extend Wrapper<T> {
+    func new(value: T) -> Wrapper<T> {
+        return Wrapper { value }
     }
 
     func get(self) -> T {
@@ -45,8 +45,8 @@ func max_value(a: T, b: T, compare: func(T, T) -> bool) -> T {
 }
 
 // Generic function with type inference
-func wrap<T>(value: T) -> Box<T> {
-    return Box { value }
+func wrap<T>(value: T) -> Wrapper<T> {
+    return Wrapper { value }
 }
 
 // Generic function that works with any type
@@ -71,22 +71,22 @@ func main() {
     print(string_int.second)
     print(")\n\n")
 
-    // Use Box with different types
-    let int_box = Box.new(100)
-    let string_box = Box.new("wrapped")
+    // Use Wrapper with different types
+    let int_wrap = Wrapper.new(100)
+    let string_wrap = Wrapper.new("wrapped")
 
-    print("Int box: ")
-    print(int_box.get())
+    print("Wrapped int: ")
+    print(int_wrap.get())
     print("\n")
 
-    print("String box: ")
-    print(string_box.get())
+    print("Wrapped string: ")
+    print(string_wrap.get())
     print("\n\n")
 
     // Type inference with wrap
-    let auto_box = wrap(3.14)  // Type inferred as Box<f64>
+    let auto_wrap = wrap(3.14)  // Type inferred as Wrapper<f64>
     print("Auto-wrapped: ")
-    print(auto_box.value)
+    print(auto_wrap.value)
     print("\n\n")
 
     // Identity function works with any type

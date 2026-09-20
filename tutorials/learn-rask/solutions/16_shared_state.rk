@@ -23,7 +23,7 @@ func flight_tracker() -> i32 {
         //
         // Access is scoped, not closure-based: `write()` inline for one
         // expression, or `with … as` for several. Rask went this way so that
-        // `return`, `try`, `break` and `continue` work through it (mem.boxes).
+        // `return`, `try`, `break` and `continue` work through it (mem.shared-rack-heap).
         let s1 = sightings.clone()
         let s2 = sightings.clone()
         let s3 = sightings.clone()

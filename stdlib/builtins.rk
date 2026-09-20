@@ -26,8 +26,8 @@ public func unreachable(msg: string?) {}
 
 /// Consume a `Heap<T>` and free its heap value (mem.heap/HP3).
 ///
-/// Exactly one box, per HP1/HP2 — a type that owns further boxes frees them
-/// itself. A scalar `Heap` was never on the heap (it fits its slot), so
+/// Exactly one block, per HP1/HP2 — a type that owns further `Heap`s frees
+/// them itself. A scalar `Heap` was never on the heap (it fits its slot), so
 /// dropping one frees nothing.
 @native
 public func drop(take ptr: Heap) {}

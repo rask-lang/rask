@@ -468,7 +468,7 @@ func process_files(paths: Vec<string>) -> void or Error {
 ### See Also
 
 - [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
-- [Owned Pointers](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
+- [Heap Values](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Ensure](../control/ensure.md) — Deferred execution (`ctrl.ensure`)

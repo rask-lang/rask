@@ -466,7 +466,7 @@ impl TypeChecker {
 
     /// Whether a `with` guard's element type is a struct/enum/union — the
     /// shapes whose bare identity must not leave the block, since the guard
-    /// is access to the box's payload, not a value of its own (mem.boxes,
+    /// is access to the box's payload, not a value of its own (mem.shared-rack-heap,
     /// "Why scoped access, not guards"). Scalars and `string` are exempt:
     /// copying them out already produces an independent value (#559).
     /// Returns the type's name for the diagnostic when it's forbidden.

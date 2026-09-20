@@ -81,7 +81,7 @@ moves the variable *into* the environment, which makes the environment its home,
 so the body works through the slot's address for its whole life.
 
 *Ownership.* I'd written this up as needing a choice between refcounting,
-leaking and an owned box. It doesn't: a `func` value is an owned value, so single
+leaking and an owned heap block. It doesn't: a `func` value is an owned value, so single
 owner, and the frame still holding it when it ends frees it
 (`mem.ownership/O1`). What was missing is that the drop pass only knew about
 closures *built* in a frame, not ones taken back from a call — and

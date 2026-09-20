@@ -1,7 +1,7 @@
 <!-- id: mem.racks -->
 <!-- status: decided -->
 <!-- summary: Rack<T> holds nodes with stable identity; Link<T> is a reference storable in a field. Delete nulls every edge pointing at the node -->
-<!-- depends: memory/boxes.md, memory/linear.md, memory/parameters.md, memory/borrowing.md -->
+<!-- depends: memory/shared-rack-heap.md, memory/linear.md, memory/parameters.md, memory/borrowing.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/, compiler/crates/rask-mir/, compiler/crates/rask-codegen/, compiler/runtime/rack.c -->
 
 # Racks and Links
@@ -196,7 +196,7 @@ Named here so the gaps are on the record rather than discovered:
 `LinkView<T>` was considered and rejected. Read-only is a parameter mode, not a
 type (`mem.parameters/PM10`): a plain link parameter is a view, a `mutate` one
 writes. A separate type would have to either propagate along every edge or leak
-in one hop, and it would put `mut` in a type position, which no other box does.
+in one hop, and it would put `mut` in a type position, which nothing else does.
 The mode gets the same guarantee out of machinery the language already has.
 
 ## Error messages

@@ -112,7 +112,7 @@ enum Method {
 }
 
 // `Handle` is `memory`'s, not BI1's. Being a closed compiler type
-// (mem.boxes/BX1-BX4) is about who may define one, not about who can see the
+// (mem.shared-rack-heap/BX1-BX4) is about who may define one, not about who can see the
 // name without asking — and this file hasn't asked.
 struct Handle {
     slot: i64

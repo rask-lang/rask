@@ -458,9 +458,9 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
 The named types (`AtomicU64`, `AtomicBool`, …) were deleted outright, not kept as aliases. A first draft kept them for familiarity, and that was the wrong instinct: two spellings for the same type means every new reader has to discover they're the same — `AtomicU64` in one file and `Atomic<u64>` in another *look* like different types, and nothing on the page says otherwise. One spelling per operation is already the language's own rule (`CORE_DESIGN` principle 8); atomics don't get a Rust-familiarity exemption. `Atomic<u64>` costs three characters over `AtomicU64` and removes a whole table from the mental model.
 
-The cost of the generic surface — operation families that vary by payload — lands entirely inside the compiler, which already special-cases every box-adjacent type. That's the right side of the line: complicated implementation behind a simple surface, the same trade `string`'s refcount elision makes.
+The cost of the generic surface — operation families that vary by payload — lands entirely inside the compiler, which already special-cases every type in that carve-out. That's the right side of the line: complicated implementation behind a simple surface, the same trade `string`'s refcount elision makes.
 
-`Atomic<T>` over a user payload does not open the box family (`mem.boxes/BX1`–`BX4`): the payload is plain Copy data, and `Atomic` itself stays compiler-provided. Nothing here lets a user type run code at assignment, scope exit, or borrow boundaries — the same relationship `Shared<T>` has to its `T`.
+`Atomic<T>` over a user payload does not open that set (`mem.shared-rack-heap/BX1`–`BX4`): the payload is plain Copy data, and `Atomic` itself stays compiler-provided. Nothing here lets a user type run code at assignment, scope exit, or borrow boundaries — the same relationship `Shared<T>` has to its `T`.
 
 **GA3 (no fetch ops on structs):** `fetch_add` exists because hardware has it for integers. For a struct, "add" has no single meaning, and inventing one (field-wise? user-defined?) would hide a CAS loop behind an innocent-looking method. The CAS loop is the honest spelling: the modify step is visible code between a `load` and a `compare_exchange`.
 
@@ -648,7 +648,7 @@ This sketch shows the push path — CAS on handles with generation-based ABA pro
 ### See Also
 
 - [Synchronization Primitives](../concurrency/sync.md) — `Shared<T, S>` for compound data (`conc.sync`)
-- [Boxes](boxes.md) — Why atomics sit adjacent to the box family (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — Why atomics sit adjacent to that set (`mem.shared-rack-heap`)
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `Atomic<*T>` results (`mem.unsafe`)
 - [Pools](pools.md) — Handle-based storage, validation for atomic handle loads (`mem.pools`)

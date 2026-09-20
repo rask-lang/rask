@@ -64,7 +64,7 @@ fit.
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
-| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and boxes a trait object (`as any Trait`). To anything else it reinterprets bits, so it needs `unsafe` |
+| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and erases a concrete type to a trait object (`as any Trait`). To anything else it reinterprets bits, so it needs `unsafe` |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless

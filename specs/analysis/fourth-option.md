@@ -1,7 +1,7 @@
 <!-- id: analysis.fourth-option -->
 <!-- status: exploration -->
 <!-- summary: Is there a fourth memory model beyond GC/RC, lifetimes, and handles? Yes: fix references at delete time instead of checking them at use time — the database answer, unclaimed at language level -->
-<!-- depends: memory/pools.md, memory/borrowing.md, memory/boxes.md, memory/allocators.md -->
+<!-- depends: memory/pools.md, memory/borrowing.md, memory/shared-rack-heap.md, memory/allocators.md -->
 
 # The Fourth Option
 
@@ -200,7 +200,7 @@ every new error path, and what `mem.relocatable` becomes when it's keys-only.
 (Iteration guarantees are now stated as B11 — they fell out of B2 and B9
 rather than needing a decision.)
 
-**Not a conflict after all:** `mem.boxes`' closed-family rule is about the set
+**Not a conflict after all:** `mem.shared-rack-heap`' closed-family rule is about the set
 *growing* — it bars users from adding boxes. Merging `Cell` and `Mutex` into
 `Shared` shrinks it, which the rule doesn't speak to.
 
@@ -761,7 +761,7 @@ link is an address") stated as a both-and rather than an either-or.
    bytes, unsynchronized concurrent holders — and those redeem a `Key<T>`
    through `get(k)?`. Pool folds into Graph as the keys-only case (see census
    above).
-4. The box-family bar (`mem.boxes` appendix: "box six needs a scoped access
+4. The box-family bar (`mem.shared-rack-heap` appendix: "box six needs a scoped access
    discipline the five don't cover") is met — *relational* access, edges fixed
    at delete, is not exclusive/identity/read-heavy/locked/linear. This doc does
    not propose adding it; it establishes that the seat exists and what sitting

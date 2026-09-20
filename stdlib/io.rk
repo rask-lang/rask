@@ -337,9 +337,9 @@ extend Stderr {
 /// In-memory buffer implementing both Reader and Writer (B4). Not linear —
 /// there's no OS resource behind it.
 ///
-/// The read position lives in a `Cell` because `Reader` takes `self`, not
-/// `mutate self`. Reading has to advance the cursor, and a box is how a `self`
-/// method changes something.
+/// The read position lives in a `Shared<i64, Local>` because `Reader` takes
+/// `self`, not `mutate self`. Reading has to advance the cursor, and scoped
+/// access is how a `self` method changes something.
 ///
 /// Written in Rask rather than native: it's bytes and an index, nothing the
 /// machine has to be asked about, so both backends run this source. Before

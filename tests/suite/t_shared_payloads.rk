@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A `Shared<T, Mutex>`/`Shared<T>` holds whatever T is, not just a struct or a word.
 //
-// The box stores the payload's bytes and the lock hands back their address. For
+// The Shared stores the payload's bytes and the lock hands back their address. For
 // something that lives in its own storage — a struct, a string, a tuple — that
 // address *is* the value; a word-sized payload has to be loaded out of it. Four
 // places decided that separately and spelled out different lists, and the

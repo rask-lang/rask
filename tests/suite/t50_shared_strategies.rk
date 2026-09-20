@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// mem.boxes / conc.sync witnesses.
+// mem.shared-rack-heap / conc.sync witnesses.
 //
 // This was a known-fail for #268 — Cell unlinked in codegen ("Function not found:
-// Cell_new") and Mutex `with .write()` reading pointer garbage on native. Box
-// codegen has landed: both tests pass on both backends and the
+// Cell_new") and Mutex `with .write()` reading pointer garbage on native.
+// `Shared` codegen has landed: both tests pass on both backends and the
 // known_divergences.txt line is gone. The note saying otherwise was left behind,
 // and is corrected here rather than left to mislead the next reader.
 //
-// Shared `with` access works now too — `t_month_boxes.rk` covers read/write
-// alongside the rest of the family.
+// Shared `with` access works now too — `t_month_scoped_access.rk` covers read/write
+// alongside the rest.
 
 import sync.Shared
 import sync.Mutex

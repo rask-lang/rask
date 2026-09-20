@@ -58,7 +58,7 @@ func observe() {
 |------|-------------|
 | **U1: Ensures run** | Every ensure scheduled between the panic point and the task root runs during unwind |
 | **U2: Access released, writes kept** | Unwind releases *access* (locks, borrows, bindings) but never rolls back *data*. Values keep whatever mutations happened before the panic |
-| **U3: `with` release** | Unwinding through a `with` block releases what the block held: Mutex/Shared unlock, Cell borrow flag clears, pool element access ends |
+| **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, pool element access ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
 
@@ -77,14 +77,14 @@ looks like mid-unwind).
 
 | Rule | Description |
 |------|-------------|
-| **LK1: Clean release** | A Mutex/Shared lock held by the panicking task unlocks during unwind (via U3/U4). Waiting tasks acquire normally |
+| **LK1: Clean release** | A `Shared` lock held by the panicking task unlocks during unwind (via U3/U4). Waiting tasks acquire normally |
 | **LK2: No poison state** | There is no poisoned flag. The next `with mutex` succeeds and sees the value exactly as the dying task left it |
 | **LK3: Torn invariants are yours** | A panic mid-mutation can leave *application-level* invariants broken for survivors. Language-level invariants (memory safety, lock state, generation counts) always hold |
 | **LK4: Panic is the only mid-update death** | A task cannot be killed at a suspension point. Pausing on I/O keeps the lock held — waiters block, they never see intermediate state. Cancellation is cooperative and arrives as an ordinary error return (`conc.async/CN1–CN4`) — visible early-exit control flow, not a death. The only path from "lock held, update half-done" to "another task reads it" is a panic between the writes |
 
 Where LK3 isn't acceptable — a multi-field invariant that other tasks will read — opt into **staged access**: `with mutex.staged() as v { }` works on a copy that commits as one move on non-panic exit and is discarded on unwind. Torn state impossible by construction at staged sites. Rules and example: `conc.sync/ST1–ST4`.
 
-This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`, `W0907`) when a `with` block over a sync box assigns two or more fields of the locked value without `staged()`. Built, and pointed at two real sites on its first run — both counters, both silenced with `@allow`, which is worth watching: if that stays the ratio the warning is noisier than it is useful.
+This isn't left to optional tooling: the compiler warns by default (`tool.warnings/W9`, `torn_lock_update`, `W0907`) when a `with` block over a `Shared` assigns two or more fields of the locked value without `staged()`. Built, and pointed at two real sites on its first run — both counters, both silenced with `@allow`, which is worth watching: if that stays the ratio the warning is noisier than it is useful.
 
 ## Ensure × Panic
 
@@ -183,7 +183,7 @@ Other alternatives worked through:
 
 - **Sticky poison-panic** (next acquirer panics): converts possible corruption into loud failure, which fits "fail loudly." Rejected because it cascades — one panicked request handler turns a shared metrics mutex into a landmine that kills every future task touching it, and recovery requires a heal/clear API that admits panics into normal control flow.
 - **Recovery arm** (`with mutex as v else abandoned { rebuild }` — sticky "holder panicked" flag, observed only by sites that opt in): the strongest detection variant, zero tax on ordinary sites. Rejected as the primary answer because unhandled it degrades to exactly LK3's silent inconsistency, and the flag needs healing semantics. Could still be added later; it composes with staged rather than competing.
-- **Invariant validators** (a check function attached to the box, run at release): hidden user code at unlock time — hidden cost and hidden control flow at once.
+- **Invariant validators** (a check function attached to the `Shared`, run at release): hidden user code at unlock time — hidden cost and hidden control flow at once.
 
 LK3 + staged is the honest split: the language guarantees its invariants everywhere, and gives you a visible, by-construction tool for yours where they matter.
 
@@ -206,19 +206,19 @@ Silence hides bugs (violates "no unreproducible failures" — the failure didn't
 The interpreter already implements most of this model; compiled code has the big gaps. Deltas to file as issues once the spec is accepted:
 
 **Interpreter** (panic = `Err` propagation, `rask-interp`):
-- Matches P1–P3, U1, U3, LK1–LK2, O1: ensures run on unwind, task panic → `JoinError.Panicked`, locks/Cell borrows release cleanly, no poisoning.
+- Matches P1–P3, U1, U3, LK1–LK2, O1: ensures run on unwind, task panic → `JoinError.Panicked`, locks release cleanly, no poisoning.
 - Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
 - Residual: the `mem.resources/R5` and `conc.async/H1` runtime guards firing at an unwound scope exit still override the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
-- `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the box whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
+- `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the `Shared` whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):
 - Main-thread panic runs the ensure-hook stack then `exit(101)` (P4), not `abort()`. The hook stack + `rask_ensure_run_all` (with E2/E3 containment) live in the linked `panic.c` and are shared by every backend; `green.c` uses them through take/set accessors.
 - Ensures run on the native panic path (U1). Each ensure body is reified as a thunk over its captures; codegen pushes `rask_ensure_push` at schedule time and pops it at the top of the inline cleanup block, so a normal exit deregisters it and only a panic reaches it via `rask_ensure_run_all`. Consumption cancellation (C1) is re-checked inside the thunk. The thunk lowers any statement list and an `else |e|` handler, through the same helper the inline cleanup block uses, so the two can't drift. Free variables are captured by reference where the MIR value already is an address (struct, enum, array, tuple, string, pointer, handle) and by value for a scalar written once, whose snapshot is the live value by definition. A scalar the function reassigns gets an address of its own: a pre-pass over the body finds the names an `ensure` reads, and a `mut` scalar among them is bound to a one-word stack cell that its reads and writes go through — the same shape a scalar `mutate` parameter already has. The hook then captures the cell, so the cleanup sees the value at the moment of the panic rather than at the moment the ensure was scheduled.
 - `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
-- Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same box can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
+- Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same `Shared` can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
 - Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
 - Panic messages hold F3 on both backends, and are pinned there. Native's checked-arithmetic messages used to be wholly static — "integer overflow: addition exceeds i32 range [...]" where the interpreter printed "2147483647 + 1 exceeds i32 range [...]" — so a user natively couldn't see which values overflowed. The operands now go to a runtime formatter (`rask_panic_overflow_binary`, and an i128 pair in `int128.c` since `snprintf` has no conversion that wide); the static half it splices behind them is the type and range codegen already registered. Two other messages named `unwrap`, a method Rask doesn't have: `x!` says whether the value was absent or an error (the operand's type decides, so MIR passes a flag), and a missing map key says so without naming a method.
 - Residual F3 gap: `r!` on an error branch doesn't print the error's own `message()`, which is the value the reader wants. Both backends have it at the panic point and neither uses it.
@@ -227,7 +227,7 @@ The interpreter already implements most of this model; compiled code has the big
 
 - [Ensure](ensure.md) — cleanup scheduling this spec extends (`ctrl.ensure`)
 - [Async](../concurrency/async.md) — task model, `JoinError` (`conc.async`)
-- [Sync](../concurrency/sync.md) — Mutex/Shared access rules (`conc.sync`)
+- [Sync](../concurrency/sync.md) — `Shared` access rules (`conc.sync`)
 - [Linear types](../memory/linear.md) — consume-exactly-once (`mem.linear`)
 - [Determinism](../determinism.md) — replay contract this spec plugs into
 - [Targets](../structure/targets.md) — process exit statuses (`struct.targets/EX3–EX4`)

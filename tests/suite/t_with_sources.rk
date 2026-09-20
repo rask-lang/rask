@@ -83,7 +83,7 @@ test "with over an element behind a field" {
 // what the block binds.
 const TOTAL: Shared<i64, Mutex> = Shared.mutex(0)
 
-test "with over a box's payload" {
+test "with over what a Shared holds" {
     with TOTAL.write() as n {
         n = n + 5
     }

@@ -11,7 +11,7 @@
 // "There are no `AtomicU64`-style named types and no aliases". The eleven named
 // ones the registry carried are gone with the fix.
 //
-// mem.boxes/BX1 lists Atomic as the box family's adjacent member and boxes.md's
+// mem.shared-rack-heap/BX1 lists Atomic as the adjacent member, and that page's
 // decision tree routes "single counter, flag, or pointer-sized value" to it, so
 // a reader following the documented procedure for a shared counter lands here.
 // Reaching one from several tasks is `t_atomic_across_tasks.rk`.

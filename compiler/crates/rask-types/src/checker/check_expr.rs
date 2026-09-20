@@ -2024,7 +2024,7 @@ impl TypeChecker {
                         {
                             self.errors.push(TypeError::StagedOnLocal {
                                 name: Self::source_text_for(recv)
-                                    .unwrap_or_else(|| "the box".to_string()),
+                                    .unwrap_or_else(|| "shared".to_string()),
                                 span: binding.source.span,
                             });
                         }
@@ -2080,7 +2080,7 @@ impl TypeChecker {
                     }
                 }
                 // A guard is access to the box's payload for this block only,
-                // not a value (mem.boxes, "Why scoped access, not guards") —
+                // not a value (mem.shared-rack-heap, "Why scoped access, not guards") —
                 // the bare identifier can't be the block's own produced value
                 // when the payload is a struct/enum. A field read or a method
                 // call already produces an independent value, so only the
@@ -5248,7 +5248,7 @@ impl TypeChecker {
         }
         self.errors.push(TypeError::TornLockUpdate {
             binding: binding.name.clone(),
-            box_name: Self::source_text_for(object).unwrap_or_else(|| "the box".to_string()),
+            source_name: Self::source_text_for(object).unwrap_or_else(|| "shared".to_string()),
             first_field: written[0].0.clone(),
             second_field: written[1].0.clone(),
             first_span: written[0].1,
@@ -5802,7 +5802,7 @@ impl TypeChecker {
     /// PS2's sanctioned wrappers: the ones that carry their own synchronization,
     /// so a module-level `const` holding one is package state done right rather
     /// than package state got at. `Shared` covers `Shared.mutex` too — the
-    /// strategy is a type argument, not a different type (mem.boxes/BX2).
+    /// strategy is a type argument, not a different type (mem.shared-rack-heap/BX2).
     fn is_sync_box(&self, ty: &Type) -> bool {
         let name = match ty {
             Type::Named(id) | Type::Generic { base: id, .. } => self.types.type_name(*id),

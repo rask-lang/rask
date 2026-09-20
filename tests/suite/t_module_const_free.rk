@@ -36,7 +36,7 @@ const COUNT: i64 = 3
 const LABEL: string = "count is {COUNT}"
 
 // One declared type over three runtime objects, each with its own release.
-const BOX: Shared<i64> = Shared.new(10)
+const LOCKED: Shared<i64> = Shared.new(10)
 const CELL: Shared<i64, Local> = Shared.local(20)
 const LOCK: Shared<i64, Mutex> = Shared.mutex(30)
 
@@ -55,8 +55,8 @@ test "a const string built by interpolation" {
     assert LABEL == "count is 3"
 }
 
-test "each box strategy" {
-    with BOX.read() as n {
+test "each Shared strategy" {
+    with LOCKED.read() as n {
         assert n == 10
     }
     with CELL.read() as n {

@@ -23,7 +23,7 @@ The sharp corner is who's allowed to hide a cost. `string`'s refcount bump is
 hidden and fine, because the compiler emits it, knows what it is, and deletes it
 when it's provably unnecessary (`comp.string-refcount-elision`). User code in
 that same slot is opaque — never elidable, never auditable. That one distinction
-is the whole of `mem.boxes/BX2`.
+is the whole of `mem.shared-rack-heap/BX2`.
 
 **Applying it:** ask who emits the hidden work, not how expensive it is.
 

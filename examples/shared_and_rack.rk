@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Shared for one value two places reach, Rack+Link for values that refer
+// to each other and get deleted
+//
+// Included by docs/book/src/guide/beyond-one-owner.md via mdBook anchors.
+// Keep the ANCHOR comments; the chapter quotes the regions between them.
+
+import sync.Shared
+import memory.Rack
+import memory.Link
+
+// ANCHOR: plain
+struct Player {
+    name: string
+    health: i64
+    items: Vec<string>
+}
+// ANCHOR_END: plain
+
+// ANCHOR: sharedtype
+struct Settings {
+    theme: string
+    retries: i64
+}
+// ANCHOR_END: sharedtype
+
+// ANCHOR: racktype
+struct Room {
+    name: string
+    exit: Link<Room>?
+}
+// ANCHOR_END: racktype
+
+func main() {
+    // ANCHOR: plainuse
+    mut hero = Player { name: "Ada", health: 100, items: [] }
+    hero.items.push("lamp")
+    hero.health = hero.health - 10
+    println("{hero.name} has {hero.health} hp and {hero.items.len()} item")
+    // ANCHOR_END: plainuse
+
+    // ANCHOR: sharedmake
+    let settings = Shared.new(Settings { theme: "dark", retries: 3 })
+    // ANCHOR_END: sharedmake
+
+    // ANCHOR: sharedget
+    let theme = settings.read().theme
+    println("theme is {theme}")
+    // ANCHOR_END: sharedget
+
+    // ANCHOR: sharedset
+    settings.write().retries = 2
+    // ANCHOR_END: sharedset
+
+    // ANCHOR: sharedblock
+    with settings.write() as s {
+        if s.retries < 5 {
+            s.retries = s.retries + 1
+        }
+    }
+    // ANCHOR_END: sharedblock
+
+    println("retries now {settings.read().retries}")
+
+    // ANCHOR: rackmake
+    mut rooms: Rack<Room> = Rack.new()
+    let hall = rooms.insert(Room { name: "hall", exit: none })
+    let cell = rooms.insert(Room { name: "cell", exit: none })
+    hall.exit = cell
+    // ANCHOR_END: rackmake
+
+    // ANCHOR: rackread
+    if hall.exit? as e {
+        println("hall leads to {e.name}")
+    }
+    // ANCHOR_END: rackread
+
+    // ANCHOR: rackdelete
+    rooms.delete(cell)
+
+    if hall.exit? as e {
+        println("hall leads to {e.name}")
+    } else {
+        println("hall leads nowhere")
+    }
+    // ANCHOR_END: rackdelete
+}

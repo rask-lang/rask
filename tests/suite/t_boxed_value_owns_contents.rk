@@ -41,7 +41,7 @@
 // (#1161). Container elements are the shape that works, and the shape this
 // pins.
 //
-// Spec: mem.boxes, and mem.ownership/O1 for the move that decides which rule
+// Spec: type.traits, and mem.ownership/O1 for the move that decides which rule
 // applies.
 
 trait Describes {
@@ -71,7 +71,7 @@ func made(n: i64) -> Holder {
 
 // ── The box owns it: moved in ───────────────────────────────
 
-test "mem.boxes — a container of boxes releases what the values hold" {
+test "type.traits — a container of boxes releases what the values hold" {
     mut boxes: Vec<any Describes> = []
     boxes.push(made(1))
     boxes.push(made(2))
@@ -81,7 +81,7 @@ test "mem.boxes — a container of boxes releases what the values hold" {
 }
 
 // One per turn, so a value released twice lands on one the next turn reused.
-test "mem.boxes — a boxed value per turn, all owned by the container" {
+test "type.traits — a boxed value per turn, all owned by the container" {
     mut boxes: Vec<any Describes> = []
     for i in 1..5 {
         boxes.push(made(i))
@@ -93,7 +93,7 @@ test "mem.boxes — a boxed value per turn, all owned by the container" {
 
 // The shape that segfaulted. Two containers, one set of boxes, and the second
 // release must not free a block the first already gave back.
-test "mem.boxes — a derived container shares its boxes" {
+test "type.traits — a derived container shares its boxes" {
     mut boxes: Vec<any Describes> = []
     boxes.push(made(5))
     boxes.push(made(6))
@@ -104,7 +104,7 @@ test "mem.boxes — a derived container shares its boxes" {
     assert boxes[1].describe() == "value 6, long enough to allocate a buffer:2"
 }
 
-test "mem.boxes — skip and take share boxes too" {
+test "type.traits — skip and take share boxes too" {
     mut boxes: Vec<any Describes> = []
     boxes.push(made(7))
     boxes.push(made(8))
@@ -124,7 +124,7 @@ test "mem.boxes — skip and take share boxes too" {
 
 // ── The frame owns it: borrowed ─────────────────────────────
 
-test "mem.boxes — a box built for a call borrows, and the frame keeps the value" {
+test "type.traits — a box built for a call borrows, and the frame keeps the value" {
     let h = made(11)
     assert through_a_box(h) == "value 11, long enough to allocate a buffer:2"
     // Still readable, which is what borrowing means — and if the box had
@@ -136,7 +136,7 @@ test "mem.boxes — a box built for a call borrows, and the frame keeps the valu
 
 // Boxed for a call more than once. Each box borrows, so the value survives all
 // of them and one release runs at the end.
-test "mem.boxes — borrowed by several boxes in turn" {
+test "type.traits — borrowed by several boxes in turn" {
     let h = made(12)
     assert through_a_box(h) == "value 12, long enough to allocate a buffer:2"
     assert through_a_box(h) == "value 12, long enough to allocate a buffer:2"

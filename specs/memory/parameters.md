@@ -80,7 +80,7 @@ so if you may write this node you may write the ones it points at.
 
 This is why there is no `LinkView<T>`. A read-only *type* would have to either
 propagate along every edge or leak in one hop, and it would put `mut` in a type
-position, which no other box does. The mode is the same borrow-versus-mutate
+position, which nothing else in the language does. The mode is the same borrow-versus-mutate
 distinction every other type already has.
 
 | Rule | Description |
@@ -425,5 +425,5 @@ Mutation is visible on every surface — source, diff, grep — with no tooling 
 - [Resource Types](resource-types.md) — `@resource` annotation (`mem.resources`)
 - [Borrowing](borrowing.md) — Borrow scope rules (`mem.borrowing`)
 - [Closures](closures.md) — Closure parameter modes (`mem.closures`)
-- [Boxes](boxes.md) — Box parameters move ownership like any other value (`mem.boxes`)
+- [Shared, Rack and Heap](shared-rack-heap.md) — They move ownership as parameters like any other value (`mem.shared-rack-heap`)
 - [Structs](../types/structs.md) — Struct definition, methods (`type.structs`)

@@ -1,7 +1,7 @@
 <!-- id: conc.data-parallel -->
 <!-- status: proposed -->
 <!-- summary: Wide[T] data-parallel algebra — stage a plan, submit to run, await results; device is a resource, CPU is the baseline -->
-<!-- depends: memory/boxes.md, memory/linear.md, types/simd.md, concurrency/async.md -->
+<!-- depends: memory/shared-rack-heap.md, memory/linear.md, types/simd.md, concurrency/async.md -->
 <!-- implemented-by: compiler/crates/rask-interp/src/builtins/wide.rs (interpreter), compiler/crates/rask-codegen/src/dispatch.rs + compiler/runtime/vec.c (native, closure-free) -->
 
 # Wide Data Parallelism

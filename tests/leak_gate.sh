@@ -19,7 +19,7 @@
 #
 # A line whose count reads "N allocations, deferred" is one this milestone is
 # not going to close — a task killed by a panic doesn't unwind its captures, and
-# that waits on the unwinder; `t_shared_box_freed.rk` is a box held on purpose
+# that waits on the unwinder; `t_shared_freed.rk` is a box held on purpose
 # and will never be zero. They are still measured and still held to their count;
 # they just don't count toward the number a memory milestone is judged on, which
 # is the one the summary calls "this milestone".
