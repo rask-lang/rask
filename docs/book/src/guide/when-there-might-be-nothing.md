@@ -1,7 +1,7 @@
 # When there might be nothing
 
-A lookup that finds nothing, a field nobody filled in, the last element of an empty list. The
-type says so: `string?` is a `string` or nothing at all.
+Some things might not be there. `string?` is the type that says so: a `string`, or nothing at
+all.
 
 ```rask
 {{#include ../../../../examples/optionals.rk:type}}
