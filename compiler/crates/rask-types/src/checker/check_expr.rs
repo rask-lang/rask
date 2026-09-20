@@ -11,39 +11,10 @@ use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint};
-use super::parse_type::parse_type_string;
+use super::parse_type::{parse_type_string, split_type_args};
 use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
-
-/// Split a type argument string by commas, respecting nested angle brackets.
-/// "Map<string, bool>, i64" → ["Map<string, bool>", "i64"]
-fn split_type_args(s: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    let bytes = s.as_bytes();
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            // The `>` of `->` closes nothing — a function type's arrow is not a
-            // bracket, and counting it made `func(i64, i64) -> i64` split down
-            // the middle.
-            '>' if i == 0 || bytes[i - 1] != b'-' => depth -= 1,
-            ')' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(s[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = s[start..].trim();
-    if !last.is_empty() {
-        args.push(last.to_string());
-    }
-    args
-}
 
 /// Parse a type argument string into a Type, handling nested generics.
 /// "Map<string, bool>" → UnresolvedGeneric { name: "Map", args: [string, bool] }
@@ -69,8 +40,8 @@ fn parse_type_arg(s: &str) -> Type {
         });
         if let Some(close) = close {
             let params = split_type_args(&rest[..close])
-                .iter()
-                .map(|p| parse_type_arg(p))
+                .into_iter()
+                .map(parse_type_arg)
                 .collect();
             let ret = rest[close + 1..]
                 .trim()
@@ -85,7 +56,7 @@ fn parse_type_arg(s: &str) -> Type {
         let inner = &s[open+1..s.len()-1];
         let args = split_type_args(inner)
             .into_iter()
-            .map(|a| GenericArg::Type(Box::new(parse_type_arg(&a))))
+            .map(|a| GenericArg::Type(Box::new(parse_type_arg(a))))
             .collect();
         Type::UnresolvedGeneric {
             name: base.to_string(),
@@ -3534,7 +3505,7 @@ impl TypeChecker {
                     let inner = &name[base_name.len()+1..name.len()-1];
                     let generic_args = split_type_args(inner)
                         .into_iter()
-                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(&s))))
+                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(s))))
                         .collect();
                     Type::UnresolvedGeneric {
                         name: base_name.to_string(),
@@ -4185,8 +4156,8 @@ impl TypeChecker {
             return Vec::new();
         }
         split_type_args(&callee[open + 1..callee.len() - 1])
-            .iter()
-            .map(|a| parse_type_arg(a.trim()))
+            .into_iter()
+            .map(parse_type_arg)
             .collect()
     }
 

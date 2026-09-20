@@ -259,7 +259,9 @@ pub(crate) fn split_type_args(s: &str) -> Vec<&str> {
     // `Shared<func(i64) -> i64, Local>` was never at depth 0, the whole thing
     // came back as one argument, and the defaulting step then filled in the
     // missing strategy: `Shared.local(f)` was checked as a `Readers` box and
-    // rejected the annotation that said `Local` (#1241).
+    // rejected the annotation that said `Local` (#1241). Same cause under
+    // `Map<string, func(i64, i64) -> i64>`, which split down the middle of the
+    // parameter list (#1151).
     for (i, c) in s.char_indices() {
         match c {
             '<' => depth += 1,
