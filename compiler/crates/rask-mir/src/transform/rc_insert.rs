@@ -351,13 +351,24 @@ fn container_handles_from(
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } => {
                         let Some(base) = uses::operand_local(base) else { continue };
                         // A container handle out of an aggregate this frame
-                        // holds. The read has to be `Ptr` — that is what tells
-                        // a handle from an ordinary scalar field. A plain
+                        // holds. The read has to be a pointer — that is what
+                        // tells a handle from an ordinary scalar field. A plain
                         // `m.size` admitted here joins the group and can block
                         // its release, which turns this into a leak somewhere
                         // else.
+                        //
+                        // `Heap<T>` is the same read: the block belongs to the
+                        // aggregate, so `*h.inner` is reading through it and
+                        // the release has to wait. It used to arrive as a bare
+                        // `Ptr` and be covered by that; once the type said
+                        // `heap<i64>` instead, the release landed between the
+                        // field read and the load and `*h.inner` read freed
+                        // memory (#1256).
                         if aggregates.contains(&base)
-                            && matches!(ty_of.get(dst), Some(MirType::Ptr))
+                            && matches!(
+                                ty_of.get(dst),
+                                Some(MirType::Ptr) | Some(MirType::Heap(_))
+                            )
                         {
                             if from.insert(*dst, base).is_none() {
                                 changed = true;

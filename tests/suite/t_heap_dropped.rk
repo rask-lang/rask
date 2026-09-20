@@ -55,10 +55,13 @@ test "mem.heap/HP3 — a Heap dropped where it was made" {
     drop(Heap(Big { a: 1, b: 2, c: 3 }))
 }
 
-// A scalar payload was never boxed, so `drop` has nothing to free — and must
-// not free the value itself.
-test "mem.heap/HP3 — a scalar payload has no block" {
+// A scalar payload gets a block like any other. It used to be the exception —
+// it fits the slot, so `Heap<i64>` really was an `i64` and `drop` freed nothing
+// — which is the transparency that cost the compiler a second shape everywhere
+// (#1256).
+test "mem.heap/HP3 — a scalar payload gets a block too" {
     let n: Heap<i64> = Heap(41)
+    ensure drop(n)
     assert *n == 41
     drop(n)
 }

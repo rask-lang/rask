@@ -618,6 +618,12 @@ impl TypeChecker {
                         // `T` to the checker, so a borrow through it yields the
                         // same type it started with.
                         match resolved {
+                            // `*b` on a `Heap<T>` borrows the `T` in the block
+                            // (HP3). The wrapper used to be gone by now, so
+                            // this was the identity.
+                            ref t if t.heap_payload().is_some() => {
+                                t.heap_payload().expect("just checked").clone()
+                            }
                             Type::RawPtr(inner) => *inner,
                             // The operand's type isn't settled yet — it came
                             // out of another call, as in `*nums.as_ptr()`.
@@ -657,6 +663,15 @@ impl TypeChecker {
                             Type::Bool
                         }
                     }
+                    // `Heap(x)` is a block holding an `x`. The type used to be
+                    // the payload's, which said nothing about the block —
+                    // HP5's transparency lives in `unify` now instead, so a
+                    // `T` still fits a `Heap<T>` slot and the other way round
+                    // (#1256).
+                    rask_ast::expr::UnaryOp::Heap => Type::UnresolvedGeneric {
+                        name: "Heap".to_string(),
+                        args: vec![GenericArg::Type(Box::new(operand_ty))],
+                    },
                     _ => operand_ty,
                 }
             }

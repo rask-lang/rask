@@ -602,7 +602,7 @@ fn resolve_field_type(
     field_ty_str: &str,
     subst: &std::collections::HashMap<&str, &Type>,
 ) -> (Type, bool) {
-    let parsed = unwrap_transparent_heap(parse_field_type(field_ty_str));
+    let parsed = parse_field_type(field_ty_str);
     match &parsed {
         Type::UnresolvedNamed(name) => {
             if let Some(concrete) = subst.get(name.as_str()) {
@@ -612,54 +612,6 @@ fn resolve_field_type(
             }
         }
         _ => (parsed, false),
-    }
-}
-
-/// `Heap<T>` whose payload fits the box's slot, replaced by the payload.
-///
-/// `Heap(x)` allocates only when the payload needs a block of its own
-/// (mem.heap): a number, a container handle, a box or a function value is one
-/// word and stays where it is. A layout that still said `Heap<i64>` had the
-/// release walk treat the slot as a block pointer and hand `rask_free` the
-/// number 42 — and a `Heap<Vec<i64>>` field was freed as a block while the
-/// vector behind it leaked (#1234).
-///
-/// A struct, an enum, a string, a tuple — anything held by address — keeps its
-/// `Heap<…>`, which is the case recursive types are built on.
-fn unwrap_transparent_heap(ty: Type) -> Type {
-    let Type::UnresolvedGeneric { name, args } = &ty else { return ty };
-    if name != "Heap" || args.len() != 1 {
-        return ty;
-    }
-    let rask_types::GenericArg::Type(payload) = &args[0] else { return ty };
-    if heap_payload_fits_slot(payload) {
-        return (**payload).clone();
-    }
-    ty
-}
-
-/// Does a `Heap<T>` payload live in the box's slot rather than in a block?
-///
-/// The same answer `MirType::passed_by_address` gives lowering, read off the
-/// checker's type. Deliberately short: a name this doesn't recognise keeps its
-/// block, which is the safe direction — a spurious block leaks, a missing one
-/// frees a number.
-fn heap_payload_fits_slot(ty: &Type) -> bool {
-    match ty {
-        Type::Bool
-        | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-        | Type::F32 | Type::F64 | Type::Char
-        | Type::RawPtr(_)
-        | Type::Fn { .. } => true,
-        // The handles: each is a pointer to something the runtime made, so a
-        // `Heap` of one holds that pointer and nothing else.
-        Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => matches!(
-            name.as_str(),
-            "Vec" | "Wide" | "Map" | "Handle" | "Pool" | "Rack" | "Link"
-                | "Shared" | "Channel" | "Sender" | "Receiver"
-        ),
-        _ => false,
     }
 }
 

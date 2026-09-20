@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Heap(x)` allocates whatever the payload is, and `Heap<T>` is a type that
+// says so.
+//
+// It used to skip the allocation when the payload fit the box's slot — a
+// number, or a handle like a `Vec` or a closure — so `Heap<i64>` really was an
+// `i64`. That made `Heap<T>` two shapes rather than one: what `*b` reads, what
+// `drop(b)` frees and what a field holds each had two answers, and lowering
+// picked between them from a flag on the *binding*. A flag can't cross a
+// carrier, because a struct field or a tuple holds a value and not a binding —
+// so every one of those was wrong for half the payload kinds (#1234, #1256).
+//
+// Two things had to change together. `Heap<T>` is a MIR type carrying its
+// payload, and the checker stopped throwing the wrapper away at parse: HP5's
+// "`Heap<T>` behaves as `T`" is a rule in unification now, so a `T` still fits
+// a `Heap<T>` slot without the block being erased on the way past.
+import memory.Heap
+import sync.Shared
+import sync.Local
+
+struct Pt {
+    public x: i64
+}
+
+struct Holder {
+    public inner: Heap<Pt>
+}
+
+struct Scalars {
+    public inner: Heap<i64>
+}
+
+enum List {
+    Nil
+    Cons(i64, Heap<List>)
+}
+
+// HP5 through a call: a `Heap<List>` handed to a `List` parameter. The block's
+// address is the enum's address, so there is nothing to spill — codegen used to
+// spill it anyway and the callee read the pointer's bytes as the tag (SIGILL on
+// the second node).
+func sum(l: List) -> i64 {
+    match l {
+        List.Cons(head, rest) => {
+            return head + sum(rest)
+        }
+        List.Nil => {
+            return 0
+        }
+    }
+}
+
+test "a number gets a block like anything else" {
+    let b: Heap<i64> = Heap(42)
+    ensure drop(b)
+    assert *b == 42
+    drop(b)
+}
+
+// The widths the old shape got wrong: an `f32` written eight bytes wide and
+// read four came back 0.
+test "the payload's own width, in and out" {
+    let f: Heap<f32> = Heap(2.5)
+    ensure drop(f)
+    assert *f == 2.5
+    drop(f)
+}
+
+// A handle is one word, so it used to be the payload itself — `drop` handed
+// `rask_free` the vector's own handle.
+test "a handle payload is inside the block, not instead of it" {
+    let v: Heap<Vec<i64>> = Heap(Vec.from([7, 42]))
+    ensure drop(v)
+    assert (*v)[1] == 42
+    assert (*v).len() == 2
+    drop(v)
+}
+
+test "a box payload, released with the block" {
+    let b: Heap<Shared<i64, Local>> = Heap(Shared.local(42))
+    ensure drop(b)
+    assert (*b).get() == 42
+    drop(b)
+}
+
+// The carrier cases. A field is the one the flag could never answer: reading
+// `h.inner` gives a value, and a value carries no flag.
+test "through a struct field, aggregate payload" {
+    let h = Holder { inner: Heap(Pt { x: 42 }) }
+    assert (*h.inner).x == 42
+}
+
+test "through a struct field, scalar payload" {
+    let s = Scalars { inner: Heap(42) }
+    assert *s.inner == 42
+}
+
+// The block is the struct's, so reading through it holds the struct's release
+// back. It didn't, and the release landed between the field read and the load —
+// `*h.inner` read freed memory, and before that the block leaked (#1260).
+test "the block a field holds is freed with the struct" {
+    mut i = 0
+    while i < 3 {
+        let h = Holder { inner: Heap(Pt { x: 42 }) }
+        assert (*h.inner).x == 42
+        i = i + 1
+    }
+    assert i == 3
+}
+
+test "HP6 — a recursive enum holds its tail behind a Heap" {
+    let l = List.Cons(1, Heap(List.Cons(2, Heap(List.Nil))))
+    assert sum(l) == 3
+}
+
+func main() {}

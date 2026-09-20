@@ -1616,10 +1616,6 @@ impl<'a> MirLowerer<'a> {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
-        // Ask before lowering: `own` is gone from the operand by then, and the
-        // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
-        // point where "the value in this local is a heap box" is knowable (#739).
-        let init_may_be_box = self.expr_yields_owned_box(init);
         // A closure this function later hands to `spawn` is lowered as one, here
         // — the wrapper that boxes a result too wide for the task's one word is
         // built while the closure is lowered, and the `spawn` comes later (#1094).
@@ -1638,39 +1634,27 @@ impl<'a> MirLowerer<'a> {
             self.lower_expr(init)?
         };
 
-        // `let p = own Big { … }` takes over the box rather than copying out of
-        // it. A struct-typed destination copies its bytes on assignment, which is
-        // right for every other aggregate and wrong here: it left `p` naming a
-        // stack copy and orphaned the heap value, so `drop(p)` had a stack address
-        // to free and a field storing `p` held an address that dangled at scope
-        // exit (#739). The binding aliases the pointer instead.
+        // `let b = Heap(Big { … })` takes over the block rather than copying out
+        // of it. A struct-typed destination copies its bytes on assignment,
+        // which is right for every other aggregate and wrong here: it left `b`
+        // naming a stack copy and orphaned the heap value, so `drop(b)` had a
+        // stack address to free and a field storing `b` held an address that
+        // dangled at scope exit (#739). The binding aliases the block instead.
         //
-        // The pointer is the test, not the `own`: a scalar `Owned` was never boxed
-        // — it fits the slot — so `let ptr: Owned<i32> = own 42` is an ordinary
-        // binding holding 42, and marking it a box would have `drop` free the
-        // address 42.
-        if init_may_be_box {
+        // Only when the name is itself a `Heap<T>`. `let o: Heap<i64>? = Heap(42)`
+        // is an option holding one, and taking the block's local as the binding
+        // skipped the wrap: the tag was read out of the block's first word and
+        // `o? as v` took the `none` branch.
+        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
+        if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
-                if matches!(self.builder.local_type(src), Some(MirType::Ptr)) {
-                    let var_ty = ty
-                        .map(|s| self.ctx.resolve_type_str(s))
-                        .unwrap_or(inferred_ty);
+                if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
                     self.builder.name_local(src, name.to_string());
                     self.locals.insert(name.to_string(), (src, var_ty));
-                    self.meta_mut(name).is_owned_box = true;
                     return Ok(());
                 }
             }
         }
-        // A `Heap<T>` whose payload fits the slot holds the payload, not a
-        // block. Nothing in the type says so (HP5 erases `Heap<T>` to `T`), so
-        // the binding records it — `*b` and `drop(b)` both ask (#1234).
-        if matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Heap, .. }) && !init_may_be_box {
-            self.meta_mut(name).is_heap_unboxed = true;
-        } else if ty.is_some_and(|s| self.ctx.is_unboxed_heap_annotation(s)) {
-            self.meta_mut(name).is_heap_unboxed = true;
-        }
-        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         // A `mut` scalar that an `ensure` reads and this function writes again
         // gets a cell of its own (#1011).
         //

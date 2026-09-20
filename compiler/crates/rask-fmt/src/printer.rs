@@ -2029,17 +2029,22 @@ impl<'a> Printer<'a> {
                 if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
-                // A field holding a function keeps its parentheses. `h.run(5)`
-                // is a method call on `h` (type.structs/M6), so `(h.run)(5)` is
-                // the only way to call the field — and the parser only ever
+                // A callee that binds looser than the call keeps its
+                // parentheses. A field holding a function is one: `h.run(5)` is
+                // a method call on `h` (type.structs/M6), so `(h.run)(5)` is
+                // the only way to call the field, and the parser only ever
                 // builds a `Call` over a field from the parenthesised form.
-                // Printing it bare turned a program that compiled into
-                // "`run` is a field on `Handler`, not a method".
+                // Printing it bare turned a program that compiled into "`run`
+                // is a field on `Handler`, not a method".
+                //
+                // A deref is the other: `(*b)(2)` calls what the block holds,
+                // and `*b(2)` calls `b` and dereferences the answer.
                 let callee_needs_parens = matches!(
                     func.kind,
                     ExprKind::Field { .. }
                         | ExprKind::OptionalField { .. }
                         | ExprKind::DynamicField { .. }
+                        | ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }
                 );
                 if callee_needs_parens {
                     self.emit("(");

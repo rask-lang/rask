@@ -119,16 +119,22 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let args = args?;
 
             match name {
+                // `Heap<T>` keeps its wrapper. HP5 says it behaves as `T`, and
+                // this used to implement that by unwrapping here — which is
+                // transparency and erasure at once. Erasure is the part that
+                // costs: nothing downstream can tell a block from the value in
+                // it, so `func() -> Heap<i64>` is checked as `func() -> i64`
+                // and `*f()` has nothing to load through. `unify` peels it
+                // instead, so `T` still fits a `Heap<T>` slot and the other way
+                // round (#1256).
                 "Heap" if args.len() == 1 => {
-                    // Owned<T> is transparent to the type checker — unwrap to T
-                    if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
-                        return Ok(*ty);
-                    } else {
+                    if !matches!(args.first(), Some(GenericArg::Type(_))) {
                         return Err(TypeError::GenericError(
-                            "Owned expects a type argument, not a const".to_string(),
+                            "Heap expects a type argument, not a const".to_string(),
                             Span::new(0, 0),
                         ));
                     }
+                    return Ok(Type::UnresolvedGeneric { name: "Heap".to_string(), args });
                 }
                 // `Shared<T, S = Readers>` (conc.sync/SH2). The strategy is a
                 // defaulted type parameter, so fill it in here rather than

@@ -8,6 +8,7 @@ import memory.Heap
 
 test "mem.heap/HP3 — Heap() allocates, *ptr reads back the value, drop consumes" {
     let ptr: Heap<i32> = Heap(42)    // heap-allocate, Heap<i32>
+    ensure drop(ptr)                  // scheduled before the first read (E0882)
     let value = *ptr                // dereference (borrow, does not consume)
     drop(ptr)                         // consume + deallocate
     assert value == 42

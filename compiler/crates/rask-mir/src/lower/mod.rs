@@ -1052,15 +1052,12 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Rack<") || name == "Rack" {
                     return MirType::Ptr;
                 }
-                // `Heap<T>` is transparent (mem.heap/HP5), and its slot holds
-                // the payload itself unless the payload needs a block of its
-                // own. Answering `Ptr` for every one of them is what made
-                // `Heap(2.5)` print 2: the float went through an
-                // integer-shaped local, and `*b` on a `Heap<Vec<i64>>` loaded
-                // through the vector's own handle (#1234).
+                // `Heap<T>` is a block address, always — that is what makes it
+                // a type rather than a fact about a binding. The payload keeps
+                // its container kind, since the payload sits at the block's
+                // start and `drop` has to free what it points at.
                 if let Some(inner) = name.strip_prefix("Heap<").and_then(|s| s.strip_suffix('>')) {
-                    let payload = self.resolve_type_str(inner.trim());
-                    return if payload.passed_by_address() { MirType::Ptr } else { payload };
+                    return MirType::Heap(Box::new(self.payload_from_str(inner.trim())));
                 }
                 if name.starts_with("Channel<") || name.starts_with("Sender<")
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
@@ -1098,21 +1095,6 @@ impl<'a> MirContext<'a> {
                 }
             }
         }
-    }
-
-    /// Is this annotation a `Heap<T>` that holds the payload itself?
-    ///
-    /// `Heap(x)` allocates only when the payload needs a block (see
-    /// `heap_payload_is_boxed`), so `Heap<f64>` and `Heap<Vec<i64>>` are the
-    /// payload and nothing else. The name has to remember which it got: the
-    /// type says nothing, and `*b` and `drop(b)` mean different things for the
-    /// two (#1234).
-    pub fn is_unboxed_heap_annotation(&self, ty_str: &str) -> bool {
-        ty_str
-            .trim()
-            .strip_prefix("Heap<")
-            .and_then(|s| s.strip_suffix('>'))
-            .is_some_and(|inner| !self.resolve_type_str(inner.trim()).passed_by_address())
     }
 
     /// A type reached through its module — `http.Response`, or `h.Response`
@@ -1672,22 +1654,6 @@ pub(crate) struct LocalMeta {
     /// gets a stack cell of its own, so the cleanup hook can capture the cell
     /// rather than a snapshot taken when the ensure was scheduled (#1011).
     pub scalar_through_ptr: Option<MirType>,
-    /// The value in this local is a heap box handed over by `own` (#739).
-    ///
-    /// `Owned<T>` erases to `T` in the checker (OW5), so nothing in the type says
-    /// whether a given value is the struct or a pointer to it. Only the code that
-    /// allocated it knows, and this carries that fact to the places that have to
-    /// tell the two apart: storing into a declared `Owned` slot must not box a
-    /// second time, and `drop` frees exactly one box.
-    pub is_owned_box: bool,
-    /// This local is a `Heap<T>` that was never boxed — it holds the payload.
-    ///
-    /// The payloads that fit the box's slot don't get a block (mem.heap), and
-    /// nothing in the type says which happened: `Heap<T>` erases to `T` (HP5).
-    /// `*b` is a relabel rather than a load for one of these, and `drop(b)`
-    /// frees nothing — freeing it handed `rask_free` a vector's own handle
-    /// (#1234).
-    pub is_heap_unboxed: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -2360,40 +2326,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Does `object.field` name a field declared `Owned<T>` whose value went to
-    /// the heap? Those hold a pointer where every other aggregate field holds the
-    /// value, so reading one is a load rather than an address (#739).
-    ///
-    /// A scalar payload is never boxed — it fits the slot already — so the field
-    /// holds the value and reads like any other.
-    pub(crate) fn owned_field_is_boxed(&self, object: &Expr, field: &str) -> bool {
-        let layout = self.struct_layout_of_expr(object);
-        if std::env::var("RASK_DEBUG_OWNED").is_ok() {
-            eprintln!("OWNEDCHK field {} layout {:?} fieldty {:?}", field,
-                layout.as_ref().map(|l| l.name.clone()),
-                layout.as_ref().and_then(|l| l.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())));
-        }
-        let Some(layout) = layout else { return false };
-        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
-        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
-        self.ctx.type_to_mir(&payload).passed_by_address()
-    }
-
-    /// Does this expression already evaluate to a heap box?
-    ///
-    /// `own e` allocates, and so does anything already holding what an `own`
-    /// produced — a local bound to one, or a field declared `Owned<T>`. Storing
-    /// such a value into a declared `Owned` slot must not allocate again; that's
-    /// how `Holder { inner: p }` ended up with a box holding a box (#739).
-    pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Heap, operand } => self.heap_payload_is_boxed(operand),
-            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
-            ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
-            _ => false,
-        }
-    }
-
     /// Record that `name` binds something callable, and what calling it
     /// answers.
     ///
@@ -2415,82 +2347,47 @@ impl<'a> MirLowerer<'a> {
         );
     }
 
-    /// Does this expression name a `Heap<T>` that holds the payload itself?
-    ///
-    /// The mirror of `expr_yields_owned_box`: that one asks "is this a block
-    /// pointer", this one asks "is this a `Heap` that never got a block". They
-    /// are not each other's negation — an ordinary `Vec` local is neither.
-    pub(crate) fn expr_is_unboxed_heap(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Heap, operand } => !self.heap_payload_is_boxed(operand),
-            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_heap_unboxed),
-            ExprKind::Field { object, field } => self.unboxed_heap_field(object, field),
-            _ => false,
-        }
-    }
-
-    /// Does `object.field` name a `Heap<T>` field holding the payload itself?
-    fn unboxed_heap_field(&self, object: &Expr, field: &str) -> bool {
-        let Some(layout) = self.struct_layout_of_expr(object) else { return false };
-        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
-        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
-        !self.ctx.type_to_mir(&payload).passed_by_address()
-    }
-
-    /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
-    /// already.
+    /// Box a value on its way into a declared `Heap<T>` slot, unless it is a
+    /// block already.
     pub(crate) fn box_into_owned_slot(
         &mut self,
-        value_expr: &Expr,
         val: MirOperand,
         val_ty: &MirType,
     ) -> MirOperand {
-        if self.expr_yields_owned_box(value_expr) {
+        if matches!(val_ty, MirType::Heap(_)) {
             return val;
         }
         self.box_into_owned(val, val_ty)
     }
 
-    /// Does `Heap(operand)` allocate a block, or hand the payload straight back?
+    /// Heap-allocate a copy of `val` and hand back the block's address — what
+    /// `Heap(…)` means.
     ///
-    /// A payload that fits the box's slot never moves (mem.heap): `Heap<i32>`
-    /// really is an `i32`, and a `Vec`'s or a closure's handle is one word too.
-    /// Only the by-address payloads — a struct, an enum, a tuple, a string —
-    /// get a block, which is the same test `box_into_owned` makes when it
-    /// allocates. Answering "always a box" is what had `drop` hand `rask_free`
-    /// a vector's own handle (#1234).
+    /// Every payload gets a block. Skipping the allocation for the ones that fit
+    /// the slot saved a `malloc` on `Heap(42)` and cost the compiler a second
+    /// shape to carry everywhere: what `*b` reads, what `drop(b)` frees and
+    /// what a field holds were each answered twice, from a flag on the binding,
+    /// and a flag can't cross a carrier (#1234, #1256). The allocation is also
+    /// what the source asked for — `Heap(…)` is written where the cost is.
     ///
-    /// An expression the checker left untyped is not a box, and lowering gives
-    /// it a word-sized fallback type, so the two halves agree there too.
-    pub(crate) fn heap_payload_is_boxed(&self, operand: &Expr) -> bool {
-        self.ctx
-            .lookup_raw_type(operand.id)
-            .map(|t| self.ctx.type_to_mir(t))
-            .is_some_and(|t| t.passed_by_address())
-    }
-
-    /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
-    ///
-    /// A scalar needs no box: it already fits the 8-byte slot, and a scalar can't
-    /// make a type recursive, so `Owned<i64>` staying transparent costs nothing.
-    /// An aggregate is the case that matters, and its pointer is also its
-    /// representation, so nothing downstream has to know it moved.
+    /// The block is a word at minimum, so a narrow payload still has a whole
+    /// one behind it. The store writes the payload's own width, which is what
+    /// the load on the other side reads: an `f32` written eight bytes wide and
+    /// read four comes back 0.
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
-        if !val_ty.passed_by_address() {
-            return val;
-        }
-        let size = val_ty.size() as i64;
-        let heap = self.builder.alloc_temp(MirType::Ptr);
+        let width = val_ty.size().max(1);
+        let block = (width as i64).max(8);
+        let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(heap),
             func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(size))],
+            args: vec![MirOperand::Constant(MirConst::Int(block))],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
             value: val,
-            store_size: Some(size as u32),
+            store_size: Some(width),
         }));
         MirOperand::Local(heap)
     }
@@ -4354,11 +4251,6 @@ impl<'a> MirLowerer<'a> {
                 // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
                 if param_ty_str.contains('<') {
                     meta.full_type = Some(param_ty_str.to_string());
-                    // A `Heap<T>` parameter carrying a payload that fits the
-                    // slot holds the payload, not a block (#1234).
-                    if ctx.is_unboxed_heap_annotation(param_ty_str) {
-                        meta.is_heap_unboxed = true;
-                    }
                     // Track collection element types so for-loop iteration resolves correctly.
                     // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
                     if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {

@@ -133,12 +133,15 @@ test "conc.sync — two Shared reads in a row" {
 // `Heap(expr)` heap-allocates and gives back a `Heap<T>`; `*ptr` reads through it.
 test "mem.heap — Heap() heap-allocates and derefs back" {
     let p: Heap<i64> = Heap(42)
+    ensure drop(p)
     assert *p == 42
+    drop(p)
 }
 
-// A struct payload really is allocated, so the Shared owes a drop (mem.linear/L1).
-// `Heap<i64>` above doesn't: a scalar was never allocated, so there is nothing
-// to free (#819).
+// Every payload is a block, a number included, so every `Heap` owes a drop
+// (mem.linear/L1). A scalar used to be the exception — it fit the slot, so
+// there was nothing to free (#819) — and the exception went with the second
+// shape it cost the compiler to carry (#1256).
 test "mem.heap — a Heap struct payload" {
     let p: Heap<Counter> = Heap(Counter { n: 5 })
     ensure drop(p)

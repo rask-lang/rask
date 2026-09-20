@@ -2731,6 +2731,14 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Array { .. }
                         | MirType::Ptr
                         | MirType::Handle
+                        // A `Heap<T>` standing where a `T` is expected (HP5):
+                        // the block's address is the aggregate's address, so
+                        // there is nothing to spill. Spilling it passed the
+                        // address of a slot holding the pointer, and the callee
+                        // read the pointer's bytes as the enum's tag —
+                        // `sum(rest)` on a `Cons(i64, Heap<List>)` trapped on
+                        // the second node.
+                        | MirType::Heap(_)
                 )
             });
             if arg_is_aggregate {
