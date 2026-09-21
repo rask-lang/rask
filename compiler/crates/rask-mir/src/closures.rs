@@ -363,21 +363,54 @@ pub(crate) fn build_callee_escape_map(
     fns: &[MirFunction],
     heap_captures_only: bool,
 ) -> HashMap<String, Vec<bool>> {
-    let mut map = HashMap::new();
-    for func in fns {
-        let escapes: Vec<bool> = func.params.iter()
-            .map(|p| param_escapes_from(func, p.id, heap_captures_only))
-            .collect();
-        map.insert(func.name.clone(), escapes);
+    // Start from "nothing escapes" and keep adding until nothing new appears.
+    // Handing a parameter on is only an escape if the callee lets it escape,
+    // and that answer is this same map — so one pass can't compute it. A single
+    // pass read every call argument as an escape, which is what put a closure
+    // on the heap the moment it was passed through one function into another:
+    //
+    //     func inner(f: func(i32)) { f(1) }       // borrows f
+    //     func outer(f: func(i32)) { inner(f) }   // read as: gives f away
+    //
+    // A heap environment copies its captures, so `outer(|x| { total = total + x })`
+    // added to a copy and the caller's `total` stayed 0 (#1038 again, from the
+    // other end). Only escapes are ever added, so the loop settles, and a
+    // recursive pair with no escape of its own correctly comes out borrowing.
+    let mut map: HashMap<String, Vec<bool>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), vec![false; f.params.len()]))
+        .collect();
+    loop {
+        let mut changed = false;
+        for func in fns {
+            for (i, p) in func.params.iter().enumerate() {
+                if map.get(&func.name).is_some_and(|e| e[i]) {
+                    continue;
+                }
+                if param_escapes_from(func, p.id, heap_captures_only, &map) {
+                    if let Some(e) = map.get_mut(&func.name) {
+                        e[i] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return map;
+        }
     }
-    map
 }
 
 /// Check if a parameter escapes from its function.
 ///
 /// A parameter "escapes" if it appears in a Call arg, Store value, or Return.
 /// If it only appears in ClosureCall position, the function merely borrows it.
-fn param_escapes_from(func: &MirFunction, param_id: LocalId, heap_captures_only: bool) -> bool {
+fn param_escapes_from(
+    func: &MirFunction,
+    param_id: LocalId,
+    heap_captures_only: bool,
+    known: &HashMap<String, Vec<bool>>,
+) -> bool {
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -400,9 +433,26 @@ fn param_escapes_from(func: &MirFunction, param_id: LocalId, heap_captures_only:
                         return true;
                     }
                 }
-                MirStmtKind::Call { args, .. } => {
-                    if args.iter().any(|a| uses::operand_reads(a, param_id)) {
-                        return true;
+                // Passed on. Whether that gives it away is the callee's
+                // answer, in the same position — the map being built. A callee
+                // with no body of its own (a runtime helper) has no answer, and
+                // "unaccounted for" has to mean "might keep it"; the ones that
+                // demonstrably don't are written down.
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    for (arg_idx, arg) in args.iter().enumerate() {
+                        if !uses::operand_reads(arg, param_id) {
+                            continue;
+                        }
+                        let borrows = known
+                            .get(&callee.name)
+                            .and_then(|e| e.get(arg_idx))
+                            .map(|escapes| !escapes)
+                            .unwrap_or_else(|| {
+                                rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+                            });
+                        if !borrows {
+                            return true;
+                        }
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } if *id == param_id => {
