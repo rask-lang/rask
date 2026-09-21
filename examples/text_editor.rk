@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Text Editor with Undo
-// Demonstrates: Pool/Handle pattern, linear resource types, ensure cleanup, command pattern
+// Demonstrates: linear resource types, ensure cleanup, command pattern
 
 import fs
 import io
-import memory.Pool
-import memory.Handle
 
 // What an edit can refuse to do. `Error` is the trait every error type
 // satisfies, not a type of its own — a document needs its own.
@@ -38,8 +36,7 @@ extend EditCommand {
 
 // The document model
 struct Document {
-    lines: Pool<Line>
-    line_order: Vec<Handle<Line>>  // Maintains line ordering
+    lines: Vec<Line>
     undo_stack: Vec<EditCommand>
     redo_stack: Vec<EditCommand>
     modified: bool
@@ -48,8 +45,7 @@ struct Document {
 extend Document {
     func new() -> Document {
         return Document {
-            lines: Pool.new(),
-            line_order: Vec.new(),
+            lines: Vec.new(),
             undo_stack: Vec.new(),
             redo_stack: Vec.new(),
             modified: false,
@@ -61,29 +57,26 @@ extend Document {
 
         mut doc = Document.new()
         for line in lines {
-            let h = doc.lines.insert(Line { text: line })
-            doc.line_order.push(h)
+            doc.lines.push(Line { text: line })
         }
         return doc
     }
 
     func line_count(self) -> i32 {
-        return self.line_order.len().wrap<i32>()
+        return self.lines.len().wrap<i32>()
     }
 
     func get_line(self, index: i32) -> string? {
         if index < 0 || index >= self.line_count() { return none }
-        let h = self.line_order[index]
-        return self.lines[h].text
+        return self.lines[index].text
     }
 
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> void or EditError {
-        let h = self.lines.insert(Line { text })
         let raw_pos = (after + 1) as i64
-        let cap = self.line_order.len().wrap<i64>()
+        let cap = self.lines.len().wrap<i64>()
         let insert_pos = if raw_pos > cap { cap } else { raw_pos }
-        self.line_order.insert(insert_pos, h)
+        self.lines.insert(insert_pos, Line { text })
 
         // Record for undo
         self.undo_stack.push(EditCommand.InsertLine(after: after, text: text))
@@ -95,8 +88,7 @@ extend Document {
     func delete_line(self, at: i32) -> void or EditError {
         if at < 0 || at >= self.line_count() { return EditError.IndexOutOfBounds }
 
-        let h = self.line_order.remove(at as i64)
-        let deleted = self.lines.remove(h)!
+        let deleted = self.lines.remove(at as i64)
 
         // Record for undo
         self.undo_stack.push(EditCommand.DeleteLine(at: at, deleted_text: deleted.text))
@@ -108,9 +100,8 @@ extend Document {
     func modify_line(self, at: i32, new_text: string) -> void or EditError {
         if at < 0 || at >= self.line_count() { return EditError.IndexOutOfBounds }
 
-        let h = self.line_order[at]
-        let old_text = self.lines[h].text
-        self.lines[h].text = new_text
+        let old_text = self.lines[at].text
+        self.lines[at].text = new_text
 
         // Record for undo
         self.undo_stack.push(EditCommand.ModifyLine(at: at, old_text: old_text, new_text: new_text))
@@ -146,16 +137,13 @@ extend Document {
     func apply_command_silent(self, cmd: EditCommand) -> void or EditError {
         match cmd {
             InsertLine(after, text) => {
-                let h = self.lines.insert(Line { text })
-                self.line_order.insert((after + 1) as i64, h)
+                self.lines.insert((after + 1) as i64, Line { text })
             }
             DeleteLine(at, _) => {
-                let h = self.line_order.remove(at as i64)
-                self.lines.remove(h)
+                self.lines.remove(at as i64)
             }
             ModifyLine(at, _, new_text) => {
-                let h = self.line_order[at]
-                self.lines[h].text = new_text
+                self.lines[at].text = new_text
             }
         }
         self.modified = true
@@ -166,8 +154,8 @@ extend Document {
         mut file = try fs.create_file(path)
         ensure file.close()
 
-        for h in self.line_order {
-            try file.write_line(self.lines[h].text)
+        for line in self.lines {
+            try file.write_line(line.text)
         }
 
         self.modified = false

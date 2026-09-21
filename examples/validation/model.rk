@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Domain entities and the Validate trait.
 //
-// Tasks form a dependency DAG: `deps` holds Handle<Task> into the store's
-// pool, not pointers or ids-to-look-up. That's the pool-shaped design from
-// canonical-patterns "Graph-shaped data is Pool-shaped".
-import memory.Pool
-import memory.Handle
+// Tasks form a dependency DAG: `deps` holds Link<Task> into the store's
+// rack, not ids to look up. That's the rack-shaped design from
+// canonical-patterns "Graph-shaped data is Rack-shaped".
+import memory.Rack
+import memory.Link
 
 const MAX_TITLE_LEN: usize = 200
 
@@ -38,7 +38,7 @@ struct Task {
     public priority: Priority
     public status: Status = Status.Open
     public assignee: UserId? = none
-    public deps: Vec<Handle<Task>> = Vec.new()
+    public deps: Vec<Link<Task>> = Vec.new()
     public tags: Vec<string> = Vec.new()
     public created_at: i64
 }
