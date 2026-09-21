@@ -524,6 +524,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("change this to type `{}`", expected))
             }
 
+            DuplicateConformance { ty, trait_name, first, span } => {
+                Diagnostic::error(format!(
+                    "`{}` already declares conformance to `{}`",
+                    ty, trait_name
+                ))
+                .with_code("E0407")
+                .with_primary(*span, "second declaration of the same conformance")
+                .with_secondary(*first, "the first one is here")
+                .with_why(format!(
+                    "Which `{}` methods `{}` gets would come down to which block \
+                     the compiler read last (type.generics/XC3).",
+                    trait_name, ty
+                ))
+                .with_fix(format!(
+                    "keep one block, or give the second behaviour its own type:\n\
+                     type My{} = {}\n\
+                     extend My{} with {} {{ … }}",
+                    ty, ty, ty, trait_name
+                ))
+            }
+
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
                 .with_primary(Span::new(0, 0), "type not found")

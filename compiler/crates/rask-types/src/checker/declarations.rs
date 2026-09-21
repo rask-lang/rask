@@ -3,6 +3,7 @@
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl, TypeAliasDecl};
 use rask_resolve::SymbolKind;
+use super::type_table::TypeTable;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -261,7 +262,7 @@ impl TypeChecker {
         }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
-                self.register_impl_methods(i, decl.id);
+                self.register_impl_methods(i, decl.id, decl.span);
             }
         }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
@@ -419,7 +420,12 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId) {
+    pub(super) fn register_impl_methods(
+        &mut self,
+        i: &ImplDecl,
+        decl_id: rask_ast::NodeId,
+        span: Span,
+    ) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
         let type_id = match self.types.get_type_id(base_name) {
             Some(id) => id,
@@ -434,7 +440,26 @@ impl TypeChecker {
             .map(|tp| (tp.name.clone(), tp.bounds.clone()))
             .collect();
         for trait_name in &i.trait_names {
-            self.types.record_conformance(type_id, trait_name);
+            let first =
+                self.types
+                    .record_declared_conformance(type_id, trait_name, decl_id, span);
+            // XC3: two blocks claiming the same pair. Reported here rather than
+            // where the conformance is used, because both are in this package —
+            // the cross-package half needs the use site and the declaring
+            // package's name, neither of which the checker has yet (#1296).
+            //
+            // The stdlib is collected twice per run (stubs, then bodies), so
+            // this is deliberately quiet in stdlib mode.
+            if let Some(first) = first {
+                if !self.types.stdlib_mode {
+                    self.errors.push(TypeError::DuplicateConformance {
+                        ty: base_name.to_string(),
+                        trait_name: TypeTable::conformance_display(trait_name),
+                        first,
+                        span,
+                    });
+                }
+            }
             if !condition.is_empty() {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
             }

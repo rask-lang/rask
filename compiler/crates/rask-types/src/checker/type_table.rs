@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::NodeId;
+use rask_ast::{NodeId, Span};
 
 use super::builtins::BuiltinModules;
 use super::type_defs::{BinaryStructInfo, TypeDef};
@@ -81,8 +81,14 @@ pub struct TypeTable {
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
-    /// names the type conforms to, from `extend T with Trait` and auto-derive.
-    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
+    /// name → the `extend T with Trait` block that declared it, or None when
+    /// the compiler derived it.
+    ///
+    /// XC3 needs the declaration site: a second declared conformance for the
+    /// same pair is an error that has to name both, and until this held the
+    /// site it was a set — so the second one landed on the first and the last
+    /// `extend` block silently won, link order and all.
+    pub(super) conformances: HashMap<TypeId, HashMap<String, Option<(NodeId, Span)>>>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
@@ -388,13 +394,52 @@ impl TypeTable {
         trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
     }
 
-    /// G1: record that a type conforms to a trait (declared or auto-derived).
-    /// Trait names are stored base-only (generic args stripped).
+    /// The trait base name as an error should print it.
+    pub(super) fn conformance_display(trait_name: &str) -> String {
+        Self::conformance_key(trait_name)
+    }
+
+    /// G1: record a compiler-derived conformance. Trait names are stored
+    /// base-only (generic args stripped).
+    ///
+    /// Never displaces a declared one: auto-derive runs after the `extend`
+    /// blocks are registered, and an override (EQ2/HA2/CO2) is the whole point
+    /// of letting a type declare a core trait for itself.
     pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
         self.conformances
             .entry(type_id)
             .or_default()
-            .insert(Self::conformance_key(trait_name));
+            .entry(Self::conformance_key(trait_name))
+            .or_insert(None);
+    }
+
+    /// XC3: record a conformance an `extend T with Trait` block declared.
+    ///
+    /// Returns the earlier block's span when one already declared this pair —
+    /// the caller reports it and leaves the first in place. Re-registering the
+    /// same block is not a duplicate: the stdlib's declarations are collected
+    /// once as stubs and again as bodies.
+    pub fn record_declared_conformance(
+        &mut self,
+        type_id: TypeId,
+        trait_name: &str,
+        decl_id: NodeId,
+        span: Span,
+    ) -> Option<Span> {
+        let slot = self
+            .conformances
+            .entry(type_id)
+            .or_default()
+            .entry(Self::conformance_key(trait_name))
+            .or_insert(None);
+        match slot {
+            Some((first_id, first_span)) if *first_id != decl_id => Some(*first_span),
+            Some(_) => None,
+            None => {
+                *slot = Some((decl_id, span));
+                None
+            }
+        }
     }
 
     /// G1: does the type declare (or auto-derive) conformance to the trait?
@@ -409,10 +454,10 @@ impl TypeTable {
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
-        if set.contains(&base) {
+        if set.contains_key(&base) {
             return true;
         }
-        set.iter()
+        set.keys()
             .any(|declared| self.trait_extends(declared, &base, &mut Vec::new()))
     }
 

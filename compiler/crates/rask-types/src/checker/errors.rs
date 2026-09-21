@@ -1070,6 +1070,21 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.generics/XC3: a second `extend T with Trait` for a pair that
+    /// already has one. The set this used to be filed in absorbed the second
+    /// declaration, so the last block parsed silently supplied the methods.
+    #[error("`{ty}` already declares conformance to `{trait_name}`")]
+    DuplicateConformance {
+        /// The type both blocks extend.
+        ty: String,
+        /// The trait both blocks claim, base name only.
+        trait_name: String,
+        /// Where the first declaration is — the one that stays.
+        first: Span,
+        /// The duplicate, which is what the error points at.
+        span: Span,
+    },
+
     /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
     /// while compiling, so the name has to be one the compiler knows. A runtime
     /// string has nothing to rewrite to.
@@ -1285,6 +1300,7 @@ impl TypeError {
             // Carry no types.
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
+            | DuplicateConformance { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
             | UnimplementedStdlibMethod { .. }
