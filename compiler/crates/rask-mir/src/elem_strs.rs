@@ -118,6 +118,28 @@ pub fn box_payload_kind_of(ty: &rask_types::Type, rendered_head: Option<&str>) -
     rendered_head.map(box_payload_kind).unwrap_or(BOX_PAYLOAD_NONE)
 }
 
+/// Which `Map` constructor a key type wants.
+///
+/// A string key hashes and compares by its contents. A *link* key compares by
+/// its word — two links are equal when they name the same node — but hashing
+/// that word hashes the address the allocator handed out, which moves with
+/// whatever the program allocated before the rack was built. Sim replays the
+/// map seed so a replay walks the buckets in the same order (determinism/D7),
+/// and an address in the hash input is the one thing that doesn't replay, so a
+/// link key buckets by its node's slot instead (#1268). Anything else buckets
+/// by its word.
+///
+/// One place, because three call sites used to spell the string case by hand
+/// and a fourth kind would have had to find all of them.
+pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
+    match key_ty {
+        MirType::String => "Map_new_string_keys",
+        MirType::Link(_) => "Map_new_link_keys",
+        MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "Map_new_link_keys",
+        _ => "Map_new",
+    }
+}
+
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
 /// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a
@@ -174,6 +196,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_chunks", 0, 0, "Vec_free"),
     ("Map_new", 2, 2, "Map_free"),
     ("Map_new_string_keys", 2, 2, "Map_free"),
+    ("Map_new_link_keys", 2, 2, "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the
     // free is written down rather than read off the prefix.

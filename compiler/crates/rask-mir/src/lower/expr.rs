@@ -5585,12 +5585,11 @@ impl<'a> MirLowerer<'a> {
                                 let from_spelling = super::generic_args_of_str(name)
                                     .and_then(|args| args.first().copied())
                                     .map(|arg| self.ctx.resolve_type_str(arg));
-                                let has_string_keys = matches!(from_checker, Some(MirType::String))
-                                    || matches!(from_spelling, Some(MirType::String));
-                                if has_string_keys {
-                                    "Map_new_string_keys".to_string()
-                                } else {
-                                    func_name
+                                match from_checker.or(from_spelling) {
+                                    Some(k) => {
+                                        crate::elem_strs::map_ctor_for(&k).to_string()
+                                    }
+                                    None => func_name,
                                 }
                             } else {
                                 func_name
@@ -8851,8 +8850,7 @@ impl<'a> MirLowerer<'a> {
             ],
         }));
 
-        // A string key hashes by its contents; anything else by its word.
-        let ctor = if key_name == "string" { "Map_new_string_keys" } else { "Map_new" };
+        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let map = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),

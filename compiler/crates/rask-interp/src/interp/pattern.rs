@@ -370,6 +370,12 @@ impl Interpreter {
             // This is the auto-derived equality. A type with its own `extend T
             // with Equal` isn't consulted — there's no interpreter to dispatch
             // through here — which is the same limitation the enum arm has.
+            // Two links are equal when they name the same node — identity,
+            // not the node's fields (mem.racks/RK11). `call_link_method`
+            // answers the direct `a == b` spelling; this is the path a `Map`
+            // takes, and without an arm here it fell to `_ => false`, so a
+            // link key could be inserted and never found again (#1268).
+            (Value::Link { node: n1, .. }, Value::Link { node: n2, .. }) => Arc::ptr_eq(n1, n2),
             (Value::Struct(s1), Value::Struct(s2)) => {
                 if Arc::ptr_eq(s1, s2) {
                     return true;
@@ -460,9 +466,31 @@ impl Interpreter {
                     Self::value_hash(item).hash(&mut hasher);
                 }
             }
+            // Equal keys hash equal, and equal here is the same node. The slot
+            // index is what identifies one without going through its address —
+            // the same thing `l.hash()` answers on both backends, and the same
+            // reason: an address doesn't replay (#1268).
+            Value::Link { rack_id, node } => {
+                Self::link_slot(*rack_id, node).hash(&mut hasher);
+            }
             _ => 0u8.hash(&mut hasher),
         }
         hasher.finish()
+    }
+
+    /// A node's slot in its rack, or -1 when the rack is gone.
+    ///
+    /// What identifies a node without naming where it happens to sit. Native
+    /// reads the same number out of the node header (`rask_link_slot`).
+    pub(crate) fn link_slot(rack_id: u32, node: &Arc<std::sync::Mutex<crate::value::StructData>>) -> i64 {
+        crate::value::rack_by_id(rack_id)
+            .and_then(|r| {
+                let key = Arc::as_ptr(node) as usize;
+                let slot = r.lock().unwrap().slot_of.get(&key).copied();
+                slot
+            })
+            .map(|s| s as i64)
+            .unwrap_or(-1)
     }
 
     /// Compare two runtime values for ordering.

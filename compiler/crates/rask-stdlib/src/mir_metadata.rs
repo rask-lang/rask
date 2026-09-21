@@ -350,6 +350,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_clone", Internal::FreshFromReceiver),
     ("Mutex_clone", Internal::FreshFromReceiver),
     ("Handle_clone", Internal::FreshFromReceiver),
+    // `l.hash()` borrows the link and answers a `u64` read off the node's slot
+    // index. No declaration to point at: `Link<T>` has no stdlib file, and
+    // every other name on it falls through to the node's own methods — which
+    // is exactly what `hash` must not do (#1268).
+    ("Link_hash", Internal::FreshFromReceiver),
     ("string_eq", Internal::FreshFromReceiver),
     ("string_gt", Internal::FreshFromReceiver),
     ("string_compare", Internal::FreshFromReceiver),

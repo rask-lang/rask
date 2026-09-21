@@ -918,6 +918,21 @@ impl Interpreter {
                     .unwrap_or(false);
                 Ok(Value::Bool(if method == "eq" { same } else { !same }))
             }
+            // The link's hash, not the node's. Falling through gave it the
+            // node's derived hash, which disagrees with `==` in both
+            // directions: two distinct nodes holding equal fields hashed the
+            // same while their links compare different (#1268).
+            //
+            // The slot index is what's hashed, the same thing native reads out
+            // of the node header — a link is the node's address there, and an
+            // address moves with whatever the program allocated before the
+            // rack was built, so a sim replay would walk a map's buckets in a
+            // different order than the run it replays [determinism/D7].
+            "hash" if args.is_empty() => {
+                let slot = crate::interp::Interpreter::link_slot(rack_id, node);
+                let h = crate::builtins::fnv1a(&(slot as u64).to_le_bytes());
+                Ok(Value::Int(h as i64, crate::value::IntKind::U64))
+            }
             _ => {
                 // Fall through to the node's own methods, so `l.take_damage(3)`
                 // works the way `l.health` does.

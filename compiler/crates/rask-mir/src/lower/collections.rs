@@ -170,9 +170,7 @@ impl<'a> MirLowerer<'a> {
         let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
             .unwrap_or(MirType::I64);
 
-        // A string key hashes and compares by its contents; anything else by
-        // its word.
-        let ctor = if key_ty == MirType::String { "Map_new_string_keys" } else { "Map_new" };
+        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

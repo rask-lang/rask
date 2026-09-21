@@ -488,6 +488,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // width bytes taken little-endian from lo and then hi, so one entry point
         // covers a 1-byte bool through a 16-byte u128 (#813).
         StdlibEntry::simple("int_hash", "rask_int_hash", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Link_hash", "rask_link_hash", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
         // find/rfind return `usize?` and the runtime signals "not found" with -1.
@@ -823,6 +824,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_new_link_keys", c_name: "rask_map_new_link_keys",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,

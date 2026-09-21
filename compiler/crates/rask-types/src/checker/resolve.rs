@@ -1123,6 +1123,13 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "Link" => {
                 match method.as_str() {
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
+                    // `hash` is the link's, not the node's. Falling through
+                    // gave it the node's derived hash, which disagrees with
+                    // `==` in both directions: two distinct nodes holding equal
+                    // fields hashed the same while their links compare
+                    // different. Equal keys have to hash equal, and here equal
+                    // means the same node (#1268).
+                    "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
                     _ => {
                         let node_ty = if let Some(GenericArg::Type(t)) = type_args.first() {
                             *t.clone()

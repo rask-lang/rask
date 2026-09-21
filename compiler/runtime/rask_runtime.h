@@ -614,6 +614,9 @@ RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
 RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
                                   const int32_t *key_offs, int64_t n_key_offs,
                                   const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
+                                const int32_t *key_offs, int64_t n_key_offs,
+                                const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
 // Releases every string the keys and values hold, then the map itself.
@@ -644,6 +647,8 @@ uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);
+uint64_t rask_hash_link_key(const void *key, int64_t key_size);
+uint64_t rask_link_hash(const void *link);
 // Pins the per-process seed mixed into the above (see map.c) — a hook for a
 // future sim runtime, unused today.
 void     rask_map_set_seed(uint64_t seed);
@@ -751,6 +756,7 @@ void      rask_rack_print_stats(void);
 // Edge maintenance. `set` writes the slot and keeps the target's incoming list
 // in step; `forget` drops the record without writing, for a holder that is
 // going away while its target stays alive.
+int64_t   rask_link_slot(const void *link);
 void      rask_link_set(void **slot, void *target);
 // `payload.<field at offset> = target` for a node of some rack. The node's own
 // link fields keep their edge record inline in the header, so this unlinks and
