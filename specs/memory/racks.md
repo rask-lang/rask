@@ -59,6 +59,7 @@ who points at whom, and that index needs one home per graph.
 | **RK7: Edges are optional for now** | A required edge (`Link<T>` with no `?`) is rejected (E0327): delete has no `none` to set it to, so it needs a declared policy, and construction needs a batch. Both are deferred — see below |
 | **RK8: A node write asks permission** | Writing a node's field needs write access to that node, which travels with the link or the rack. See `mem.parameters/PM10` for the parameter modes and the view-versus-writer distinction |
 | **RK9: An unnamed delete is declared** | A function that deletes nodes the caller didn't hand it declares `deleting` (`mem.parameters/PM8`, PM9). The call then revokes the caller's links into that rack, because which nodes died isn't knowable from outside |
+| **RK11: Links compare, they don't order** | `a == b` asks whether two links name the same node, which is meaningful and stable. `<`, `<=`, `>`, `>=`, `compare`, and `sort`/`min`/`max` over a collection of links are rejected (E0406): a link is an address, so the answer would come from the allocator and change with anything the program allocated earlier. Order by something the nodes declare — `links.sort_by_key(|l| l.id)` |
 
 ## Crossing a task boundary
 
@@ -212,6 +213,18 @@ ERROR [mem.racks/RK5]: use after delete
 FIX: move the reads above the delete, or store the link in a `Link<T>?` field
 WHY: `delete` frees the node, so every name for it dies at once. A field can
      survive because the rack nulls it; a local can't be reached by the rack.
+```
+
+```
+ERROR [mem.racks/RK11]: `<` on `Link<T>` would go by address
+   |
+ 4 |  if a < b { … }
+   |     ^^^^^ nodes have no order of their own
+   |
+FIX: order by a field the nodes declare — `a.id < b.id`
+WHY: a link is the address of its node, so `<` answers from wherever the
+     allocator put the chunk. `==` is fine: it asks whether two links name
+     the same node.
 ```
 
 ```

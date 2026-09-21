@@ -258,6 +258,15 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    /// mem.racks/RK11: `<`, `compare` or `sort` on links. A link is the node's
+    /// address, so the answer would come from the allocator. `op` is what the
+    /// source wrote.
+    #[error("`{op}` on `{recv}` would order nodes by address")]
+    LinkNotOrderable {
+        op: String,
+        recv: String,
+        span: Span,
+    },
     #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
     RetiredBoxType {
         name: String,
@@ -1298,6 +1307,7 @@ impl TypeError {
             | LocalSharedSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
+            | LinkNotOrderable { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
             | StringIsImmutable { .. }
