@@ -49,12 +49,15 @@ Raido's 32.32 fixed-point number is the in-house test that the property exists. 
 <!-- test: skip -->
 ```rask
 let readings: Vec<Fixed> = sensor.window()
-let smallest = min(readings[0], readings[1])
-let total = readings.sum()
-let mid = clamp(estimate, low, high)
+let smallest = min(readings[0], readings[1])   // std.math/G1, T: Comparable
+mut total = Fixed.zero()
+for r in readings {
+    total = total + r                          // operator trait, not a Fixed method
+    if r > alarm_level { alert(r) }            // Comparable again
+}
 ```
 
-If any of those needs a stdlib edit, a cast, or a `Fixed`-specific sibling function, SD6 or SD7 was violated somewhere. Re-run this check whenever a numeric or container API lands.
+If any line needs a stdlib edit, a cast, or a `Fixed`-specific sibling function, SD6 or SD7 was violated somewhere. Re-run this check whenever a numeric or container API lands, and whenever the stdlib gains a numeric algorithm (a `sum`, a `clamp`): each must be born generic or not at all.
 
 ### What SD8 buys
 
