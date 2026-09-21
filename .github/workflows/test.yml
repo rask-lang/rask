@@ -266,9 +266,9 @@ jobs:
     # one id makes every citation of it ambiguous, and it happens by accident
     # because a file with two rule tables numbers each from its own end. Needs
     # no compiler, so it runs whatever else broke.
-    - name: Spec rule-id gate
+    - name: Spec reference gate
       if: ${{ !cancelled() }}
-      run: tests/spec_ids_gate.py
+      run: tests/spec_refs_gate.py
 
     # Every example with a tests/golden/ output must match on both backends.
     # Catches native codegen rot in examples/. Also parallel (GATE_JOBS).

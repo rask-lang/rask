@@ -1,7 +1,7 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
 <!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement Error. Auto-wrap fires only at return. Three words: `try` propagates the bad branch of either shape (shape must fit the enclosing return; a flat `T? or E` operand needs `try … ?? …`); `??` is the absence fallback (value or written-out exit); `catch e =>` / `catch _ =>` is the failure fallback — binder mandatory, no bare-value form, so a discarded error is always visible. `?` is absence-only, so results narrow with `is`. Neither wrapper has methods. No fold method, no presence guard. -->
-<!-- depends: types/types.md, types/optionals.md, types/union-types.md, types/type-aliases.md -->
+<!-- depends: types/optionals.md, types/union-types.md, types/type-aliases.md -->
 
 # Error Types
 

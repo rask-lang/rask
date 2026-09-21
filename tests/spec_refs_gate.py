@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: (MIT OR Apache-2.0)
 #
-# Spec rule-id gate.
+# Spec reference gate.
+#
+# A reference in specs/ has to resolve — a rule id, a `depends` entry, a link
+# to another page. One that doesn't reads with exactly the authority of one
+# that does, which is the whole problem: nothing about the sentence tells you
+# to stop trusting it.
+#
+# ── Rule ids ──────────────────────────────────────────────────────────────
 #
 # `CONVENTIONS.md` makes `spec-id/rule-id` the way anything cites a rule —
 # `mem.ownership/O11`, `type.structs/M3`. Diagnostics emit them too:
@@ -30,6 +37,7 @@
 # earlier drafts verbatim, and editing a quote to please a gate falsifies it.
 
 import glob
+import os
 import re
 import sys
 
@@ -38,6 +46,8 @@ ROW = re.compile(r'^\| \*\*([^*]*)\*\*', re.M)
 HEAD = re.compile(r'^#+ (.*?)[(\[]([^)\]]*)[)\]]\s*$', re.M)
 CITE = re.compile(r'\b([a-z][a-z0-9]*\.[a-z0-9-]+)/([A-Z]+[0-9]+(?:\.[0-9]+)?[a-z]?)\b')
 SPEC_ID = re.compile(r'<!--\s*id:\s*([a-z0-9.-]+)\s*-->')
+DEPENDS = re.compile(r'<!--\s*depends:\s*([^>]*?)\s*-->')
+MD_LINK = re.compile(r'\]\(([^)#]+?\.md)(?:#[^)]*)?\)')
 STATUS = re.compile(r'<!--\s*status:\s*([a-z]+)')
 
 # A heading's parens carry cross-references as well as its own id:
@@ -93,6 +103,33 @@ def named_definitions(text):
     return names
 
 
+def broken_file_refs():
+    """`depends` entries and Markdown links that point at nothing.
+
+    Two spellings went wrong on their own: `depends` takes paths relative to
+    `specs/` (CONVENTIONS.md), and two pages wrote spec *ids* there instead
+    (`depends: type.enums`), which nothing resolves. Two more wrote
+    `specs/METRICS.md`, which is the path from the repo root, not from
+    `specs/`. And `types/types.md` was depended on by two pages and has never
+    existed in the history of the repo.
+    """
+    bad = []
+    for f in sorted(glob.glob('specs/**/*.md', recursive=True)):
+        text = open(f, errors='ignore').read()
+        here = os.path.dirname(f)
+        m = DEPENDS.search(text)
+        if m:
+            for dep in (d.strip() for d in m.group(1).split(',')):
+                if dep and not os.path.exists(os.path.join('specs', dep)):
+                    bad.append((f, f"depends: {dep}"))
+        for link in MD_LINK.findall(text):
+            if link.startswith(('http', '//')):
+                continue
+            if not os.path.exists(os.path.normpath(os.path.join(here, link))):
+                bad.append((f, f"link: {link}"))
+    return bad
+
+
 def main():
     specs, rules, skip = {}, {}, set()
     for f in sorted(glob.glob('specs/**/*.md', recursive=True)):
@@ -120,9 +157,9 @@ def main():
                 for name in sorted(names):
                     print(f"    {rid}: {name[:88]}")
     if not failed:
-        print(f"spec ids gate: {checked} specs, no duplicate rule ids")
+        print(f"spec refs gate: {checked} specs, no duplicate rule ids")
     else:
-        print("spec ids gate: FAILED — a citation like `spec/ID` can't name two rules")
+        print("spec refs gate: FAILED — a citation like `spec/ID` can't name two rules")
         print("Give the newer rule the next free number in that file and update its citations.")
 
     sources = sorted(set(glob.glob('specs/**/*.md', recursive=True)
@@ -140,11 +177,21 @@ def main():
         print(f"dangling citation: {f}:{i} cites {sid}/{rid}, not defined in {specs[sid]}")
     if dangling:
         failed = True
-        print(f"spec ids gate: {len(sources)} files scanned, FAILED")
+        print(f"spec refs gate: {len(sources)} files scanned, FAILED")
         print("Point each citation at the rule it means, or say in the spec "
               "that the old id was retired.")
     else:
-        print(f"spec ids gate: {len(sources)} files scanned, no dangling citations")
+        print(f"spec refs gate: {len(sources)} files scanned, no dangling citations")
+
+    broken = broken_file_refs()
+    for f, what in broken:
+        print(f"broken reference: {f} -> {what}")
+    if broken:
+        failed = True
+        print("spec refs gate: FAILED — a `depends` path is relative to specs/, "
+              "and a link is relative to its own page")
+    else:
+        print("spec refs gate: every depends path and page link resolves")
 
     print("──────────────────────────────────────────────────")
     return 1 if failed else 0

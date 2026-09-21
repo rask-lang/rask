@@ -1,7 +1,7 @@
 <!-- id: compiler.layout -->
 <!-- status: decided -->
 <!-- summary: ABI-level memory layout for enums, closures, trait objects -->
-<!-- depends: type.enums, type.traits, mem.closures, mem.value -->
+<!-- depends: types/enums.md, types/traits.md, memory/closures.md, memory/value-semantics.md -->
 
 # Memory Layout
 

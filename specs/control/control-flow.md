@@ -718,4 +718,4 @@ See [ensure.md](ensure.md) for full specification.
 - [Enums](../types/enums.md) — Match syntax, exhaustiveness (`type.enums`)
 - [Error Types](../types/error-types.md) — `try` propagation, linear resources (`type.errors`)
 - [Loops](loops.md) — For loops, iteration (`ctrl.loops`)
-- [Ensure Cleanup](../ecosystem/ensure.md) — Cleanup on all exit paths
+- [Ensure Cleanup](ensure.md) — Cleanup on all exit paths
