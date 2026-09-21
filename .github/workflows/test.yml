@@ -270,6 +270,13 @@ jobs:
       if: ${{ !cancelled() }}
       run: tests/spec_refs_gate.py
 
+    # `rask lint` on the code a reader is meant to copy. It ran from an editor
+    # hook and nowhere else, so its findings piled up unread — 3 errors and 24
+    # warnings by the time anyone counted.
+    - name: Lint gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/lint_gate.sh
+
     # Every example with a tests/golden/ output must match on both backends.
     # Catches native codegen rot in examples/. Also parallel (GATE_JOBS).
     - name: Example run-gate

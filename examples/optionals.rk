@@ -13,6 +13,10 @@ struct Profile {
 }
 // ANCHOR_END: type
 
+// The `match` is here to be the "before" — `shout` below writes the same
+// thing with `if p? as found`, which is the point of the page. The `@allow`
+// sits above the anchor so it doesn't show up in the book.
+@allow(idiom/match-on-optional)
 // ANCHOR: simplest
 func greet(p: Profile?) -> string {
     match p {
