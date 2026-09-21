@@ -435,7 +435,7 @@ Validates once at entry, then provides unchecked access inside the closure.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `pool.read(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then read |
-| `pool.with_valid_mut(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then write |
+| `pool.modify(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then write |
 
 ### Unsafe: Unchecked Access
 

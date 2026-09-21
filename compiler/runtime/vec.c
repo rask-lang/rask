@@ -535,10 +535,6 @@ static void vec_shrink(RaskVec *v, int64_t min_cap) {
     v->cap = want;
 }
 
-void rask_vec_shrink_to_fit(RaskVec *v) {
-    vec_shrink(v, 0);
-}
-
 void rask_vec_shrink_to(RaskVec *v, int64_t min_capacity) {
     vec_shrink(v, min_capacity < 0 ? 0 : min_capacity);
 }
