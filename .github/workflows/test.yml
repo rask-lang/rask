@@ -261,6 +261,15 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
 
+    # A rule id is a name: CONVENTIONS.md cites rules as `spec-id/RULE` and
+    # diagnostics print them (`warning[comp.effects/CW2]`). Two rules sharing
+    # one id makes every citation of it ambiguous, and it happens by accident
+    # because a file with two rule tables numbers each from its own end. Needs
+    # no compiler, so it runs whatever else broke.
+    - name: Spec rule-id gate
+      if: ${{ !cancelled() }}
+      run: tests/spec_ids_gate.sh
+
     # Every example with a tests/golden/ output must match on both backends.
     # Catches native codegen rot in examples/. Also parallel (GATE_JOBS).
     - name: Example run-gate

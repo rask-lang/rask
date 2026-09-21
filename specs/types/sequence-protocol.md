@@ -17,7 +17,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP4`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
 | **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
 | **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
-| **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C4`) |
+| **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C9`) |
 
 <!-- test: skip -->
 ```rask

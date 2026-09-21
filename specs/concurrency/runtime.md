@@ -1745,7 +1745,7 @@ task resumes
 
 ### Borrowing Constraints (I1 - mem.borrowing)
 
-**No cross-task reference escape (mem.borrowing/B5):**
+**No cross-task reference escape (mem.ownership/T3):**
 
 Rask's borrowing rules prevent references from outliving lexical scope. This means:
 
