@@ -72,6 +72,13 @@ pub struct StructDesc {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     pub public: bool,
+    /// Set when this entry is an `extend` block on a type the file doesn't
+    /// declare publicly — a primitive (`extend char`), a package-visible
+    /// container (`struct math { }`), or a type from another file. The methods
+    /// are surface either way; the container just isn't a public struct here.
+    /// Omitted otherwise (S3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extended: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_params: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

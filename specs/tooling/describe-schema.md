@@ -121,6 +121,7 @@
 | Rule | Description |
 |------|-------------|
 | **T1: Methods merged** | Methods from struct body and `extend` blocks appear in one `methods` array |
+| **T2: An `extend` on a type the file doesn't declare publicly still reports** | `extend char` (a primitive), `extend math` where the container is `struct math { }` (package-visible), and an `extend` on a type declared in another file all produce an entry carrying the public methods, with `"extended": true` and `"public": false`. The methods are surface — `math.ln(x)` and `c.len_utf8()` resolve to them — so dropping them understated the module. Text output writes `extend <name>` rather than `struct <name>`, which is true of all three shapes |
 
 ```json
 {
@@ -140,6 +141,7 @@
 |-------|------|-------------|
 | `name` | `string` | Struct name |
 | `public` | `bool` | Whether the struct is `public` |
+| `extended` | `bool?` | Present and `true` when the entry is an `extend` block on a type this file doesn't declare publicly (T2). Omitted otherwise |
 | `type_params` | `string[]?` | Generic type parameter names |
 | `attrs` | `string[]?` | Attributes (`@resource`, etc.) |
 | `fields` | `Field[]` | Struct fields |
