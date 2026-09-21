@@ -903,6 +903,33 @@ impl<'a> MirLowerer<'a> {
     /// Parameter types a closure argument at position `i` should take, read off
     /// the callee's declared `func(...)` parameter. Empty when the callee is
     /// unknown or that parameter isn't a function type.
+    /// Wrap a lowered closure into the layers its parameter declares.
+    ///
+    /// Every other argument shape reaches `coerce_into_wrapper` through the
+    /// non-closure branch; a closure literal was lowered and passed straight
+    /// through, so a `func(…) -> … ?` parameter got a bare closure pointer
+    /// where the callee reads a tag. It answered `none` with the closure
+    /// sitting right there — and only when the callee was too big to inline,
+    /// because the inliner substitutes the argument instead of going through
+    /// the ABI (#1275).
+    fn wrap_closure_arg(
+        &mut self,
+        op: MirOperand,
+        mir_ty: MirType,
+        declared: Option<&String>,
+    ) -> (MirOperand, MirType) {
+        let Some(dst_ty) = declared.map(|s| self.ctx.resolve_type_str(s)) else {
+            return (op, mir_ty);
+        };
+        let op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::Argument,
+            op,
+            &mir_ty,
+            &dst_ty,
+        );
+        (op, mir_ty)
+    }
+
     fn expected_closure_param_tys(
         callee_params: &[Option<String>],
         i: usize,
@@ -1847,7 +1874,8 @@ impl<'a> MirLowerer<'a> {
                             // the call that carries it (#963).
                             spawn_boxes_result = self.spawn_result_boxed;
                         }
-                        lowered
+                        let (op, mir_ty) = lowered;
+                        self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
@@ -5727,7 +5755,10 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false)?
+                let (op, mir_ty) = self.lower_closure_expecting(
+                    params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false,
+                )?;
+                self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
                 let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
                 let declared = callee_params
