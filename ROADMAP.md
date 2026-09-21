@@ -34,13 +34,14 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 520 of 525, 5 registered red | `tests/differential.sh` |
+| Suite programs agreeing on both backends | 524 of 529, 5 registered red | `tests/differential.sh` |
+| Matrix cells clean (value kind × position) | 259 of 286, 27 registered red | `tests/matrix/run.sh` |
 | Programs that leak | 1, holding 2 allocations, both deferred | `tests/leak_gate.sh` |
-| Programs memcheck finds an error in | 0 of 522 | `tests/memcheck_gate.sh` |
-| Examples with a pinned golden | 35 of 37 | `tests/examples_gate.sh` |
+| Programs memcheck finds an error in | 0 of 526 | `tests/memcheck_gate.sh` |
+| Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 37 of 78 open issues | issue search |
-| Open design questions | 20 | issue search |
+| Open bugs | 42 of 101 open issues | issue search |
+| Open design questions | 22 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -154,24 +155,65 @@ at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position
 
-**Done when a new positional-matrix gate is green.**
+**Done when every matrix cell is clean or carved out of the milestone. Today:
+259 of 286 clean, 27 registered red — `tests/matrix/run.sh`.**
 
-These read as unrelated bugs and aren't. A closure works as a local and not out
-of a `Map`; a function works as an argument and not as a struct field. Nothing
-enumerates value-kind × position, so the holes are found one report at a time.
-The deliverable is the matrix — every value kind (closure, container, box,
-string, struct, function, and a `Sequence` over `Vec.iter()`) in every position
-(local, struct field, `Vec` element, `Map` value, return, capture, argument) —
-and then the bugs it lights up. Sequence is in there because
-[#1046](https://github.com/rask-lang/rask/issues/1046) is the same shape: the
-adapters are written and work, and `Vec.iter()` not returning a `Sequence` is the
-position they can't occupy.
+The matrix exists now, not just as an idea: every value kind (closure,
+container, box, string, struct, enum, function, tuple, `Heap`, `Shared`,
+`Sequence`, the primitives) crossed with every position (local, param/return,
+struct field, `Vec` element, `Map` value, optional, tuple, closure and
+closure parameter, `for`). One generated program per cell, run on both
+backends, five times each under `RASK_POISON_STACK` so a miscompile that only
+shows up on a dirty stack can't hide. Each of the 27 red cells is named in
+`tests/matrix/known_red.txt` with an issue and a claim about which backend
+fails and how — the same discipline `tests/differential.sh` already holds
+suite files to.
 
-[#1046](https://github.com/rask-lang/rask/issues/1046) ·
-[#1151](https://github.com/rask-lang/rask/issues/1151)
+Eight of the 27 are one bug: `Heap(x)` stores its payload directly in the box
+local instead of allocating a block and storing a pointer to it, so freeing a
+`Heap<Vec>` frees the vector's own pointer as if it were the box's
+([#1234](https://github.com/rask-lang/rask/issues/1234)). The rest are one or
+two cells each — a struct or enum argument landing on the wrong Cranelift
+value through a closure parameter
+([#1235](https://github.com/rask-lang/rask/issues/1235)), a derived `compare`
+that trips the Cranelift verifier on a tuple field
+([#1237](https://github.com/rask-lang/rask/issues/1237)), MIR giving up on a
+function value held in an optional or a `Map`
+([#1239](https://github.com/rask-lang/rask/issues/1239)), and so on down the
+file.
 
-[#1151](https://github.com/rask-lang/rask/issues/1151) is the worst of them —
-making it compile currently gives a wrong answer.
+[#1151](https://github.com/rask-lang/rask/issues/1151) was the worst of
+them — a closure out of a `Map` didn't compile, and making it compile gave a
+wrong answer. An open PR
+([#1254](https://github.com/rask-lang/rask/pull/1254), not yet merged) fixes
+it along with 15 of the other issues behind the red cells, which should take
+the matrix to 281 of 283 clean.
+
+**Four issues the matrix work turned up aren't matrix bugs, and won't close
+this milestone:**
+
+- **[#1244](https://github.com/rask-lang/rask/issues/1244)** — there's no way
+  to write a `Result` whose success type is a function
+  (`func(i64) -> i64 or Oops` binds the `or` to the inner return instead).
+  That's a parser/spec gap, not a value failing in a position — it's what the
+  last two red cells will be once #1254 lands.
+- **[#1245](https://github.com/rask-lang/rask/issues/1245)** — `Vec<Heap<T>>`
+  compiles when it shouldn't; `Map<K, Heap<T>>` is correctly rejected. Both
+  cells are skipped in `gen.py` rather than scored, since neither can go
+  green until the missing `Vec` check lands.
+- **[#1233](https://github.com/rask-lang/rask/issues/1233)** — an array
+  literal only takes its shape from an annotated `let`; a `push` slot or a
+  `T?` slot rejects it. `gen.py` routes around it with `Vec.from(...)`, so
+  the matrix never actually exercises it.
+- **[#1248](https://github.com/rask-lang/rask/issues/1248)** — a generic
+  function returning a `Vec` leaks if its name happens to end in `_free`,
+  found incidentally while adding a matrix control case. Nothing to do with
+  position.
+
+[#1046](https://github.com/rask-lang/rask/issues/1046) is separate again: the
+`Sequence` adapters are written and pass every matrix cell, but can't land in
+the stdlib until `Vec.iter()` returns a `Sequence` instead of `Iterator` —
+stage 6 of a bigger migration, not a positional bug.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -285,7 +327,7 @@ scheduled — only earned. What has to be true first:
   consecutive releases, measured with `git log specs/` rather than by feel. This
   is the real gate and the others are downstream of it: a language is 1.0 when
   it has stopped changing, not when it is popular.
-- Every design question closed rather than deferred. Twenty are open, and each
+- Every design question closed rather than deferred. Twenty-two are open, and each
   one is a spec that hasn't stopped moving yet.
 - The stdlib at 100% of its own spec, measured.
 - No untracked bugs, and nothing registered red without an issue and a decision.
@@ -308,7 +350,7 @@ Don't plan past the next two versions. v0.9's contents are fiction today.
 
 ## Not in any version
 
-**Design questions** — twenty open issues. They're upstream of features, they
+**Design questions** — twenty-two open issues. They're upstream of features, they
 have no gate, and putting them in a version is how a version stops closing. Work
 them between releases, or when one blocks a scheduled feature, and say which.
 
