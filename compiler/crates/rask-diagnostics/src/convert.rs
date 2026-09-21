@@ -1223,6 +1223,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
+            LinkNotOrderable { op, recv, span } => {
+                Diagnostic::error(format!("`{}` on `{}` would go by address", op, recv))
+                    .with_code("E0406")
+                    .with_primary(*span, "nodes have no order of their own")
+                    .with_help("`==` asks whether two links name the same node; ordering needs something the nodes declare")
+                    .with_fix("order by a field: `a.id < b.id`, or `links.sort_by_key(|l| l.id)`")
+                    .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
+            }
+
             LocalSharedSent { name, span } => {
                 Diagnostic::error("this `Shared` is task-local and cannot be sent")
                     .with_code("E0346")
