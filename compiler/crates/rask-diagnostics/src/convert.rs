@@ -1246,7 +1246,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             RecursiveTypeHasNoSize { name, through, span } => {
                 Diagnostic::error(format!("`{}` contains itself, so it has no size", name))
-                    .with_code("E0885")
+                    .with_code("E0886")
                     .with_primary(
                         *span,
                         if through.is_empty() {
