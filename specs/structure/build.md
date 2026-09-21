@@ -782,6 +782,7 @@ func build(ctx: BuildContext) -> void or Error {
 | Capability inference (PM1-PM8) | Implemented |
 | Lock file system (LK1-LK7) | Implemented |
 | Feature resolution (F1-F6, FG1-FG6) | Implemented |
+| Dependency scopes (D4, D4a, D4b) | Implemented |
 | `rask add`/`remove` (AD1-AD4, RM1-RM2) | Implemented |
 | `rask init` project scaffolding | Implemented |
 | `rask fetch` dependency validation | Implemented |
