@@ -368,7 +368,7 @@ impl<'a> MirLowerer<'a> {
     fn call_ret_ty(&self, qualified: &str, node: rask_ast::NodeId) -> MirType {
         super::stdlib_return_mir_type_known(qualified, Some(self.ctx))
             .or_else(|| self.ctx.lookup_node_type(node))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:call-return"))
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:call-return"))
     }
 
     /// The element type push tracking recorded for this receiver.
@@ -1916,7 +1916,7 @@ impl<'a> MirLowerer<'a> {
                                 tmp
                             }
                         };
-                        let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:885"));
+                        let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:885"));
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                             dst: Some(result_local),
@@ -1933,7 +1933,7 @@ impl<'a> MirLowerer<'a> {
                         let ret_ty = self.func_sigs
                             .get(&func_name)
                             .map(|s| s.ret_ty.clone())
-                            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:902"));
+                            .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:902"));
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                             dst: Some(result_local),
@@ -2100,7 +2100,7 @@ impl<'a> MirLowerer<'a> {
                         // Derive the result MirType from type checker info if available.
                         // Fallback uses the payload's actual type so aggregate payloads
                         // get a correctly-sized stack slot.
-                        let payload_ty = arg_mir_types.first().cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:1084"));
+                        let payload_ty = arg_mir_types.first().cloned().unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1084"));
                         let fallback_ty = if func_name == "Some" {
                             MirType::Option(Box::new(payload_ty.clone()))
                         } else if func_name == "Ok" {
@@ -2172,7 +2172,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(&func_name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:1156"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156"));
 
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
 
@@ -2658,7 +2658,7 @@ impl<'a> MirLowerer<'a> {
                     // a `json.decode` result — fell through to i64 and
                     // `h.names[0]` printed a string's first bytes as a number.
                     .or_else(|| self.collection_elem_of_expr(object))
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_index_elem"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:vec_index_elem"));
                 let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
                         self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
@@ -3336,7 +3336,7 @@ impl<'a> MirLowerer<'a> {
                 // Demanded, not optional: `emit_option_payload` below extracts the
                 // value and needs its real width.
                 let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche)
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:try_else_payload"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:try_else_payload"));
                 self.bind_pattern_payload_niche(
                     pattern, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
                 // Extract the payload value for the result
@@ -3495,7 +3495,7 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(ok_block);
                 let payload_ty = self.extract_payload_type(inner)
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2073"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:2073"));
                 let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 Ok((MirOperand::Local(result_local), payload_ty))
             }
@@ -3549,7 +3549,7 @@ impl<'a> MirLowerer<'a> {
                             MirType::Option(inner) => Some((**inner).clone()),
                             _ => None,
                         },
-                    ).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:coalesce_payload"))
+                    ).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:coalesce_payload"))
                 };
                 let result_local = if keeps_shape {
                     let slot = self.builder.alloc_temp(payload_ty.clone());
@@ -3708,7 +3708,7 @@ impl<'a> MirLowerer<'a> {
                 // `Option<Option<T>>` raw type for the inner expression. We
                 // want the bare T to look up the field on.
                 let mut payload_ty = self.extract_payload_type(object)
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2206"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:2206"));
                 while let MirType::Option(inner) = payload_ty {
                     payload_ty = *inner;
                 }
@@ -4212,7 +4212,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:2653"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:2653"));
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
@@ -5861,7 +5861,7 @@ impl<'a> MirLowerer<'a> {
         //     stamp it `NodeId::DUMMY`, discarding the record
         //
         // A receiver that resolves to nothing now fails lowering with the method
-        // named, which is the same trade `fallback::i64_fallback` makes: a
+        // named, which is the same trade `fallback::unknown_type` makes: a
         // missing answer reported beats a wrong one emitted.
 
         crate::dispatch_trace::record(answered_by, &method);
@@ -6003,7 +6003,7 @@ impl<'a> MirLowerer<'a> {
             // callee): take the checker's `T?` payload first, then tracking.
             let elem = self.extract_payload_type(expr)
                 .or(tracked_elem)
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3750"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3750"));
             Some(super::option_of(elem))
         } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
             // Same reasoning as Vec_get: these answer `T?`, and the payload type
@@ -6015,7 +6015,7 @@ impl<'a> MirLowerer<'a> {
             // type parameter; the receiver's tracked element type is the
             // concrete one after monomorphization.
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:3765"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
             Some(super::option_of(elem))
         } else if qualified_name == "Random_choice" {
             // `choice(v)` answers `T?`, and the payload type sizes the slot the
@@ -6027,7 +6027,7 @@ impl<'a> MirLowerer<'a> {
             let elem = args
                 .first()
                 .and_then(|a| self.collection_elem_of_expr(&a.expr))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:random_choice"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:random_choice"));
             Some(super::option_of(vec_slot_type(elem)))
         } else if matches!(qualified_name.as_str(),
             "Map_get" | "Map_remove" | "Map_insert")
@@ -6046,7 +6046,7 @@ impl<'a> MirLowerer<'a> {
             let payload = self.extract_payload_type(expr)
                 .or_else(|| self.map_value_mir(object))
                 .or_else(|| self.collection_elem_of_expr(object))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:map_get_value"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:map_get_value"));
             Some(super::option_of(payload))
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
@@ -6109,7 +6109,7 @@ impl<'a> MirLowerer<'a> {
                 // not. This used to read the first generic arg of an
                 // `UnresolvedGeneric` only, so a resolved type or a Map missed.
                 .or_else(|| self.collection_elem_of_expr(object))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:vec_get_elem"));
             // `remove` hands the element over, `get` only lends it. So a
             // removed `Vec` or `Map` is the frame's to free and the local has
             // to say which container it holds — MIR spells every container a
@@ -6650,7 +6650,7 @@ impl<'a> MirLowerer<'a> {
                         let (op, _) = self.lower_expr(&arg.expr)?;
                         arg_operands.push(op);
                     }
-                    let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4037"));
+                    let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4037"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(result_local),
@@ -9588,7 +9588,7 @@ impl<'a> MirLowerer<'a> {
 
             self.builder.switch_to_block(ok_block);
             let payload_ty = self.extract_payload_type(object)
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4941"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4941"));
             let result_local = self.emit_option_payload(obj_op.clone(), payload_ty.clone(), is_niche);
             return Ok(Some((MirOperand::Local(result_local), payload_ty)));
         }
@@ -9765,7 +9765,7 @@ impl<'a> MirLowerer<'a> {
                     // Resolve return type from type checker or fall back to i64
                     let ret_ty = self.ctx.lookup_raw_type(expr.id)
                         .map(|t| self.ctx.type_to_mir(t))
-                        .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:4989"));
+                        .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4989"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::TraitCall {
                         dst: Some(result_local),
@@ -10008,7 +10008,7 @@ impl<'a> MirLowerer<'a> {
             self.extract_payload_type(inner),
             Self::payload_of_mir(scrutinee_ty),
         )
-        .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:presence_payload"))
+        .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:presence_payload"))
     }
 
     /// Bind an `x? as v` payload as a local in the current block. Shared by the

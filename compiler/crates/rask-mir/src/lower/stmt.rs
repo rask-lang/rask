@@ -2047,7 +2047,7 @@ impl<'a> MirLowerer<'a> {
             }
             let elem_ty = elem_types.as_ref()
                 .and_then(|f| f.get(i).cloned())
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:1220"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1220"));
             let dst = match pat {
                 TuplePat::Name(name) => {
                     let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
@@ -2160,7 +2160,7 @@ impl<'a> MirLowerer<'a> {
                 mir_elem_types.as_ref()
                     .and_then(|elems| elems.get(i).cloned())
                     .or_else(|| self.lookup_expr_type(init))
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:1285"))
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1285"))
             };
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
             self.locals.insert(name.clone(), (local_id, elem_ty));
@@ -2572,7 +2572,7 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.vec_elem_of_expr(iter_expr))
                 // Last: the source collection's own declared element type.
                 .or_else(|| self.collection_elem_of_expr(iter_expr))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:for_loop_elem"))
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:for_loop_elem"))
         };
         let (pair_tys, binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
@@ -2775,7 +2775,7 @@ impl<'a> MirLowerer<'a> {
         let mut second = None;
         for (i, name) in names.iter().enumerate() {
             if i == 0 { continue; }
-            let field_ty = pair_tys.get(i).cloned().unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:1828"));
+            let field_ty = pair_tys.get(i).cloned().unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1828"));
             let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
             self.locals.insert(name.clone(), (field_local, field_ty.clone()));
             if let Some(prefix) = self.mir_type_name(&field_ty) {
@@ -3612,7 +3612,7 @@ impl<'a> MirLowerer<'a> {
                 MirType::Result { err, .. } => Some(*err),
                 _ => None,
             })
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/stmt:ensure_else"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:ensure_else"));
         self.builder.switch_to_block(handler_block);
         let err_local = self.builder.alloc_local(param_name.to_string(), err_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

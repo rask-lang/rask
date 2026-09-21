@@ -525,7 +525,7 @@ impl<'a> MirLowerer<'a> {
             self.builder.switch_to_block(err_dispatch);
             let err_ty = err_payload_ty
                 .clone()
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/match_lower:err_enum"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/match_lower:err_enum"));
             let err_local = self.builder.alloc_temp(err_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: err_local,
@@ -635,7 +635,7 @@ impl<'a> MirLowerer<'a> {
                                 vf.get(j)
                                     .map(|(ty, off, sz)| (ty.clone(), Some((*off, *sz))))
                                     .unwrap_or_else(|| (
-                                        crate::fallback::i64_fallback(
+                                        crate::fallback::unknown_type(
                                             "lower/match_lower:enum_variant_field"),
                                         None,
                                     ))
@@ -644,7 +644,7 @@ impl<'a> MirLowerer<'a> {
                                     "Err" => err_payload_ty.clone(),
                                     _ => ok_payload_ty.clone(),
                                 }
-                                .unwrap_or_else(|| crate::fallback::i64_fallback(
+                                .unwrap_or_else(|| crate::fallback::unknown_type(
                                     "lower/match_lower:ok_err_binding"));
                                 (ty, None)
                             };
@@ -793,7 +793,7 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 ok_payload_ty.clone()
                             }
-                            .unwrap_or_else(|| crate::fallback::i64_fallback(
+                            .unwrap_or_else(|| crate::fallback::unknown_type(
                                 "lower/match_lower:typepat_payload"));
                             let payload_local = self.builder.alloc_local(
                                 binding_name.clone(), payload_ty.clone(),

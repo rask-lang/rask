@@ -3970,7 +3970,7 @@ impl<'a> MirLowerer<'a> {
     /// guessed type.
     ///
     /// Every place lowering can't resolve a type routes through
-    /// `fallback::i64_fallback`. Guessing i64 there is right only for a payload
+    /// `fallback::unknown_type`. Guessing i64 there is right only for a payload
     /// that already fits a machine word, so it used to pass silently for
     /// integers and quietly corrupt everything else. The record is drained
     /// around each function so a failure names the function that caused it.
@@ -5320,7 +5320,7 @@ impl<'a> MirLowerer<'a> {
                 for (i, field_pat) in fields.iter().enumerate() {
                     if let Pattern::Ident(name) = field_pat {
                         let demand = || payload_ty.clone().unwrap_or_else(|| {
-                            crate::fallback::i64_fallback("lower/mod:constructor_payload")
+                            crate::fallback::unknown_type("lower/mod:constructor_payload")
                         });
                         let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
                             vf.get(i)
@@ -5450,7 +5450,7 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
-                    crate::fallback::i64_fallback("lower/mod:typepat_payload")
+                    crate::fallback::unknown_type("lower/mod:typepat_payload")
                 });
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
                 let is_aggregate = matches!(

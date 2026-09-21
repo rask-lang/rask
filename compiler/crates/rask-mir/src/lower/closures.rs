@@ -47,7 +47,7 @@ impl<'a> MirLowerer<'a> {
                 let ty = ty_str
                     .as_deref()
                     .map(|s| self.ctx.resolve_type_str(s))
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:fnval_param"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"));
                 let id = wb.add_param(format!("__a{}", i), ty);
                 args.push(MirOperand::Local(id));
             }
@@ -118,7 +118,7 @@ impl<'a> MirLowerer<'a> {
                 let ty = ty_str
                     .as_deref()
                     .map(|s| self.ctx.resolve_type_str(s))
-                    .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:cmp_param"));
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
                 let id = wb.add_param(format!("__c{}", i), ty);
                 args.push(MirOperand::Local(id));
             }
@@ -265,7 +265,7 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| if inferred_void {
                 MirType::Void
             } else {
-                crate::fallback::i64_fallback("lower/closures:closure_ret")
+                crate::fallback::unknown_type("lower/closures:closure_ret")
             });
         // A comparator closure hands its answer to C code that reads a plain
         // integer — `rask_vec_sort_by`'s adapter tests the return against zero.
@@ -311,7 +311,7 @@ impl<'a> MirLowerer<'a> {
             let param_ty = ty_str.as_deref()
                 .map(|s| self.ctx.resolve_type_str(s))
                 .or_else(|| checked_params.get(i).cloned())
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/closures:param"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
             closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
             // A parameter that holds a function — `fs.map(|f| { return f(3) })`.
