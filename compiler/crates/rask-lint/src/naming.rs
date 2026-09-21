@@ -538,7 +538,11 @@ func try_parse(s: string) -> i64 or ParseError9 {
     }
 
     #[test]
-    fn still_rejects_a_non_result_return() {
+    fn still_rejects_a_return_that_cannot_report_failure() {
+        // `try_peek` answers a bare `i64`, so a caller has no way to ask
+        // whether it worked — that is the case the rule exists for.
+        // `try_insert` answers `Handle9<T>?`, which says "not this time"
+        // with nothing else to add, and is fine.
         let src = r#"
 struct Pool9<T> { }
 
@@ -548,7 +552,8 @@ extend Pool9<T> {
 }
 "#;
         let errs = try_errors(src);
-        assert_eq!(errs.len(), 2, "both should still be flagged: {:?}", errs);
+        assert_eq!(errs.len(), 1, "only try_peek should be flagged: {:?}", errs);
+        assert!(errs[0].contains("try_peek"), "{}", errs[0]);
     }
 
     #[test]
@@ -558,13 +563,13 @@ extend Pool9<T> {
         let src = r#"
 struct S9 { }
 extend S9 {
-    public func try_thing(self) -> Handle9<i64>? {}
+    public func try_thing(self) -> void {}
 }
 "#;
         let errs = try_errors(src);
         assert_eq!(errs.len(), 1);
         assert!(
-            !errs[0].contains("Result<"),
+            !errs[0].contains("Result<") && !errs[0].contains("()"),
             "message should use Rask syntax, not the internal rendering: {}",
             errs[0]
         );
